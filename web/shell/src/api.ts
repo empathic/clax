@@ -26,7 +26,15 @@ let tokenPromise: Promise<string | null> | null = null;
 /** The write token, only served to loopback browsers; null on a LAN viewer. */
 export function getToken(): Promise<string | null> {
   if (!tokenPromise) {
-    tokenPromise = fetch("/api/token").then(async r => (r.ok ? (await r.json()).token as string : null)).catch(() => null);
+    const p: Promise<string | null> = fetch("/api/token").then(async r => {
+      if (r.ok) return (await r.json()).token as string;
+      if (r.status === 403) return null;
+      throw new Error(`token request failed: ${r.status}`);
+    }).catch(() => {
+      if (tokenPromise === p) tokenPromise = null;
+      return null;
+    });
+    tokenPromise = p;
   }
   return tokenPromise;
 }

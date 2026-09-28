@@ -1,32 +1,58 @@
 import { useEffect, useState } from "preact/hooks";
-import { type Artifact, listArtifacts } from "./api";
+import { type Artifact, deleteArtifact, getToken, listArtifacts, patchArtifact } from "./api";
 import { relativeTime } from "./format";
 
 export default function Gallery() {
   const [artifacts, setArtifacts] = useState<Artifact[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  useEffect(() => { listArtifacts().then(setArtifacts, e => setError(String(e))); }, []);
+  const [token, setToken] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const describe = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  const refresh = () => listArtifacts().then(a => { setError(null); setArtifacts(a); }, e => setError(describe(e)));
+  useEffect(() => { refresh(); getToken().then(setToken); }, []);
+
+  const act = (op: () => Promise<unknown>) => op().then(refresh, e => setError(describe(e)));
+  const q = query.trim().toLowerCase();
+  const shown = artifacts?.filter(a => !q || a.title.toLowerCase().includes(q) || (a.description ?? "").toLowerCase().includes(q));
+
   return (
     <>
-      <header class="topbar"><h1>Artifax</h1><span class="muted hide-sm">local artifacts</span></header>
+      <header class="topbar">
+        <h1>Artifax</h1><span class="muted hide-sm">local artifacts</span>
+        <input type="search" class="search" placeholder="Search artifacts" value={query}
+          onInput={e => setQuery((e.currentTarget as HTMLInputElement).value)} />
+      </header>
       <main class="wrap">
         {error && <p class="empty">Could not load artifacts: {error}</p>}
         {artifacts && artifacts.length === 0 && (
           <p class="empty">No artifacts yet. Publish one with <code>artifax publish index.html</code>.</p>
         )}
-        {artifacts && artifacts.length > 0 && (
+        {artifacts && artifacts.length > 0 && shown && shown.length === 0 && (
+          <p class="empty">No artifacts match your search.</p>
+        )}
+        {shown && shown.length > 0 && (
           <div class="grid">
-            {artifacts.map(a => (
-              <a class="card" href={`/a/${a.id}`} key={a.id}>
-                {a.pinned && <span class="pin" title="Pinned">★</span>}
-                <h2>{a.title}</h2>
-                {a.description && <p>{a.description}</p>}
-                <div class="meta">
-                  <span>v{a.current_version}</span>
-                  <span>{relativeTime(a.updated_at)}</span>
-                  <span>{a.owner_session_id ? "published by an agent" : "published from the command line"}</span>
-                </div>
-              </a>
+            {shown.map(a => (
+              <div class="card-wrap" key={a.id}>
+                <a class="card" href={`/a/${a.id}`}>
+                  {a.pinned && <span class="pin" title="Pinned">★</span>}
+                  <h2>{a.title}</h2>
+                  {a.description && <p>{a.description}</p>}
+                  <div class="meta">
+                    <span>v{a.current_version}</span>
+                    <span>{relativeTime(a.updated_at)}</span>
+                    <span>{a.owner_session_id ? "published by an agent" : "published from the command line"}</span>
+                  </div>
+                </a>
+                {token && (
+                  <div class="card-tools">
+                    <button type="button" title={a.pinned ? "Unpin" : "Pin"}
+                      onClick={() => act(() => patchArtifact(a.id, { pinned: !a.pinned }, token))}>{a.pinned ? "★" : "☆"}</button>
+                    <button type="button" title="Delete"
+                      onClick={() => { if (confirm(`Delete "${a.title}"? This removes every version.`)) act(() => deleteArtifact(a.id, token)); }}>Delete</button>
+                  </div>
+                )}
+              </div>
             ))}
           </div>
         )}

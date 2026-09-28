@@ -9,7 +9,7 @@ web-install:
     cd web && npm ci
 
 web: web-install
-    rm -rf web/dist/_artifax web/dist/index.html web/dist/shell
+    rm -rf web/dist/_artifax web/dist/index.html
     cd web && npm run build
 
 web-test: web-install

@@ -29,4 +29,9 @@ select { font: inherit; background: var(--card); color: var(--fg); border: 1px s
 .viewer { position: relative; height: calc(100vh - 53px); }
 .banner { position: absolute; left: 50%; transform: translateX(-50%); top: 12px; background: var(--card); border: 1px solid var(--accent); border-radius: 999px; padding: 8px 14px; display: flex; gap: 10px; align-items: center; box-shadow: 0 6px 24px rgba(0,0,0,.15); }
 .muted { color: var(--muted); }
+.search { margin-left: auto; font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; min-width: 0; width: 220px; max-width: 50%; }
+.card-wrap { position: relative; }
+.card-wrap .card { height: 100%; padding-bottom: 48px; }
+.card-tools { position: absolute; right: 12px; bottom: 10px; display: flex; gap: 6px; }
+.card-tools button { padding: 2px 8px; font-size: 13px; }
 @media (max-width: 480px) { .topbar h1 { font-size: 14px; } .topbar .hide-sm { display: none; } }
