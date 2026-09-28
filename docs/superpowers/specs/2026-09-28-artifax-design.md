@@ -184,7 +184,12 @@ SQLite tables (abridged; columns beyond keys are illustrative):
 - `comments(id, thread_id, author_kind, author_name, via_session_id, body,
   created_at)` with `author_kind` in `viewer | agent`.
 - `feedback(id, thread_id, comment_id, target_session_id, created_at,
-  delivered_at, delivery_tier)`; one row per (comment, target session).
+  delivered_at, delivery_tier, acknowledged_at)`; one row per (comment,
+  target session). `target_session_id` is null when no live session was
+  found at send time. `delivery_tier` is one of `piggyback | stop_hook |
+  prompt_hook | wait | queue | inject`. `acknowledged_at` is set when the
+  target session reads, replies to, or resolves the thread; delivered but
+  unacknowledged rows are resent (§10).
 - `docs(artifact_id, path, json, version, updated_at)` for the `db`
   capability; `path` is the full document path such as `tasks/t1`.
 - `viewers(id, display_name, created_at)` for the `user` capability,
@@ -215,8 +220,8 @@ Agent- and shell-facing JSON API under `/api`:
 
 - Artifacts: `GET /api/artifacts`, `POST /api/artifacts` (W, create +
   version 1), `GET /api/artifacts/<aid>`, `POST /api/artifacts/<aid>/versions`
-  (W; multipart or JSON with base64 files; `if_version` for conflict
-  detection), `PATCH /api/artifacts/<aid>` (W: title, pinned, capabilities),
+  (W; publish body below; `if_version` for conflict detection),
+  `PATCH /api/artifacts/<aid>` (W: title, pinned, capabilities),
   `DELETE /api/artifacts/<aid>` (W), `GET /api/artifacts/<aid>/files`,
   `POST /api/artifacts/<aid>/assets` (W or viewer-with-write-grant; see §9),
   `DELETE /api/artifacts/<aid>/assets/<id>` (W).
@@ -239,8 +244,34 @@ Agent- and shell-facing JSON API under `/api`:
 - Sample: `POST /api/artifacts/<aid>/sample` streams text over SSE.
 - Room (phase 5): `GET /api/artifacts/<aid>/room` WebSocket.
 
-Health: `GET /healthz` returns `{version, pid, started_at}`; CLI and shim use
-it for discovery.
+Health: `GET /healthz` returns `{version, pid, started_at}` on every Host,
+including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
+
+### Publish body
+
+`POST /api/artifacts` and `POST /api/artifacts/<aid>/versions` take JSON:
+
+```json
+{
+  "title": "Quarterly Review",          // optional after version 1
+  "description": "…", "icon": "chart",  // optional
+  "label": "Draft to legal",            // optional, ≤ 60 chars
+  "if_version": 3,                      // required on an existing artifact
+  "capabilities": {"db": {}},           // optional; omitted keeps, {} clears
+  "files": {
+    "index.html": {"content": "<title>…", "encoding": "utf8"},
+    "app.js":     {"content": "…", "encoding": "utf8", "content_type": "text/javascript"},
+    "logo.png":   {"content": "iVBOR…", "encoding": "base64"},
+    "old.css":    null                  // remove a file carried forward
+  }
+}
+```
+
+`index.html` is required on every publish and is never carried forward.
+Other files carry forward from the previous version unless given or
+`null`. `content_type` defaults from the extension. Bodies are capped at
+64 MB and a single file at 16 MB, as on claude.ai. Assets use multipart at
+`POST /api/artifacts/<aid>/assets`.
 
 ## 7. Daemon discovery and lifecycle
 
@@ -271,9 +302,11 @@ Artifact shell (`/a/<aid>`):
   toggle, viewer display name.
 - Content frame: iframe whose `src` is the per-artifact origin when
   reachable (D5 probe: fetch `http://<aid>.localhost:<port>/healthz` with a
-  1 s timeout, cached per browser), else `/c/<aid>/v/<n>/` with
-  `sandbox="allow-scripts allow-forms allow-modals allow-popups
-  allow-downloads"` and no `allow-same-origin`.
+  1 s timeout, cached per browser). In that mode the iframe carries no
+  `sandbox` attribute; the distinct origin is the isolation. Otherwise the
+  `src` is `/c/<aid>/v/<n>/` with `sandbox="allow-scripts allow-forms
+  allow-modals allow-popups allow-downloads"` and no `allow-same-origin`,
+  so the content runs in an opaque origin.
 - Live updates: the shell subscribes to `/api/events`; a new version shows a
   "v4 published, reload" banner unless the page published it itself via the
   `artifact` capability, in which case it reloads immediately as on
@@ -291,14 +324,41 @@ The shell is Preact + TypeScript with CSS tokens on `:root`, dark mode via
 `prefers-color-scheme`, phone width supported, so it follows the same page
 contract it asks of artifacts.
 
+Phase 1 builds the gallery, the header without the comment mode toggle,
+thread sidebar, and viewer name, the content frame in both origin modes,
+and the version banner. The comment affordances are added in phase 3 and
+must not be stubbed into phase 1.
+
 ## 9. Runtime bridge and capabilities
 
 The daemon wraps every version's `index.html` at serve time into the
 document skeleton claude.ai uses (doctype, charset, viewport, the small
 reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
 data-version="<n>" data-contract="0.2.61">` as the first element of
-`<body>`, then the page content. A page that already carries the skeleton
-(one that republished itself) is recognised and not double-wrapped.
+`<body>`, then the page content. Recognition rule: if the file, after
+leading whitespace, begins with `<!doctype html>` (case-insensitive), it is
+a complete document and is served as-is with the bridge script inserted
+immediately after the first `<body ...>` tag; otherwise it is a fragment
+and is wrapped. This is what makes a self-republished page (which sends
+the full skeleton) round-trip without nesting. Wrapping is pure and cached
+per version.
+
+Capability ownership by phase. Every name below is placed; nothing else
+exists in the surface.
+
+| Capability | Phase | Notes |
+|---|---|---|
+| `use()` itself, resolving `null` for every name | 1 | The bridge ships in phase 1 so pages written against the contract load and degrade correctly. |
+| `permissions` (built in) | 4 | Until phase 4, `permissions.state()` reports every capability unavailable and `request()` resolves the same. |
+| `artifact`, `self` alias | 4 | |
+| `db` | 4 | Together with the `db_*` MCP tools. |
+| `downloads` | 4 | |
+| `user` | 4 | Viewer cookie and display names arrive in phase 3 for comments; `user` exposes them in phase 4. |
+| `comments` | 4 | Depends on phase 3 threads. |
+| `assets` | 4 | The asset store and `asset_upload` tool are phase 1 and 2; page-side `assets` is phase 4. |
+| `room` | 5 | |
+| `sample` | 5 | |
+| `files`, `mcp` | never in v1 | Resolve `null`. |
 
 `window.claude` exposes only `use(name)` returning a Promise of a frozen
 namespace or `null`. The bridge posts `{type:"artifax:use", name, id}` to
@@ -422,28 +482,80 @@ Reply with comments_reply, then comments_resolve when done.
 | 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code (confirmed shape), Codex (stop hook exists; block semantics unverified) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
 | 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
-| 5 | Native push | Pi: extension injects a user message (API name unverified). Codex: `codex queue --thread <id> --message` (command exists; behaviour on an idle session unverified). Claude Code: none available to third-party plugins. | seconds, when it works | See below. |
+| 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: extension message injection (API name unverified, §13). Claude Code: none available to third-party plugins. | seconds when the harness submits the message itself; otherwise the user's next input | See below, and the resend rule. |
 
-### The Codex gap, stated plainly
+### Delivery and acknowledgement
 
-There is no verified way to wake an idle Codex session from outside it.
-What Artifax does on Codex:
+A feedback row is marked `delivered_at` by the first tier that hands it
+to the harness. Delivery is not proof the agent saw it: a queued Codex
+message or an injected Pi message can be dropped by the harness. So the
+row also carries `acknowledged_at`, set when that session calls
+`comments_read`, `comments_reply`, or `comments_resolve` on the thread, or
+when tier 1 or tier 4 returns it (those paths are in-band and count as
+seen). Rows delivered by tier 2, 3, or 5 and unacknowledged after 2 minutes
+are included again by tier 1 on the next tool result and by tier 2 on the
+next stop, marked `(resent)`. Resends stop after acknowledgement or after
+three attempts; the thread then shows "delivered, not acknowledged" in the
+shell.
 
-- During a turn, tier 1 delivers on the next artifax tool call.
-- At the end of a turn, the Codex `stop` hook runs `artifax hook --agent
-  codex stop`. If Codex honours a block decision from a stop hook, the
-  agent is re-engaged with the payload. If it does not, the hook is a
-  no-op and the feedback waits.
-- Phase 3 tests `codex queue --thread <thread> --message <payload>` from
-  the daemon when a Codex session is the target. The thread ID comes from
-  the Codex session-start hook's `session_id`, correlated to the shim by
-  parent PID (§11). If a queued message is submitted when the session is
-  idle, this is a true wake with seconds of latency. If it is only consumed
-  after the user's next input, its latency equals tier 3.
-- Uniform fallback when nothing above fires: the feedback sits in the
-  daemon until the agent's next artifax tool call or the user's next
-  message. The shell shows "sent, waiting for the agent" with the elapsed
-  time, so the person knows the agent has not seen it yet.
+### The Codex wake path, stated plainly
+
+Mechanism: when a feedback row targets a Codex session whose
+`harness_session_id` is known and whose watch has `replies_armed`, the
+daemon runs
+
+```
+codex queue --thread <harness_session_id> --message <payload>
+```
+
+with the payload from above, a 10 s timeout, and the daemon's environment.
+Exit 0 marks the row delivered with tier `queue`. The thread ID is the
+`session_id` the Codex `session_start` hook received, joined to the shim's
+session record by parent PID (§11).
+
+What is known and not known as of this spec: the command exists in Codex
+0.158 and is documented as "queue a message for an existing session". It
+is not verified whether a queued message is submitted automatically when
+the session is idle at its prompt, only submitted after the current turn
+ends, or held until the user presses enter. Phase 3 measures this on the
+installed Codex and records the result in `docs/contract.md`.
+
+Latency by outcome:
+
+- Submitted on idle: seconds. This is a true wake.
+- Submitted at end of the current turn only: the end of the turn, the
+  same as tier 2.
+- Held until user input: the user's next message, the same as tier 3.
+
+Failure modes and what happens in each:
+
+- **Thread ID unknown.** The Codex hooks did not run (not installed, or
+  Codex has not granted persisted hook trust), so no `session_start` hook
+  registered the ID. The daemon skips tier 5 for that session, the `status`
+  tool reports "Codex session ID unknown, native push disabled", and
+  `artifax doctor --agent codex` explains how to install and trust the
+  hooks. Tiers 1, 2, and 4 still apply.
+- **Session has exited.** `codex queue` exits non-zero. The daemon marks the
+  session ended, clears `target_session_id` on its undelivered rows, and
+  delivers them to the next session that publishes a version of or watches
+  the artifact. The shell shows "agent session ended; waiting for a new
+  one".
+- **`codex` not on the daemon's PATH.** The daemon was started by a process
+  with a minimal environment. Tier 5 is disabled for all Codex sessions and
+  `doctor` reports it. The shim passes its own `PATH` when it auto-starts
+  the daemon, which covers the common case.
+- **Queued but never surfaced.** Exit 0 but the agent never sees it. The
+  acknowledgement and resend rule above catches it: the row is resent
+  in-band on the next tool result or stop, up to three times.
+- **Stop hook.** The Codex `stop` hook (`clash-codex/hooks.toml` shows the
+  event exists) runs `artifax hook --agent codex stop`. Whether Codex
+  honours a block decision from it is unverified; if it does not, the hook
+  is a no-op and the tier is skipped on Codex.
+
+Uniform fallback when nothing above fires: the feedback sits in the daemon
+until the agent's next artifax tool call or the user's next message. The
+shell shows "sent, waiting for the agent" with the elapsed time and the
+tier it is waiting on, so the person knows the agent has not seen it.
 
 The same honesty applies to Claude Code: without a first-party background
 task, an idle Claude Code session is woken only by tiers 2 and 3. Live
@@ -556,11 +668,26 @@ harnesses without MCP and for scripts.
   MCP shim if Pi's extension API exposes MCP registration; on `tool_result`
   appends pending feedback; for tier 5 uses the extension API's
   message-injection call if one exists.
-- Everything above that names a Pi API is to be re-checked against the
-  installed `@mariozechner/pi-coding-agent` types before the phase 2 plan
-  is executed: event names (`session_start`, `tool_call`, `tool_result` are
-  confirmed by clash-pi), tool registration, message injection, and whether
-  Pi passes its session ID to spawned processes.
+- Pi is not installed on the machine this was designed on. Before the Pi
+  tasks of the phase 2 plan run, install Pi and re-check each item below
+  against the installed `@mariozechner/pi-coding-agent` types, recording
+  the answer in the plan:
+  1. Event names. `session_start`, `tool_call`, `tool_result` are confirmed
+     by clash-pi; confirm they still exist and their payload fields
+     (`event.sessionId`, `event.toolName`, `event.input`).
+  2. Tool registration. Whether the extension API can register a tool with
+     a JSON schema and an async handler, and what the return shape is.
+  3. MCP registration. Whether an extension can register a stdio MCP server;
+     if yes, the shim is used and item 2 is unnecessary.
+  4. Message injection. Whether an extension can submit a user-role message
+     into the running session, and whether that starts a turn when idle.
+     This decides whether Pi has tier 5.
+  5. Session ID propagation. Whether Pi exposes its session ID in the
+     environment of spawned processes; if not, parent-PID join per §11.
+  6. Install path. Whether `pi install npm:<pkg>` is still the install
+     command and how `package.json`'s `pi.extensions` is read.
+  7. UI. Whether `ctx.hasUI` and `ctx.ui.select` exist for a "watch this
+     artifact?" prompt; optional.
 
 ## 14. Security model
 
@@ -594,6 +721,8 @@ harnesses without MCP and for scripts.
   the daemon call inside uses a 3 s timeout.
 - `wait_for_feedback` past the harness's limit: returns early with a
   "call again" result rather than erroring.
+- `codex queue` failure: handled per §10; never retried in a loop, never
+  blocks the send request that triggered it (dispatch is asynchronous).
 - Storage corruption: `artifax doctor` runs `PRAGMA integrity_check`,
   verifies files against `versions.files_json`, and reports.
 
@@ -628,14 +757,21 @@ harnesses without MCP and for scripts.
 
 Each phase is shippable on its own and gets its own implementation plan.
 
-**Phase 1: daemon, publish, versions, gallery, viewer.** `artifax serve`,
-discovery and auto-start, storage, REST for artifacts/versions/files/assets,
-gallery and artifact shell with version picker and live "new version"
-banner, content wrapping with the skeleton (bridge present but exposing
-only `permissions` and `null` for everything else), D5 origin probe and
-fallback, CLI `publish/list/open/delete/pin/status/doctor/stop`. No
-comments, no sessions beyond a placeholder owner. Ship when: an HTML file
-can be published from the CLI, opened, updated, and its versions browsed.
+**Phase 1: daemon, publish, versions, gallery, viewer.** Stands alone:
+no comments, no sessions, no capabilities, no room, no sample. In scope:
+`artifax serve` with discovery, auto-start, `daemon.json`, and `stop`;
+storage with the `artifacts`, `versions`, and `assets` tables only (later
+tables arrive with their phases via migrations); the REST routes for
+artifacts, versions, files, and assets, `/api/token`, `/healthz`, and SSE
+with the `version` event only; content serving and wrapping with the
+recognition rule; the bridge with `use()` resolving `null` for every
+name; the D5 origin probe and both frame modes; the gallery and the shell
+per §8's phase 1 paragraph; the CLI `serve`, `stop`, `status`, `publish`,
+`list`, `open`, `delete`, `pin`, `unpin`, `doctor`. `owner_session_id` is
+null and the gallery shows "published from the command line". Ship when:
+an HTML file with a supporting file can be published from the CLI,
+opened at its URL, republished with `if_version`, its versions browsed
+in the shell, and the version banner appears in an already-open tab.
 
 **Phase 2: MCP and the three plugins.** Shim, session registration, hooks
 for session-start/end, MCP tools for artifacts and `status`, HTTP MCP on
@@ -646,17 +782,21 @@ Code and Codex can publish and update an artifact through MCP, and the Pi
 extension passes its mocked tests.
 
 **Phase 3: comments and the feedback loop.** Threads, anchors, clips,
-comment mode, sidebar, send to agent, feedback rows, tiers 1–4, Stop and
-prompt hooks, `comments_*` and `watch` and `wait_for_feedback` tools,
-Codex `queue` experiment and Pi injection experiment (tier 5), the
-"waiting for the agent" indicator. Ship when: the loop in §1 works end to
-end in Claude Code, and the Codex behaviour is measured and documented.
+comment mode, sidebar, viewer display names, send to agent, feedback rows
+with acknowledgement and resend, tiers 1–4, Stop and prompt hooks,
+`comments_*` and `watch` and `wait_for_feedback` tools, tier 5 on Codex
+via `codex queue` with its behaviour measured and written into
+`docs/contract.md`, tier 5 on Pi if item 4 of the Pi checklist is
+confirmed, the "waiting for the agent" indicator with tier and elapsed
+time. Ship when: the loop in §1 works end to end in Claude Code, and the
+Codex behaviour is measured and documented.
 
-**Phase 4: runtime capabilities.** `artifact` self-publish, `db` with
-rules and snapshots and the `db_*` tools, `downloads`, `user`, `comments`
-capability (composer and custom anchors), `assets` from the page, contract
-docs in `docs/contract.md`. Ship when: a claude.ai page using these
-capabilities runs unchanged.
+**Phase 4: runtime capabilities.** `permissions`, `artifact` and its
+`self` alias, `db` with rules and snapshots and the `db_*` tools,
+`downloads`, `user`, `comments` capability (composer and custom anchors),
+`assets` from the page, the `.d.ts` contract files in `web/contract/`,
+contract docs in `docs/contract.md`. Ship when: a claude.ai page using
+these capabilities runs unchanged in both frame modes.
 
 **Phase 5: room and sample.** WebSocket room with presence and topics,
 `sample()` with the Anthropic provider, streaming, tools round-trip,
@@ -671,10 +811,10 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   fallback make this safe either way, but if Safari fails the fallback
   becomes the common case on macOS and per-artifact `localStorage`
   isolation is lost there.
-- **Codex wake path.** Whether Codex honours a block from a `stop` hook, and
-  what `codex queue` does to an idle session, both decide how live the
-  Codex experience is. Measured in phase 3; §10 is written to be true in
-  either outcome.
+- **Codex wake path.** The mechanism is fixed (`codex queue`); what is
+  open is its latency class, decided by whether Codex submits a queued
+  message on an idle session, and whether the `stop` hook can block.
+  Measured in phase 3; §10 is written to be true in every outcome.
 - **Codex plugin manifest capabilities.** If `.codex-plugin/plugin.json`
   can declare MCP servers and hooks, the setup skill goes away. Checked at
   the start of phase 2 against the installed Codex.
