@@ -5,16 +5,18 @@ pub mod events;
 pub mod health;
 pub mod token;
 
+use crate::auth::RequireToken;
 use crate::state::AppState;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
     handler::Handler,
-    routing::{delete, get},
+    http::StatusCode,
+    routing::{delete, get, post},
 };
 use tower_http::cors::{Any, CorsLayer};
 
-pub fn router(state: AppState) -> Router {
+pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -> Router {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     let publish_limit = DefaultBodyLimit::max(artifacts::PUBLISH_BODY_LIMIT);
     let asset_limit = DefaultBodyLimit::max(21 * 1024 * 1024);
@@ -28,7 +30,7 @@ pub fn router(state: AppState) -> Router {
             delete(assets::delete),
         )
         .layer(asset_limit);
-    Router::new()
+    let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/token", get(token::token))
         .route("/api/events", get(events::events))
@@ -55,6 +57,19 @@ pub fn router(state: AppState) -> Router {
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
-        .route("/c/{aid}/v/{n}/{*path}", get(content::file))
-        .with_state(state)
+        .route("/c/{aid}/v/{n}/{*path}", get(content::file));
+    if let Some(tx) = shutdown {
+        let tx = std::sync::Arc::new(tx);
+        r = r.route(
+            "/api/admin/shutdown",
+            post(move |_t: RequireToken| {
+                let tx = tx.clone();
+                async move {
+                    let _ = tx.send(true);
+                    StatusCode::ACCEPTED
+                }
+            }),
+        );
+    }
+    r.with_state(state)
 }

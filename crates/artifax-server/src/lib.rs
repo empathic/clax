@@ -1,6 +1,7 @@
 //! HTTP server for Artifax: REST API, content serving, SSE, embedded UI.
 
 pub mod auth;
+pub mod daemon;
 pub mod error;
 pub mod host;
 pub mod routes;
@@ -9,9 +10,20 @@ pub mod state;
 pub use state::AppState;
 
 pub fn build_router(state: AppState) -> axum::Router {
-    // `Router::layer` runs after route matching, so the host rewrite has to wrap the
-    // whole inner router (mounted as the outer fallback) to influence routing.
+    wrap(routes::router(state, None))
+}
+
+pub fn build_router_with_shutdown(
+    state: AppState,
+    shutdown: tokio::sync::watch::Sender<bool>,
+) -> axum::Router {
+    wrap(routes::router(state, Some(shutdown)))
+}
+
+// `Router::layer` runs after route matching, so the host rewrite has to wrap the
+// whole inner router (mounted as the outer fallback) to influence routing.
+fn wrap(inner: axum::Router) -> axum::Router {
     axum::Router::new()
-        .fallback_service(routes::router(state))
+        .fallback_service(inner)
         .layer(axum::middleware::from_fn(host::rewrite_artifact_host))
 }
