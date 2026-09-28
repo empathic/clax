@@ -175,7 +175,7 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   contract_version, deleted_at)`
 - `versions(artifact_id, n, label, created_at, session_id, files_json)`
   where `files_json` maps published path to content type and size.
-- `assets(id, artifact_id, content_type, size, created_at)`
+- `assets(id, artifact_id, content_type, ext, size, created_at)`
 - `sessions(id, harness, harness_session_id, cwd, pid, parent_pid,
   started_at, last_seen_at, ended_at)`
 - `watches(session_id, artifact_id, replies_armed, created_at)`
@@ -210,7 +210,9 @@ Browser-facing:
   shell pinned to a version.
 - `GET /c/<aid>/v/<n>/` wrapped content document (bridge prepended).
   `GET /c/<aid>/v/<n>/<path>` supporting files. Also served at
-  `http://<aid>.localhost:<port>/v/<n>/...` for D5.
+  `http://<aid>.localhost:<port>/v/<n>/...` for D5. On `<aid>.localhost` the
+  daemon serves `/v/...`, `/healthz`, `/_artifax/*`, and `/_blob/*` and
+  404s everything else.
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
@@ -269,8 +271,9 @@ including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
 
 `index.html` is required on every publish and is never carried forward.
 Other files carry forward from the previous version unless given or
-`null`. `content_type` defaults from the extension. Bodies are capped at
-64 MB and a single file at 16 MB, as on claude.ai. Assets use multipart at
+`null`. `content_type` defaults from the extension. The 64 MB cap is on
+decoded bytes (the HTTP body limit is 96 MiB to cover base64 inflation) and
+a single file is capped at 16 MB, as on claude.ai. Assets use multipart at
 `POST /api/artifacts/<aid>/assets`.
 
 ## 7. Daemon discovery and lifecycle
@@ -279,9 +282,11 @@ Other files carry forward from the previous version unless given or
    and checks the PID is alive. Match: use it.
 2. Otherwise it takes an exclusive `flock` on `~/.artifax/daemon.lock`,
    re-checks, then spawns `artifax serve --daemonize` detached (new session,
-   stdio to `logs/daemon.log`), and polls `/healthz` for up to 5 seconds.
+   stdio to `logs/daemon.log`), and polls `/healthz` for up to 5 seconds. The
+   spawning client holds the lock until `/healthz` answers.
 3. `artifax serve` binds `127.0.0.1:7480` by default, tries the next 20
-   ports if busy, writes `daemon.json` atomically, and drops the lock.
+   ports if busy, and writes `daemon.json` atomically. `artifax serve` itself
+   does not take the lock.
 4. `artifax stop` sends `POST /api/admin/shutdown` (W). The daemon also
    exits if `daemon.json` is replaced by a newer daemon (checked every 30 s),
    so a stale process cannot shadow a new one.
@@ -306,7 +311,9 @@ Artifact shell (`/a/<aid>`):
   `sandbox` attribute; the distinct origin is the isolation. Otherwise the
   `src` is `/c/<aid>/v/<n>/` with `sandbox="allow-scripts allow-forms
   allow-modals allow-popups allow-downloads"` and no `allow-same-origin`,
-  so the content runs in an opaque origin.
+  so the content runs in an opaque origin. Content on the main origin
+  (`/c/...`) and `/_blob/...` responses carry a `Content-Security-Policy:
+  sandbox` header so a top-level navigation cannot reach the API same-origin.
 - Live updates: the shell subscribes to `/api/events`; a new version shows a
   "v4 published, reload" banner unless the page published it itself via the
   `artifact` capability, in which case it reloads immediately as on
@@ -336,8 +343,8 @@ document skeleton claude.ai uses (doctype, charset, viewport, the small
 reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
 data-version="<n>" data-contract="0.2.61">` as the first element of
 `<body>`, then the page content. Recognition rule: if the file, after
-leading whitespace, begins with `<!doctype html>` (case-insensitive), it is
-a complete document and is served as-is with the bridge script inserted
+whitespace and an optional BOM, begins with a `<!doctype` declaration
+(case-insensitive), it is a complete document and is served as-is with the bridge script inserted
 immediately after the first `<body ...>` tag; otherwise it is a fragment
 and is wrapped. This is what makes a self-republished page (which sends
 the full skeleton) round-trip without nesting. Wrapping is pure and cached
@@ -696,11 +703,16 @@ harnesses without MCP and for scripts.
   bound.
 - Write endpoints need the bearer token from `daemon.json` (0600). Local
   shims, hooks, and the CLI read it; the shell on localhost fetches it from
-  `/api/token`, which only answers to loopback connections. LAN viewers can
+  `/api/token`, which only answers to loopback connections and also requires
+  a literal local `Host` header (localhost, 127.0.0.1, [::1]) to defeat DNS
+  rebinding. LAN viewers can
   view, comment, send to agent, resolve, and write `db` docs at
   `interact` level; they cannot publish, delete, upload assets, or write
   `admin`-level docs.
 - Content isolation per D5. In LAN mode content runs with an opaque origin.
+  Content on the main origin (`/c/...`) and `/_blob/...` responses carry a
+  `Content-Security-Policy: sandbox` header so a top-level navigation cannot
+  reach the API same-origin.
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
   results wrap them in a clearly labelled block and the skills say so.
 - `sample()` spends the configured key; consent is per viewer per artifact
@@ -750,7 +762,7 @@ harnesses without MCP and for scripts.
   Codex setup script idempotency; Pi extension against a mocked
   `ExtensionAPI` until Pi is installed.
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
-  web lint and typecheck, Playwright, and the plugin tests; CI runs the same
+  web typecheck, Playwright, and the plugin tests; CI runs the same
   script.
 
 ## 17. Phases
@@ -811,6 +823,9 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   fallback make this safe either way, but if Safari fails the fallback
   becomes the common case on macOS and per-artifact `localStorage`
   isolation is lost there.
+- **Phase 3 cookie scoping.** The viewer cookie must be host-only and
+  validated by the shell, since `<aid>.localhost` shares a site with
+  `localhost`.
 - **Codex wake path.** The mechanism is fixed (`codex queue`); what is
   open is its latency class, decided by whether Codex submits a queued
   message on an idle session, and whether the `stop` hook can block.
