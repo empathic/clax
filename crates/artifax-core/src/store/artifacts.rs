@@ -199,4 +199,24 @@ mod tests {
             Err(crate::CoreError::NotFound)
         ));
     }
+
+    #[test]
+    fn migrations_run_in_transaction_and_version_bumps() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let store = Store::open(&home).unwrap();
+
+        // After first open, user_version should be 1
+        let version: u32 = store
+            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(version, 1);
+
+        // Opening a second time should not re-run migrations or error
+        let store2 = Store::open(&home).unwrap();
+        let version2: u32 = store2
+            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(version2, 1);
+    }
 }

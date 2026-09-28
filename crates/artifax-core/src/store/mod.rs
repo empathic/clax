@@ -35,13 +35,15 @@ impl Store {
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap();
         let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
         for (i, sql) in migrations::MIGRATIONS.iter().enumerate() {
             let target = i as u32 + 1;
             if target > version {
-                conn.execute_batch(sql)?;
-                conn.pragma_update(None, "user_version", target)?;
+                let tx = conn.transaction()?;
+                tx.execute_batch(sql)?;
+                tx.pragma_update(None, "user_version", target)?;
+                tx.commit()?;
             }
         }
         Ok(())
