@@ -30,6 +30,20 @@ pub enum Cmd {
     Stop,
     /// Show whether a daemon is running.
     Status(commands::status::Args),
+    /// Publish a page (and files) as a new artifact or a new version.
+    Publish(commands::publish::Args),
+    /// List artifacts, or the files of one.
+    List(commands::list::Args),
+    /// Open an artifact in the browser.
+    Open(commands::open::Args),
+    /// Delete an artifact.
+    Delete(commands::delete::Args),
+    /// Pin an artifact to the top of the gallery.
+    Pin(commands::pin::Args),
+    /// Unpin an artifact.
+    Unpin(commands::pin::Args),
+    /// Check the installation and storage.
+    Doctor,
 }
 
 fn main() {
@@ -39,6 +53,13 @@ fn main() {
         Cmd::Serve(a) => commands::serve::run(&cli, &home, a),
         Cmd::Stop => commands::stop::run(&cli, &home),
         Cmd::Status(a) => commands::status::run(&cli, &home, a),
+        Cmd::Publish(a) => commands::publish::run(&cli, &home, a),
+        Cmd::List(a) => commands::list::run(&cli, &home, a),
+        Cmd::Open(a) => commands::open::run(&cli, &home, a),
+        Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
+        Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
+        Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
+        Cmd::Doctor => commands::doctor::run(&cli, &home),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

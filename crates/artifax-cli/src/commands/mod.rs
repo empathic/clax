@@ -1,3 +1,9 @@
+pub mod delete;
+pub mod doctor;
+pub mod list;
+pub mod open;
+pub mod pin;
+pub mod publish;
 pub mod serve;
 pub mod status;
 pub mod stop;

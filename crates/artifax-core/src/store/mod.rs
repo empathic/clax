@@ -31,6 +31,11 @@ impl Store {
         &self.home
     }
 
+    /// First row of `PRAGMA integrity_check`; "ok" when the database is sound.
+    pub fn integrity_check(&self) -> Result<String> {
+        self.with_conn(|c| Ok(c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?))
+    }
+
     pub fn now() -> String {
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     }

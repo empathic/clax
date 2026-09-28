@@ -151,6 +151,14 @@ impl Client {
     pub fn healthz(&self) -> anyhow::Result<serde_json::Value> {
         self.get("/healthz")
     }
+    /// Status code of an unauthenticated GET, or None if unreachable.
+    pub fn http_status(&self, path: &str) -> Option<u16> {
+        self.http
+            .get(format!("{}{path}", self.base))
+            .send()
+            .ok()
+            .map(|r| r.status().as_u16())
+    }
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         Self::check(self.http.get(format!("{}{path}", self.base)).send()?)
     }
@@ -163,7 +171,6 @@ impl Client {
                 .send()?,
         )
     }
-    #[expect(dead_code)]
     pub fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
             self.http
@@ -173,7 +180,6 @@ impl Client {
                 .send()?,
         )
     }
-    #[expect(dead_code)]
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
         Self::check(
             self.http
