@@ -3,6 +3,7 @@ pub mod assets;
 pub mod content;
 pub mod events;
 pub mod health;
+pub mod shell;
 pub mod token;
 
 use crate::auth::RequireToken;
@@ -54,6 +55,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
         .merge(asset_routes)
+        .route("/", get(shell::shell))
+        .route("/a/{aid}", get(shell::shell))
+        .route("/a/{aid}/v/{n}", get(shell::shell))
+        .route("/_artifax/{*path}", get(shell::static_file))
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))

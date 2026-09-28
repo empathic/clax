@@ -30,6 +30,7 @@ async fn serves_wrapped_index_and_files_with_caching_headers() {
         "public, max-age=31536000, immutable"
     );
     assert_eq!(res.headers()["x-content-type-options"], "nosniff");
+    assert_eq!(res.headers()["access-control-allow-origin"], "*");
     assert_eq!(res.text().await.unwrap(), "p{color:red}");
     assert_eq!(
         ts.get(&format!("/c/{id}/v/1/missing.js")).await.status(),
@@ -167,11 +168,32 @@ async fn artifact_host_passes_blob_and_bridge_paths_to_router() {
             .await
             .unwrap();
         assert_eq!(res.status(), 404, "{path}");
-        // `/_artifax/*` has no route until the bridge is served, so only the blob
-        // route is expected to answer with the JSON error body for now.
-        if path.starts_with("/_blob/") {
-            let v: serde_json::Value = res.json().await.expect(path);
-            assert_eq!(v["error"]["code"], "not_found", "{path}");
+        let v: serde_json::Value = res.json().await.expect(path);
+        assert_eq!(v["error"]["code"], "not_found", "{path}");
+    }
+}
+
+#[tokio::test]
+async fn shell_routes_serve_ui_or_explain_missing_build() {
+    let ts = TestServer::spawn().await;
+    for path in ["/", "/a/7q3k9mzx2b4t", "/a/7q3k9mzx2b4t/v/2"] {
+        let res = ts.get(path).await;
+        let status = res.status().as_u16();
+        assert!(status == 200 || status == 503, "{path} -> {status}");
+        if status == 200 {
+            assert!(
+                res.headers()["content-type"]
+                    .to_str()
+                    .unwrap()
+                    .starts_with("text/html")
+            );
+            assert_eq!(res.headers()["cache-control"], "no-store");
+        } else {
+            assert_eq!(
+                res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+                "ui_not_built"
+            );
         }
     }
+    assert_eq!(ts.get("/_artifax/does-not-exist.js").await.status(), 404);
 }

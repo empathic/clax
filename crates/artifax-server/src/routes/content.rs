@@ -81,6 +81,7 @@ pub async fn file(
             (header::CONTENT_TYPE, meta.content_type.as_str()),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
         body,
     )
