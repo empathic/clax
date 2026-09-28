@@ -2,6 +2,7 @@
 //! single transaction.
 
 pub mod artifacts;
+pub mod assets;
 pub mod migrations;
 
 use crate::{Home, Result};
