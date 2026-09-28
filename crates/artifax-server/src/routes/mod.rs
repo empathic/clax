@@ -11,11 +11,9 @@ use axum::{
 use tower_http::cors::{Any, CorsLayer};
 
 pub fn router(state: AppState) -> Router {
-    let health = Router::new()
-        .route("/healthz", get(health::healthz))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any));
+    let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     Router::new()
-        .merge(health)
+        .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/token", get(token::token))
         // Placeholder so the auth gate is testable; replaced by the real publish route.
         .route(

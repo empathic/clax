@@ -20,6 +20,29 @@ async fn token_is_served_to_loopback_peers() {
 }
 
 #[tokio::test]
+async fn token_response_is_uncached_and_not_cors_enabled() {
+    let ts = TestServer::spawn().await;
+    let res = ts.get("/api/token").await;
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    assert!(res.headers().get("access-control-allow-origin").is_none());
+}
+
+#[tokio::test]
+async fn token_is_refused_for_non_local_host_header() {
+    let ts = TestServer::spawn().await;
+    let res = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("host", "evil.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "not_loopback");
+}
+
+#[tokio::test]
 async fn write_routes_require_bearer_token() {
     let ts = TestServer::spawn().await;
     let res = ts
