@@ -21,6 +21,23 @@ impl Env {
     }
 }
 
+impl Drop for Env {
+    fn drop(&mut self) {
+        let _ = self.cmd().arg("stop").output();
+        let info = std::fs::read_to_string(self.dir.path().join("ax/daemon.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+        if let Some(pid) = info.and_then(|v| v["pid"].as_i64()) {
+            // SAFETY: signal 0 probes, SIGTERM ends the leaked test daemon.
+            unsafe {
+                if libc::kill(pid as libc::pid_t, 0) == 0 {
+                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn status_without_daemon_reports_not_running() {
     let e = Env::new();

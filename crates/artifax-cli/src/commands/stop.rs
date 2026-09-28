@@ -11,10 +11,23 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
             {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
+            let stopped = !artifax_server::daemon::pid_alive(c.info.pid);
+            if !stopped {
+                eprintln!(
+                    "warning: daemon (pid {}) is still draining connections",
+                    c.info.pid
+                );
+            }
             super::print(
                 cli,
-                serde_json::json!({"stopped": true, "pid": c.info.pid}),
-                |_| "artifax daemon stopped".into(),
+                serde_json::json!({"stopped": stopped, "pid": c.info.pid}),
+                |j| {
+                    if stopped {
+                        "artifax daemon stopped".into()
+                    } else {
+                        format!("artifax daemon (pid {}) is still shutting down", j["pid"])
+                    }
+                },
             );
         }
         None => super::print(cli, serde_json::json!({"stopped": false}), |_| {

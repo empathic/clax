@@ -14,15 +14,22 @@ pub struct Client {
     http: reqwest::blocking::Client,
 }
 
+fn probe_client() -> Option<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(1))
+        .build()
+        .ok()
+}
+
 fn http() -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
+        .no_proxy()
         .timeout(Duration::from_secs(30))
         .build()
         .expect("client")
 }
 
-// The request helpers are consumed by the artifact commands that follow.
-#[allow(dead_code)]
 impl Client {
     fn from_info(info: DaemonInfo) -> Client {
         Client {
@@ -36,17 +43,17 @@ impl Client {
     /// A live daemon named by daemon.json that answers `/healthz`, or None.
     /// Never starts one.
     pub fn discover(home: &Home) -> Option<Client> {
+        Client::discover_with(home, &probe_client()?)
+    }
+
+    fn discover_with(home: &Home, probe: &reqwest::blocking::Client) -> Option<Client> {
         let info = read_daemon_info(home)?;
         if !pid_alive(info.pid) {
             return None;
         }
-        let c = Client::from_info(info);
-        let probe = reqwest::blocking::Client::builder()
-            .timeout(Duration::from_secs(1))
-            .build()
-            .ok()?;
-        let res = probe.get(format!("{}/healthz", c.base)).send().ok()?;
-        res.status().is_success().then_some(c)
+        let base = format!("http://127.0.0.1:{}", info.port);
+        let res = probe.get(format!("{base}/healthz")).send().ok()?;
+        res.status().is_success().then(|| Client::from_info(info))
     }
 
     /// Discover, or start a daemon on `port` (0 = any free port) and wait for it.
@@ -59,12 +66,13 @@ impl Client {
     /// The start lock is held from the re-check until the spawned daemon answers
     /// `/healthz` (or the deadline passes), so concurrent callers start one daemon.
     pub fn connect_with_bind(home: &Home, port: u16, bind: IpAddr) -> anyhow::Result<Client> {
-        if let Some(c) = Client::discover(home) {
+        let probe = probe_client().context("building probe client")?;
+        if let Some(c) = Client::discover_with(home, &probe) {
             return Ok(c);
         }
         home.ensure_dirs()?;
         let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
-        if let Some(c) = Client::discover(home) {
+        if let Some(c) = Client::discover_with(home, &probe) {
             return Ok(c);
         }
         let log = std::fs::OpenOptions::new()
@@ -82,17 +90,30 @@ impl Client {
             &bind.to_string(),
         ])
         .env("ARTIFAX_HOME", home.root())
+        .current_dir(home.root())
         .stdin(Stdio::null())
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
         {
             use std::os::unix::process::CommandExt;
-            cmd.process_group(0);
+            // SAFETY: setsid is async-signal-safe and the closure does nothing else.
+            unsafe {
+                cmd.pre_exec(|| {
+                    libc::setsid();
+                    Ok(())
+                });
+            }
         }
-        let child = cmd.spawn().context("spawning artifax serve")?;
+        let mut child = cmd.spawn().context("spawning artifax serve")?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Some(c) = Client::discover(home)
+            if let Some(status) = child.try_wait()? {
+                bail!(
+                    "daemon exited during startup ({status}); see {}",
+                    home.log_path().display()
+                );
+            }
+            if let Some(c) = Client::discover_with(home, &probe)
                 && c.info.pid == child.id()
             {
                 return Ok(c);
@@ -126,6 +147,7 @@ impl Client {
         }
     }
 
+    #[expect(dead_code)]
     pub fn healthz(&self) -> anyhow::Result<serde_json::Value> {
         self.get("/healthz")
     }
@@ -141,6 +163,7 @@ impl Client {
                 .send()?,
         )
     }
+    #[expect(dead_code)]
     pub fn patch(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
             self.http
@@ -150,6 +173,7 @@ impl Client {
                 .send()?,
         )
     }
+    #[expect(dead_code)]
     pub fn delete(&self, path: &str) -> anyhow::Result<()> {
         Self::check(
             self.http
