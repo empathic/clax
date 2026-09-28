@@ -37,7 +37,14 @@ pub async fn events(
             .event(name)
             .data(serde_json::to_string(&ev).unwrap())))
     });
-    Sse::new(ready.chain(live)).keep_alive(
+    let mut shutdown = s.shutdown.clone();
+    // A dropped sender means the state has no shutdown source; never end the stream then.
+    let stop = async move {
+        if shutdown.wait_for(|v| *v).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    Sse::new(futures::StreamExt::take_until(ready.chain(live), stop)).keep_alive(
         KeepAlive::new()
             .interval(Duration::from_secs(15))
             .text("keep-alive"),

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,6 +14,7 @@ use tokio::sync::{oneshot, watch};
 
 pub const DEFAULT_PORT: u16 = 7480;
 pub const PORT_ATTEMPTS: u16 = 21;
+const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DaemonInfo {
@@ -31,9 +32,18 @@ pub fn read_daemon_info(home: &Home) -> Option<DaemonInfo> {
 }
 
 pub fn write_daemon_info(home: &Home, info: &DaemonInfo) -> io::Result<()> {
-    let tmp = home.root().join("daemon.json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec_pretty(info).expect("serialisable"))?;
-    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))?;
+    use io::Write;
+    let tmp = home
+        .root()
+        .join(format!("daemon.json.{}.tmp", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let mut f = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?;
+    f.write_all(&serde_json::to_vec_pretty(info).expect("serialisable"))?;
+    f.sync_all()?;
     std::fs::rename(tmp, home.daemon_json())
 }
 
@@ -42,6 +52,9 @@ pub fn remove_daemon_info(home: &Home) {
 }
 
 pub fn pid_alive(pid: u32) -> bool {
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
     // SAFETY: kill with signal 0 only probes for existence.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
@@ -102,6 +115,12 @@ async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::Tcp
     Err(last.unwrap_or_else(|| io::Error::other("no port")))
 }
 
+/// Runs the daemon until shutdown is requested, a newer daemon takes over, or a
+/// termination signal arrives.
+///
+/// `daemon.json` is written exactly once, at startup. That write-once invariant is what
+/// makes the stale watcher race-free: a different live pid in the file can only mean
+/// another daemon started after this one.
 pub async fn serve(
     cfg: ServeConfig,
     ready: Option<oneshot::Sender<DaemonInfo>>,
@@ -123,6 +142,7 @@ pub async fn serve(
     write_daemon_info(&cfg.home, &info)?;
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let events_shutdown = shutdown_tx.subscribe();
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -130,6 +150,7 @@ pub async fn serve(
         events: EventBus::new(),
         started_at,
         version: cfg.version,
+        shutdown: events_shutdown,
     };
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
@@ -154,6 +175,8 @@ pub async fn serve(
         }
     });
 
+    let (fired_tx, fired_rx) = oneshot::channel::<()>();
+    let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -169,9 +192,25 @@ pub async fn serve(
             } => {}
             _ = stale => {}
             _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
         }
+        // Tell open SSE streams to end, and start the drain deadline.
+        let _ = shutdown_tx.send(true);
+        let _ = fired_tx.send(());
     });
-    server.await?;
+    // Graceful shutdown waits for every open connection; bound the drain so a
+    // lingering client cannot keep the daemon alive.
+    let drain_deadline = async {
+        if fired_rx.await.is_ok() {
+            tokio::time::sleep(DRAIN_TIMEOUT).await;
+        } else {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::select! {
+        res = server => res?,
+        _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
+    }
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }

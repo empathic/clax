@@ -28,6 +28,13 @@ fn daemon_info_roundtrips_with_0600() {
             & 0o777,
         0o600
     );
+    assert!(
+        !home
+            .root()
+            .join(format!("daemon.json.{}.tmp", std::process::id()))
+            .exists(),
+        "temp file renamed away"
+    );
     std::fs::write(home.daemon_json(), "garbage").unwrap();
     assert_eq!(read_daemon_info(&home), None);
 }
@@ -39,6 +46,13 @@ fn pid_alive_distinguishes_live_and_dead() {
     let pid = child.id();
     child.wait().unwrap();
     assert!(!pid_alive(pid));
+}
+
+#[test]
+fn pid_alive_rejects_out_of_range_pids() {
+    assert!(!pid_alive(0));
+    assert!(!pid_alive(u32::MAX));
+    assert!(!pid_alive(i32::MAX as u32 + 1));
 }
 
 #[test]
@@ -92,4 +106,40 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         read_daemon_info(&home).is_none(),
         "daemon.json removed on clean exit"
     );
+}
+
+#[tokio::test]
+async fn shutdown_completes_while_an_sse_client_stays_connected() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let cfg = ServeConfig {
+        home: home.clone(),
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port: 0,
+        version: "test",
+    };
+    let handle = tokio::spawn(serve(cfg, Some(tx)));
+    let info = rx.await.unwrap();
+    let client = reqwest::Client::new();
+    let mut sse = client
+        .get(format!("http://127.0.0.1:{}/api/events", info.port))
+        .send()
+        .await
+        .unwrap();
+    let first = sse.chunk().await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&first).contains("ready"));
+    let res = client
+        .post(format!("http://127.0.0.1:{}/api/admin/shutdown", info.port))
+        .bearer_auth(&info.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 202);
+    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+        .await
+        .expect("serve exits while SSE client is still connected")
+        .unwrap()
+        .unwrap();
+    drop(sse);
 }
