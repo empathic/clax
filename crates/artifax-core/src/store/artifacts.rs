@@ -4,7 +4,7 @@
 use super::Store;
 use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
-use crate::{ArtifactId, CoreError, Result};
+use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{OptionalExtension, Row, params};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -131,6 +131,39 @@ impl Store {
     }
 }
 
+/// Removes its directory on drop; a no-op once the directory has been renamed away.
+struct Staging(PathBuf);
+
+impl Drop for Staging {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// Rejects path sets where one path is a `/`-prefix of another (a file and a
+/// directory of the same name) or two paths are equal under ASCII case folding.
+fn check_collisions<'a>(paths: impl Iterator<Item = &'a String>) -> Result<()> {
+    let folded: Vec<String> = paths.map(|p| p.to_ascii_lowercase()).collect();
+    let set: std::collections::HashSet<&str> = folded.iter().map(String::as_str).collect();
+    if set.len() != folded.len() {
+        return Err(CoreError::invalid(
+            "invalid_path",
+            "two paths differ only by letter case",
+        ));
+    }
+    for p in &folded {
+        for (i, _) in p.match_indices('/') {
+            if set.contains(&p[..i]) {
+                return Err(CoreError::invalid(
+                    "invalid_path",
+                    format!("'{}' is both a file and a directory", &p[..i]),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Version> {
     let files: String = r.get("files_json")?;
     Ok(Version {
@@ -168,7 +201,7 @@ impl Store {
             )?;
             Ok(())
         })?;
-        self.write_version(&id, 1, &p, &BTreeMap::new())
+        self.write_version(&id, 0, &p, &BTreeMap::new())
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -197,24 +230,42 @@ impl Store {
             .get_version(id, current.current_version)?
             .map(|v| v.files)
             .unwrap_or_default();
-        self.write_version(id, current.current_version + 1, &p, &prev)
+        self.write_version(id, current.current_version, &p, &prev)
     }
 
-    /// Writes files for version `n`, carrying forward `prev` entries not named in `p.files`,
-    /// then records the version and bumps the artifact in one transaction.
+    /// Stages the files of version `expected + 1` in a private directory,
+    /// carrying forward `prev` entries not named in `p.files`, then, in one
+    /// transaction, re-checks that the artifact is still at `expected`
+    /// (`Conflict` otherwise), records the version, bumps the artifact and
+    /// renames the staging directory into place before committing.
     fn write_version(
         &self,
         id: &ArtifactId,
-        n: u32,
+        expected: u32,
         p: &ValidatedPublish,
         prev: &BTreeMap<String, FileMeta>,
     ) -> Result<(Artifact, Version)> {
-        let vdir = self.home.version_dir(id, n);
-        let files_dir = vdir.join("files");
+        let n = expected + 1;
+        let carried: Vec<&String> = prev
+            .keys()
+            .filter(|path| *path != INDEX && !p.files.contains_key(*path))
+            .collect();
+        let put: Vec<&String> = p
+            .files
+            .iter()
+            .filter(|(_, c)| matches!(c, FileChange::Put(_)))
+            .map(|(k, _)| k)
+            .collect();
+        check_collisions(carried.iter().copied().chain(put.iter().copied()))?;
+
+        let versions_dir = self.home.artifact_dir(id).join("versions");
+        std::fs::create_dir_all(&versions_dir)?;
+        let staging = Staging(versions_dir.join(format!(".tmp-{}", new_ulid())));
+        let files_dir = staging.0.join("files");
         std::fs::create_dir_all(&files_dir)?;
         let write = |path: &str, bytes: &[u8]| -> Result<()> {
             let dest = if path == INDEX {
-                vdir.join(INDEX)
+                staging.0.join(INDEX)
             } else {
                 files_dir.join(path)
             };
@@ -225,14 +276,10 @@ impl Store {
             Ok(())
         };
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
-        for (path, meta) in prev {
-            if path == INDEX || p.files.contains_key(path) {
-                continue;
-            }
-            let src = self.home.version_dir(id, n - 1).join("files").join(path);
-            let bytes = std::fs::read(&src)?;
-            write(path, &bytes)?;
-            files.insert(path.clone(), meta.clone());
+        for path in carried {
+            let src = self.home.version_dir(id, expected).join("files").join(path);
+            write(path, &std::fs::read(&src)?)?;
+            files.insert(path.clone(), prev[path].clone());
         }
         for (path, change) in &p.files {
             if let FileChange::Put(f) = change {
@@ -248,7 +295,17 @@ impl Store {
         }
         let now = Store::now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
+        let vdir = self.home.version_dir(id, n);
+        let renamed = std::cell::Cell::new(false);
         let result = self.with_tx(|tx| {
+            let current: u32 = tx.query_row(
+                "SELECT current_version FROM artifacts WHERE id = ?1",
+                params![id.as_str()],
+                |r| r.get(0),
+            )?;
+            if current != expected {
+                return Err(CoreError::Conflict { current });
+            }
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json)
                  VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
@@ -279,9 +336,13 @@ impl Store {
                 params![id.as_str(), n],
                 row_to_version,
             )?;
+            std::fs::rename(&staging.0, &vdir)?;
+            renamed.set(true);
             Ok((a, v))
         });
-        if result.is_err() {
+        if result.is_err() && renamed.get() {
+            // Commit failed after the rename; no other writer can hold `n`
+            // because the transaction verified `expected` under the lock.
             let _ = std::fs::remove_dir_all(&vdir);
         }
         result
@@ -568,5 +629,108 @@ mod tests {
             .unwrap();
         assert!(store.get_artifact(&id).unwrap().is_none());
         assert!(store.list_artifacts().unwrap().is_empty());
+    }
+
+    #[test]
+    fn colliding_paths_are_rejected() {
+        let (_d, store) = store();
+        for (a, b) in [("a", "a/b.js"), ("App.js", "app.js")] {
+            let e = store
+                .create_artifact(publish(
+                    &[("index.html", Some("x")), (a, Some("1")), (b, Some("2"))],
+                    None,
+                ))
+                .unwrap_err();
+            assert!(matches!(
+                e,
+                crate::CoreError::Invalid {
+                    code: "invalid_path",
+                    ..
+                }
+            ));
+        }
+        assert!(store.list_artifacts().unwrap().is_empty());
+
+        let (a, _) = store
+            .create_artifact(publish(
+                &[("index.html", Some("v1")), ("a", Some("1"))],
+                None,
+            ))
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let e = store
+            .publish_version(
+                &id,
+                publish(
+                    &[("index.html", Some("v2")), ("a/b.js", Some("2"))],
+                    Some(1),
+                ),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            crate::CoreError::Invalid {
+                code: "invalid_path",
+                ..
+            }
+        ));
+        let e = store
+            .publish_version(
+                &id,
+                publish(&[("index.html", Some("v2")), ("A", Some("2"))], Some(1)),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            e,
+            crate::CoreError::Invalid {
+                code: "invalid_path",
+                ..
+            }
+        ));
+        assert!(!store.home().version_dir(&id, 2).exists());
+    }
+
+    #[test]
+    fn concurrent_publishes_with_same_if_version_yield_one_winner() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        let store = std::sync::Arc::new(Store::open(&home).unwrap());
+        let (a, _) = store
+            .create_artifact(publish(&[("index.html", Some("v1"))], None))
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let handles: Vec<_> = ["left", "right"]
+            .into_iter()
+            .map(|body| {
+                let store = store.clone();
+                let id = id.clone();
+                std::thread::spawn(move || {
+                    let r =
+                        store.publish_version(&id, publish(&[("index.html", Some(body))], Some(1)));
+                    (body, r)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let wins: Vec<_> = results.iter().filter(|(_, r)| r.is_ok()).collect();
+        assert_eq!(wins.len(), 1);
+        for (_, r) in &results {
+            if let Err(e) = r {
+                assert!(matches!(e, crate::CoreError::Conflict { .. }));
+            }
+        }
+        let winner = wins[0].0;
+        let vdir = store.home().version_dir(&id, 2);
+        assert_eq!(
+            std::fs::read_to_string(vdir.join("index.html")).unwrap(),
+            winner
+        );
+        assert_eq!(store.get_artifact(&id).unwrap().unwrap().current_version, 2);
+        let leftovers: Vec<_> = std::fs::read_dir(vdir.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with(".tmp-"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
     }
 }
