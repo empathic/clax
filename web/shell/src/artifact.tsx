@@ -1,5 +1,5 @@
 import type { ComponentChildren } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { type Artifact, type Version, getArtifact } from "./api";
 import { subscribe } from "./events";
 import { Frame } from "./frame";
@@ -14,7 +14,15 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const [newer, setNewer] = useState<number | null>(null);
   const [deleted, setDeleted] = useState(false);
 
-  useEffect(() => { getArtifact(id).then(setData, e => setError(String(e).includes("404") ? "Artifact not found" : String(e))); }, [id]);
+  const latestKnown = useRef(0);
+
+  useEffect(() => {
+    getArtifact(id).then(d => {
+      latestKnown.current = Math.max(latestKnown.current, d.artifact.current_version);
+      setNewer(prev => (prev !== null && prev <= d.artifact.current_version ? null : prev));
+      setData(d);
+    }, e => setError(String(e).includes("404") ? "Artifact not found" : String(e)));
+  }, [id]);
   useEffect(() => {
     const o = artifactOrigin(id);
     if (!o) { setOrigin(null); return; }
@@ -23,9 +31,9 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
 
   const shown = pinnedVersion ?? data?.artifact.current_version ?? 0;
   useEffect(() => subscribe(id, e => {
-    if (e.type === "version" && e.n > shown) setNewer(e.n);
+    if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
-  }), [id, shown]);
+  }), [id]);
 
   if (error) return <Shell title="Artifax"><p class="empty">{error}</p></Shell>;
   if (!data || origin === undefined) return <Shell title="Artifax"><p class="empty muted">Loading…</p></Shell>;
@@ -36,11 +44,15 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   return (
     <Shell title={artifact.title} right={
       <>
-        <select value={shown} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(n === latest ? `/a/${id}` : `/a/${id}/v/${n}`); }}>
+        <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(n === latest ? `/a/${id}` : `/a/${id}/v/${n}`); }}>
           {versions.map(v => <option value={v.n} key={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>)}
         </select>
-        <a class="hide-sm" href={raw} target="_blank" rel="noopener">open raw</a>
-        <button onClick={() => navigator.clipboard?.writeText(location.origin + `/a/${id}`)}>copy link</button>
+        {deleted
+          ? <span class="hide-sm muted">open raw</span>
+          : <a class="hide-sm" href={raw} target="_blank" rel="noopener">open raw</a>}
+        {navigator.clipboard && (
+          <button disabled={deleted} onClick={() => { navigator.clipboard.writeText(location.origin + `/a/${id}`).catch(() => {}); }}>copy link</button>
+        )}
       </>
     }>
       <div class="viewer">
@@ -48,7 +60,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         {newer && !deleted && (
           <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(`/a/${id}`)}>Reload</button></div>
         )}
-        {shown < latest && !newer && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={`/a/${id}`}>latest</a></div>}
+        {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={`/a/${id}`}>latest</a></div>}
       </div>
     </Shell>
   );
@@ -60,7 +72,6 @@ function Shell({ title, right, children }: { title: string; right?: ComponentChi
       <header class="topbar">
         <a href="/" title="Gallery">←</a>
         <h1>{title}</h1>
-        <span style="flex:1" />
         {right}
       </header>
       {children}
