@@ -32,7 +32,10 @@ impl ArtifactId {
         if ok {
             Ok(ArtifactId(s.to_string()))
         } else {
-            Err(CoreError::invalid("invalid_id", format!("'{s}' is not an artifact ID")))
+            Err(CoreError::invalid(
+                "invalid_id",
+                format!("'{s}' is not an artifact ID"),
+            ))
         }
     }
 
@@ -83,7 +86,10 @@ mod tests {
         assert!(ArtifactId::parse("7Q3K9MZX2B4T").is_err(), "uppercase");
         assert!(ArtifactId::parse("7q3k9mzx2b4").is_err(), "short");
         assert!(ArtifactId::parse("7q3k9mzx2b4tu").is_err(), "long");
-        assert!(ArtifactId::parse("7q3k9mzx2b4i").is_err(), "i not in alphabet");
+        assert!(
+            ArtifactId::parse("7q3k9mzx2b4i").is_err(),
+            "i not in alphabet"
+        );
     }
 
     #[test]

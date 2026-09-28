@@ -72,9 +72,18 @@ mod tests {
         assert_eq!(home.daemon_json(), PathBuf::from("/tmp/ax/daemon.json"));
         assert_eq!(home.daemon_lock(), PathBuf::from("/tmp/ax/daemon.lock"));
         assert_eq!(home.log_path(), PathBuf::from("/tmp/ax/logs/daemon.log"));
-        assert_eq!(home.artifact_dir(&id), PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t"));
-        assert_eq!(home.version_dir(&id, 3), PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t/versions/3"));
-        assert_eq!(home.assets_dir(&id), PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t/assets"));
+        assert_eq!(
+            home.artifact_dir(&id),
+            PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t")
+        );
+        assert_eq!(
+            home.version_dir(&id, 3),
+            PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t/versions/3")
+        );
+        assert_eq!(
+            home.assets_dir(&id),
+            PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t/assets")
+        );
     }
 
     #[test]

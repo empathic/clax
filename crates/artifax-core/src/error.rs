@@ -18,7 +18,10 @@ pub enum CoreError {
 
 impl CoreError {
     pub fn invalid(code: &'static str, message: impl Into<String>) -> Self {
-        CoreError::Invalid { code, message: message.into() }
+        CoreError::Invalid {
+            code,
+            message: message.into(),
+        }
     }
 }
 
