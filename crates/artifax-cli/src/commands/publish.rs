@@ -1,4 +1,5 @@
 use crate::client::Client;
+use anyhow::Context;
 use artifax_core::Home;
 use base64::Engine;
 use std::path::{Path, PathBuf};
@@ -11,6 +12,9 @@ pub struct Args {
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Include every file under this directory (except index.html) at its relative path.
+    /// Entries whose name starts with `.` and symlinks are skipped. When updating
+    /// (--id/--url) the directory is mirrored: carried-forward files absent from it
+    /// are removed.
     #[arg(long)]
     pub dir: Option<PathBuf>,
     /// Update this artifact instead of creating one.
@@ -19,12 +23,16 @@ pub struct Args {
     /// Update the artifact at this URL instead of creating one.
     #[arg(long)]
     pub url: Option<String>,
+    /// Artifact title.
     #[arg(long)]
     pub title: Option<String>,
+    /// One-line description.
     #[arg(long)]
     pub description: Option<String>,
+    /// Icon name for the artifact.
     #[arg(long)]
     pub icon: Option<String>,
+    /// Label for this version.
     #[arg(long)]
     pub label: Option<String>,
     /// Expected current version; defaults to the artifact's current version.
@@ -62,7 +70,11 @@ fn collect_dir(
     out: &mut serde_json::Map<String, serde_json::Value>,
 ) -> anyhow::Result<()> {
     for entry in std::fs::read_dir(dir)? {
-        let p = entry?.path();
+        let entry = entry?;
+        if entry.file_name().to_string_lossy().starts_with('.') || entry.file_type()?.is_symlink() {
+            continue;
+        }
+        let p = entry.path();
         if p.is_dir() {
             collect_dir(&p, base, out)?;
             continue;
@@ -89,7 +101,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 PathBuf::from(spec),
                 Path::new(spec)
                     .file_name()
-                    .unwrap()
+                    .context("--file needs a file name")?
                     .to_string_lossy()
                     .to_string(),
             ),
@@ -120,13 +132,28 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 Some(v) => v,
                 None => c.get(&format!("/api/artifacts/{id}"))?["artifact"]["current_version"]
                     .as_u64()
-                    .unwrap() as u32,
+                    .context("server response lacks artifact.current_version")?
+                    as u32,
             };
+            if a.dir.is_some() {
+                let current_files = c.get(&format!("/api/artifacts/{id}/files"))?;
+                let existing = current_files["files"]
+                    .as_object()
+                    .context("server response lacks files")?;
+                for path in existing.keys() {
+                    if path != "index.html" && !files.contains_key(path) {
+                        body["files"][path] = serde_json::Value::Null;
+                    }
+                }
+            }
             body["if_version"] = serde_json::json!(current);
             c.post(&format!("/api/artifacts/{id}/versions"), &body)?
         }
     };
-    let id = res["artifact"]["id"].as_str().unwrap().to_string();
+    let id = res["artifact"]["id"]
+        .as_str()
+        .context("server response lacks artifact.id")?
+        .to_string();
     let url = c.browser_url(&format!("/a/{id}"));
     super::print(
         cli,
@@ -135,7 +162,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             format!(
                 "published v{} at {}",
                 j["version"],
-                j["url"].as_str().unwrap()
+                j["url"].as_str().unwrap_or_default()
             )
         },
     );

@@ -31,6 +31,8 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         };
         std::process::Command::new(opener)
             .arg(&url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .map_err(|e| anyhow::anyhow!("cannot run {opener}: {e}"))?;
     }

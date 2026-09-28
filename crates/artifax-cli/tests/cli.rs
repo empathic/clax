@@ -290,3 +290,50 @@ fn doctor_runs_all_checks() {
     }
     e.stop();
 }
+
+#[test]
+fn publish_dir_skips_dotfiles_and_mirrors_on_update() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "site/index.html", "<p>v1</p>");
+    write(e.dir.path(), "site/a.js", "1");
+    write(e.dir.path(), "site/.hidden", "secret");
+    let site = e.dir.path().join("site");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0", "--dir"])
+        .arg(&site)
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let files = |e: &Env| -> serde_json::Value {
+        serde_json::from_slice(
+            &e.cmd()
+                .args(["list", "--json", "--files", &id])
+                .assert()
+                .success()
+                .get_output()
+                .stdout,
+        )
+        .unwrap()
+    };
+    let f = files(&e);
+    assert!(f["files"]["a.js"].is_object());
+    assert!(f["files"][".hidden"].is_null());
+
+    std::fs::remove_file(site.join("a.js")).unwrap();
+    e.cmd()
+        .args(["publish", "--json", "--id", &id, "--dir"])
+        .arg(&site)
+        .arg(&index)
+        .assert()
+        .success();
+    assert!(files(&e)["files"]["a.js"].is_null());
+    e.stop();
+}

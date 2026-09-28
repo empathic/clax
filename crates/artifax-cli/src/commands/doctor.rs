@@ -6,6 +6,60 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
 }
 
+/// Every file recorded for each artifact's current version exists on disk
+/// with the recorded size.
+fn version_files(home: &Home, store: &Store) -> serde_json::Value {
+    let artifacts = match store.list_artifacts() {
+        Ok(a) => a,
+        Err(e) => return check("version_files", false, e.to_string()),
+    };
+    let mut problems = vec![];
+    for a in artifacts {
+        let id = match ArtifactId::parse(&a.id) {
+            Ok(id) => id,
+            Err(e) => {
+                problems.push(format!("{}: {e}", a.id));
+                continue;
+            }
+        };
+        let version = match store.get_version(&id, a.current_version) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                problems.push(format!("{}: version {} missing", a.id, a.current_version));
+                continue;
+            }
+            Err(e) => {
+                problems.push(format!("{}: {e}", a.id));
+                continue;
+            }
+        };
+        let dir = home.version_dir(&id, a.current_version);
+        for (path, meta) in &version.files {
+            let on_disk = if path == "index.html" {
+                dir.join("index.html")
+            } else {
+                dir.join("files").join(path)
+            };
+            match std::fs::metadata(&on_disk) {
+                Err(_) => problems.push(format!("missing {}:{path}", a.id)),
+                Ok(m) if m.len() != meta.size => {
+                    problems.push(format!("size mismatch {}:{path}", a.id))
+                }
+                Ok(_) => {}
+            }
+        }
+    }
+    check(
+        "version_files",
+        problems.is_empty(),
+        if problems.is_empty() {
+            "all current version files present".into()
+        } else {
+            problems.join(", ")
+        },
+    )
+}
+
 pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
     let mut checks = vec![];
     let writable = home.ensure_dirs().is_ok()
@@ -38,28 +92,12 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
                 matches!(&integrity, Ok(s) if s == "ok"),
                 integrity.unwrap_or_else(|e| e.to_string()),
             ));
-            let mut missing = vec![];
-            for a in store.list_artifacts()? {
-                let id = ArtifactId::parse(&a.id)?;
-                if !home
-                    .version_dir(&id, a.current_version)
-                    .join("index.html")
-                    .exists()
-                {
-                    missing.push(a.id.clone());
-                }
-            }
-            checks.push(check(
-                "version_files",
-                missing.is_empty(),
-                if missing.is_empty() {
-                    "all current versions present".into()
-                } else {
-                    missing.join(", ")
-                },
-            ));
+            checks.push(version_files(home, &store));
         }
-        Err(e) => checks.push(check("db_integrity", false, e.to_string())),
+        Err(e) => {
+            checks.push(check("db_integrity", false, e.to_string()));
+            checks.push(check("version_files", false, "store unavailable"));
+        }
     }
     let ui = client
         .as_ref()
