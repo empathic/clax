@@ -36,7 +36,7 @@ fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     })
 }
 
-fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
+pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
     r.map(|Path(v)| v)
         .map_err(|e| ApiError::bad_request("invalid_path_param", e.body_text()))
 }

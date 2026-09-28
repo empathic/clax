@@ -1,5 +1,6 @@
 pub mod artifacts;
 pub mod assets;
+pub mod content;
 pub mod health;
 pub mod token;
 
@@ -50,5 +51,8 @@ pub fn router(state: AppState) -> Router {
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
         .merge(asset_routes)
         .route("/_blob/{asset_id}", get(assets::blob))
+        .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
+        .route("/c/{aid}/v/{n}/", get(content::index))
+        .route("/c/{aid}/v/{n}/{*path}", get(content::file))
         .with_state(state)
 }
