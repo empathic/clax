@@ -1,6 +1,7 @@
 //! Serves published page content: wrapped index and immutable supporting files.
 
 use crate::error::ApiError;
+use crate::host::OnArtifactOrigin;
 use crate::routes::artifacts::{parse_id, path};
 use crate::state::AppState;
 use artifax_core::model::CONTRACT_VERSION;
@@ -8,24 +9,38 @@ use artifax_core::publish::INDEX;
 use artifax_core::wrap::wrap_document;
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Path, State};
-use axum::http::{StatusCode, header};
+use axum::extract::{Extension, Path, State};
+use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+
+/// Content served on the main origin must not run same-origin with the API.
+const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+
+fn sandboxed(mut res: Response, origin: &Option<Extension<OnArtifactOrigin>>) -> Response {
+    if origin.is_none() {
+        res.headers_mut().insert(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(SANDBOX),
+        );
+    }
+    res
+}
 
 pub async fn redirect_to_slash(
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Redirect, ApiError> {
     let (aid, n) = path(p)?;
-    let id = parse_id(&aid)?;
-    Ok(Redirect::permanent(&format!("/c/{}/v/{n}/", id.as_str())))
+    parse_id(&aid)?;
+    Ok(Redirect::permanent(&format!("{n}/")))
 }
 
 pub async fn index(
     State(s): State<AppState>,
+    origin: Option<Extension<OnArtifactOrigin>>,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n) = path(p)?;
-    serve_index(&s, &aid, n).await
+    Ok(sandboxed(serve_index(&s, &aid, n).await?, &origin))
 }
 
 async fn serve_index(s: &AppState, aid: &str, n: u32) -> Result<Response, ApiError> {
@@ -44,12 +59,13 @@ async fn serve_index(s: &AppState, aid: &str, n: u32) -> Result<Response, ApiErr
 
 pub async fn file(
     State(s): State<AppState>,
+    origin: Option<Extension<OnArtifactOrigin>>,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;
     let id = parse_id(&aid)?;
     if rel == INDEX {
-        return Ok(Redirect::permanent(&format!("/c/{}/v/{n}/", id.as_str())).into_response());
+        return Ok(Redirect::permanent("./").into_response());
     }
     let (disk, meta) = s
         .store
@@ -59,7 +75,7 @@ pub async fn file(
         .await
         .map_err(|_| ApiError::not_found())?;
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
-    Ok((
+    let res = (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, meta.content_type.as_str()),
@@ -68,5 +84,6 @@ pub async fn file(
         ],
         body,
     )
-        .into_response())
+        .into_response();
+    Ok(sandboxed(res, &origin))
 }
