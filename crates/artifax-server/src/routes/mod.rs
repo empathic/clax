@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod assets;
 pub mod content;
+pub mod events;
 pub mod health;
 pub mod token;
 
@@ -30,6 +31,7 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/token", get(token::token))
+        .route("/api/events", get(events::events))
         .route(
             "/api/artifacts",
             get(artifacts::list).post(artifacts::create.layer(publish_limit)),

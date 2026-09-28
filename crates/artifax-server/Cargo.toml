@@ -26,6 +26,7 @@ futures = "0.3"
 mime_guess.workspace = true
 
 [dev-dependencies]
+bytes = "1"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["full"] }
