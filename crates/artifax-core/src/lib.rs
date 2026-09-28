@@ -6,6 +6,7 @@ pub mod ids;
 pub mod model;
 pub mod publish;
 pub mod store;
+pub mod wrap;
 
 pub use error::{CoreError, Result};
 pub use home::Home;
