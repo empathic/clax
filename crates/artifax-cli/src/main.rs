@@ -1,3 +1,47 @@
-//! Artifax CLI: publish and manage artifacts.
+//! The `artifax` command line: run the daemon and manage artifacts.
 
-fn main() {}
+mod client;
+mod commands;
+
+use clap::{Parser, Subcommand};
+
+#[derive(Parser)]
+#[command(
+    name = "artifax",
+    version,
+    about = "Local artifacts with comment-driven development"
+)]
+pub struct Cli {
+    /// Emit one JSON object on stdout instead of text.
+    #[arg(long, global = true)]
+    pub json: bool,
+    /// Port to use when starting a daemon (0 = any free port).
+    #[arg(long, global = true, default_value_t = artifax_server::daemon::DEFAULT_PORT)]
+    pub port: u16,
+    #[command(subcommand)]
+    pub cmd: Cmd,
+}
+
+#[derive(Subcommand)]
+pub enum Cmd {
+    /// Start the daemon in the background (or run it here with --foreground).
+    Serve(commands::serve::Args),
+    /// Stop the running daemon.
+    Stop,
+    /// Show whether a daemon is running.
+    Status(commands::status::Args),
+}
+
+fn main() {
+    let cli = Cli::parse();
+    let home = artifax_core::Home::from_env();
+    let result = match &cli.cmd {
+        Cmd::Serve(a) => commands::serve::run(&cli, &home, a),
+        Cmd::Stop => commands::stop::run(&cli, &home),
+        Cmd::Status(a) => commands::status::run(&cli, &home, a),
+    };
+    if let Err(e) = result {
+        eprintln!("error: {e:#}");
+        std::process::exit(1);
+    }
+}
