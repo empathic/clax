@@ -53,6 +53,13 @@ impl Home {
     }
 
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&self.root)?;
+        }
         std::fs::create_dir_all(self.root.join("logs"))?;
         std::fs::create_dir_all(self.root.join("artifacts"))?;
         Ok(())
@@ -101,6 +108,11 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         assert!(home.root().is_dir());
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(home.root()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "newly created root is private");
+        }
         assert!(home.root().join("logs").is_dir());
         assert!(home.root().join("artifacts").is_dir());
     }

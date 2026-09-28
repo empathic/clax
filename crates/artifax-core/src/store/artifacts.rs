@@ -1,5 +1,4 @@
-//! Artifact metadata: read, patch, pin, delete. Creation and versions live in
-//! `publish.rs` because they need validated input.
+//! Artifact metadata, creation, versions, and file lookup.
 
 use super::Store;
 use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};

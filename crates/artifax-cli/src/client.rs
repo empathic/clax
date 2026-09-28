@@ -126,6 +126,20 @@ impl Client {
         )
     }
 
+    /// Errors when the running daemon is bound to a different address than `requested`.
+    pub fn require_bind(&self, requested: IpAddr) -> anyhow::Result<()> {
+        let requested = requested.to_string();
+        if self.info.bind != requested {
+            bail!(
+                "daemon already running bound to {} at {}; run `artifax stop` first, then `artifax serve --bind {}`",
+                self.info.bind,
+                self.browser_url(""),
+                requested
+            );
+        }
+        Ok(())
+    }
+
     pub fn browser_url(&self, path: &str) -> String {
         format!("http://localhost:{}{}", self.info.port, path)
     }

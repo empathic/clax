@@ -32,6 +32,7 @@ async fn upload_serve_list_delete() {
         "public, max-age=31536000, immutable"
     );
     assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    assert_eq!(res.headers()["content-security-policy"], "sandbox");
     assert_eq!(res.bytes().await.unwrap().to_vec(), vec![137, 80, 78, 71]);
     let list: serde_json::Value = ts
         .get(&format!("/api/artifacts/{id}/assets"))

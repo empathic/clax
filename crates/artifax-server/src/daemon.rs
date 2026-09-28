@@ -101,6 +101,8 @@ pub struct ServeConfig {
     pub bind: IpAddr,
     pub port: u16,
     pub version: &'static str,
+    /// How often the stale watcher checks `daemon.json` (30 s in production).
+    pub stale_check_interval: std::time::Duration,
 }
 
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
@@ -115,8 +117,9 @@ async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::Tcp
     Err(last.unwrap_or_else(|| io::Error::other("no port")))
 }
 
-/// Runs the daemon until shutdown is requested, a newer daemon takes over, or a
-/// termination signal arrives.
+/// Runs the daemon until shutdown is requested, a newer daemon takes over,
+/// `daemon.json` is missing on two consecutive stale checks (its home directory
+/// was deleted), or a termination signal arrives.
 ///
 /// `daemon.json` is written exactly once, at startup. That write-once invariant is what
 /// makes the stale watcher race-free: a different live pid in the file can only mean
@@ -159,18 +162,29 @@ pub async fn serve(
     tracing::info!(port, "artifax daemon listening");
 
     let home = cfg.home.clone();
+    let interval = cfg.stale_check_interval;
     let stale = tokio::spawn(async move {
+        let mut missing = 0u32;
         loop {
-            tokio::time::sleep(Duration::from_secs(30)).await;
-            if let Some(other) = read_daemon_info(&home)
-                && other.pid != std::process::id()
-                && pid_alive(other.pid)
-            {
-                tracing::warn!(
-                    other = other.pid,
-                    "another daemon owns daemon.json; exiting"
-                );
-                return;
+            tokio::time::sleep(interval).await;
+            match read_daemon_info(&home) {
+                Some(other) => {
+                    missing = 0;
+                    if other.pid != std::process::id() && pid_alive(other.pid) {
+                        tracing::warn!(
+                            other = other.pid,
+                            "another daemon owns daemon.json; exiting"
+                        );
+                        return;
+                    }
+                }
+                None => {
+                    missing += 1;
+                    if missing >= 2 {
+                        tracing::warn!("daemon.json is missing; exiting");
+                        return;
+                    }
+                }
             }
         }
     });

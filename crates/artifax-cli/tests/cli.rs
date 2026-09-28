@@ -102,6 +102,19 @@ fn serve_starts_a_background_daemon_and_stop_ends_it() {
 }
 
 #[test]
+fn serve_with_a_different_bind_than_the_running_daemon_fails() {
+    let e = Env::new();
+    e.cmd().args(["serve", "--port", "0"]).assert().success();
+    e.cmd()
+        .args(["serve", "--port", "0", "--bind", "0.0.0.0"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("artifax stop"));
+    e.stop();
+}
+
+#[test]
 fn concurrent_auto_starts_yield_one_daemon() {
     let e = Env::new();
     let handles: Vec<_> = (0..4)

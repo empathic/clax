@@ -1,5 +1,6 @@
-//! SQLite-backed store. One connection behind a mutex; every public method is a
-//! single transaction.
+//! SQLite-backed store. One connection behind a mutex. Metadata operations are
+//! single transactions; version writes, deletes, and asset writes combine a
+//! transaction with file-system work.
 
 pub mod artifacts;
 pub mod assets;

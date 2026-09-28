@@ -9,10 +9,22 @@ pub fn bridge_tag(artifact_id: &str, version: u32, contract: &str) -> String {
     )
 }
 
-/// A page that begins, after whitespace, with `<!doctype html>` (any case) is complete.
+/// Byte offset of a leading `<!doctype` declaration (any case), after whitespace
+/// and an optional UTF-8 BOM, or None when the page does not begin with one.
+fn doctype_start(page: &str) -> Option<usize> {
+    let start = page.len()
+        - page
+            .trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}')
+            .len();
+    let rest = &page.as_bytes()[start..];
+    (rest.len() >= 9 && rest[..9].eq_ignore_ascii_case(b"<!doctype")).then_some(start)
+}
+
+/// A page is a full document when, after leading whitespace and an optional
+/// UTF-8 BOM, it begins with a `<!doctype` declaration of any kind
+/// (`<!doctype html>`, `<!DOCTYPE html PUBLIC "...">`, `<!doctype html >`).
 pub fn is_full_document(page: &str) -> bool {
-    let head: String = page.trim_start().chars().take(15).collect();
-    head.eq_ignore_ascii_case("<!doctype html>")
+    doctype_start(page).is_some()
 }
 
 /// Byte offset just past the first real `<body ...>` tag, skipping HTML comments
@@ -112,8 +124,11 @@ pub fn wrap_document(page: &str, artifact_id: &str, version: u32, contract: &str
         if let Some(pos) = body_tag_end(page) {
             return format!("{}{}{}", &page[..pos], tag, &page[pos..]);
         }
-        let trimmed = page.len() - page.trim_start().len();
-        let doctype_end = trimmed + "<!doctype html>".len();
+        let start = doctype_start(page).expect("full document has a doctype");
+        let doctype_end = match page.as_bytes()[start..].iter().position(|&b| b == b'>') {
+            Some(off) => start + off + 1,
+            None => page.len(),
+        };
         return format!("{}{}{}", &page[..doctype_end], tag, &page[doctype_end..]);
     }
     format!(
@@ -171,6 +186,37 @@ mod tests {
         );
         assert!(out.starts_with(&format!(
             "<!doctype html>{}",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+        )));
+    }
+
+    #[test]
+    fn xhtml_doctype_with_body_gets_bridge_after_body_and_is_not_double_wrapped() {
+        let page = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html><head><title>x</title></head><body><p>hi</p></body></html>";
+        assert!(is_full_document(page));
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let body_end = out.find("<body>").unwrap() + "<body>".len();
+        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")));
+        assert!(out.starts_with("<!DOCTYPE html PUBLIC"));
+        assert_eq!(out.to_lowercase().matches("<!doctype").count(), 1);
+    }
+
+    #[test]
+    fn doctype_with_space_and_no_body_gets_bridge_after_its_closing_bracket() {
+        let out = wrap_document("<!doctype html ><p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61");
+        assert!(out.starts_with(&format!(
+            "<!doctype html >{}<p>x</p>",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+        )));
+    }
+
+    #[test]
+    fn bom_prefixed_doctype_is_recognised_and_bom_preserved() {
+        let page = "\u{FEFF}<!doctype html><p>x</p>";
+        assert!(is_full_document(page));
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        assert!(out.starts_with(&format!(
+            "\u{FEFF}<!doctype html>{}",
             bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
         )));
     }
