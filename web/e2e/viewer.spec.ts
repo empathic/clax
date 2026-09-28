@@ -2,9 +2,10 @@ import { test, expect } from "@playwright/test";
 import { startDaemon, publish } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { d = await startDaemon(); });
-test.afterAll(async () => { await d.stop(); });
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
 
+// Must run first: it expects an empty daemon.
 test("gallery shows an empty state then a card", async ({ page }) => {
   await page.goto(`${d.base}/`);
   await expect(page.getByText("No artifacts yet")).toBeVisible();
@@ -15,12 +16,16 @@ test("gallery shows an empty state then a card", async ({ page }) => {
 });
 
 test("viewer renders content with the bridge, and shows a banner on republish", async ({ page }) => {
-  const { artifact } = await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v1</h1><script>document.title = typeof window.claude.use</script>" });
+  const { artifact } = await publish(d.base, d.token, "Live", { "index.html": `<link rel="stylesheet" href="style.css"><h1 id=h>v1</h1><script>document.title = typeof window.claude.use</script>`, "style.css": "#h{color:rgb(0,128,0)}" });
   await page.goto(`${d.base}/a/${artifact.id}`);
   const frame = page.frameLocator("iframe.frame");
   await expect(frame.locator("#h")).toHaveText("v1");
-  await expect.poll(async () => await page.frames()[1]?.title()).toBe("function");
-  const src = await page.locator("iframe.frame").getAttribute("src");
+  await expect(frame.locator("#h")).toHaveCSS("color", "rgb(0, 128, 0)");
+  await expect.poll(async () => await page.frame({ url: /\/v\/1\/$/ })?.title()).toBe("function");
+  const src = (await page.locator("iframe.frame").getAttribute("src")) ?? "";
+  const sandbox = await page.locator("iframe.frame").getAttribute("sandbox");
+  if (src.includes(".localhost:")) { console.log("frame mode: subdomain"); expect(sandbox).toBeNull(); }
+  else { console.log("frame mode: sandboxed fallback"); expect(sandbox).not.toBeNull(); }
   expect(src).toMatch(new RegExp(`(${artifact.id}\\.localhost:\\d+/v/1/|/c/${artifact.id}/v/1/)$`));
   await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v2</h1>" }, 1, artifact.id);
   await expect(page.getByText("v2 published")).toBeVisible({ timeout: 5000 });
@@ -57,10 +62,16 @@ test("gallery and viewer fit a phone in dark mode", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Phone", { "index.html": "<p>small</p>" });
   await page.setViewportSize({ width: 375, height: 812 });
   await page.emulateMedia({ colorScheme: "dark" });
-  for (const path of ["/", `/a/${artifact.id}`]) {
+  for (const [path, ready] of [["/", "a.card"], [`/a/${artifact.id}`, "iframe.frame"]]) {
     await page.goto(`${d.base}${path}`);
-    await expect(page.locator("body")).toBeVisible();
+    await expect(page.locator(ready).first()).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
-    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe("rgb(255, 255, 255)");
+    const bg = await page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    const m = bg.match(/rgba?\(([^)]+)\)/);
+    expect(m, bg).not.toBeNull();
+    const parts = m![1].split(/[,\s/]+/).filter(Boolean).map(Number);
+    const alpha = parts.length > 3 ? parts[3] : 1;
+    expect(alpha, bg).not.toBe(0);
+    expect(Math.max(...parts.slice(0, 3)), bg).toBeLessThan(128);
   }
 });
