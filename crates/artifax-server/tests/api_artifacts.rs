@@ -129,3 +129,88 @@ async fn patch_and_delete() {
     assert_eq!(ts.get(&format!("/api/artifacts/{id}")).await.status(), 404);
     assert_eq!(ts.get("/api/artifacts/not-an-id").await.status(), 400);
 }
+
+#[tokio::test]
+async fn deleted_artifact_hides_versions_files_and_patch() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>v1</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/artifacts/{id}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    for p in ["versions", "versions/1", "files"] {
+        assert_eq!(
+            ts.get(&format!("/api/artifacts/{id}/{p}")).await.status(),
+            404,
+            "{p}"
+        );
+    }
+    let res = ts
+        .authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{id}", ts.base))
+                .json(&json!({"title": "x"})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
+#[tokio::test]
+async fn oversized_publish_is_413_body_too_large() {
+    let ts = TestServer::spawn().await;
+    let mut body = br#"{"files":{"index.html":{"content":""#.to_vec();
+    body.resize(body.len() + 97 * 1024 * 1024, b'x');
+    body.extend_from_slice(br#""}}}"#);
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts", ts.base))
+                .header("content-type", "application/json")
+                .body(reqwest::Body::from(body)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 413);
+    assert_eq!(
+        res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "body_too_large"
+    );
+}
+
+#[tokio::test]
+async fn bad_path_param_is_json_400() {
+    let ts = TestServer::spawn().await;
+    let res = ts.get("/api/artifacts/7q3k9mzx2b4t/versions/abc").await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_path_param"
+    );
+}
+
+#[tokio::test]
+async fn patch_rejects_unknown_fields() {
+    let ts = TestServer::spawn().await;
+    let created = ts.publish("R", &[("index.html", "<p>v1</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .patch(format!("{}/api/artifacts/{id}", ts.base))
+                .json(&json!({"capabilities": {}})),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_json"
+    );
+}
