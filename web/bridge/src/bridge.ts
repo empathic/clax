@@ -1,0 +1,34 @@
+/**
+ * Runtime bridge injected into every published page.
+ * Phase 1 exposes `window.claude.use(name)` and resolves `null` for every
+ * capability, so pages written against the claude.ai contract load and
+ * degrade correctly. Later phases add the shell handshake.
+ */
+(() => {
+  const script = document.currentScript as HTMLScriptElement | null;
+  const meta = {
+    artifact: script?.dataset.artifact ?? "",
+    version: Number(script?.dataset.version ?? "0"),
+    contract: script?.dataset.contract ?? "",
+  };
+  (window as any).__artifax = meta;
+
+  const cache = new Map<string, Promise<null>>();
+  function use(name: string): Promise<null> {
+    let p = cache.get(name);
+    if (!p) {
+      p = Promise.resolve().then(() => null);
+      cache.set(name, p);
+    }
+    return p;
+  }
+
+  Object.defineProperty(window, "claude", {
+    value: Object.freeze({ use }),
+    writable: false,
+    configurable: false,
+    enumerable: true,
+  });
+})();
+
+export {};
