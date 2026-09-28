@@ -1,6 +1,9 @@
 target/
 node_modules/
-web/dist/
+web/dist/*
+!web/dist/.gitkeep
+web/playwright-report/
+web/test-results/
 .DS_Store
 .claude/worktrees/
 .superpowers/
