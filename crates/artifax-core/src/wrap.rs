@@ -15,31 +15,92 @@ pub fn is_full_document(page: &str) -> bool {
     head.eq_ignore_ascii_case("<!doctype html>")
 }
 
-/// Byte offset just past the first real `<body ...>` tag, skipping HTML comments.
+/// Byte offset just past the first real `<body ...>` tag, skipping HTML comments
+/// and raw-text elements (`<script>` and `<style>`).
+///
+/// Limitations: a `>` inside a quoted attribute value truncates tag detection,
+/// `<title>`/`<textarea>` contents are not skipped, and `-->` inside script
+/// text is recognized as a comment end but not inside other raw text.
 fn body_tag_end(doc: &str) -> Option<usize> {
-    let lower = doc.to_ascii_lowercase();
-    let bytes = lower.as_bytes();
+    let bytes = doc.as_bytes();
     let mut i = 0;
+
     while i < bytes.len() {
-        if lower[i..].starts_with("<!--") {
-            match lower[i..].find("-->") {
-                Some(e) => {
-                    i += e + 3;
+        // Skip HTML comments: <!--
+        if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
+            i += 4;
+            // Find -->
+            while i + 3 <= bytes.len() {
+                if &bytes[i..i + 3] == b"-->" {
+                    i += 3;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        // Skip <script> elements
+        if i + 7 <= bytes.len()
+            && bytes[i..i + 7].eq_ignore_ascii_case(b"<script")
+            && i + 7 < bytes.len()
+        {
+            match bytes[i + 7] {
+                b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
+                    i += 7;
+                    // Find </script>
+                    while i + 9 <= bytes.len() {
+                        if bytes[i..i + 9].eq_ignore_ascii_case(b"</script>") {
+                            i += 9;
+                            break;
+                        }
+                        i += 1;
+                    }
                     continue;
                 }
-                None => return None,
+                _ => {}
             }
         }
-        if lower[i..].starts_with("<body") {
+
+        // Skip <style> elements
+        if i + 6 <= bytes.len()
+            && bytes[i..i + 6].eq_ignore_ascii_case(b"<style")
+            && i + 6 < bytes.len()
+        {
+            match bytes[i + 6] {
+                b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
+                    i += 6;
+                    // Find </style>
+                    while i + 8 <= bytes.len() {
+                        if bytes[i..i + 8].eq_ignore_ascii_case(b"</style>") {
+                            i += 8;
+                            break;
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+
+        // Check for <body tag
+        if i + 5 <= bytes.len() && bytes[i..i + 5].eq_ignore_ascii_case(b"<body") {
             let after = i + 5;
-            let next = bytes.get(after).copied();
-            if matches!(
-                next,
-                Some(b'>') | Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r')
-            ) {
-                return lower[after..].find('>').map(|e| after + e + 1);
+            if after < bytes.len() {
+                match bytes[after] {
+                    b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
+                        // Find the closing >
+                        if let Some(pos) = bytes[after..].iter().position(|&b| b == b'>') {
+                            return Some(after + pos + 1);
+                        }
+                        return None;
+                    }
+                    _ => {}
+                }
             }
         }
+
         i += 1;
     }
     None
@@ -115,12 +176,59 @@ mod tests {
     }
 
     #[test]
-    fn body_inside_a_comment_or_attribute_is_not_the_body_tag() {
+    fn body_inside_a_comment_is_not_the_body_tag() {
         let page = "<!doctype html><html><head><!-- <body> --></head><body><p></p></body></html>";
         let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
         let real = out
             .find("<body><script")
             .expect("bridge after real body tag");
         assert!(real > out.find("-->").unwrap());
+    }
+
+    #[test]
+    fn non_ascii_before_body_tag_does_not_panic() {
+        let page =
+            "<!doctype html><html><head><title>é — ü</title></head><body><p>x</p></body></html>";
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let body_end = out.find("<body>").unwrap() + "<body>".len();
+        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")));
+    }
+
+    #[test]
+    fn non_ascii_before_missing_body_tag_does_not_panic() {
+        let page = "<!doctype html><title>é — ü</title><p>x</p>";
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        assert!(out.starts_with(&format!(
+            "<!doctype html>{}",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+        )));
+    }
+
+    #[test]
+    fn body_inside_script_is_not_the_body_tag() {
+        let page = "<!doctype html><html><head><script>var a=\"<body>\";</script></head><body><p>x</p></body></html>";
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        // The real <body> tag should have the bridge after it
+        let body_end = out
+            .find("<body><script src=\"/_artifax/bridge.js\"")
+            .unwrap()
+            + "<body>".len();
+        assert!(
+            out[body_end..].starts_with("<script src=\"/_artifax/bridge.js\""),
+            "bridge should be directly after real body tag"
+        );
+        assert!(out.contains("<script>var a=\"<body>\";"));
+    }
+
+    #[test]
+    fn bodyx_is_not_body_and_body_with_newline_is() {
+        let page1 = "<!doctype html><bodyx><p>x</p>";
+        let out1 = wrap_document(page1, "id1", 1, "0.2.61");
+        assert!(out1.contains("<bodyx><p>x</p>"));
+
+        let page2 = "<!doctype html><body\n class=\"a\"><p>x</p></body></html>";
+        let out2 = wrap_document(page2, "id2", 1, "0.2.61");
+        let body_end = out2.find("<body\n class=\"a\">").unwrap() + "<body\n class=\"a\">".len();
+        assert!(out2[body_end..].starts_with(&bridge_tag("id2", 1, "0.2.61")));
     }
 }
