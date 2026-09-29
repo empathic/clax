@@ -95,7 +95,7 @@ PATH="$ORIG_PATH"
 SERVE="$ROOT/serve"
 mkdir -p "$SERVE/v0.2.0" "$ROOT/payload"
 fake_artifax "$ROOT/payload" "artifax 0.2.0"
-for target in aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-gnu; do
+for target in aarch64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
     tarball="artifax-${target}.tar.gz"
     (cd "$ROOT/payload" && tar czf "$SERVE/v0.2.0/$tarball" artifax)
     (cd "$SERVE/v0.2.0" && { sha256sum "$tarball" 2>/dev/null || shasum -a 256 "$tarball"; } > "$tarball.sha256")
@@ -127,6 +127,17 @@ ARTIFAX_RELEASE_BASE_URL="$BASE" ARTIFAX_RELEASE_VERSION="v0.2.0" run
 if [ "$RC" = 0 ] && [ "$OUT" = "$HOME/.artifax/bin/artifax" ] && [ -x "$HOME/.artifax/bin/artifax" ] && [ ! -e "$HOME/.local/bin/artifax" ]; then
     pass "install dir is ~/.artifax/bin when a foreign binary shadows the name"
 else fail "install dir is ~/.artifax/bin when shadowed (rc=$RC out=$OUT err=$ERR)"; fi
+
+# Each supported Linux machine gets a static musl build.
+for machine in x86_64 aarch64; do
+    new_env
+    printf '#!/bin/sh\ncase "$1" in -s) echo Linux ;; -m) echo %s ;; esac\n' "$machine" > "$FAKEBIN/uname"
+    chmod +x "$FAKEBIN/uname"
+    ARTIFAX_RELEASE_BASE_URL="$BASE" ARTIFAX_RELEASE_VERSION="v0.2.0" run
+    if [ "$RC" = 0 ] && echo "$ERR" | grep -q "(${machine}-unknown-linux-musl)" && [ -x "$HOME/.local/bin/artifax" ]; then
+        pass "Linux ${machine} downloads ${machine}-unknown-linux-musl"
+    else fail "Linux ${machine} downloads ${machine}-unknown-linux-musl (rc=$RC err=$ERR)"; fi
+done
 
 new_env
 ARTIFAX_RELEASE_BASE_URL="$BASE" ARTIFAX_RELEASE_VERSION="bad" run

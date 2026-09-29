@@ -131,7 +131,7 @@ resolve_target() {
     case "${os}-${arch}" in
         macos-aarch64) echo "aarch64-apple-darwin" ;;
         linux-x86_64)  echo "x86_64-unknown-linux-musl" ;;
-        linux-aarch64) echo "aarch64-unknown-linux-gnu" ;;
+        linux-aarch64) echo "aarch64-unknown-linux-musl" ;;
         *)             cargo_fallback "no prebuilt binary for ${os}-${arch}" ;;
     esac
 }
