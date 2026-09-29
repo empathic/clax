@@ -580,7 +580,8 @@ plus the `CODEX_HOME` the Codex `session_start` hook recorded for that
 session (the daemon's own environment lacks it; without a recorded value
 the default `~/.codex` applies). The daemon claims the rows (delivered, tier
 `queue`) before running the command, so no other tier hands them over
-meanwhile; exit 0 keeps the claim. It means "queued", not "seen". The thread
+meanwhile, and publishes the claimed `feedback_state` at once; exit 0 keeps
+the claim. It means "queued", not "seen". The thread
 ID is the `session_id` the Codex `session_start` hook received, joined to the
 shim's session record by parent PID (§11).
 

@@ -7,13 +7,14 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A fake `codex` that records its arguments and `CODEX_HOME`, sleeps, and exits with `exit`.
+/// A fake `codex` that records `CODEX_HOME`, then its arguments (`args.txt`
+/// appears complete, last), sleeps, and exits with `exit`.
 fn fake_codex(dir: &Path, exit: i32, sleep_s: u32) -> PathBuf {
     let bin = dir.join("codex");
     std::fs::write(
         &bin,
         format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{args}'\nprintf '%s' \"${{CODEX_HOME:-}}\" > '{home}'\nsleep {sleep_s}\nexit {exit}\n",
+            "#!/bin/sh\nprintf '%s' \"${{CODEX_HOME:-}}\" > '{home}'\nprintf '%s\\n' \"$@\" > '{args}.tmp'\nmv '{args}.tmp' '{args}'\nsleep {sleep_s}\nexit {exit}\n",
             args = dir.join("args.txt").display(),
             home = dir.join("codex_home.txt").display()
         ),
@@ -69,6 +70,17 @@ async fn codex_owner(ts: &TestServer, hsid: Option<&str>) -> (String, String) {
     (sid, a["artifact"]["id"].as_str().unwrap().to_string())
 }
 
+/// The arguments the fake `codex` recorded, once it has run (within 5 s).
+async fn ran(dir: &Path) -> String {
+    for _ in 0..100 {
+        if let Ok(a) = std::fs::read_to_string(dir.join("args.txt")) {
+            return a;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the fake codex never ran");
+}
+
 async fn state_of(ts: &TestServer, aid: &str, tid: &str) -> Value {
     let v: Value = ts
         .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
@@ -103,8 +115,8 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
     let mut ev = ts.events(&format!("?artifact={aid}")).await;
     let t = ts.thread(&aid, 1, "@agent two columns").await;
     let tid = t["id"].as_str().unwrap();
-    // The claim marks the row delivered before `codex queue` runs; the
-    // `delivered` event is published once it has exited 0.
+    // The claim marks the row delivered before `codex queue` runs, and its
+    // `delivered` event is published at the claim.
     loop {
         let e = ev.next_named("feedback_state").await;
         if e["state"] == "delivered" {
@@ -114,7 +126,7 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
     }
     let s = eventually(&ts, &aid, tid, "delivered").await;
     assert_eq!(s["tier"], "queue");
-    let args = std::fs::read_to_string(d.path().join("args.txt")).unwrap();
+    let args = ran(d.path()).await;
     assert!(args.starts_with("queue\n--thread\ncx-1\n--message\n[artifax] 1 comment sent to you:\n[artifax] Comment sent to you on \"Pushed\""), "{args}");
     assert_eq!(
         std::fs::read_to_string(d.path().join("codex_home.txt")).unwrap(),
@@ -400,6 +412,7 @@ async fn without_a_recorded_codex_home_codex_inherits_the_daemons() {
             break;
         }
     }
+    ran(d.path()).await;
     assert_eq!(
         std::fs::read_to_string(d.path().join("codex_home.txt")).unwrap(),
         std::env::var("CODEX_HOME").unwrap_or_default(),
@@ -475,5 +488,55 @@ async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
             break;
         }
     }
-    assert!(d.path().join("args.txt").exists());
+    ran(d.path()).await;
+}
+
+/// A claim made by a dispatch that no `thread` event follows (here a watch
+/// retargeting an untargeted row) is announced at claim time, not only when
+/// `codex queue` settles.
+#[tokio::test]
+async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 3)), Duration::from_secs(10)).await;
+    let a = ts
+        .publish("Unowned", &[("index.html", "<h2>Goals</h2>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let t = ts.thread(&aid, 1, "@agent anyone?").await;
+    let tid = t["id"].as_str().unwrap();
+    assert_eq!(
+        t["feedback_state"]["state"], "agent_ended",
+        "no target yet: {t}"
+    );
+    let res = ts.post_json("/api/sessions/join", json!({"harness": "codex", "parent_pid": 4244, "harness_session_id": "cx-m1", "cwd": "/w"})).await;
+    let sid = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let started = std::time::Instant::now();
+    let put = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/watches/{aid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(put.status().is_success());
+    loop {
+        let e = ev.next_named("feedback_state").await;
+        if e["state"] == "delivered" {
+            assert_eq!(
+                (e["thread_id"].as_str(), e["tier"].as_str()),
+                (Some(tid), Some("queue"))
+            );
+            break;
+        }
+    }
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "announced at the claim, before the 3 s fake exits ({:?})",
+        started.elapsed()
+    );
 }

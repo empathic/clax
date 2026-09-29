@@ -189,13 +189,15 @@ pub async fn run_queue(
 /// committed after that poll's last take and before it returns is left to the
 /// in-band tiers.
 ///
-/// The claim comes first, so no other tier hands the rows over meanwhile: for
-/// up to the timeout (10 s) the rows read `delivered` by `queue` before
-/// `codex queue` has confirmed. Exit 0: the claim stands, the session's
-/// recorded push error is cleared, and the new states are published. A
+/// The claim comes first, so no other tier hands the rows over meanwhile, and
+/// its `feedback_state` (`delivered` by `queue`) is published at once: for up
+/// to the timeout (10 s) the rows read `delivered` before `codex queue` has
+/// confirmed. Exit 0: the claim stands and the session's recorded push error
+/// is cleared; nothing more is published. A
 /// non-zero exit, a timeout, or a spawn failure: the rows are released and
 /// marked push-failed, so they read `sent` waiting on the in-band tiers and
-/// `queue` does not take them again, and the failure is recorded on the
+/// `queue` does not take them again, the released states are published, and
+/// the failure is recorded on the
 /// session (`push.last_error` and `push.last_error_at` in
 /// `GET /api/sessions/<id>`). Dispatch never ends a session: a non-zero exit
 /// was measured to mean a CLI or app-server failure, never that the session
@@ -220,8 +222,13 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             artifact_id: None,
             include_resends: false,
         };
-        let (items, claimed) = match st.take_feedback(&q, &ctx.browser_base) {
-            Ok((items, touched)) if !items.is_empty() => (items, touched),
+        let items = match st.take_feedback(&q, &ctx.browser_base) {
+            Ok((items, claimed)) if !items.is_empty() => {
+                // Announced now: a dispatch triggered without a `thread` event
+                // (a watch or publish retargeting rows) has nothing else to.
+                publish_states(ctx, st, &claimed);
+                items
+            }
             Ok(_) => continue,
             Err(e) => {
                 tracing::warn!(session = %sid, error = %e, "claiming feedback for codex queue failed");
@@ -242,7 +249,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             let outcome = run_queue(&bin, timeout, &thread, &message, codex_home.as_deref()).await;
             let store = ctx.store.clone();
             let settled = tokio::task::spawn_blocking(move || {
-                let mut touched: Touched = claimed;
+                let mut touched = Touched::default();
                 let error = outcome.failure();
                 if let Some(reason) = &error {
                     tracing::warn!(session = %sid, reason = %reason, "codex queue failed; leaving the rows to the other tiers");
