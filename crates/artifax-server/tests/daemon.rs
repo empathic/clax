@@ -131,6 +131,8 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         version: "test",
         stale_check_interval: std::time::Duration::from_secs(30),
         reap_interval: std::time::Duration::from_secs(60),
+        // Push off: these daemons never reach the real `codex`.
+        codex: Default::default(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -173,6 +175,8 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         version: "test",
         stale_check_interval: std::time::Duration::from_secs(30),
         reap_interval: std::time::Duration::from_secs(60),
+        // Push off: these daemons never reach the real `codex`.
+        codex: Default::default(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -211,6 +215,8 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         version: "test",
         stale_check_interval: std::time::Duration::from_millis(100),
         reap_interval: std::time::Duration::from_secs(60),
+        // Push off: these daemons never reach the real `codex`.
+        codex: Default::default(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -234,6 +240,8 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         version: "test",
         stale_check_interval: std::time::Duration::from_secs(30),
         reap_interval: std::time::Duration::from_millis(100),
+        // Push off: these daemons never reach the real `codex`.
+        codex: Default::default(),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();

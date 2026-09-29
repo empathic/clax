@@ -161,6 +161,9 @@ pub struct ServeConfig {
     pub stale_check_interval: std::time::Duration,
     /// How often idle sessions with dead processes are ended (60 s in production).
     pub reap_interval: std::time::Duration,
+    /// Where the daemon's `codex` is, for Codex tier 5 (`artifax serve` uses
+    /// [`crate::push::CodexPush::from_env`] on its own environment).
+    pub codex: crate::push::CodexPush,
 }
 
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
@@ -220,7 +223,9 @@ pub async fn serve(
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
+        codex: Arc::new(cfg.codex.clone()),
     };
+    tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     let fctx = state.feedback_ctx();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {

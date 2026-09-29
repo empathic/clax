@@ -336,6 +336,22 @@ async fn watch_toggles_and_status_lists_watches() {
 }
 
 #[tokio::test]
+async fn status_reports_the_sessions_push() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let (s, _) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    assert_eq!(s["push"]["tier"], Value::Null);
+    assert_eq!(s["push"]["available"], false);
+    assert!(
+        s["push"]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Claude Code has no native push"),
+        "{s}"
+    );
+}
+
+#[tokio::test]
 async fn wait_for_feedback_returns_within_a_second_and_asks_to_call_again() {
     let ts = TestServer::spawn().await;
     let (t, _sid) = session_tools(&ts).await;

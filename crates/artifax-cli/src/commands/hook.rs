@@ -148,12 +148,18 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no artifax daemon is running"))?
         .with_timeout(event.budget().1);
+    // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
+    // the daemon's own environment may lack.
+    let codex_home = std::env::var("CODEX_HOME")
+        .ok()
+        .filter(|v| !v.is_empty() && matches!(agent, Agent::Codex));
     match event {
         Event::SessionStart => events::session_start(
             agent.harness(),
             parent_pid,
             &ancestors(parent_pid),
             &input,
+            codex_home.as_deref(),
             &client,
         ),
         Event::SessionEnd => events::session_end(agent.harness(), &input, &client),

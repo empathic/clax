@@ -382,6 +382,7 @@ async fn status_reports_the_daemon() {
     assert!(s["session"].is_null());
     assert!(s["harness"].is_null());
     assert_eq!(s["watches"], serde_json::json!([]));
+    assert!(s["push"].is_null(), "no session, no push");
 }
 
 #[tokio::test]

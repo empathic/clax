@@ -261,6 +261,31 @@ impl Store {
         })
     }
 
+    /// Records the `CODEX_HOME` the session's Codex runs with, for `codex queue`.
+    pub fn set_codex_home(&self, session_id: &str, codex_home: &str) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute(
+                "INSERT INTO session_env (session_id, codex_home) VALUES (?1, ?2)
+                 ON CONFLICT(session_id) DO UPDATE SET codex_home = excluded.codex_home",
+                params![session_id, codex_home],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The `CODEX_HOME` recorded for the session, if any.
+    pub fn codex_home(&self, session_id: &str) -> Result<Option<String>> {
+        self.with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT codex_home FROM session_env WHERE session_id = ?1",
+                params![session_id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+        })
+    }
+
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         self.with_conn(|c| {
             Ok(c.query_row(
@@ -661,6 +686,21 @@ mod tests {
         assert_eq!(
             store.feedback_rows(&t.id).unwrap()[0].target_session_id,
             None
+        );
+    }
+
+    #[test]
+    fn codex_home_is_stored_per_session() {
+        let (_d, store) = store();
+        let s = store
+            .join_session("codex", 5, "cx-1", Some("/w"), &[])
+            .unwrap();
+        assert_eq!(store.codex_home(&s.id).unwrap(), None);
+        store.set_codex_home(&s.id, "/tmp/cxh").unwrap();
+        store.set_codex_home(&s.id, "/tmp/cxh2").unwrap();
+        assert_eq!(
+            store.codex_home(&s.id).unwrap().as_deref(),
+            Some("/tmp/cxh2")
         );
     }
 }

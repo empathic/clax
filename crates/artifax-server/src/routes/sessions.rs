@@ -3,7 +3,9 @@
 use super::artifacts::{body, path};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::push::{CodexPush, CodexSource};
 use crate::state::AppState;
+use artifax_core::model::Session;
 use artifax_core::{CoreError, RegisterSession};
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection};
@@ -50,6 +52,9 @@ pub struct JoinBody {
     /// The caller's ancestors, nearest first, tried after `parent_pid`.
     #[serde(default)]
     ancestor_pids: Vec<u32>,
+    /// The `CODEX_HOME` the session's Codex runs with, recorded for `codex queue`.
+    #[serde(default)]
+    codex_home: Option<String>,
 }
 
 pub async fn join(
@@ -67,13 +72,17 @@ pub async fn join(
     }
     let session = s
         .store_call(move |st| {
-            st.join_session(
+            let session = st.join_session(
                 &b.harness,
                 b.parent_pid,
                 &b.harness_session_id,
                 b.cwd.as_deref(),
                 &b.ancestor_pids,
-            )
+            )?;
+            if let Some(h) = &b.codex_home {
+                st.set_codex_home(&session.id, h)?;
+            }
+            Ok(session)
         })
         .await?;
     Ok(Json(json!({"session": session})))
@@ -136,15 +145,52 @@ pub async fn list(
     Ok(Json(json!({"sessions": sessions})))
 }
 
-/// One session; needs the token, as [`list`] does.
+/// One session and how feedback can be pushed to it ([`push_info`]); needs
+/// the token, as [`list`] does.
 pub async fn get(
     State(s): State<AppState>,
     _t: RequireToken,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;
-    let session = s
-        .store_call(move |st| st.get_session(&id)?.ok_or(CoreError::NotFound))
+    let (session, codex_home) = s
+        .store_call(move |st| {
+            let session = st.get_session(&id)?.ok_or(CoreError::NotFound)?;
+            let codex_home = st.codex_home(&id)?;
+            Ok((session, codex_home))
+        })
         .await?;
-    Ok(Json(json!({"session": session})))
+    let push = push_info(&session, &s.codex, codex_home);
+    Ok(Json(json!({"session": session, "push": push})))
+}
+
+/// How feedback can be pushed to this session (tier 5), and why not when it cannot.
+fn push_info(s: &Session, codex: &CodexPush, codex_home: Option<String>) -> Value {
+    match s.harness.as_str() {
+        "codex" if codex.source == CodexSource::Disabled => {
+            json!({"tier": null, "available": false, "reason": "Codex push is off: ARTIFAX_CODEX_BIN is set empty", "codex_home": codex_home})
+        }
+        "codex" if !codex.available() => {
+            json!({"tier": null, "available": false, "reason": "codex is not on the daemon's PATH; native push disabled", "codex_home": codex_home})
+        }
+        "codex" if s.harness_session_id.is_none() => {
+            json!({"tier": null, "available": false, "reason": "Codex session ID unknown, native push disabled", "codex_home": codex_home})
+        }
+        "codex" => {
+            json!({"tier": "queue", "available": true, "reason": null, "codex_home": codex_home})
+        }
+        "pi" => json!({"tier": "inject", "available": true, "reason": null}),
+        _ => {
+            json!({"tier": null, "available": false, "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next artifax tool call, or during wait_for_feedback"})
+        }
+    }
+}
+
+/// `GET /api/push`: the daemon's `codex` and where it came from.
+pub async fn push_status(State(s): State<AppState>) -> Json<Value> {
+    Json(json!({"codex": {
+        "available": s.codex.available(),
+        "bin": s.codex.bin.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        "source": s.codex.source,
+    }}))
 }

@@ -28,4 +28,6 @@ pub struct AppState {
     pub browser_base: String,
     /// Long-polls waiting for feedback, by session.
     pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
+    /// Where the daemon's `codex` is; Codex tier 5 is off without it.
+    pub codex: Arc<crate::push::CodexPush>,
 }

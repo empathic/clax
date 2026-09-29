@@ -36,9 +36,10 @@ function load(home: string, sessionId: string, cwd = scratch) {
   return { pi, ...fakeContext(cwd, sessionId) };
 }
 
-/** This process's environment with `ARTIFAX_BIN` set to `bin`. */
+/** This process's environment with `ARTIFAX_BIN` set to `bin` and Codex push
+ * off (`ARTIFAX_CODEX_BIN` empty) for any daemon it starts. */
 function withBin(bin: string): NodeJS.ProcessEnv {
-  return { ...process.env, ARTIFAX_BIN: bin };
+  return { ...process.env, ARTIFAX_BIN: bin, ARTIFAX_CODEX_BIN: "" };
 }
 
 /** An Artifax home whose daemon answers `/healthz` and then never answers

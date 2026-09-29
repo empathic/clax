@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod error;
 pub mod feedback;
 pub mod host;
+pub mod push;
 pub mod routes;
 pub mod state;
 #[cfg(feature = "test-support")]

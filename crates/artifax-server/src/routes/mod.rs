@@ -65,6 +65,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             get(sessions::list).post(sessions::register),
         )
         .route("/api/sessions/join", post(sessions::join))
+        .route("/api/push", get(sessions::push_status))
         .route(
             "/api/sessions/{id}",
             get(sessions::get).patch(sessions::patch),

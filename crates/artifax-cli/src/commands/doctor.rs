@@ -13,10 +13,68 @@ pub struct Args {
     /// artifacts. Live artifacts' rows are never deleted.
     #[arg(long)]
     pub fix: bool,
+    /// Also check native push for this harness's sessions.
+    #[arg(long, value_enum)]
+    pub agent: Option<DoctorAgent>,
+}
+
+/// A harness whose native push `doctor --agent` checks.
+#[derive(Clone, Copy, clap::ValueEnum)]
+pub enum DoctorAgent {
+    Codex,
 }
 
 fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
+}
+
+/// `codex_push`: whether the running daemon has a `codex` to run `codex queue`
+/// with, naming the binary and where it came from; `codex_sessions`: whether
+/// every live Codex session has its Codex session ID (joined by the
+/// SessionStart hook), without which push is off for it.
+fn codex_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
+    let Some(c) = client else {
+        return vec![check(
+            "codex_push",
+            false,
+            "no daemon is running; it finds codex on the PATH it starts with",
+        )];
+    };
+    let push = c.get("/api/push").ok();
+    let bin = push
+        .as_ref()
+        .and_then(|p| p["codex"]["bin"].as_str().map(str::to_string));
+    let source = push
+        .as_ref()
+        .and_then(|p| p["codex"]["source"].as_str().map(str::to_string))
+        .unwrap_or_default();
+    let detail = match (bin.as_deref(), source.as_str()) {
+        (Some(b), "env") => format!("codex at {b} (from ARTIFAX_CODEX_BIN)"),
+        (Some(b), _) => format!("codex at {b} (found on PATH)"),
+        (None, "disabled") => "Codex push is off: the daemon was started with ARTIFAX_CODEX_BIN set empty".to_string(),
+        (None, _) => "codex is not on the daemon's PATH; run `artifax stop`, then start it again from a shell where `codex` is on PATH, or set ARTIFAX_CODEX_BIN".to_string(),
+    };
+    let mut out = vec![check("codex_push", bin.is_some(), detail)];
+    let sessions = c.get("/api/sessions?live=true").ok();
+    let codex: Vec<&serde_json::Value> = sessions
+        .as_ref()
+        .and_then(|s| s["sessions"].as_array())
+        .map(|a| a.iter().filter(|s| s["harness"] == "codex").collect())
+        .unwrap_or_default();
+    let missing = codex
+        .iter()
+        .filter(|s| s["harness_session_id"].is_null())
+        .count();
+    out.push(check(
+        "codex_sessions",
+        missing == 0,
+        match (codex.len(), missing) {
+            (0, _) => "no live Codex sessions".to_string(),
+            (n, 0) => format!("{n} live Codex sessions, each with its Codex session ID"),
+            (n, m) => format!("{m} of {n} live Codex sessions have no Codex session ID, so native push is off for them: install the artifax plugin's hooks, set `features.hooks = true` in the Codex config, and trust the hooks when Codex asks"),
+        },
+    ));
+    out
 }
 
 /// Every stored JSON column parses; the detail lists each failing row as
@@ -313,6 +371,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             "UI not built or daemon down; run `just web`"
         },
     ));
+    if let Some(DoctorAgent::Codex) = args.agent {
+        checks.extend(codex_checks(client.as_ref()));
+    }
     let ok = checks.iter().all(|c| c["ok"].as_bool().unwrap());
     super::print(
         cli,

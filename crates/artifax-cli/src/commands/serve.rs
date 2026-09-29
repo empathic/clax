@@ -29,6 +29,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             reap_interval: std::time::Duration::from_secs(60),
             port: cli.port,
             version: env!("CARGO_PKG_VERSION"),
+            codex: artifax_server::push::CodexPush::from_env(
+                std::env::var_os("ARTIFAX_CODEX_BIN"),
+                std::env::var_os("PATH").as_deref(),
+            ),
         };
         return rt.block_on(serve(cfg, None));
     }

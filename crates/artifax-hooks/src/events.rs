@@ -28,12 +28,14 @@ pub trait Daemon {
 /// context names the daemon and, when the joined session has pending
 /// `prompt_hook` feedback, appends its rendered text. That feedback request is
 /// bounded by [`START_FEEDBACK_TIMEOUT`]; when it fails or times out the
-/// context is returned without it.
+/// context is returned without it. `codex_home`, when given, is recorded for
+/// the session so the daemon can run `codex queue` against that Codex home.
 pub fn session_start(
     harness: &str,
     parent_pid: u32,
     ancestor_pids: &[u32],
     input: &HookInput,
+    codex_home: Option<&str>,
     daemon: &dyn Daemon,
 ) -> anyhow::Result<HookOutput> {
     let Some(session_id) = input.session_id.as_deref().filter(|s| !s.is_empty()) else {
@@ -49,6 +51,9 @@ pub fn session_start(
     }
     if let Some(cwd) = &input.cwd {
         body["cwd"] = json!(cwd);
+    }
+    if let Some(h) = codex_home {
+        body["codex_home"] = json!(h);
     }
     let joined = daemon.post("/api/sessions/join", &body)?;
     let mut context = format!(
@@ -208,7 +213,7 @@ mod tests {
     #[test]
     fn start_joins_and_reports_url() {
         let d = Fake::default();
-        let out = session_start("claude", 42, &[7, 1], &input("s1"), &d).unwrap();
+        let out = session_start("claude", 42, &[7, 1], &input("s1"), None, &d).unwrap();
         let calls = d.calls.borrow();
         assert_eq!(calls[0].1, "/api/sessions/join");
         assert_eq!(
@@ -225,8 +230,15 @@ mod tests {
     #[test]
     fn start_without_session_id_errors() {
         let d = Fake::default();
-        assert!(session_start("claude", 1, &[], &HookInput::default(), &d).is_err());
+        assert!(session_start("claude", 1, &[], &HookInput::default(), None, &d).is_err());
         assert!(d.calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn start_sends_codex_home_when_known() {
+        let d = Fake::default();
+        session_start("codex", 42, &[], &input("s1"), Some("/cx"), &d).unwrap();
+        assert_eq!(d.calls.borrow()[0].2["codex_home"], "/cx");
     }
 
     #[test]
@@ -346,7 +358,7 @@ mod tests {
     #[test]
     fn session_start_appends_pending_feedback() {
         let d = fake(Some("PENDING"));
-        let out = session_start("claude", 1, &[], &input("s1"), &d).unwrap();
+        let out = session_start("claude", 1, &[], &input("s1"), None, &d).unwrap();
         let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap()
@@ -383,7 +395,7 @@ mod tests {
     #[test]
     fn session_start_returns_the_join_context_when_feedback_is_slow() {
         let started = std::time::Instant::now();
-        let out = session_start("claude", 1, &[], &input("s1"), &SlowFeedback).unwrap();
+        let out = session_start("claude", 1, &[], &input("s1"), None, &SlowFeedback).unwrap();
         assert!(
             started.elapsed() < Duration::from_millis(1500),
             "{:?}",

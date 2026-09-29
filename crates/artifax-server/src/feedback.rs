@@ -50,12 +50,16 @@ pub struct FeedbackCtx {
     pub events: EventBus,
     pub waiters: Arc<FeedbackWaiters>,
     pub browser_base: String,
+    pub store: Arc<Store>,
+    pub codex: Arc<crate::push::CodexPush>,
+    /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
+    pub handle: tokio::runtime::Handle,
 }
 
 impl FeedbackCtx {
     /// Whether the daemon can push to Codex sessions with `codex queue`.
     pub fn codex_push(&self) -> bool {
-        false
+        self.codex.available()
     }
 }
 
@@ -65,13 +69,16 @@ impl AppState {
             events: self.events.clone(),
             waiters: self.feedback_waiters.clone(),
             browser_base: self.browser_base.clone(),
+            store: self.store.clone(),
+            codex: self.codex.clone(),
+            handle: tokio::runtime::Handle::current(),
         }
     }
 }
 
-/// Publishes `feedback_state` for every touched thread and wakes long-polls of
-/// every touched target. Failures are logged; the change itself has happened.
-pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
+/// Publishes `feedback_state` for every touched thread. Failures are logged;
+/// the change itself has happened.
+pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
     for (aid, tid) in &touched.threads {
         match st.feedback_state(tid, ctx.codex_push()) {
             Ok(Some(s)) => ctx.events.publish(Event::feedback_state(aid.clone(), s)),
@@ -79,7 +86,14 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
             Err(e) => tracing::warn!(thread = %tid, error = %e, "feedback state unavailable"),
         }
     }
+}
+
+/// Publishes states, wakes the targets' long-polls, and pushes to Codex
+/// targets ([`crate::push::dispatch`]). Call after the change is committed.
+pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
+    publish_states(ctx, st, touched);
     ctx.waiters.wake(&touched.targets);
+    crate::push::dispatch(ctx, st, &touched.targets);
 }
 
 /// The thread as routes return it: the stored fields plus `clip_url`,

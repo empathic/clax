@@ -924,3 +924,55 @@ fn the_shim_serves_only_claude_and_codex() {
         .success()
         .stderr(predicate::str::contains("invalid value 'pi'"));
 }
+
+#[test]
+fn doctor_reports_codex_push_from_the_daemons_path() {
+    let e = Env::new();
+    let bin_dir = e.dir.path().join("bin");
+    std::fs::create_dir_all(&bin_dir).unwrap();
+    let codex = bin_dir.join("codex");
+    std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    // This test is about push: it lets the daemon look on its PATH.
+    e.cmd()
+        .env_remove("ARTIFAX_CODEX_BIN")
+        .env("PATH", &path)
+        .args(["serve", "--port", "0"])
+        .assert()
+        .success();
+    let push = doctor_check(&e, &["--agent", "codex"], "codex_push");
+    assert_eq!(push["ok"], true);
+    let detail = push["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&codex.display().to_string()) && detail.contains("found on PATH"),
+        "{detail}"
+    );
+    let info: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(e.dir.path().join("ax/daemon.json")).unwrap(),
+    )
+    .unwrap();
+    reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(format!("http://127.0.0.1:{}/api/sessions", info["port"]))
+        .bearer_auth(info["token"].as_str().unwrap())
+        .json(&serde_json::json!({"harness": "codex", "cwd": "/w", "pid": 1, "parent_pid": 2}))
+        .send()
+        .unwrap();
+    let sessions = doctor_check(&e, &["--agent", "codex"], "codex_sessions");
+    assert_eq!(sessions["ok"], false);
+    assert!(
+        sessions["detail"]
+            .as_str()
+            .unwrap()
+            .contains("features.hooks = true")
+    );
+    e.stop();
+}

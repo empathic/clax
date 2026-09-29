@@ -782,6 +782,16 @@ impl ArtifaxTools {
             "session": session,
             "watches": watches,
         });
+        out["push"] = match &session {
+            Some(_) => match self.client.session_info().await {
+                Ok(v) => v["push"].clone(),
+                Err(e) => {
+                    tracing::warn!(error = %e, "status could not read the session's push");
+                    Value::Null
+                }
+            },
+            None => Value::Null,
+        };
         // Version skew between these tools and the daemon they call.
         if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
             out["daemon_version"] = h["version"].clone();

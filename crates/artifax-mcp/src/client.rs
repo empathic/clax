@@ -563,6 +563,12 @@ impl DaemonClient {
         .map(|_| ())
     }
 
+    /// `GET /api/sessions/<sid>`: `{session, push}`.
+    pub async fn session_info(&self) -> Result<Value> {
+        self.json(|c| c.request(reqwest::Method::GET, &c.session_path()))
+            .await
+    }
+
     /// `GET /api/sessions/<sid>/watches`: `{watches}`.
     pub async fn watches(&self) -> Result<Value> {
         self.json(|c| {

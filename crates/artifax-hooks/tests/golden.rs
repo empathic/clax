@@ -59,13 +59,19 @@ struct Ran {
 }
 
 fn hook(home: &Path, agent: &str, event: &str, stdin: &[u8]) -> Ran {
-    let mut child = artifax(home)
-        .args(["hook", "--agent", agent, event])
+    hook_env(home, agent, event, stdin, &[])
+}
+
+fn hook_env(home: &Path, agent: &str, event: &str, stdin: &[u8], env: &[(&str, &str)]) -> Ran {
+    let mut cmd = artifax(home);
+    cmd.args(["hook", "--agent", agent, event])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+        .stderr(Stdio::null());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().unwrap();
     let start = Instant::now();
     child.stdin.take().unwrap().write_all(stdin).unwrap();
     let out = child.wait_with_output().unwrap();
@@ -502,4 +508,31 @@ fn prompt_hook_adds_pending_feedback_even_without_armed_replies() {
         &fixture("claude-prompt.json"),
     );
     assert_eq!(r.stdout, "", "delivered once");
+}
+
+#[test]
+fn codex_session_start_records_codex_home() {
+    let d = Daemon::start();
+    let r = hook_env(
+        &d.home(),
+        "codex",
+        "session-start",
+        &fixture("codex-session-start.json"),
+        &[("CODEX_HOME", "/tmp/cxh-golden")],
+    );
+    assert_eq!(r.code, Some(0));
+    let id = d.sessions(true)[0]["id"].as_str().unwrap().to_string();
+    let v: Value = d
+        .http()
+        .get(format!("{}/api/sessions/{id}", d.base()))
+        .bearer_auth(d.token())
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(v["push"]["codex_home"], "/tmp/cxh-golden");
+    assert_eq!(
+        v["push"]["reason"], "Codex push is off: ARTIFAX_CODEX_BIN is set empty",
+        "the harness disables push"
+    );
 }
