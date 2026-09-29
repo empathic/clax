@@ -1,6 +1,6 @@
 # Artifax
 
-Artifax is a local server for HTML artifacts that agents publish. It stores every version of each artifact and serves a gallery and viewer in your browser.
+Artifax is a local server for HTML artifacts that agents publish. It stores every version of each artifact and serves a gallery and viewer in your browser, where people comment on a page and send comments back to the agent that published it.
 
 ## Prerequisites
 
@@ -36,7 +36,7 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 
 ## Use from an agent
 
-Each harness gets the same nine tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`) and the `artifax` skill:
+Each harness gets the same fourteen tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`) and the `artifax` skill:
 
 - Claude Code: `/plugin marketplace add empathic/artifax`, then `/plugin install artifax@artifax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
 - Codex: `codex plugin marketplace add /path/to/artifax`, then `codex plugin add artifax@artifax`. See [plugins/artifax/README.md](plugins/artifax/README.md).
@@ -57,12 +57,12 @@ The Claude Code and Codex plugins download the `artifax` binary on first use whe
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, and that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, and that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
 
-Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.artifax/daemon.json` (mode 0600, served only to localhost browsers), so LAN viewers can only read artifacts. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.artifax/daemon.json` (mode 0600, served only to localhost browsers), so LAN viewers can read artifacts and comment on them but not publish or change them. The comment routes need no token but refuse requests from another origin, including published pages. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
 
 Design: [docs/superpowers/specs/2026-09-28-artifax-design.md](docs/superpowers/specs/2026-09-28-artifax-design.md)
 
-Comments and runtime capabilities arrive in later phases.
+Runtime capabilities arrive in a later phase.

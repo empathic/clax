@@ -6,13 +6,18 @@ do, what the daemon guarantees about isolation, and what does not exist yet.
 The implementation is the authority where the two disagree:
 `crates/artifax-mcp/src/tools.rs` (arguments), `crates/artifax-mcp/src/render.rs`
 (result shape), `crates/artifax-server/src/routes/` (daemon errors),
-`crates/artifax-core/src/store/sessions.rs` (sessions), and
-`plugins/pi/src/artifax.ts` (the Pi tools).
+`crates/artifax-core/src/store/sessions.rs` (sessions),
+`crates/artifax-core/src/feedback.rs` and
+`crates/artifax-core/src/store/feedback.rs` (comment delivery),
+`crates/artifax-hooks/src/events.rs` (hooks), and `plugins/pi/src/artifax.ts`
+(the Pi tools).
 
 ## Tools
 
-Nine tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
-`asset_upload`, `status`. The MCP implementation lives in
+Fourteen tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+`asset_upload`, `status`, and the comment tools `comments_read`,
+`comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback` (see
+"Comments and feedback"). The MCP implementation lives in
 `crates/artifax-mcp` and is served two ways:
 
 - the stdio shim `artifax mcp --agent <claude|codex>`, which a harness
@@ -22,7 +27,7 @@ Nine tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   which attributes publishes to no session.
 
 Pi's extension API cannot register an MCP server, so `plugins/pi` implements
-the same nine tools in TypeScript against the daemon's REST API, with the same
+the same fourteen tools in TypeScript against the daemon's REST API, with the same
 arguments and the same result and error JSON.
 
 Names as the model sees them:
@@ -51,9 +56,14 @@ opener fails (see `open`); `artifax open --json` only prints the URL.
 
 ### Results
 
-Every result is one text content block holding a pretty-printed JSON object.
-The object always carries `"feedback": []` (comments arrive in phase 3). A
-success is the tool's fields plus `feedback`. A failure is marked as an error
+Every result's first text content block holds a pretty-printed JSON object.
+The object always carries a `feedback` array: the comments sent to this
+session that the call handed over (tier 1; always `[]` through the daemon's
+`/mcp`, which has no session; for `wait_for_feedback`, the comments it waited
+for). When it is not empty, a second text block follows: `---`, a newline, and
+the payload text described under "Comments and feedback". A success is the
+tool's fields plus `feedback`. Error results carry `"feedback": []` and no
+second block. A failure is marked as an error
 result (`isError: true` over MCP; Pi marks a thrown tool error the same way)
 and its text is:
 
@@ -404,7 +414,19 @@ No arguments.
     "last_seen_at": "2026-09-29T10:14:40.560Z",
     "ended_at": null
   },
-  "watches": [],
+  "watches": [
+    {
+      "session_id": "01K6AB3Q9X7N2M4P5R6S8T0V1W",
+      "artifact_id": "7q3k9mzx2b4t",
+      "replies_armed": true,
+      "created_at": "2026-09-29T10:05:12.304Z"
+    }
+  ],
+  "push": {
+    "tier": null,
+    "available": false,
+    "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next artifax tool call, or during wait_for_feedback"
+  },
   "feedback": []
 }
 ```
@@ -418,7 +440,18 @@ filled in appears after the next heartbeat; Pi sends no heartbeat, so under Pi
 it is the row as registered. `daemon_version` (the daemon's version again) is
 present only when it differs from the Artifax version of the tools answering
 (the shim's binary, or the Pi package, which carries the same version), which
-signals version skew. `watches` is always empty until phase 3.
+signals version skew.
+
+`watches` lists this session's watches (`[{session_id, artifact_id,
+replies_armed, created_at}]`; `[]` without a session). `push` says whether
+comments can be pushed into this session (tier 5) and why not:
+`{tier, available, reason}`, plus `codex_home` (the recorded `CODEX_HOME`, or
+`null`) for Codex. Under Codex `tier` is `"queue"` when available, else
+`null` with `reason` "Codex session ID unknown, native push disabled" or the
+daemon's reason for having no `codex` (see "Delivery tiers per harness");
+under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
+Claude Code it is as shown above. `push` is `null` without a session, or when
+the daemon could not be asked.
 
 Version skew: a shim that finds a daemon older than itself stops it and starts
 its own on the old daemon's bind address (the port is the shim's `--port`,
@@ -467,9 +500,16 @@ harness session ID on its next tool call (see `unknown_session`), and a shim
 heartbeat that finds its row ended or gone registers again; a shim that
 reaches a restarted daemon registers again.
 
+When a row ends, its watches are dropped and its undelivered comments go to
+other sessions (see "Comments and feedback").
+
 The hooks give up rather than hold up the harness: `session-start` after 4 s
 (3 s per daemon request), `session-end` after 2.5 s (2 s per request, inside
-Codex's 3 s `SessionEnd` cap). A hook that gives up exits 0 with no output.
+Codex's 3 s `SessionEnd` cap), `stop` after 8 s and `prompt` after 4 s (3 s
+per request; the plugins give the Stop hook 10 s and the prompt hook 5 s). A
+hook that gives up, or finds no daemon, exits 0 with no output. The `stop` and
+`prompt` hooks find the live row by the harness session ID in their input and
+do nothing when there is none.
 
 ### Claude Code
 
@@ -483,6 +523,11 @@ joins by that same ID and adds the daemon URL to the session context, and the
 `SessionEnd` hook ends every live row with that ID; when none is running, they
 do nothing. If `CLAUDE_CODE_SESSION_ID` is absent, the shim registers as under
 Codex and the hook's parent-PID join applies.
+
+The `UserPromptSubmit` hook (`artifax hook --agent claude prompt`) and the
+`Stop` hook (`artifax hook --agent claude stop`) hand comments over (tiers 3
+and 2 under "Comments and feedback"); the `SessionStart` hook also appends
+comments already waiting for the session to its context.
 
 Without hooks the row is still keyed by the session ID; it ends when the shim
 exits or through the reaper.
@@ -499,12 +544,15 @@ forward), its parent process
 `SessionStart` hook runs under a shell, so its parent is that shell; it sends
 the Codex session ID from its input, its parent PID, and its ancestors, and
 the daemon gives the ID to the shim's row by matching Codex's PID among them.
-The hook also fills an empty `cwd`. The `SessionEnd` hook ends the row by the
+The hook also fills an empty `cwd`, and records its `CODEX_HOME` (when set)
+for `codex queue`. The `Stop` hook (`artifax hook --agent codex stop`) hands
+comments over at the end of a turn. The `SessionEnd` hook ends the row by the
 Codex session ID.
 
 Hooks run only when the person enables and trusts them. Without them the row
 has no harness session ID; the tools work and publishes are attributed to it,
-and it ends when the shim exits or through the reaper.
+it ends when the shim exits or through the reaper, and comments reach it only
+through tiers 1 and 4.
 
 Because a registration without a harness session ID adopts the live row with
 the same `(harness, parent_pid)`, several conversations hosted by one Codex
@@ -529,6 +577,165 @@ by the reaper.
 The daemon's `/mcp` endpoint has no session: publishes have no owner,
 `list` with `scope: "mine"` is empty, `status` reports `null` for `harness`
 and `session`, and relative file paths are rejected.
+
+## Comments and feedback
+
+People comment on a page in the browser: comment mode outlines the element
+under the pointer; a click anchors a thread to that element, a text selection
+to that range. The bridge records the anchor (spec §9) and a PNG clip of the
+region, stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
+thread is plain until the person presses **Send to agent** or writes `@agent`
+(as a word, not inside an address) in a comment; from then on, every later
+viewer comment on it is sent too. A viewer comment on a resolved thread
+reopens it.
+
+A sent comment goes to every live target session: the session that created
+the artifact, and every session that watches it. Publishing (a new artifact or
+a new version) makes the publishing session watch the artifact with replies
+on; the `watch` tool adds or removes a watch. Agent replies and resolves need
+a live session and work only on sent threads.
+
+### Tools
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
+| `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
+| `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
+| `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
+| `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
+
+`comments_read` returns the open threads (and resolved ones with
+`include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
+next page (`null` on the last); `thread_id` returns that one thread whatever
+its status. `quote` has its whitespace collapsed and is cut to 200
+characters followed by `…`. `clip_path` is the absolute path of the clip, or
+`null` when none was captured. `feedback_state` is the
+thread's delivery state (`{thread_id, state, tier, since, resends,
+exhausted}`, see "What the person sees"), or `null` when nothing on it was
+sent. `note` says that comment text comes from people viewing the page.
+Through a session, reading acknowledges the returned comments of sent threads
+for that session (a comment added after the read stays pending).
+
+`comments_reply` posts the reply as the agent; the person sees
+`Agent · via <harness>`. Replying to or resolving a thread acknowledges its
+comments for the session. Resolving a thread withdraws its comments that no
+session has been handed yet.
+
+`watch` with `on: false` removes the session's watch (the result has
+`watching: false, replies_armed: false`); the session that created the
+artifact still receives its comments through tiers 1, 3 and 4. Watching an
+artifact hands the session any of its comments that were waiting untargeted.
+
+`wait_for_feedback` returns as soon as comments sent to this session arrive
+(only those on `url_or_id` when given), or after `timeout_s` seconds with
+`feedback: []` and `call_again: true`. `timeout_s` is raised to 1 and capped
+at 600. `waited_s` is whole seconds.
+
+Error codes besides the common ones: `invalid_id` (`url_or_id` names no
+artifact), `invalid_args` (a `thread_id` that is not a thread ID, empty
+`text`), `invalid_comment` (`text` over 10,000 characters), `invalid_cursor`
+(a `cursor` that is not a thread of the artifact), `not_found` (the artifact
+or thread is gone), `no_session` (`watch` and `wait_for_feedback` through
+`/mcp`), `unknown_session` (`comments_reply` and `comments_resolve` through
+`/mcp`, which sends no session). Replies and resolves on a thread that was not
+sent to the agent are not errors: the result carries `guidance` and nothing
+changes.
+
+### Payload
+
+Each forwarded comment is rendered as:
+
+```
+[artifax] Comment sent to you on "Quarterly Review" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9...
+Anchored on: main > section:nth-of-type(2) > h2  «Quarterly goals»  (v3)
+Clip: /Users/alex/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
+Alex: "Make this a two-column layout and drop the third bullet."
+Reply with comments_reply, then comments_resolve when done.
+```
+
+The title and the comment text are JSON strings (U+0085, U+2028 and U+2029
+escaped too), so a comment is always one line. The anchor line holds the
+selector (`custom:<name>` for a custom anchor) and, when there is one, the
+quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
+characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
+40 characters (`Viewer` when empty). A resend says `Comment sent to you
+(resent)`. A thread without a clip says `Clip: none (no screenshot was captured
+for this comment)`. The payload starts with `[artifax] N comments sent to
+you:` (`1 comment` for one) on its own line, followed by the comments
+separated by blank lines. Tool results carry this text after `---` in a
+second text block; the Stop hook's `reason`, the prompt hook's
+`additionalContext`, `codex queue --message`, and Pi's follow-up message carry
+it without `---`. The structured form is each result's `feedback` array:
+`{feedback_id, thread_id, comment_id, artifact_id, artifact_title, url,
+version, anchor, clip_path, author, body, resent, created_at}`.
+
+### Delivery tiers per harness
+
+Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
+0.73.1 from its source.
+
+| Tier | Claude Code | Codex | Pi |
+|---|---|---|---|
+| 1, tool result | next artifax tool call (shim) | next artifax tool call (shim) | next `artifax_*` tool call (`tool_result` handler) |
+| 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | none |
+| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`) | not wired | none |
+| 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting |
+| 5, native push | none: an idle Claude Code session is not woken | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
+
+Tier 1 applies to every successful tool result of a session-bound shim or Pi
+extension, except `wait_for_feedback`, whose result is tier 4. Tiers 2 and 5
+apply only to watches with `replies_armed`. While `stop_hook_active` is set,
+the Stop hook blocks only for comments never handed over before, so each
+comment blocks a stop at most once.
+
+Tier 5 for Codex needs the Codex session ID (from the `SessionStart` hook, so
+hooks must be enabled and trusted), `codex` from `ARTIFAX_CODEX_BIN` (an
+executable file) or else the daemon's `PATH` (`ARTIFAX_CODEX_BIN` set empty
+turns Codex push off), and the session's `CODEX_HOME` (passed by the hook when
+set; otherwise `codex` uses its default). `artifax doctor --agent codex`
+checks the first two, naming where `codex` came from, and so does
+`GET /api/push` (which needs no token and names the binary). `status`
+reports `push` with the reason when it is off. Tier 5 is skipped while the
+session is inside `wait_for_feedback`, which delivers instead. The comments
+read "delivered via codex queue" from the moment `codex queue` starts until
+it finishes (at most 10 s). A `codex queue` that exits non-zero ends the
+session and hands its comments to the next session that publishes or watches
+the artifact; a timeout (10 s) or a failure to start it leaves them to tiers 1
+to 4, and `codex queue` is not tried again for them.
+
+Pi's tier 5 long-poll runs from the session's registration to
+`session_shutdown`, 50 s per poll, pausing 5 s after a failed poll or one that
+came back empty in under a second. It finds a running daemon but never starts
+one.
+
+### Acknowledgement and resends
+
+A feedback row (one per forwarded comment and target session) is delivered
+once, by the first tier that hands it over. Tiers 1 and 4 count as seen and
+acknowledge at once; so does the agent calling `comments_read`,
+`comments_reply`, or `comments_resolve` on the thread. A row delivered by
+tiers 2, 3, or 5 and not acknowledged within 2 minutes is resent, marked
+`(resent)`, by the next tool result or the next Stop hook (not while
+`stop_hook_active` is set), at most three times. Then the thread shows
+"delivered, not acknowledged".
+
+When a session ends, each of its rows not yet handed over is deleted when
+another live session is a target of the same comment, and otherwise waits
+untargeted. Untargeted rows (also those of a comment sent while no target
+session was live) go to the next session that publishes a version of the
+artifact or watches it.
+
+### What the person sees
+
+The thread's waiting indicator follows the `feedback_state` event:
+
+| State | Indicator |
+|---|---|
+| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next artifax tool call, the end of its turn, Codex to pick up the queued message, Pi to take the message>" |
+| `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
+| `acknowledged` | "seen by the agent" |
+| `agent_ended` | "agent session ended; waiting for a new one" |
 
 ## Page contract
 
@@ -587,16 +794,19 @@ Minimal skeleton:
 
 - The daemon binds `127.0.0.1` by default. `artifax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
-- Every route that changes state requires `Authorization: Bearer <token>`
-  with the token from `<ARTIFAX_HOME>/daemon.json` (mode 0600): creating and
-  publishing artifacts, changing and deleting them, uploading and deleting
-  assets, registering, joining and ending sessions, and shutting the daemon
-  down. Reading sessions (`GET /api/sessions`, `GET /api/sessions/<id>`)
-  needs it too, since a session row carries a working directory, process IDs
-  and the harness's session ID; without it they are 401 `unauthorized`. The
-  comparison is constant time. The other read routes (`GET /api/artifacts...`,
-  the gallery, content, blobs) need no token, so LAN viewers can read
-  artifacts but not write. `GET /api/artifacts/<id>` returns
+- Every route that changes state, except the viewer routes below, requires
+  `Authorization: Bearer <token>` with the token from
+  `<ARTIFAX_HOME>/daemon.json` (mode 0600): creating and publishing artifacts,
+  changing and deleting them, uploading and deleting assets, registering,
+  joining and ending sessions, watches, taking and acknowledging a session's
+  feedback, and shutting the daemon down. Reading sessions and their watches
+  (`GET /api/sessions...`) needs it too, since a session row carries a working
+  directory, process IDs and the harness's session ID; without it they are 401
+  `unauthorized`. The comparison is constant time. The other read routes
+  (`GET /api/artifacts...` including threads and clips, `GET /api/push`, the
+  gallery, content, blobs) need no token, so LAN viewers can read artifacts
+  and comment on them but not publish or change them. `GET /api/push` names
+  the daemon's `codex` binary. `GET /api/artifacts/<id>` returns
   `{artifact, versions}`; like each entry of the artifact list, `artifact`
   carries `owner_session_id`, `owner_live` and `owner_harness`, never the
   owner's session row. Content and asset URLs are readable by anyone who can
@@ -630,6 +840,22 @@ Minimal skeleton:
   page cannot reach the API same-origin. Content on an artifact's own origin
   carries no CSP; the origin is the boundary. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`.
+- The viewer routes (creating a thread, commenting, sending to the agent,
+  resolving, and `GET`/`PUT /api/viewers/me`) need no token, so LAN viewers
+  can comment. They refuse a request whose `Origin` is not the daemon's own
+  (`http://` plus the request's `Host`, never an artifact origin) with 403
+  `forbidden_origin`, so a published page cannot comment, send, or resolve on
+  the person's behalf; requests without an `Origin` header (scripts) are
+  allowed. The daemon serves plain HTTP only. A viewer is identified by the
+  `artifax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
+  the daemon accepts only when it is a ULID. Agent replies and resolves need
+  the token and `X-Artifax-Session` naming a live session (400
+  `unknown_session` otherwise). Thread views carry `clip_path` only for
+  requests with the token and never in `/api/events`; the clip itself
+  (`GET /api/artifacts/<aid>/threads/<tid>/clip`) is served with
+  `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
+  Comment text is untrusted input: tool results and the skill say so, and the
+  payload quotes it as a JSON string.
 - Published pages and uploaded files are untrusted content: Artifax never
   executes them outside the browser.
 - No telemetry. The daemon makes no calls off the machine; the Claude Code
@@ -638,9 +864,6 @@ Minimal skeleton:
 
 ## What is not yet available
 
-- Comments and feedback (phase 3): the person cannot comment on a page yet,
-  `feedback` in every result is always `[]`, `status` reports no `watches`,
-  and there are no comment tools.
 - Runtime capabilities (phase 4): `window.claude.use(name)` resolves `null`
   for every name, and `capabilities` on `publish` is stored but has no effect.
 - Rooms and `sample()` (phase 5): not available.

@@ -60,7 +60,7 @@ import json, sys
 server = json.load(open(sys.argv[1]))["mcpServers"]["artifax"]
 hooks = json.load(open(sys.argv[2]))["hooks"]
 argv = [server["command"], *server.get("args", [])]
-cmds = [h["command"] for event in ("SessionStart", "SessionEnd") for entry in hooks[event] for h in entry["hooks"]]
+cmds = [h["command"] for event in ("SessionStart", "SessionEnd", "Stop") for entry in hooks[event] for h in entry["hooks"]]
 ok = argv[-4:] == ["exec", "mcp", "--agent", "codex"] and all("exec hook --agent codex" in c for c in cmds)
 # Codex expands no plugin-root variable in .mcp.json but resolves a relative cwd
 # against the plugin root, so the script path is relative to that cwd.
@@ -75,12 +75,31 @@ then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Cod
 if python3 - plugins/claude-code/hooks/hooks.json 2>/dev/null <<'PY'
 import json, sys
 hooks = json.load(open(sys.argv[1]))["hooks"]
-cmds = [h["command"] for event in ("SessionStart", "SessionEnd") for entry in hooks[event] for h in entry["hooks"]]
+cmds = [h["command"] for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop") for entry in hooks[event] for h in entry["hooks"]]
 prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent claude '
 sys.exit(0 if cmds and all(c.startswith(prefix) for c in cmds) else 1)
 PY
 then pass "the Claude Code hooks quote \${CLAUDE_PLUGIN_ROOT} and use --agent claude"
 else fail "the Claude Code hooks must run \"\${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude"; fi
+
+# The Claude Code plugin hands feedback over at Stop and prompt submit; the
+# Codex plugin at Stop. Stop hooks get 10 s.
+if python3 - plugins/claude-code/hooks/hooks.json plugins/artifax/hooks/hooks.json 2>/dev/null <<'PY'
+import json, sys
+claude = json.load(open(sys.argv[1]))["hooks"]
+codex = json.load(open(sys.argv[2]))["hooks"]
+def cmds(hooks, event):
+    return [h for e in hooks.get(event, []) for h in e.get("hooks", [])]
+ok = all(h["command"].endswith("exec hook --agent claude stop") and h["timeout"] == 10 for h in cmds(claude, "Stop")) and cmds(claude, "Stop")
+ok = ok and all(h["command"].endswith("exec hook --agent claude prompt") and isinstance(h["timeout"], int) for h in cmds(claude, "UserPromptSubmit")) and cmds(claude, "UserPromptSubmit")
+ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex stop' in h["command"] and h["timeout"] == 10 for h in cmds(codex, "Stop")) and cmds(codex, "Stop")
+sys.exit(0 if ok else 1)
+PY
+then pass "Stop and prompt hooks are wired"; else fail "the Claude Stop/UserPromptSubmit or Codex Stop hooks are missing or misconfigured"; fi
+
+for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md; do
+    [ -f "$f" ] || fail "$f is missing"
+done
 
 # One version everywhere: the workspace, both plugin manifests, the Pi package,
 # and the installer's MIN_VERSION.
@@ -190,8 +209,8 @@ for f in "${skills[@]}"; do
 done
 
 # The three skill copies (Claude Code, Codex, Pi) share the page contract word
-# for word (docs/contract.md carries the same section), and "What is not yet
-# available" is the same in all three.
+# for word (docs/contract.md carries the same section), and "Comment loop" and
+# "What is not yet available" are the same in all three.
 skill_copies=(plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md plugins/pi/skills/artifax/SKILL.md)
 # The lines from "## <heading>" up to, not including, the next "## " heading.
 section() {
@@ -231,6 +250,10 @@ PY2
 then pass "plugins/pi/package.json lists and ships skills/"; else fail "plugins/pi/package.json must list skills in pi.skills and skills/ in files"; fi
 same_section "Page contract" "${skill_copies[@]}" docs/contract.md
 same_section "What is not yet available" "${skill_copies[@]}"
+for f in "${skill_copies[@]}"; do
+    if [ -n "$(section "$f" "Comment loop")" ]; then pass "$f has a Comment loop section"; else fail "$f has no '## Comment loop' section"; fi
+done
+same_section "Comment loop" "${skill_copies[@]}"
 
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then

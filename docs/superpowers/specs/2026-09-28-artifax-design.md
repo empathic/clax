@@ -91,8 +91,8 @@ Components:
 - **Shim** (`artifax mcp --agent <claude|codex>`). A stdio MCP server the
   harness spawns per session. On start it ensures the daemon is up,
   registers a session record, and proxies every tool call to the daemon
-  over HTTP with the token. It appends undelivered feedback to tool results
-  (§10 tier 1). It exits with the harness.
+  over HTTP with the token. It appends undelivered feedback to its successful
+  tool results (§10 tier 1). It exits with the harness.
 - **Hooks** (`artifax hook --agent <x> <event>`). Short-lived processes the
   harness runs at lifecycle points. They read the harness's JSON on stdin,
   call the daemon, and print the harness's expected JSON.
@@ -183,20 +183,28 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   started_at, last_seen_at, ended_at)`
 - `watches(session_id, artifact_id, replies_armed, created_at)`
 - `threads(id, artifact_id, version_n, anchor_json, status, sent_to_agent,
-  created_at, resolved_at, resolved_by)`
+  has_clip, created_at, resolved_at, resolved_by)`; `has_clip` records
+  whether `clips/<thread_id>.png` was stored.
 - `comments(id, thread_id, author_kind, author_name, via_session_id, body,
   created_at)` with `author_kind` in `viewer | agent`.
 - `feedback(id, thread_id, comment_id, target_session_id, created_at,
-  delivered_at, delivery_tier, acknowledged_at)`; one row per (comment,
-  target session). `target_session_id` is null when no live session was
-  found at send time. `delivery_tier` is one of `piggyback | stop_hook |
-  prompt_hook | wait | queue | inject`. `acknowledged_at` is set when the
-  target session reads, replies to, or resolves the thread; delivered but
-  unacknowledged rows are resent (§10).
+  delivered_at, delivery_tier, acknowledged_at, resend_count, last_sent_at,
+  untargeted_at, push_failed_at)`; one row per (comment, target session).
+  `target_session_id` is null when no live session was found at send time
+  or the target ended before the row was delivered (`untargeted_at` records
+  when). `last_sent_at` and `resend_count` drive resends (§10).
+  `push_failed_at` marks a row `codex queue` failed to take (timeout or spawn
+  failure), which is then left to the in-band tiers. `delivery_tier` is one
+  of `piggyback | stop_hook | prompt_hook | wait | queue | inject`.
+  `acknowledged_at` is set when the target session reads, replies to, or
+  resolves the thread; delivered but unacknowledged rows are resent (§10).
 - `docs(artifact_id, path, json, version, updated_at)` for the `db`
   capability; `path` is the full document path such as `tasks/t1`.
-- `viewers(id, display_name, created_at)` for the `user` capability,
-  keyed by a cookie.
+- `viewers(id, display_name, created_at)` for comment authors and the `user`
+  capability, keyed by a cookie.
+- `session_env(session_id, codex_home)`: per-session environment the daemon
+  needs to push to a harness; `codex_home` is the `CODEX_HOME` the Codex
+  `session_start` hook reported.
 
 Content addressing: every version keeps its own files; files omitted from a
 later publish are copied forward as on claude.ai, `null` removes one. A
@@ -235,19 +243,36 @@ Agent- and shell-facing JSON API under `/api`:
   unwrapped; `Content-Security-Policy: sandbox`, `nosniff`),
   `POST /api/artifacts/<aid>/assets` (W or viewer-with-write-grant; see §9),
   `DELETE /api/artifacts/<aid>/assets/<id>` (W).
-- Sessions: `POST /api/sessions` (W, register), `PATCH /api/sessions/<id>`
-  (W, heartbeat or end), `GET /api/sessions`.
+- Sessions: `POST /api/sessions` (W, register), `POST /api/sessions/join`
+  (W, hooks), `PATCH /api/sessions/<id>` (W, heartbeat or end),
+  `GET /api/sessions` (token), `GET /api/sessions/<id>` (token; `{session,
+  push}`, where `push` is `{tier, available, reason}` plus `codex_home` for
+  Codex: whether and how tier 5 reaches the session).
+- Push: `GET /api/push` (no token): `{codex: {available, bin, source,
+  reason}}`, the daemon's `codex` binary, where it came from (`env`, `path`,
+  `disabled`, `not_found`), and why push is off when it is.
 - Watches: `PUT /api/sessions/<sid>/watches/<aid>` (W), `DELETE` same (W),
   `GET /api/sessions/<sid>/watches`.
-- Comments: `GET /api/artifacts/<aid>/threads`, `POST .../threads` (create
-  thread with first comment; no token), `POST .../threads/<tid>/comments`
-  (viewer: no token; agent: W and `author_kind=agent`), `POST
+- Comments: `GET /api/artifacts/<aid>/threads` (`include_resolved`,
+  `cursor`, `limit`), `GET .../threads/<tid>`, `GET .../threads/<tid>/clip`
+  (the PNG; `Content-Security-Policy: sandbox`, `nosniff`), `POST
+  .../threads` (create thread with first comment; no token), `POST
+  .../threads/<tid>/comments` (viewer: no token; agent: W,
+  `author_kind=agent`, and `X-Artifax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
-  rows), `POST .../threads/<tid>/resolve` (viewer or agent).
-- Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>&tier=<tier>&resends=<0|1>`
+  rows), `POST .../threads/<tid>/resolve` (viewer, or agent with W and
+  `X-Artifax-Session`). Thread views carry `clip_path` only for requests with
+  the token.
+- Viewers: `GET /api/viewers/me` (creates the viewer and sets the
+  `artifax_viewer` cookie on first contact), `PUT /api/viewers/me`
+  (`{display_name}`; empty clears it). No token. The viewer routes (thread
+  creation, comments, send, resolve, and these two) refuse a foreign `Origin`
+  (§14).
+- Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>&tier=<tier>&resends=<true|false>`
   (W; long-poll, returns undelivered feedback for that session and marks it
-  delivered by the named tier when the response is produced; `resends=1`
-  also includes resend-eligible rows), `POST /api/sessions/<sid>/feedback/ack`
+  delivered by the named tier when the response is produced; `resends`,
+  default true, also includes resend-eligible rows for the tiers that resend,
+  `piggyback` and `stop_hook`), `POST /api/sessions/<sid>/feedback/ack`
   (W; `{thread_ids?, comment_ids?}`: acknowledges every row on the named
   threads, and only the named comments' rows, so a comment the caller has not
   seen stays pending).
@@ -485,7 +510,10 @@ an agent can view it with its own file-reading tool.
 4. The agent calls `comments_reply` and `comments_resolve`. Replies appear
    as `Agent · via <harness>`. Only sent-to-agent threads accept agent
    replies and agent resolves; on a plain thread the tool returns guidance,
-   mirroring claude.ai.
+   mirroring claude.ai. Agent replies and resolves need a live session
+   (`X-Artifax-Session`; 400 `unknown_session` without one), so they fail
+   through the sessionless `/mcp`. Resolving a thread, by the viewer or the
+   agent, withdraws its feedback rows that have not been delivered.
 
 ### Feedback payload
 
@@ -503,7 +531,7 @@ Reply with comments_reply, then comments_resolve when done.
 
 | Tier | Mechanism | Harnesses | Latency | Failure modes |
 |---|---|---|---|---|
-| 1 | The shim (or the Pi extension) appends undelivered feedback to every tool result it returns | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
+| 1 | Undelivered feedback is appended to every successful tool result of a session-bound shim or Pi extension (errors and the sessionless `/mcp` carry none; `wait_for_feedback`'s own result is tier 4) | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
 | 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code and Codex (both verified: `{"decision":"block","reason":...}` on stdout with exit 0 continues the turn with the reason as input and the hook fires again with `stop_hook_active: true`) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
 | 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
@@ -519,9 +547,9 @@ row also carries `acknowledged_at`, set when that session calls
 when tier 1 or tier 4 returns it (those paths are in-band and count as
 seen). Rows delivered by tier 2, 3, or 5 and unacknowledged after 2 minutes
 are included again by tier 1 on the next tool result and by tier 2 on the
-next stop, marked `(resent)`. Resends stop after acknowledgement or after
-three attempts; the thread then shows "delivered, not acknowledged" in the
-shell.
+next stop (not while `stop_hook_active` is set), marked `(resent)`. Resends
+stop after acknowledgement or after three attempts; the thread then shows
+"delivered, not acknowledged" in the shell.
 
 ### The Codex wake path, stated plainly
 
@@ -536,10 +564,11 @@ codex queue --thread <harness_session_id> --message <payload>
 with the payload from above, a 10 s timeout, and the daemon's environment
 plus the `CODEX_HOME` the Codex `session_start` hook recorded for that
 session (the daemon's own environment lacks it; without a recorded value
-the default `~/.codex` applies). Exit 0 marks the row delivered with tier
-`queue`; it means "queued", not "seen". The thread ID is the
-`session_id` the Codex `session_start` hook received, joined to the shim's
-session record by parent PID (§11).
+the default `~/.codex` applies). The daemon claims the rows (delivered, tier
+`queue`) before running the command, so no other tier hands them over
+meanwhile; exit 0 keeps the claim. It means "queued", not "seen". The thread
+ID is the `session_id` the Codex `session_start` hook received, joined to the
+shim's session record by parent PID (§11).
 
 Measured on Codex 0.158.0 (2026-09-29): the CLI sends the message to the
 shared Codex app-server daemon (starting it if needed; `--no-daemon` is
@@ -567,10 +596,14 @@ Failure modes and what happens in each:
 - **`codex queue` fails.** A non-zero exit (the measurement never produced
   one for an exited session, which is held instead; this path covers a
   missing app-server, a malformed thread ID, or a CLI failure) makes the
-  daemon mark the session ended, clear `target_session_id` on its
-  undelivered rows, and deliver them to the next session that publishes a
-  version of or watches the artifact. The shell shows "agent session ended;
-  waiting for a new one".
+  daemon release the claimed rows, mark the session ended, and untarget each
+  of its undelivered rows, or delete it when another live session already
+  targets the same comment; untargeted rows go to the next session that
+  publishes a version of or watches the artifact. The shell shows "agent
+  session ended; waiting for a new one" when no other target remains. A
+  timeout (10 s) or a failure to start `codex` releases the rows and marks
+  them `push_failed_at`: they wait on tiers 1 to 4 and are not queued again
+  until they are retargeted to another session.
 - **`codex` not on the daemon's PATH.** The daemon was started by a process
   with a minimal environment. Tier 5 is disabled for all Codex sessions and
   `doctor` reports it. The shim passes its own `PATH` when it auto-starts
@@ -600,9 +633,13 @@ feedback on Claude Code means the agent is in a `wait_for_feedback` loop.
 `watch` rows are created on publish for the publishing session, by the
 `watch` tool, or by the `/artifax:watch` command. `watch off` removes one.
 A session's watches end when its `SessionEnd` hook fires or when the shim
-exits and the daemon notices the closed connection. `replies_armed` mirrors
-claude.ai's auto-reply arming and gates tier 2 and tier 5; tiers 1 and 4
-work for any session with a watch.
+exits and the daemon notices the closed connection. When a session ends, each
+of its undelivered feedback rows is untargeted, or deleted when another live
+session already targets the same comment; untargeted rows go to the next
+session that publishes a version of or watches the artifact.
+`replies_armed` mirrors claude.ai's auto-reply arming and gates tier 2 and
+tier 5; tiers 1, 3 and 4 work for every target session (the artifact's owner
+session, watching or not, and every watcher).
 
 ## 11. Sessions and identity
 
@@ -657,17 +694,18 @@ scope), `delete`, `open` (opens the browser on the machine running the tool
 and reports `opened` from the opener's exit status within 1.5 s), `pin`,
 `unpin`, `asset_upload` (file_path or file_paths).
 
-Comments: `comments_read` (url_or_id, thread_id, cursor), `comments_reply`
-(url_or_id, thread_id, text), `comments_resolve` (url_or_id, thread_id),
-`watch` (url_or_id, on, replies), `wait_for_feedback` (url_or_id optional,
-timeout_s default 50, maximum 600). The artifact argument keeps the phase 2
-name `url_or_id`.
+Comments: `comments_read` (url_or_id, thread_id, cursor, include_resolved),
+`comments_reply` (url_or_id, thread_id, text), `comments_resolve`
+(url_or_id, thread_id), `watch` (url_or_id, on, replies), `wait_for_feedback`
+(url_or_id optional, timeout_s default 50, raised to at least 1 and capped
+at 600). The artifact argument keeps the phase 2 name `url_or_id`.
 
 Data: `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
 `db_str_replace`, `db_batch`, with `collection`, `doc_id`, `data`,
 `file_path`, `if_version`, `as_level` as on claude.ai.
 
-Server: `status` (daemon URL, version, this session's ID and watches).
+Server: `status` (daemon URL, version, this session's ID and watches, and
+`push`: whether tier 5 reaches this session and why not).
 
 Every tool result is JSON text plus, when present, a trailing
 `---\n[artifax] N comments sent to you:\n...` block (`1 comment` when N is
@@ -720,12 +758,14 @@ must point at `./plugins/<plugin-name>`.
   root. It starts MCP servers with a minimal environment, so `env_vars`
   forwards `ARTIFAX_HOME`, `ARTIFAX_NO_OPEN`, `ARTIFAX_BIN`,
   `ARTIFAX_INSTALL_DIR`, `ARTIFAX_CONFIG_DIR`, `ARTIFAX_RELEASE_BASE_URL`,
-  and `ARTIFAX_RELEASE_VERSION`.
+  `ARTIFAX_RELEASE_VERSION`, and `ARTIFAX_CODEX_BIN` (which a daemon the
+  shim starts inherits, §10).
 - `hooks/hooks.json` in Claude Code's format: `SessionStart` →
   `bash "${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex
-  session-start`, `SessionEnd` → the same with `session-end` (Codex caps
-  `SessionEnd` at 3 s, so `session-end` gives up after 2.5 s). Hooks run in a
-  shell with `PLUGIN_ROOT` exported.
+  session-start`, `Stop` → the same with `stop` (tier 2, timeout 10 s; the
+  hook gives up after 8 s), `SessionEnd` → the same with `session-end` (Codex
+  caps `SessionEnd` at 3 s, so `session-end` gives up after 2.5 s). Hooks run
+  in a shell with `PLUGIN_ROOT` exported.
 - `skills/artifax/SKILL.md`: same content as the Claude skill, with Codex
   tool naming (`mcp__artifax__<tool>`).
 - `scripts/ensure-artifax.sh`: a copy of the Claude plugin's installer.
@@ -751,7 +791,7 @@ plugin:
   lists once one exists). Installed from a clone with
   `pi install /absolute/path/to/artifax/plugins/pi`, or loaded for one run
   with `pi -e <path>`. It needs the `artifax` CLI on `PATH` or `ARTIFAX_BIN`.
-- `src/artifax.ts` registers `artifax_<tool>` for the nine tools through
+- `src/artifax.ts` registers `artifax_<tool>` for the fourteen tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
   identical to the MCP tools. The package carries the Artifax version, so
   `status` compares the daemon's version with the Artifax version and
@@ -768,8 +808,13 @@ plugin:
   the daemon's reaper. A tool call whose session was ended under it
   (`unknown_session`) registers a new session and retries once, as the shim
   does.
-- In phase 3 the extension appends undelivered feedback to its own tool
-  results (tier 1), as the shim does.
+- The extension appends undelivered feedback to its own successful tool
+  results (tier 1), as the shim does, from a `tool_result` handler. For tier
+  5 it long-polls `GET /api/sessions/<sid>/feedback?tier=inject` (50 s per
+  poll; a 5 s pause after a failed poll or one that came back empty within a
+  second; it finds a running daemon but never starts one) from registration
+  to `session_shutdown`, and hands each payload to
+  `pi.sendUserMessage(text, {deliverAs: "followUp"})`.
 - The `/artifax open [id] | list | status` command.
 - `skills/artifax/SKILL.md`: the same skill as the other plugins, with
   `artifax_<tool>` names, relative file paths resolved against the Pi session's
@@ -809,6 +854,14 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   view, comment, send to agent, resolve, and write `db` docs at
   `interact` level; they cannot publish, delete, upload assets, or write
   `admin`-level docs.
+- The viewer routes (creating a thread, commenting, sending to the agent,
+  resolving, `GET`/`PUT /api/viewers/me`) refuse a request whose `Origin` is
+  not the daemon's own (`http://` plus the request's `Host`; artifact
+  origins, `null`, and other origins are refused) with 403
+  `forbidden_origin`, so a published page cannot comment, send, or resolve
+  on the person's behalf. Requests without an `Origin` header are allowed.
+  The daemon is HTTP only. `GET /api/push` needs no token and names the
+  daemon's `codex` binary.
 - Content isolation per D5. In LAN mode content runs with an opaque origin.
   Content on the main origin (`/c/...`) carries `Content-Security-Policy:
   sandbox allow-scripts allow-forms allow-modals allow-popups
