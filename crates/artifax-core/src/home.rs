@@ -61,10 +61,11 @@ impl Home {
     pub fn assets_dir(&self, id: &ArtifactId) -> PathBuf {
         self.artifact_dir(id).join("assets")
     }
+    /// `artifacts/<aid>/clips`: the clip images of the artifact's threads.
     pub fn clips_dir(&self, id: &ArtifactId) -> PathBuf {
         self.artifact_dir(id).join("clips")
     }
-    /// `artifacts/<aid>/clips/<thread_id>.png`.
+    /// `artifacts/<aid>/clips/<tid>.png`: the clip image of thread `thread_id`.
     pub fn clip_path(&self, id: &ArtifactId, thread_id: &str) -> PathBuf {
         self.clips_dir(id).join(format!("{thread_id}.png"))
     }

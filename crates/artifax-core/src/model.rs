@@ -122,4 +122,31 @@ pub struct Feedback {
     pub acknowledged_at: Option<String>,
     pub resend_count: u32,
     pub last_sent_at: Option<String>,
+    /// When the row became untargeted (created with no live target session, or
+    /// released by its target); `None` while it has a target.
+    pub untargeted_at: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Feedback;
+
+    #[test]
+    fn feedback_carries_untargeted_at() {
+        let f = Feedback {
+            id: "f".into(),
+            thread_id: "t".into(),
+            comment_id: "c".into(),
+            target_session_id: None,
+            created_at: "2026-01-01T00:00:00.000Z".into(),
+            delivered_at: None,
+            delivery_tier: None,
+            acknowledged_at: None,
+            resend_count: 0,
+            last_sent_at: None,
+            untargeted_at: Some("2026-01-02T00:00:00.000Z".into()),
+        };
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["untargeted_at"], "2026-01-02T00:00:00.000Z");
+    }
 }

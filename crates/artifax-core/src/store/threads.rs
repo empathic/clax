@@ -171,11 +171,24 @@ pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
     )?)
 }
 
+/// Writes `bytes` to `path` via a temporary file in `dir`, creating `dir`.
+fn write_clip(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    std::fs::create_dir_all(dir)?;
+    let tmp = path.with_extension("png.tmp");
+    std::fs::write(&tmp, bytes)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
+    Ok(())
+}
+
 impl Store {
     /// Creates a thread on version `t.version_n` of the live artifact `id` with
-    /// its first (viewer) comment. The clip, when given, is written before the
-    /// rows and removed again if they cannot be inserted; callers check it
-    /// with [`clip_problem`] first.
+    /// its first (viewer) comment. Liveness, the version, the rows, and the
+    /// clip are checked and written in one transaction; when it fails, no rows
+    /// remain and no clip file is left behind. Callers check the clip with
+    /// [`clip_problem`] first.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor`,
@@ -183,11 +196,15 @@ impl Store {
     pub fn create_thread(&self, id: &ArtifactId, t: NewThread) -> Result<Thread> {
         t.anchor.validate()?;
         check_body(&t.body)?;
-        self.with_conn(|c| {
-            if !artifact_live(c, id.as_str())? {
+        let tid = new_ulid();
+        let now = Store::now();
+        let clip_path = self.home.clip_path(id, &tid);
+        let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
+        let inserted = self.with_tx(|tx| {
+            if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
-            let has: bool = c.query_row(
+            let has: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM versions WHERE artifact_id = ?1 AND n = ?2)",
                 params![id.as_str(), t.version_n],
                 |r| r.get(0),
@@ -198,22 +215,6 @@ impl Store {
                     format!("artifact {id} has no version {}", t.version_n),
                 ));
             }
-            Ok(())
-        })?;
-        let tid = new_ulid();
-        let now = Store::now();
-        let clip_path = self.home.clip_path(id, &tid);
-        if let Some(bytes) = &t.clip {
-            std::fs::create_dir_all(self.home.clips_dir(id))?;
-            let tmp = clip_path.with_extension("png.tmp");
-            std::fs::write(&tmp, bytes)?;
-            if let Err(e) = std::fs::rename(&tmp, &clip_path) {
-                let _ = std::fs::remove_file(&tmp);
-                return Err(e.into());
-            }
-        }
-        let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
-        let inserted = self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
@@ -224,6 +225,11 @@ impl Store {
                  VALUES (?1, ?2, 'viewer', ?3, NULL, ?4, ?5)",
                 params![new_ulid(), tid, t.author_name, t.body, now],
             )?;
+            // Written last, still inside the transaction: a failed write rolls
+            // the rows back, and a failed commit removes the file below.
+            if let Some(bytes) = &t.clip {
+                write_clip(&self.home.clips_dir(id), &clip_path, bytes)?;
+            }
             Ok(())
         });
         if let Err(e) = inserted {
@@ -270,6 +276,9 @@ impl Store {
     }
 
     /// The thread with its comments, or `None` when it or its artifact is gone.
+    ///
+    /// # Errors
+    /// `Corrupt` when its `anchor_json` does not parse.
     pub fn get_thread(&self, thread_id: &str) -> Result<Option<Thread>> {
         self.with_conn(|c| thread_in(c, thread_id))
     }
@@ -277,6 +286,8 @@ impl Store {
     /// Threads of the live artifact `id`, oldest first; resolved ones only with
     /// `include_resolved`. Pages of `limit` start after the thread `cursor`;
     /// the second value is the cursor for the next page, `None` on the last.
+    /// A row whose `anchor_json` does not parse counts against the page but is
+    /// logged and left out, so a page can hold fewer than `limit` threads.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact.
@@ -302,11 +313,29 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let more = rows.len() > limit;
             let mut threads = Vec::with_capacity(limit);
+            let mut last = None;
             for row in rows.into_iter().take(limit) {
-                let comments = load_comments(c, &row.id)?;
-                threads.push(row.into_thread(comments)?);
+                let thread_id = row.id.clone();
+                let comments = load_comments(c, &thread_id)?;
+                match row.into_thread(comments) {
+                    Ok(thread) => threads.push(thread),
+                    Err(CoreError::Corrupt {
+                        artifact_id,
+                        column,
+                        ..
+                    }) => {
+                        tracing::warn!(
+                            thread_id = thread_id.as_str(),
+                            artifact_id,
+                            column,
+                            "skipping corrupt thread row"
+                        );
+                    }
+                    Err(e) => return Err(e),
+                }
+                last = Some(thread_id);
             }
-            let next = if more { threads.last().map(|t| t.id.clone()) } else { None };
+            let next = if more { last } else { None };
             Ok((threads, next))
         })
     }
@@ -509,5 +538,128 @@ mod tests {
             st.create_thread(&aid, new_thread("y", None)),
             Err(CoreError::NotFound)
         ));
+    }
+
+    fn clip_files(st: &Store, aid: &ArtifactId) -> usize {
+        std::fs::read_dir(st.home().clips_dir(aid)).map_or(0, |d| d.count())
+    }
+
+    fn thread_rows(st: &Store) -> i64 {
+        st.with_conn(|c| Ok(c.query_row("SELECT count(*) FROM threads", [], |r| r.get(0))?))
+            .unwrap()
+    }
+
+    #[test]
+    fn corrupt_anchor_rows_are_skipped_in_lists_and_named_on_lookup() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let ids: Vec<String> = (0..4)
+            .map(|i| {
+                st.create_thread(&aid, new_thread(&format!("c{i}"), None))
+                    .unwrap()
+                    .id
+            })
+            .collect();
+        st.with_conn(|c| {
+            c.execute(
+                "UPDATE threads SET anchor_json = '{' WHERE id = ?1",
+                [&ids[1]],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let (all, next) = st.list_threads(&aid, true, None, 50).unwrap();
+        assert_eq!(
+            all.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            [&ids[0], &ids[2], &ids[3]].map(String::clone)
+        );
+        assert_eq!(next, None);
+        let (page1, next) = st.list_threads(&aid, true, None, 2).unwrap();
+        assert_eq!(
+            page1.len(),
+            1,
+            "the corrupt row counts against the page and is left out"
+        );
+        assert_eq!(page1[0].id, ids[0]);
+        assert_eq!(next.as_deref(), Some(ids[1].as_str()));
+        let (page2, next) = st.list_threads(&aid, true, next.as_deref(), 2).unwrap();
+        assert_eq!(
+            page2.iter().map(|t| t.id.clone()).collect::<Vec<_>>(),
+            [&ids[2], &ids[3]].map(String::clone)
+        );
+        assert_eq!(next, None);
+        assert!(matches!(
+            st.get_thread(&ids[1]),
+            Err(CoreError::Corrupt {
+                column: "anchor_json",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn thread_on_a_deleted_artifact_writes_no_clip() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        st.delete_artifact(&aid).unwrap();
+        let e = st
+            .create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+            .unwrap_err();
+        assert!(matches!(e, CoreError::NotFound), "{e:?}");
+        assert_eq!(clip_files(&st, &aid), 0);
+        assert_eq!(thread_rows(&st), 0);
+    }
+
+    #[test]
+    fn failed_insert_writes_no_clip() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        st.with_conn(|c| {
+            c.execute_batch(
+                "CREATE TRIGGER refuse BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+                .is_err()
+        );
+        assert_eq!(clip_files(&st, &aid), 0);
+        assert_eq!(thread_rows(&st), 0);
+    }
+
+    #[test]
+    fn failed_commit_removes_the_clip() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        // A deferred foreign-key violation passes every statement and fails the commit.
+        st.with_conn(|c| {
+            c.execute_batch(
+                "CREATE TABLE parent (id TEXT PRIMARY KEY);
+                 CREATE TABLE child (p TEXT REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
+                 CREATE TRIGGER orphan AFTER INSERT ON comments BEGIN INSERT INTO child VALUES ('none'); END;",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(
+            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())))
+                .is_err()
+        );
+        assert_eq!(clip_files(&st, &aid), 0);
+        assert_eq!(thread_rows(&st), 0);
+    }
+
+    #[test]
+    fn unwritable_clip_leaves_no_thread() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        std::fs::write(st.home().clips_dir(&aid), b"not a directory").unwrap();
+        assert!(matches!(
+            st.create_thread(&aid, new_thread("x", Some(PNG.to_vec()))),
+            Err(CoreError::Io(_))
+        ));
+        assert_eq!(thread_rows(&st), 0);
     }
 }
