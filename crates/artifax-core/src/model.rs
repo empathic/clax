@@ -59,3 +59,67 @@ pub struct Session {
 }
 
 pub const CONTRACT_VERSION: &str = "0.2.61";
+
+/// A comment thread anchored to one version of an artifact. `status` is `open`
+/// or `resolved`; `comments` are oldest first.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Thread {
+    pub id: String,
+    pub artifact_id: String,
+    pub version_n: u32,
+    pub anchor: crate::anchor::Anchor,
+    pub status: String,
+    pub sent_to_agent: bool,
+    pub has_clip: bool,
+    pub created_at: String,
+    pub resolved_at: Option<String>,
+    pub resolved_by: Option<String>,
+    pub comments: Vec<Comment>,
+}
+
+/// `author_kind` is `viewer` or `agent`; an agent comment names the harness in
+/// `author_name` and the replying session in `via_session_id`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Comment {
+    pub id: String,
+    pub thread_id: String,
+    pub author_kind: String,
+    pub author_name: String,
+    pub via_session_id: Option<String>,
+    pub body: String,
+    pub created_at: String,
+}
+
+/// A session's watch on an artifact; `replies_armed` gates the Stop-hook and
+/// native-push delivery tiers.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Watch {
+    pub session_id: String,
+    pub artifact_id: String,
+    pub replies_armed: bool,
+    pub created_at: String,
+}
+
+/// A browser viewer, keyed by the `artifax_viewer` cookie.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Viewer {
+    pub id: String,
+    pub display_name: Option<String>,
+    pub created_at: String,
+}
+
+/// One feedback row: a viewer comment addressed to one target session (or to
+/// none, until a session publishes or watches the artifact).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Feedback {
+    pub id: String,
+    pub thread_id: String,
+    pub comment_id: String,
+    pub target_session_id: Option<String>,
+    pub created_at: String,
+    pub delivered_at: Option<String>,
+    pub delivery_tier: Option<String>,
+    pub acknowledged_at: Option<String>,
+    pub resend_count: u32,
+    pub last_sent_at: Option<String>,
+}

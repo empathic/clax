@@ -346,8 +346,47 @@ mod tests {
         let version: u32 = store
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version, 2);
+        assert_eq!(version, super::super::migrations::MIGRATIONS.len() as u32);
         assert!(store.list_sessions(false).unwrap().is_empty());
+    }
+
+    #[test]
+    fn phase_2_database_upgrades_to_3() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = rusqlite::Connection::open(home.db_path()).unwrap();
+            c.execute_batch(super::super::migrations::MIGRATIONS[0])
+                .unwrap();
+            c.execute_batch(super::super::migrations::MIGRATIONS[1])
+                .unwrap();
+            c.pragma_update(None, "user_version", 2).unwrap();
+        }
+        let store = Store::open(&home).unwrap();
+        let version: u32 = store
+            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(version, 3);
+        for table in [
+            "watches",
+            "threads",
+            "comments",
+            "feedback",
+            "viewers",
+            "session_env",
+        ] {
+            let n: i64 = store
+                .with_conn(|c| {
+                    Ok(c.query_row(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                        [table],
+                        |r| r.get(0),
+                    )?)
+                })
+                .unwrap();
+            assert_eq!(n, 1, "{table}");
+        }
     }
 
     #[test]

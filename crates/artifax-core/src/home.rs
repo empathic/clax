@@ -61,6 +61,13 @@ impl Home {
     pub fn assets_dir(&self, id: &ArtifactId) -> PathBuf {
         self.artifact_dir(id).join("assets")
     }
+    pub fn clips_dir(&self, id: &ArtifactId) -> PathBuf {
+        self.artifact_dir(id).join("clips")
+    }
+    /// `artifacts/<aid>/clips/<thread_id>.png`.
+    pub fn clip_path(&self, id: &ArtifactId, thread_id: &str) -> PathBuf {
+        self.clips_dir(id).join(format!("{thread_id}.png"))
+    }
 
     pub fn ensure_dirs(&self) -> std::io::Result<()> {
         {

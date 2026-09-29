@@ -6,6 +6,9 @@ pub mod artifacts;
 pub mod assets;
 pub mod migrations;
 pub mod sessions;
+pub mod threads;
+pub mod viewers;
+pub mod watches;
 
 use crate::{Home, Result};
 use rusqlite::Connection;
@@ -71,5 +74,58 @@ impl Store {
         let out = f(&tx)?;
         tx.commit()?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod test_util {
+    use crate::anchor::{Anchor, AnchorKind};
+    use crate::publish::{PublishRequest, validate};
+    use crate::{ArtifactId, Home, RegisterSession, Store};
+
+    pub fn store() -> (tempfile::TempDir, Store) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        (dir, store)
+    }
+
+    /// A one-version artifact titled "Quarterly Review", owned by `session`.
+    pub fn artifact(store: &Store, session: Option<&str>) -> ArtifactId {
+        let req: PublishRequest = serde_json::from_value(serde_json::json!({
+            "title": "Quarterly Review",
+            "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let (a, _) = store
+            .create_artifact(validate(req).unwrap(), session)
+            .unwrap();
+        ArtifactId::parse(&a.id).unwrap()
+    }
+
+    /// A live session of `harness` with harness session ID `hsid`; returns its ID.
+    pub fn session(store: &Store, harness: &str, hsid: &str) -> String {
+        store
+            .register_session(RegisterSession {
+                harness: harness.into(),
+                harness_session_id: Some(hsid.into()),
+                cwd: "/w".into(),
+                pid: None,
+                parent_pid: None,
+            })
+            .unwrap()
+            .id
+    }
+
+    pub fn anchor() -> Anchor {
+        Anchor {
+            kind: AnchorKind::Element,
+            selector: Some("body > main > h2".into()),
+            quote: Some("Quarterly goals".into()),
+            prefix: Some(String::new()),
+            suffix: Some(String::new()),
+            html_hash: Some("sha256:00".into()),
+            rect: None,
+            custom_name: None,
+        }
     }
 }

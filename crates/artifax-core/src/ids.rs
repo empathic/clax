@@ -63,8 +63,25 @@ impl From<ArtifactId> for String {
     }
 }
 
+/// A new ULID. IDs from this process ascend: within one millisecond the random
+/// part is incremented, so ordering rows by `(created_at, id)` is total. When
+/// the random part would overflow (2^80 IDs in one millisecond), a fresh
+/// random ULID is returned instead.
 pub fn new_ulid() -> String {
-    ulid::Ulid::new().to_string()
+    static GENERATOR: std::sync::OnceLock<std::sync::Mutex<ulid::Generator>> =
+        std::sync::OnceLock::new();
+    let mut g = GENERATOR
+        .get_or_init(|| std::sync::Mutex::new(ulid::Generator::new()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    g.generate()
+        .unwrap_or_else(|_| ulid::Ulid::new())
+        .to_string()
+}
+
+/// True when `s` is a canonical ULID string.
+pub fn is_ulid(s: &str) -> bool {
+    s.len() == 26 && ulid::Ulid::from_string(s).is_ok()
 }
 
 #[cfg(test)]
@@ -98,5 +115,14 @@ mod tests {
         let b = new_ulid();
         assert_eq!(a.len(), 26);
         assert_ne!(a, b);
+    }
+
+    #[test]
+    fn ulids_ascend_within_one_millisecond() {
+        let ids: Vec<String> = (0..1000).map(|_| new_ulid()).collect();
+        for pair in ids.windows(2) {
+            assert!(pair[0] < pair[1], "{} !< {}", pair[0], pair[1]);
+            assert!(is_ulid(&pair[1]));
+        }
     }
 }

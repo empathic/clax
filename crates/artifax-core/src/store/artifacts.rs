@@ -911,14 +911,15 @@ mod tests {
         let version: u32 = store
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version, 2);
+        let expected = crate::store::migrations::MIGRATIONS.len() as u32;
+        assert_eq!(version, expected);
 
         // Opening a second time should not re-run migrations or error
         let store2 = Store::open(&home).unwrap();
         let version2: u32 = store2
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version2, 2);
+        assert_eq!(version2, expected);
     }
 
     use crate::publish::{Encoding, FileInput, PublishRequest, validate};
