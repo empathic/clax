@@ -118,6 +118,22 @@ describe("comments (page side)", () => {
     ctl.release();
   });
 
+  it("calls the page's mode callback only when comment mode starts or ends, not when areas turn on or off", async () => {
+    const f = fakeRpc(() => ({ opened: true }));
+    const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, unknown>> };
+    const mode = vi.fn();
+    const ctl = await on.customAnchors({ mode, threads() {}, reveal() {} });
+    f.emit("mode", { on: true, canArea: true });
+    f.emit("mode", { on: true, canArea: false });
+    expect(ctl.areas).toBe(false);
+    f.emit("mode", { on: true, canArea: true });
+    expect(ctl.areas).toBe(true);
+    expect(mode.mock.calls).toEqual([[true]]);
+    f.emit("mode", { on: false });
+    expect(mode.mock.calls).toEqual([[true], [false]]);
+    (ctl.release as () => void)();
+  });
+
   it("composer_only keeps only DOM anchor paths", async () => {
     const f = fakeRpc(() => ({ opened: true }));
     const on = commentsLocals(f.rpc as never, { composer_only: true, customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };

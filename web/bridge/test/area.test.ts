@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveAnchor } from "../src/anchor";
-import { AREA_MIN, Widen, areaBox, areaFractions, boxOf, buildAreaAnchor, containingElement, dragRect, foreignRoot, isClickSized, nonTextAt, widenedTarget } from "../src/area";
+import { fingerprint, resolveAnchor } from "../src/anchor";
+import { AREA_MIN, Widen, placeArea, areaBox, areaFractions, boxOf, buildAreaAnchor, containingElement, dragRect, foreignRoot, isClickSized, nonTextAt, widenedTarget } from "../src/area";
 import { areaCrop, areaRenderRoot } from "../src/clip";
 
 type Box = { left: number; top: number; width: number; height: number };
@@ -102,6 +102,33 @@ describe("the containing element", () => {
     expect(areaRenderRoot(document.documentElement)).toBe(document.body);
   });
 
+  it("counts HTML inside an SVG <foreignObject> as part of the <svg>", () => {
+    document.body.innerHTML = `<div id="card"><svg id="chart" width="400" height="300"><g id="g"><foreignObject id="fo" width="400" height="300"><div id="note">note</div></foreignObject></g></svg></div>`;
+    const [card, chart, g, fo, note] = ["#card", "#chart", "#g", "#fo", "#note"].map(q => document.querySelector(q)!);
+    place(card, { left: 0, top: 0, width: 800, height: 400 });
+    for (const el of [chart, g, fo]) place(el, { left: 0, top: 0, width: 400, height: 300 });
+    place(note, { left: 0, top: 0, width: 50, height: 20 });
+    d.elementsFromPoint = () => [note, fo, g, chart, card, document.body];
+    expect(containingElement(document, { left: 20, top: 30, width: 200, height: 100 })).toBe(chart);
+  });
+
+  it("place an area on the document by its page coordinates, so a resize does not move it", () => {
+    document.body.innerHTML = `<p>short</p>`;
+    d.elementsFromPoint = () => [document.documentElement];
+    const se = document.scrollingElement ?? document.documentElement;
+    const set = (h: number) => { for (const [k, v] of Object.entries({ scrollWidth: 800, scrollHeight: h, clientWidth: 800, clientHeight: h })) Object.defineProperty(se, k, { value: v, configurable: true }); };
+    set(600);
+    try {
+      const a = buildAreaAnchor(document, { left: 100, top: 300, width: 200, height: 150 });
+      expect(placeArea(a, document.documentElement)).toEqual({ x: 100 - window.scrollX + a.rect!.scrollX, y: 300 - window.scrollY + a.rect!.scrollY, w: 200, h: 150 });
+      // The window grows from 600 to 1000 px tall: still where it was drawn.
+      set(1000);
+      expect(placeArea(a, document.documentElement)).toMatchObject({ y: 300 - window.scrollY + a.rect!.scrollY, h: 150 });
+    } finally {
+      for (const k of ["scrollWidth", "scrollHeight", "clientWidth", "clientHeight"]) delete (se as unknown as Record<string, unknown>)[k];
+    }
+  });
+
   it("is the document when no element holds the rectangle (below a short page), placed on the whole scrollable page", () => {
     document.body.innerHTML = `<p id="p">short</p>`;
     place(document.body, { left: 8, top: 8, width: 784, height: 100 });
@@ -153,6 +180,41 @@ describe("area anchors", () => {
     moved.remove();
     expect(resolveAnchor(document, a)).toBeNull();
   });
+  it("detach when a new section of the same size inserted before takes the anchored one's selector", () => {
+    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p></section><section id="goals"><h2>Quarterly goals</h2><p>Grow</p></section></main>`;
+    const goals = document.querySelector("#goals")!;
+    goals.removeAttribute("id");
+    place(goals, { left: 0, top: 300, width: 600, height: 200 });
+    d.elementsFromPoint = () => [goals, document.body];
+    const a = buildAreaAnchor(document, { left: 100, top: 350, width: 200, height: 50 });
+    expect(a.selector).toBe("body > main > section:nth-of-type(2)");
+    expect(a.area).toMatchObject({ tag: "section", text: "Quarterly goals Grow", children: 2 });
+    // v2: a new section before it; nth-of-type(2) is now the new one, same width.
+    document.querySelector("main")!.insertAdjacentHTML("afterbegin", "<section><h2>News</h2><p>Launch</p></section>");
+    for (const sec of Array.from(document.querySelectorAll("section"))) place(sec, { left: 0, top: 0, width: 600, height: 200 });
+    expect(resolveAnchor(document, a)).toBeNull();
+    // A change inside the anchored section that keeps its opening text re-anchors it.
+    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p></section><section><h2>Quarterly goals</h2><p>Grow</p><p>and more</p></section></main>`;
+    for (const sec of Array.from(document.querySelectorAll("section"))) place(sec, { left: 0, top: 0, width: 600, height: 200 });
+    expect(resolveAnchor(document, a)?.element).toBe(document.querySelectorAll("section")[1]);
+  });
+
+  it("fingerprint an element by tag, text prefix, and child count, falling back to the count without text", () => {
+    document.body.innerHTML = `<div id="a">  lots   of\n text ${"x".repeat(100)}</div><div id="b"><img><img></div>`;
+    const fa = fingerprint(document.querySelector("#a")!);
+    expect(fa.tag).toBe("div");
+    expect(fa.text).toBe(`lots of text ${"x".repeat(19)}`);
+    expect(fingerprint(document.querySelector("#b")!)).toEqual({ tag: "div", text: "", children: 2 });
+    const b = document.querySelector("#b")!;
+    place(b, { left: 0, top: 0, width: 300, height: 100 });
+    d.elementsFromPoint = () => [b, document.body];
+    const a = buildAreaAnchor(document, { left: 10, top: 10, width: 100, height: 50 });
+    b.setAttribute("data-v", "2");
+    expect(resolveAnchor(document, a)?.element).toBe(b);
+    b.appendChild(document.createElement("img"));
+    expect(resolveAnchor(document, a)).toBeNull();
+  });
+
   it("detach when only the selector matched an element whose width changed by more than a quarter", () => {
     document.body.innerHTML = `<main><section id="s"><p>a</p></section></main>`;
     const s = document.querySelector("#s")!;
@@ -160,7 +222,7 @@ describe("area anchors", () => {
     d.elementsFromPoint = () => [s, document.body];
     const a = buildAreaAnchor(document, { left: 100, top: 150, width: 200, height: 50 });
     // Same content but another hash: the selector alone matched.
-    s.insertAdjacentHTML("beforeend", "<p>b</p>");
+    s.setAttribute("data-edited", "1");
     place(s, { left: 0, top: 100, width: 460, height: 200 });
     expect(resolveAnchor(document, a)?.method).toBe("selector");
     place(s, { left: 0, top: 100, width: 900, height: 200 });

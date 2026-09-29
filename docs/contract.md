@@ -634,20 +634,25 @@ drag ends comment mode), and releasing picks an **area**: an anchor of kind
 whole rectangle (an inline `<svg>` counts as one element, never one of its
 shapes; `html`, the whole scrollable page, when no element in the body holds
 it, as below a short page), whose `area` places the rectangle in that box as
-fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 6 decimal places), and whose
-`rect` holds the rectangle in viewport pixels with the page's scroll at draw
-time. The area's clip is always taken, at release, of exactly the rectangle
+fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 6 decimal places, with the
+element's `tag`, the first 32 characters of its text, and its child element
+`children` count as a fingerprint), and whose `rect` holds the rectangle in
+viewport pixels with the page's scroll at draw time. The area's clip is always taken, at release, of exactly the rectangle
 as the page rendered it (its nearest HTML element rendered and cropped to
 it); the rectangle stays drawn, dashed, until the clip is taken, and no other
-pick starts meanwhile. A clip over 5 MiB is rendered again at half the scale,
+pick of any kind starts while one pick's clip is taken. A clip over 5 MiB is rendered again at half the scale,
 up to three times; one that still does not fit, or a pick's clip over the cap,
 is dropped with the reason shown in the composer, and a thread the daemon
 kept without its clip says so in the notice banner. On a later version the
 area follows its element (found by selector) and is projected onto the
 element's box then; without the element the thread is detached, and so it is
 when only the selector (not the element's content hash) matched and the
-element's width differs by more than 25% from its width at draw time (while
-the viewport's width is within 5% of what it was). Area threads get their
+element is another one: a different tag, text that no longer starts with the
+recorded text (or, for an element without text, another child count), or a
+width more than 25% off its width at draw time (while the viewport's width is
+within 5% of what it was). An area on `html` is placed by its drawn rectangle
+at the same page coordinates, so a resize or a longer page does not move it.
+Area threads get their
 numbered pin at the area's top right, and the page outlines the area dashed
 while its thread is hovered in the sidebar or its pin is hovered, or the
 thread is selected. Holding Option (Alt) targets the enclosing element of the
@@ -658,7 +663,14 @@ widened picks that element (a drag selection is widened at least to its
 block); Option never starts an area drag. Option, Up, Down, and Escape work
 with focus in the page or in the shell while the pointer is over the page.
 Only the viewer's own input counts: the bridge ignores events the page
-dispatched, and the shell takes a pick only while comment mode is on.
+dispatched, and the shell takes a pick only while comment mode is on and only
+after its start (`artifax:pick-start`, sent by the bridge at the viewer's
+click or release) arrived while the frame held the viewer's gesture (the
+check `compose` uses); each start counts once, and two starts pending at
+once are both refused, so a pick a page forges by posting messages opens
+nothing. A composer waiting for a page area's screenshot keeps Post disabled
+and, after 10 seconds without it, says "No screenshot: it was not taken in
+time".
 
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
@@ -760,7 +772,8 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   never stored (`detail` is dropped); the anchor is the name alone, or the
   `domAnchor` path. `areas` reads true while comment mode is on, no post or
   send to the agent is in flight, and the registration is live (false after
-  `release`); the shell sends it with the mode (`mode` event `canArea`).
+  `release`); the shell sends it with the mode (`mode` event `canArea`), and
+  the page's `mode` callback fires only when comment mode starts or ends.
   `compose` with `{area: true}` while it reads true passes the same gesture
   check before anything is rendered, then opens the composer even over an
   open composer or thread card (a composer with typed text moves to the new

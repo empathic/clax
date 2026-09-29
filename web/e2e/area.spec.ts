@@ -289,3 +289,78 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expectVisibleClip(page, pick.pickId);
   });
 }
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: a pick the page forges by posting messages opens no composer`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Forged ${mode}`, { "index.html": PAGE });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    // A magenta 1 × 1 PNG as "the screenshot", with and without a forged start.
+    await frame.evaluate(async () => {
+      const c = new OffscreenCanvas(1, 1);
+      const ctx = c.getContext("2d")!;
+      ctx.fillStyle = "#ff00ff";
+      ctx.fillRect(0, 0, 1, 1);
+      const png = await (await c.convertToBlob({ type: "image/png" })).arrayBuffer();
+      const anchor = { kind: "element", selector: "#para", quote: "forged", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+      const version = (window as unknown as { __artifax: { version: number } }).__artifax.version;
+      parent.postMessage({ type: "artifax:pick", pickId: "forged1", version, anchor, clipPng: png.slice(0) }, "*");
+      parent.postMessage({ type: "artifax:pick-start", pickId: "forged2" }, "*");
+      parent.postMessage({ type: "artifax:pick", pickId: "forged2", version, anchor, clipPng: png.slice(0) }, "*");
+    });
+    await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);
+    await page.waitForTimeout(300);
+    await expect(page.locator(".composer")).toHaveCount(0);
+    // The viewer's own pick still opens the composer.
+    const para = await rectOf(frame, "#para");
+    const fb = await frameBox(page);
+    await page.mouse.click(fb.x + para.x + 20, fb.y + para.y + 8);
+    await expect(page.locator(".composer")).toHaveCount(1);
+    await expect(page.locator(".composer .composer-quote")).not.toHaveText(/forged/);
+  });
+
+  test(`${mode}: an area on the document stays where it was drawn when the window is resized`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Resize ${mode}`, { "index.html": SHORT_PAGE });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    const box = await rectOf(frame, "#box");
+    const r: R = { x: 40, y: box.y + 60, w: 200, h: 340 };
+    await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
+    expect((await last(page, "artifax:pick")).anchor.selector).toBe("html");
+    await post(page, "Resize me");
+    const pinInFrame = async () => {
+      const fb = await frameBox(page);
+      const p = await page.locator("button.thread-pin").boundingBox();
+      return p ? { x: Math.round(p.x - fb.x), y: Math.round(p.y - fb.y) } : null;
+    };
+    await expect.poll(pinInFrame).toEqual({ x: Math.round(r.x + r.w - 12), y: Math.round(r.y - 12) });
+    const size = page.viewportSize()!;
+    await page.setViewportSize({ width: size.width, height: size.height + 400 });
+    await expect.poll(async () => (await frameBox(page)).height).toBeGreaterThan(size.height);
+    await expect.poll(pinInFrame).toEqual({ x: Math.round(r.x + r.w - 12), y: Math.round(r.y - 12) });
+  });
+
+  test(`${mode}: Escape drops a drag in the page, picking nothing and keeping comment mode, then ends it`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Escape ${mode}`, { "index.html": PAGE });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    const panel = await rectOf(frame, "#panel");
+    const fb = await frameBox(page);
+    // Focus on the shell's Comment button, as after clicking it (the press moves it into the page).
+    await page.getByRole("button", { name: "Comment", exact: true }).focus();
+    const picks = await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:pick").length);
+    await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
+    await page.mouse.down();
+    await page.mouse.move(fb.x + panel.x + 200, fb.y + panel.y + 180, { steps: 5 });
+    await page.keyboard.press("Escape");
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    expect(await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:pick").length)).toBe(picks);
+    await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "false");
+  });
+}

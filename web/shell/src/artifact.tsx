@@ -3,8 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
-import { Composer, type Draft, MAX_CLIP_BYTES, Pins, nextDraft, withClip } from "./comments";
+import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
+import { frameGesture } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
@@ -19,6 +20,13 @@ import { ViewerName } from "./viewer-name";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 type Props = { id: string; pinnedVersion: number | null; file?: string };
+
+/** How long a pick's start stays valid for its pick (longer than the
+ * longest clip render, an area's 12 s). */
+const PICK_WAIT_MS = 20_000;
+
+/** The notice kind for a thread the daemon kept without its screenshot. */
+const CLIP_DROPPED = "Posted without its screenshot";
 
 /** A fragment the frame may report or a link may carry: "" or `#…`, at most 512 characters. */
 const validHash = (h: unknown): h is string => typeof h === "string" && (h === "" || h.startsWith("#")) && h.length <= 512;
@@ -98,6 +106,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const sendRef = useRef(send);
   sendRef.current = send;
   const focusRef = useRef<string | null>(null);
+  // Picks whose start arrived with the viewer's gesture in the frame, by pick
+  // ID, with when it arrived.
+  const startedPicks = useRef(new Map<string, number>());
   focusRef.current = hovered ?? selected;
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
@@ -372,6 +383,14 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => { send({ type: "artifax:comment-mode", on: commenting }); }, [commenting]);
   useEffect(() => { sendFocus(); }, [hovered, selected, threads]);
+  // A screenshot still being taken that never arrives: the composer says so
+  // (Post stays disabled until then).
+  useEffect(() => {
+    const token = draft?.capturing ? draft.clipToken : undefined;
+    if (!token) return;
+    const timer = setTimeout(() => setDraft(dr => withClip(dr, token, null, CAPTURE_LATE)), captureWait.ms);
+    return () => clearTimeout(timer);
+  }, [draft?.clipToken, draft?.capturing]);
   useEffect(() => { hostRef.current?.uiChanged(); }, [commenting, draft, selected, threads, file, host, busy]);
   useEffect(() => {
     if (typeof matchMedia !== "function") return;
@@ -393,6 +412,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // this version does not hold, gets no welcome, no anchors, and no pins.
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         helloOk.current = helloMatches(m, id, shown) && holds(greeted);
+        startedPicks.current.clear();
         setResolved({});
         forgetAnchorIds();
         if (!helloOk.current) { setCurrentFile(null); break; }
@@ -416,10 +436,24 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         }
         break;
       }
+      case "artifax:pick-start":
+        // The viewer's pick itself: taken only in comment mode and while the
+        // frame holds the viewer's gesture, so a page cannot forge a pick
+        // (and the screenshot shown with it) by posting messages.
+        // The bridge never has two picks in flight, so a start arriving while
+        // another is pending means the page forged one: both are refused.
+        if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64 && frameGesture()) {
+          const now = Date.now();
+          for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);
+          if (startedPicks.current.size) startedPicks.current.clear();
+          else startedPicks.current.set(m.pickId, now);
+        }
+        break;
       case "artifax:pick": {
-        // A pick counts only while the viewer is in comment mode; a clip the
-        // daemon would not keep is dropped here, with the reason shown.
-        if (!commentingRef.current) break;
+        // A pick counts only after its gesture-checked start (each start
+        // once), while the viewer is in comment mode; a clip the daemon would
+        // not keep is dropped here, with the reason shown.
+        if (!commentingRef.current || typeof m.pickId !== "string" || !startedPicks.current.delete(m.pickId)) break;
         setCommenting(false);
         const png = m.clipPng instanceof ArrayBuffer && m.clipPng.byteLength > 0 ? m.clipPng : null;
         const tooBig = !!png && png.byteLength > MAX_CLIP_BYTES;
@@ -596,7 +630,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread, clip_error: clipError } = await whileBusy(createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip }));
-              noticeFor(POST_FAILED)(clipError ? `Posted without its screenshot: ${clipError}` : null);
+              noticeFor(POST_FAILED)(null);
+              noticeFor(CLIP_DROPPED)(clipError ? `${CLIP_DROPPED}: ${clipError}` : null);
               changeThreads(ts => upsert(ts, thread));
               setSelected(thread.id);
               setDraft(null);

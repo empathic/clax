@@ -8,6 +8,12 @@ import { type Thread, areaLabel } from "./threads";
  * `clipToken` (`attachClip`). */
 export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string };
 
+/** How long a composer waits for a screenshot still being taken before it
+ * says none was taken (the bridge's clip limit plus a margin; settable for tests). */
+export const captureWait = { ms: 10_000 };
+/** What a composer says when its screenshot never arrived. */
+export const CAPTURE_LATE = "it was not taken in time";
+
 /** Largest clip the daemon keeps, in bytes (its `MAX_CLIP_BYTES`). */
 export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
 
@@ -101,7 +107,7 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
       <div class="actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" class="primary" disabled={busy || !body.trim()}>Post comment</button>
+        <button type="submit" class="primary" disabled={busy || !body.trim() || !!draft.capturing}>Post comment</button>
       </div>
     </form>
   );

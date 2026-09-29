@@ -98,6 +98,8 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     // with the mode (comment mode on, no post or send in flight); `areas`
     // and `compose`'s `area` follow it.
     let canArea = false;
+    // Comment mode as last passed to the page's `mode` callback.
+    let modeOn: boolean | null = null;
     let placedOnce = false;
     let lastPlaced: Record<string, DocPoint> = {};
     let frame = 0;
@@ -105,9 +107,13 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     // Callbacks are cheap and infallible by contract; a throw is discarded.
     const safe = (f: () => void) => { try { f(); } catch { /* discarded */ } };
     const offs = [
+      // `mode` fires only when comment mode starts or ends; a change of
+      // `canArea` alone (a post or send starting or ending) is taken silently.
       rpc.on("comments", "mode", d => {
         const on = (d as { on?: unknown })?.on === true;
         canArea = on && (d as { canArea?: unknown })?.canArea !== false;
+        if (on === modeOn) return;
+        modeOn = on;
         safe(() => (cb.mode as (on: boolean) => void)(on));
       }),
       rpc.on("comments", "threads", d => safe(() => (cb.threads as (l: unknown) => void)((d as { list?: unknown })?.list ?? []))),
@@ -169,8 +175,9 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         if (o.area !== true || !canArea) return rpc.call("comments", "compose", [base]);
         // An area on a domAnchor path: the shell checks the viewer's gesture
         // and opens the composer at once; the element's clip is rendered only
-        // then and sent after it under the one-shot nonce the shell answered
-        // (never handed to the page).
+        // then and sent after it under the one-shot nonce the shell answered.
+        // The page's `compose` result never carries the nonce (though the
+        // page, sharing this window, could read the shell's reply).
         let el: Element | null = null;
         if (dom) { try { el = document.querySelector(anchor as string); } catch { el = null; } }
         return rpc.call("comments", "compose", [{ ...base, area: true, clipPending: !!el }]).then(r => {

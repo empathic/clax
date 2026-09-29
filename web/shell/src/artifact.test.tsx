@@ -618,13 +618,14 @@ describe("ArtifactView", () => {
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     // A pick counts only in comment mode.
-    fromFrame(win, pick("p0", "Not in comment mode"));
+    viewerPick(frame, pick("p0", "Not in comment mode"));
     await new Promise(r => setTimeout(r, 30));
     expect(root.querySelector(".composer")).toBeNull();
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
-    fromFrame(win, pick("p1", "Quarterly goals"));
+    viewerPick(frame, pick("p1", "Quarterly goals"));
     let textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
     textarea.value = "first draft";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -636,10 +637,89 @@ describe("ArtifactView", () => {
     expect(root.querySelector(".composer")!.textContent).not.toContain("disk full");
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
-    fromFrame(win, pick("p2", "Grow revenue"));
+    viewerPick(frame, pick("p2", "Grow revenue"));
     await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Grow revenue"), "second pick");
     textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     expect(textarea.value).toBe("");
+  });
+
+  it("opens no composer for a pick the page forged: without a start, with a start outside the viewer's gesture, or beside another pending start", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
+    const settle = () => new Promise(r => setTimeout(r, 30));
+    gestureIn(frame);
+    fromFrame(win, pick("f1", "No start"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    gestureIn(frame, false);
+    fromFrame(win, { type: "artifax:pick-start", pickId: "f2" });
+    fromFrame(win, pick("f2", "No gesture"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    // The page's forged start beside the bridge's real one: neither counts.
+    gestureIn(frame);
+    fromFrame(win, { type: "artifax:pick-start", pickId: "real" });
+    fromFrame(win, { type: "artifax:pick-start", pickId: "forged" });
+    fromFrame(win, pick("forged", "Forged"));
+    fromFrame(win, pick("real", "Real"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    // A start is used once: a second pick under it is dropped.
+    viewerPick(frame, pick("ok", "Quarterly goals"));
+    await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Quarterly goals"), "the viewer's pick");
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode again");
+    fromFrame(win, pick("ok", "Replayed"));
+    await settle();
+    expect(root.querySelector(".composer-quote")!.textContent).toContain("Quarterly goals");
+  });
+
+  it("tells a custom-anchors page areas are off while a send is in flight, and a page area's composer waits for its screenshot with Post disabled, then says it never came", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const thread = { id: "tS", artifact_id: ID, version_n: 1, anchor: pick("x", "Goals").anchor, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: "c1", thread_id: "tS", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
+    let answerSend!: (r: Response) => void;
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
+      async (url, init) => url.startsWith("/api/viewers/")
+        ? new Response(JSON.stringify(viewer))
+        : url.endsWith("/send") && init?.method === "POST"
+          ? new Promise<Response>(r => { answerSend = r; })
+          : new Response(JSON.stringify({ threads: [thread], next_cursor: null })));
+    (await import("./comments")).captureWait.ms = 50;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean }; ok?: boolean; value?: { opened?: boolean } }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "artifax:call", id: "r1", ns: "comments", method: "register", args: [] });
+    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "r1"), "registered");
+    buttonNamed(root, "Comment").click();
+    const lastMode = () => posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)?.data;
+    await waitFor(() => lastMode()?.on === true && lastMode()?.canArea === true, "areas on in comment mode");
+    const card = await waitFor(() => root.querySelector('[data-thread="tS"]'), "the thread");
+    buttonNamed(card, "Send to agent").click();
+    await waitFor(() => lastMode()?.canArea === false, "areas off while the send is in flight");
+    answerSend(new Response(JSON.stringify({ thread: { ...thread, sent_to_agent: true } })));
+    await waitFor(() => lastMode()?.canArea === true, "areas on again");
+    // A page area: the composer opens at once, waiting for its screenshot.
+    gestureIn(frame);
+    fromFrame(win, { type: "artifax:call", id: "c1", ns: "comments", method: "compose", args: [{ anchor: "body > h2", dom: true, area: true, clipPending: true, version: 1 }] });
+    await waitFor(() => posted.find(m => m.type === "artifax:call-result" && m.id === "c1"), "compose answered");
+    expect(posted.find(m => m.id === "c1")!.value).toMatchObject({ opened: true });
+    await waitFor(() => root.querySelector(".composer")?.textContent?.includes("Taking the screenshot…"), "capturing");
+    const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    textarea.value = "look here";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 10));
+    expect(buttonNamed(root, "Post comment").disabled).toBe(true);
+    await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: it was not taken in time"), "the late note");
+    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
   });
 
   it("drops a pick's clip past the daemon's cap with the reason, and says when a thread was posted without its screenshot", async () => {
@@ -650,10 +730,10 @@ describe("ArtifactView", () => {
           ? new Response(JSON.stringify({ thread: { id: "01JX", artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, clip_error: "clip is not a PNG" }), { status: 201 })
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    const win = frame.contentWindow!;
+    fromFrame(frame.contentWindow!, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
-    fromFrame(win, { ...pick("big", "Photo"), clipPng: new ArrayBuffer(5 * 1024 * 1024 + 1) });
+    viewerPick(frame, { ...pick("big", "Photo"), clipPng: new ArrayBuffer(5 * 1024 * 1024 + 1) });
     await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: the screenshot was too large to keep"), "the reason");
     const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     textarea.value = "look";
@@ -761,6 +841,25 @@ function buttonNamed(root: Element, name: string | RegExp): HTMLButtonElement {
 /** A message from the content frame as a sandboxed (opaque-origin) bridge sends it. */
 function fromFrame(win: Window, data: unknown) {
   window.dispatchEvent(new MessageEvent("message", { data, origin: "null", source: win }));
+}
+
+/** The viewer's gesture in the content frame: transient activation, with
+ * focus moved into the frame after the shell's own control. */
+function gestureIn(frame: HTMLIFrameElement, active = true) {
+  Object.defineProperty(navigator, "userActivation", { value: { isActive: active }, configurable: true });
+  const control = document.createElement("button");
+  document.body.appendChild(control);
+  control.focus();
+  frame.focus();
+  control.remove();
+}
+
+/** A pick as the bridge sends one for the viewer's click: its start while the
+ * frame holds the gesture, then the pick. */
+function viewerPick(frame: HTMLIFrameElement, m: { pickId: string; [k: string]: unknown }) {
+  gestureIn(frame);
+  fromFrame(frame.contentWindow!, { type: "artifax:pick-start", pickId: m.pickId });
+  fromFrame(frame.contentWindow!, m);
 }
 
 function pick(pickId: string, quote: string) {

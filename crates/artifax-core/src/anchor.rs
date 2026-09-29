@@ -34,27 +34,52 @@ pub enum AnchorKind {
 
 /// A drawn rectangle as fractions (0 to 1) of its element's border box: `x`
 /// and `y` from its top left corner, `w` and `h` of its width and height.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// `tag`, `text`, and `children` fingerprint that element at draw time (its
+/// local name, the first characters of its text with whitespace collapsed,
+/// its child element count), so re-anchoring by selector alone can tell
+/// another element at the same path; each is optional and serialized only
+/// when present.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnchorArea {
     pub x: f64,
     pub y: f64,
     pub w: f64,
     pub h: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub children: Option<u32>,
 }
+
+/// Longest area fingerprint `tag` or `text`, in characters.
+pub const MAX_FINGERPRINT: usize = 64;
 
 impl AnchorArea {
     /// Every fraction is finite, the rectangle has some width and height,
     /// and it lies within the element's box.
     fn in_range(&self) -> bool {
         let unit = |v: f64| v.is_finite() && (0.0..=1.0).contains(&v);
-        // Fractions are rounded to 4 places, so their sums may pass 1 by a rounding step.
+        // Fractions are rounded, so their sums may pass 1 by a rounding step.
         let fits = |a: f64, b: f64| a + b <= 1.0 + 1e-4;
         [self.x, self.y, self.w, self.h].into_iter().all(unit)
             && self.w > 0.0
             && self.h > 0.0
             && fits(self.x, self.w)
             && fits(self.y, self.h)
+    }
+
+    /// The fingerprint's `tag` and `text` are at most [`MAX_FINGERPRINT`]
+    /// characters with no control characters or line separators.
+    fn fingerprint_ok(&self) -> bool {
+        [&self.tag, &self.text].into_iter().flatten().all(|s| {
+            s.chars().count() <= MAX_FINGERPRINT
+                && !s
+                    .chars()
+                    .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        })
     }
 }
 
@@ -176,6 +201,11 @@ impl Anchor {
                 return Err(bad(
                     "area fractions must lie in 0 to 1, with some width and height, within the element",
                 ));
+            }
+            (AnchorKind::Area, Some(a)) if !a.fingerprint_ok() => {
+                return Err(bad(format!(
+                    "area tag and text are at most {MAX_FINGERPRINT} characters without control characters"
+                )));
             }
             (AnchorKind::Area, Some(_)) | (_, None) => {}
             (_, Some(_)) => return Err(bad("only area anchors carry an area")),
@@ -436,7 +466,15 @@ mod tests {
             f(&mut a);
             a.validate()
         };
-        let area = |x: f64, y: f64, w: f64, h: f64| Some(AnchorArea { x, y, w, h });
+        let area = |x: f64, y: f64, w: f64, h: f64| {
+            Some(AnchorArea {
+                x,
+                y,
+                w,
+                h,
+                ..Default::default()
+            })
+        };
         assert!(with(&|a| a.area = area(0.0, 0.0, 1.0, 1.0)).is_ok());
         for (name, bad) in [
             ("no area", None),
@@ -481,6 +519,34 @@ mod tests {
     }
 
     #[test]
+    fn area_fingerprints_round_trip_and_are_bounded() {
+        let v = json!({"kind": "area", "selector": "main > section", "area": {"x": 0.1, "y": 0.2, "w": 0.3, "h": 0.4, "tag": "section", "text": "Quarterly goals", "children": 3}});
+        let a: Anchor = serde_json::from_value(v.clone()).unwrap();
+        a.validate().unwrap();
+        assert_eq!(serde_json::to_value(&a).unwrap()["area"], v["area"]);
+        for (name, patch) in [
+            ("long tag", json!({"tag": "x".repeat(MAX_FINGERPRINT + 1)})),
+            (
+                "long text",
+                json!({"text": "t".repeat(MAX_FINGERPRINT + 1)}),
+            ),
+            ("control text", json!({"text": "a\nb"})),
+            ("separator tag", json!({"tag": "a\u{2028}b"})),
+        ] {
+            let mut bad = v.clone();
+            for (k, val) in patch.as_object().unwrap() {
+                bad["area"][k] = val.clone();
+            }
+            let a: Anchor = serde_json::from_value(bad).unwrap();
+            assert!(a.validate().is_err(), "{name}");
+        }
+        assert!(
+            serde_json::from_value::<Anchor>(json!({"kind": "area", "selector": "h2", "area": {"x": 0, "y": 0, "w": 1, "h": 1, "children": -1}})).is_err(),
+            "children is a count"
+        );
+    }
+
+    #[test]
     fn area_anchors_round_trip_and_other_anchors_carry_no_area_field() {
         let a = area_anchor();
         let v = serde_json::to_value(&a).unwrap();
@@ -512,6 +578,7 @@ mod tests {
             y: 0.0,
             w: 1.0,
             h: 0.004,
+            ..Default::default()
         });
         assert!(a.summary().ends_with("(100% × <1%)"), "{}", a.summary());
     }

@@ -517,8 +517,13 @@ file under `v/<digits>/` is reachable only through the versioned form):
   the frame, unless focus is in a text field. A forwarded Escape drops a drag
   in progress, else the bridge answers `artifax:cancel` and the shell leaves
   comment mode; Escape elsewhere leaves it at once. The bridge's comment mode
-  acts only on trusted (viewer) events, and the shell takes `artifax:pick`
-  only while comment mode is on.
+  acts only on trusted (viewer) events and has at most one pick in flight;
+  it sends `artifax:pick-start {pickId}` at the viewer's click or release,
+  before rendering the clip, and the shell takes the `artifax:pick` with that
+  ID only in comment mode, only when its start arrived while the frame held
+  the viewer's gesture (`frameGesture`), and once; two starts pending at once
+  are both refused. The bridge keeps the shell's window as it was at load, so
+  a page replacing `window.parent` cannot read or alter what it posts.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the
@@ -700,9 +705,16 @@ selector or with fractions out of range, and an `area` on any other kind
 half a percent). An area re-resolves by selector (exact with a matching
 `html_hash`, else selector alone; it has no quote to fall back on) and its
 fractions are projected onto the element's box then; otherwise it is
-detached. A selector-only match whose element's width differs by more than
-25% from its width at draw time (`rect.w / area.w`) is detached as well,
-unless the viewport's width changed by more than 5% since.
+detached. `area` also records a fingerprint of the element: `tag` (its local
+name), `text` (its first 32 characters of visible text, whitespace
+collapsed, control characters dropped; at most 64 characters as the daemon
+checks), and `children` (its child element count). A selector-only match is
+detached when its tag differs, when its text does not start with the
+recorded text (or, without recorded text, its child count differs), or when
+its width differs by more than 25% from its width at draw time (`rect.w /
+area.w`, skipped when the viewport's width changed by more than 5% since). An
+area on `html` is placed by `rect` at the same page coordinates (`x +
+scrollX`, `y + scrollY`), not by its fractions.
 
 Re-resolution order on a new version: exact `selector` with matching
 `html_hash`; `selector` alone; text `quote` with `prefix`/`suffix` search;

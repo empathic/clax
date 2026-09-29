@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { acceptFromShell, shellOrigins } from "../src/channel";
+import { acceptFromShell, forwardedKey, shellOrigins } from "../src/channel";
 
 describe("shellOrigins", () => {
   it("allows the loopback shell for subdomain content", () => {
@@ -21,5 +21,15 @@ describe("acceptFromShell", () => {
     expect(acceptFromShell(ev({ type: "artifax:comment-mode", on: true }, "http://localhost:7480", null), window, origins)).toBeNull();
     expect(acceptFromShell(ev({ type: "artifax:pick" }, "http://localhost:7480", window), window, origins)).toBeNull();
     expect(acceptFromShell(ev("artifax:comment-mode", "http://localhost:7480", window), window, origins)).toBeNull();
+  });
+});
+
+describe("forwardedKey", () => {
+  it("takes Option, Up, Down, and Escape with a direction, and nothing else", () => {
+    for (const key of ["Alt", "ArrowUp", "ArrowDown", "Escape"]) expect(forwardedKey({ key, down: true })).toEqual({ key, down: true });
+    expect(forwardedKey({ key: "Escape", down: false })).toEqual({ key: "Escape", down: false });
+    expect(forwardedKey({ key: "Enter", down: true })).toBeNull();
+    expect(forwardedKey({ key: "Escape", down: "yes" })).toBeNull();
+    expect(forwardedKey({ key: 5, down: true })).toBeNull();
   });
 });

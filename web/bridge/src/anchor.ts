@@ -185,6 +185,44 @@ function query(doc: Document, selector: string): Element | null {
   try { return doc.querySelector(selector); } catch { return null; }
 }
 
+/** Characters of an element's text an area fingerprint keeps. */
+export const FINGERPRINT_TEXT = 32;
+
+/** The first `FINGERPRINT_TEXT` characters of the text a reader sees in `el`,
+ * whitespace collapsed and trimmed; only as much text is read as that needs. */
+export function textPrefix(el: Element): string {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => {
+      const p = n.parentElement;
+      return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  let out = "";
+  for (let n = walker.nextNode(); n && out.length < FINGERPRINT_TEXT + 1; n = walker.nextNode()) {
+    out = `${out} ${(n as Text).data.slice(0, 4000)}`.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trimStart();
+  }
+  return cut(out.trim(), 0, FINGERPRINT_TEXT);
+}
+
+/** An area's element fingerprint: its local name, text prefix, and child
+ * element count. */
+export function fingerprint(el: Element): { tag: string; text: string; children: number } {
+  return { tag: el.localName.slice(0, 64), text: textPrefix(el), children: el.childElementCount };
+}
+
+/** Whether `el` matches area anchor `a`'s fingerprint: the same tag, and the
+ * same text prefix (its text now starts with the recorded prefix) when the
+ * element had text at draw time, else the same
+ * child count. Holds when no fingerprint was recorded. */
+export function fingerprintHolds(a: Anchor, el: Element): boolean {
+  const f = a.area;
+  if (!f || f.tag === undefined) return true;
+  if (el.localName.slice(0, 64) !== f.tag) return false;
+  // Text added after a short recorded prefix keeps the match.
+  if (f.text) return textPrefix(el).startsWith(f.text);
+  return f.children === undefined || el.childElementCount === f.children;
+}
+
 /** How far, as a share, an area's element may have changed width since the
  * area was drawn and still be taken for the same element when only its
  * selector matched. */
@@ -217,7 +255,7 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
     const method: ResolveMethod = a.html_hash && htmlHash(el) === a.html_hash ? "exact" : "selector";
     // An area has no text to confirm a selector-only match: one on an element
     // whose width moved away from its width at draw time is on other content.
-    if (method === "selector" && a.kind === "area" && !areaWidthHolds(a, el, doc)) return null;
+    if (method === "selector" && a.kind === "area" && el !== doc.documentElement && (!areaWidthHolds(a, el, doc) || !fingerprintHolds(a, el))) return null;
     let range: Range | null = null;
     if (a.kind === "range" && a.quote) {
       const s = span(idx, el);

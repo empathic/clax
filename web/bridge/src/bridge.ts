@@ -25,8 +25,8 @@
  * places the pins, and its placements are re-sent on scroll and resize.
  */
 import { AnchorCache, type Resolved, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
-import { areaBox, boxOf, buildAreaAnchor, containingElement } from "./area";
-import { acceptFromShell, shellOrigins } from "./channel";
+import { areaBox, boxOf, buildAreaAnchor, containingElement, placeArea } from "./area";
+import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
@@ -42,10 +42,14 @@ import { makeUse } from "./use";
   commentsContext.version = meta.version;
   commentsContext.file = meta.file;
 
-  const framed = window.parent !== window;
+  // The shell's window as it is when the bridge loads: a page script that
+  // later replaces `window.parent` can neither read nor alter what the
+  // bridge posts, nor pose as the shell.
+  const shellWin = window.parent;
+  const framed = shellWin !== window;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
-    window.parent.postMessage(m, shellOrigin ?? "*", transfer);
+    shellWin.postMessage(m, shellOrigin ?? "*", transfer);
   const rpc = new Rpc(m => post(m));
   const use = makeUse({ framed, rpc });
 
@@ -69,7 +73,7 @@ import { makeUse } from "./use";
   /** Where a resolved anchor is now: an area's rectangle projected onto its
    * element, else the range or element. */
   const placeOf = (anchor: Anchor, r: Resolved): Box => {
-    if (anchor.kind === "area" && anchor.area) return areaBox(anchor.area, boxOf(r.element));
+    if (anchor.kind === "area" && anchor.area) return placeArea(anchor, r.element);
     return box(r.range ?? r.element);
   };
 
@@ -107,6 +111,7 @@ import { makeUse } from "./use";
 
   const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
+    post({ type: "artifax:pick-start", pickId });
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
     try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
@@ -114,8 +119,8 @@ import { makeUse } from "./use";
   };
   const mode = new CommentMode(document, {
     hover: t => post({ type: "artifax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-    pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)); },
-    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)); },
+    pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)).finally(() => mode.captured()); },
+    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)).finally(() => mode.captured()); },
     // The clip starts at once, from the page as it is at release: the drawn
     // rectangle cropped out of a render of its element. The rectangle stays
     // drawn (as capturing) until the pick is posted.
@@ -148,7 +153,7 @@ import { makeUse } from "./use";
   addEventListener("hashchange", () => { if (welcomed) post(hashFor(location.hash)); });
 
   addEventListener("message", e => {
-    const m = acceptFromShell(e, window.parent, origins);
+    const m = acceptFromShell(e, shellWin, origins);
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
@@ -172,9 +177,11 @@ import { makeUse } from "./use";
         break;
       }
       case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; updateFocus(); break;
-      case "artifax:key":
-        if ((m.key === "Alt" || m.key === "ArrowUp" || m.key === "ArrowDown" || m.key === "Escape") && typeof m.down === "boolean") mode.key(m.key, m.down);
+      case "artifax:key": {
+        const k = forwardedKey(m);
+        if (k) mode.key(k.key, k.down);
         break;
+      }
     }
   });
   post(helloFor(meta));

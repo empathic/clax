@@ -8,8 +8,8 @@
 // drag with Shift held, draws a rectangle (shown live, clamped to the
 // viewport); one narrower or shorter than `AREA_MIN` is a click, and Escape
 // drops it (Escape with no drag ends comment mode). After release the
-// rectangle stays drawn, dashed, until its clip is taken (`captured`), and no
-// new area drag starts meanwhile. With Option held a drag selection picks the
+// rectangle stays drawn, dashed, until its clip is taken (`captured`); no
+// other pick of any kind starts while a pick's clip is taken. With Option held a drag selection picks the
 // widened element instead of the text, and a press never starts a native
 // drag of an image. Only the viewer's own (trusted) events count, so a page
 // cannot pick for them with synthetic events. The outline is clamped to the viewport so all four borders show,
@@ -62,7 +62,9 @@ export class CommentMode {
   private border = "";
   private pointer = { x: 0, y: 0, el: null as Element | null };
   private selectionBefore: Range | null = null;
-  /** A picked area's clip is being taken. */
+  /** A pick's clip is being taken (for an area, with its rectangle drawn):
+   * no other pick starts until `captured`, so the bridge never has two picks
+   * in flight. */
   private capturing = false;
   private readonly trustedOnly: boolean;
 
@@ -114,12 +116,18 @@ export class CommentMode {
     }
   }
 
-  /** The picked area's clip was taken: its rectangle is removed, and new area
-   * drags may start. */
+  /** The pick's clip was taken (the pick was posted): an area's rectangle is
+   * removed, and new picks may start. */
   captured(): void {
     this.capturing = false;
     this.areaBox.classList.remove("capturing");
     if (!this.drag) this.areaBox.style.display = "none";
+  }
+
+  /** Moves focus into the page, as the press it prevented would have: the
+   * shell counts a pick only when the viewer's gesture is in the frame. */
+  private focusPage(): void {
+    try { this.doc.defaultView?.focus(); } catch { /* not focusable */ }
   }
 
   /** Whether `e` is the viewer's own input (or trust is not required). */
@@ -159,7 +167,8 @@ export class CommentMode {
     if (!this.on) return false;
     if (key === "Escape") {
       if (!down) return false;
-      if (this.drag) this.endDrag();
+      // A dropped drag's press makes no click pick either.
+      if (this.drag) { this.endDrag(); this.suppressClick = true; }
       else this.hooks.cancel();
       return true;
     }
@@ -284,11 +293,12 @@ export class CommentMode {
     // With Option held a press widens (a click, or a drag selection picks the
     // widened element); it never starts a native drag of an image.
     if (this.widen.active || e.altKey) {
-      if (el?.closest(REPLACED)) e.preventDefault();
+      if (el?.closest(REPLACED)) { e.preventDefault(); this.focusPage(); }
       return;
     }
     if (!e.shiftKey && !nonTextAt(this.doc, el, e.clientX, e.clientY)) return;
     e.preventDefault();
+    this.focusPage();
     // One area at a time: none starts while the last one's clip is taken.
     if (this.capturing) return;
     const win = this.doc.defaultView!;
@@ -313,6 +323,8 @@ export class CommentMode {
     }
     const sel = this.doc.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+    // No other pick while an area's clip is being taken.
+    if (this.capturing) { sel.removeAllRanges(); this.suppressClick = true; return; }
     const r = sel.getRangeAt(0).cloneRange();
     if (!this.doc.body.contains(r.commonAncestorContainer)) return;
     const before = this.selectionBefore;
@@ -323,8 +335,9 @@ export class CommentMode {
     if (this.widen.active || e.altKey) {
       // Option widens a drag selection like a click: to the enclosing element.
       const w = widenedTarget(r, Math.max(1, this.widen.level)).target;
-      if (w instanceof Element) { this.hooks.pickElement(w); return; }
+      if (w instanceof Element) { this.capturing = true; this.hooks.pickElement(w); return; }
     }
+    this.capturing = true;
     this.hooks.pickRange(r);
   };
 
@@ -337,6 +350,7 @@ export class CommentMode {
     if (this.capturing) return;
     let t = this.choose(this.target(e), e.clientX, e.clientY);
     if (t && (this.widen.active || e.altKey)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
+    if (t) this.capturing = true;
     if (t instanceof Element) this.hooks.pickElement(t);
     else if (t) this.hooks.pickRange(t);
   };

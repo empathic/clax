@@ -8,7 +8,7 @@
 // (`html`, its whole scrollable size). Holding Option (Alt) targets the
 // enclosing element of the hovered target, one ancestor more per Up press.
 
-import { OVERLAY_TAG, cssPath, htmlHash } from "./anchor";
+import { OVERLAY_TAG, cssPath, fingerprint, htmlHash } from "./anchor";
 import { blockAncestor } from "./clip";
 import { type Anchor, type AnchorArea, type Box, INDEX_FILE } from "./protocol";
 import { caretAt } from "./target";
@@ -60,6 +60,20 @@ export function areaFractions(r: AreaRect, box: AreaRect): AnchorArea {
   return { x, y, w, h };
 }
 
+/** Where area anchor `a`, resolved to `el`, is now (client coordinates): on
+ * the document (`html`) its drawn rectangle at the same page coordinates
+ * (`rect` plus the scroll at draw time), so a resize or a longer page does
+ * not move it; on any other element its fractions projected onto the
+ * element's box. */
+export function placeArea(a: Anchor, el: Element): Box {
+  const doc = el.ownerDocument;
+  if (el === doc.documentElement && a.rect) {
+    const win = doc.defaultView!;
+    return { x: a.rect.x + a.rect.scrollX - win.scrollX, y: a.rect.y + a.rect.scrollY - win.scrollY, w: a.rect.w, h: a.rect.h };
+  }
+  return areaBox(a.area!, boxOf(el));
+}
+
 /** `area` projected onto an element's border box `box` (client coordinates). */
 export function areaBox(area: AnchorArea, box: AreaRect): Box {
   return { x: box.left + area.x * box.width, y: box.top + area.y * box.height, w: area.w * box.width, h: area.h * box.height };
@@ -100,7 +114,8 @@ export function containingElement(doc: Document, r: AreaRect): Element {
   let bestArea = Infinity;
   for (const hit of hits) {
     if (hit.closest(OVERLAY_TAG)) continue;
-    for (let e: Element | null = foreignRoot(hit); e && e !== doc.documentElement; e = e.parentElement) {
+    // HTML inside an SVG `<foreignObject>` walks up to the `<svg>`, not into its shapes.
+    for (let e: Element | null = foreignRoot(hit); e && e !== doc.documentElement; e = e.parentElement ? foreignRoot(e.parentElement) : null) {
       const b = e.getBoundingClientRect();
       if (!holds(b, r)) continue;
       if (b.width * b.height < bestArea) { best = e; bestArea = b.width * b.height; }
@@ -117,7 +132,7 @@ export function buildAreaAnchor(doc: Document, r: AreaRect, file: string = INDEX
   return {
     kind: "area", selector: el === doc.documentElement ? "html" : cssPath(el), quote: null, prefix: null, suffix: null, html_hash: el === doc.documentElement ? null : htmlHash(el),
     rect: { x: r.left, y: r.top, w: r.width, h: r.height, scrollX: win.scrollX, scrollY: win.scrollY, viewportW: win.innerWidth },
-    custom_name: null, area: areaFractions(r, boxOf(el)), file,
+    custom_name: null, area: el === doc.documentElement ? areaFractions(r, boxOf(el)) : { ...areaFractions(r, boxOf(el)), ...fingerprint(el) }, file,
   };
 }
 

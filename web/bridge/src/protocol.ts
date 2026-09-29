@@ -5,10 +5,11 @@ export type AnchorKind = "element" | "range" | "custom" | "area";
 /** The page an anchor names when it names none, and the index's `file`. */
 export const INDEX_FILE = "index.html";
 export interface AnchorRect { x: number; y: number; w: number; h: number; scrollX: number; scrollY: number; viewportW: number }
-/** A drawn rectangle as fractions (0 to 1, 4 decimal places) of its
+/** A drawn rectangle as fractions (0 to 1, 6 decimal places) of its
  * element's border box: `x` and `y` from its top left corner, `w` and `h` of
- * its width and height. */
-export interface AnchorArea { x: number; y: number; w: number; h: number }
+ * its width and height; `tag`, `text`, and `children` fingerprint the element
+ * at draw time (see `anchor.ts` `fingerprint`). */
+export interface AnchorArea { x: number; y: number; w: number; h: number; tag?: string; text?: string; children?: number }
 /** Spec §9 "Anchors"; field names match the daemon's JSON. An `area` anchor
  * (a rectangle the viewer drew) names the smallest element containing the
  * rectangle in `selector`, places it in `area`, and holds it in viewport
@@ -65,6 +66,10 @@ export type ShellToBridge =
 export type BridgeToShell =
   | { type: "artifax:hello"; artifact: string; version: number; file: string }
   | { type: "artifax:hover"; selector: string | null; rect: Box | null }
+  /** Sent at the viewer's pick itself (the click or release), before its
+   * clip is rendered: the shell takes the `artifax:pick` with this `pickId`
+   * only when this arrived while the frame held the viewer's gesture. */
+  | { type: "artifax:pick-start"; pickId: string }
   | { type: "artifax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "artifax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "artifax:cancel" }
@@ -78,4 +83,4 @@ export type BridgeToShell =
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["artifax:welcome", "artifax:comment-mode", "artifax:resolve-anchors", "artifax:scroll-to", "artifax:focus", "artifax:key", "artifax:use-result", "artifax:call-result", "artifax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:hash", "artifax:use", "artifax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick-start", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:hash", "artifax:use", "artifax:call"]);

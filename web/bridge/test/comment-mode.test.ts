@@ -128,6 +128,7 @@ describe("CommentMode", () => {
     select(p, 0, 4);
     fire(p, "mouseup");
     expect(hooks.pickRange).toHaveBeenCalledTimes(1);
+    mode.captured();
     const h2 = document.querySelector("h2")!;
     fire(h2, "mousedown");
     fire(h2, "mouseup");
@@ -219,6 +220,30 @@ describe("drawing areas", () => {
     expect(hooks.pickArea).toHaveBeenCalledTimes(2);
   });
 
+  it("starts no text-selection or click pick while another pick's clip is taken", () => {
+    mode.set(true);
+    const p = document.querySelector("#p")!;
+    const img = document.querySelector("#i")!;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    at(img, "mouseup", 110, 60);
+    expect(hooks.pickArea).toHaveBeenCalledTimes(1);
+    // A drag selection over text while capturing: dropped, and its click swallowed.
+    at(p, "mousedown", 24, 18, { shiftKey: false });
+    select(p, 0, 4);
+    at(p, "mouseup", 60, 18);
+    at(p, "click", 60, 18);
+    expect(hooks.pickRange).not.toHaveBeenCalled();
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(document.getSelection()!.isCollapsed).toBe(true);
+    mode.captured();
+    at(p, "click", 60, 18);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+    // An element pick is in flight too until captured: a second click picks nothing.
+    at(p, "click", 60, 18);
+    expect(hooks.pickElement).toHaveBeenCalledTimes(1);
+  });
+
   it("drops a drag whose button was released outside the frame", () => {
     mode.set(true);
     const img = document.querySelector("#i")!;
@@ -251,7 +276,9 @@ describe("drawing areas", () => {
     expect(areaBox().style.display).toBe("none");
     expect(hooks.cancel).not.toHaveBeenCalled();
     at(img, "mouseup", 110, 60);
+    at(img, "click", 110, 60);
     expect(hooks.pickArea).not.toHaveBeenCalled();
+    expect(hooks.pickElement).not.toHaveBeenCalled();
     mode.key("Escape", false);
     expect(hooks.cancel).not.toHaveBeenCalled();
     mode.key("Escape", true);
@@ -280,6 +307,7 @@ describe("drawing areas", () => {
     at(p, "mouseup", 200, 18);
     expect(hooks.pickRange).toHaveBeenCalledTimes(1);
     expect(hooks.pickArea).not.toHaveBeenCalled();
+    mode.captured();
     expect(at(p, "mousedown", 24, 18, { shiftKey: true }).defaultPrevented).toBe(true);
     at(p, "mousemove", 200, 90, { shiftKey: true });
     at(p, "mouseup", 200, 90, { shiftKey: true });
