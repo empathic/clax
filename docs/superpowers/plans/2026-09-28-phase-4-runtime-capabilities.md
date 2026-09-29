@@ -1142,7 +1142,8 @@ Append to `MIGRATIONS` in `crates/artifax-core/src/store/migrations.rs`:
         holder TEXT NOT NULL,
         expires_at TEXT NOT NULL,
         PRIMARY KEY (artifact_id, path)
-    );",```
+    );",
+```
 
 The fix wave provides `viewers.public_id`, `Viewer.public_id` (with `id` skip-serializing), `artifax_core::is_public_id`, and, in `store/viewers.rs`, `VIEWER_SELECT`, `row_to_viewer`, and `Store::viewer_by_public_id`. Use exactly those; this task adds none of them.
 
