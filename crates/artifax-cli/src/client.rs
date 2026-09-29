@@ -2,8 +2,10 @@
 
 use anyhow::{Context, anyhow, bail};
 use artifax_core::Home;
-use artifax_server::daemon::{DaemonInfo, DaemonLock, pid_alive, read_daemon_info};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use artifax_server::daemon::{
+    DaemonInfo, DaemonLock, browser_host, pid_alive, probe_host, read_daemon_info,
+};
+use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -12,29 +14,6 @@ pub struct Client {
     pub token: String,
     pub info: DaemonInfo,
     http: reqwest::blocking::Client,
-}
-
-/// The host part of a URL that reaches a daemon bound to `bind`: an unspecified
-/// address (`0.0.0.0`, `::`) maps to the same-family loopback, a specific
-/// address is used as-is, and IPv6 is bracketed. Text that is not an IP address
-/// is returned unchanged.
-fn probe_host(bind: &str) -> String {
-    match bind.parse::<IpAddr>() {
-        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
-        Ok(IpAddr::V6(ip)) if ip.is_unspecified() => format!("[{}]", Ipv6Addr::LOCALHOST),
-        Ok(IpAddr::V4(ip)) => ip.to_string(),
-        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
-        Err(_) => bind.to_string(),
-    }
-}
-
-/// The host a browser on this machine should use: `localhost` for loopback
-/// binds, otherwise the [`probe_host`] address.
-fn browser_host(bind: &str) -> String {
-    match bind.parse::<IpAddr>() {
-        Ok(ip) if ip.is_loopback() => "localhost".to_string(),
-        _ => probe_host(bind),
-    }
 }
 
 fn probe_client() -> Option<reqwest::blocking::Client> {
@@ -234,35 +213,5 @@ impl Client {
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))
             .map(|_| ())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn probe_host_maps_unspecified_to_same_family_loopback() {
-        assert_eq!(probe_host("0.0.0.0"), "127.0.0.1");
-        assert_eq!(probe_host("::"), "[::1]");
-    }
-
-    #[test]
-    fn probe_host_uses_specific_addresses_as_is_and_brackets_ipv6() {
-        assert_eq!(probe_host("127.0.0.1"), "127.0.0.1");
-        assert_eq!(probe_host("192.168.1.20"), "192.168.1.20");
-        assert_eq!(probe_host("::1"), "[::1]");
-        assert_eq!(probe_host("fe80::1"), "[fe80::1]");
-        assert_eq!(probe_host("mymac.local"), "mymac.local");
-    }
-
-    #[test]
-    fn browser_host_is_localhost_only_for_loopback_binds() {
-        assert_eq!(browser_host("127.0.0.1"), "localhost");
-        assert_eq!(browser_host("::1"), "localhost");
-        assert_eq!(browser_host("192.168.1.20"), "192.168.1.20");
-        assert_eq!(browser_host("fe80::1"), "[fe80::1]");
-        assert_eq!(browser_host("0.0.0.0"), "127.0.0.1");
-        assert_eq!(browser_host("::"), "[::1]");
     }
 }

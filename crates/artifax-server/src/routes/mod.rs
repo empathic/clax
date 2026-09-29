@@ -3,6 +3,7 @@ pub mod assets;
 pub mod content;
 pub mod events;
 pub mod health;
+pub mod mcp;
 pub mod sessions;
 pub mod shell;
 pub mod token;
@@ -115,7 +116,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
-        .route("/c/{aid}/v/{n}/{*path}", get(content::file));
+        .route("/c/{aid}/v/{n}/{*path}", get(content::file))
+        .route(
+            "/api/artifacts/{aid}/versions/{n}/files/{*path}",
+            get(content::raw_file),
+        )
+        .merge(mcp::router(&state));
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(

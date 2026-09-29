@@ -5,7 +5,7 @@ use artifax_core::{EventBus, Home, Store};
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
@@ -76,6 +76,29 @@ pub fn pid_alive(pid: u32) -> bool {
     // SAFETY: kill with signal 0 only probes for existence.
     let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
     rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
+/// The host part of a URL that reaches a daemon bound to `bind`: an unspecified
+/// address (`0.0.0.0`, `::`) maps to the same-family loopback, a specific
+/// address is used as-is, and IPv6 is bracketed. Text that is not an IP address
+/// is returned unchanged.
+pub fn probe_host(bind: &str) -> String {
+    match bind.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) if ip.is_unspecified() => Ipv4Addr::LOCALHOST.to_string(),
+        Ok(IpAddr::V6(ip)) if ip.is_unspecified() => format!("[{}]", Ipv6Addr::LOCALHOST),
+        Ok(IpAddr::V4(ip)) => ip.to_string(),
+        Ok(IpAddr::V6(ip)) => format!("[{ip}]"),
+        Err(_) => bind.to_string(),
+    }
+}
+
+/// The host a browser on this machine should use: `localhost` for loopback
+/// binds, otherwise the [`probe_host`] address.
+pub fn browser_host(bind: &str) -> String {
+    match bind.parse::<IpAddr>() {
+        Ok(ip) if ip.is_loopback() => "localhost".to_string(),
+        _ => probe_host(bind),
+    }
 }
 
 pub fn generate_token() -> String {
@@ -194,6 +217,8 @@ pub async fn serve(
         request_timeout: Duration::from_secs(30),
         publish_timeout: Duration::from_secs(120),
         sse_keep_alive: Duration::from_secs(15),
+        self_base: format!("http://{}:{port}", probe_host(&info.bind)),
+        browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
     };
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
@@ -287,4 +312,34 @@ pub async fn serve(
         remove_daemon_info(&cfg.home);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn probe_host_maps_unspecified_to_same_family_loopback() {
+        assert_eq!(probe_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(probe_host("::"), "[::1]");
+    }
+
+    #[test]
+    fn probe_host_uses_specific_addresses_as_is_and_brackets_ipv6() {
+        assert_eq!(probe_host("127.0.0.1"), "127.0.0.1");
+        assert_eq!(probe_host("192.168.1.20"), "192.168.1.20");
+        assert_eq!(probe_host("::1"), "[::1]");
+        assert_eq!(probe_host("fe80::1"), "[fe80::1]");
+        assert_eq!(probe_host("mymac.local"), "mymac.local");
+    }
+
+    #[test]
+    fn browser_host_is_localhost_only_for_loopback_binds() {
+        assert_eq!(browser_host("127.0.0.1"), "localhost");
+        assert_eq!(browser_host("::1"), "localhost");
+        assert_eq!(browser_host("192.168.1.20"), "192.168.1.20");
+        assert_eq!(browser_host("fe80::1"), "[fe80::1]");
+        assert_eq!(browser_host("0.0.0.0"), "127.0.0.1");
+        assert_eq!(browser_host("::"), "[::1]");
+    }
 }

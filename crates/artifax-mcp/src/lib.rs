@@ -1,0 +1,9 @@
+//! MCP tools for Artifax: an rmcp tool set that calls the daemon's REST API,
+//! served by the stdio shim and by the daemon's `/mcp` endpoint.
+
+pub mod client;
+pub mod render;
+pub mod tools;
+
+pub use client::{ClientError, DaemonClient};
+pub use tools::ArtifaxTools;

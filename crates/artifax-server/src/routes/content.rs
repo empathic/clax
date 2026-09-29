@@ -102,3 +102,35 @@ pub async fn file(
         .into_response();
     Ok(sandboxed(res, &origin))
 }
+
+/// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,
+/// `index.html` included and never wrapped. Served with `Content-Security-Policy:
+/// sandbox` because it shares the API's origin.
+pub async fn raw_file(
+    State(s): State<AppState>,
+    p: Result<Path<(String, u32, String)>, PathRejection>,
+) -> Result<Response, ApiError> {
+    let (aid, n, rel) = path(p)?;
+    let id = parse_id(&aid)?;
+    let (disk, meta) = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound)
+        })
+        .await?;
+    let f = tokio::fs::File::open(&disk)
+        .await
+        .map_err(|_| ApiError::not_found())?;
+    let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    Ok((
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, meta.content_type.as_str()),
+            (header::CACHE_CONTROL, "no-store"),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            (header::CONTENT_SECURITY_POLICY, "sandbox"),
+        ],
+        body,
+    )
+        .into_response())
+}

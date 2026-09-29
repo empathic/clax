@@ -7,6 +7,8 @@ pub mod error;
 pub mod host;
 pub mod routes;
 pub mod state;
+#[cfg(feature = "test-support")]
+pub mod testing;
 pub mod wrap_cache;
 
 pub use state::AppState;

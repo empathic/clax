@@ -24,12 +24,18 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 futures = "0.3"
 mime_guess.workspace = true
+artifax-mcp = { path = "../artifax-mcp" }
+rmcp = { workspace = true }
+reqwest = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 
 [features]
 test-routes = []
+# Exposes `artifax_server::testing` (an in-process test daemon) to other crates' tests.
+test-support = ["dep:reqwest", "dep:tempfile"]
 
 [dev-dependencies]
-artifax-server = { path = ".", features = ["test-routes"] }
+artifax-server = { path = ".", features = ["test-routes", "test-support"] }
 bytes = "1"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true

@@ -20,4 +20,10 @@ pub struct AppState {
     pub publish_timeout: Duration,
     /// Interval between SSE keep-alive comments on `/api/events` (15 s in the daemon).
     pub sse_keep_alive: Duration,
+    /// Base URL (`http://<host>:<port>`, no trailing slash) at which this daemon
+    /// reaches its own API; the `/mcp` tools call the REST API through it.
+    pub self_base: String,
+    /// Base URL a browser on this machine uses to reach the daemon; tool results
+    /// build artifact URLs from it.
+    pub browser_base: String,
 }
