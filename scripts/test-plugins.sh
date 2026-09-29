@@ -71,6 +71,61 @@ sys.exit(0 if ok else 1)
 PY
 then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Codex MCP server and hooks must run the shim with --agent codex"; fi
 
+# The Claude Code hooks quote the plugin root, which may contain spaces.
+if python3 - plugins/claude-code/hooks/hooks.json 2>/dev/null <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]
+cmds = [h["command"] for event in ("SessionStart", "SessionEnd") for entry in hooks[event] for h in entry["hooks"]]
+prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent claude '
+sys.exit(0 if cmds and all(c.startswith(prefix) for c in cmds) else 1)
+PY
+then pass "the Claude Code hooks quote \${CLAUDE_PLUGIN_ROOT} and use --agent claude"
+else fail "the Claude Code hooks must run \"\${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude"; fi
+
+# One version everywhere: the workspace, both plugin manifests, the Pi package,
+# and the installer's MIN_VERSION.
+if out="$(python3 - Cargo.toml plugins/claude-code/.claude-plugin/plugin.json plugins/artifax/.codex-plugin/plugin.json \
+    plugins/pi/package.json scripts/ensure-artifax.sh 2>&1 <<'PY'
+import json, re, sys
+cargo, claude, codex, pi, installer = sys.argv[1:6]
+def first(pattern, text):
+    m = re.search(pattern, text, re.M)
+    return m.group(1) if m else None
+ws = re.search(r'^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)', open(cargo).read(), re.M | re.S)
+versions = {
+    "Cargo.toml [workspace.package]": first(r'^version\s*=\s*"([^"]+)"', ws.group(1)) if ws else None,
+    claude: json.load(open(claude)).get("version"),
+    codex: json.load(open(codex)).get("version"),
+    pi: json.load(open(pi)).get("version"),
+    installer + " MIN_VERSION": first(r'^MIN_VERSION="([^"]+)"', open(installer).read()),
+}
+if None in versions.values() or len(set(versions.values())) != 1:
+    print(", ".join(f"{k}={v}" for k, v in versions.items()))
+    sys.exit(1)
+PY
+)"; then pass "the workspace, plugin manifests, Pi package and MIN_VERSION share one version"
+else fail "versions differ: $out"; fi
+
+# The Rust tools and the Pi extension carry the same nine tool descriptions,
+# word for word (plugins/pi/test/fixtures/contract.json lists them).
+if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/artifax-mcp/src/tools.rs plugins/pi/src/artifax.ts 2>&1 <<'PY'
+import json, sys
+tools = json.load(open(sys.argv[1]))["tools"]
+missing = []
+for src in sys.argv[2:4]:
+    text = open(src).read()
+    for t in tools:
+        # Both sources write the description as one double-quoted literal.
+        quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
+        if quoted not in text:
+            missing.append(f"{src}: {t['name']}")
+if len(tools) != 9 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 9")
+    sys.exit(1)
+PY
+)"; then pass "the nine tool descriptions match in tools.rs and artifax.ts"
+else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
+
 # Every Claude marketplace plugin source is an existing directory.
 if python3 - .claude-plugin/marketplace.json <<'PY'
 import json, os, sys
