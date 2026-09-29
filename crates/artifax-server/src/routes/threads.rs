@@ -7,9 +7,9 @@ use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view};
 use crate::state::AppState;
-use crate::viewer::{ViewerCookie, author_name};
+use crate::viewer::{SameOrigin, ViewerCookie, author_name};
 use artifax_core::feedback::Touched;
-use artifax_core::model::Thread;
+use artifax_core::model::{Session, Thread};
 use artifax_core::store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
 };
@@ -62,6 +62,21 @@ fn publish_thread(
         thread: view,
     });
     Ok(())
+}
+
+/// The live session an agent reply or resolve comes from: `X-Artifax-Session`
+/// is required, and must name a session that exists and has not ended.
+///
+/// # Errors
+/// `unknown_session` otherwise.
+fn agent_session(st: &Store, header: &Option<String>) -> artifax_core::Result<Session> {
+    let sid = publishing_session(st, header)?.ok_or_else(|| {
+        CoreError::invalid(
+            "unknown_session",
+            "agent replies and resolves need X-Artifax-Session naming a live session",
+        )
+    })?;
+    st.get_session(&sid)?.ok_or(CoreError::NotFound)
 }
 
 /// The thread `tid` if it belongs to the live artifact `id`.
@@ -150,9 +165,11 @@ pub async fn clip(
 
 /// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG).
 /// A clip that fails `clip_problem` is dropped and reported as `clip_error`.
+/// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn create(
     State(s): State<AppState>,
     headers: HeaderMap,
+    _o: SameOrigin,
     viewer: ViewerCookie,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
@@ -274,11 +291,14 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 }
 
 /// A viewer comment (no token) or, with `author_kind: "agent"`, an agent reply
-/// (token; only on sent threads, otherwise guidance). A viewer comment on a
-/// sent thread, or one mentioning `@agent`, is forwarded to the agent.
+/// (token and `X-Artifax-Session` naming a live session, else 400
+/// `unknown_session`; only on sent threads, otherwise guidance). A viewer
+/// comment on a sent thread, or one mentioning `@agent`, is forwarded to the
+/// agent. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn comment(
     State(s): State<AppState>,
     headers: HeaderMap,
+    _o: SameOrigin,
     viewer: ViewerCookie,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<CommentBody>, JsonRejection>,
@@ -307,29 +327,20 @@ pub async fn comment(
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
             let c = if agent {
+                let sess = agent_session(st, &session)?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_REPLY));
                 }
-                let sid = publishing_session(st, &session)?;
-                let harness = match &sid {
-                    Some(sid) => st
-                        .get_session(sid)?
-                        .map(|x| x.harness)
-                        .unwrap_or_else(|| "agent".into()),
-                    None => "agent".into(),
-                };
                 let c = st.add_comment(
                     &tid,
                     NewComment {
                         author_kind: AUTHOR_AGENT,
-                        author_name: harness,
-                        via_session_id: sid.clone(),
+                        author_name: sess.harness,
+                        via_session_id: Some(sess.id.clone()),
                         body: b.body,
                     },
                 )?;
-                if let Some(sid) = &sid {
-                    touched.merge(st.acknowledge(sid, std::slice::from_ref(&tid))?);
-                }
+                touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
                 c
             } else {
                 let name = author_name(st, viewer.0.as_deref())?;
@@ -362,10 +373,12 @@ pub async fn comment(
     Ok(respond(o, StatusCode::CREATED))
 }
 
-/// Sets `sent_to_agent` and creates feedback rows; idempotent.
+/// Sets `sent_to_agent` and creates feedback rows; idempotent. A request with a
+/// foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn send(
     State(s): State<AppState>,
     headers: HeaderMap,
+    _o: SameOrigin,
     p: Result<Path<(String, String)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
@@ -392,11 +405,16 @@ struct ResolveBody {
 }
 
 /// Resolves as the viewer (no token) or, with `{"as": "agent"}`, as the agent
-/// (token; only on sent threads, otherwise guidance). An empty body resolves
-/// as the viewer.
+/// (token and `X-Artifax-Session` naming a live session, else 400
+/// `unknown_session`; only on sent threads, otherwise guidance). An empty body
+/// resolves as the viewer. Undelivered feedback on the thread is withdrawn; a
+/// `feedback_state` event follows when delivered rows remain, and when none
+/// remain the `thread` event carries `feedback_state: null`. A request with a
+/// foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn resolve(
     State(s): State<AppState>,
     headers: HeaderMap,
+    _o: SameOrigin,
     viewer: ViewerCookie,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
@@ -430,18 +448,17 @@ pub async fn resolve(
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
             let by = if agent {
+                let sess = agent_session(st, &session)?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
-                let sid = publishing_session(st, &session)?;
-                if let Some(sid) = &sid {
-                    touched.merge(st.acknowledge(sid, std::slice::from_ref(&tid))?);
-                }
-                format!("agent:{}", sid.as_deref().unwrap_or("none"))
+                touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
+                format!("agent:{}", sess.id)
             } else {
                 format!("viewer:{}", viewer.0.as_deref().unwrap_or("anonymous"))
             };
-            let t = st.resolve_thread(&tid, &by)?;
+            let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
+            touched.merge(withdrawn);
             ctx.events.publish(Event::ThreadResolved {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),

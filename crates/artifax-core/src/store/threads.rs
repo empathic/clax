@@ -365,20 +365,47 @@ impl Store {
 
     /// Marks the thread resolved by `by` (`viewer:<id>` or `agent:<session>`).
     /// Resolving a resolved thread keeps its first `resolved_at` and `resolved_by`.
+    /// Undelivered feedback rows of the thread are deleted: nobody needs to act
+    /// on a resolved thread. See [`Store::resolve_thread_touched`].
     ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
     pub fn resolve_thread(&self, thread_id: &str, by: &str) -> Result<Thread> {
-        self.with_tx(|tx| {
-            thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+        self.resolve_thread_touched(thread_id, by).map(|(t, _)| t)
+    }
+
+    /// [`Store::resolve_thread`], also returning what it changed: the thread is
+    /// in `threads` when undelivered rows were deleted (its feedback state then
+    /// reflects only delivered rows, or is `None` when none remain); `targets`
+    /// is always empty, since no session gains rows.
+    pub fn resolve_thread_touched(
+        &self,
+        thread_id: &str,
+        by: &str,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
+        let touched = self.with_tx(|tx| {
+            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
                 "UPDATE threads SET status = 'resolved', resolved_at = COALESCE(resolved_at, ?2),
                     resolved_by = COALESCE(resolved_by, ?3) WHERE id = ?1",
                 params![thread_id, Store::now(), by],
             )?;
-            Ok(())
+            let deleted = tx.execute(
+                "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL",
+                params![thread_id],
+            )?;
+            let mut touched = crate::feedback::Touched::default();
+            if deleted > 0 {
+                touched
+                    .threads
+                    .insert((t.artifact_id, thread_id.to_string()));
+            }
+            Ok(touched)
         })?;
-        self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
+        Ok((
+            self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?,
+            touched,
+        ))
     }
 }
 

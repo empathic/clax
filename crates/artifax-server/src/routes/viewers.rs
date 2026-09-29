@@ -1,9 +1,10 @@
-//! `GET/PUT /api/viewers/me`: the browser viewer behind the `artifax_viewer` cookie.
+//! `GET/PUT /api/viewers/me`: the browser viewer behind the `artifax_viewer`
+//! cookie. Both refuse a request with a foreign `Origin` ([`SameOrigin`]).
 
 use super::artifacts::body;
 use crate::error::ApiError;
 use crate::state::AppState;
-use crate::viewer::{ViewerCookie, set_cookie};
+use crate::viewer::{SameOrigin, ViewerCookie, set_cookie};
 use artifax_core::new_ulid;
 use axum::Json;
 use axum::extract::State;
@@ -42,6 +43,7 @@ async fn respond(
 /// The viewer, created (and its cookie set) on first contact.
 pub async fn me(
     State(s): State<AppState>,
+    _o: SameOrigin,
     ViewerCookie(c): ViewerCookie,
 ) -> Result<Response, ApiError> {
     respond(s, c, None).await
@@ -50,6 +52,7 @@ pub async fn me(
 /// Sets the display name; an empty name clears it.
 pub async fn set_me(
     State(s): State<AppState>,
+    _o: SameOrigin,
     ViewerCookie(c): ViewerCookie,
     req: Result<Json<NameBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {

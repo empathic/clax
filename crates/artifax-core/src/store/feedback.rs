@@ -991,6 +991,41 @@ mod tests {
     }
 
     #[test]
+    fn resolving_deletes_undelivered_rows_and_touches_the_thread() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let aid = artifact(&st, Some(&owner));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        let (t, touched) = st.resolve_thread_touched(&tid, "viewer:x").unwrap();
+        assert_eq!(t.status, "resolved");
+        assert!(st.feedback_rows(&tid).unwrap().is_empty());
+        assert!(
+            touched
+                .threads
+                .contains(&(aid.as_str().to_string(), tid.clone()))
+        );
+        assert!(touched.targets.is_empty());
+        assert_eq!(st.feedback_state(&tid, false).unwrap(), None);
+    }
+
+    #[test]
+    fn resolving_keeps_delivered_rows() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let aid = artifact(&st, Some(&owner));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(take(&st, &owner, Tier::PromptHook).len(), 1);
+        st.resolve_thread(&tid, "viewer:x").unwrap();
+        assert_eq!(st.feedback_rows(&tid).unwrap().len(), 1);
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap().unwrap().state,
+            FeedbackPhase::Delivered
+        );
+    }
+
+    #[test]
     fn artifact_filter_and_clip_paths() {
         let (_d, st) = store();
         let owner = session(&st, "claude", "o");

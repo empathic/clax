@@ -453,3 +453,195 @@ async fn thread_events_never_carry_the_clip_path() {
         "the agent's token never reaches SSE subscribers"
     );
 }
+
+#[tokio::test]
+async fn agent_actions_need_a_live_session_header() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let t = ts.thread(&aid, 1, "@agent fix").await;
+    let tid = t["id"].as_str().unwrap();
+    let reply = format!("{}/api/artifacts/{aid}/threads/{tid}/comments", ts.base);
+    let resolve = format!("{}/api/artifacts/{aid}/threads/{tid}/resolve", ts.base);
+    let body = json!({"body": "done", "author_kind": "agent"});
+    let as_agent = json!({"as": "agent"});
+    for (url, b) in [(&reply, &body), (&resolve, &as_agent)] {
+        let res = ts.authed(ts.client.post(url)).json(b).send().await.unwrap();
+        assert_eq!(res.status(), 400, "{url}: no session header");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "unknown_session"
+        );
+    }
+    ts.authed(ts.client.patch(format!("{}/api/sessions/{sid}", ts.base)))
+        .json(&json!({"ended": true}))
+        .send()
+        .await
+        .unwrap();
+    for (url, b) in [(&reply, &body), (&resolve, &as_agent)] {
+        let res = ts
+            .authed(ts.client.post(url))
+            .header("x-artifax-session", &sid)
+            .json(b)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 400, "{url}: ended session");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "unknown_session"
+        );
+    }
+    let after: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["thread"]["status"], "open");
+    assert_eq!(after["thread"]["comments"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn viewer_resolve_withdraws_undelivered_feedback() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let t = ts.thread(&aid, 1, "@agent fix").await;
+    let tid = t["id"].as_str().unwrap();
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let v: Value = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+            ts.base
+        ))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["thread"]["feedback_state"], Value::Null, "no rows remain");
+    ev.next_named("thread_resolved").await;
+    assert_eq!(
+        ev.next_named("thread").await["thread"]["feedback_state"],
+        Value::Null
+    );
+    let fb: Value = ts
+        .authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/feedback?tier=piggyback",
+            ts.base
+        )))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(fb["feedback"].as_array().unwrap().is_empty());
+    let st = artifax_core::Store::open(&ts.home).unwrap();
+    assert!(
+        st.feedback_rows(tid).unwrap().is_empty(),
+        "the rows are gone"
+    );
+}
+
+#[tokio::test]
+async fn viewer_routes_refuse_foreign_origins() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let port = ts.addr.port();
+    let t = ts.thread(&aid, 1, "plain").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let form = || {
+        reqwest::multipart::Form::new()
+            .text("anchor", element_anchor().to_string())
+            .text("body", "hi")
+            .text("version", "1")
+    };
+    let foreign = [
+        format!("http://{aid}.localhost:{port}"),
+        "https://evil.example".to_string(),
+        "null".to_string(),
+    ];
+    for origin in &foreign {
+        let reqs = [
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+                .multipart(form()),
+            ts.client
+                .post(format!(
+                    "{}/api/artifacts/{aid}/threads/{tid}/comments",
+                    ts.base
+                ))
+                .json(&json!({"body": "x"})),
+            ts.client.post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                ts.base
+            )),
+            ts.client.post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+                ts.base
+            )),
+            ts.client.get(format!("{}/api/viewers/me", ts.base)),
+            ts.client
+                .put(format!("{}/api/viewers/me", ts.base))
+                .json(&json!({"display_name": "x"})),
+        ];
+        for r in reqs {
+            let res = r.header("origin", origin).send().await.unwrap();
+            assert_eq!(res.status(), 403, "{origin}");
+            assert_eq!(
+                res.json::<Value>().await.unwrap()["error"]["code"],
+                "forbidden_origin"
+            );
+        }
+    }
+    let same = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("host", format!("localhost:{port}"))
+        .header("origin", format!("http://localhost:{port}"))
+        .multipart(form())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(same.status(), 201, "the shell's own origin");
+    let none = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .multipart(form())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(none.status(), 201, "no Origin: scripts and curl");
+    let after: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        after["thread"]["status"], "open",
+        "refused requests changed nothing"
+    );
+    assert_eq!(after["thread"]["sent_to_agent"], false);
+}
+
+#[tokio::test]
+async fn the_first_valid_viewer_cookie_wins() {
+    let ts = TestServer::spawn().await;
+    let a = artifax_core::new_ulid();
+    let b = artifax_core::new_ulid();
+    let res = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header(
+            "cookie",
+            format!("artifax_viewer=junk; artifax_viewer={a}; artifax_viewer={b}"),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.headers().get("set-cookie").is_none());
+    assert_eq!(res.json::<Value>().await.unwrap()["viewer"]["id"], a);
+}

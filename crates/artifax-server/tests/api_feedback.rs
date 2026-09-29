@@ -189,3 +189,56 @@ async fn long_poll_is_exempt_from_the_request_timeout() {
     let body = poll(&ts, &sid, "?wait=1").await;
     assert_eq!(body["waited_s"], 1);
 }
+
+#[tokio::test]
+async fn an_ended_session_cannot_poll_or_ack() {
+    let ts = TestServer::spawn().await;
+    let (sid, _aid, tid) = sent_thread(&ts).await;
+    ts.authed(ts.client.patch(format!("{}/api/sessions/{sid}", ts.base)))
+        .json(&serde_json::json!({"ended": true}))
+        .send()
+        .await
+        .unwrap();
+    let started = Instant::now();
+    let res = ts
+        .authed(
+            ts.client
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=5", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "answered at once"
+    );
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "unknown_session"
+    );
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/sessions/{sid}/feedback/ack", ts.base)),
+        )
+        .json(&serde_json::json!({"thread_ids": [tid]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "unknown_session"
+    );
+    let missing = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/sessions/nope/feedback/ack", ts.base)),
+        )
+        .json(&serde_json::json!({"thread_ids": []}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), 404);
+}
