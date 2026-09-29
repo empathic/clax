@@ -2,6 +2,7 @@
 //! served by the stdio shim and by the daemon's `/mcp` endpoint.
 
 pub mod client;
+pub mod plugin;
 pub mod render;
 pub mod shim;
 pub mod tools;

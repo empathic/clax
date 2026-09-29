@@ -166,7 +166,24 @@ pub async fn run(
         ),
         Err(e) => tracing::warn!("no artifax daemon yet; registration pending: {e}"),
     }
-    let tools = ArtifaxTools::new(client.clone(), String::new(), None, home.log_path());
+    let plugin_version = crate::plugin::root_from_env(
+        |k| std::env::var(k).ok(),
+        (harness == Harness::Codex)
+            .then(|| std::env::current_dir().ok())
+            .flatten(),
+    )
+    .and_then(|root| crate::plugin::manifest_version(&root));
+    match &plugin_version {
+        Some(v) if v != env!("CARGO_PKG_VERSION") => tracing::warn!(
+            plugin_version = %v,
+            binary_version = env!("CARGO_PKG_VERSION"),
+            "version skew: the plugin and the artifax binary differ; reinstall the plugin or update artifax"
+        ),
+        Some(v) => tracing::info!(plugin_version = %v, "plugin version matches the binary"),
+        None => tracing::info!("plugin root unknown; plugin version not checked"),
+    }
+    let tools = ArtifaxTools::new(client.clone(), String::new(), None, home.log_path())
+        .with_plugin_version(plugin_version);
 
     let beat = {
         let client = client.clone();

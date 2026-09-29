@@ -444,6 +444,14 @@ present only when it differs from the Artifax version of the tools answering
 (the shim's binary, or the Pi package, which carries the same version), which
 signals version skew.
 
+`plugin_version` is the version in the manifest of the plugin that started the
+shim, and `skew` is `true` when it differs from the shim's binary version
+(`false` when they match). Both are absent when the shim does not know its
+plugin root: it reads `CLAUDE_PLUGIN_ROOT`, then `PLUGIN_ROOT`, then, under
+Codex, its working directory when that holds `.codex-plugin/plugin.json`. The
+daemon's `/mcp` and the Pi extension never report them. The shim also logs the
+comparison to stderr when it starts (a warning on skew).
+
 `watches` lists this session's watches (`[{session_id, artifact_id,
 replies_armed, created_at}]`; `[]` without a session). `push` says whether
 comments can be pushed into this session (tier 5) and why not:

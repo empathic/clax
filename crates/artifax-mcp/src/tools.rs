@@ -611,6 +611,7 @@ pub struct ArtifaxTools {
     browser_base: String,
     session: Option<Session>,
     log_path: PathBuf,
+    plugin_version: Option<String>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -630,8 +631,22 @@ impl ArtifaxTools {
             browser_base: browser_base.trim_end_matches('/').to_string(),
             session,
             log_path,
+            plugin_version: None,
             tool_router: Self::tool_router(),
         }
+    }
+
+    /// These tools with the version of the plugin that started them, which
+    /// `status` reports as `plugin_version` (with `skew` when it is not this
+    /// build's version).
+    pub fn with_plugin_version(mut self, version: Option<String>) -> ArtifaxTools {
+        self.plugin_version = version;
+        self
+    }
+
+    /// How many tools the set has.
+    pub fn tool_count() -> usize {
+        Self::tool_router().list_all().len()
     }
 
     fn session(&self) -> Option<Session> {
@@ -1016,6 +1031,11 @@ impl ArtifaxTools {
         // Version skew between these tools and the daemon they call.
         if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
             out["daemon_version"] = h["version"].clone();
+        }
+        // Version skew between the installed plugin and these tools.
+        if let Some(v) = &self.plugin_version {
+            out["plugin_version"] = json!(v);
+            out["skew"] = json!(v != env!("CARGO_PKG_VERSION"));
         }
         Ok(out)
     }

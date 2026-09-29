@@ -817,3 +817,21 @@ async fn a_working_directory_filled_in_later_is_used_after_the_next_heartbeat() 
     let p = ok(t.publish(Parameters(relative())).await);
     assert_eq!(p["title"], "Later");
 }
+
+#[tokio::test]
+async fn status_reports_the_plugin_version_and_skew_when_known() {
+    let ts = TestServer::spawn().await;
+    let s = ok(tools_for(&ts).status(Parameters(StatusArgs {})).await);
+    assert!(
+        s.get("plugin_version").is_none() && s.get("skew").is_none(),
+        "{s}"
+    );
+    let old = tools_for(&ts).with_plugin_version(Some("0.1.0".into()));
+    let s = ok(old.status(Parameters(StatusArgs {})).await);
+    assert_eq!(s["plugin_version"], "0.1.0");
+    assert_eq!(s["skew"], true);
+    let same = tools_for(&ts).with_plugin_version(Some(env!("CARGO_PKG_VERSION").into()));
+    let s = ok(same.status(Parameters(StatusArgs {})).await);
+    assert_eq!(s["plugin_version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(s["skew"], false);
+}
