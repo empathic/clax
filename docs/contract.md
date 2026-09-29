@@ -60,6 +60,13 @@ and its text is:
 `error` may carry extra fields, named under each code below. A result field
 the daemon has no value for is `null`.
 
+The one exception: arguments that fail the tool's schema (a wrong type, a
+missing required argument, or an unknown argument, since every schema rejects
+unknown fields) are refused before the tool runs. Over MCP that is a
+protocol-level invalid-params error, not a tool result, so it has no
+`error.code` and no `feedback`. Pi reports it as an error result whose text is
+Pi's own validation message (`Validation failed for tool ...`), not JSON.
+
 ### Error codes every tool can return
 
 These come from the tool layer itself, not the daemon:
@@ -122,8 +129,6 @@ Local paths may be absolute or relative. The shim resolves a relative path
 against its session's working directory; the daemon's `/mcp` has no session
 and rejects relative paths with `invalid_args`; Pi resolves against the Pi
 session's working directory and drops a leading `@`.
-
-Unknown arguments are rejected by the argument schema.
 
 Result:
 
@@ -367,7 +372,9 @@ tools have no registered session (the daemon's `/mcp`, or a shim or Pi
 extension that has not yet reached a daemon). `session` is the session as it
 was when registered, so `last_seen_at` is not live. `daemon_version` (the
 daemon's version again) is present only when it differs from the version of
-the tools answering, which signals version skew. `watches` is always empty
+the tools answering, which signals version skew. The Pi extension currently
+compares against its own package version, not the Artifax version, so under
+Pi it is always present; a fix is scheduled. `watches` is always empty
 until phase 3.
 
 Errors: only those every tool can return.
@@ -378,6 +385,9 @@ A session is one harness conversation. Publishes made through a session's
 tools carry it (the `X-Artifax-Session` header on the daemon's publish routes)
 and the artifact records it as `owner_session_id`; the gallery shows which
 session published each artifact and whether that session is live.
+
+The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
+Code, else from `ARTIFAX_SESSION_ID` for any harness, else sends none.
 
 A session row has `harness` (`claude`, `codex`, `pi`), `harness_session_id`
 (the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
@@ -396,12 +406,12 @@ live rows so that a shim and a hook for the same conversation share one row:
   hook-only row for a later shim registration to adopt.
 - A given `cwd` fills an empty one on the matched row.
 
-Rows end when the shim's stdin closes (3 s deadline), when a `SessionEnd`
-hook or Pi's `session_shutdown` ends them, or when the daemon's reaper finds a
-row unseen for 300 seconds whose `pid` is unknown or no longer alive. The shim
-marks its row seen every 60 seconds; hook-only rows and Pi rows get no
-heartbeat. An ended row is never revived; a shim that
-reaches a restarted daemon registers again.
+Rows end when the shim's stdin closes or it receives SIGTERM (3 s deadline),
+when a `SessionEnd` hook or Pi's `session_shutdown` ends them, or when the
+daemon's reaper finds a row unseen for 300 seconds whose `pid` is unknown or no
+longer alive. The shim marks its row seen every 60 seconds; hook-only rows and
+Pi rows get no heartbeat. An ended row is never revived; a shim that reaches a
+restarted daemon registers again.
 
 ### Claude Code
 
@@ -409,10 +419,12 @@ Claude Code passes `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID` and
 `CLAUDE_PROJECT_DIR` to MCP servers. The shim registers with
 `harness_session_id` set to `CLAUDE_CODE_SESSION_ID` and `cwd` set to
 `CLAUDE_PROJECT_DIR` (else its own working directory), so the row is keyed by
-the Claude session ID from the start. The `SessionStart` hook
-(`artifax hook --agent claude session-start`) joins by that same ID and, when
-a daemon is running, adds the daemon URL to the session context. The
-`SessionEnd` hook ends every live row with that ID.
+the Claude session ID from the start. Hooks never start a daemon: when one is
+running, the `SessionStart` hook (`artifax hook --agent claude session-start`)
+joins by that same ID and adds the daemon URL to the session context, and the
+`SessionEnd` hook ends every live row with that ID; when none is running, they
+do nothing. If `CLAUDE_CODE_SESSION_ID` is absent, the shim registers as under
+Codex and the hook's parent-PID join applies.
 
 Without hooks the row is still keyed by the session ID; it ends when the shim
 exits or through the reaper.
@@ -421,7 +433,9 @@ exits or through the reaper.
 
 Codex passes only `PATH`, `PWD` and the variables the plugin's `env_vars`
 lists to MCP servers, and starts the shim in the plugin's own directory. The
-shim therefore registers with no `harness_session_id`, its parent process
+shim therefore registers with no `harness_session_id` (unless
+`ARTIFAX_SESSION_ID` is set in its environment, which the plugin does not
+forward), its parent process
 (Codex) as `parent_pid`, and Codex's working directory as `cwd`, read with
 `lsof` on macOS or from `/proc/<pid>/cwd` on Linux (empty when that fails). The
 `SessionStart` hook runs under a shell, so its parent is that shell; it sends

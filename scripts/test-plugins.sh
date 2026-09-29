@@ -135,7 +135,8 @@ for f in "${skills[@]}"; do
 done
 
 # The three skill copies (Claude Code, Codex, Pi) share the page contract word
-# for word, and docs/contract.md carries the same section.
+# for word (docs/contract.md carries the same section), and "What is not yet
+# available" is the same in all three.
 skill_copies=(plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md plugins/pi/skills/artifax/SKILL.md)
 # The lines from "## <heading>" up to, not including, the next "## " heading.
 section() {
@@ -148,7 +149,6 @@ section() {
 for f in "${skill_copies[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
     if [ "$(frontmatter "$f" name)" = "artifax" ]; then pass "$f is named artifax"; else fail "$f frontmatter name is not artifax"; fi
-    if [ -n "$(frontmatter "$f" description)" ]; then pass "$f has a description"; else fail "$f has no frontmatter description"; fi
     if [ -n "$(section "$f" "Page contract")" ]; then pass "$f has a Page contract section"; else fail "$f has no '## Page contract' section"; fi
 done
 same_section() {
@@ -175,7 +175,7 @@ sys.exit(0 if ok else 1)
 PY2
 then pass "plugins/pi/package.json lists and ships skills/"; else fail "plugins/pi/package.json must list skills in pi.skills and skills/ in files"; fi
 same_section "Page contract" "${skill_copies[@]}" docs/contract.md
-same_section "What is not yet available" plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md
+same_section "What is not yet available" "${skill_copies[@]}"
 
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then

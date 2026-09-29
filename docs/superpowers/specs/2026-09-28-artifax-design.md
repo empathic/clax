@@ -115,7 +115,7 @@ crates/
   artifax-core/                    types, IDs, storage (SQLite + files), anchors, events
   artifax-server/                  axum HTTP/SSE server, REST API, MCP-over-HTTP, sample provider
   artifax-mcp/                     stdio MCP shim (rmcp), session registration, feedback piggyback
-  artifax-hooks/                   per-harness hook protocol adapters (Claude, Codex, Pi JSON shapes)
+  artifax-hooks/                   per-harness hook protocol adapters (Claude Code, Codex JSON shapes)
   artifax-cli/                     binary `artifax`: serve, mcp, hook, publish, list, open, ..., doctor
 web/
   shell/                           Preact + TypeScript: gallery, artifact shell, comment sidebar
@@ -498,7 +498,7 @@ Reply with comments_reply, then comments_resolve when done.
 
 | Tier | Mechanism | Harnesses | Latency | Failure modes |
 |---|---|---|---|---|
-| 1 | Shim appends undelivered feedback to every tool result it returns | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
+| 1 | The shim (or the Pi extension) appends undelivered feedback to every tool result it returns | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
 | 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code (confirmed shape), Codex (stop hook exists; block semantics unverified) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
 | 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
@@ -730,7 +730,9 @@ plugin:
   with `pi -e <path>`. It needs the `artifax` CLI on `PATH` or `ARTIFAX_BIN`.
 - `src/artifax.ts` registers `artifax_<tool>` for the nine tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
-  identical to the MCP tools. The tools call the daemon's REST API over
+  identical to the MCP tools except one: `status` compares the daemon's
+  version with the Pi package's own version, so it reports `daemon_version`
+  on every call. The tools call the daemon's REST API over
   `node:http`, finding the daemon through `daemon.json` and starting it with
   `artifax serve` when none is running. A tool error is thrown, so Pi marks the
   result `isError`, with the JSON error body intact as its text.
@@ -740,6 +742,8 @@ plugin:
   finish); on `session_shutdown` it ends the session with a 3 s deadline. It
   sends no heartbeat: a row left behind when Pi exits uncleanly lapses through
   the daemon's reaper.
+- In phase 3 the extension appends undelivered feedback to its own tool
+  results (tier 1), as the shim does.
 - The `/artifax open [id] | list | status` command.
 - `skills/artifax/SKILL.md`: the same skill as the other plugins, with
   `artifax_<tool>` names, relative file paths resolved against the Pi session's
@@ -748,7 +752,9 @@ plugin:
 Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 
 1. Events: `session_start`, `session_shutdown`, `tool_call` and `tool_result`
-   exist.
+   exist. `tool_call` and `tool_result` carry `toolName` and `input` (and
+   `toolCallId`); no event carries `sessionId`, which comes from the context
+   (item 5).
 2. Tools: `registerTool` takes a TypeBox parameter schema and an async
    `execute` returning `{content, details}`.
 3. MCP: an extension cannot register an MCP server, hence the direct REST
@@ -759,7 +765,8 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
    it in spawned processes' environment.
 6. Install: `pi install <path>` (or `npm:<pkg>`); `package.json`'s
    `pi.extensions` is read.
-7. UI: `ctx.hasUI` and `ctx.ui.notify` exist.
+7. UI: `ctx.hasUI`, `ctx.ui.notify` and `ctx.ui.select(title, options)`
+   exist.
 
 ## 14. Security model
 
@@ -834,8 +841,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - **Plugins**: shell tests for `ensure-artifax.sh`; a Claude Code smoke test
   that loads the plugin from the repo path and runs a scripted session;
   structure checks and Codex's plugin validator for the Codex plugin, and a
-  manual Codex smoke test that installs it into a scratch `CODEX_HOME`; Pi extension against a mocked
-  `ExtensionAPI` until Pi is installed.
+  manual Codex smoke test that installs it into a scratch `CODEX_HOME`; the Pi extension through a fake
+  `ExtensionAPI` object against a real daemon, plus a manual `pi -p` smoke
+  test (`scripts/smoke-pi.sh`).
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
   web lint (oxlint) and typecheck, Playwright, and the plugin tests; CI runs
   the same script.
@@ -866,7 +874,7 @@ the daemon, `ensure-artifax.sh`, Claude Code plugin with skill and
 commands, Codex plugin, Pi extension, release
 workflow producing binaries with checksums. Ship when: an agent in Claude
 Code and Codex can publish and update an artifact through MCP, and the Pi
-extension passes its mocked tests.
+extension passes its tests against a real daemon.
 
 **Phase 3: comments and the feedback loop.** Threads, anchors, clips,
 comment mode, sidebar, viewer display names, send to agent, feedback rows
@@ -914,7 +922,7 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   directly and each §13 item is verified against Pi 0.73.1.
 - **Claude Code session ID in the shim.** Resolved in phase 2: Claude Code
   passes `CLAUDE_CODE_SESSION_ID` to MCP servers, so the parent-PID join in
-  §11 is used only by Codex.
+  §11 is primary for Codex and a fallback for Claude Code.
 - **Clip fidelity.** DOM-to-canvas rendering misses some CSS (backdrop
   filters, some SVG). If clips are frequently wrong, a headless-Chrome
   option behind a flag is the fallback; it is not in v1.
