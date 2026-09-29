@@ -25,7 +25,11 @@ tracing-subscriber.workspace = true
 futures = "0.3"
 mime_guess.workspace = true
 
+[features]
+test-routes = []
+
 [dev-dependencies]
+artifax-server = { path = ".", features = ["test-routes"] }
 bytes = "1"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true

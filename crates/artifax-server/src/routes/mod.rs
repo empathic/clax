@@ -7,7 +7,9 @@ pub mod shell;
 pub mod token;
 
 use crate::auth::RequireToken;
+use crate::error::ApiError;
 use crate::state::AppState;
+use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
     extract::DefaultBodyLimit,
@@ -15,30 +17,42 @@ use axum::{
     http::StatusCode,
     routing::{delete, get, post},
 };
+use std::time::Duration;
+use tower::ServiceBuilder;
+use tower::timeout::TimeoutLayer;
 use tower_http::cors::{Any, CorsLayer};
+
+async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
+    if err.is::<tower::timeout::error::Elapsed>() {
+        ApiError::new(
+            StatusCode::REQUEST_TIMEOUT,
+            "timeout",
+            format!("request exceeded {limit:?}"),
+        )
+    } else {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            err.to_string(),
+        )
+    }
+}
+
+fn with_timeout(router: Router<AppState>, d: Duration) -> Router<AppState> {
+    router.layer(
+        ServiceBuilder::new()
+            .layer(HandleErrorLayer::new(move |e| timeout_error(e, d)))
+            .layer(TimeoutLayer::new(d)),
+    )
+}
 
 pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>>) -> Router {
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     let publish_limit = DefaultBodyLimit::max(artifacts::PUBLISH_BODY_LIMIT);
     let asset_limit = DefaultBodyLimit::max(21 * 1024 * 1024);
-    let asset_routes = Router::new()
-        .route(
-            "/api/artifacts/{aid}/assets",
-            get(assets::list).post(assets::upload),
-        )
-        .route(
-            "/api/artifacts/{aid}/assets/{asset_id}",
-            delete(assets::delete),
-        )
-        .layer(asset_limit);
-    let mut r = Router::new()
-        .route("/healthz", get(health::healthz).layer(cors))
+    let api_fast = Router::new()
         .route("/api/token", get(token::token))
-        .route("/api/events", get(events::events))
-        .route(
-            "/api/artifacts",
-            get(artifacts::list).post(artifacts::create.layer(publish_limit)),
-        )
+        .route("/api/artifacts", get(artifacts::list))
         .route(
             "/api/artifacts/{aid}",
             get(artifacts::get)
@@ -47,14 +61,40 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route(
             "/api/artifacts/{aid}/versions",
-            get(artifacts::list_versions).post(artifacts::publish.layer(publish_limit)),
+            get(artifacts::list_versions),
         )
         .route(
             "/api/artifacts/{aid}/versions/{n}",
             get(artifacts::get_version),
         )
         .route("/api/artifacts/{aid}/files", get(artifacts::files))
-        .merge(asset_routes)
+        .route("/api/artifacts/{aid}/assets", get(assets::list))
+        .route(
+            "/api/artifacts/{aid}/assets/{asset_id}",
+            delete(assets::delete),
+        );
+    #[cfg(feature = "test-routes")]
+    let api_fast = api_fast.route("/api/_test/sleep/{ms}", get(test_sleep));
+    let api_fast = with_timeout(api_fast, state.request_timeout);
+    let api_slow = Router::new()
+        .route(
+            "/api/artifacts",
+            post(artifacts::create.layer(publish_limit)),
+        )
+        .route(
+            "/api/artifacts/{aid}/versions",
+            post(artifacts::publish.layer(publish_limit)),
+        )
+        .route(
+            "/api/artifacts/{aid}/assets",
+            post(assets::upload.layer(asset_limit)),
+        );
+    let api_slow = with_timeout(api_slow, state.publish_timeout);
+    let mut r = Router::new()
+        .route("/healthz", get(health::healthz).layer(cors))
+        .route("/api/events", get(events::events))
+        .merge(api_fast)
+        .merge(api_slow)
         .route("/", get(shell::shell))
         .route("/a/{aid}", get(shell::shell))
         .route("/a/{aid}/v/{n}", get(shell::shell))
@@ -77,4 +117,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         );
     }
     r.with_state(state)
+}
+
+#[cfg(feature = "test-routes")]
+async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> StatusCode {
+    tokio::time::sleep(Duration::from_millis(ms)).await;
+    StatusCode::OK
 }

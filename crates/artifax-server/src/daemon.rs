@@ -154,6 +154,9 @@ pub async fn serve(
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,
+        wrap_cache: Arc::new(crate::wrap_cache::WrapCache::new(64)),
+        request_timeout: Duration::from_secs(30),
+        publish_timeout: Duration::from_secs(120),
     };
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {

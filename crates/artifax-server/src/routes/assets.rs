@@ -4,6 +4,7 @@ use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::routes::artifacts::parse_id;
 use crate::state::AppState;
+use artifax_core::CoreError;
 use axum::Json;
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
@@ -46,7 +47,9 @@ pub async fn upload(
             .bytes()
             .await
             .map_err(|e| ApiError::bad_request("invalid_multipart", e.to_string()))?;
-        let asset = s.store.add_asset(&id, &content_type, &bytes)?;
+        let asset = s
+            .store_call(move |st| st.add_asset(&id, &content_type, &bytes))
+            .await?;
         let url = format!("/_blob/{}", asset.id);
         return Ok((
             StatusCode::CREATED,
@@ -65,8 +68,13 @@ pub async fn list(
 ) -> Result<Json<Value>, ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
-    s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
-    Ok(Json(json!({"assets": s.store.list_assets(&id)?})))
+    let assets = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.list_assets(&id)
+        })
+        .await?;
+    Ok(Json(json!({"assets": assets})))
 }
 
 pub async fn delete(
@@ -76,13 +84,12 @@ pub async fn delete(
 ) -> Result<StatusCode, ApiError> {
     let (aid, asset_id) = path(params)?;
     let id = parse_id(&aid)?;
-    match s.store.get_asset(&asset_id)? {
-        Some((a, _)) if a.artifact_id == id.as_str() => {
-            s.store.delete_asset(&asset_id)?;
-            Ok(StatusCode::NO_CONTENT)
-        }
-        _ => Err(ApiError::not_found()),
-    }
+    s.store_call(move |st| match st.get_asset(&asset_id)? {
+        Some((a, _)) if a.artifact_id == id.as_str() => st.delete_asset(&asset_id),
+        _ => Err(CoreError::NotFound),
+    })
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn blob(
@@ -91,9 +98,8 @@ pub async fn blob(
 ) -> Result<Response, ApiError> {
     let asset_id = path(asset_id)?;
     let (asset, path) = s
-        .store
-        .get_asset(&asset_id)?
-        .ok_or_else(ApiError::not_found)?;
+        .store_call(move |st| st.get_asset(&asset_id)?.ok_or(CoreError::NotFound))
+        .await?;
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| ApiError::not_found())?;

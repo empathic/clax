@@ -1,11 +1,13 @@
 //! HTTP server for Artifax: REST API, content serving, SSE, embedded UI.
 
 pub mod auth;
+pub mod blocking;
 pub mod daemon;
 pub mod error;
 pub mod host;
 pub mod routes;
 pub mod state;
+pub mod wrap_cache;
 
 pub use state::AppState;
 

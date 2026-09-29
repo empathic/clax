@@ -4,6 +4,7 @@ use crate::error::ApiError;
 use crate::host::OnArtifactOrigin;
 use crate::routes::artifacts::{parse_id, path};
 use crate::state::AppState;
+use artifax_core::CoreError;
 use artifax_core::model::CONTRACT_VERSION;
 use artifax_core::publish::INDEX;
 use artifax_core::wrap::wrap_document;
@@ -45,16 +46,30 @@ pub async fn index(
 
 async fn serve_index(s: &AppState, aid: &str, n: u32) -> Result<Response, ApiError> {
     let id = parse_id(aid)?;
-    s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
-    let (disk, _) = s
-        .store
-        .file_path(&id, n, INDEX)?
-        .ok_or_else(ApiError::not_found)?;
-    let page = tokio::fs::read_to_string(&disk)
-        .await
-        .map_err(|_| ApiError::not_found())?;
-    let html = wrap_document(&page, id.as_str(), n, CONTRACT_VERSION);
-    Ok(([(header::CACHE_CONTROL, "no-store")], Html(html)).into_response())
+    let cache = s.wrap_cache.clone();
+    let html = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            let (disk, _) = st.file_path(&id, n, INDEX)?.ok_or(CoreError::NotFound)?;
+            cache
+                .get_or_wrap(id.as_str(), n, || {
+                    std::fs::read_to_string(&disk)
+                        .map(|page| wrap_document(&page, id.as_str(), n, CONTRACT_VERSION))
+                })
+                .map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::NotFound {
+                        CoreError::NotFound
+                    } else {
+                        CoreError::Io(e)
+                    }
+                })
+        })
+        .await?;
+    Ok((
+        [(header::CACHE_CONTROL, "no-store")],
+        Html(html.to_string()),
+    )
+        .into_response())
 }
 
 pub async fn file(
@@ -68,9 +83,8 @@ pub async fn file(
         return Ok(Redirect::permanent("./").into_response());
     }
     let (disk, meta) = s
-        .store
-        .file_path(&id, n, &rel)?
-        .ok_or_else(ApiError::not_found)?;
+        .store_call(move |st| st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound))
+        .await?;
     let f = tokio::fs::File::open(&disk)
         .await
         .map_err(|_| ApiError::not_found())?;

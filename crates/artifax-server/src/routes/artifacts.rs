@@ -4,7 +4,7 @@ use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
 use artifax_core::publish::{PublishRequest, validate};
-use artifax_core::{ArtifactId, Event, MetaPatch};
+use artifax_core::{ArtifactId, CoreError, Event, MetaPatch};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::rejection::PathRejection;
@@ -42,7 +42,9 @@ pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> 
 }
 
 pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(json!({"artifacts": s.store.list_artifacts()?})))
+    Ok(Json(
+        json!({"artifacts": s.store_call(|st| st.list_artifacts()).await?}),
+    ))
 }
 
 pub async fn create(
@@ -51,7 +53,7 @@ pub async fn create(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body(req)?)?;
-    let (artifact, version) = s.store.create_artifact(p)?;
+    let (artifact, version) = s.store_call(move |st| st.create_artifact(p)).await?;
     s.events.publish(Event::Version {
         artifact_id: artifact.id.clone(),
         n: version.n,
@@ -68,10 +70,14 @@ pub async fn get(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let artifact = s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
-    Ok(Json(
-        json!({"artifact": artifact, "versions": s.store.list_versions(&id)?}),
-    ))
+    let (artifact, versions) = s
+        .store_call(move |st| {
+            let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            let v = st.list_versions(&id)?;
+            Ok((a, v))
+        })
+        .await?;
+    Ok(Json(json!({"artifact": artifact, "versions": versions})))
 }
 
 /// Capabilities are set through publish until the runtime bridge honours them.
@@ -92,15 +98,19 @@ pub async fn patch(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
-    let artifact = s.store.update_meta(
-        &id,
-        MetaPatch {
-            title: b.title,
-            description: b.description,
-            icon: b.icon,
-            pinned: b.pinned,
-        },
-    )?;
+    let artifact = s
+        .store_call(move |st| {
+            st.update_meta(
+                &id,
+                MetaPatch {
+                    title: b.title,
+                    description: b.description,
+                    icon: b.icon,
+                    pinned: b.pinned,
+                },
+            )
+        })
+        .await?;
     Ok(Json(json!({"artifact": artifact})))
 }
 
@@ -110,7 +120,9 @@ pub async fn delete(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    s.store.delete_artifact(&id)?;
+    let del = id.clone();
+    s.store_call(move |st| st.delete_artifact(&del)).await?;
+    s.wrap_cache.remove_artifact(id.as_str());
     s.events.publish(Event::ArtifactDeleted {
         artifact_id: id.as_str().to_string(),
     });
@@ -122,8 +134,13 @@ pub async fn list_versions(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
-    Ok(Json(json!({"versions": s.store.list_versions(&id)?})))
+    let versions = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.list_versions(&id)
+        })
+        .await?;
+    Ok(Json(json!({"versions": versions})))
 }
 
 pub async fn publish(
@@ -134,7 +151,8 @@ pub async fn publish(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     let p = validate(body(req)?)?;
-    let (artifact, version) = s.store.publish_version(&id, p)?;
+    let pid = id.clone();
+    let (artifact, version) = s.store_call(move |st| st.publish_version(&pid, p)).await?;
     s.events.publish(Event::Version {
         artifact_id: artifact.id.clone(),
         n: version.n,
@@ -152,11 +170,12 @@ pub async fn get_version(
 ) -> Result<Json<Value>, ApiError> {
     let (aid, n) = path(params)?;
     let id = parse_id(&aid)?;
-    s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
     let v = s
-        .store
-        .get_version(&id, n)?
-        .ok_or_else(ApiError::not_found)?;
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.get_version(&id, n)?.ok_or(CoreError::NotFound)
+        })
+        .await?;
     Ok(Json(json!({"version": v})))
 }
 
@@ -165,10 +184,12 @@ pub async fn files(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let a = s.store.get_artifact(&id)?.ok_or_else(ApiError::not_found)?;
     let v = s
-        .store
-        .get_version(&id, a.current_version)?
-        .ok_or_else(ApiError::not_found)?;
+        .store_call(move |st| {
+            let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.get_version(&id, a.current_version)?
+                .ok_or(CoreError::NotFound)
+        })
+        .await?;
     Ok(Json(json!({"files": v.files, "version": v.n})))
 }

@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 use artifax_core::{EventBus, Home, Store};
+use artifax_server::wrap_cache::WrapCache;
 use artifax_server::{AppState, build_router};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 
 pub struct TestServer {
     pub base: String,
@@ -14,11 +16,15 @@ pub struct TestServer {
 
 impl TestServer {
     pub async fn spawn() -> TestServer {
+        Self::spawn_with(|_| {}).await
+    }
+
+    pub async fn spawn_with(f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let store = Arc::new(Store::open(&home).unwrap());
         let token = "test-token".to_string();
-        let state = AppState {
+        let mut state = AppState {
             store,
             home: home.clone(),
             token: token.clone(),
@@ -26,7 +32,11 @@ impl TestServer {
             started_at: Store::now(),
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
+            wrap_cache: Arc::new(WrapCache::new(64)),
+            request_timeout: Duration::from_secs(30),
+            publish_timeout: Duration::from_secs(120),
         };
+        f(&mut state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = build_router(state);
