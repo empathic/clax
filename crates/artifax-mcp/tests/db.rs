@@ -473,6 +473,14 @@ fn versions_and_limits_carry_their_bounds_in_the_schema() {
     ] {
         assert_eq!(min(&s, "if_version"), Some(1), "{s:?}");
     }
+    let b = schema_for_type::<DbBatchArgs>();
+    assert_eq!(
+        (
+            b["properties"]["writes"]["minItems"].as_u64(),
+            b["properties"]["writes"]["maxItems"].as_u64()
+        ),
+        (Some(1), Some(50))
+    );
     let q = schema_for_type::<DbQueryOpts>();
     assert_eq!(
         (
@@ -481,4 +489,152 @@ fn versions_and_limits_carry_their_bounds_in_the_schema() {
         ),
         (Some(1), Some(1000))
     );
+}
+
+#[tokio::test]
+async fn schema_bounds_hold_at_runtime() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let aid = artifact(&ts, json!({})).await;
+    let args_err = |e: Value, message: &str| {
+        assert_eq!(
+            (e["code"].as_str(), e["message"].as_str()),
+            (Some("invalid_args"), Some(message)),
+            "{e}"
+        );
+    };
+    args_err(
+        err(t
+            .db_set(Parameters(write(&aid, "t1", json!({}), Some(0))))
+            .await),
+        "if_version is 1 or more",
+    );
+    args_err(
+        err(t
+            .db_update(Parameters(write(&aid, "t1", json!({}), Some(0))))
+            .await),
+        "if_version is 1 or more",
+    );
+    args_err(
+        err(t
+            .db_delete(Parameters(DbDeleteArgs {
+                url_or_id: aid.clone(),
+                collection: "tasks".into(),
+                doc_id: "t1".into(),
+                if_version: Some(0),
+                as_level: None,
+            }))
+            .await),
+        "if_version is 1 or more",
+    );
+    args_err(
+        err(t
+            .db_str_replace(Parameters(DbStrReplaceArgs {
+                url_or_id: aid.clone(),
+                collection: "tasks".into(),
+                doc_id: "t1".into(),
+                field: "f".into(),
+                old_str: "a".into(),
+                new_str: "b".into(),
+                replace_all: None,
+                if_version: Some(0),
+                as_level: None,
+            }))
+            .await),
+        "if_version is 1 or more",
+    );
+    let del0 = DbBatchWrite {
+        op: DbBatchOp::Delete,
+        collection: "tasks".into(),
+        doc_id: "t1".into(),
+        data: None,
+        file_path: None,
+        if_version: Some(0),
+    };
+    args_err(
+        err(t
+            .db_batch(Parameters(DbBatchArgs {
+                url_or_id: aid.clone(),
+                writes: vec![del0],
+                as_level: None,
+            }))
+            .await),
+        "if_version is 1 or more",
+    );
+    args_err(
+        err(t
+            .db_batch(Parameters(DbBatchArgs {
+                url_or_id: aid.clone(),
+                writes: vec![],
+                as_level: None,
+            }))
+            .await),
+        "writes holds 1 to 50 entries",
+    );
+    for limit in [0, 1001] {
+        let q = DbQueryArgs {
+            url_or_id: aid.clone(),
+            collection: "tasks".into(),
+            query: Some(DbQueryOpts {
+                limit: Some(limit),
+                ..Default::default()
+            }),
+            as_level: None,
+        };
+        args_err(
+            err(t.db_list(Parameters(q.clone())).await),
+            "query.limit is 1 to 1000",
+        );
+        args_err(
+            err(t.db_query(Parameters(q)).await),
+            "query.limit is 1 to 1000",
+        );
+    }
+}
+
+#[tokio::test]
+async fn a_doc_id_is_one_path_segment() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let aid = artifact(&ts, json!({})).await;
+    let bad = |e: Value| {
+        assert_eq!(
+            (e["code"].as_str(), e["message"].as_str()),
+            (
+                Some("invalid_argument"),
+                Some("doc_id is one path segment; 'b1/columns/c1' contains /")
+            ),
+            "{e}"
+        );
+    };
+    // Four segments would pass as a document path, in another collection.
+    bad(err(t
+        .db_get(Parameters(DbGetArgs {
+            url_or_id: aid.clone(),
+            collection: "boards".into(),
+            doc_id: "b1/columns/c1".into(),
+            as_level: None,
+        }))
+        .await));
+    bad(err(t
+        .db_set(Parameters(DbWriteArgs {
+            doc_id: "b1/columns/c1".into(),
+            ..write(&aid, "x", json!({}), None)
+        }))
+        .await));
+    let entry = DbBatchWrite {
+        op: DbBatchOp::Delete,
+        collection: "boards".into(),
+        doc_id: "b1/columns/c1".into(),
+        data: None,
+        file_path: None,
+        if_version: None,
+    };
+    bad(err(t
+        .db_batch(Parameters(DbBatchArgs {
+            url_or_id: aid,
+            writes: vec![entry],
+            as_level: None,
+        }))
+        .await));
 }

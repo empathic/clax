@@ -442,14 +442,14 @@ export class DaemonClient {
 
   /** `POST /api/artifacts/<id>/docs:batch`: `{results}`. */
   docBatch(id: string, body: unknown, asLevel?: string): Promise<any> {
-    const q = asLevel === undefined ? "" : `?as_level=${asLevel}`;
-    return this.json(`/api/artifacts/${id}/docs:batch${q}`, this.jsonBody("POST", body));
+    const q = new URLSearchParams(asLevel === undefined ? {} : { as_level: asLevel }).toString();
+    return this.json(`/api/artifacts/${id}/docs:batch${q ? `?${q}` : ""}`, this.jsonBody("POST", body));
   }
 
   /** `POST /api/artifacts/<id>/docs:str_replace`: `{doc}`. */
   docStrReplace(id: string, body: unknown, asLevel?: string): Promise<any> {
-    const q = asLevel === undefined ? "" : `?as_level=${asLevel}`;
-    return this.json(`/api/artifacts/${id}/docs:str_replace${q}`, this.jsonBody("POST", body));
+    const q = new URLSearchParams(asLevel === undefined ? {} : { as_level: asLevel }).toString();
+    return this.json(`/api/artifacts/${id}/docs:str_replace${q ? `?${q}` : ""}`, this.jsonBody("POST", body));
   }
 
   /** `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`. */

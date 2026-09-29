@@ -687,6 +687,27 @@ describe("comments", () => {
     expect(json(order).error, "a bad collection is reported before misplaced filters").toEqual({
       code: "invalid_argument", message: "'tasks/t1' has 2 segments; a collection path has an odd number",
     });
+    const failsWith = async (tool: string, args: Record<string, unknown>, error: Record<string, string>) => {
+      const r = await pi.callToolAsPi(tool, { url_or_id: aid, ...args }, ctx);
+      expect(r.isError, `${tool} ${JSON.stringify(args)}`).toBe(true);
+      expect(json(r).error, `${tool} ${JSON.stringify(args)}`).toEqual(error);
+    };
+    const pin0 = { code: "invalid_args", message: "if_version is 1 or more" };
+    await failsWith("artifax_db_set", { collection: "tasks", doc_id: "t1", data: {}, if_version: 0 }, pin0);
+    await failsWith("artifax_db_update", { collection: "tasks", doc_id: "t1", data: {}, if_version: 0 }, pin0);
+    await failsWith("artifax_db_delete", { collection: "tasks", doc_id: "t1", if_version: 0 }, pin0);
+    await failsWith("artifax_db_str_replace", { collection: "tasks", doc_id: "t1", field: "f", old_str: "a", new_str: "b", if_version: 0 }, pin0);
+    await failsWith("artifax_db_batch", { writes: [{ op: "delete", collection: "tasks", doc_id: "t1", if_version: 0 }] }, pin0);
+    await failsWith("artifax_db_batch", { writes: [] }, { code: "invalid_args", message: "writes holds 1 to 50 entries" });
+    for (const limit of [0, 1001]) {
+      for (const tool of ["artifax_db_list", "artifax_db_query"]) {
+        await failsWith(tool, { collection: "tasks", query: { limit } }, { code: "invalid_args", message: "query.limit is 1 to 1000" });
+      }
+    }
+    const oneSegment = { code: "invalid_argument", message: "doc_id is one path segment; 'b1/columns/c1' contains /" };
+    await failsWith("artifax_db_get", { collection: "boards", doc_id: "b1/columns/c1" }, oneSegment);
+    await failsWith("artifax_db_set", { collection: "boards", doc_id: "b1/columns/c1", data: {} }, oneSegment);
+    await failsWith("artifax_db_batch", { writes: [{ op: "delete", collection: "boards", doc_id: "b1/columns/c1" }] }, oneSegment);
     for (const [tool, args] of [["artifax_db_get", { doc_id: "p" }], ["artifax_db_list", {}]] as const) {
       const me = await pi.callToolAsPi(tool, { url_or_id: aid, collection: "data/users/me", ...args }, ctx);
       expect(me.isError, tool).toBe(true);
@@ -707,14 +728,25 @@ describe("comments", () => {
         const branches = (n?.anyOf ?? n?.oneOf)?.filter((b: any) => b.type !== "null");
         return branches?.length === 1 ? resolve({ ...n, anyOf: undefined, oneOf: undefined, ...branches[0] }) : n;
       };
-      // Property names, required names, base types and numeric bounds, down
+      // The allowed values of an enum node, as `enum` or as `const` branches
+      // (schemars writes documented variants that way); null is dropped.
+      const enumOf = (n: any): unknown[] | undefined => {
+        const branches = n.oneOf ?? n.anyOf;
+        const values = n.enum ?? (branches?.every((b: any) => b.const !== undefined || b.type === "null") ? branches.map((b: any) => b.const) : undefined);
+        return values?.filter((v: unknown) => v !== null && v !== undefined).sort();
+      };
+      // Property names, required names, base types, enums, bounds, and closed objects, down
       // through nested objects and array items.
       const compare = (o: any, t: any, at: string) => {
         t = resolve(t);
         if (!o || !t || typeof o !== "object" || typeof t !== "object") return;
         if (o.type !== undefined && t.type !== undefined) expect(base(o.type), at).toBe(base(t.type));
-        for (const k of ["minimum", "maximum"]) {
+        for (const k of ["minimum", "maximum", "minItems", "maxItems"]) {
           if (o[k] !== undefined || t[k] !== undefined) expect(o[k], `${at}.${k}`).toBe(t[k]);
+        }
+        expect(enumOf(o), `${at}.enum`).toEqual(enumOf(t));
+        if (base(o.type) === "object" || base(t.type) === "object") {
+          expect(o.additionalProperties === false, `${at}.additionalProperties`).toBe(t.additionalProperties === false);
         }
         if (o.properties !== undefined || t.properties !== undefined) {
           expect(Object.keys(o.properties ?? {}).sort(), at).toEqual(Object.keys(t.properties ?? {}).sort());

@@ -306,10 +306,16 @@ function dbSegments(path: string): string[] {
   return segs;
 }
 
+/** `invalid_args` for an `if_version` of 0: versions start at 1. */
+function checkPin(ifVersion: number | undefined): void {
+  if (ifVersion !== undefined && ifVersion < 1) throw invalid("if_version is 1 or more");
+}
+
 /** `collection/doc_id`, checked as `artifax_core::db::doc_path` checks it;
- * `data/users/me` is refused ([`refuseMe`]). */
+ * `doc_id` is one segment. `data/users/me` is refused ([`refuseMe`]). */
 function dbPath(collection: string, docId: string): string {
   refuseMe(collection);
+  if (docId.includes("/")) throw dbInvalid(`doc_id is one path segment; '${docId}' contains /`);
   const path = `${collection}/${docId}`;
   const segs = dbSegments(path);
   if (segs.length % 2 !== 0) throw dbInvalid(`'${path}' has ${segs.length} segments; a document path has an even number`);
@@ -872,6 +878,7 @@ class Tools {
     refuseMe(a.collection);
     collectionPath(a.collection);
     const q = a.query ?? {};
+    if (q.limit !== undefined && !(q.limit >= 1 && q.limit <= 1000)) throw invalid("query.limit is 1 to 1000");
     if (!allowFilters && (q.where !== undefined || q.order_by !== undefined)) {
       throw invalid("where and order_by belong to db_query; db_list pages a collection in document ID order");
     }
@@ -891,6 +898,7 @@ class Tools {
 
   async dbWrite(ctx: ExtensionContext, a: Static<typeof DbWriteArgs>, update: boolean): Promise<Json> {
     const { id } = artifactRef(a.url_or_id);
+    checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
     const body: Json = { data: this.dbBody(ctx, a.data as Json | undefined, a.file_path) };
     if (a.if_version !== undefined) body.if_version = a.if_version;
@@ -903,6 +911,7 @@ class Tools {
 
   async dbDelete(ctx: ExtensionContext, a: Static<typeof DbDeleteArgs>): Promise<Json> {
     const { id } = artifactRef(a.url_or_id);
+    checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
     const c = this.clientFor(ctx);
     const r = await this.call(() => c.docDelete(id, path, a.if_version, a.as_level));
@@ -911,6 +920,7 @@ class Tools {
 
   async dbStrReplace(ctx: ExtensionContext, a: Static<typeof DbStrReplaceArgs>): Promise<Json> {
     const { id } = artifactRef(a.url_or_id);
+    checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
     const body: Json = { path, field: a.field, old_str: a.old_str, new_str: a.new_str, replace_all: a.replace_all ?? false };
     if (a.if_version !== undefined) body.if_version = a.if_version;
@@ -923,6 +933,7 @@ class Tools {
     const { id } = artifactRef(a.url_or_id);
     if (a.writes.length < 1 || a.writes.length > 50) throw invalid("writes holds 1 to 50 entries");
     const writes = a.writes.map(w => {
+      checkPin(w.if_version);
       const path = dbPath(w.collection, w.doc_id);
       const e: Json = { op: w.op, path };
       if (w.op === "delete") {

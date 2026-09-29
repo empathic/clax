@@ -377,6 +377,7 @@ pub struct DbBatchArgs {
     /// Artifact URL or ID.
     pub url_or_id: String,
     /// 1 to 50 writes, each document at most once.
+    #[schemars(length(min = 1, max = 50))]
     pub writes: Vec<DbBatchWrite>,
     /// Act at this lower access level (`view`, `interact`, or `admin`) to check what the page's rules allow; it narrows your access, never raises it.
     pub as_level: Option<DbLevel>,
@@ -569,10 +570,25 @@ fn refuse_me(collection: &str) -> Result<(), CallToolResult> {
     Ok(())
 }
 
-/// The document path `collection/doc_id`, checked against the path grammar.
-/// `data/users/me` is refused ([`refuse_me`]).
+/// `invalid_args` for an `if_version` of 0: versions start at 1.
+fn check_pin(if_version: Option<u64>) -> Result<(), CallToolResult> {
+    match if_version {
+        Some(0) => Err(invalid("if_version is 1 or more")),
+        _ => Ok(()),
+    }
+}
+
+/// The document path `collection/doc_id`, checked against the path grammar;
+/// `doc_id` is one segment. `data/users/me` is refused ([`refuse_me`]).
 fn db_path(collection: &str, doc_id: &str) -> Result<String, CallToolResult> {
     refuse_me(collection)?;
+    if doc_id.contains('/') {
+        return Err(render::error(
+            "invalid_argument",
+            format!("doc_id is one path segment; '{doc_id}' contains /"),
+            json!({}),
+        ));
+    }
     artifax_core::db::doc_path(&format!("{collection}/{doc_id}"))
         .map(|d| d.path)
         .map_err(|e| render::error("invalid_argument", e.to_string(), json!({})))
@@ -1204,6 +1220,9 @@ impl ArtifaxTools {
         artifax_core::db::collection_path(&a.collection)
             .map_err(|e| render::error("invalid_argument", e.to_string(), json!({})))?;
         let q = a.query.unwrap_or_default();
+        if q.limit.is_some_and(|l| !(1..=1000).contains(&l)) {
+            return Err(invalid("query.limit is 1 to 1000"));
+        }
         if !allow_filters && (q.where_.is_some() || q.order_by.is_some()) {
             return Err(invalid(
                 "where and order_by belong to db_query; db_list pages a collection in document ID order",
@@ -1244,6 +1263,7 @@ impl ArtifaxTools {
 
     async fn do_db_write(&self, a: DbWriteArgs, update: bool) -> Outcome {
         let id = artifact_id(&a.url_or_id)?;
+        check_pin(a.if_version)?;
         self.prepare_session(a.file_path.as_deref().into_iter())
             .await;
         let path = db_path(&a.collection, &a.doc_id)?;
@@ -1271,6 +1291,7 @@ impl ArtifaxTools {
 
     async fn do_db_delete(&self, a: DbDeleteArgs) -> Outcome {
         let id = artifact_id(&a.url_or_id)?;
+        check_pin(a.if_version)?;
         let path = db_path(&a.collection, &a.doc_id)?;
         let r = self
             .client
@@ -1282,6 +1303,7 @@ impl ArtifaxTools {
 
     async fn do_db_str_replace(&self, a: DbStrReplaceArgs) -> Outcome {
         let id = artifact_id(&a.url_or_id)?;
+        check_pin(a.if_version)?;
         let path = db_path(&a.collection, &a.doc_id)?;
         let mut body = json!({"path": path, "field": a.field, "old_str": a.old_str, "new_str": a.new_str, "replace_all": a.replace_all.unwrap_or(false)});
         if let Some(v) = a.if_version {
@@ -1304,6 +1326,7 @@ impl ArtifaxTools {
             .await;
         let mut writes = Vec::with_capacity(a.writes.len());
         for w in a.writes {
+            check_pin(w.if_version)?;
             let path = db_path(&w.collection, &w.doc_id)?;
             let mut e = json!({"op": w.op, "path": path});
             match w.op {
