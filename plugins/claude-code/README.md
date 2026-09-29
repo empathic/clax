@@ -19,10 +19,12 @@ authenticity. Set
 
 ## What it adds
 
-- The `artifax` MCP server (`artifax mcp --agent claude`): tools `publish`,
-  `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`,
-  `comments_read`, `comments_reply`, `comments_resolve`, `watch`,
-  `wait_for_feedback`.
+- The `artifax` MCP server (`artifax mcp --agent claude`): twenty-two tools,
+  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+  `asset_upload`, `status`, `comments_read`, `comments_reply`,
+  `comments_resolve`, `watch`, `wait_for_feedback`, and the data tools
+  `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
+  `db_str_replace`, `db_batch`.
 - Hooks (`hooks/hooks.json`), all run as `artifax hook --agent claude <event>`.
   Hooks never start a daemon (the first tool call does); with none running
   they do nothing.

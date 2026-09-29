@@ -254,6 +254,14 @@ for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Comment loop")" ]; then pass "$f has a Comment loop section"; else fail "$f has no '## Comment loop' section"; fi
 done
 same_section "Comment loop" "${skill_copies[@]}"
+same_section "Data (db)" "${skill_copies[@]}"
+
+# Every tool list names exactly the tools in plugins/pi/test/fixtures/contract.json:
+# the generated block in each skill intro, and the hand-written lists in
+# docs/contract.md and the READMEs, whose spelled-out count must match too.
+if out="$(python3 scripts/sync-skill-tools.py --check 2>&1)"; then
+    pass "the skills, docs/contract.md and the READMEs list exactly the fixture's tools"
+else fail "$out"; fi
 
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then

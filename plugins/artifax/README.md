@@ -29,10 +29,12 @@ authenticity. Set
 
 ## What it adds
 
-- The `artifax` MCP server (`artifax mcp --agent codex`): tools `publish`,
-  `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`,
-  `comments_read`, `comments_reply`, `comments_resolve`, `watch`,
-  `wait_for_feedback`, which Codex names `mcp__artifax__<tool>`. The first
+- The `artifax` MCP server (`artifax mcp --agent codex`): twenty-two tools,
+  `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
+  `asset_upload`, `status`, `comments_read`, `comments_reply`,
+  `comments_resolve`, `watch`, `wait_for_feedback`, and the data tools
+  `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
+  `db_str_replace`, `db_batch`, which Codex names `mcp__artifax__<tool>`. The first
   tool call starts the daemon when none is running.
 - The `artifax` skill: when to publish, the page contract, and the comment
   loop.
