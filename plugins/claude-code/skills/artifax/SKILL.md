@@ -175,5 +175,5 @@ reachable.
 - Comments: reading the person's comments on a page arrives in phase 3. Until
   then `feedback` is always empty; do not promise that you will see comments.
 - Capabilities: `window.claude.use(name)` resolves `null` for every name until
-  phase 4, and `capabilities` on `publish` is not acted on yet. Do not build pages that
+  phase 4, and `capabilities` on `publish` is stored with the artifact; it has no effect until phase 4. Do not build pages that
   depend on shared state, live data, or asking Claude questions.

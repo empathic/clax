@@ -5,10 +5,24 @@
 # Builds artifax, starts a daemon in a scratch ARTIFAX_HOME, has Claude publish a
 # page through the MCP shim, then verifies the page and the registered session.
 #
-# Usage: scripts/smoke-claude.sh [scratch-dir]
+# Modes:
+#   --plugin-dir  (default when `claude` supports the flag) loads plugins/claude-code
+#                 as a plugin, so the installer script, MCP shim, and both hooks run.
+#                 Also asserts the session carries a harness session ID and is
+#                 ended (SessionEnd) after the run.
+#   --mcp-config  points --mcp-config at target/debug/artifax mcp --agent claude.
+#
+# Usage: scripts/smoke-claude.sh [--plugin-dir|--mcp-config] [scratch-dir]
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
+MODE=""
+case "${1:-}" in
+    --plugin-dir|--mcp-config) MODE="$1"; shift ;;
+esac
+if [ -z "$MODE" ]; then
+    if claude --help 2>&1 | grep -q -- '--plugin-dir'; then MODE=--plugin-dir; else MODE=--mcp-config; fi
+fi
 SCRATCH="${1:-${TMPDIR:-/tmp}/artifax-smoke-claude}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd)"
 HOME_DIR="$SCRATCH/home"
@@ -32,8 +46,18 @@ echo "smoke: starting daemon in $HOME_DIR"
 BASE="$("$BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')"
 echo "smoke: daemon at $BASE"
 
-CONFIG="$SCRATCH/mcp.json"
-python3 - "$CONFIG" "$BIN" "$HOME_DIR" <<'PY'
+PROMPT="Publish a one-line HTML page titled Smoke via the artifax publish tool, then call the artifax status tool. Reply with only the artifact URL."
+TOOLS="mcp__artifax__publish mcp__artifax__status"
+# A plugin's MCP server is named plugin_<plugin>_<server>.
+PLUGIN_TOOLS="mcp__plugin_artifax_artifax__publish mcp__plugin_artifax_artifax__status"
+echo "smoke: running claude ($MODE)"
+if [ "$MODE" = --plugin-dir ]; then
+    export ARTIFAX_BIN="$BIN"
+    OUT="$(cd "$CWD" && claude -p "$PROMPT" --max-turns 4 --plugin-dir "$REPO/plugins/claude-code" --allowedTools $PLUGIN_TOOLS </dev/null)" \
+        || die "claude exited non-zero; output: $OUT"
+else
+    CONFIG="$SCRATCH/mcp.json"
+    python3 - "$CONFIG" "$BIN" "$HOME_DIR" <<'PY'
 import json, sys
 config, binary, home = sys.argv[1:4]
 json.dump({"mcpServers": {"artifax": {
@@ -42,10 +66,9 @@ json.dump({"mcpServers": {"artifax": {
     "env": {"ARTIFAX_HOME": home, "ARTIFAX_NO_OPEN": "1"},
 }}}, open(config, "w"), indent=2)
 PY
-
-echo "smoke: running claude"
-OUT="$(cd "$CWD" && claude -p "Publish a one-line HTML page titled Smoke via the artifax publish tool, then call the artifax status tool. Reply with only the artifact URL." --max-turns 4 --mcp-config "$CONFIG" --strict-mcp-config --allowedTools mcp__artifax__publish mcp__artifax__status </dev/null)" \
-    || die "claude exited non-zero; output: $OUT"
+    OUT="$(cd "$CWD" && claude -p "$PROMPT" --max-turns 4 --mcp-config "$CONFIG" --strict-mcp-config --allowedTools $TOOLS </dev/null)" \
+        || die "claude exited non-zero; output: $OUT"
+fi
 echo "smoke: claude replied: $OUT"
 
 URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"]*/a/[a-z0-9]+' | head -1 || true)"
@@ -60,12 +83,25 @@ CODE="$(curl -s -o "$SCRATCH/page.html" -w '%{http_code}' "$BASE/c/$ID/v/1/")"
 grep -q Smoke "$SCRATCH/page.html" || die "page $BASE/c/$ID/v/1/ does not contain Smoke"
 echo "smoke: $BASE/a/$ID is 200 and its page contains Smoke"
 
-SESSIONS="$(curl -s "$BASE/api/sessions?live=true")"
-printf '%s' "$SESSIONS" | python3 -c '
+sessions_check() { # $1: python predicate over `sessions`
+    curl -s "$BASE/api/sessions" | python3 -c "
 import json, sys
-sessions = json.load(sys.stdin)["sessions"]
-sys.exit(0 if any(s.get("harness") == "claude" for s in sessions) else 1)
-' || die "no live claude session in /api/sessions?live=true: $SESSIONS"
-echo "smoke: live claude session registered"
+sessions = [s for s in json.load(sys.stdin)['sessions'] if s.get('harness') == 'claude']
+sys.exit(0 if ($1) else 1)"
+}
+sessions_check "sessions" || die "no claude session in /api/sessions"
+echo "smoke: claude session registered"
+if [ "$MODE" = --plugin-dir ]; then
+    sessions_check "any(s.get('harness_session_id') for s in sessions)" \
+        || die "no claude session carries a harness_session_id"
+    echo "smoke: session carries a harness session ID"
+    ended=""
+    for _ in $(seq 1 20); do
+        if sessions_check "any(s.get('ended_at') for s in sessions)"; then ended=1; break; fi
+        sleep 0.5
+    done
+    [ -n "$ended" ] || die "claude session has no ended_at after the run (SessionEnd)"
+    echo "smoke: session ended (SessionEnd hook ran)"
+fi
 
 echo "smoke: OK"

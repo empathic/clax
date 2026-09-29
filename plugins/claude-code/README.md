@@ -20,7 +20,7 @@ otherwise downloads the latest release and installs it on first use. Set
 - The `artifax` MCP server (`artifax mcp --agent claude`): tools `publish`,
   `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`.
 - Hooks that register the Claude Code session with the daemon on start and end
-  it on exit. On start the session is told the daemon URL.
+  it on exit. The session-start context includes the daemon URL only when a daemon is already running; hooks never start one, the first tool call does.
 - The `artifax` skill: when to publish and the page contract.
 - Commands: `/artifax:open [id]`, `/artifax:list`,
   `/artifax:serve [--bind 0.0.0.0|stop|status]`, `/artifax:doctor`.

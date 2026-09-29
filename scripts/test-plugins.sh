@@ -28,6 +28,37 @@ for f in plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/.mcp
     [ -f "$f" ] || fail "$f is missing"
 done
 
+# .mcp.json: a bare map of servers or a mcpServers wrapper, each with a command.
+if python3 - plugins/claude-code/.mcp.json <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+servers = d.get("mcpServers", d) if isinstance(d, dict) else None
+ok = isinstance(servers, dict) and servers and all(isinstance(v, dict) and v.get("command") for v in servers.values())
+sys.exit(0 if ok else 1)
+PY
+then pass ".mcp.json servers have a command"; else fail ".mcp.json must map server names to objects with a command"; fi
+
+# hooks.json: SessionStart and SessionEnd commands with numeric timeouts.
+if python3 - plugins/claude-code/hooks/hooks.json <<'PY'
+import json, sys
+hooks = json.load(open(sys.argv[1])).get("hooks", {})
+def ok(event):
+    entries = hooks.get(event) or []
+    cmds = [h for e in entries for h in e.get("hooks", [])]
+    return bool(cmds) and all(isinstance(h.get("timeout"), (int, float)) and not isinstance(h.get("timeout"), bool) for h in cmds)
+sys.exit(0 if ok("SessionStart") and ok("SessionEnd") else 1)
+PY
+then pass "hooks.json has SessionStart and SessionEnd with numeric timeouts"; else fail "hooks.json needs SessionStart and SessionEnd hooks with numeric timeout"; fi
+
+# Every marketplace plugin source is an existing directory.
+if python3 - .claude-plugin/marketplace.json <<'PY'
+import json, os, sys
+plugins = json.load(open(sys.argv[1])).get("plugins", [])
+ok = bool(plugins) and all(isinstance(p.get("source"), str) and os.path.isdir(p["source"]) for p in plugins)
+sys.exit(0 if ok else 1)
+PY
+then pass "marketplace plugin sources exist"; else fail "a marketplace plugin source is not an existing directory"; fi
+
 installer=plugins/claude-code/scripts/ensure-artifax.sh
 if cmp -s scripts/ensure-artifax.sh "$installer"; then
     pass "$installer matches scripts/ensure-artifax.sh"
@@ -41,6 +72,7 @@ commands=(plugins/claude-code/commands/*.md)
 for f in "${commands[@]}"; do
     [ -f "$f" ] || continue
     if [ -n "$(frontmatter "$f" description)" ]; then pass "$f has a description"; else fail "$f has no frontmatter description"; fi
+    if [ -n "$(frontmatter "$f" allowed-tools)" ]; then pass "$f has allowed-tools"; else fail "$f has no frontmatter allowed-tools"; fi
 done
 
 skills=(plugins/*/skills/*/SKILL.md)
