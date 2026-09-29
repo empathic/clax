@@ -9,7 +9,10 @@
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
- * clips within the budget in `clip.ts`), anchor resolution, and scroll-to (see `protocol.ts`). Every HTML
+ * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
+ * rectangle, Option widening with keys the shell forwards), anchor
+ * resolution (an area's rectangle projected onto its element's current box),
+ * the dashed outline of the focused thread's area, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
  * file, and anchors on other files never resolve here. Once welcomed, a plain
  * click on a link to another page of the version that the page did not cancel
@@ -21,10 +24,11 @@
  * own comment mode, anchor resolution, and scroll-to stand down: the page
  * places the pins, and its placements are re-sent on scroll and resize.
  */
-import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
+import { AnchorCache, type Resolved, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
+import { areaBox, buildAreaAnchor, containingElement } from "./area";
 import { acceptFromShell, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
-import { blockAncestor, renderTargetClip } from "./clip";
+import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
 import { hashFor, helloFor, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
@@ -62,17 +66,33 @@ import { makeUse } from "./use";
   const origins = shellOrigins(location.href);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
+  /** Where a resolved anchor is now: an area's rectangle projected onto its
+   * element, else the range or element. */
+  const placeOf = (anchor: Anchor, r: Resolved): Box => {
+    if (anchor.kind === "area" && anchor.area) { const b = r.element.getBoundingClientRect(); return areaBox(anchor.area, { left: b.left, top: b.top, width: b.width, height: b.height }); }
+    return box(r.range ?? r.element);
+  };
+
   // Anchors are resolved once per shell request; scroll and resize only
   // re-measure, unless the DOM under a resolved element changed since.
   let anchors: { id: string; anchor: Anchor }[] = [];
   let resolutions: AnchorCache | null = null;
+  // The thread the shell focuses (hovered in its list, or selected); its
+  // area, if it is one, is outlined dashed.
+  let focusId: string | null = null;
+  const updateFocus = (flash = false) => {
+    const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
+    const r = f?.anchor.kind === "area" ? (resolutions ??= new AnchorCache(document, undefined, meta.file)).resolve(f.id, f.anchor) : null;
+    mode.showFocus(f && r ? placeOf(f.anchor, r) : null, flash);
+  };
   const resolveAll = (requestId: string | null) => {
     const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file);
     const results: AnchorResult[] = anchors.map(({ id, anchor }) => {
       const r = resolved.resolve(id, anchor);
-      return r ? { id, found: true, method: r.method, rect: box(r.range ?? r.element) } : { id, found: false, method: null, rect: null };
+      return r ? { id, found: true, method: r.method, rect: placeOf(anchor, r) } : { id, found: false, method: null, rect: null };
     });
     post({ type: "artifax:anchors", requestId, results });
+    updateFocus();
   };
   let raf = 0;
   const reflow = () => {
@@ -85,17 +105,26 @@ import { makeUse } from "./use";
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  const pick = async (anchor: Anchor, target: Element | Range) => {
+  const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
-    try { clipPng = await renderTargetClip(target); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
+    try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
     post({ type: "artifax:pick", pickId, version: meta.version, anchor, clipPng, clipError }, clipPng ? [clipPng] : []);
   };
   const mode = new CommentMode(document, {
     hover: t => post({ type: "artifax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-    pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), el); },
-    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), r); },
+    pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)); },
+    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)); },
+    // The clip starts at once, from the page as it is at release: the drawn
+    // rectangle (clamped into its element) cropped out of its element.
+    pickArea: r => {
+      const el = containingElement(document, r);
+      const anchor = buildAreaAnchor(document, r, meta.file, el);
+      const b = el.getBoundingClientRect();
+      const clip = renderAreaClip(el, areaBox(anchor.area!, { left: b.left, top: b.top, width: b.width, height: b.height }));
+      void pick(anchor, () => clip);
+    },
     cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
   });
 
@@ -130,9 +159,22 @@ import { makeUse } from "./use";
       case "artifax:scroll-to": {
         if (commentsContext.live) break;
         const r = resolveAnchor(document, m.anchor, undefined, meta.file);
-        if (r) { r.element.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => mode.flash(r.range ?? r.element), 350); }
+        if (!r) break;
+        if (m.anchor.kind === "area" && m.anchor.area) {
+          // The drawn area is centred, not its element (often far taller).
+          const a = placeOf(m.anchor, r);
+          scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior: "smooth" });
+          setTimeout(() => mode.showFocus(placeOf(m.anchor, r), true), 350);
+        } else {
+          r.element.scrollIntoView({ block: "center", behavior: "smooth" });
+          setTimeout(() => mode.flash(r.range ?? r.element), 350);
+        }
         break;
       }
+      case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; updateFocus(); break;
+      case "artifax:key":
+        if ((m.key === "Alt" || m.key === "ArrowUp" || m.key === "ArrowDown") && typeof m.down === "boolean") mode.key(m.key, m.down);
+        break;
     }
   });
   post(helloFor(meta));

@@ -153,11 +153,23 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         } else if (!isPoint(at)) {
           return Promise.reject(invalid("at is an element or a {x, y} point"));
         }
-        const o = (opts ?? {}) as { label?: unknown; detail?: unknown };
+        const o = (opts ?? {}) as { label?: unknown; detail?: unknown; area?: unknown };
         for (const k of ["label", "detail"] as const) {
           if (o[k] !== undefined && (typeof o[k] !== "string" || (o[k] as string).length > MAX_LABEL)) return Promise.reject(invalid(`${k} is text of at most ${MAX_LABEL} characters`));
         }
-        return rpc.call("comments", "compose", [{ anchor, dom, label: o.label as string | undefined, detail: o.detail as string | undefined, version: commentsContext.version }]);
+        const base = { anchor, dom, label: o.label as string | undefined, detail: o.detail as string | undefined, version: commentsContext.version };
+        // `area` is honoured only while it could be (comments.d.ts: `areas`).
+        if (o.area !== true || !modeOn) return rpc.call("comments", "compose", [base]);
+        // An area on a domAnchor path covers that element: the shell anchors
+        // it as a drawn area over all of it, with a clip of the element.
+        return (async () => {
+          let clipPng: ArrayBuffer | undefined;
+          let clipError: string | undefined;
+          let el: Element | null = null;
+          if (dom) { try { el = document.querySelector(anchor as string); } catch { el = null; } }
+          if (el) { try { clipPng = await renderTargetClip(el); } catch (e) { clipError = e instanceof Error ? e.message : String(e); } }
+          return rpc.call("comments", "compose", [{ ...base, area: true, ...(dom ? { clipPng, clipError } : {}) }]);
+        })();
       },
       open(id: unknown, at: unknown) {
         if (released) return gone();

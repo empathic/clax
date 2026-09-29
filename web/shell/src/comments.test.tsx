@@ -54,6 +54,30 @@ describe("Pins", () => {
     done();
   });
 
+  it("pins an area thread at its drawn area's top right, labels it by its share, and reports hovers on pins and cards", () => {
+    const area: Thread = { ...thread("a"), anchor: { ...anchor, kind: "area", selector: "main > section", quote: null, area: { x: 0.1, y: 0.2, w: 0.4213, h: 0.18 } } };
+    const resolved = { a: { id: "a", found: true, method: "selector" as const, rect: { x: 100, y: 300, w: 200, h: 80 } } };
+    const onHover = vi.fn();
+    const { root, done } = mount(<Pins threads={[area]} resolved={resolved} onSelect={vi.fn()} onHover={onHover} width={800} />);
+    const pin = root.querySelector<HTMLElement>("button.thread-pin")!;
+    expect([pin.style.left, pin.style.top]).toEqual(["288px", "288px"]);
+    pin.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(onHover).toHaveBeenLastCalledWith(area);
+    pin.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(onHover).toHaveBeenLastCalledWith(null);
+    done();
+    const { root: side, done: doneSide } = mount(<Sidebar threads={[area]} resolved={resolved} now={new Date()} selected={null}
+      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} onHover={onHover} />);
+    expect(side.querySelector(".anchor-label")!.textContent).toBe("Area in main > section (42% × 18%)");
+    const card = side.querySelector(".thread-card")!;
+    onHover.mockClear();
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    expect(onHover).toHaveBeenLastCalledWith(area);
+    card.dispatchEvent(new MouseEvent("mouseleave"));
+    expect(onHover).toHaveBeenLastCalledWith(null);
+    doneSide();
+  });
+
   it("keeps a full-width region's pin inside the stage and clear of the frame's scrollbar", () => {
     const wide = { a: { id: "a", found: true, method: "exact" as const, rect: { x: 0, y: 40, w: 400, h: 20 } } };
     const { root, done } = mount(<Pins threads={[thread("a")]} resolved={wide} onSelect={vi.fn()} width={400} />);

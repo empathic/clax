@@ -1,6 +1,6 @@
 import { type Anchor, type AnchorResult, INDEX_FILE } from "../../bridge/src/protocol";
 import { useEffect, useRef, useState } from "preact/hooks";
-import type { Thread } from "./threads";
+import { type Thread, areaLabel } from "./threads";
 
 /** A pick being commented on; `pickId` keys the composer so each pick starts empty. */
 export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string };
@@ -9,10 +9,12 @@ export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blo
  * classic scrollbar in the frame. */
 export const PIN_RIGHT_ROOM = 38;
 
-/** Numbered pins over the frame at the resolved rectangle of each attached
- * open thread on `file`, the page the frame shows (the index by default;
- * none when it is null, a document that did not greet). */
-export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; width?: number; file?: string | null }) {
+/** Numbered pins over the frame at the top right of the resolved rectangle
+ * (for an area thread, the drawn area) of each attached open thread on
+ * `file`, the page the frame shows (the index by default; none when it is
+ * null, a document that did not greet). `onHover` hears the thread whose pin
+ * the pointer is over, and null when it leaves. */
+export function Pins({ threads, resolved, onSelect, onHover, width, file = INDEX_FILE }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; onHover?(t: Thread | null): void; width?: number; file?: string | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState(0);
   useEffect(() => {
@@ -41,7 +43,8 @@ export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: 
         if (!r || r.y + r.h <= 0) return null;
         let left = r.x + r.w - 12;
         if (stage > 0) left = Math.min(left, stage - PIN_RIGHT_ROOM);
-        return <button class="thread-pin" key={t.id} title={t.comments[0]?.body ?? ""} aria-label={`Thread ${i + 1}`} style={{ left: `${Math.max(0, left)}px`, top: `${Math.max(0, r.y - 12)}px` }} onClick={() => onSelect(t)}>{i + 1}</button>;
+        return <button class="thread-pin" key={t.id} title={t.comments[0]?.body ?? ""} aria-label={`Thread ${i + 1}`} style={{ left: `${Math.max(0, left)}px`, top: `${Math.max(0, r.y - 12)}px` }} onClick={() => onSelect(t)}
+          onMouseEnter={() => onHover?.(t)} onMouseLeave={() => onHover?.(null)}>{i + 1}</button>;
       })}
     </div>
   );
@@ -71,7 +74,7 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
       // the draft stays so the viewer can retry.
       try { await onSubmit(body); } catch { setBusy(false); }
     }}>
-      <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.selector}</p>
+      <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "area" ? areaLabel(draft.anchor) : draft.anchor.selector}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}

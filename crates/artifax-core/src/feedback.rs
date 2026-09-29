@@ -260,6 +260,20 @@ mod tests {
     }
 
     #[test]
+    fn the_anchor_line_describes_a_drawn_area() {
+        let mut i = item();
+        i.anchor = serde_json::from_value::<Anchor>(serde_json::json!({
+            "kind": "area", "selector": "main > section:nth-of-type(2)",
+            "area": {"x": 0.1, "y": 0.2, "w": 0.42, "h": 0.18}, "file": "source.html"
+        }))
+        .unwrap();
+        assert_eq!(
+            render_item(&i).lines().nth(1).unwrap(),
+            "Anchored on: source.html › area in main > section:nth-of-type(2) (42% × 18%)  (v3)"
+        );
+    }
+
+    #[test]
     fn resends_and_missing_clips_are_marked() {
         let mut i = item();
         i.resent = true;

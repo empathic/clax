@@ -56,6 +56,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const [resolved, setResolved] = useState<Record<string, AnchorResult>>({});
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
+  // The thread whose card or pin the pointer is over; it, else the selected
+  // thread, is the frame's focus (a drawn area is outlined dashed).
+  const [hovered, setHovered] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [me, setMe] = useState<Viewer | null>(null);
   // A success clears only a notice its own kind of call raised, so the viewer
@@ -87,6 +90,10 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
 
   const frameWin = () => frameRef.current?.contentWindow ?? null;
   const send = (m: ShellToBridge) => sendToFrame(frameWin(), origin ?? null, m);
+  const sendRef = useRef(send);
+  sendRef.current = send;
+  const focusRef = useRef<string | null>(null);
+  focusRef.current = hovered ?? selected;
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
   const hostRef = useRef<CapabilityHost | null>(null);
@@ -105,8 +112,14 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const customLive = useRef(false);
   const uiRef = useRef<CommentsUi | null>(null);
   uiRef.current = {
-    openComposer: d => {
-      if (draftRef.current && composerText.current.trim()) return false;
+    openComposer: (d, opts) => {
+      const open = draftRef.current;
+      if (open && composerText.current.trim()) {
+        if (!opts?.area) return false;
+        // A drawn area moves the composer holding text: same composer, new anchor.
+        setDraft({ ...d, pickId: open.pickId });
+        return true;
+      }
       setDraft({ pickId: `page-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...d });
       return true;
     },
@@ -123,7 +136,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     state: () => ({ mode: commentingRef.current, composing: draftRef.current !== null, threads: threadsRef.current, selected: selectedRef.current }),
   };
   const commentsUi = useMemo<CommentsUi>(() => ({
-    openComposer: d => uiRef.current!.openComposer(d),
+    openComposer: (d, opts) => uiRef.current!.openComposer(d, opts),
     upsert: t => uiRef.current!.upsert(t),
     remove: tid => uiRef.current!.remove(tid),
     setCustom: live => uiRef.current!.setCustom(live),
@@ -319,6 +332,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => { send({ type: "artifax:comment-mode", on: commenting }); }, [commenting]);
+  useEffect(() => { send({ type: "artifax:focus", id: hovered ?? selected }); }, [hovered, selected]);
   useEffect(() => { hostRef.current?.uiChanged(); }, [commenting, draft, selected, threads, file, host]);
   useEffect(() => {
     if (typeof matchMedia !== "function") return;
@@ -352,6 +366,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         if (r.kind !== "artifact" || r.file !== greeted) setUrl(here(pinnedVersion) + location.hash);
         send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
         resolveAll();
+        send({ type: "artifax:focus", id: focusRef.current });
         const p = pendingScroll.current;
         if (p) {
           // The jump's page greeted: scroll there. Another page greeted: the
@@ -396,9 +411,29 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => {
     const onMessage = (e: MessageEvent) => onMessageRef.current(e);
     addEventListener("message", onMessage);
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCommenting(false); };
+    // Whether the pointer is over the content frame (the shell sees a
+    // mouseover on the iframe element as it enters, and on another element
+    // as it leaves).
+    let overFrame = false;
+    const onOver = (e: MouseEvent) => { overFrame = e.target === frameRef.current; };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.type === "keydown" && e.key === "Escape") { setCommenting(false); return; }
+      // Option widening works with focus in the shell: while comment mode is
+      // on and the pointer is over the frame, Option and, with it held, Up
+      // and Down are forwarded to the page (not from a text field).
+      if (!commentingRef.current || !overFrame) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.localName === "input" || t.localName === "textarea" || t.isContentEditable)) return;
+      const down = e.type === "keydown";
+      if (e.key === "Alt" || ((e.key === "ArrowUp" || e.key === "ArrowDown") && e.altKey)) {
+        sendRef.current({ type: "artifax:key", key: e.key, down });
+        if (e.key !== "Alt") e.preventDefault();
+      }
+    };
+    addEventListener("mouseover", onOver);
     addEventListener("keydown", onKey);
-    return () => { removeEventListener("message", onMessage); removeEventListener("keydown", onKey); };
+    addEventListener("keyup", onKey);
+    return () => { removeEventListener("message", onMessage); removeEventListener("mouseover", onOver); removeEventListener("keydown", onKey); removeEventListener("keyup", onKey); };
   }, []);
 
   const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
@@ -490,7 +525,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             : missing
               ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
               : <Frame id={id} n={shown} origin={origin} file={startFile} hash={startHash} frameRef={frameRef} onLoad={onFrameLoad} />}
-          {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
+          {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} onHover={t => setHovered(t?.id ?? null)} />}
           {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
@@ -516,6 +551,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         {panel && <Sidebar threads={threads} resolved={resolved} selected={selected} file={file} holds={holds}
           me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}
           onSelect={scrollTo}
+          onHover={t => setHovered(t?.id ?? null)}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}
           onResolve={t => saveThread(resolveThread(id, t.id), RESOLVE_FAILED)}
           onReply={(t, body) => saveThread(addComment(id, t.id, body), POST_FAILED)} />}

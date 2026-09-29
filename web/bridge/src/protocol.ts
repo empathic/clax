@@ -1,11 +1,18 @@
 // Messages between the shell and the bridge in the content frame. The shell
 // imports these types from here.
 
-export type AnchorKind = "element" | "range" | "custom";
+export type AnchorKind = "element" | "range" | "custom" | "area";
 /** The page an anchor names when it names none, and the index's `file`. */
 export const INDEX_FILE = "index.html";
 export interface AnchorRect { x: number; y: number; w: number; h: number; scrollX: number; scrollY: number; viewportW: number }
-/** Spec §9 "Anchors"; field names match the daemon's JSON. */
+/** A drawn rectangle as fractions (0 to 1, 4 decimal places) of its
+ * element's border box: `x` and `y` from its top left corner, `w` and `h` of
+ * its width and height. */
+export interface AnchorArea { x: number; y: number; w: number; h: number }
+/** Spec §9 "Anchors"; field names match the daemon's JSON. An `area` anchor
+ * (a rectangle the viewer drew) names the smallest element containing the
+ * rectangle in `selector`, places it in `area`, and holds it in viewport
+ * pixels at draw time in `rect`; other kinds carry no `area`. */
 export interface Anchor {
   kind: AnchorKind;
   selector: string | null;
@@ -15,6 +22,7 @@ export interface Anchor {
   html_hash: string | null;
   rect: AnchorRect | null;
   custom_name: string | null;
+  area?: AnchorArea;
   /** The published path of the page the anchor is on (`index.html` for the index). */
   file: string;
 }
@@ -41,6 +49,13 @@ export type ShellToBridge =
   | { type: "artifax:comment-mode"; on: boolean }
   | { type: "artifax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor }[] }
   | { type: "artifax:scroll-to"; anchor: Anchor }
+  /** The thread whose drawn area the page outlines dashed (hovered in the
+   * sidebar or selected), by its ID in the latest `resolve-anchors`; null
+   * for none. Threads that are not area anchors show nothing. */
+  | { type: "artifax:focus"; id: string | null }
+  /** A key the viewer pressed or released in the shell while comment mode is
+   * on and the pointer is over the frame (Option widening, see `comment-mode.ts`). */
+  | { type: "artifax:key"; key: "Alt" | "ArrowUp" | "ArrowDown"; down: boolean }
   | UseResult
   | CallResult
   | CapEvent;
@@ -60,5 +75,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["artifax:welcome", "artifax:comment-mode", "artifax:resolve-anchors", "artifax:scroll-to", "artifax:use-result", "artifax:call-result", "artifax:event"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["artifax:welcome", "artifax:comment-mode", "artifax:resolve-anchors", "artifax:scroll-to", "artifax:focus", "artifax:key", "artifax:use-result", "artifax:call-result", "artifax:event"]);
 export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:hash", "artifax:use", "artifax:call"]);

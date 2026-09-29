@@ -119,7 +119,8 @@ function fullPath(el: Element): string {
   return parts.length ? `body > ${parts.join(" > ")}` : "body";
 }
 
-const htmlHash = (el: Element) => `sha256:${sha256Hex(el.outerHTML)}`;
+/** `sha256:<hex>` of `el`'s outer HTML. */
+export const htmlHash = (el: Element) => `sha256:${sha256Hex(el.outerHTML)}`;
 
 function anchorRect(target: Element | Range, win: Window): AnchorRect {
   const r = typeof target.getBoundingClientRect === "function" ? target.getBoundingClientRect() : null;

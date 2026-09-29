@@ -180,6 +180,11 @@ async fn comments_read_summarises_threads_and_acknowledges_them() {
     assert_eq!(th["sent_to_agent"], true);
     assert_eq!(th["anchor"]["selector"], "body > main > h2");
     assert_eq!(th["anchor"]["file"], "index.html");
+    assert_eq!(
+        th["anchor"]["summary"],
+        "body > main > h2  «Quarterly goals»"
+    );
+    assert_eq!(th["anchor"]["area"], Value::Null);
     assert_eq!(th["comments"][0]["body"], "@agent drop the third bullet");
     let clip = th["clip_path"].as_str().unwrap();
     assert!(
@@ -545,4 +550,37 @@ async fn pending_feedback_does_not_attach_to_an_error_result() {
         v["feedback"][0]["body"], "@agent pending",
         "still pending after the error"
     );
+}
+
+#[tokio::test]
+async fn comments_read_describes_a_drawn_area() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let aid = publish(&t).await;
+    let area = json!({"x": 0.1, "y": 0.2, "w": 0.4213, "h": 0.18});
+    let anchor = json!({"kind": "area", "selector": "body > main", "area": area});
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", anchor.to_string())
+        .text("body", "what is this gap?")
+        .text("version", "1");
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let (v, _) = blocks(
+        &t.comments_read(Parameters(CommentsReadArgs {
+            url_or_id: aid.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap(),
+    );
+    let a = &v["threads"][0]["anchor"];
+    assert_eq!(a["kind"], "area");
+    assert_eq!(a["area"], area);
+    assert_eq!(a["summary"], "area in body > main (42% × 18%)");
 }

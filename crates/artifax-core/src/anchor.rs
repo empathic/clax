@@ -29,6 +29,33 @@ pub enum AnchorKind {
     Element,
     Range,
     Custom,
+    Area,
+}
+
+/// A drawn rectangle as fractions (0 to 1) of its element's border box: `x`
+/// and `y` from its top left corner, `w` and `h` of its width and height.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnchorArea {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+}
+
+impl AnchorArea {
+    /// Every fraction is finite, the rectangle has some width and height,
+    /// and it lies within the element's box.
+    fn in_range(&self) -> bool {
+        let unit = |v: f64| v.is_finite() && (0.0..=1.0).contains(&v);
+        // Fractions are rounded to 4 places, so their sums may pass 1 by a rounding step.
+        let fits = |a: f64, b: f64| a + b <= 1.0 + 1e-4;
+        [self.x, self.y, self.w, self.h].into_iter().all(unit)
+            && self.w > 0.0
+            && self.h > 0.0
+            && fits(self.x, self.w)
+            && fits(self.y, self.h)
+    }
 }
 
 /// The anchored region at pick time, in viewport pixels, with the page's
@@ -50,6 +77,10 @@ pub struct AnchorRect {
 
 /// Spec §9 "Anchors". Every field but `kind` and `file` may be null. `file` is
 /// the published path of the page the anchor is on, `index.html` when absent.
+/// An `area` anchor is a rectangle the viewer drew: `selector` names the
+/// smallest element containing it, `area` places it within that element, and
+/// `rect` holds it in viewport pixels at draw time; `area` is serialized only
+/// when present.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
@@ -68,6 +99,8 @@ pub struct Anchor {
     pub rect: Option<AnchorRect>,
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area: Option<AnchorArea>,
     #[serde(default = "index_file")]
     pub file: String,
 }
@@ -99,9 +132,19 @@ pub fn cap(s: &str, n: usize) -> String {
     }
 }
 
+/// `f` (a fraction) as whole percent, clamped to 0 to 100.
+fn pct(f: f64) -> i64 {
+    // Clamped to 0..=100 first, so the cast cannot truncate or wrap.
+    #[allow(clippy::cast_possible_truncation)]
+    let p = (f.clamp(0.0, 1.0) * 100.0).round() as i64;
+    p
+}
+
 impl Anchor {
-    /// Element and range anchors need a selector, custom anchors a
-    /// `custom_name`; selectors and names hold no control characters and no
+    /// Element, range, and area anchors need a selector, custom anchors a
+    /// `custom_name`; an area anchor needs an `area` whose fractions lie in 0
+    /// to 1 with some width and height, within the element's box, and only area
+    /// anchors carry one; selectors and names hold no control characters and no
     /// U+2028 or U+2029 line or paragraph separators; lengths
     /// are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`], and [`MAX_AFFIX`].
     /// `file` is a safe relative path ([`crate::publish::check_path`]) of at
@@ -112,15 +155,25 @@ impl Anchor {
     /// `Invalid { code: "invalid_anchor" }` naming the first problem.
     pub fn validate(&self) -> Result<()> {
         match self.kind {
-            AnchorKind::Element | AnchorKind::Range
+            AnchorKind::Element | AnchorKind::Range | AnchorKind::Area
                 if self.selector.as_deref().is_none_or(str::is_empty) =>
             {
-                return Err(bad("element and range anchors need a selector"));
+                return Err(bad("element, range, and area anchors need a selector"));
             }
             AnchorKind::Custom if self.custom_name.as_deref().is_none_or(str::is_empty) => {
                 return Err(bad("custom anchors need a custom_name"));
             }
             _ => {}
+        }
+        match (&self.kind, &self.area) {
+            (AnchorKind::Area, None) => return Err(bad("area anchors need an area")),
+            (AnchorKind::Area, Some(a)) if !a.in_range() => {
+                return Err(bad(
+                    "area fractions must lie in 0 to 1, with some width and height, within the element",
+                ));
+            }
+            (AnchorKind::Area, Some(_)) | (_, None) => {}
+            (_, Some(_)) => return Err(bad("only area anchors carry an area")),
         }
         if self.file.len() > MAX_FILE {
             return Err(bad(format!("file is longer than {MAX_FILE} bytes")));
@@ -152,12 +205,21 @@ impl Anchor {
     }
 
     /// One line naming the anchor: the file and ` › ` when it is not
-    /// `index.html`, the selector (or `custom:<name>`), then two
+    /// `index.html`, the selector (or `custom:<name>`, or for an area
+    /// `area in <selector> (<w>% × <h>%)`, its share of the element's width
+    /// and height rounded to whole percent), then two
     /// spaces and the quote in «» when there is one, whitespace collapsed,
     /// `«`/`»` in the quote replaced by `"`, cut to 120 characters with `…`.
     pub fn summary(&self) -> String {
         let target = match self.kind {
             AnchorKind::Custom => format!("custom:{}", self.custom_name.as_deref().unwrap_or("")),
+            AnchorKind::Area => {
+                let sel = self.selector.as_deref().unwrap_or("");
+                match &self.area {
+                    Some(a) => format!("area in {sel} ({}% × {}%)", pct(a.w), pct(a.h)),
+                    None => format!("area in {sel}"),
+                }
+            }
             _ => self.selector.clone().unwrap_or_default(),
         };
         let target = if self.file == INDEX_FILE {
@@ -347,5 +409,104 @@ mod tests {
         let c: Anchor =
             serde_json::from_value(json!({"kind": "custom", "custom_name": "chart-1"})).unwrap();
         assert_eq!(c.summary(), "custom:chart-1");
+    }
+
+    fn area_anchor() -> Anchor {
+        serde_json::from_value(json!({
+            "kind": "area",
+            "selector": "main > section:nth-of-type(2)",
+            "area": {"x": 0.1, "y": 0.25, "w": 0.4213, "h": 0.1788},
+            "rect": {"x": 10.0, "y": 20.0, "w": 300.0, "h": 90.0, "scrollX": 0.0, "scrollY": 400.0, "viewportW": 1280.0}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn area_anchors_validate_their_fractions_and_need_a_selector() {
+        let a = area_anchor();
+        a.validate().unwrap();
+        let with = |f: &dyn Fn(&mut Anchor)| {
+            let mut a = area_anchor();
+            f(&mut a);
+            a.validate()
+        };
+        let area = |x: f64, y: f64, w: f64, h: f64| Some(AnchorArea { x, y, w, h });
+        assert!(with(&|a| a.area = area(0.0, 0.0, 1.0, 1.0)).is_ok());
+        for (name, bad) in [
+            ("no area", None),
+            ("negative x", area(-0.1, 0.0, 0.5, 0.5)),
+            ("past the right edge", area(0.6, 0.0, 0.5, 0.5)),
+            ("past the bottom edge", area(0.0, 0.7, 0.5, 0.4)),
+            ("zero width", area(0.0, 0.0, 0.0, 0.5)),
+            ("zero height", area(0.0, 0.0, 0.5, 0.0)),
+            ("not finite", area(f64::NAN, 0.0, 0.5, 0.5)),
+            ("over one", area(0.0, 0.0, 1.5, 0.5)),
+        ] {
+            assert!(
+                matches!(
+                    with(&|a| a.area = bad.clone()),
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "{name}"
+            );
+        }
+        assert!(
+            with(&|a| a.selector = None).is_err(),
+            "area needs a selector"
+        );
+        assert!(
+            with(&|a| a.selector = Some("x".repeat(MAX_SELECTOR + 1))).is_err(),
+            "the selector limit holds"
+        );
+        let mut e: Anchor =
+            serde_json::from_value(json!({"kind": "element", "selector": "h2"})).unwrap();
+        e.area = area(0.0, 0.0, 1.0, 1.0);
+        assert!(e.validate().is_err(), "only area anchors carry an area");
+        assert!(
+            serde_json::from_value::<Anchor>(json!({
+                "kind": "area", "selector": "h2", "area": {"x": 0, "y": 0, "w": 1, "h": 1, "z": 1}
+            }))
+            .is_err(),
+            "unknown area fields"
+        );
+    }
+
+    #[test]
+    fn area_anchors_round_trip_and_other_anchors_carry_no_area_field() {
+        let a = area_anchor();
+        let v = serde_json::to_value(&a).unwrap();
+        assert_eq!(v["kind"], "area");
+        assert_eq!(
+            v["area"],
+            json!({"x": 0.1, "y": 0.25, "w": 0.4213, "h": 0.1788})
+        );
+        assert_eq!(serde_json::from_value::<Anchor>(v).unwrap(), a);
+        let e: Anchor =
+            serde_json::from_value(json!({"kind": "element", "selector": "h2"})).unwrap();
+        assert!(serde_json::to_value(&e).unwrap().get("area").is_none());
+    }
+
+    #[test]
+    fn area_summary_names_the_element_and_the_share_it_covers() {
+        let mut a = area_anchor();
+        assert_eq!(
+            a.summary(),
+            "area in main > section:nth-of-type(2) (42% × 18%)"
+        );
+        a.file = "source.html".into();
+        assert_eq!(
+            a.summary(),
+            "source.html › area in main > section:nth-of-type(2) (42% × 18%)"
+        );
+        a.area = Some(AnchorArea {
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 0.004,
+        });
+        assert!(a.summary().ends_with("(100% × 0%)"), "{}", a.summary());
     }
 }

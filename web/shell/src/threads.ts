@@ -127,9 +127,18 @@ export function resolvedByLabel(by: string, me?: Viewer | null): string {
   return "Viewer";
 }
 
-/** A short label for an anchor: the quote in «», else the selector. */
+/** A short label for an anchor: the quote in «», else `Area in <selector>
+ * (<w>% × <h>%)` for a drawn area, else the selector. */
 export function anchorLabel(a: Anchor): string {
   const q = a.quote?.replace(/\s+/g, " ").trim();
   if (q) return `«${q.length > 80 ? `${q.slice(0, 80)}…` : q}»`;
+  if (a.kind === "area") return areaLabel(a);
   return a.kind === "custom" ? `custom: ${a.custom_name ?? ""}` : a.selector ?? "";
+}
+
+/** `Area in <selector> (<w>% × <h>%)`: the share of its element's width and
+ * height a drawn area covers, in whole percent (as the daemon's summary). */
+export function areaLabel(a: Anchor): string {
+  const pct = (f: number) => Math.round(Math.min(1, Math.max(0, f)) * 100);
+  return `Area in ${a.selector ?? ""}${a.area ? ` (${pct(a.area.w)}% × ${pct(a.area.h)}%)` : ""}`;
 }

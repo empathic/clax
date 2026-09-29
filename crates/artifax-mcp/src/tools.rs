@@ -464,7 +464,9 @@ fn sent_comment_ids(threads: &[Value]) -> Vec<String> {
 }
 
 /// A daemon thread view as `comments_read` returns it: the quote shortened,
-/// comments cut down to their ID, author, body, and time.
+/// the anchor's drawn `area` (null unless it is an area anchor) and its
+/// one-line `summary` (as the payload's "Anchored on" line; null for an anchor
+/// that does not parse), comments cut down to their ID, author, body, and time.
 fn thread_summary(t: &Value) -> Value {
     let comments: Vec<Value> = t["comments"]
         .as_array()
@@ -492,6 +494,10 @@ fn thread_summary(t: &Value) -> Value {
             "quote": t["anchor"]["quote"].as_str().map(artifax_core::feedback::short_quote),
             "custom_name": t["anchor"]["custom_name"],
             "file": t["anchor"]["file"].as_str().unwrap_or(artifax_core::anchor::INDEX_FILE),
+            "area": t["anchor"]["area"],
+            "summary": serde_json::from_value::<artifax_core::anchor::Anchor>(t["anchor"].clone())
+                .ok()
+                .map(|a| a.summary()),
         },
         "clip_path": t["clip_path"],
         "comments": comments,

@@ -14,6 +14,8 @@ type Props = {
   onSend(t: Thread): void;
   onResolve(t: Thread): void;
   onReply(t: Thread, body: string): void;
+  /** Hears the thread whose card the pointer is over, and null when it leaves. */
+  onHover?(t: Thread | null): void;
   /** This viewer, to show its own name on threads it resolved. */
   me?: Viewer | null;
   /** Rendered above the sections (the "Your name" field on narrow screens). */
@@ -65,11 +67,12 @@ export function Sidebar(p: Props) {
   );
 }
 
-function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
+function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onReply, onHover }: Props & { t: Thread; n?: number; now: Date }) {
   const [reply, setReply] = useState("");
   const label = t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null;
   return (
-    <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onClick={() => onSelect(t)}>
+    <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onClick={() => onSelect(t)}
+      onMouseEnter={() => onHover?.(t)} onMouseLeave={() => onHover?.(null)}>
       <header>
         <button type="button" class="card-head" aria-pressed={selected === t.id} onClick={e => { e.stopPropagation(); onSelect(t); }}>
           {n !== undefined && <span class="thread-num">{n}</span>}

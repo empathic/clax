@@ -85,6 +85,26 @@ describe("comments (page side)", () => {
     expect(f.rpc.call.mock.calls.filter(c => c[1] === "release")).toHaveLength(1);
   });
 
+  it("compose sends the area flag only in comment mode, with a clip attempt for a domAnchor path", async () => {
+    const f = fakeRpc(() => ({ opened: true }));
+    const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
+    const ctl = await on.customAnchors({ mode() {}, threads() {}, reveal() {} });
+    const sent = () => (f.rpc.call.mock.calls.filter(c => c[1] === "compose").at(-1)![2] as Record<string, unknown>[])[0];
+    await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
+    expect(sent()).not.toHaveProperty("area");
+    f.emit("mode", { on: true });
+    expect(ctl.areas).toBe(true);
+    await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
+    expect(sent()).toMatchObject({ anchor: "shape-1", dom: false, area: true });
+    expect(sent()).not.toHaveProperty("clipError");
+    const [path, at] = ctl.domAnchor(document.querySelector("h2")!) as [string, unknown];
+    await ctl.compose(path, at, { area: true });
+    // jsdom cannot render a clip; the attempt's error goes along.
+    expect(sent()).toMatchObject({ anchor: path, dom: true, area: true });
+    expect(typeof sent().clipError).toBe("string");
+    ctl.release();
+  });
+
   it("composer_only keeps only DOM anchor paths", async () => {
     const f = fakeRpc(() => ({ opened: true }));
     const on = commentsLocals(f.rpc as never, { composer_only: true, customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };

@@ -349,8 +349,10 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           return null;
         case "compose": {
           if (!custom) throw invalid("no custom-anchors registration is live");
-          const d = (args[0] ?? {}) as { anchor?: unknown; dom?: unknown; label?: unknown; detail?: unknown };
+          const d = (args[0] ?? {}) as { anchor?: unknown; dom?: unknown; label?: unknown; detail?: unknown; area?: unknown; clipPng?: unknown; clipError?: unknown };
           const dom = d.dom === true;
+          // `area` (comments.d.ts ComposeOptions) only while comment mode is on.
+          const area = d.area === true && ui().state().mode;
           if (dom) {
             if (typeof d.anchor !== "string" || !d.anchor || d.anchor.length > MAX_SELECTOR || CONTROL.test(d.anchor)) throw invalid("a domAnchor path is a CSS path");
           } else {
@@ -365,10 +367,18 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const u = ui();
           opening();
           const base = { quote: cleanLabel(d.label as string | undefined), prefix: null, suffix: null, html_hash: null, rect: null, file };
+          // An area on a domAnchor path is a drawn area covering that element,
+          // with the element's clip; an area on a page-invented name stays custom.
+          if (area && dom) {
+            const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;
+            const clipError = clip ? undefined : typeof d.clipError === "string" ? d.clipError.slice(0, 200) : "no screenshot of the element";
+            const anchor: Anchor = { kind: "area", selector: d.anchor as string, custom_name: null, ...base, area: { x: 0, y: 0, w: 1, h: 1 } };
+            return { opened: u.openComposer({ anchor, version: env.version, clip, clipError }, { area }) };
+          }
           const anchor: Anchor = dom
             ? { kind: "element", selector: d.anchor as string, custom_name: null, ...base }
             : { kind: "custom", selector: null, custom_name: d.anchor as string, ...base };
-          return { opened: u.openComposer({ anchor, version: env.version, clip: null, clipError: "anchored by the page" }) };
+          return { opened: u.openComposer({ anchor, version: env.version, clip: null, clipError: "anchored by the page" }, area ? { area } : undefined) };
         }
         case "openThread": {
           if (typeof args[0] !== "string") throw invalid("open takes a thread handle");

@@ -13,8 +13,10 @@ import { REGISTRY } from "./registry";
 
 /** The shell's comment UI as the `comments` capability drives it. */
 export interface CommentsUi {
-  /** Opens the composer for a pick; false when a composer holds typed text. */
-  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string }): boolean;
+  /** Opens the composer for a pick; false when a composer holds typed text,
+   * unless `opts.area` (a page's drawn area), which moves that composer to
+   * the new anchor with its text. */
+  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string }, opts?: { area?: boolean }): boolean;
   upsert(t: Thread): void;
   /** Drops a thread the page deleted. */
   remove(threadId: string): void;

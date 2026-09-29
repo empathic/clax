@@ -624,6 +624,29 @@ thread is plain until the person presses **Send to agent** or writes `@agent`
 viewer comment on it is sent too. A viewer comment on a resolved thread
 reopens it.
 
+A drag in comment mode that starts where no text is under the pointer (empty
+space, padding, an image, a canvas), or any drag with Shift held, draws a
+rectangle instead of selecting text; a drag that starts over text still
+selects it, and a rectangle smaller than 8 × 8 px is a click. The rectangle
+shows while dragging, Escape drops it, and releasing picks an **area**: an
+anchor of kind `area` whose `selector` names the smallest element whose
+border box holds the whole rectangle, whose `area` places the rectangle in
+that box as fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 4 decimal
+places), and whose `rect` holds the rectangle in viewport pixels with the
+page's scroll at draw time. The area's clip is always taken, at release, of
+exactly the rectangle as the page rendered it (its element rendered and
+cropped to it). On a later version the area follows its element (found by
+selector) and is projected onto the element's box then; without the element
+the thread is detached. Area threads get their numbered pin at the area's
+top right, and the page outlines the area dashed while its thread is hovered
+in the sidebar or its pin is hovered, or the thread is selected. Holding
+Option (Alt) targets the enclosing element of the target under the pointer
+(the whole oversized code panel instead of one line); each Up press widens
+one more ancestor, Down narrows back, releasing Option returns to the usual
+target, and a click while widened picks that element. Option, Up, and Down
+work with focus in the page or in the shell while the pointer is over the
+page.
+
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
 document skeleton, a full document as written plus the bridge tag; a page that
@@ -690,6 +713,12 @@ the anchor string, `resolved`, and `active`; never their text, authors, or
 IDs. While it is registered the page places the pins, the bridge's own
 comment mode and anchor resolution stand down, and opening a thread from the
 sidebar asks the page to reveal it instead of scrolling the frame.
+`CustomAnchors.areas` reads true while comment mode is on and the
+registration is live; `compose` with `{area: true}` then moves a composer
+holding typed text to the new anchor instead of leaving it, and on a
+`domAnchor` path anchors a drawn area covering that whole element (kind
+`area`, fractions 0, 0, 1, 1) with a clip of the element. `openComposer`
+takes no area form in 0.2.61.
 
 ### Shell URLs
 
@@ -727,7 +756,7 @@ entry of the shell's own; copy link includes it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
@@ -737,7 +766,9 @@ entry of the shell's own; copy link includes it.
 `include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
 next page (`null` on the last); `thread_id` returns that one thread whatever
 its status. `quote` has its whitespace collapsed and is cut to 200
-characters followed by `…`. `clip_path` is the absolute path of the clip, or
+characters followed by `…`. `area` is a drawn area's fractions (`null` for
+other anchors), and `summary` is the anchor as the payload's "Anchored on"
+line names it. `clip_path` is the absolute path of the clip, or
 `null` when none was captured. `feedback_state` is the
 thread's delivery state (`{thread_id, state, tier, since, resends,
 exhausted}`, see "What the person sees"), or `null` when nothing on it was
@@ -789,7 +820,9 @@ The title and the comment text are JSON strings (U+0085, U+2028 and U+2029
 escaped too), so a comment is always one line. The anchor line holds the
 page's file followed by ` › ` when it is not `index.html`
 (`Anchored on: source.html › main > h2  «Sources»  (v3)`), the
-selector (`custom:<name>` for a custom anchor) and, when there is one, the
+selector (`custom:<name>` for a custom anchor; `area in <selector> (<w>% ×
+<h>%)` for a drawn area, its share of the element's width and height in whole
+percent, e.g. `area in main > section:nth-of-type(2) (42% × 18%)`) and, when there is one, the
 quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A resend says `Comment sent to you

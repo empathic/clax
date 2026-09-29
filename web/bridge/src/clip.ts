@@ -251,6 +251,23 @@ export async function renderTargetClip(t: Element | Range, win: Window = window,
   return renderRegion(block, range, win, timeoutMs);
 }
 
+/** How long an area clip may take: longer than other clips, since the area's
+ * element (often the page's main column) is rendered to crop it, and an
+ * area thread's clip is the record of what the viewer drew around. */
+export const AREA_CLIP_TIMEOUT_MS = 12_000;
+
+/** The part of `box` (an element's border box) that `r` covers, relative to
+ * the box's top left corner, rounded to whole CSS px and at least 1 px each way. */
+export function areaCrop(r: { x: number; y: number; w: number; h: number }, box: { left: number; top: number }): { x: number; y: number; w: number; h: number } {
+  return { x: Math.round(r.x - box.left), y: Math.round(r.y - box.top), w: Math.max(1, Math.round(r.w)), h: Math.max(1, Math.round(r.h)) };
+}
+
+/** A PNG of exactly the drawn area `r` (viewport pixels, within `el`'s box)
+ * as the page shows it now: `el` rendered and cropped to `r`. */
+export async function renderAreaClip(el: Element, r: { x: number; y: number; w: number; h: number }, win: Window = window, timeoutMs = AREA_CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
+  return renderClip(el, win, timeoutMs, { crop: areaCrop(r, el.getBoundingClientRect()) });
+}
+
 /** The text point at or after (`c`, `o`) in `root`. */
 function textAfter(root: Node, c: Node, o: number): { node: Text; offset: number } | null {
   if (c.nodeType === Node.TEXT_NODE) return { node: c as Text, offset: o };

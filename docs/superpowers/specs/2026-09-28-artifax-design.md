@@ -465,7 +465,26 @@ file under `v/<digits>/` is reachable only through the versioned form):
   page's colour scheme), in any CSS colour syntax. The bridge
   highlights the hovered element with an outline
   and shows a floating pin cursor. Click selects that element; drag-select
-  text creates a range anchor. The composer opens in the shell with the
+  text creates a range anchor. A drag that starts where no text is under the
+  pointer (the caret there is not in visible, non-blank text within 4 px of
+  the pointer, or the pointer is over `img`, `svg`, `canvas`, `video`,
+  `iframe`, `object`, `embed`, or `picture`), or any drag with Shift held,
+  draws a rectangle instead: shown live in the outline's colours, clamped to
+  the viewport with all four borders visible; Escape drops it; one narrower
+  and shorter than 8 px is a click. Releasing it creates an area anchor. While
+  Option (Alt) is held the target is the enclosing element of the target
+  under the pointer (a line's nearest block ancestor, an element's parent);
+  each Up press widens one more ancestor (never past `body`), Down narrows
+  back, releasing Option returns to the usual target, and a click picks the
+  widened element. The bridge takes Option from its own key events and from
+  the pointer events' `altKey`; the shell forwards Option, and Up and Down
+  while Option is held, as `artifax:key` (`key` one of `Alt`, `ArrowUp`,
+  `ArrowDown`; `down` a boolean; anything else is ignored) while comment mode
+  is on and the pointer is over the frame, unless focus is in a text field.
+  An area thread's pin sits at the area's top right; the bridge outlines the
+  area dashed (from its resolved rectangle) for the thread the shell names in
+  `artifax:focus`: the one hovered in the sidebar or by its pin, else the
+  selected one. The composer opens in the shell with the
   quote and clip preview.
 
 The shell is Preact + TypeScript with CSS tokens on `:root`, dark mode via
@@ -602,7 +621,7 @@ window and origin.
 
 ```json
 {
-  "kind": "element" | "range" | "custom",
+  "kind": "element" | "range" | "custom" | "area",
   "selector": "main > section:nth-of-type(2) > h2",
   "quote": "Quarterly goals",
   "prefix": "...", "suffix": "...",
@@ -618,6 +637,21 @@ path of at most 512 bytes that the thread's version holds (`invalid_anchor`
 otherwise); an anchor without it is on `index.html`. An anchor resolves only
 on its own page. Its summary (the payload's "Anchored on" line) starts with
 `<file> › ` when the file is not `index.html`.
+
+An `area` anchor (a rectangle the viewer drew) also carries `"area": {"x",
+"y", "w", "h"}`: the rectangle as fractions of the border box of the smallest
+element that holds all of it (under the rectangle's centre, or an ancestor of
+such an element; `body` when none does, the rectangle then clamped into it),
+each in 0 to 1 with 4 decimal places, `w` and `h` above 0, `x + w` and `y +
+h` at most 1. `selector` names that element (`cssPath`, within the 1024
+limit), `rect` is the rectangle in viewport pixels with the page's scroll at
+draw time, and `quote` is null. The daemon refuses an area anchor without a
+selector or with fractions out of range, and an `area` on any other kind
+(`invalid_anchor`); `area` is absent from other kinds' JSON. Its summary is
+`area in <selector> (<w>% × <h>%)` (whole percent). An area re-resolves by
+selector (exact with a matching `html_hash`, else selector alone; it has no
+quote to fall back on) and its fractions are projected onto the element's box
+then; otherwise it is detached.
 
 Re-resolution order on a new version: exact `selector` with matching
 `html_hash`; `selector` alone; text `quote` with `prefix`/`suffix` search;
@@ -651,6 +685,13 @@ shell, which uploads them with the thread. Cross-origin images that taint the
 canvas are dropped from the render; the thread still stores the anchor and
 quote. The clip is saved at `~/.artifax/artifacts/<aid>/clips/<tid>.png` so
 an agent can view it with its own file-reading tool.
+
+An area's clip is mandatory in intent: at release the bridge renders the
+area's element cropped to exactly the rectangle (clamped into the element),
+at device pixel ratio capped at 1600 px on the long side, within a 12 s limit
+(longer than other clips, since the element is often the page's main
+column), in both frame modes. A failed render is reported in the composer,
+which still lets the viewer post, as for other clips.
 
 ## 10. Comments and the feedback loop
 

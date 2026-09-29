@@ -612,6 +612,57 @@ describe("ArtifactView", () => {
     textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     expect(textarea.value).toBe("");
   });
+
+  it("focuses the frame on the thread hovered in the list or selected, so its drawn area is outlined", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = { id: "tZ", artifact_id: ID, version_n: 1, anchor: { kind: "area", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, area: { x: 0, y: 0, w: 0.5, h: 0.5 }, file: "index.html" },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: "c1", thread_id: "tZ", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "gap", created_at: "x" }] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string | null }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    const card = await waitFor(() => root.querySelector('[data-thread="tZ"]'), "the card");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    const lastFocus = () => posted.filter(m => m.type === "artifax:focus").at(-1);
+    expect(lastFocus()).toEqual({ type: "artifax:focus", id: null });
+    card.dispatchEvent(new MouseEvent("mouseenter"));
+    await waitFor(() => lastFocus()?.id === "tZ", "focus on the hovered card");
+    card.dispatchEvent(new MouseEvent("mouseleave"));
+    await waitFor(() => lastFocus()?.id === null, "focus cleared");
+    card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+    await waitFor(() => lastFocus()?.id === "tZ", "focus on the selected thread");
+  });
+
+  it("forwards Option and, with it, Up and Down to the frame while commenting with the pointer over it", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; key?: string; down?: boolean }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    const keys = () => posted.filter(m => m.type === "artifax:key").map(m => `${m.key}:${m.down}`);
+    const press = (key: string, type = "keydown", altKey = false) => { const e = new KeyboardEvent(type, { key, altKey, bubbles: true, cancelable: true }); document.body.dispatchEvent(e); return e; };
+    frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    press("Alt");
+    expect(keys()).toEqual([]);
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => posted.some(m => m.type === "artifax:comment-mode"), "comment mode on");
+    press("Alt");
+    expect(press("ArrowUp", "keydown", true).defaultPrevented).toBe(true);
+    press("ArrowDown", "keydown", true);
+    expect(press("ArrowUp").defaultPrevented).toBe(false);
+    press("Alt", "keyup");
+    expect(keys()).toEqual(["Alt:true", "ArrowUp:true", "ArrowDown:true", "Alt:false"]);
+    // The pointer left the frame: nothing more is forwarded.
+    root.querySelector("header")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    press("Alt");
+    expect(keys()).toHaveLength(4);
+  });
 });
 
 function stubMedia(matches: Record<string, boolean>) {

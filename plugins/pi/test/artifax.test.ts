@@ -422,9 +422,9 @@ describe("artifax Pi extension", () => {
 });
 
 /** Creates a thread on version 1 as a browser does; `@agent` in `body` sends it. */
-async function browserThread(aid: string, body: string, base = daemon.base): Promise<string> {
+async function browserThread(aid: string, body: string, base = daemon.base, anchor: object = { kind: "element", selector: "body > h2", quote: "Goals" }): Promise<string> {
   const form = new FormData();
-  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals" }));
+  form.set("anchor", JSON.stringify(anchor));
   form.set("body", body);
   form.set("version", "1");
   const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
@@ -458,9 +458,13 @@ describe("comments", () => {
     const sent = await browserThread(aid, "@agent fix it");
     const read = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json;
     expect(read.threads.map((t: any) => t.thread_id)).toEqual([plain, sent]);
-    expect(read.threads[0].anchor).toMatchObject({ file: "index.html", selector: "body > h2" });
+    expect(read.threads[0].anchor).toMatchObject({ file: "index.html", selector: "body > h2", area: null, summary: "body > h2  «Goals»" });
     expect(read.note).toContain("people viewing the page");
     expect(read.feedback).toEqual([]);
+    const area = { x: 0.1, y: 0.2, w: 0.4213, h: 0.18 };
+    await browserThread(aid, "what is this gap?", daemon.base, { kind: "area", selector: "body > h2", area, file: "index.html" });
+    const drawn = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
+    expect(drawn.anchor).toMatchObject({ kind: "area", area, summary: "area in body > h2 (42% × 18%)" });
     expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });
     expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: sent, text: "Fixed." }, ctx)).json).toMatchObject({ replied: true });
     expect(parts(await pi.callToolAsPi("artifax_comments_resolve", { url_or_id: aid, thread_id: sent }, ctx)).json).toMatchObject({ resolved: true, status: "resolved" });

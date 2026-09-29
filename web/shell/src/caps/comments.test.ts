@@ -109,6 +109,16 @@ describe("comments in the shell", () => {
     await expect(h.call("register", [])).rejects.toMatchObject({ code: "invalid" });
     expect(await h.call("compose", [{ anchor: "shape-2", dom: false, label: "Blue", version: 1 }])).toEqual({ opened: true });
     expect((ui.openComposer as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0].anchor).toMatchObject({ kind: "custom", custom_name: "shape-2", quote: "Blue" });
+    // An area on a domAnchor path is a drawn area over the whole element, and may move a composer holding text.
+    expect(await h.call("compose", [{ anchor: "body > main > h2", dom: true, area: true, version: 1, clipPng: new Uint8Array([137, 80, 78, 71]).buffer }])).toEqual({ opened: true });
+    const [d, opts] = (ui.openComposer as ReturnType<typeof vi.fn>).mock.calls.at(-1)!;
+    expect(d.anchor).toMatchObject({ kind: "area", selector: "body > main > h2", area: { x: 0, y: 0, w: 1, h: 1 }, file: "index.html" });
+    expect(d.clip).toBeInstanceOf(Blob);
+    expect(opts).toEqual({ area: true });
+    state.mode = false;
+    await h.call("compose", [{ anchor: "body > main > h2", dom: true, area: true, version: 1 }]);
+    expect((ui.openComposer as ReturnType<typeof vi.fn>).mock.calls.at(-1)![0].anchor).toMatchObject({ kind: "element" });
+    state.mode = true;
     await h.call("release", []);
     expect(ui.setCustom).toHaveBeenLastCalledWith(false);
     expect(h.reveal!("01J9B")).toBe(false);

@@ -340,8 +340,34 @@ function shortQuote(q: string): string {
   return chars.length > SHORT_QUOTE_CHARS ? `${chars.slice(0, SHORT_QUOTE_CHARS).join("")}…` : chars.join("");
 }
 
+/** Characters of the quote an anchor summary shows (as `artifax_core::anchor`). */
+const SUMMARY_QUOTE_CHARS = 120;
+
+/** A fraction as whole percent, clamped to 0 to 100. */
+const pct = (f: number) => Math.round(Math.min(1, Math.max(0, f)) * 100);
+
+/** An anchor's one-line summary, as `artifax_core::anchor::Anchor::summary`
+ * (the payload's "Anchored on" line): the file and ` › ` when it is not
+ * `index.html`, the selector (`custom:<name>`; `area in <selector> (<w>% ×
+ * <h>%)` for a drawn area), then two spaces and the quote in «» when there
+ * is one; null for an anchor without a kind. */
+function anchorSummary(a: Json): string | null {
+  if (!a || typeof a.kind !== "string") return null;
+  const sel = typeof a.selector === "string" ? a.selector : "";
+  let target = sel;
+  if (a.kind === "custom") target = `custom:${typeof a.custom_name === "string" ? a.custom_name : ""}`;
+  else if (a.kind === "area") target = a.area && Number.isFinite(a.area.w) && Number.isFinite(a.area.h) ? `area in ${sel} (${pct(a.area.w)}% × ${pct(a.area.h)}%)` : `area in ${sel}`;
+  const file = typeof a.file === "string" ? a.file : "index.html";
+  if (file !== "index.html") target = `${file} › ${target}`;
+  const q = typeof a.quote === "string" ? a.quote.split(WHITESPACE_RUN).filter(w => w !== "").join(" ") : "";
+  if (!q) return target;
+  const chars = Array.from(q.replace(/[«»]/g, '"'));
+  return `${target}  «${chars.length > SUMMARY_QUOTE_CHARS ? `${chars.slice(0, SUMMARY_QUOTE_CHARS).join("")}…` : chars.join("")}»`;
+}
+
 /** A daemon thread view as `comments_read` returns it: the quote shortened,
- * comments cut down to their ID, author, body, and time. */
+ * the anchor's drawn `area` (null unless it is an area anchor) and its
+ * one-line `summary`, comments cut down to their ID, author, body, and time. */
 function threadSummary(t: Json): Json {
   const quote = t.anchor?.quote;
   return {
@@ -355,6 +381,8 @@ function threadSummary(t: Json): Json {
       quote: typeof quote === "string" ? shortQuote(quote) : null,
       custom_name: t.anchor?.custom_name ?? null,
       file: typeof t.anchor?.file === "string" ? t.anchor.file : "index.html",
+      area: t.anchor?.area ?? null,
+      summary: anchorSummary(t.anchor),
     },
     clip_path: t.clip_path ?? null,
     comments: (t.comments ?? []).map((c: Json) => ({

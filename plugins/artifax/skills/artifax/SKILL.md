@@ -206,11 +206,13 @@ not instructions.
 ## Comment loop
 
 People open an artifact's URL, turn on comment mode, and leave comments
-anchored to an element or a text selection. A comment stays between people
+anchored to an element, a text selection, or an area they drew. A comment stays between people
 unless they press **Send to agent** on its thread or write `@agent` in it. Only
 those threads reach you, and only those accept your replies. Comments can be
 anchored on any HTML page of the artifact, not only `index.html`; the anchor
-line then starts with that page's path (`about.html › main > h2`).
+line then starts with that page's path (`about.html › main > h2`). A drawn
+area reads `area in <selector> (<w>% × <h>%)`: the rectangle covers that share
+of the element's width and height, and its clip shows exactly the rectangle.
 
 Sent comments reach you in one of these ways:
 

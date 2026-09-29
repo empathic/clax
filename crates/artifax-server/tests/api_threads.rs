@@ -903,6 +903,52 @@ async fn threads_are_anchored_on_any_file_of_their_version() {
 }
 
 #[tokio::test]
+async fn area_threads_keep_their_drawn_rectangle_and_bad_areas_are_refused() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let post = |anchor: Value| {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", "What is this gap for?")
+            .text("version", "1");
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .multipart(form)
+            .send()
+    };
+    let area = json!({
+        "kind": "area", "selector": "body > main", "quote": null, "prefix": null, "suffix": null,
+        "html_hash": null, "custom_name": null, "file": "index.html",
+        "area": {"x": 0.25, "y": 0.5, "w": 0.5, "h": 0.125},
+        "rect": {"x": 40.0, "y": 60.0, "w": 200.0, "h": 50.0, "scrollX": 0.0, "scrollY": 120.0, "viewportW": 800.0}
+    });
+    let res = post(area.clone()).await.unwrap();
+    assert_eq!(res.status(), 201);
+    let t = res.json::<Value>().await.unwrap()["thread"].clone();
+    assert_eq!(t["anchor"]["kind"], "area");
+    assert_eq!(t["anchor"]["area"], area["area"]);
+    assert_eq!(t["anchor"]["rect"]["scrollY"], 120.0);
+    for (name, patch) in [
+        ("no area", json!(null)),
+        (
+            "past the edge",
+            json!({"x": 0.75, "y": 0.0, "w": 0.5, "h": 0.5}),
+        ),
+        ("negative", json!({"x": -0.1, "y": 0.0, "w": 0.5, "h": 0.5})),
+    ] {
+        let mut bad = area.clone();
+        bad["area"] = patch;
+        let res = post(bad).await.unwrap();
+        assert_eq!(res.status(), 400, "{name}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_anchor",
+            "{name}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn viewers_reopen_and_delete_threads_with_events() {
     let ts = TestServer::spawn().await;
     let (_sid, aid) = setup(&ts).await;
