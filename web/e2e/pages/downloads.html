@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export Report</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<h1>Quarterly numbers</h1>
+<button id="csv">Download CSV</button>
+<button id="exe">Download installer</button>
+<p id="status" role="status"></p>
+<script>
+(async () => {
+  const downloads = await claude.use("downloads");
+  const status = document.getElementById("status");
+  if (!downloads) { status.textContent = "Downloads are not available here."; return; }
+  const save = async (filename, data) => {
+    try { status.textContent = (await downloads.save({ filename, data })).status; }
+    catch (e) { status.textContent = e.code; }
+  };
+  document.getElementById("csv").onclick = () => save("q3 report.csv", "quarter,revenue\nQ3,120\n");
+  document.getElementById("exe").onclick = () => save("setup.exe", new Uint8Array([77, 90]));
+})();
+</script>
+</body>
+</html>

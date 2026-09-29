@@ -89,6 +89,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
   const hostRef = useRef<CapabilityHost | null>(null);
+  // Set by the `artifact` handler while this view's own page publish is in
+  // flight: the view reloads itself once the page has its result.
+  const ownPublish = useRef({ active: false });
   // Whether the frame's latest hello named the shown artifact and version: only
   // then are its capability requests answered and events pushed to it, so a
   // document the frame navigated to gets nothing. A frame load with no
@@ -160,6 +163,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       prompt,
       post: m => { if (helloOk.current) send(m); },
       reload: () => location.assign(here(null)),
+      ownPublish: ownPublish.current,
+      page: () => fileRef.current,
     })));
   }, [id, shown, origin, data]);
   hostRef.current = host;
@@ -334,6 +339,15 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
   onEventRef.current = e => {
     hostRef.current?.onEvent(e);
+    if (e.type === "version" && e.by_page && pinnedVersion === null && e.n > shown) {
+      // The page republished itself (artifact.publish): every open view
+      // follows at once, on the page it shows (the new version carries every
+      // file forward). The publishing view reloads itself after its call
+      // result is posted.
+      latestKnown.current = Math.max(latestKnown.current, e.n);
+      if (!ownPublish.current.active) location.assign(here(null));
+      return;
+    }
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
     if (e.type === "thread") changeThreads(ts => upsert(ts, e.thread));

@@ -246,6 +246,7 @@ async fn test_slow_publish(
         events.publish(artifax_core::Event::Version {
             artifact_id: artifact.id,
             n: version.n,
+            by_page: false,
         });
         Ok(())
     })

@@ -25,6 +25,13 @@ export interface CapEnv {
   post(m: ShellToBridge): void;
   /** Loads the latest version in the shell. */
   reload(): void;
+  /** Set while this view's own `artifact.publish` is in flight, so the SSE
+   * `version` event it causes does not reload the view before the page hears
+   * the result. */
+  ownPublish?: { active: boolean };
+  /** The published file of the page in the frame, from its latest matching
+   * hello (null while the frame shows no greeted page); `index.html` when absent. */
+  page?(): string | null;
 }
 
 export interface Handler {

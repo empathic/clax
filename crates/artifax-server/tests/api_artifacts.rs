@@ -282,3 +282,41 @@ async fn creating_an_artifact_requires_a_title_but_a_new_version_does_not() {
     let v: serde_json::Value = res.json().await.unwrap();
     assert_eq!(v["artifact"]["title"], "Titled");
 }
+
+#[tokio::test]
+async fn a_page_publish_is_announced_by_page() {
+    let ts = TestServer::spawn().await;
+    let a = ts
+        .publish("Poll", &[("index.html", "<!doctype html><body>0</body>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let mut events = ts.events(&format!("?artifact={aid}")).await;
+    let body = json!({"if_version": 1, "files": {"index.html": {"content": "<!doctype html><body>1</body>", "encoding": "utf8"}}});
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/versions", ts.base)),
+        )
+        .header("x-artifax-via", "page")
+        .json(&body)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(
+        events.next_named("version").await,
+        json!({"type": "version", "artifact_id": aid, "n": 2, "by_page": true})
+    );
+    let body = json!({"if_version": 2, "files": {"index.html": {"content": "<p>agent</p>", "encoding": "utf8"}}});
+    assert_eq!(
+        ts.post_json(&format!("/api/artifacts/{aid}/versions"), body)
+            .await
+            .status(),
+        201
+    );
+    assert_eq!(
+        events.next_named("version").await,
+        json!({"type": "version", "artifact_id": aid, "n": 3}),
+        "by_page is omitted when false"
+    );
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lunch Poll</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; --accent: #2b5fd9; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; --accent: #7aa2ff; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; --accent: #7aa2ff; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--accent); background: transparent; color: var(--fg); }
+</style>
+</head>
+<body data-votes="0">
+<h1>Lunch poll</h1>
+<p>Tacos: <span id="count"></span> votes</p>
+<button id="vote">Vote for tacos</button>
+<p id="status" role="status"></p>
+<script>
+const SOURCE = document.currentScript.textContent;
+const STYLE = document.querySelector("style").textContent;
+const votes = Number(document.body.dataset.votes);
+document.getElementById("count").textContent = String(votes);
+function render(n) {
+  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Lunch Poll</title>\n<style>" + STYLE + "</style>\n</head>\n<body data-votes=\"" + n + "\">\n<h1>Lunch poll</h1>\n<p>Tacos: <span id=\"count\"></span> votes</p>\n<button id=\"vote\">Vote for tacos</button>\n<p id=\"status\" role=\"status\"></p>\n<script>" + SOURCE + "</scr" + "ipt>\n</body>\n</html>\n";
+}
+(async () => {
+  const artifact = await claude.use("artifact");
+  const button = document.getElementById("vote");
+  if (!artifact) { button.disabled = true; return; }
+  button.onclick = async () => {
+    button.disabled = true;
+    try {
+      await artifact.publish(render(votes + 1));
+    } catch (e) {
+      document.getElementById("status").textContent = e.code === "not_writer" ? "This view is read-only." : e.code;
+      if (e.code === "not_writer") return;
+      button.disabled = false;
+    }
+  };
+})();
+</script>
+</body>
+</html>

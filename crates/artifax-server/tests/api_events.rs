@@ -156,6 +156,7 @@ async fn lagged_subscriber_receives_resync_with_dropped_count() {
         ts.events.publish(artifax_core::Event::Version {
             artifact_id: "7q3k9mzx2b4t".into(),
             n,
+            by_page: false,
         });
     }
     let dropped = sent - capacity;

@@ -52,6 +52,10 @@ pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> 
         .map_err(|e| ApiError::bad_request("invalid_path_param", e.body_text()))
 }
 
+/// Header a shell sets when the page itself publishes (`artifact.publish`):
+/// the version event then carries `by_page`.
+pub const VIA_HEADER: &str = "x-artifax-via";
+
 /// Header naming the session a publish is attributed to.
 pub const SESSION_HEADER: &str = "x-artifax-session";
 
@@ -148,6 +152,7 @@ pub async fn create(
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
+                by_page: false,
             });
             Ok((artifact, version))
         })
@@ -259,6 +264,7 @@ pub async fn publish(
     let id = parse_id(&path(aid)?)?;
     let p = validate(body_within(req, "the publish limit")?)?;
     let session = session_header(&headers)?;
+    let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
     let (artifact, version) = s
@@ -274,6 +280,7 @@ pub async fn publish(
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
+                by_page,
             });
             Ok((artifact, version))
         })

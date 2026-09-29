@@ -8,9 +8,14 @@ use crate::feedback::{FeedbackPhase, FeedbackState, Tier};
 #[derive(Clone, Debug, Serialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
+    /// A new version; `by_page` when the page published it through the
+    /// `artifact` capability (open views then reload at once instead of
+    /// offering a banner). Serialised only when true.
     Version {
         artifact_id: String,
         n: u32,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        by_page: bool,
     },
     ArtifactDeleted {
         artifact_id: String,
@@ -129,6 +134,7 @@ mod tests {
         bus.publish(Event::Version {
             artifact_id: "7q3k9mzx2b4t".into(),
             n: 2,
+            by_page: false,
         });
         let ev = rx.recv().await.unwrap();
         assert_eq!(ev.artifact_id(), "7q3k9mzx2b4t");
