@@ -1,4 +1,5 @@
 //! Comment anchors: where on a page a thread points, as the bridge records it.
+//! A version may hold several HTML pages; an anchor names its page in `file`.
 //! DOM resolution happens in the browser; the daemon only validates, stores,
 //! and summarises anchors.
 
@@ -13,6 +14,14 @@ pub const MAX_QUOTE: usize = 2000;
 pub const MAX_AFFIX: usize = 64;
 /// Characters of the quote shown by [`Anchor::summary`].
 const SUMMARY_QUOTE: usize = 120;
+/// Longest accepted `file`, in bytes.
+pub const MAX_FILE: usize = 512;
+/// The page an anchor is on when it names none: the version's index.
+pub const INDEX_FILE: &str = crate::publish::INDEX;
+
+fn index_file() -> String {
+    INDEX_FILE.to_string()
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -39,7 +48,8 @@ pub struct AnchorRect {
     pub viewport_w: f64,
 }
 
-/// Spec §9 "Anchors". Every field but `kind` may be null.
+/// Spec §9 "Anchors". Every field but `kind` and `file` may be null. `file` is
+/// the published path of the page the anchor is on, `index.html` when absent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Anchor {
@@ -58,6 +68,8 @@ pub struct Anchor {
     pub rect: Option<AnchorRect>,
     #[serde(default)]
     pub custom_name: Option<String>,
+    #[serde(default = "index_file")]
+    pub file: String,
 }
 
 fn bad(message: impl Into<String>) -> CoreError {
@@ -92,6 +104,9 @@ impl Anchor {
     /// `custom_name`; selectors and names hold no control characters and no
     /// U+2028 or U+2029 line or paragraph separators; lengths
     /// are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`], and [`MAX_AFFIX`].
+    /// `file` is a safe relative path ([`crate::publish::check_path`]) of at
+    /// most [`MAX_FILE`] bytes with no line or paragraph separators; whether
+    /// the version holds it is the store's check.
     ///
     /// # Errors
     /// `Invalid { code: "invalid_anchor" }` naming the first problem.
@@ -106,6 +121,14 @@ impl Anchor {
                 return Err(bad("custom anchors need a custom_name"));
             }
             _ => {}
+        }
+        if self.file.len() > MAX_FILE {
+            return Err(bad(format!("file is longer than {MAX_FILE} bytes")));
+        }
+        if crate::publish::check_path(&self.file).is_err()
+            || self.file.contains(['\u{2028}', '\u{2029}'])
+        {
+            return Err(bad("file is not a safe relative path"));
         }
         for (name, v) in [
             ("selector", &self.selector),
@@ -130,7 +153,8 @@ impl Anchor {
         Ok(())
     }
 
-    /// One line naming the anchor: the selector (or `custom:<name>`), then two
+    /// One line naming the anchor: the file and ` › ` when it is not
+    /// `index.html`, the selector (or `custom:<name>`), then two
     /// spaces and the quote in «» when there is one, whitespace collapsed,
     /// `«`/`»` in the quote replaced by `"`, cut to 120 characters with `…`.
     pub fn summary(&self) -> String {
@@ -138,6 +162,12 @@ impl Anchor {
             AnchorKind::Custom => format!("custom:{}", self.custom_name.as_deref().unwrap_or("")),
             _ => self.selector.clone().unwrap_or_default(),
         };
+        let target = if self.file == INDEX_FILE {
+            target
+        } else {
+            format!("{} › {target}", self.file)
+        };
+
         match self
             .quote
             .as_deref()
@@ -167,7 +197,8 @@ mod tests {
             "prefix": "...", "suffix": "...",
             "html_hash": "sha256:ab",
             "rect": {"x": 1.0, "y": 2.0, "w": 3.0, "h": 4.0, "scrollX": 0.0, "scrollY": 10.0, "viewportW": 1280.0},
-            "custom_name": null
+            "custom_name": null,
+            "file": "index.html"
         });
         let a: Anchor = serde_json::from_value(v.clone()).unwrap();
         assert_eq!(a.kind, AnchorKind::Element);
@@ -249,6 +280,58 @@ mod tests {
         assert!(
             serde_json::from_value::<Anchor>(json!({"kind": "shape", "selector": "h2"})).is_err()
         );
+    }
+
+    #[test]
+    fn file_defaults_to_the_index_and_is_validated() {
+        let a: Anchor =
+            serde_json::from_value(json!({"kind": "element", "selector": "h2"})).unwrap();
+        assert_eq!(
+            a.file, INDEX_FILE,
+            "an anchor without a file is on the index"
+        );
+        assert_eq!(serde_json::to_value(&a).unwrap()["file"], "index.html");
+        let with = |file: String| {
+            let mut a = a.clone();
+            a.file = file;
+            a.validate()
+        };
+        assert!(with("about.html".into()).is_ok());
+        assert!(with("docs/source.html".into()).is_ok());
+        assert!(with("x".repeat(MAX_FILE)).is_ok());
+        for bad in [
+            String::new(),
+            "../about.html".into(),
+            "docs/../about.html".into(),
+            "/about.html".into(),
+            "docs/".into(),
+            "a\\b.html".into(),
+            "a\nb.html".into(),
+            "a\u{2028}b.html".into(),
+            "x".repeat(MAX_FILE + 1),
+        ] {
+            assert!(
+                matches!(
+                    with(bad.clone()),
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn summary_names_a_file_other_than_the_index() {
+        let mut a: Anchor = serde_json::from_value(
+            json!({"kind": "element", "selector": "main > h2", "quote": "Sources", "file": "source.html"}),
+        )
+        .unwrap();
+        assert_eq!(a.summary(), "source.html › main > h2  «Sources»");
+        a.file = INDEX_FILE.into();
+        assert_eq!(a.summary(), "main > h2  «Sources»");
     }
 
     #[test]

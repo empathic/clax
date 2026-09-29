@@ -140,6 +140,7 @@ pub(crate) mod test_util {
             html_hash: Some("sha256:00".into()),
             rect: None,
             custom_name: None,
+            file: "index.html".into(),
         }
     }
 }

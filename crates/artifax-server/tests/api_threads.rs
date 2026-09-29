@@ -839,3 +839,65 @@ async fn resolving_as_a_viewer_records_the_public_id() {
         "the cookie never reaches SSE"
     );
 }
+
+#[tokio::test]
+async fn threads_are_anchored_on_any_file_of_their_version() {
+    let ts = TestServer::spawn().await;
+    let a = ts
+        .publish(
+            "Two pages",
+            &[
+                ("index.html", "<a href=\"about.html\">about</a>"),
+                ("about.html", "<h2>About</h2>"),
+            ],
+        )
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let post = |anchor: Value| {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", anchor.to_string())
+            .text("body", "Tighten this heading")
+            .text("version", "1");
+        ts.client
+            .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+            .multipart(form)
+            .send()
+    };
+    let mut on_about = element_anchor();
+    on_about["file"] = json!("about.html");
+    let res = post(on_about).await.unwrap();
+    assert_eq!(res.status(), 201);
+    let t = res.json::<Value>().await.unwrap()["thread"].clone();
+    assert_eq!(t["anchor"]["file"], "about.html");
+    let e = ev.next_named("thread").await;
+    assert_eq!(e["thread"]["anchor"]["file"], "about.html");
+    let listed: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(listed["threads"][0]["anchor"]["file"], "about.html");
+
+    let res = post(element_anchor()).await.unwrap();
+    assert_eq!(
+        res.status(),
+        201,
+        "an anchor without a file is on the index"
+    );
+    let t = res.json::<Value>().await.unwrap()["thread"].clone();
+    assert_eq!(t["anchor"]["file"], "index.html");
+
+    for file in ["missing.html", "../about.html", ""] {
+        let mut bad = element_anchor();
+        bad["file"] = json!(file);
+        let res = post(bad).await.unwrap();
+        assert_eq!(res.status(), 400, "{file:?}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_anchor",
+            "{file:?}"
+        );
+    }
+}

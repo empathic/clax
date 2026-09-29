@@ -179,6 +179,8 @@ async fn comments_read_summarises_threads_and_acknowledges_them() {
     assert_eq!(th["thread_id"], tid);
     assert_eq!(th["sent_to_agent"], true);
     assert_eq!(th["anchor"]["selector"], "body > main > h2");
+    assert_eq!(th["anchor"]["file"], "index.html");
+
     assert_eq!(th["comments"][0]["body"], "@agent drop the third bullet");
     let clip = th["clip_path"].as_str().unwrap();
     assert!(

@@ -458,6 +458,8 @@ describe("comments", () => {
     const sent = await browserThread(aid, "@agent fix it");
     const read = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json;
     expect(read.threads.map((t: any) => t.thread_id)).toEqual([plain, sent]);
+    expect(read.threads[0].anchor).toMatchObject({ file: "index.html", selector: "body > h2" });
+
     expect(read.note).toContain("people viewing the page");
     expect(read.feedback).toEqual([]);
     expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });

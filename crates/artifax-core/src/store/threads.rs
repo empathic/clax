@@ -191,8 +191,9 @@ impl Store {
     /// [`clip_problem`] first.
     ///
     /// # Errors
-    /// `NotFound` for a missing or deleted artifact; `invalid_anchor`,
-    /// `invalid_comment`, or `unknown_version` for bad input.
+    /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
+    /// when the version holds no file at `anchor.file`), `invalid_comment`, or
+    /// `unknown_version` for bad input.
     pub fn create_thread(&self, id: &ArtifactId, t: NewThread) -> Result<Thread> {
         t.anchor.validate()?;
         check_body(&t.body)?;
@@ -204,17 +205,36 @@ impl Store {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
-            let has: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM versions WHERE artifact_id = ?1 AND n = ?2)",
-                params![id.as_str(), t.version_n],
-                |r| r.get(0),
-            )?;
-            if !has {
+            let files: Option<String> = tx
+                .query_row(
+                    "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",
+                    params![id.as_str(), t.version_n],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let Some(files) = files else {
                 return Err(CoreError::invalid(
                     "unknown_version",
                     format!("artifact {id} has no version {}", t.version_n),
                 ));
+            };
+            let files: std::collections::BTreeMap<String, serde_json::Value> =
+                serde_json::from_str(&files).map_err(|_| CoreError::Corrupt {
+                    artifact_id: id.to_string(),
+                    column: "files_json",
+                    version: Some(t.version_n),
+                })?;
+
+            if !files.contains_key(&t.anchor.file) {
+                return Err(CoreError::invalid(
+                    "invalid_anchor",
+                    format!(
+                        "version {} of artifact {id} has no file {}",
+                        t.version_n, t.anchor.file
+                    ),
+                ));
             }
+
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
@@ -459,6 +479,48 @@ mod tests {
             PNG
         );
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap(), t);
+    }
+
+    #[test]
+    fn anchors_name_a_file_of_the_thread_version() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let req: crate::publish::PublishRequest = serde_json::from_value(serde_json::json!({
+            "if_version": 1,
+            "files": {
+                "index.html": {"content": "<a href=about.html>about</a>", "encoding": "utf8"},
+                "about.html": {"content": "<h2>About</h2>", "encoding": "utf8"}
+            }
+        }))
+        .unwrap();
+        st.publish_version(&aid, crate::publish::validate(req).unwrap(), None)
+            .unwrap();
+        let on = |n: u32, file: &str| {
+            let mut nt = new_thread("x", None);
+            nt.version_n = n;
+            nt.anchor.file = file.into();
+            st.create_thread(&aid, nt)
+        };
+        let t = on(2, "about.html").unwrap();
+        assert_eq!(t.anchor.file, "about.html");
+        assert_eq!(
+            st.get_thread(&t.id).unwrap().unwrap().anchor.file,
+            "about.html"
+        );
+        for (n, file) in [(1, "about.html"), (2, "missing.html"), (2, "../about.html")] {
+            let e = on(n, file).unwrap_err();
+            assert!(
+                matches!(
+                    e,
+                    CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    }
+                ),
+                "v{n} {file}: {e:?}"
+            );
+        }
+        assert_eq!(on(1, "index.html").unwrap().anchor.file, "index.html");
     }
 
     #[test]

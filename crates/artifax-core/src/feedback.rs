@@ -249,6 +249,17 @@ mod tests {
     }
 
     #[test]
+    fn the_anchor_line_names_a_page_other_than_the_index() {
+        let mut i = item();
+        i.anchor.file = "source.html".into();
+        let t = render_item(&i);
+        assert_eq!(
+            t.lines().nth(1).unwrap(),
+            "Anchored on: source.html › main > section:nth-of-type(2) > h2  «Quarterly goals»  (v3)"
+        );
+    }
+
+    #[test]
     fn resends_and_missing_clips_are_marked() {
         let mut i = item();
         i.resent = true;

@@ -197,3 +197,156 @@ async fn shell_routes_serve_ui_or_explain_missing_build() {
     }
     assert_eq!(ts.get("/_artifax/does-not-exist.js").await.status(), 404);
 }
+
+const ABOUT: &str = "<!doctype html><html><head><title>About</title></head><body><h2>About</h2><a href=\"index.html\">back</a></body></html>";
+
+#[tokio::test]
+async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<a href=\"about.html\">about</a>"),
+                ("about.html", ABOUT),
+                ("docs/part.htm", "<p>part</p>"),
+                ("a.css", "p{}"),
+                ("data.json", "{\"x\":1}"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let csp = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+    let index = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
+    assert!(index.contains("data-file=\"index.html\""), "{index}");
+
+    let res = ts.get(&format!("/c/{id}/v/1/about.html")).await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(res.headers()["cache-control"], "no-store");
+    assert_eq!(res.headers()["content-security-policy"], csp);
+    let html = res.text().await.unwrap();
+    assert_eq!(html.matches("/_artifax/bridge.js").count(), 1, "{html}");
+    assert!(html.starts_with("<!doctype html><html><head><title>About</title>"));
+    assert!(html.contains(&format!(
+        "<body><script src=\"/_artifax/bridge.js\" data-artifact=\"{id}\" data-version=\"1\" data-contract=\"0.2.61\" data-file=\"about.html\"></script><h2>About</h2>"
+    )));
+
+    let part = ts
+        .get(&format!("/c/{id}/v/1/docs/part.htm"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert!(
+        part.starts_with("<!doctype html><html><head>"),
+        "a fragment gets the skeleton"
+    );
+    assert!(part.contains("data-file=\"docs/part.htm\"></script><p>part</p>"));
+
+    for (path, ct, body) in [
+        ("a.css", "text/css", "p{}"),
+        ("data.json", "application/json", "{\"x\":1}"),
+    ] {
+        let res = ts.get(&format!("/c/{id}/v/1/{path}")).await;
+        assert_eq!(res.headers()["content-type"], ct, "{path}");
+        assert_eq!(
+            res.headers()["cache-control"],
+            "public, max-age=31536000, immutable"
+        );
+        assert_eq!(res.text().await.unwrap(), body, "{path} untouched");
+    }
+
+    let host = format!("{id}.localhost");
+    let res = ts
+        .client
+        .get(format!("{}/v/1/about.html", ts.base))
+        .header("host", &host)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(res.headers().get("content-security-policy").is_none());
+    let html = res.text().await.unwrap();
+    assert_eq!(html.matches("/_artifax/bridge.js").count(), 1);
+    assert!(html.contains("data-file=\"about.html\""));
+
+    let raw = ts
+        .get_authed(&format!("/api/artifacts/{id}/versions/1/files/about.html"))
+        .await;
+    assert_eq!(raw.status(), 200);
+    assert_eq!(raw.text().await.unwrap(), ABOUT, "raw bytes stay unwrapped");
+}
+
+#[tokio::test]
+async fn a_supporting_page_carrying_a_bridge_tag_is_served_with_one() {
+    let ts = TestServer::spawn().await;
+    let stale = "<!doctype html><html><body><script src=\"/_artifax/bridge.js\" data-artifact=\"7q3k9mzx2b4t\" data-version=\"1\" data-contract=\"0.2.61\" data-file=\"about.html\"></script><p>x</p></body></html>";
+    let created = ts
+        .publish("R", &[("index.html", "<p>i</p>"), ("about.html", stale)])
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let html = ts
+        .get(&format!("/c/{id}/v/1/about.html"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(html.matches("/_artifax/bridge.js").count(), 1, "{html}");
+    assert!(html.contains(&format!("data-artifact=\"{id}\"")));
+}
+
+#[tokio::test]
+async fn wrapped_pages_are_cached_per_file_until_the_artifact_is_deleted() {
+    let cache = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = cache.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        *slot.lock().unwrap() = Some(s.wrap_cache.clone());
+    })
+    .await;
+    let cache = cache.lock().unwrap().clone().unwrap();
+    let created = ts
+        .publish(
+            "R",
+            &[
+                ("index.html", "<p>index</p>"),
+                ("about.html", "<p>about</p>"),
+            ],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let get = |p: &'static str| {
+        let url = format!("/c/{id}/v/1/{p}");
+        let ts = &ts;
+        async move { ts.get(&url).await.text().await.unwrap() }
+    };
+    assert!(get("").await.contains("<p>index</p>"));
+    assert!(!cache.contains(id, 1, "about.html"));
+    assert!(get("about.html").await.contains("<p>about</p>"));
+    assert!(cache.contains(id, 1, "index.html") && cache.contains(id, 1, "about.html"));
+    // Versions are immutable: a second serve comes from the cache, not the disk.
+    let aid = artifax_core::ArtifactId::parse(id).unwrap();
+    let disk = ts
+        .home
+        .version_dir(&aid, 1)
+        .join("files")
+        .join("about.html");
+    std::fs::write(&disk, "<p>changed</p>").unwrap();
+    let again = get("about.html").await;
+    assert!(again.contains("<p>about</p>") && !again.contains("changed"));
+    assert!(
+        get("").await.contains("<p>index</p>"),
+        "each file keeps its own wrap"
+    );
+    let res = ts
+        .authed(ts.client.delete(format!("{}/api/artifacts/{id}", ts.base)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 204);
+    assert!(!cache.contains(id, 1, "index.html") && !cache.contains(id, 1, "about.html"));
+    assert_eq!(
+        ts.get(&format!("/c/{id}/v/1/about.html")).await.status(),
+        404
+    );
+}
