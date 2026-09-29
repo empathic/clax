@@ -69,6 +69,7 @@ impl Store {
     pub const SESSION_IDLE_SECS: u64 = 300;
 
     /// Registers a session, reusing a live row where one already stands for it.
+    /// An empty `harness_session_id` counts as none.
     ///
     /// With a `harness_session_id`: a live row with the same `(harness,
     /// harness_session_id)` is refreshed and returned; failing that, a live row
@@ -79,7 +80,10 @@ impl Store {
     /// restarted shim, under one harness process share a row). Otherwise a new
     /// row is inserted. A refresh overwrites `pid` and `parent_pid` only when
     /// the caller supplies them, and fills an empty `cwd` (a hook-only row).
-    pub fn register_session(&self, r: RegisterSession) -> Result<Session> {
+    pub fn register_session(&self, mut r: RegisterSession) -> Result<Session> {
+        if r.harness_session_id.as_deref() == Some("") {
+            r.harness_session_id = None;
+        }
         self.with_tx(|tx| {
             let now = Store::now();
             let recent = (chrono::Utc::now() - Duration::from_secs(Self::SESSION_IDLE_SECS))
@@ -319,7 +323,7 @@ mod tests {
         parent: Option<u32>,
     ) -> RegisterSession {
         RegisterSession {
-            harness: "claude-code".into(),
+            harness: "claude".into(),
             harness_session_id: harness_session_id.map(String::from),
             cwd: "/work".into(),
             pid,
@@ -377,9 +381,7 @@ mod tests {
             .register_session(reg(None, Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.harness_session_id, None);
-        let joined = store
-            .join_session("claude-code", 5, "h1", None, &[])
-            .unwrap();
+        let joined = store.join_session("claude", 5, "h1", None, &[]).unwrap();
         assert_eq!(joined.id, shim.id);
         assert_eq!(joined.harness_session_id.as_deref(), Some("h1"));
         assert_eq!(joined.pid, Some(10));
@@ -397,7 +399,7 @@ mod tests {
             .unwrap();
         // Hook's parent is a wrapper shell (4); the harness (5) is next.
         let joined = store
-            .join_session("claude-code", 4, "h1", None, &[5, 7])
+            .join_session("claude", 4, "h1", None, &[5, 7])
             .unwrap();
         assert_eq!(joined.id, shim.id, "nearest matching ancestor wins");
         assert_eq!(joined.harness_session_id.as_deref(), Some("h1"));
@@ -409,9 +411,7 @@ mod tests {
     #[test]
     fn hook_first_then_shim_adopts() {
         let (_d, store) = store();
-        let hook = store
-            .join_session("claude-code", 5, "h1", None, &[])
-            .unwrap();
+        let hook = store.join_session("claude", 5, "h1", None, &[]).unwrap();
         assert_eq!(hook.pid, None);
         let shim = store
             .register_session(reg(None, Some(10), Some(5)))
@@ -427,7 +427,7 @@ mod tests {
     fn hook_cwd_is_used_for_new_rows_and_fills_empty_ones() {
         let (_d, store) = store();
         let hook = store
-            .join_session("claude-code", 5, "h1", Some("/hook"), &[])
+            .join_session("claude", 5, "h1", Some("/hook"), &[])
             .unwrap();
         assert_eq!(hook.cwd, "/hook");
         let shim = store
@@ -455,9 +455,7 @@ mod tests {
         assert_eq!(a.id, b.id);
         assert_eq!(b.pid, Some(11));
         assert_eq!(store.list_sessions(true).unwrap().len(), 1);
-        let joined = store
-            .join_session("claude-code", 5, "h1", None, &[])
-            .unwrap();
+        let joined = store.join_session("claude", 5, "h1", None, &[]).unwrap();
         assert_eq!(joined.id, a.id);
     }
 
@@ -489,12 +487,8 @@ mod tests {
     #[test]
     fn hook_join_is_idempotent_and_other_harnesses_stay_apart() {
         let (_d, store) = store();
-        let a = store
-            .join_session("claude-code", 5, "h1", None, &[])
-            .unwrap();
-        let b = store
-            .join_session("claude-code", 5, "h1", None, &[])
-            .unwrap();
+        let a = store.join_session("claude", 5, "h1", None, &[]).unwrap();
+        let b = store.join_session("claude", 5, "h1", None, &[]).unwrap();
         assert_eq!(a.id, b.id);
         let other = store.join_session("codex", 5, "h1", None, &[]).unwrap();
         assert_ne!(a.id, other.id);
@@ -542,9 +536,7 @@ mod tests {
         let alive = store
             .register_session(reg(Some("alive"), Some(1002), None))
             .unwrap();
-        let hook_only = store
-            .join_session("claude-code", 7, "hook", None, &[])
-            .unwrap();
+        let hook_only = store.join_session("claude", 7, "hook", None, &[]).unwrap();
         // Everything is fresh: nothing is idle yet.
         let pid_alive = |pid: u32| pid == 1002;
         assert_eq!(

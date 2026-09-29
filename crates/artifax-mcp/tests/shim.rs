@@ -103,12 +103,15 @@ impl Shim {
         )
     }
 
+    /// GETs `path` from the daemon with its token.
     async fn get(&self, path: &str) -> Value {
+        let token = read_daemon_info(&self.home()).expect("daemon.json").token;
         reqwest::Client::builder()
             .no_proxy()
             .build()
             .unwrap()
             .get(format!("{}{path}", self.daemon_base()))
+            .bearer_auth(token)
             .send()
             .await
             .expect("daemon answers")

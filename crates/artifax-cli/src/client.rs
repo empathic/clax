@@ -239,8 +239,14 @@ impl Client {
             .ok()
             .map(|r| r.status().as_u16())
     }
+    /// GET with the bearer token (the session routes need it; the others ignore it).
     pub fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
-        Self::check(self.http.get(format!("{}{path}", self.base)).send()?)
+        Self::check(
+            self.http
+                .get(format!("{}{path}", self.base))
+                .bearer_auth(&self.token)
+                .send()?,
+        )
     }
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(

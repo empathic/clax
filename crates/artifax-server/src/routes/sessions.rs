@@ -12,18 +12,29 @@ use axum::http::StatusCode;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+/// The harness names a session may carry.
+pub const HARNESSES: [&str; 3] = ["claude", "codex", "pi"];
+
+/// `invalid_args` unless `harness` is one of [`HARNESSES`].
+fn check_harness(harness: &str) -> Result<(), ApiError> {
+    if HARNESSES.contains(&harness) {
+        Ok(())
+    } else {
+        Err(ApiError::bad_request(
+            "invalid_args",
+            format!("harness must be one of {}", HARNESSES.join(", ")),
+        ))
+    }
+}
+
+/// Registers a session; `harness` must be one of [`HARNESSES`].
 pub async fn register(
     State(s): State<AppState>,
     _t: RequireToken,
     req: Result<Json<RegisterSession>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let r = body(req)?;
-    if r.harness.trim().is_empty() {
-        return Err(ApiError::bad_request(
-            "invalid_session",
-            "harness must not be empty",
-        ));
-    }
+    check_harness(&r.harness)?;
     let session = s.store_call(move |st| st.register_session(r)).await?;
     Ok((StatusCode::CREATED, Json(json!({"session": session}))))
 }
@@ -47,10 +58,11 @@ pub async fn join(
     req: Result<Json<JoinBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
-    if b.harness.trim().is_empty() || b.harness_session_id.is_empty() {
+    check_harness(&b.harness)?;
+    if b.harness_session_id.is_empty() {
         return Err(ApiError::bad_request(
             "invalid_session",
-            "harness and harness_session_id must not be empty",
+            "harness_session_id must not be empty",
         ));
     }
     let session = s
@@ -108,8 +120,11 @@ pub struct ListQuery {
     live: bool,
 }
 
+/// Lists sessions. Session rows carry working directories and process IDs,
+/// so reading them needs the token.
 pub async fn list(
     State(s): State<AppState>,
+    _t: RequireToken,
     q: Result<Query<ListQuery>, axum::extract::rejection::QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -117,8 +132,10 @@ pub async fn list(
     Ok(Json(json!({"sessions": sessions})))
 }
 
+/// One session; needs the token, as [`list`] does.
 pub async fn get(
     State(s): State<AppState>,
+    _t: RequireToken,
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;

@@ -273,9 +273,11 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
     let ended = |id: String| {
         let client = client.clone();
         let url = format!("{base}/api/sessions/{id}");
+        let token = info.token.clone();
         async move {
             client
                 .get(url)
+                .bearer_auth(token)
                 .send()
                 .await
                 .unwrap()

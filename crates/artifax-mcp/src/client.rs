@@ -350,7 +350,7 @@ impl DaemonClient {
             .await
     }
 
-    /// `GET /api/artifacts/<id>`: `{artifact, versions, owner_session}`.
+    /// `GET /api/artifacts/<id>`: `{artifact, versions}`.
     pub async fn get(&self, id: &str) -> Result<Value> {
         self.json(|c| c.request(reqwest::Method::GET, &format!("/api/artifacts/{id}")))
             .await

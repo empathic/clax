@@ -27,16 +27,16 @@ async fn register_heartbeat_end_roundtrip() {
     let ts = TestServer::spawn().await;
     let s = register(
         &ts,
-        json!({"harness": "claude-code", "harness_session_id": "h1", "cwd": "/w", "pid": 10, "parent_pid": 5}),
+        json!({"harness": "claude", "harness_session_id": "h1", "cwd": "/w", "pid": 10, "parent_pid": 5}),
     )
     .await;
     let id = s["id"].as_str().unwrap().to_string();
-    assert_eq!(s["harness"], "claude-code");
+    assert_eq!(s["harness"], "claude");
     assert_eq!(s["ended_at"], Value::Null);
     // Registering the same harness session again returns the same row.
     let again = register(
         &ts,
-        json!({"harness": "claude-code", "harness_session_id": "h1", "cwd": "/w", "pid": 11}),
+        json!({"harness": "claude", "harness_session_id": "h1", "cwd": "/w", "pid": 11}),
     )
     .await;
     assert_eq!(again["id"], id);
@@ -53,7 +53,7 @@ async fn register_heartbeat_end_roundtrip() {
     assert!(beat["session"]["last_seen_at"].as_str() >= s["last_seen_at"].as_str());
 
     let live: Value = ts
-        .get("/api/sessions?live=true")
+        .get_authed("/api/sessions?live=true")
         .await
         .json()
         .await
@@ -68,16 +68,16 @@ async fn register_heartbeat_end_roundtrip() {
         .unwrap();
     assert!(res.json::<Value>().await.unwrap()["session"]["ended_at"].is_string());
     let live: Value = ts
-        .get("/api/sessions?live=true")
+        .get_authed("/api/sessions?live=true")
         .await
         .json()
         .await
         .unwrap();
     assert!(live["sessions"].as_array().unwrap().is_empty());
-    let all: Value = ts.get("/api/sessions").await.json().await.unwrap();
+    let all: Value = ts.get_authed("/api/sessions").await.json().await.unwrap();
     assert_eq!(all["sessions"].as_array().unwrap().len(), 1);
     let one: Value = ts
-        .get(&format!("/api/sessions/{id}"))
+        .get_authed(&format!("/api/sessions/{id}"))
         .await
         .json()
         .await
@@ -114,7 +114,7 @@ async fn write_routes_need_the_token_and_bad_input_is_json_400() {
         .await
         .unwrap();
     assert_eq!(res.status(), 400);
-    assert_eq!(ts.get("/api/sessions/nope").await.status(), 404);
+    assert_eq!(ts.get_authed("/api/sessions/nope").await.status(), 404);
 }
 
 #[tokio::test]
@@ -122,13 +122,13 @@ async fn join_by_parent_pid_meets_the_shim_in_either_order() {
     let ts = TestServer::spawn().await;
     let shim = register(
         &ts,
-        json!({"harness": "claude-code", "cwd": "/w", "pid": 10, "parent_pid": 5}),
+        json!({"harness": "claude", "cwd": "/w", "pid": 10, "parent_pid": 5}),
     )
     .await;
     let res = ts
         .post_json(
             "/api/sessions/join",
-            json!({"harness": "claude-code", "parent_pid": 5, "harness_session_id": "h1"}),
+            json!({"harness": "claude", "parent_pid": 5, "harness_session_id": "h1"}),
         )
         .await;
     assert_eq!(res.status(), 200);
@@ -174,7 +174,7 @@ async fn join_by_parent_pid_meets_the_shim_in_either_order() {
 #[tokio::test]
 async fn publish_with_session_header_attributes_owner_and_versions() {
     let ts = TestServer::spawn().await;
-    let s = register(&ts, json!({"harness": "claude-code", "cwd": "/w"})).await;
+    let s = register(&ts, json!({"harness": "claude", "cwd": "/w"})).await;
     let sid = s["id"].as_str().unwrap();
     let res = publish_as(&ts, Some(sid)).await;
     assert_eq!(res.status(), 201);
@@ -204,11 +204,13 @@ async fn publish_with_session_header_attributes_owner_and_versions() {
         .json()
         .await
         .unwrap();
-    assert_eq!(got["owner_session"]["id"], sid);
-    assert_eq!(got["owner_session"]["harness"], "claude-code");
+    assert!(got.get("owner_session").is_none(), "{got}");
+    assert_eq!(got["artifact"]["owner_session_id"], sid);
+    assert_eq!(got["artifact"]["owner_live"], true);
+    assert_eq!(got["artifact"]["owner_harness"], "claude");
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["owner_live"], true);
-    assert_eq!(list["artifacts"][0]["owner_harness"], "claude-code");
+    assert_eq!(list["artifacts"][0]["owner_harness"], "claude");
 
     ts.authed(ts.client.patch(format!("{}/api/sessions/{sid}", ts.base)))
         .json(&json!({"ended": true}))
@@ -223,7 +225,8 @@ async fn publish_with_session_header_attributes_owner_and_versions() {
         .json()
         .await
         .unwrap();
-    assert!(got["owner_session"]["ended_at"].is_string());
+    assert_eq!(got["artifact"]["owner_live"], false);
+    assert_eq!(got["artifact"]["owner_harness"], "claude");
 }
 
 #[tokio::test]
@@ -238,7 +241,9 @@ async fn publish_without_header_has_no_owner() {
         .json()
         .await
         .unwrap();
-    assert_eq!(got["owner_session"], Value::Null);
+    assert!(got.get("owner_session").is_none(), "{got}");
+    assert_eq!(got["artifact"]["owner_live"], false);
+    assert_eq!(got["artifact"]["owner_harness"], Value::Null);
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["owner_live"], false);
 }
@@ -311,4 +316,68 @@ async fn non_utf8_session_header_is_400_unknown_session() {
         res.json::<Value>().await.unwrap()["error"]["code"],
         "unknown_session"
     );
+}
+
+#[tokio::test]
+async fn session_reads_need_the_token() {
+    let ts = TestServer::spawn().await;
+    let s = register(&ts, json!({"harness": "claude", "cwd": "/home/me/secret"})).await;
+    let id = s["id"].as_str().unwrap();
+    for path in [
+        "/api/sessions".to_string(),
+        "/api/sessions?live=true".to_string(),
+        format!("/api/sessions/{id}"),
+    ] {
+        let res = ts.get(&path).await;
+        assert_eq!(res.status(), 401, "{path}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "unauthorized", "{path}");
+        let res = ts
+            .client
+            .get(format!("{}{path}", ts.base))
+            .bearer_auth("wrong")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 401, "{path}");
+        assert_eq!(ts.get_authed(&path).await.status(), 200, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn register_accepts_only_known_harnesses() {
+    let ts = TestServer::spawn().await;
+    for harness in ["claude-code", "", " ", "Claude"] {
+        let res = ts
+            .post_json("/api/sessions", json!({"harness": harness, "cwd": "/"}))
+            .await;
+        assert_eq!(res.status(), 400, "{harness:?}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_args", "{harness:?}");
+        assert_eq!(
+            body["error"]["message"],
+            "harness must be one of claude, codex, pi"
+        );
+    }
+    for harness in ["claude", "codex", "pi"] {
+        register(&ts, json!({"harness": harness, "cwd": "/"})).await;
+    }
+}
+
+#[tokio::test]
+async fn an_empty_harness_session_id_is_no_id() {
+    let ts = TestServer::spawn().await;
+    let a = register(
+        &ts,
+        json!({"harness": "claude", "harness_session_id": "", "cwd": "/", "parent_pid": 1001}),
+    )
+    .await;
+    let b = register(
+        &ts,
+        json!({"harness": "claude", "harness_session_id": "", "cwd": "/", "parent_pid": 1002}),
+    )
+    .await;
+    assert_eq!(a["harness_session_id"], Value::Null);
+    assert_eq!(b["harness_session_id"], Value::Null);
+    assert_ne!(a["id"], b["id"], "two harness processes are two sessions");
 }

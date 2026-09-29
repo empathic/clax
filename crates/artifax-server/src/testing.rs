@@ -88,6 +88,14 @@ impl TestServer {
             .unwrap()
     }
 
+    /// A GET carrying the bearer token.
+    pub async fn get_authed(&self, path: &str) -> reqwest::Response {
+        self.authed(self.client.get(format!("{}{}", self.base, path)))
+            .send()
+            .await
+            .unwrap()
+    }
+
     pub fn authed(&self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req.bearer_auth(&self.token)
     }

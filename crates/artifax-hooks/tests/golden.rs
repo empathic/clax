@@ -106,7 +106,14 @@ impl Daemon {
             .no_proxy()
             .build()
             .unwrap();
-        let v: Value = c.get(url).send().unwrap().json().unwrap();
+        let token = self.info()["token"].as_str().unwrap().to_string();
+        let v: Value = c
+            .get(url)
+            .bearer_auth(token)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
         v["sessions"].as_array().unwrap().clone()
     }
 }

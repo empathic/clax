@@ -3,6 +3,7 @@
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
+use artifax_core::model::{Artifact, Session};
 use artifax_core::publish::{PublishRequest, require_title, validate};
 use artifax_core::{ArtifactId, CoreError, Event, MetaPatch, Store};
 use axum::Json;
@@ -75,8 +76,17 @@ fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
         .transpose()
 }
 
-/// Each live artifact with `owner_live` (its owner session exists and has not
-/// ended) and `owner_harness` (the owner's harness, when it exists).
+/// `a` as JSON with `owner_live` (its owner session exists and has not ended)
+/// and `owner_harness` (the owner's harness, when it exists). The owner
+/// session itself is not exposed: these routes need no token.
+fn with_owner(a: &Artifact, owner: Option<&Session>) -> Value {
+    let mut v = serde_json::to_value(a).expect("serialisable artifact");
+    v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
+    v["owner_harness"] = json!(owner.map(|o| &o.harness));
+    v
+}
+
+/// Each live artifact, with the owner fields of [`with_owner`].
 pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     let artifacts = s
         .store_call(|st| {
@@ -92,10 +102,7 @@ pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
                     }
                     None => None,
                 };
-                let mut v = serde_json::to_value(&a).expect("serialisable artifact");
-                v["owner_live"] = json!(owner.as_ref().is_some_and(|o| o.ended_at.is_none()));
-                v["owner_harness"] = json!(owner.map(|o| o.harness));
-                out.push(v);
+                out.push(with_owner(&a, owner.as_ref()));
             }
             Ok(out)
         })
@@ -132,6 +139,7 @@ pub async fn create(
     ))
 }
 
+/// The artifact (with the owner fields of [`with_owner`]) and its versions.
 pub async fn get(
     State(s): State<AppState>,
     aid: Result<Path<String>, PathRejection>,
@@ -149,7 +157,7 @@ pub async fn get(
         })
         .await?;
     Ok(Json(
-        json!({"artifact": artifact, "versions": versions, "owner_session": owner}),
+        json!({"artifact": with_owner(&artifact, owner.as_ref()), "versions": versions}),
     ))
 }
 
