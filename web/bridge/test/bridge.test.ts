@@ -1,15 +1,24 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 
 import { BRIDGE_TYPES } from "../src/protocol";
-import { hashFor, helloFor, readMeta } from "../src/meta";
+import { hashFor, helloFor, isBridgeSrc, isFirstBridge, readMeta } from "../src/meta";
 
 declare global { interface Window { claude?: { use(name: string): Promise<unknown> }; __artifax?: { artifact: string; version: number; contract: string; file: string } } }
 
 // window.claude is defined non-configurable, so the bridge loads once and
 // every test shares that single load.
+let first: HTMLScriptElement;
+const bridgeScript = (src = "/_artifax/bridge.js?v=0123456789ab") => {
+  const s = document.createElement("script");
+  s.setAttribute("src", src);
+  return s;
+};
+const runAs = (script: HTMLScriptElement) => Object.defineProperty(document, "currentScript", { value: script, configurable: true });
 beforeAll(async () => {
   document.body.innerHTML = "";
-  const script = document.createElement("script");
+  // A page's own global of the bridge's name does not keep the bridge out.
+  (window as { __artifax?: unknown }).__artifax = { preset: true };
+  const script = first = bridgeScript();
   script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "3"; script.dataset.contract = "0.2.61"; script.dataset.file = "docs/about.html";
   document.body.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
@@ -52,21 +61,51 @@ describe("bridge", () => {
     expect(readMeta(null).file).toBe("index.html");
   });
 
-  it("a second bridge in the same document does nothing", async () => {
+  it("installs although the page preset a window.__artifax", () => {
+    expect(window.__artifax).not.toEqual({ preset: true });
+    expect(window.claude).toBeDefined();
+  });
+
+  it("a duplicate bridge tag in the same document stands down", async () => {
     const installed = window.claude;
     const meta = window.__artifax;
-    vi.resetModules();
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await import("../src/bridge");
-    expect(warn).not.toHaveBeenCalled();
-    expect(window.claude).toBe(installed);
-    expect(window.__artifax).toBe(meta);
+    const dup = bridgeScript();
+    dup.dataset.artifact = "7q3k9mzx2b4t"; dup.dataset.version = "9";
+    document.body.appendChild(dup);
+    runAs(dup);
+    try {
+      vi.resetModules();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await import("../src/bridge");
+      expect(warn).not.toHaveBeenCalled();
+      expect(window.claude).toBe(installed);
+      expect(window.__artifax).toBe(meta);
+    } finally {
+      dup.remove();
+      runAs(first);
+    }
+  });
+
+  it("counts only the daemon's exact tag forms when finding the first bridge", () => {
+    expect(isBridgeSrc("/_artifax/bridge.js")).toBe(true);
+    expect(isBridgeSrc("/_artifax/bridge.js?v=0a1b")).toBe(true);
+    for (const src of ["/_artifax/bridge.jsx", "/_artifax/bridge.js?v=XY", "https://x/_artifax/bridge.js", "/_artifax/bridge.js?v=1&x", null]) expect(isBridgeSrc(src)).toBe(false);
+    const other = bridgeScript("/_artifax/bridge.js?v=NOTHEX");
+    other.dataset.artifact = "x";
+    const noData = bridgeScript();
+    document.body.prepend(other, noData);
+    try {
+      expect(isFirstBridge(first)).toBe(true);
+      expect(isFirstBridge(null)).toBe(true);
+    } finally {
+      other.remove(); noData.remove();
+    }
   });
 
   it("logs once and does not throw when window.claude cannot be redefined", async () => {
     const installed = window.claude;
-    // Without the first bridge's marker the second load runs in full.
-    delete (window as { __artifax?: unknown }).__artifax;
+    // The document's first bridge loading again runs in full.
+    runAs(first);
     vi.resetModules();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(import("../src/bridge")).resolves.toBeDefined();

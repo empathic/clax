@@ -26,3 +26,20 @@ export function hashFor(hash: string): Extract<BridgeToShell, { type: "artifax:h
 export function helloFor(meta: PageMeta): Extract<BridgeToShell, { type: "artifax:hello" }> {
   return { type: "artifax:hello", artifact: meta.artifact, version: meta.version, file: meta.file };
 }
+
+/** Whether `src` is a bridge URL exactly as the daemon writes it: the bare
+ * `/_artifax/bridge.js` or `/_artifax/bridge.js?v=<lowercase hex>`. */
+export function isBridgeSrc(src: string | null): boolean {
+  return src !== null && /^\/_artifax\/bridge\.js(\?v=[0-9a-f]+)?$/.test(src);
+}
+
+/** Whether `script` is the first daemon bridge tag (bridge URL and
+ * `data-artifact`) in its document. Another copy of the bridge in the same
+ * document stands down; a script that cannot be identified (no
+ * `currentScript`) is taken as the first. */
+export function isFirstBridge(script: HTMLScriptElement | null): boolean {
+  if (!script) return true;
+  const first = Array.from(script.ownerDocument.querySelectorAll<HTMLScriptElement>("script[src][data-artifact]"))
+    .find(s => isBridgeSrc(s.getAttribute("src")));
+  return first === script;
+}

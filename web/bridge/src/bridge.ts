@@ -17,8 +17,9 @@
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
  * on every `hashchange` it reports the page's fragment (`artifax:hash`).
- * The daemon serves it first in `<head>`, once per document (a second copy
- * stands down), so `window.claude` exists before any page script; shell
+ * The daemon serves it right after the doctype (first in the skeleton's
+ * `<head>` for a fragment), and only the document's first bridge tag runs, so
+ * `window.claude` exists before any page script; shell
  * orders that read the page's content wait until the document has parsed.
  * While the page holds a `comments.customAnchors` registration, the bridge's
  * own comment mode, anchor resolution, and scroll-to stand down: the page
@@ -29,7 +30,7 @@ import { acceptFromShell, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
-import { hashFor, helloFor, readMeta } from "./meta";
+import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
@@ -37,10 +38,11 @@ import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
 (() => {
-  // One bridge per document: a copy the page carried in (a republished served
-  // DOM) or a second injection stands down.
-  if ((window as { __artifax?: unknown }).__artifax) return;
-  const meta = readMeta(document.currentScript as HTMLScriptElement | null);
+  // One bridge per document: any bridge tag after the document's first one
+  // (a copy the page carried in, or a second injection) stands down.
+  const script = document.currentScript as HTMLScriptElement | null;
+  if (!isFirstBridge(script)) return;
+  const meta = readMeta(script);
   (window as any).__artifax = meta;
   commentsContext.version = meta.version;
   commentsContext.file = meta.file;
@@ -72,6 +74,7 @@ import { makeUse } from "./use";
   // Anchors are resolved once per shell request; scroll and resize only
   // re-measure, unless the DOM under a resolved element changed since.
   let anchors: { id: string; anchor: Anchor }[] = [];
+  let latestResolve: unknown = null;
   let resolutions: AnchorCache | null = null;
   const resolveAll = (requestId: string | null) => {
     const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file);
@@ -135,9 +138,13 @@ import { makeUse } from "./use";
       case "artifax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
       case "artifax:resolve-anchors": {
         if (commentsContext.live) break;
-        anchors = m.anchors;
-        const requestId = m.requestId;
-        whenParsed(document, () => { if (anchors !== m.anchors) return; resolutions?.reset(); resolveAll(requestId); });
+        // The anchors take effect (for reflows too) once the page has parsed,
+        // and only the latest request's.
+        latestResolve = m;
+        whenParsed(document, () => {
+          if (latestResolve !== m || commentsContext.live) return;
+          anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId);
+        });
         break;
       }
       case "artifax:scroll-to": whenParsed(document, () => {

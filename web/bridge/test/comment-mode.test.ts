@@ -36,6 +36,17 @@ describe("CommentMode", () => {
     expect(outline().style.display).toBe("block");
   });
 
+  it("moves an overlay created before <body> to the end of the document when the mode turns on and when the pin shows", () => {
+    const root = document.documentElement;
+    const overlay = document.querySelector("artifax-overlay")!;
+    root.insertBefore(overlay, document.body);
+    mode.set(true);
+    expect(root.lastElementChild).toBe(overlay);
+    root.insertBefore(overlay, document.body);
+    fire(document.body, "mousemove");
+    expect(root.lastElementChild).toBe(overlay);
+  });
+
   it("moves an overlay created before <body> to the end of the document when it outlines", async () => {
     const root = document.documentElement;
     const overlay = document.querySelector("artifax-overlay")!;

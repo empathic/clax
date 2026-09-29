@@ -1,13 +1,31 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { openArtifact, publish, publishWith, startDaemon } from "./fixtures";
+import { contentFrame, openArtifact, publish, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
 test.afterAll(async () => { await d?.stop(); });
 
-const EARLY = `<!doctype html><html><head><title>Early</title><script>
+const EARLY = `<!doctype html><html lang="en"><head><title>Early</title><script>
   window.seen = typeof (window.claude && window.claude.use);
 </script></head><body><p id="out"></p><script>document.getElementById("out").textContent = window.seen;</script></body></html>`;
+
+// No <head> tag: the head is implied, and its script runs before <body>.
+const EARLY_NO_HEAD = `<!doctype html><html lang="fr"><meta charset="utf-8"><title>Early</title><script>
+  window.seen = typeof (window.claude && window.claude.use);
+</script><body><p id="out"></p><script>document.getElementById("out").textContent = window.seen;</script></body></html>`;
+
+// Republishes its served DOM on a click.
+const ROUND_TRIP = `<!doctype html><html lang="en"><head><title>Round trip</title><script>
+  window.seen = typeof (window.claude && window.claude.use);
+</script></head><body><p id="out"></p><button id="go">Republish</button><script>
+  document.getElementById("out").textContent = window.seen;
+  document.getElementById("go").onclick = async () => {
+    const artifact = await claude.use("artifact");
+    await artifact.publish("<!doctype html>\\n" + document.documentElement.outerHTML);
+  };
+</script></body></html>`;
+
+const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelectorAll("script[src^='/_artifax/bridge.js']")).map(s => ({ first: s === document.head.firstElementChild, version: (s as HTMLScriptElement).dataset.version })));
 
 // A page whose `<head>` blocks on a script, so the shell's welcome and anchor
 // requests reach the bridge before `<body>` exists.
@@ -24,9 +42,33 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `Early ${mode}`, EARLY, {});
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(f.locator("#out")).toHaveText("function");
-    // Exactly one bridge runs in the served document, first in <head>.
-    expect(await f.evaluate(() => document.querySelectorAll("script[src^='/_artifax/bridge.js']").length)).toBe(1);
-    expect(await f.evaluate(() => (document.head.firstElementChild as HTMLScriptElement).src)).toContain("/_artifax/bridge.js");
+    // Exactly one bridge runs in the served document, first in the head the
+    // parser builds after the doctype, and
+    // the page's <html lang> still applies.
+    expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
+    expect(await f.evaluate(() => document.documentElement.lang)).toBe("en");
+  });
+
+  test(`${mode}: a script in an implied <head> sees window.claude.use`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Early no head ${mode}`, EARLY_NO_HEAD, {});
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#out")).toHaveText("function");
+    expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
+    expect(await f.evaluate(() => document.documentElement.lang)).toBe("fr");
+  });
+
+  test(`${mode}: a page republished from its served DOM runs one bridge, for the new version`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Round trip ${mode}`, ROUND_TRIP, { artifact: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#out")).toHaveText("function");
+    await f.locator("#go").click();
+    const g = await contentFrame(page, artifact.id, 2);
+    await expect(g.locator("#out")).toHaveText("function");
+    // The stored page carries the version 1 tag the daemon strips when serving.
+    const stored = await (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/2/files/index.html`)).text();
+    expect(stored).toContain('data-version="1"');
+    expect(await bridges(g)).toEqual([{ first: true, version: "2" }]);
+    expect(await g.evaluate(() => document.documentElement.lang)).toBe("en");
   });
 
   test(`${mode}: a sub page's <head> script sees window.claude.use`, async ({ page }) => {
@@ -37,6 +79,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const f = await frameAt(page, artifact.id, "early.html");
     await expect(f.locator("#out")).toHaveText("function");
     expect(await f.evaluate(() => (document.head.firstElementChild as HTMLScriptElement).dataset.file)).toBe("early.html");
+    expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
   });
 
   test(`${mode}: anchors requested before <body> exists resolve once the page has parsed`, async ({ page, browser }) => {

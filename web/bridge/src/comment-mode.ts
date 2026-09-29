@@ -60,6 +60,7 @@ export class CommentMode {
       else this.doc.removeEventListener(type, fn, true);
     }
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
+    if (on) this.ensureLast();
     this.suppressClick = false;
     if (on) {
       const sel = this.doc.getSelection();
@@ -84,12 +85,17 @@ export class CommentMode {
     }, 1800);
   }
 
-  /** Outlines `t`, in colours that stand out on the background behind it. */
-  private place(t: Element | Range): void {
-    // Created from `<head>`, the overlay precedes `<body>`; it moves last so it
-    // stacks above page content at the same z-index.
+  /** Created from `<head>`, the overlay precedes `<body>`; before it shows
+   * anything it moves last, so it stacks above page content at the same
+   * z-index. */
+  private ensureLast(): void {
     const root = this.doc.documentElement;
     if (root.lastElementChild !== this.host) root.appendChild(this.host);
+  }
+
+  /** Outlines `t`, in colours that stand out on the background behind it. */
+  private place(t: Element | Range): void {
+    this.ensureLast();
     const el = t instanceof Element ? t : t.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? (t.commonAncestorContainer as Element) : t.commonAncestorContainer.parentElement;
     const c = outlineColors(el ? backgroundBehind(el) : "#ffffff");
     if (c.border !== this.border) {
@@ -114,6 +120,7 @@ export class CommentMode {
   }
 
   private onMove = (e: MouseEvent) => {
+    this.ensureLast();
     Object.assign(this.pin.style, { display: "block", left: `${e.clientX}px`, top: `${e.clientY}px` });
     this.pointer = { x: e.clientX, y: e.clientY, el: this.target(e) };
     if (this.frame) return;
