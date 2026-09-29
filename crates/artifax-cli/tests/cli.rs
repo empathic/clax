@@ -723,3 +723,53 @@ fn publish_takes_a_new_artifacts_title_from_the_page_or_refuses() {
         .success();
     e.stop();
 }
+
+#[test]
+fn open_fails_when_the_opener_fails() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    let page = write(e.dir.path(), "p.html", "<title>Open</title>");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&page)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let bin = e.dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let path = format!(
+        "{}:{}",
+        bin.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let fake = |code: u8| {
+        for name in ["open", "xdg-open"] {
+            let p = bin.join(name);
+            std::fs::write(&p, format!("#!/bin/sh\nexit {code}\n")).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    };
+    fake(1);
+    e.cmd()
+        .env("PATH", &path)
+        .args(["open", &id])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("could not open a browser"))
+        .stderr(predicate::str::contains(format!("/a/{id}")));
+    fake(0);
+    e.cmd()
+        .env("PATH", &path)
+        .args(["open", &id])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(format!("/a/{id}")));
+    e.stop();
+}

@@ -579,7 +579,12 @@ impl ArtifaxTools {
         let id = artifact_id(&a.url_or_id)?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
         let url = self.artifact_url(&id);
-        let opened = std::env::var_os("ARTIFAX_NO_OPEN").is_none() && open_in_browser(&url);
+        let opened = std::env::var_os("ARTIFAX_NO_OPEN").is_none() && {
+            let url = url.clone();
+            tokio::task::spawn_blocking(move || open_in_browser(&url))
+                .await
+                .unwrap_or(false)
+        };
         Ok(json!({"url": url, "opened": opened}))
     }
 
@@ -647,28 +652,44 @@ impl ArtifaxTools {
     }
 }
 
-/// Starts the platform opener (`open` on macOS, `xdg-open` elsewhere) on `url`
-/// with stdio detached, reaping it in the background. True when it started.
-fn open_in_browser(url: &str) -> bool {
+/// How long [`open_in_browser`] waits for the opener to exit.
+pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Runs the platform opener (`open` on macOS, `xdg-open` elsewhere) on `url`
+/// with stdio detached and waits up to [`OPEN_WAIT`] for it. True when it
+/// exits successfully in time, or is still running then (best effort: some
+/// openers hand off and linger; it is reaped in the background); false when it
+/// cannot start or exits unsuccessfully. Blocks the calling thread.
+pub fn open_in_browser(url: &str) -> bool {
     let opener = if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
     };
-    let child = tokio::process::Command::new(opener)
+    let Ok(mut child) = std::process::Command::new(opener)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
-    match child {
-        Ok(mut child) => {
-            tokio::spawn(async move {
-                let _ = child.wait().await;
-            });
-            true
+        .spawn()
+    else {
+        return false;
+    };
+    let deadline = std::time::Instant::now() + OPEN_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Ok(None) => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return true;
+            }
+            Err(_) => return false,
         }
-        Err(_) => false,
     }
 }
 

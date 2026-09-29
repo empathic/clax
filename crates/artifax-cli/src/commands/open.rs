@@ -18,23 +18,16 @@ pub fn id_from(s: &str) -> anyhow::Result<String> {
         .to_string())
 }
 
+/// Opens the artifact in a browser (text mode) or prints its URL (`--json`,
+/// which never opens). Text mode fails when the opener fails, by the rule of
+/// [`artifax_mcp::tools::open_in_browser`].
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let id = id_from(&a.target)?;
     let c = Client::connect(home, cli.port)?;
     c.get(&format!("/api/artifacts/{id}"))?;
     let url = c.browser_url(&format!("/a/{id}"));
-    if !cli.json {
-        let opener = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        std::process::Command::new(opener)
-            .arg(&url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("cannot run {opener}: {e}"))?;
+    if !cli.json && !artifax_mcp::tools::open_in_browser(&url) {
+        anyhow::bail!("could not open a browser; open {url} yourself");
     }
     super::print(cli, serde_json::json!({"url": url}), |j| {
         j["url"].as_str().unwrap().to_string()
