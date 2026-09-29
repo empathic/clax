@@ -297,3 +297,59 @@ async fn an_ended_session_cannot_poll_or_ack() {
         .unwrap();
     assert_eq!(missing.status(), 404);
 }
+
+/// A Pi session in `wait_for_feedback` with its injection loop also polling:
+/// the wait poll gets the rows, and the inject poll yields at once.
+#[tokio::test]
+async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
+    let ts = TestServer::spawn().await;
+    let s = ts.register_session("pi", "p1").await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let a = ts.publish_as(&sid, "T", "<h2>x</h2>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let url = |q: &str| format!("{}/api/sessions/{sid}/feedback{q}", ts.base);
+    // An inject poll already waiting when the wait poll starts.
+    let early_inject = ts.authed(ts.client.get(url("?tier=inject&wait=5")));
+    let early = tokio::spawn(async move {
+        let started = Instant::now();
+        let body: Value = early_inject.send().await.unwrap().json().await.unwrap();
+        (started.elapsed(), body)
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let wait = ts.authed(ts.client.get(url("?tier=wait&wait=5")));
+    let waiter = tokio::spawn(async move {
+        let body: Value = wait.send().await.unwrap().json().await.unwrap();
+        body
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    // An inject poll that starts while the wait poll is in progress.
+    let started = Instant::now();
+    let late = poll(&ts, &sid, "?tier=inject&wait=5").await;
+    assert!(started.elapsed() < Duration::from_secs(1), "yields at once");
+    assert_eq!(
+        (
+            late["feedback"].as_array().unwrap().len(),
+            &late["text"],
+            &late["waited_s"]
+        ),
+        (0, &Value::Null, &Value::from(0))
+    );
+    let t = ts.thread(&aid, 1, "@agent first").await;
+    let got = waiter.await.unwrap();
+    assert_eq!(got["feedback"][0]["thread_id"], t["id"]);
+    // The woken inject poll either yields at once or, when the wait poll has
+    // already returned, finds nothing left; it never takes the row.
+    let (_took, early_body) = early.await.unwrap();
+    assert!(early_body["feedback"].as_array().unwrap().is_empty());
+    // With no wait poll in progress, inject takes the next comment.
+    let inject = ts.authed(ts.client.get(url("?tier=inject&wait=5")));
+    let injector = tokio::spawn(async move {
+        let body: Value = inject.send().await.unwrap().json().await.unwrap();
+        body
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let t2 = ts.thread(&aid, 1, "@agent second").await;
+    let got = injector.await.unwrap();
+    assert_eq!(got["feedback"][0]["thread_id"], t2["id"]);
+    assert_eq!(got["feedback"].as_array().unwrap().len(), 1);
+}

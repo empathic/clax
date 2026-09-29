@@ -52,8 +52,16 @@ pub struct FeedbackQuery {
 /// resend-eligible rows. A daemon that begins shutting down answers empty at once.
 /// An unknown session is 404; an ended one is 400 `unknown_session`, answered
 /// before any wait. A session that ends during the wait answers empty at the
-/// deadline. While a poll with `wait > 0` is in progress, the session is not
-/// pushed to with `codex queue` ([`crate::push::dispatch`]).
+/// deadline.
+///
+/// While a `tier=wait` poll with `wait > 0` (`wait_for_feedback`) is in
+/// progress, tier 5 is skipped for the session: `codex queue` does not push
+/// to it ([`crate::push::dispatch`]), and a `tier=inject` poll (the Pi
+/// injection loop) takes nothing and answers empty at once, `{feedback: [],
+/// text: null, waited_s: 0}` (also when it was already waiting and is woken),
+/// so the rows go to the wait poll. The inject poll checks before each take;
+/// a wait poll that starts between that check and the take can lose one hand
+/// over to it.
 ///
 /// Any holder of the token may read or acknowledge any session's feedback: the
 /// token is the local trust boundary, and sessions are not authenticated
@@ -82,8 +90,8 @@ pub async fn poll(
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let notify = s.feedback_waiters.get(&sid);
-    // While this poll waits, tier 5 leaves the session's rows to it.
-    let _waiting = (q.wait > 0).then(|| s.feedback_waiters.enter(&sid));
+    // While a wait-tier poll waits, tier 5 leaves the session's rows to it.
+    let _waiting = (q.wait > 0 && tier == Tier::Wait).then(|| s.feedback_waiters.enter(&sid));
     let mut shutdown = s.shutdown.clone();
     // A dropped sender means the state has no shutdown source; never end early then.
     let stopping = async move {
@@ -102,6 +110,9 @@ pub async fn poll(
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
+        if take.tier == Tier::Inject && s.feedback_waiters.is_waiting(&take.session_id) {
+            return Ok(Json(json!({"feedback": [], "text": null, "waited_s": 0})));
+        }
         let ctx = s.feedback_ctx();
         let t = take.clone();
         let items = s

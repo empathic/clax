@@ -167,8 +167,9 @@ pub async fn run_queue(
 /// claims its undelivered rows on watches with replies armed (tier `queue`)
 /// and runs `codex queue` in the background, never blocking the caller.
 ///
-/// A target with a feedback long-poll in progress (`wait_for_feedback`) is
-/// skipped: the woken poll delivers the rows in-band (tier `wait`). A row
+/// A target with a `wait_for_feedback` long-poll (`tier=wait`) in progress is
+/// skipped ([`crate::feedback::FeedbackWaiters::is_waiting`]): the woken poll
+/// delivers the rows in-band (tier `wait`). A row
 /// committed after that poll's last take and before it returns is left to the
 /// in-band tiers.
 ///

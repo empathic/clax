@@ -11,7 +11,9 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
 /// One `Notify` per session that has long-polled for feedback, and how many
-/// long-polls each session has in progress.
+/// `wait_for_feedback` long-polls (`tier=wait`, `wait > 0`) each session has
+/// in progress. Other tiers' long-polls (the Pi `inject` loop) are woken but
+/// never counted.
 #[derive(Default)]
 pub struct FeedbackWaiters {
     notifies: Mutex<HashMap<String, Arc<Notify>>>,
@@ -47,8 +49,9 @@ impl FeedbackWaiters {
         }
     }
 
-    /// Counts a long-poll of `session_id` as in progress until the returned
-    /// guard is dropped (on every exit, including the client going away).
+    /// Counts a `wait_for_feedback` long-poll of `session_id` as in progress
+    /// until the returned guard is dropped (on every exit, including the
+    /// client going away). Only `tier=wait` polls enter.
     pub fn enter(self: &Arc<Self>, session_id: &str) -> WaitGuard {
         *self
             .active
@@ -62,7 +65,8 @@ impl FeedbackWaiters {
         }
     }
 
-    /// Whether a long-poll of `session_id` is in progress.
+    /// Whether a `wait_for_feedback` long-poll (`tier=wait`) of `session_id`
+    /// is in progress; tier 5 (`codex queue`, Pi `inject`) is skipped while it is.
     pub fn is_waiting(&self, session_id: &str) -> bool {
         self.active.lock().unwrap().contains_key(session_id)
     }
