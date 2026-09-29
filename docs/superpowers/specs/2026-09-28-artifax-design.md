@@ -232,9 +232,16 @@ All routes are on the daemon. Write routes (marked W) require
 Browser-facing:
 
 - `GET /` gallery shell. `GET /a/<aid>` artifact shell. `GET /a/<aid>/v/<n>`
-  shell pinned to a version.
+  shell pinned to a version. Either may be followed by `/<path>`, a
+  published page the frame opens on (`GET /a/<aid>/<path>`,
+  `GET /a/<aid>/v/<n>/<path>`); every `/a/<aid>/...` path serves the shell
+  (see §8 for how it reads the path).
 - `GET /c/<aid>/v/<n>/` wrapped content document (bridge prepended).
-  `GET /c/<aid>/v/<n>/<path>` supporting files. Also served at
+  `GET /c/<aid>/v/<n>/<path>` supporting files; a file stored as
+  `text/html` is wrapped exactly like the index (the bridge tag carries
+  `data-file="<path>"`, `index.html` for the index; cached per artifact,
+  version, and file; `Cache-Control: no-store`), every other file is served
+  as stored. Also served at
   `http://<aid>.localhost:<port>/v/<n>/...` for D5. On `<aid>.localhost` the
   daemon serves `/v/...`, `/healthz`, `/_artifax/*`, and `/_blob/*` and
   404s everything else.
@@ -378,7 +385,17 @@ Gallery (`/`): cards with title, description, icon, updated time, pinned
 first; search; open, pin, delete; shows which session published each and
 whether that session is live.
 
-Artifact shell (`/a/<aid>`):
+Artifact shell (`/a/<aid>`, `/a/<aid>/v/<n>`, either followed by
+`/<path>` of a published page; after `/a/<aid>`, `v` followed by an
+all-digit segment is a version and anything else starts the page path, so a
+file under `v/<digits>/` is reachable only through the versioned form):
+
+- URL: the frame opens on the page the URL names (`index.html` when none; a
+  page the version does not hold shows a message instead of the frame). When
+  the frame moves to another page (its bridge greets with a different
+  `file`), the shell pushes that page's URL; back and forward move the frame
+  between pages. The version picker, the reload banner, and copy link keep
+  the current page. `url` in tool results stays `/a/<aid>`.
 
 - Header: title, version picker (`v3 of 3`, older versions read-only), copy
   link, open raw content in a new tab, comment mode toggle, thread sidebar
@@ -402,9 +419,14 @@ Artifact shell (`/a/<aid>`):
   claude.ai.
 - Thread sidebar: open and resolved threads, each with anchor summary,
   clip thumbnail, comments, "Send to agent" button, resolve. Clicking a
-  thread scrolls the frame to its anchor and flashes it. Detached threads
-  (anchor not found in this version) are listed under "Detached".
-- Comment mode: the bridge highlights the hovered element with an outline
+  thread scrolls the frame to its anchor and flashes it; a thread on
+  another page than the one in the frame is labelled "on <file>", and
+  clicking it navigates the frame to that page and then scrolls to it.
+  Pins show only for the page in the frame. Detached threads (anchor not
+  found on its own page in this version) are listed under "Detached".
+- Comment mode: works on every HTML page of the version (each is served
+  with the bridge, which greets the shell with its `file`). The bridge
+  highlights the hovered element with an outline
   and shows a floating pin cursor. Click selects that element; drag-select
   text creates a range anchor. The composer opens in the shell with the
   quote and clip preview.
@@ -420,10 +442,11 @@ must not be stubbed into phase 1.
 
 ## 9. Runtime bridge and capabilities
 
-The daemon wraps every version's `index.html` at serve time into the
+The daemon wraps every HTML page of a version (`index.html` and every
+supporting file stored as `text/html`) at serve time into the
 document skeleton claude.ai uses (doctype, charset, viewport, the small
 reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
-data-version="<n>" data-contract="0.2.61">` as the first element of
+data-version="<n>" data-contract="0.2.61" data-file="<path>">` as the first element of
 `<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
 (case-insensitive), it is a complete document and is served as-is with the
@@ -434,7 +457,10 @@ there is neither), so `window.claude` exists before any page script, as
 republished document that already carries a bridge tag keeps exactly one,
 for the new version. This is what makes a self-republished page (which sends
 the full skeleton) round-trip without nesting. Wrapping is pure and cached
-per version.
+per version and file. The bridge greets the shell with its page's `file`,
+records it on every anchor it builds, and never resolves an anchor whose
+`file` is another page.
+
 
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.
@@ -540,11 +566,19 @@ window and origin.
   "prefix": "...", "suffix": "...",
   "html_hash": "sha256:...",
   "rect": {"x":0,"y":0,"w":0,"h":0,"scrollX":0,"scrollY":0,"viewportW":0},
-  "custom_name": null
+  "custom_name": null,
+  "file": "index.html"
 }
 ```
 
+`file` is the published path of the page the anchor is on: a safe relative
+path of at most 512 bytes that the thread's version holds (`invalid_anchor`
+otherwise); an anchor without it is on `index.html`. An anchor resolves only
+on its own page. Its summary (the payload's "Anchored on" line) starts with
+`<file> › ` when the file is not `index.html`.
+
 Re-resolution order on a new version: exact `selector` with matching
+
 `html_hash`; `selector` alone; text `quote` with `prefix`/`suffix` search;
 `custom_name` for custom anchors. Nothing found: the thread is detached for
 that version and stays attached to the version it was made on.

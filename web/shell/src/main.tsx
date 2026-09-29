@@ -1,10 +1,11 @@
 import { render } from "preact";
 import Gallery from "./gallery";
 import ArtifactView from "./artifact";
+import { parseShellPath } from "./route";
 
 function route() {
-  const m = location.pathname.match(/^\/a\/([0-9a-hj-km-np-tv-z]{12})(?:\/v\/(\d+))?\/?$/);
-  if (m) return <ArtifactView id={m[1]} pinnedVersion={m[2] ? Number(m[2]) : null} />;
+  const r = parseShellPath(location.pathname);
+  if (r.kind === "artifact") return <ArtifactView id={r.id} pinnedVersion={r.version} file={r.file} />;
   return <Gallery />;
 }
 

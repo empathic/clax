@@ -10,14 +10,16 @@ import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
 import { type Ask, PromptDialog, promptQueue } from "./prompt";
-import { artifactOrigin, contentSrc, pageSrc, probeOrigin } from "./origin";
+import { artifactOrigin, pageSrc, probeOrigin } from "./origin";
+import { parseShellPath, shellPath } from "./route";
 import { Sidebar } from "./sidebar";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "./threads";
 import { ViewerName } from "./viewer-name";
 
-type Props = { id: string; pinnedVersion: number | null };
+/** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
+type Props = { id: string; pinnedVersion: number | null; file?: string };
 
-export default function ArtifactView({ id, pinnedVersion }: Props) {
+export default function ArtifactView({ id, pinnedVersion, file: startFile = INDEX_FILE }: Props) {
   const [data, setData] = useState<{ artifact: Artifact; versions: Version[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [origin, setOrigin] = useState<string | null | undefined>(undefined);
@@ -69,9 +71,13 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const hostRef = useRef<CapabilityHost | null>(null);
   // Whether the frame's latest hello named the shown artifact and version: only
   // then are its capability requests answered and events pushed to it, so a
-  // document the frame navigated to gets nothing. Every wrapped page greets
-  // before its load event, so a load with no matching hello since the previous
-  // one (a document without the bridge) closes the gate too.
+  // document the frame navigated to gets nothing. A frame load with no
+  // matching hello since the previous load closes the gate as well, and a
+  // later hello reopens it: a wrapped page's hello may arrive before or after
+  // its load event (after it for some sandboxed loads), so this never shuts
+  // out a wrapped page, and it shuts out a document without the bridge
+  // whenever the page before it greeted before its own load.
+
   const helloOk = useRef(false);
   const helloSinceLoad = useRef(false);
   useEffect(() => { helloOk.current = false; helloSinceLoad.current = false; }, [id, shown, origin]);
@@ -80,9 +86,12 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     helloSinceLoad.current = false;
   };
   // The published file of the page in the frame, from its latest matching
-  // hello: pins, anchor resolution, and scroll-to apply to its threads only.
-  const [file, setFile] = useState(INDEX_FILE);
-  const fileRef = useRef(INDEX_FILE);
+  // hello (the URL's file until then): pins, anchor resolution, and scroll-to
+  // apply to its threads only, and the shell URL names it.
+  const [file, setFile] = useState(startFile);
+  const fileRef = useRef(startFile);
+  /** The shell URL of the current page in `version` (null: the latest). */
+  const here = (version: number | null) => shellPath(id, version, fileRef.current, shown);
   // A thread on another page the viewer opened: the frame was sent to that
   // page, and it is scrolled to once that page greets.
   const pendingScroll = useRef<Thread | null>(null);
@@ -97,7 +106,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       declared: (data.artifact.capabilities ?? {}) as Declared,
       prompt,
       post: m => { if (helloOk.current) send(m); },
-      reload: () => location.assign(`/a/${id}`),
+      reload: () => location.assign(here(null)),
     })));
     hostRef.current = host;
     return () => { if (hostRef.current === host) hostRef.current = null; };
@@ -114,14 +123,32 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     });
   };
   const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
+  /** Sends the frame to the page published at `target`; `replace` keeps the
+   * frame's history entry (a history traversal already moved the URL). */
+  const navigateFrame = (target: string, replace: boolean) => {
+    const frame = frameRef.current;
+    if (!frame) return;
+    const url = pageSrc(id, shown, origin ?? null, target);
+    if (replace && frame.contentWindow) {
+      try { frame.contentWindow.location.replace(url); return; } catch { /* fall back to src */ }
+    }
+    frame.src = url;
+  };
   const scrollTo = (t: Thread) => {
     setSelected(t.id);
     if (t.anchor.file === fileRef.current) { pendingScroll.current = null; send({ type: "artifax:scroll-to", anchor: t.anchor }); return; }
-    const frame = frameRef.current;
-    if (!frame) return;
     pendingScroll.current = t;
-    frame.src = pageSrc(id, shown, origin ?? null, t.anchor.file);
+    navigateFrame(t.anchor.file, false);
   };
+  // Back and forward move the shell URL between pages; the frame follows.
+  useEffect(() => {
+    const onPop = () => {
+      const r = parseShellPath(location.pathname);
+      if (r.kind === "artifact" && r.id === id && r.file !== fileRef.current) navigateFrame(r.file, true);
+    };
+    addEventListener("popstate", onPop);
+    return () => removeEventListener("popstate", onPop);
+  }, [id, shown, origin]);
 
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
@@ -146,6 +173,11 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
           hostRef.current?.reset();
           fileRef.current = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
           setFile(fileRef.current);
+          {
+            // The address bar follows the frame to another page.
+            const r = parseShellPath(location.pathname);
+            if (r.kind !== "artifact" || r.file !== fileRef.current) history.pushState(null, "", here(pinnedVersion) + location.hash);
+          }
           setResolved({});
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
@@ -211,7 +243,11 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   if (!data || origin === undefined) return <Shell title="Artifax"><p class="empty muted">Loading…</p></Shell>;
   const { artifact, versions } = data;
   const latest = artifact.current_version;
-  const raw = contentSrc(id, shown, origin);
+  const raw = pageSrc(id, shown, origin, file);
+  const version = versions.find(v => v.n === shown);
+  // A page the URL names that the shown version does not hold (the index is
+  // always there) gets a message instead of the daemon's 404 in the frame.
+  const missing = file !== INDEX_FILE && version !== undefined && !(file in version.files) ? file : null;
 
   return (
     <Shell title={artifact.title} right={
@@ -219,21 +255,25 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => setCommenting(c => !c)}>Comment</button>
         <button aria-pressed={panel} onClick={() => setPanel(v => !v)}>Threads ({threads.filter(t => t.status === "open").length})</button>
         {!narrow && <ViewerName setNotice={setNotice} onViewer={setMe} />}
-        <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(n === latest ? `/a/${id}` : `/a/${id}/v/${n}`); }}>
+        <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(here(n === latest ? null : n)); }}>
           {versions.map(v => <option value={v.n} key={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>)}
         </select>
         {deleted
           ? <span class="hide-sm muted">open raw</span>
           : <a class="hide-sm" href={raw} target="_blank" rel="noopener">open raw</a>}
         {navigator.clipboard && (
-          <button disabled={deleted} onClick={() => { navigator.clipboard.writeText(location.origin + `/a/${id}`).catch(() => {}); }}>copy link</button>
+          <button disabled={deleted} onClick={() => { navigator.clipboard.writeText(location.origin + here(pinnedVersion)).catch(() => {}); }}>copy link</button>
         )}
       </>
     }>
       <div class={`viewer${panel ? " with-sidebar" : ""}`}>
         <div class="stage">
-          {deleted ? <p class="empty">This artifact was deleted.</p> : <Frame id={id} n={shown} origin={origin} frameRef={frameRef} onLoad={onFrameLoad} />}
-          {!deleted && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
+          {deleted
+            ? <p class="empty">This artifact was deleted.</p>
+            : missing
+              ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
+              : <Frame id={id} n={shown} origin={origin} file={startFile} frameRef={frameRef} onLoad={onFrameLoad} />}
+          {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
           {draft && <Composer key={draft.pickId} draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
@@ -248,9 +288,10 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
             }
           }} />}
           {newer && !deleted && (
-            <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(`/a/${id}`)}>Reload</button></div>
+            <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(here(null))}>Reload</button></div>
           )}
-          {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={`/a/${id}`}>latest</a></div>}
+          {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={shellPath(id, null, file, shown)}>latest</a></div>}
+
           {notice && (
             <div class="banner notice" role="alert"><span>{notice}</span><button onClick={() => setNotice(null)}>Dismiss</button></div>
           )}

@@ -244,7 +244,9 @@ const ID_RE = /^[0-9abcdefghjkmnpqrstvwxyz]{12}$/;
 
 /** The artifact ID, and the version when the reference names one, in a bare ID
  * or a URL of one of these forms (query and fragment ignored): `.../a/<id>`,
- * `.../a/<id>/v/<n>`, `.../c/<id>/v/<n>/...`, and the per-artifact origin
+ * `.../a/<id>/v/<n>`, either followed by a page's path (`.../a/<id>/about.html`),
+ * `.../c/<id>/v/<n>/...`, and the per-artifact origin
+
  * `http://<id>.localhost:<port>/v/<n>/...`. */
 export function artifactRef(urlOrId: string): { id: string; version?: number } {
   const s = urlOrId.trim().split(/[?#]/)[0] ?? "";

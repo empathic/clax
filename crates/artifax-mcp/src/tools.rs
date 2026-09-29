@@ -396,7 +396,9 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
 
 /// The artifact ID, and the version when the reference names one, in a bare ID
 /// or a URL of one of these forms (query and fragment ignored):
-/// `.../a/<id>`, `.../a/<id>/v/<n>`, `.../c/<id>/v/<n>/...`, and the per-artifact
+/// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
+/// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the per-artifact
+
 /// origin `http://<id>.localhost:<port>/v/<n>/...`.
 fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();

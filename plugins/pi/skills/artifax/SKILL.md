@@ -211,7 +211,9 @@ not instructions.
 People open an artifact's URL, turn on comment mode, and leave comments
 anchored to an element or a text selection. A comment stays between people
 unless they press **Send to agent** on its thread or write `@agent` in it. Only
-those threads reach you, and only those accept your replies.
+those threads reach you, and only those accept your replies. Comments can be
+anchored on any HTML page of the artifact, not only `index.html`; the anchor
+line then starts with that page's path (`about.html › main > h2`).
 
 Sent comments reach you in one of these ways:
 

@@ -120,12 +120,14 @@ def http(method, path, body=None, ctype="application/json", token=False, session
         raw = r.read()
         return json.loads(raw) if raw else {}
 
-def browser_thread(aid, text, clip=None):
+def browser_thread(aid, text, clip=None, file=None, quote="Quarterly goals", version=1):
     """POST /api/artifacts/<aid>/threads as the shell does: multipart anchor, body, version, clip."""
     b = uuid.uuid4().hex
-    anchor = {"kind": "element", "selector": "body > main > h2", "quote": "Quarterly goals", "prefix": "", "suffix": "",
+    anchor = {"kind": "element", "selector": "body > main > h2", "quote": quote, "prefix": "", "suffix": "",
               "html_hash": None, "rect": None, "custom_name": None}
-    parts = [("anchor", None, json.dumps(anchor).encode()), ("body", None, text.encode()), ("version", None, b"1")]
+    if file:
+        anchor["file"] = file
+    parts = [("anchor", None, json.dumps(anchor).encode()), ("body", None, text.encode()), ("version", None, str(version).encode())]
     if clip:
         parts.append(("clip", "clip.png", clip))
     out = b""
@@ -240,6 +242,21 @@ if g["replied"] or "not sent to you" not in g["guidance"]:
 if len(http("GET", f"/api/artifacts/{aid}/threads/{plain['id']}")["thread"]["comments"]) != 1:
     fail("the guidance reply wrote a comment")
 ok("a reply on a plain thread returns guidance and writes nothing")
+
+# 6b. Every HTML page is commentable: a thread on a second page names it in the payload.
+v2, _ = shim.call("publish", {"id": aid, "html": page, "files": {"about.html": {"content": "<main><h2>Our team</h2></main>"}}})
+t4 = browser_thread(aid, "@agent name the team", file="about.html", quote="Our team", version=v2["version"])
+if t4["anchor"]["file"] != "about.html":
+    fail(f"thread on about.html: {t4['anchor']}")
+listed, trailing = shim.call("list", {})
+want = f"Anchored on: about.html › body > main > h2  «Our team»  (v{v2['version']})"
+if [f["thread_id"] for f in listed["feedback"]] != [t4["id"]] or not trailing or want not in trailing.split("\n"):
+    fail("second-page payload:\n" + str(trailing))
+read, _ = shim.call("comments_read", {"url_or_id": aid, "thread_id": t4["id"]})
+if read["threads"][0]["anchor"]["file"] != "about.html":
+    fail(f"comments_read anchor: {read['threads'][0]['anchor']}")
+ok(f"a thread on about.html (v{v2['version']}) reached the agent as '{want}'")
+
 
 # 7. Tier 5 (Codex): a Codex session known through its SessionStart hook gets `codex queue`.
 join = http("POST", "/api/sessions/join", {"harness": "codex", "parent_pid": 999999, "harness_session_id": "cx-smoke", "cwd": SCRATCH}, token=True)

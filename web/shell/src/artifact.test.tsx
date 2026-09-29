@@ -21,12 +21,13 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
 }
 
 const ID = "7q3k9mzx2b4t";
-const artifact = (n: number) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files: {} }] });
+const artifact = (n: number, files: Record<string, unknown> = {}) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files }] });
+const page = { content_type: "text/html", size: 1 };
 
 const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
-async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>) {
+async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string) {
   vi.stubGlobal("EventSource", FakeES);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -40,7 +41,7 @@ async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (
   const { default: ArtifactView } = await import("./artifact");
   const root = document.createElement("div");
   document.body.appendChild(root);
-  render(<ArtifactView id={ID} pinnedVersion={null} />, root);
+  render(<ArtifactView id={ID} pinnedVersion={null} file={file} />, root);
   return root;
 }
 
@@ -48,7 +49,8 @@ describe("ArtifactView", () => {
   // `forgetViewer` comes from the fresh module registry, the same `threads`
   // module the test's `import("./artifact")` then loads.
   beforeEach(async () => { vi.resetModules(); (await import("./threads")).forgetViewer(); FakeES.last = undefined; });
-  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
+  beforeEach(() => { history.replaceState(null, "", `/a/${ID}`); });
+  afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
 
   it("says not found only for a 404 status", async () => {
     const root = await mount(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
@@ -225,7 +227,38 @@ describe("ArtifactView", () => {
     await waitFor(() => !root.querySelector('[data-thread="tA"] .file-label') && root.querySelector('[data-thread="tI"] .file-label'), "labels follow the page");
   });
 
+  it("opens the frame on the URL's page, and says so when the version does not hold it", async () => {
+    let root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "docs/about.html": page }))), undefined, "docs/about.html");
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/docs/about.html`);
+    render(null, root);
+    document.body.replaceChildren();
+    vi.resetModules();
+    root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))), undefined, "gone.html");
+    const msg = await waitFor(() => root.querySelector(".stage .empty"), "not-found message");
+    expect(msg.textContent).toContain("v1 has no page gone.html");
+    expect(msg.querySelector("a")!.getAttribute("href")).toBe(`/a/${ID}`);
+    expect(root.querySelector("iframe")).toBeNull();
+  });
+
+  it("puts the page the frame greets from in the address bar", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    win.postMessage = (() => {}) as typeof win.postMessage;
+    const depth = history.length;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await new Promise(r => setTimeout(r, 20));
+    expect([location.pathname, history.length]).toEqual([`/a/${ID}`, depth]);
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
+    expect(history.length).toBe(depth + 1);
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => location.pathname === `/a/${ID}`, "back on the index's URL");
+  });
+
   it("closes the capability gate on a frame load that no hello preceded", async () => {
+
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;

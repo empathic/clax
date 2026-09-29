@@ -198,6 +198,50 @@ async fn shell_routes_serve_ui_or_explain_missing_build() {
     assert_eq!(ts.get("/_artifax/does-not-exist.js").await.status(), 404);
 }
 
+#[tokio::test]
+async fn every_page_path_under_an_artifact_serves_the_shell() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[("index.html", "<p>i</p>"), ("docs/about.html", "<p>a</p>")],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let shell = ts.get("/").await;
+    let (status, body) = (shell.status(), shell.bytes().await.unwrap());
+    for path in [
+        format!("/a/{id}/about.html"),
+        format!("/a/{id}/docs/about.html"),
+        format!("/a/{id}/v/1/docs/about.html"),
+        format!("/a/{id}/v/1/"),
+        format!("/a/{id}/v/x.html"),
+    ] {
+        let res = ts.get(&path).await;
+        assert_eq!(res.status(), status, "{path}");
+        assert_eq!(res.bytes().await.unwrap(), body, "{path} is the shell");
+    }
+    // Content, the API, and the shell's own assets keep their routes.
+    let res = ts.get(&format!("/c/{id}/v/1/docs/about.html")).await;
+    assert!(
+        res.text()
+            .await
+            .unwrap()
+            .contains("data-file=\"docs/about.html\"")
+    );
+    assert_eq!(ts.get(&format!("/api/artifacts/{id}")).await.status(), 200);
+    assert_eq!(ts.get("/_artifax/does-not-exist.js").await.status(), 404);
+    // An artifact origin serves content only.
+    let res = ts
+        .client
+        .get(format!("{}/a/{id}/about.html", ts.base))
+        .header("host", format!("{id}.localhost"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+}
+
 const ABOUT: &str = "<!doctype html><html><head><title>About</title></head><body><h2>About</h2><a href=\"index.html\">back</a></body></html>";
 
 #[tokio::test]

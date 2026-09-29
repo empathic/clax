@@ -614,6 +614,37 @@ thread is plain until the person presses **Send to agent** or writes `@agent`
 viewer comment on it is sent too. A viewer comment on a resolved thread
 reopens it.
 
+Every HTML page of a version is commentable: `index.html` and every supporting
+file stored as `text/html` are served with the bridge (a fragment inside the
+document skeleton, a full document as written plus the bridge tag; a page that
+already carries a bridge tag keeps exactly one). The raw bytes stay available
+at `/api/artifacts/<id>/versions/<n>/files/<path>`. An anchor names its page
+in `file`: the published path (`index.html` for the index; an anchor without
+`file` is on the index). A thread's `file` must be a published path of its
+version, or the thread is refused with `invalid_anchor`. Following a link
+inside the page to another HTML page of the artifact loads that page with the
+bridge, so comment mode works there the same way. The shell shows the pins of
+the page in the frame only, lists threads on other pages in the sidebar
+labelled "on <file>", and opening one takes the frame to that page and scrolls
+to the thread. A thread detaches only when its anchor is not found on its own
+page.
+
+### Shell URLs
+
+`/a/<id>` shows the latest version and `/a/<id>/v/<n>` version `n`; either may
+be followed by `/<file>`, a published path whose segments are percent-encoded,
+to open the frame on that page (`/a/<id>/about.html`,
+`/a/<id>/v/2/docs/source.html`; `index.html` is never written). After
+`/a/<id>`, a `v` segment followed by an all-digit segment is a version and
+anything else starts the file path, so a file published under `v/<digits>/` is
+reachable only through the versioned form. The address bar follows the frame:
+when it moves to another page the shell pushes that page's URL, and back and
+forward move the frame between pages. A page the version does not hold shows
+a message instead of the frame. The `url` in tool results and payloads stays
+the artifact URL (`/a/<id>`); every `url_or_id` argument accepts the page form
+too (the page is ignored; a version in it is used where the tool takes one).
+
+
 A sent comment goes to every live target session: the session that created
 the artifact, and every session that watches it. Publishing (a new artifact or
 a new version) makes the publishing session watch the artifact with replies
@@ -624,7 +655,7 @@ a live session and work only on sent threads.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
@@ -684,7 +715,10 @@ Reply with comments_reply, then comments_resolve when done.
 
 The title and the comment text are JSON strings (U+0085, U+2028 and U+2029
 escaped too), so a comment is always one line. The anchor line holds the
+page's file followed by ` › ` when it is not `index.html`
+(`Anchored on: source.html › main > h2  «Sources»  (v3)`), the
 selector (`custom:<name>` for a custom anchor) and, when there is one, the
+
 quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A resend says `Comment sent to you
