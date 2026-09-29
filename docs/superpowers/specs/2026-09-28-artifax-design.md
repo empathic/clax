@@ -910,8 +910,7 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   view, comment, send to agent, and resolve; once they have set a display
   name they hold `interact` and may also write `db` docs at that level,
   reopen or delete threads; unnamed viewers hold `view`. No LAN viewer can
-  publish, upload assets, or write `admin`-level docs. `db_*` tool results
-  carry documents as data beside an untrusted-text `note`, not wrapped.
+  publish, delete artifacts, upload assets, or write `admin`-level docs.
 - The viewer routes (creating a thread, commenting, sending to the agent,
   resolving, `GET`/`PUT /api/viewers/me`) refuse a request whose `Origin` is
   not the daemon's own (`http://` plus the request's `Host`; artifact
@@ -928,7 +927,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   `Content-Security-Policy: sandbox` (see section 8 for the PDF note), so a
   top-level navigation cannot reach the API same-origin.
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
-  results wrap them in a clearly labelled block and the skills say so.
+  results render comment bodies only as JSON-escaped strings inside the
+  labelled feedback block; `db_*` results return documents as JSON data
+  beside an untrusted-text `note` (data cannot be wrapped without changing
+  its shape); the skills say so.
 - `sample()` spends the configured key; consent is per viewer per artifact
   and the shell shows a running count of calls.
 - No telemetry, no outbound calls except `sample()` and release downloads

@@ -889,8 +889,11 @@ Minimal skeleton:
   lowercase hex digits, assigned once and never changed): `GET`/`PUT
   /api/viewers/me` answer `{"viewer": {"public_id", "display_name",
   "created_at"}}`, and a viewer's resolve records `resolved_by`
-  `viewer:<public ID>`. No unauthenticated surface carries a session ID: an
-  agent's resolve records `agent:<harness>` and its comments `via_harness`.
+  `viewer:<public ID>`. Comment threads never carry a session ID: an
+  agent's resolve records `agent:<harness>` and its comments `via_harness`
+  (the artifact list and artifact view still name the owning session's ID
+  in `owner_session_id` and each version's `session_id`, which are not
+  credentials).
   Agent replies and resolves need
   the token and `X-Artifax-Session` naming a live session (400
   `unknown_session` otherwise). Thread views carry `clip_path` only for
