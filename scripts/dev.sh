@@ -10,6 +10,7 @@ if ! cargo watch --version >/dev/null 2>&1; then
     echo "cargo-watch is required: cargo install cargo-watch" >&2
     exit 1
 fi
+command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
     echo "a daemon is already listening on $PORT; run \`just stop\` first" >&2
     exit 1
@@ -19,7 +20,8 @@ if [ ! -d web/node_modules ]; then
 fi
 
 cleanup() {
-    trap - EXIT INT TERM HUP
+    trap - EXIT
+    trap '' INT TERM HUP
     local pid
     for pid in $(jobs -p); do
         pkill -P "$pid" 2>/dev/null || true
@@ -52,6 +54,8 @@ cargo watch -q -w crates -w Cargo.toml -w Cargo.lock \
     -x "run -q -p artifax-cli -- serve --foreground --port $PORT $ARGS" &
 watch_pid=$!
 while :; do
-    wait "$watch_pid" && break
-    [ $? -gt 128 ] || break
+    rc=0
+    wait "$watch_pid" || rc=$?
+    [ "$rc" -gt 128 ] || break
 done
+exit "$rc"
