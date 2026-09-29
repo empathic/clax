@@ -13,6 +13,7 @@ run() {
         if out="$("$@" 2>&1)"; then echo ok; else echo FAIL; echo "$out"; exit 1; fi
     fi
 }
+run "justfile"              scripts/test-justfile.sh
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace

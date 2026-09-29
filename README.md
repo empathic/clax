@@ -32,6 +32,11 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 
 ## Development
 
+- `just help` (or bare `just`) lists every recipe with a description.
+- `just dev` runs an auto-reloading server on port 7480 and can be left running. A Rust change rebuilds and restarts the daemon; a web change rebuilds `web/dist` (reload the browser to see it). Extra arguments go to `serve`, for example `just dev --bind 0.0.0.0`. It needs `cargo-watch` (`cargo install cargo-watch`).
+- `just check` formats the Rust code, then runs every quality gate.
+- `just ci` runs the same gates CI runs, without formatting.
+
 `scripts/quality_gates.sh` runs every check CI runs: `cargo fmt`, clippy with `-D warnings`, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
