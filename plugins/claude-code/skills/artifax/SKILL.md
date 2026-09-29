@@ -1,6 +1,6 @@
 ---
 name: artifax
-description: Use when the user wants a web page, app, dashboard, or visual they can open in a browser and comment on; publishes HTML through the artifax tools
+description: Use when the user wants a web page, app, dashboard, or visual they can open in a browser; publishes HTML through the artifax tools
 ---
 
 # Artifax
@@ -30,9 +30,9 @@ call `open` only when they want it shown in their browser.
 Every page follows this contract so it renders well in the gallery, in light and
 dark mode, and on a phone:
 
-- A `<title>` element with a short name (two to four words). Pass the same
-  name as `title` when you first publish: the daemon does not read the page's
-  `<title>`, and an artifact created without `title` is titled "Untitled".
+- A `<title>` element with a short name (two to four words). A new artifact
+  needs a title: pass `title` on the first publish or give the page a
+  non-empty `<title>`, which the tools then use.
 - Colors and other design values are CSS custom properties (tokens) on `:root`.
 - Dark mode is provided twice, so both the system setting and the person's
   explicit choice work:
@@ -102,8 +102,11 @@ Arguments:
 - `id` or `url` (string, optional, at most one): the artifact to update. Omit
   both to create a new artifact.
 - `if_version` (integer, optional): the version the update is based on.
-- `title`, `description`, `icon` (one generic word such as `chart` or `map`),
-  `label` (a short name for this version): all optional.
+- `title` (string): required to create an artifact unless the page has a
+  non-empty `<title>`, which is used instead; optional on updates, where
+  omitting it keeps the current title.
+- `description`, `icon` (one generic word such as `chart` or `map`), `label`
+  (a short name for this version): all optional.
 - `capabilities` (object, optional): reserved for phase 4.
 
 Returns `artifact_id`, `url` (for the person), `version` (the new version
@@ -149,8 +152,9 @@ Returns `artifact_id` and `deleted: true`. Only delete when the person asks.
 ### open
 
 Argument: `url_or_id`. Opens the artifact in the person's browser on this
-machine. Returns `url` and `opened` (false when no browser could be started;
-give the person the URL).
+machine. Returns `url` and `opened`: false when the browser opener could not
+start or failed, so give the person the URL; true is best effort (the opener
+started and did not fail within 1.5 s).
 
 ### pin and unpin
 

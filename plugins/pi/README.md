@@ -21,7 +21,8 @@ has no runtime dependencies beyond the modules Pi provides to extensions
 
 The extension needs the `artifax` CLI: it uses `$ARTIFAX_BIN` when set, else
 `artifax` on `PATH`. Install the CLI with `cargo install --path crates/artifax-cli`
-from the clone, or from a release.
+from the clone, or from a release. A release's `.sha256` file comes from the
+same place as its tarball: the checksum protects integrity, not authenticity.
 
 ## What it adds
 
@@ -33,11 +34,12 @@ from the clone, or from a release.
   `~/.artifax`), starting it with `artifax serve` when none is running, and
   registers the Pi session (harness `pi`, Pi's session ID, the working
   directory). Publishes are attributed to that session. When no daemon can be
-  started then, the first tool call tries again. On session shutdown the session
-  is ended.
+  started then, the first tool call tries again. If the session is ended under
+  the extension, the next tool call registers a new one. On session shutdown
+  the session is ended.
 - The `artifax` skill (`skills/artifax/SKILL.md`): when to publish and the
   page contract.
-- The `/artifax` command: `/artifax open [id]` opens the gallery or an
+- The `/artifax` command: `/artifax open [ID]` opens the gallery or an
   artifact, `/artifax list` lists artifacts, `/artifax status` shows the daemon
   and session.
 

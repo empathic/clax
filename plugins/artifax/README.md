@@ -22,7 +22,9 @@ pick up the tools and the skill.
 
 The plugin bundles a small wrapper (`scripts/ensure-artifax.sh`) that finds the
 `artifax` binary on `PATH`, in `~/.local/bin`, or in `~/.artifax/bin`, and
-otherwise downloads the latest release and installs it on first use. Set
+otherwise downloads the latest release and installs it on first use. The download is checked against the release's `.sha256` file, which
+comes from the same place as the tarball: the checksum protects integrity, not
+authenticity. Set
 `ARTIFAX_BIN` to an absolute path to run a specific build.
 
 ## What it adds

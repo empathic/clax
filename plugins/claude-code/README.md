@@ -12,7 +12,9 @@ browser, and (from phase 3) get comments back.
 
 The plugin bundles a small wrapper (`scripts/ensure-artifax.sh`) that finds the
 `artifax` binary on `PATH`, in `~/.local/bin`, or in `~/.artifax/bin`, and
-otherwise downloads the latest release and installs it on first use. Set
+otherwise downloads the latest release and installs it on first use. The download is checked against the release's `.sha256` file, which
+comes from the same place as the tarball: the checksum protects integrity, not
+authenticity. Set
 `ARTIFAX_BIN` to run a specific build.
 
 ## What it adds
@@ -22,7 +24,7 @@ otherwise downloads the latest release and installs it on first use. Set
 - Hooks that register the Claude Code session with the daemon on start and end
   it on exit. The session-start context includes the daemon URL only when a daemon is already running; hooks never start one, the first tool call does.
 - The `artifax` skill: when to publish and the page contract.
-- Commands: `/artifax:open [id]`, `/artifax:list`,
+- Commands: `/artifax:open [ID]`, `/artifax:list`,
   `/artifax:serve [--bind 0.0.0.0|stop|status]`, `/artifax:doctor`.
 
 ## Maintaining

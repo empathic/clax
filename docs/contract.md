@@ -15,8 +15,9 @@ Nine tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `asset_upload`, `status`. The MCP implementation lives in
 `crates/artifax-mcp` and is served two ways:
 
-- the stdio shim `artifax mcp --agent <claude|codex|pi>`, which a harness
-  starts once per session and which attributes publishes to that session;
+- the stdio shim `artifax mcp --agent <claude|codex>`, which a harness
+  starts once per session and which attributes publishes to that session
+  (Pi does not use it; `--agent pi` is a usage error);
 - the daemon's `/mcp` endpoint (MCP streamable HTTP, bearer token required),
   which attributes publishes to no session.
 
@@ -33,11 +34,20 @@ Names as the model sees them:
 | Codex | `mcp__artifax__<tool>` |
 | Pi | `artifax_<tool>` |
 
-The command line covers most of the same operations for scripts and harnesses
-without MCP: `artifax publish`, `list`, `open`, `delete`, `pin`, `unpin` and
-`status`, each with `--json` for one JSON object on stdout. The CLI's JSON is
-its own shape, not the tool result shape below, and there is no CLI
-counterpart of `read` or `asset_upload`.
+The command line covers the same operations for scripts and harnesses
+without MCP: `artifax publish`, `read`, `list`, `open`, `delete`, `pin`,
+`unpin`, `asset upload` and `status`, each with `--json` for one JSON object
+on stdout. `artifax read <ID|URL> [--version N] [--path P] [--max-bytes N]`
+and `artifax asset upload <ID|URL> <file>...` run the `read` and
+`asset_upload` tools, and with `--json` print exactly the tool's result object
+(including `feedback`) on one line; a tool error exits 1 with
+`error: <code>: <message>` on stderr. Without `--json`, `read` writes the
+file's content (no trailing newline added) and `asset upload` prints one asset
+URL per line. The other commands' JSON is their own shape, not the tool
+result shape below. `artifax publish` takes a new artifact's title from
+`--title`, else the page's `<title>`, as the `publish` tool does. `artifax
+open` exits 1 with `could not open a browser; open <url> yourself` when the
+opener fails (see `open`); `artifax open --json` only prints the URL.
 
 ### Results
 
@@ -89,7 +99,10 @@ daemon codes a tool can surface in normal operation:
 - `unauthorized` (401): the bearer token was refused. The shim and the Pi
   extension re-discover the daemon and retry once, so this surfaces only when
   that retry is refused too.
-- `internal`, `corrupt` (500): a storage or database failure; see the daemon log.
+- `internal`, `corrupt` (500): a storage or database failure; see the daemon
+  log. A failed file operation is `internal` with the message
+  `storage error: <kind>`, naming the I/O error kind (for example
+  `storage error: StorageFull`) and never a path.
 
 ### publish
 
@@ -106,7 +119,7 @@ Arguments:
 | `id` | string | no; at most one of `id`, `url` | Artifact to update. |
 | `url` | string | no; at most one of `id`, `url` | Artifact to update, as any artifact URL. |
 | `if_version` | integer ≥ 0 | no | The version the update is based on. Defaults to the artifact's current version. Ignored when creating. |
-| `title` | string | no | Artifact title. A new artifact without one is titled `Untitled`; the page's `<title>` is not read. |
+| `title` | string | on create, unless the page has a `<title>` | Artifact title. Creating without it takes the page's `<title>` (below). Updates never need it. |
 | `description` | string | no | One-line description. |
 | `icon` | string | no | One generic word, such as `chart` or `map`. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
@@ -114,6 +127,18 @@ Arguments:
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
 keeps the artifact's current value.
+
+Title on create: a new artifact needs a title. When `title` is omitted, the
+tool uses the text of the page's first `<title>` element: the tag name in any
+case, attributes allowed; `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;`
+decoded once (other entities kept as written); runs of whitespace collapsed to
+one space; trimmed; cut to 200 characters. A page sent as base64 (a
+`file_path` that is not UTF-8 or lacks a text extension), or one with no
+closed `<title>` holding non-blank text, gives none, and the call fails with
+`invalid_args`. An explicit `title` always wins; an explicit blank one on
+create reaches the daemon, which refuses it (`POST /api/artifacts` without a
+non-blank `title` is 400 `invalid_args` `title is required when creating an
+artifact`).
 
 A file entry is an object with exactly one of:
 
@@ -126,9 +151,16 @@ plus optional `content_type` (string; otherwise inferred from the published
 path's extension). `encoding` with `path` is an error.
 
 Local paths may be absolute or relative. The shim resolves a relative path
-against its session's working directory; the daemon's `/mcp` has no session
-and rejects relative paths with `invalid_args`; Pi resolves against the Pi
-session's working directory and drops a leading `@`.
+against its session's working directory, registering the session first if it
+has not yet; a session whose working directory is not known yet (under Codex,
+when reading it failed and until the `SessionStart` hook fills it in and the
+next heartbeat brings it to the shim) refuses it with `invalid_args` `file
+paths must be absolute: session <ID> has no working directory yet to resolve
+'<path>' against`. The daemon's `/mcp` has no session and refuses relative
+paths with `invalid_args` `file paths must be absolute: there is no session
+working directory to resolve '<path>' against`. Pi resolves against the Pi
+session's working directory and drops a leading `@`; if Pi reports no working
+directory it refuses relative paths with that second message.
 
 Result:
 
@@ -151,7 +183,10 @@ Errors:
 - `invalid_args`: neither or both of `html` and `file_path`; both `id` and
   `url`; `index.html` in `files`; a file entry with neither or both of `path`
   and `content`, or with `encoding` alongside `path`; a relative path with no
-  session working directory.
+  session working directory; a new artifact with neither `title` nor a usable
+  `<title>` (message ``a new artifact needs a title: pass `title`, or give the
+  page a non-empty <title>``), or with a blank `title` (the daemon's
+  `title is required when creating an artifact`).
 - `invalid_id`: `id` or `url` names no artifact ID.
 - `file_unreadable`: a local file could not be read. Extra field `path`.
 - `conflict` (409): `if_version` is not the current version. Extra fields
@@ -168,8 +203,10 @@ Errors:
 - `body_too_large`: the files together exceed 64 MiB decoded, or the request
   body exceeds 96 MiB.
 - `label_too_long`: `label` exceeds 60 characters.
-- `unknown_session`: the session the shim registered has ended or no longer
-  exists.
+- `unknown_session`: the session the tools registered has ended (for example
+  through a `SessionEnd` hook) or no longer exists. The shim and the Pi
+  extension register a new session with the same harness session ID and retry
+  once, so this surfaces only when that retry fails the same way.
 
 ```json
 {
@@ -284,7 +321,12 @@ machine running the tool (`open` on macOS, `xdg-open` elsewhere). With
 { "url": "http://localhost:7480/a/7q3k9mzx2b4t", "opened": true, "feedback": [] }
 ```
 
-`opened` is `false` when no browser was started; give the person `url`.
+The tool waits up to 1.5 s for the opener. `opened` is `true` when the opener
+exits successfully within that time, or is still running then (best effort:
+some openers hand off and linger, so one that fails later is still reported as
+opened). It is `false` when the opener cannot be started or exits
+unsuccessfully (for example `xdg-open` with no display or handler), or when
+`ARTIFAX_NO_OPEN` is set; then give the person `url`.
 
 Errors: `invalid_id`, `not_found`.
 
@@ -369,13 +411,19 @@ No arguments.
 
 `version` is the daemon's version. `harness` and `session` are `null` when the
 tools have no registered session (the daemon's `/mcp`, or a shim or Pi
-extension that has not yet reached a daemon). `session` is the session as it
-was when registered, so `last_seen_at` is not live. `daemon_version` (the
-daemon's version again) is present only when it differs from the version of
-the tools answering, which signals version skew. The Pi extension currently
-compares against its own package version, not the Artifax version, so under
-Pi it is always present; a fix is scheduled. `watches` is always empty
-until phase 3.
+extension that has not yet reached a daemon). `session` is the row as of the
+last registration or heartbeat: the shim heartbeats every 60 s, so its
+`last_seen_at` lags by up to a minute and a `cwd` the `SessionStart` hook
+filled in appears after the next heartbeat; Pi sends no heartbeat, so under Pi
+it is the row as registered. `daemon_version` (the daemon's version again) is
+present only when it differs from the Artifax version of the tools answering
+(the shim's binary, or the Pi package, which carries the same version), which
+signals version skew. `watches` is always empty until phase 3.
+
+Version skew: a shim that finds a daemon older than itself stops it and starts
+its own on the old daemon's bind address (the port is the shim's `--port`,
+7480 by default), logging the replacement. A newer daemon, or one whose
+version does not parse, is kept.
 
 Errors: only those every tool can return.
 
@@ -391,7 +439,10 @@ Code, else from `ARTIFAX_SESSION_ID` for any harness, else sends none.
 
 A session row has `harness` (`claude`, `codex`, `pi`), `harness_session_id`
 (the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
-`parent_pid`, and timestamps. The daemon matches registrations to existing
+`parent_pid`, and timestamps. Registration and join accept only those three
+harness names (anything else is 400 `invalid_args` `harness must be one of
+claude, codex, pi`); an empty `harness_session_id` on registration counts as
+none. The daemon matches registrations to existing
 live rows so that a shim and a hook for the same conversation share one row:
 
 - A registration with a `harness_session_id` reuses the live row with the same
@@ -410,8 +461,15 @@ Rows end when the shim's stdin closes or it receives SIGTERM (3 s deadline),
 when a `SessionEnd` hook or Pi's `session_shutdown` ends them, or when the
 daemon's reaper finds a row unseen for 300 seconds whose `pid` is unknown or no
 longer alive. The shim marks its row seen every 60 seconds; hook-only rows and
-Pi rows get no heartbeat. An ended row is never revived; a shim that reaches a
-restarted daemon registers again.
+Pi rows get no heartbeat. An ended row is never revived. A shim or Pi
+extension whose row was ended under it registers a new row with the same
+harness session ID on its next tool call (see `unknown_session`), and a shim
+heartbeat that finds its row ended or gone registers again; a shim that
+reaches a restarted daemon registers again.
+
+The hooks give up rather than hold up the harness: `session-start` after 4 s
+(3 s per daemon request), `session-end` after 2.5 s (2 s per request, inside
+Codex's 3 s `SessionEnd` cap). A hook that gives up exits 0 with no output.
 
 ### Claude Code
 
@@ -448,6 +506,12 @@ Hooks run only when the person enables and trusts them. Without them the row
 has no harness session ID; the tools work and publishes are attributed to it,
 and it ends when the shim exits or through the reaper.
 
+Because a registration without a harness session ID adopts the live row with
+the same `(harness, parent_pid)`, several conversations hosted by one Codex
+process (one shim each) share the first conversation's session: all of them
+publish as that session, and a later conversation's `SessionStart` hook joins
+a hook-only row that no shim adopts.
+
 ### Pi
 
 Pi has no hooks and no MCP. The extension registers the session itself on
@@ -471,9 +535,9 @@ and `session`, and relative file paths are rejected.
 Every page follows this contract so it renders well in the gallery, in light and
 dark mode, and on a phone:
 
-- A `<title>` element with a short name (two to four words). Pass the same
-  name as `title` when you first publish: the daemon does not read the page's
-  `<title>`, and an artifact created without `title` is titled "Untitled".
+- A `<title>` element with a short name (two to four words). A new artifact
+  needs a title: pass `title` on the first publish or give the page a
+  non-empty `<title>`, which the tools then use.
 - Colors and other design values are CSS custom properties (tokens) on `:root`.
 - Dark mode is provided twice, so both the system setting and the person's
   explicit choice work:
@@ -527,10 +591,16 @@ Minimal skeleton:
   with the token from `<ARTIFAX_HOME>/daemon.json` (mode 0600): creating and
   publishing artifacts, changing and deleting them, uploading and deleting
   assets, registering, joining and ending sessions, and shutting the daemon
-  down. The comparison is constant time. Read routes (`GET /api/...`, the
-  gallery, content, blobs) need no token, so LAN viewers can read but not
-  write. Content and asset URLs are readable by anyone who can reach the
-  daemon and knows the unguessable artifact or asset ID.
+  down. Reading sessions (`GET /api/sessions`, `GET /api/sessions/<id>`)
+  needs it too, since a session row carries a working directory, process IDs
+  and the harness's session ID; without it they are 401 `unauthorized`. The
+  comparison is constant time. The other read routes (`GET /api/artifacts...`,
+  the gallery, content, blobs) need no token, so LAN viewers can read
+  artifacts but not write. `GET /api/artifacts/<id>` returns
+  `{artifact, versions}`; like each entry of the artifact list, `artifact`
+  carries `owner_session_id`, `owner_live` and `owner_harness`, never the
+  owner's session row. Content and asset URLs are readable by anyone who can
+  reach the daemon and knows the unguessable artifact or asset ID.
 - `GET /api/token` hands the token to the gallery in a local browser. It
   answers only when the connection comes from a loopback address and the
   `Host` header is literally `localhost`, `127.0.0.1` or `[::1]` (with an
