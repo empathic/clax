@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import type { AnchorResult, ShellToBridge } from "../../bridge/src/protocol";
+import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { Composer, type Draft, Pins } from "./comments";
@@ -10,7 +10,7 @@ import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
 import { type Ask, PromptDialog, promptQueue } from "./prompt";
-import { artifactOrigin, contentSrc, probeOrigin } from "./origin";
+import { artifactOrigin, contentSrc, pageSrc, probeOrigin } from "./origin";
 import { Sidebar } from "./sidebar";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "./threads";
 import { ViewerName } from "./viewer-name";
@@ -69,9 +69,23 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const hostRef = useRef<CapabilityHost | null>(null);
   // Whether the frame's latest hello named the shown artifact and version: only
   // then are its capability requests answered and events pushed to it, so a
-  // document the frame navigated to gets nothing.
+  // document the frame navigated to gets nothing. Every wrapped page greets
+  // before its load event, so a load with no matching hello since the previous
+  // one (a document without the bridge) closes the gate too.
   const helloOk = useRef(false);
-  useEffect(() => { helloOk.current = false; }, [id, shown, origin]);
+  const helloSinceLoad = useRef(false);
+  useEffect(() => { helloOk.current = false; helloSinceLoad.current = false; }, [id, shown, origin]);
+  const onFrameLoad = () => {
+    if (!helloSinceLoad.current) helloOk.current = false;
+    helloSinceLoad.current = false;
+  };
+  // The published file of the page in the frame, from its latest matching
+  // hello: pins, anchor resolution, and scroll-to apply to its threads only.
+  const [file, setFile] = useState(INDEX_FILE);
+  const fileRef = useRef(INDEX_FILE);
+  // A thread on another page the viewer opened: the frame was sent to that
+  // page, and it is scrolled to once that page greets.
+  const pendingScroll = useRef<Thread | null>(null);
   useEffect(() => {
     if (!data || origin === undefined) return;
     const host = new CapabilityHost(getToken().then(token => ({
@@ -88,7 +102,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     hostRef.current = host;
     return () => { if (hostRef.current === host) hostRef.current = null; };
   }, [id, shown, origin, data]);
-  const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.map(t => ({ id: t.id, anchor: t.anchor })) });
+  const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
     threadLoad.current = load;
@@ -100,7 +114,14 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     });
   };
   const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
-  const scrollTo = (t: Thread) => { setSelected(t.id); send({ type: "artifax:scroll-to", anchor: t.anchor }); };
+  const scrollTo = (t: Thread) => {
+    setSelected(t.id);
+    if (t.anchor.file === fileRef.current) { pendingScroll.current = null; send({ type: "artifax:scroll-to", anchor: t.anchor }); return; }
+    const frame = frameRef.current;
+    if (!frame) return;
+    pendingScroll.current = t;
+    frame.src = pageSrc(id, shown, origin ?? null, t.anchor.file);
+  };
 
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
@@ -121,9 +142,17 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
           // A stale or foreign document in the frame gets no welcome and no anchors.
           helloOk.current = helloMatches(m, id, shown);
           if (!helloOk.current) break;
+          helloSinceLoad.current = true;
           hostRef.current?.reset();
+          fileRef.current = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
+          setFile(fileRef.current);
+          setResolved({});
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
+          if (pendingScroll.current?.anchor.file === fileRef.current) {
+            send({ type: "artifax:scroll-to", anchor: pendingScroll.current.anchor });
+            pendingScroll.current = null;
+          }
           break;
         case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
@@ -203,8 +232,8 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     }>
       <div class={`viewer${panel ? " with-sidebar" : ""}`}>
         <div class="stage">
-          {deleted ? <p class="empty">This artifact was deleted.</p> : <Frame id={id} n={shown} origin={origin} frameRef={frameRef} />}
-          {!deleted && <Pins threads={threads} resolved={resolved} onSelect={t => { setPanel(true); scrollTo(t); }} />}
+          {deleted ? <p class="empty">This artifact was deleted.</p> : <Frame id={id} n={shown} origin={origin} frameRef={frameRef} onLoad={onFrameLoad} />}
+          {!deleted && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
           {draft && <Composer key={draft.pickId} draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
@@ -227,7 +256,8 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
           )}
           {ask && <PromptDialog ask={ask} />}
         </div>
-        {panel && <Sidebar threads={threads} resolved={resolved} selected={selected}
+        {panel && <Sidebar threads={threads} resolved={resolved} selected={selected} file={file}
+
           me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}
           onSelect={scrollTo}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}

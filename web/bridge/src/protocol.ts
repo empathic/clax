@@ -2,6 +2,8 @@
 // imports these types from here.
 
 export type AnchorKind = "element" | "range" | "custom";
+/** The page an anchor names when it names none, and the index's `file`. */
+export const INDEX_FILE = "index.html";
 export interface AnchorRect { x: number; y: number; w: number; h: number; scrollX: number; scrollY: number; viewportW: number }
 /** Spec §9 "Anchors"; field names match the daemon's JSON. */
 export interface Anchor {
@@ -13,6 +15,8 @@ export interface Anchor {
   html_hash: string | null;
   rect: AnchorRect | null;
   custom_name: string | null;
+  /** The published path of the page the anchor is on (`index.html` for the index). */
+  file: string;
 }
 /** A rectangle in the content frame's viewport pixels. */
 export interface Box { x: number; y: number; w: number; h: number }
@@ -42,7 +46,8 @@ export type ShellToBridge =
   | CapEvent;
 
 export type BridgeToShell =
-  | { type: "artifax:hello"; artifact: string; version: number }
+  | { type: "artifax:hello"; artifact: string; version: number; file: string }
+
   | { type: "artifax:hover"; selector: string | null; rect: Box | null }
   | { type: "artifax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "artifax:anchors"; requestId: string | null; results: AnchorResult[] }

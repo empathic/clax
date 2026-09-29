@@ -89,12 +89,39 @@ it("text index skips scripts, styles, and the overlay", () => {
 });
 
 it("custom anchors resolve only through registered names", () => {
-  const a = { kind: "custom" as const, selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: "chart" };
+  const a = { kind: "custom" as const, selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: "chart", file: "index.html" };
   expect(resolveAnchor(document, a)).toBeNull();
   expect(resolveAnchor(document, a, new Map([["chart", h2()]]))?.method).toBe("custom");
 });
 
+describe("files", () => {
+  it("anchors name the page they were built on, the index by default", () => {
+    expect(buildElementAnchor(document, h2()).file).toBe("index.html");
+    expect(buildElementAnchor(document, h2(), "about.html").file).toBe("about.html");
+    const r = document.createRange();
+    r.selectNodeContents(h2());
+    expect(buildRangeAnchor(document, r).file).toBe("index.html");
+    expect(buildRangeAnchor(document, r, "docs/source.html").file).toBe("docs/source.html");
+  });
+
+  it("an anchor on another page never resolves here", () => {
+    const onAbout = buildElementAnchor(document, h2(), "about.html");
+    expect(resolveAnchor(document, onAbout, new Map(), "about.html")?.method).toBe("exact");
+    expect(resolveAnchor(document, onAbout)).toBeNull();
+    expect(resolveAnchor(document, onAbout, new Map(), "index.html")).toBeNull();
+    const onIndex = buildElementAnchor(document, h2());
+    expect(resolveAnchor(document, onIndex, new Map(), "about.html")).toBeNull();
+    const custom = { kind: "custom" as const, selector: null, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: "chart", file: "about.html" };
+    expect(resolveAnchor(document, custom, new Map([["chart", h2()]]))).toBeNull();
+    const cache = new AnchorCache(document, new Map(), "about.html");
+    expect(cache.resolve("a", onAbout)?.method).toBe("exact");
+    expect(cache.resolve("i", onIndex)).toBeNull();
+    cache.disconnect();
+  });
+});
+
 describe("daemon limits", () => {
+
   it("keeps selectors free of control characters and line separators", () => {
     document.body.innerHTML = `<div><x\u0001y>a</x\u0001y><x\u2028y>b</x\u2028y></div>`;
     for (const el of Array.from(document.querySelector("div")!.children)) {

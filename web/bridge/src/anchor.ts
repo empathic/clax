@@ -3,7 +3,7 @@
 // ("selector"), the quote located by prefix and suffix ("quote"), a
 // registered custom name ("custom"); otherwise the anchor is detached.
 
-import type { Anchor, AnchorRect, ResolveMethod } from "./protocol";
+import { type Anchor, type AnchorRect, INDEX_FILE, type ResolveMethod } from "./protocol";
 import { sha256Hex } from "./sha256";
 
 export const AFFIX = 32;
@@ -135,7 +135,8 @@ function affixes(idx: TextIndex, start: number, quote: string) {
   return { prefix: cut(idx.text, Math.max(0, start - AFFIX), start), suffix: cut(idx.text, start + quote.length, start + quote.length + AFFIX) };
 }
 
-export function buildElementAnchor(doc: Document, el: Element): Anchor {
+/** An anchor on `el` of the page published at `file`. */
+export function buildElementAnchor(doc: Document, el: Element, file: string = INDEX_FILE): Anchor {
   const idx = textIndex(doc.body);
   const s = span(idx, el);
   let quote: string | null = null;
@@ -145,17 +146,18 @@ export function buildElementAnchor(doc: Document, el: Element): Anchor {
     quote = cut(idx.text, s[0], Math.min(s[1], s[0] + MAX_QUOTE));
     ({ prefix, suffix } = affixes(idx, s[0], quote));
   }
-  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null };
+  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null, file };
 }
 
-export function buildRangeAnchor(doc: Document, range: Range): Anchor {
+/** An anchor on `range` of the page published at `file`. */
+export function buildRangeAnchor(doc: Document, range: Range, file: string = INDEX_FILE): Anchor {
   const idx = textIndex(doc.body);
   const start = boundaryOffset(idx, range.startContainer, range.startOffset);
   const end = Math.max(start, boundaryOffset(idx, range.endContainer, range.endOffset));
   const quote = cut(idx.text, start, Math.min(end, start + MAX_QUOTE));
   const c = range.commonAncestorContainer;
   const el = c.nodeType === Node.ELEMENT_NODE ? (c as Element) : c.parentElement!;
-  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null };
+  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null, file };
 }
 
 const commonSuffix = (a: string, b: string) => { let n = 0; while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++; return n; };
@@ -180,7 +182,10 @@ function query(doc: Document, selector: string): Element | null {
   try { return doc.querySelector(selector); } catch { return null; }
 }
 
-export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map()): Resolved | null {
+/** Where `a` is in `doc`, the page published at `file`; null when it is
+ * detached, or when it is on another page (its `file` differs). */
+export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE): Resolved | null {
+  if ((a.file || INDEX_FILE) !== file) return null;
   if (a.kind === "custom") {
     const el = a.custom_name ? custom.get(a.custom_name) : undefined;
     return el ? { method: "custom", element: el, range: null } : null;
@@ -216,7 +221,7 @@ export class AnchorCache {
   private readonly entries = new Map<string, { anchor: Anchor; res: Resolved | null }>();
   private readonly observer: MutationObserver;
 
-  constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map()) {
+  constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map(), private readonly file: string = INDEX_FILE) {
     const win = doc.defaultView!;
     this.observer = new win.MutationObserver(records => this.invalidate(records));
     this.observer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true });
@@ -225,7 +230,8 @@ export class AnchorCache {
   resolve(id: string, anchor: Anchor): Resolved | null {
     const hit = this.entries.get(id);
     if (hit && hit.anchor === anchor) return hit.res;
-    const res = resolveAnchor(this.doc, anchor, this.custom);
+    const res = resolveAnchor(this.doc, anchor, this.custom, this.file);
+
     this.entries.set(id, { anchor, res });
     return res;
   }

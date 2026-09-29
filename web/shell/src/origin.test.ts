@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { artifactOrigin, probeOrigin, contentSrc } from "./origin";
+import { artifactOrigin, probeOrigin, contentSrc, pageSrc } from "./origin";
 
 const loc = (hostname: string, port = "7480") => ({ hostname, port, protocol: "http:" } as unknown as Location);
 
@@ -45,7 +45,16 @@ describe("probeOrigin", () => {
   });
 });
 
+describe("pageSrc", () => {
+  it("is the version's root for the index and the file's path otherwise, segments encoded", () => {
+    expect(pageSrc("7q3k9mzx2b4t", 2, null, "index.html")).toBe("/c/7q3k9mzx2b4t/v/2/");
+    expect(pageSrc("7q3k9mzx2b4t", 2, null, "docs/a b.html")).toBe("/c/7q3k9mzx2b4t/v/2/docs/a%20b.html");
+    expect(pageSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480", "about.html")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/about.html");
+  });
+});
+
 describe("contentSrc", () => {
+
   it("picks the origin or the same-origin path", () => {
     expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/");
     expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");

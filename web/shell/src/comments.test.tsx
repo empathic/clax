@@ -4,7 +4,7 @@ import { PIN_RIGHT_ROOM, Pins } from "./comments";
 import { Sidebar } from "./sidebar";
 import type { Thread } from "./threads";
 
-const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null };
+const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
   id, artifact_id: "7q3k9mzx2b4t", version_n: 1, anchor, status, sent_to_agent: false, has_clip: false, clip_url: null,
   created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null,
@@ -36,7 +36,26 @@ describe("Pins", () => {
     doneSide();
   });
 
+  it("pins only the threads on the page the frame shows, numbered like the sidebar", () => {
+    const onAbout = (id: string): Thread => ({ ...thread(id), anchor: { ...anchor, file: "about.html" } });
+    const threads = [thread("a"), onAbout("b"), onAbout("c")];
+    const resolved = { a: at("a", 40), b: at("b", 80), c: at("c", 120) };
+    const pins = (file: string) => {
+      const { root, done } = mount(<Pins threads={threads} resolved={resolved} file={file} onSelect={vi.fn()} width={800} />);
+      const out = Array.from(root.querySelectorAll<HTMLElement>("button.thread-pin")).map(b => `${b.textContent}@${b.style.top}`);
+      done();
+      return out;
+    };
+    expect(pins("index.html")).toEqual(["1@28px"]);
+    expect(pins("about.html")).toEqual(["1@68px", "2@108px"]);
+    const { root: side, done } = mount(<Sidebar threads={threads} resolved={resolved} file="about.html" now={new Date()} selected={null}
+      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />);
+    expect(Array.from(side.querySelectorAll(".section-open .thread-num")).map(n => n.textContent)).toEqual(["1", "2"]);
+    done();
+  });
+
   it("keeps a full-width region's pin inside the stage and clear of the frame's scrollbar", () => {
+
     const wide = { a: { id: "a", found: true, method: "exact" as const, rect: { x: 0, y: 40, w: 400, h: 20 } } };
     const { root, done } = mount(<Pins threads={[thread("a")]} resolved={wide} onSelect={vi.fn()} width={400} />);
     expect(root.querySelector<HTMLElement>("button.thread-pin")!.style.left).toBe(`${400 - PIN_RIGHT_ROOM}px`);

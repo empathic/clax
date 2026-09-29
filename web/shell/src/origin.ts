@@ -27,3 +27,11 @@ export async function probeOrigin(origin: string, fetchImpl: typeof fetch = fetc
 export function contentSrc(id: string, n: number, origin: string | null): string {
   return origin ? `${origin}/v/${n}/` : `/c/${id}/v/${n}/`;
 }
+
+/** Where the frame shows the page published at `file`: the version's root
+ * for `index.html`, else the file's path under it, each segment encoded. */
+export function pageSrc(id: string, n: number, origin: string | null, file: string): string {
+  const root = contentSrc(id, n, origin);
+  return file === "index.html" ? root : root + file.split("/").map(encodeURIComponent).join("/");
+}
+

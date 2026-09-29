@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
-import type { AnchorResult } from "../../bridge/src/protocol";
+import { type AnchorResult, INDEX_FILE } from "../../bridge/src/protocol";
 import { anchorLabel, resolvedByLabel, type Thread, type Viewer } from "./threads";
 import { hasElapsedLabel, waitingLabel } from "./waiting";
 
@@ -18,9 +18,13 @@ type Props = {
   me?: Viewer | null;
   /** Rendered above the sections (the "Your name" field on narrow screens). */
   header?: ComponentChildren;
+  /** The page the frame shows (the index by default); threads on other pages are labelled with theirs. */
+  file?: string;
 };
 
-/** Open threads found on this version, open threads not found (Detached), then resolved threads. */
+/** Open threads: those on the page shown and found (numbered like the pins),
+ * then those on other pages (labelled "on <file>"); open threads on the page
+ * shown and not found (Detached); then resolved threads. */
 export function Sidebar(p: Props) {
   const [tick, setTick] = useState(() => new Date());
   const ticking = p.now === undefined && p.threads.some(t => t.status === "open" && t.sent_to_agent && hasElapsedLabel(t.feedback_state));
@@ -31,28 +35,31 @@ export function Sidebar(p: Props) {
     return () => clearInterval(timer);
   }, [ticking]);
   const now = p.now ?? tick;
+  const file = p.file ?? INDEX_FILE;
   const open = p.threads.filter(t => t.status === "open");
-  const detached = open.filter(t => p.resolved[t.id] && !p.resolved[t.id].found);
-  const attached = open.filter(t => !detached.includes(t));
+  const here = open.filter(t => t.anchor.file === file);
+  const detached = here.filter(t => p.resolved[t.id] && !p.resolved[t.id].found);
+  const attached = here.filter(t => !detached.includes(t));
+  const elsewhere = open.filter(t => t.anchor.file !== file);
   const done = p.threads.filter(t => t.status === "resolved");
   const numbers = new Map(attached.map((t, i) => [t.id, i + 1]));
   const section = (cls: string, title: string, list: Thread[]) => (
     <section class={cls}>
       <h2>{title} <span class="muted">{list.length}</span></h2>
-      {list.length === 0 ? <p class="muted small">None.</p> : list.map(t => <Card key={t.id} t={t} n={numbers.get(t.id)} {...p} now={now} />)}
+      {list.length === 0 ? <p class="muted small">None.</p> : list.map(t => <Card key={t.id} t={t} n={numbers.get(t.id)} {...p} file={file} now={now} />)}
     </section>
   );
   return (
     <aside class="sidebar" aria-label="Comment threads">
       {p.header}
-      {section("section-open", "Open", attached)}
+      {section("section-open", "Open", [...attached, ...elsewhere])}
       {section("section-detached", "Detached", detached)}
       {section("section-resolved", "Resolved", done)}
     </aside>
   );
 }
 
-function Card({ t, n, now, me, selected, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
+function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
   const [reply, setReply] = useState("");
   const label = t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null;
   return (
@@ -61,6 +68,8 @@ function Card({ t, n, now, me, selected, onSelect, onSend, onResolve, onReply }:
         <button type="button" class="card-head" aria-pressed={selected === t.id} onClick={e => { e.stopPropagation(); onSelect(t); }}>
           {n !== undefined && <span class="thread-num">{n}</span>}
           <span class="anchor-label">{anchorLabel(t.anchor)}</span>
+          {t.anchor.file !== file && <span class="file-label muted small">on {t.anchor.file}</span>}
+
           <span class="muted small">v{t.version_n}</span>
         </button>
       </header>

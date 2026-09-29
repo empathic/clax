@@ -19,7 +19,7 @@ describe("acceptFromFrame", () => {
 
 describe("helloMatches", () => {
   it("accepts only the hello of the artifact and version the shell shows", () => {
-    const hello = { type: "artifax:hello" as const, artifact: "7q3k9mzx2b4t", version: 2 };
+    const hello = { type: "artifax:hello" as const, artifact: "7q3k9mzx2b4t", version: 2, file: "index.html" };
     expect(helloMatches(hello, "7q3k9mzx2b4t", 2)).toBe(true);
     expect(helloMatches(hello, "7q3k9mzx2b4t", 1)).toBe(false);
     expect(helloMatches(hello, "9zzzzzzzzzzz", 2)).toBe(false);

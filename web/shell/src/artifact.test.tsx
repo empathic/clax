@@ -76,7 +76,7 @@ describe("ArtifactView", () => {
 
   it("reloads the threads when the event stream (re)connects", async () => {
     let listed = 0;
-    const t = { id: "01JA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+    const t = { id: "01JA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: "c1", thread_id: "01JA", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "made while the daemon restarted", created_at: "x" }] };
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
@@ -106,7 +106,7 @@ describe("ArtifactView", () => {
 
   it("keeps a thread event that arrives while an older thread list is in flight", async () => {
     let answerList!: () => void;
-    const t = { id: "01JB", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+    const t = { id: "01JB", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
       url => url.includes("/threads")
@@ -164,11 +164,11 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: unknown[] = [];
     win.postMessage = ((m: unknown) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1 });
-    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2 });
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
     await new Promise(r => setTimeout(r, 20));
     expect(posted.filter(m => (m as { type: string }).type === "artifax:welcome")).toHaveLength(0);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2 });
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
     await waitFor(() => posted.some(m => (m as { type: string }).type === "artifax:welcome"), "welcome");
   });
 
@@ -183,11 +183,11 @@ describe("ArtifactView", () => {
     fromFrame(win, { type: "artifax:use", id: "before", name: "permissions" });
     await new Promise(r => setTimeout(r, 30));
     expect(results()).toEqual([]);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2 });
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
     fromFrame(win, { type: "artifax:use", id: "matched", name: "permissions" });
     await waitFor(() => results().includes("matched"), "use answer after the hello");
     // The frame navigated to another document, which greets as something else.
-    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2 });
+    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
     fromFrame(win, { type: "artifax:use", id: "foreign", name: "permissions" });
     fromFrame(win, { type: "artifax:call", id: "foreign-call", ns: "permissions", method: "state", args: [] });
     await new Promise(r => setTimeout(r, 30));
@@ -195,10 +195,60 @@ describe("ArtifactView", () => {
     expect(posted.some(m => m.type === "artifax:call-result")).toBe(false);
   });
 
+  it("follows the page the frame shows: resolves its threads only, and opens another page's thread on that page", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = (id: string, file: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: `Goals ${id}`, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "x" }] });
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tI", "index.html"), t("tA", "about.html")], next_cursor: null } : viewer)));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const posted: { type: string; anchors?: { id: string }[]; anchor?: { file: string } }[] = [];
+    // jsdom gives the frame a new window when it navigates; a browser keeps one WindowProxy.
+    const tap = () => { const w = frame.contentWindow!; w.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof w.postMessage; return w; };
+    let win = tap();
+    const lastResolve = () => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.map(a => a.id);
+    await waitFor(() => root.querySelector('[data-thread="tA"]'), "threads in the sidebar");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => lastResolve()?.join() === "tI", "resolution of the index's threads only");
+    const card = root.querySelector('[data-thread="tA"]')!;
+    expect(card.querySelector(".file-label")!.textContent).toBe("on about.html");
+    card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+    await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/about.html`, "the frame navigated to about.html");
+    expect(posted.some(m => m.type === "artifax:scroll-to")).toBe(false);
+    win = tap();
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+
+    await waitFor(() => lastResolve()?.join() === "tA", "resolution of about.html's threads");
+    const scroll = await waitFor(() => posted.find(m => m.type === "artifax:scroll-to"), "scroll to the thread once its page greeted");
+    expect(scroll.anchor!.file).toBe("about.html");
+    await waitFor(() => !root.querySelector('[data-thread="tA"] .file-label') && root.querySelector('[data-thread="tI"] .file-label'), "labels follow the page");
+  });
+
+  it("closes the capability gate on a frame load that no hello preceded", async () => {
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    const results = () => posted.filter(m => m.type === "artifax:use-result").map(m => m.id);
+    await new Promise(r => setTimeout(r, 30));
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
+    frame.dispatchEvent(new Event("load"));
+    fromFrame(win, { type: "artifax:use", id: "greeted", name: "permissions" });
+    await waitFor(() => results().includes("greeted"), "a load right after the hello keeps the gate open");
+    // The frame navigated to a document without a bridge: it loads without greeting.
+    frame.dispatchEvent(new Event("load"));
+    fromFrame(win, { type: "artifax:use", id: "silent", name: "permissions" });
+    await new Promise(r => setTimeout(r, 30));
+    expect(results()).toEqual(["greeted"]);
+  });
+
   it("drops the thread changes it kept once the latest list answered or failed", async () => {
+
     let lists = 0;
     let failNext = false;
-    const t = (id: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+    const t = (id: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] });
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
       async url => {
@@ -269,5 +319,5 @@ function fromFrame(win: Window, data: unknown) {
 }
 
 function pick(pickId: string, quote: string) {
-  return { type: "artifax:pick", pickId, version: 1, anchor: { kind: "element", selector: "body > h2", quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null } };
+  return { type: "artifax:pick", pickId, version: 1, anchor: { kind: "element", selector: "body > h2", quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } };
 }

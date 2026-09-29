@@ -1,4 +1,4 @@
-import type { Anchor, AnchorResult } from "../../bridge/src/protocol";
+import { type Anchor, type AnchorResult, INDEX_FILE } from "../../bridge/src/protocol";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Thread } from "./threads";
 
@@ -9,8 +9,9 @@ export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blo
  * classic scrollbar in the frame. */
 export const PIN_RIGHT_ROOM = 38;
 
-/** Numbered pins over the frame at each attached open thread's resolved rectangle. */
-export function Pins({ threads, resolved, onSelect, width }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; width?: number }) {
+/** Numbered pins over the frame at the resolved rectangle of each attached
+ * open thread on `file`, the page the frame shows (the index by default). */
+export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; width?: number; file?: string }) {
   const ref = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState(0);
   useEffect(() => {
@@ -27,11 +28,11 @@ export function Pins({ threads, resolved, onSelect, width }: { threads: Thread[]
     return () => removeEventListener("resize", measure);
   }, [width]);
   const stage = width ?? measured;
-  // Numbered like the sidebar's Open section (open threads not detached); only
-  // those found with a rectangle get a pin, and a region scrolled wholly above
-  // the frame gets none (one below it is clipped by `.pins`). A pin never
-  // passes the stage's right edge or the frame's scrollbar.
-  const attached = threads.filter(t => t.status === "open" && !(resolved[t.id] && !resolved[t.id].found));
+  // Numbered like the sidebar's Open section (open threads on this page not
+  // detached); only those found with a rectangle get a pin, and a region
+  // scrolled wholly above the frame gets none (one below it is clipped by
+  // `.pins`). A pin never passes the stage's right edge or the frame's scrollbar.
+  const attached = threads.filter(t => t.status === "open" && t.anchor.file === file && !(resolved[t.id] && !resolved[t.id].found));
   return (
     <div class="pins" ref={ref}>
       {attached.map((t, i) => {
@@ -66,6 +67,8 @@ export function Composer({ draft, onCancel, onSubmit }: { draft: Draft; onCancel
       try { await onSubmit(body); } catch { setBusy(false); }
     }}>
       <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.selector}</p>
+      {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
+
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
