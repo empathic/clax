@@ -25,6 +25,7 @@ async fn open_returns_the_browser_url_without_opening_under_artifax_no_open() {
     let published = t
         .publish(Parameters(PublishArgs {
             html: Some("<p>".into()),
+            title: Some("Open me".into()),
             ..Default::default()
         }))
         .await

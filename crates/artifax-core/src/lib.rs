@@ -13,6 +13,7 @@ pub use error::{CoreError, Result};
 pub use events::{EVENT_BUS_CAPACITY, Event, EventBus};
 pub use home::Home;
 pub use ids::{ArtifactId, new_ulid};
+pub use publish::html_title;
 pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::sessions::RegisterSession;

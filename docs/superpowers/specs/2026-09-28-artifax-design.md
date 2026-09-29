@@ -263,7 +263,7 @@ including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
 
 ```json
 {
-  "title": "Quarterly Review",          // optional after version 1
+  "title": "Quarterly Review",          // required on version 1 (the tools take it from <title> when omitted), optional after
   "description": "…", "icon": "chart",  // optional
   "label": "Draft to legal",            // optional, ≤ 60 chars
   "if_version": 3,                      // required on an existing artifact

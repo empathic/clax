@@ -183,6 +183,7 @@ async fn publish_reads_local_files() {
         .publish(Parameters(PublishArgs {
             file_path: Some(page.to_string_lossy().into()),
             files: Some(files),
+            title: Some("Disk".into()),
             ..Default::default()
         }))
         .await);
@@ -483,6 +484,7 @@ async fn relative_paths_need_a_session_working_directory() {
     let p = ok(st
         .publish(Parameters(PublishArgs {
             file_path: Some("page.html".into()),
+            title: Some("Relative".into()),
             ..Default::default()
         }))
         .await);
@@ -619,4 +621,64 @@ async fn a_non_json_success_body_is_bad_response() {
     );
     let e = err(t.status(Parameters(StatusArgs {})).await);
     assert_eq!(e["error"]["code"], "bad_response", "{e}");
+}
+
+#[tokio::test]
+async fn a_new_artifact_takes_its_title_from_the_page_when_none_is_given() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let p = ok(t
+        .publish(Parameters(PublishArgs {
+            html: Some("<html><head><TITLE lang=en>\n Q3 &amp; Q4 </TITLE></head></html>".into()),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(p["title"], "Q3 & Q4");
+
+    let dir = tempfile::tempdir().unwrap();
+    let page = dir.path().join("page.html");
+    std::fs::write(&page, "<title>From disk</title><p>").unwrap();
+    let p = ok(t
+        .publish(Parameters(PublishArgs {
+            file_path: Some(page.to_string_lossy().into()),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(p["title"], "From disk");
+
+    // An explicit title wins over the page's.
+    let p = ok(t
+        .publish(Parameters(html("Given", "<title>Page</title>")))
+        .await);
+    assert_eq!(p["title"], "Given");
+
+    // An update without a title keeps the artifact's.
+    let id = p["artifact_id"].as_str().unwrap().to_string();
+    let p = ok(t
+        .publish(Parameters(PublishArgs {
+            id: Some(id),
+            html: Some("<title>Other</title>".into()),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(p["title"], "Given");
+}
+
+#[tokio::test]
+async fn a_new_artifact_without_any_title_is_invalid_args_naming_both_remedies() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    for page in ["<p>no title", "<title>  </title><p>"] {
+        let e = err(t
+            .publish(Parameters(PublishArgs {
+                html: Some(page.into()),
+                ..Default::default()
+            }))
+            .await);
+        assert_eq!(e["error"]["code"], "invalid_args", "{e}");
+        let msg = e["error"]["message"].as_str().unwrap();
+        assert!(msg.contains("`title`") && msg.contains("<title>"), "{msg}");
+    }
+    let list = ok(t.list(Parameters(ListArgs::default())).await);
+    assert!(list["artifacts"].as_array().unwrap().is_empty());
 }

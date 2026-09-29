@@ -25,7 +25,7 @@ pub struct Args {
     /// Update the artifact at this URL instead of creating one.
     #[arg(long)]
     pub url: Option<String>,
-    /// Artifact title.
+    /// Artifact title. When creating without it, the page's <title> is used.
     #[arg(long)]
     pub title: Option<String>,
     /// One-line description.
@@ -123,9 +123,24 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         (_, Some(u)) => Some(super::open::id_from(u)?),
         _ => None,
     };
+    let title = match (&target, &a.title) {
+        (None, None) => Some(
+            files["index.html"]["content"]
+                .as_str()
+                .filter(|_| files["index.html"]["encoding"] == "utf8")
+                .and_then(artifax_core::html_title)
+                .with_context(|| {
+                    format!(
+                        "a new artifact needs a title: pass --title, or give {} a non-empty <title>",
+                        a.index.display()
+                    )
+                })?,
+        ),
+        (_, t) => t.clone(),
+    };
     let mut body = serde_json::json!({"files": files});
     for (k, v) in [
-        ("title", &a.title),
+        ("title", &title),
         ("description", &a.description),
         ("icon", &a.icon),
         ("label", &a.label),

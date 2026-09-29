@@ -248,3 +248,37 @@ async fn corrupt_row_is_left_out_of_the_list_and_named_on_lookup() {
     let message = body["error"]["message"].as_str().unwrap();
     assert!(message.contains(&bad_id), "{message}");
 }
+
+#[tokio::test]
+async fn creating_an_artifact_requires_a_title_but_a_new_version_does_not() {
+    let ts = TestServer::spawn().await;
+    let page = json!({"index.html": {"content": "<title>Page</title>"}});
+    for body in [
+        json!({"files": page}),
+        json!({"title": null, "files": page}),
+        json!({"title": "  \n", "files": page}),
+    ] {
+        let res = ts.post_json("/api/artifacts", body.clone()).await;
+        assert_eq!(res.status(), 400, "{body}");
+        let err: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(err["error"]["code"], "invalid_args", "{body}");
+        assert_eq!(
+            err["error"]["message"],
+            "title is required when creating an artifact"
+        );
+    }
+    let list: serde_json::Value = ts.get("/api/artifacts").await.json().await.unwrap();
+    assert!(list["artifacts"].as_array().unwrap().is_empty());
+
+    let created = ts.publish("Titled", &[("index.html", "<p>1")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = ts
+        .post_json(
+            &format!("/api/artifacts/{id}/versions"),
+            json!({"if_version": 1, "files": {"index.html": {"content": "<p>2"}}}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(v["artifact"]["title"], "Titled");
+}

@@ -111,6 +111,85 @@ pub fn content_type_for(path: &str) -> String {
     }
 }
 
+/// Longest title [`html_title`] returns, in characters.
+pub const MAX_DERIVED_TITLE_CHARS: usize = 200;
+
+/// The text of the first `<title>` element of `html`, for use as an artifact
+/// title: the tag name matches in any case and may carry attributes; the five
+/// entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any
+/// other entity is kept as written); runs of whitespace become one space; the
+/// result is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `None`
+/// when there is no closed `<title>` element or its text is empty.
+pub fn html_title(html: &str) -> Option<String> {
+    let lower = html.to_ascii_lowercase();
+    let mut from = 0;
+    let body_start = loop {
+        let at = from + lower[from..].find("<title")?;
+        let after = at + "<title".len();
+        match lower.as_bytes().get(after) {
+            Some(b'>') => break after + 1,
+            Some(b) if b.is_ascii_whitespace() || *b == b'/' => {
+                break after + lower[after..].find('>')? + 1;
+            }
+            _ => from = after,
+        }
+    };
+    let body_end = body_start + lower[body_start..].find("</title")?;
+    let text = decode_basic_entities(&html[body_start..body_end]);
+    let title: String = text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+        .take(MAX_DERIVED_TITLE_CHARS)
+        .collect();
+    let title = title.trim_end().to_string();
+    (!title.is_empty()).then_some(title)
+}
+
+/// `s` with `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;` decoded in one pass.
+fn decode_basic_entities(s: &str) -> String {
+    const ENTITIES: [(&str, char); 5] = [
+        ("&amp;", '&'),
+        ("&lt;", '<'),
+        ("&gt;", '>'),
+        ("&quot;", '"'),
+        ("&apos;", '\''),
+    ];
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find('&') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i..];
+        match ENTITIES.iter().find(|(e, _)| rest.starts_with(e)) {
+            Some((e, c)) => {
+                out.push(*c);
+                rest = &rest[e.len()..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The title of a new artifact: `Some` non-blank text.
+///
+/// # Errors
+/// `invalid_args` when `title` is absent or blank.
+pub fn require_title(title: Option<&str>) -> Result<()> {
+    match title {
+        Some(t) if !t.trim().is_empty() => Ok(()),
+        _ => Err(CoreError::invalid(
+            "invalid_args",
+            "title is required when creating an artifact",
+        )),
+    }
+}
+
 /// Checks a publish request: `index.html` present and not removed, every path
 /// safe, encodings decodable, size caps and label length respected. Base64
 /// content may contain ASCII whitespace (line breaks from encoders), which is
@@ -413,5 +492,55 @@ mod tests {
     fn removals_pass_through() {
         let v = validate(req(&[("index.html", utf8("<p>")), ("old.css", None)])).unwrap();
         assert!(matches!(v.files["old.css"], FileChange::Remove));
+    }
+
+    #[test]
+    fn html_title_is_none_without_a_usable_title() {
+        assert_eq!(html_title("<p>no title here</p>"), None);
+        assert_eq!(html_title("<title></title>"), None);
+        assert_eq!(html_title("<title> \n\t </title>"), None);
+        assert_eq!(html_title("<title>never closed"), None);
+        assert_eq!(html_title("<titles>x</titles>"), None);
+    }
+
+    #[test]
+    fn html_title_decodes_entities_and_collapses_whitespace() {
+        assert_eq!(
+            html_title("<head><title>\n  Q3   Review\n</title></head>").as_deref(),
+            Some("Q3 Review")
+        );
+        assert_eq!(
+            html_title("<title>A &amp; B &lt;C&gt; &quot;d&quot; &apos;e&apos;</title>").as_deref(),
+            Some("A & B <C> \"d\" 'e'")
+        );
+        // Decoded once: `&amp;lt;` is the text `&lt;`; unknown entities stay.
+        assert_eq!(
+            html_title("<title>&amp;lt; &copy; &#39;</title>").as_deref(),
+            Some("&lt; &copy; &#39;")
+        );
+    }
+
+    #[test]
+    fn html_title_accepts_attributes_and_any_case() {
+        assert_eq!(
+            html_title("<TITLE lang=\"en\">Upper</TITLE>").as_deref(),
+            Some("Upper")
+        );
+        assert_eq!(
+            html_title("<Title\tid=t>Mixed</tItLe>").as_deref(),
+            Some("Mixed")
+        );
+        assert_eq!(
+            html_title("<title>first</title><title>second</title>").as_deref(),
+            Some("first")
+        );
+    }
+
+    #[test]
+    fn html_title_is_cut_at_200_characters() {
+        let long = "é".repeat(250);
+        let t = html_title(&format!("<title>{long}</title>")).unwrap();
+        assert_eq!(t.chars().count(), MAX_DERIVED_TITLE_CHARS);
+        assert_eq!(MAX_DERIVED_TITLE_CHARS, 200);
     }
 }

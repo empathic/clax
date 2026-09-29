@@ -310,7 +310,11 @@ fn doctor_runs_all_checks() {
 #[test]
 fn publish_dir_skips_dotfiles_and_mirrors_on_update() {
     let e = Env::new();
-    let index = write(e.dir.path(), "site/index.html", "<p>v1</p>");
+    let index = write(
+        e.dir.path(),
+        "site/index.html",
+        "<title>Site</title><p>v1</p>",
+    );
     write(e.dir.path(), "site/a.js", "1");
     write(e.dir.path(), "site/.hidden", "secret");
     let site = e.dir.path().join("site");
@@ -601,7 +605,7 @@ fn usage_errors_exit_1_and_help_and_version_exit_0() {
 #[test]
 fn file_spec_splits_only_when_the_source_exists() {
     let e = Env::new();
-    let index = write(e.dir.path(), "index.html", "<p>x</p>");
+    let index = write(e.dir.path(), "index.html", "<title>Specs</title><p>x</p>");
     let odd = write(e.dir.path(), "a=b.js", "1");
     let src = write(e.dir.path(), "src.js", "2");
     let out = e
@@ -670,4 +674,52 @@ fn doctor_fix_refuses_while_a_daemon_is_live() {
         "the summary names the path"
     );
     assert!(!versions.join(".tmp-x").exists());
+}
+
+#[test]
+fn publish_takes_a_new_artifacts_title_from_the_page_or_refuses() {
+    let e = Env::new();
+    let titled = write(
+        e.dir.path(),
+        "titled.html",
+        "<title>From &lt;page&gt;</title><p>",
+    );
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&titled)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let list: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["list", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(list["artifacts"][0]["title"], "From <page>");
+
+    let bare = write(e.dir.path(), "bare.html", "<p>no title");
+    e.cmd()
+        .args(["publish"])
+        .arg(&bare)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("--title").and(predicate::str::contains("<title>")));
+    // An update needs no title.
+    e.cmd()
+        .args(["publish", "--id", &id])
+        .arg(&bare)
+        .assert()
+        .success();
+    e.stop();
 }

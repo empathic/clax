@@ -3,7 +3,7 @@
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
-use artifax_core::publish::{PublishRequest, validate};
+use artifax_core::publish::{PublishRequest, require_title, validate};
 use artifax_core::{ArtifactId, CoreError, Event, MetaPatch, Store};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
@@ -103,6 +103,7 @@ pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(json!({"artifacts": artifacts})))
 }
 
+/// Creates an artifact. The body must carry a non-blank `title`.
 pub async fn create(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -110,6 +111,7 @@ pub async fn create(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body(req)?)?;
+    require_title(p.title.as_deref())?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
     let (artifact, version) = s

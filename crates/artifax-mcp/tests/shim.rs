@@ -295,7 +295,12 @@ async fn a_restarted_daemon_is_found_again_with_the_same_session() {
 
     // The next call finds no daemon, starts a replacement (a new port and token),
     // registers the session there again, and succeeds.
-    let published = ok(&shim.call("publish", json!({"html": "<p>again</p>"})).await);
+    let published = ok(&shim
+        .call(
+            "publish",
+            json!({"html": "<title>again</title><p>again</p>"}),
+        )
+        .await);
     let after = ok(&shim.call("status", json!({})).await);
     assert_ne!(read_daemon_info(&shim.home()).unwrap().pid, old_pid);
     assert_eq!(after["session"]["id"], before["session"]["id"]);

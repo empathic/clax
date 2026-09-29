@@ -72,7 +72,8 @@ pub struct PublishArgs {
     /// The version this update is based on; a stale value fails with the current
     /// version. Defaults to the artifact's current version.
     pub if_version: Option<u32>,
-    /// Artifact title.
+    /// Artifact title. Required to create an artifact unless the page has a
+    /// non-empty `<title>`, which is used instead; optional on an update.
     pub title: Option<String>,
     /// One-line description.
     pub description: Option<String>,
@@ -367,10 +368,24 @@ impl ArtifaxTools {
             };
             files.insert(name, entry);
         }
+        let title = match (&target, a.title) {
+            (None, None) => Some(
+                page["content"]
+                    .as_str()
+                    .filter(|_| page["encoding"] == "utf8")
+                    .and_then(artifax_core::html_title)
+                    .ok_or_else(|| {
+                        invalid(
+                            "a new artifact needs a title: pass `title`, or give the page a non-empty <title>",
+                        )
+                    })?,
+            ),
+            (_, t) => t,
+        };
         files.insert(artifax_core::publish::INDEX.to_string(), page);
         let mut body = json!({"files": files});
         for (k, v) in [
-            ("title", a.title),
+            ("title", title),
             ("description", a.description),
             ("icon", a.icon),
             ("label", a.label),
