@@ -1,7 +1,8 @@
 //! The `db` capability's routes (spec §6 "Docs"). Every route refuses a
 //! foreign `Origin` ([`SameOrigin`]) and acts as the [`CallerParts`] caller.
 //! A document the caller may not read answers 404, like a missing one; a
-//! write the rules refuse answers 404 too. Each change publishes the `doc`
+//! write the rules refuse answers 404 too. Those 404s name the document's
+//! `path` in the error; a missing artifact's 404 does not. Each change publishes the `doc`
 //! SSE event, which carries the path and version but never the body.
 
 use super::artifacts::{body, body_within, parse_id, path};
@@ -49,7 +50,7 @@ pub struct WriteBody {
 }
 
 /// The document: `{doc: {path, collection, id, data, version, updated_at}}`;
-/// 404 when it is missing or the caller may not read it.
+/// 404 with `path` when it is missing or the caller may not read it.
 pub async fn get(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -59,10 +60,13 @@ pub async fn get(
     let (aid, doc) = path(p)?;
     let id = parse_id(&aid)?;
     let d = s
-        .store_call(move |st| st.doc_get(&id, &doc, &who.resolve(st)?))
+        .store_call({
+            let doc = doc.clone();
+            move |st| st.doc_get(&id, &doc, &who.resolve(st)?)
+        })
         .await?;
     d.map(|d| Json(json!({"doc": d})))
-        .ok_or_else(ApiError::not_found)
+        .ok_or_else(|| artifax_core::CoreError::DocNotFound { path: doc }.into())
 }
 
 /// Replaces or creates the document: `{doc, created}`.

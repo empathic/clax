@@ -293,20 +293,33 @@ function refuseMe(collection: string): void {
   }
 }
 
-/** `collection/doc_id`, checked against the path grammar with the Rust
- * messages of `artifax_core::db::doc_path`; `data/users/me` is refused
- * ([`refuseMe`]). */
+const dbInvalid = (message: string) => toolError("invalid_argument", message);
+
+/** The segments of `path`, checked against the path grammar with the Rust
+ * messages of `artifax_core::db`. */
+function dbSegments(path: string): string[] {
+  if (Buffer.byteLength(path) > 1000) throw dbInvalid("a path is at most 1000 bytes");
+  const segs = path.split("/");
+  if (segs.length > 16) throw dbInvalid(`a path has at most 16 segments; '${path}' has ${segs.length}`);
+  const seg = segs.find(s => !DB_SEGMENT.test(s) || s === "." || s === "..");
+  if (seg !== undefined) throw dbInvalid(`'${seg}' is not a valid path segment: letters, digits and _ - . ~ : @ + only, 1 to 200 bytes, not . or ..`);
+  return segs;
+}
+
+/** `collection/doc_id`, checked as `artifax_core::db::doc_path` checks it;
+ * `data/users/me` is refused ([`refuseMe`]). */
 function dbPath(collection: string, docId: string): string {
   refuseMe(collection);
   const path = `${collection}/${docId}`;
-  const bad = (message: string) => toolError("invalid_argument", message);
-  if (Buffer.byteLength(path) > 1000) throw bad("a path is at most 1000 bytes");
-  const segs = path.split("/");
-  if (segs.length > 16) throw bad(`a path has at most 16 segments; '${path}' has ${segs.length}`);
-  const seg = segs.find(s => !DB_SEGMENT.test(s) || s === "." || s === "..");
-  if (seg !== undefined) throw bad(`'${seg}' is not a valid path segment: letters, digits and _ - . ~ : @ + only, 1 to 200 bytes, not . or ..`);
-  if (segs.length % 2 !== 0) throw bad(`'${path}' has ${segs.length} segments; a document path has an even number`);
+  const segs = dbSegments(path);
+  if (segs.length % 2 !== 0) throw dbInvalid(`'${path}' has ${segs.length} segments; a document path has an even number`);
   return path;
+}
+
+/** Checks `collection` as `artifax_core::db::collection_path` does. */
+function collectionPath(collection: string): void {
+  const segs = dbSegments(collection);
+  if (segs.length % 2 !== 1) throw dbInvalid(`'${collection}' has ${segs.length} segments; a collection path has an odd number`);
 }
 
 function docView(d: Json): Json {
@@ -845,7 +858,11 @@ class Tools {
     try {
       doc = docView((await c.docGet(id, path, a.as_level)).doc ?? {});
     } catch (e) {
-      if (!(e instanceof ClientError && e.kind === "api" && e.status === 404 && e.error.code === "not_found")) throw clientError(e, this.log);
+      // A document's 404 names its path; an artifact's does not, and passes
+      // through as the error it is.
+      if (!(e instanceof ClientError && e.kind === "api" && e.status === 404 && e.error.code === "not_found" && e.error.path !== undefined)) {
+        throw clientError(e, this.log);
+      }
     }
     return { artifact_id: id, path, exists: doc !== null, doc, note: DOC_NOTE };
   }
@@ -853,6 +870,7 @@ class Tools {
   async dbList(ctx: ExtensionContext, a: Static<typeof DbQueryArgs>, allowFilters: boolean): Promise<Json> {
     const { id } = artifactRef(a.url_or_id);
     refuseMe(a.collection);
+    collectionPath(a.collection);
     const q = a.query ?? {};
     if (!allowFilters && (q.where !== undefined || q.order_by !== undefined)) {
       throw invalid("where and order_by belong to db_query; db_list pages a collection in document ID order");

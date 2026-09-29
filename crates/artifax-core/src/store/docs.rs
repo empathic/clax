@@ -7,7 +7,8 @@
 //! pin taken before the delete can only conflict. Every
 //! call loads the artifact's declared rules and checks the caller against
 //! them: a document the caller may not read behaves as absent, and a write it
-//! may not make fails as `NotFound`. Leases (`acquire`) live beside the
+//! may not make fails as `DocNotFound`, as for a missing document; a missing
+//! artifact is `NotFound`. Leases (`acquire`) live beside the
 //! documents and coordinate only callers that use them.
 
 use super::Store;
@@ -490,7 +491,7 @@ fn next_version(c: &Connection, id: &ArtifactId, floor: u64) -> Result<u64> {
     Ok(v as u64)
 }
 
-/// One write: refused as `NotFound` unless `rules` let `caller` write `path`;
+/// One write: refused as `DocNotFound` unless `rules` let `caller` write `path`;
 /// pinned by `pin`; `next` maps the current document to the new body (`None`
 /// deletes).
 fn write_in(
@@ -504,7 +505,7 @@ fn write_in(
 ) -> Result<Written> {
     let dp = doc_path(path)?;
     if !rules.allows(&dp.path, Op::Write, caller) {
-        return Err(CoreError::NotFound);
+        return Err(CoreError::DocNotFound { path: dp.path });
     }
     let current = doc_in(c, id, &dp.path)?;
     check_pin(&dp.path, current.as_ref().map(|d| d.version), pin)?;
@@ -611,7 +612,7 @@ impl Store {
     ///
     /// # Errors
     /// `invalid_argument` ("<path> does not exist; use set to create it")
-    /// when the document is absent; `NotFound` when `caller` may not write it.
+    /// when the document is absent; `DocNotFound` when `caller` may not write it.
     pub fn doc_update(
         &self,
         id: &ArtifactId,
@@ -649,8 +650,8 @@ impl Store {
     /// # Errors
     /// `invalid_argument` when `old_str` is empty or `field` is not a
     /// top-level string; `old_str_not_found`; `old_str_not_unique` when it
-    /// occurs more than once without `replace_all`; `NotFound` when the
-    /// document is absent.
+    /// occurs more than once without `replace_all`; `DocNotFound` when the
+    /// document is absent or `caller` may not write it.
     pub fn doc_str_replace(
         &self,
         id: &ArtifactId,
@@ -666,7 +667,7 @@ impl Store {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             write_in(tx, id, &rules, caller, path, pin, |cur| {
-                let cur = cur.ok_or(CoreError::NotFound)?;
+                let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
                 let mut data = cur.data.clone();
                 let Some(Value::String(text)) = data.get_mut(&r.field) else {
                     return Err(invalid_argument(format!("'{}' is not a top-level string field of {}", r.field, cur.path)));
@@ -848,7 +849,7 @@ impl Store {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             if !rules.allows(&dp.path, Op::Write, caller) {
-                return Err(CoreError::NotFound);
+                return Err(CoreError::DocNotFound { path: dp.path.clone() });
             }
             let now = Store::now();
             tx.execute(
@@ -1136,7 +1137,7 @@ mod tests {
                 page(),
                 &who(Level::Interact, Some(A))
             ),
-            Err(CoreError::NotFound)
+            Err(CoreError::DocNotFound { .. })
         ));
         st.doc_set(&id, "t/1", json!({}), page(), &admin()).unwrap();
         assert!(
@@ -1148,7 +1149,7 @@ mod tests {
         let open = artifact_with_caps(&st, json!({}));
         assert!(matches!(
             st.doc_set(&open, "t/1", json!({}), page(), &who(Level::View, Some(A))),
-            Err(CoreError::NotFound)
+            Err(CoreError::DocNotFound { .. })
         ));
     }
 
@@ -1181,7 +1182,7 @@ mod tests {
             assert!(
                 matches!(
                     st.doc_set(&id, &mine, json!({}), page(), &c),
-                    Err(CoreError::NotFound)
+                    Err(CoreError::DocNotFound { .. })
                 ),
                 "{c:?}"
             );
@@ -1755,7 +1756,7 @@ mod tests {
         match st.doc_batch(&id, writes, true, &who(Level::Interact, Some(A))) {
             Err(CoreError::InBatch { op: 1, path, error }) => {
                 assert_eq!(path, "locked/x");
-                assert!(matches!(*error, CoreError::NotFound));
+                assert!(matches!(&*error, CoreError::DocNotFound { path } if path == "locked/x"));
             }
             other => panic!("{other:?}"),
         }

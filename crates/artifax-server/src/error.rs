@@ -44,6 +44,11 @@ impl From<CoreError> for ApiError {
     fn from(e: CoreError) -> Self {
         match e {
             CoreError::NotFound => ApiError::not_found(),
+            CoreError::DocNotFound { path } => {
+                let mut err = ApiError::not_found();
+                err.extra.insert("path".into(), json!(path));
+                err
+            }
             CoreError::Conflict { current } => {
                 let mut err = ApiError::new(
                     StatusCode::CONFLICT,

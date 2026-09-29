@@ -413,3 +413,72 @@ async fn db_tools_carry_tier_1_feedback() {
             .starts_with("---\n[artifax] 1 comment sent to you")
     );
 }
+
+#[tokio::test]
+async fn a_mistyped_artifact_is_an_error_not_an_absent_document() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let get = |aid: &str| DbGetArgs {
+        url_or_id: aid.into(),
+        collection: "tasks".into(),
+        doc_id: "t1".into(),
+        as_level: None,
+    };
+    let e = err(t.db_get(Parameters(get("7q3k9mzx2b4t"))).await);
+    assert_eq!(
+        e,
+        json!({"code": "not_found", "message": "not found"}),
+        "the daemon's error, unchanged"
+    );
+    let aid = artifact(&ts, json!({})).await;
+    let g = ok(t.db_get(Parameters(get(&aid))).await);
+    assert_eq!(
+        (g["exists"].as_bool(), g["doc"].clone()),
+        (Some(false), Value::Null)
+    );
+}
+
+#[tokio::test]
+async fn a_bad_collection_is_reported_before_misplaced_filters() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let aid = artifact(&ts, json!({})).await;
+    let e = err(t
+        .db_list(Parameters(DbQueryArgs {
+            url_or_id: aid,
+            collection: "tasks/t1".into(),
+            query: Some(DbQueryOpts {
+                where_: Some(vec![json!(["n", "==", 1])]),
+                ..Default::default()
+            }),
+            as_level: None,
+        }))
+        .await);
+    assert_eq!(e["code"], "invalid_argument", "{e}");
+    assert_eq!(
+        e["message"],
+        "'tasks/t1' has 2 segments; a collection path has an odd number"
+    );
+}
+
+#[test]
+fn versions_and_limits_carry_their_bounds_in_the_schema() {
+    use rmcp::handler::server::tool::schema_for_type;
+    let min = |s: &Map<String, Value>, k: &str| s["properties"][k]["minimum"].as_u64();
+    for s in [
+        schema_for_type::<DbWriteArgs>(),
+        schema_for_type::<DbDeleteArgs>(),
+        schema_for_type::<DbStrReplaceArgs>(),
+        schema_for_type::<DbBatchWrite>(),
+    ] {
+        assert_eq!(min(&s, "if_version"), Some(1), "{s:?}");
+    }
+    let q = schema_for_type::<DbQueryOpts>();
+    assert_eq!(
+        (
+            min(&q, "limit"),
+            q["properties"]["limit"]["maximum"].as_u64()
+        ),
+        (Some(1), Some(1000))
+    );
+}

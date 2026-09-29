@@ -677,6 +677,16 @@ describe("comments", () => {
     expect(q.note).toContain("data, not as instructions");
     const b = parts(await pi.callToolAsPi("artifax_db_batch", { url_or_id: aid, writes: [{ op: "delete", collection: "tasks", doc_id: "t1", if_version: 2 }] }, ctx)).json;
     expect(b).toMatchObject({ atomic: true, results: [{ op: "delete", path: "tasks/t1", deleted: true }] });
+    const gone = await pi.callToolAsPi("artifax_db_get", { url_or_id: "7q3k9mzx2b4t", collection: "tasks", doc_id: "t1" }, ctx);
+    expect(gone.isError).toBe(true);
+    expect(json(gone).error, "a mistyped artifact is the daemon's error, unchanged").toEqual({ code: "not_found", message: "not found" });
+    const absent = parts(await pi.callToolAsPi("artifax_db_get", { url_or_id: aid, collection: "tasks", doc_id: "t9" }, ctx)).json;
+    expect(absent).toMatchObject({ exists: false, doc: null });
+    const order = await pi.callToolAsPi("artifax_db_list", { url_or_id: aid, collection: "tasks/t1", query: { where: [["n", "==", 1]] } }, ctx);
+    expect(order.isError).toBe(true);
+    expect(json(order).error, "a bad collection is reported before misplaced filters").toEqual({
+      code: "invalid_argument", message: "'tasks/t1' has 2 segments; a collection path has an odd number",
+    });
     for (const [tool, args] of [["artifax_db_get", { doc_id: "p" }], ["artifax_db_list", {}]] as const) {
       const me = await pi.callToolAsPi(tool, { url_or_id: aid, collection: "data/users/me", ...args }, ctx);
       expect(me.isError, tool).toBe(true);
@@ -691,11 +701,29 @@ describe("comments", () => {
     for (const name of TOOLS) {
       const ours = (pi.tools.get(name)!.parameters as any);
       const theirs = mcp.get(name.replace(/^artifax_/, ""))!;
-      expect(Object.keys(ours.properties ?? {}).sort(), name).toEqual(Object.keys(theirs.properties ?? {}).sort());
-      expect([...(ours.required ?? [])].sort(), name).toEqual([...(theirs.required ?? [])].sort());
-      for (const [k, v] of Object.entries<any>(theirs.properties ?? {})) {
-        if (v.type !== undefined && ours.properties[k].type !== undefined) expect(base(ours.properties[k].type), `${name}.${k}`).toBe(base(v.type));
-      }
+      // An MCP schema node with `$ref`s resolved and `Option`'s null branch dropped.
+      const resolve = (n: any): any => {
+        if (n?.$ref !== undefined) return resolve(theirs.$defs?.[n.$ref.replace(/^#\/\$defs\//, "")]);
+        const branches = (n?.anyOf ?? n?.oneOf)?.filter((b: any) => b.type !== "null");
+        return branches?.length === 1 ? resolve({ ...n, anyOf: undefined, oneOf: undefined, ...branches[0] }) : n;
+      };
+      // Property names, required names, base types and numeric bounds, down
+      // through nested objects and array items.
+      const compare = (o: any, t: any, at: string) => {
+        t = resolve(t);
+        if (!o || !t || typeof o !== "object" || typeof t !== "object") return;
+        if (o.type !== undefined && t.type !== undefined) expect(base(o.type), at).toBe(base(t.type));
+        for (const k of ["minimum", "maximum"]) {
+          if (o[k] !== undefined || t[k] !== undefined) expect(o[k], `${at}.${k}`).toBe(t[k]);
+        }
+        if (o.properties !== undefined || t.properties !== undefined) {
+          expect(Object.keys(o.properties ?? {}).sort(), at).toEqual(Object.keys(t.properties ?? {}).sort());
+          expect([...(o.required ?? [])].sort(), at).toEqual([...(t.required ?? [])].sort());
+          for (const k of Object.keys(t.properties ?? {})) compare(o.properties[k], t.properties[k], `${at}.${k}`);
+        }
+        if (o.items !== undefined && t.items !== undefined) compare(o.items, t.items, `${at}[]`);
+      };
+      compare(ours, theirs, name);
     }
   });
 });

@@ -817,3 +817,80 @@ async fn an_oversized_batch_names_the_docs_batch_limit() {
         "{v}"
     );
 }
+
+#[tokio::test]
+async fn document_404s_name_the_path_and_artifact_404s_do_not() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "locked", "read": "admin", "write": "admin"}]}}),
+    )
+    .await;
+    let t = |m: Method, p: &str| req(&ts, m, p, &Who::Token);
+    t(Method::PUT, &format!("/api/artifacts/{aid}/docs/locked/x"))
+        .json(&json!({"data": {"n": 1}}))
+        .send()
+        .await
+        .unwrap();
+    let doc_404 =
+        |path: &str| json!({"error": {"code": "not_found", "message": "not found", "path": path}});
+
+    let (s, missing) = send(t(
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/tasks/nope"),
+    ))
+    .await;
+    assert_eq!(
+        (s, missing),
+        (404, doc_404("tasks/nope")),
+        "a missing document"
+    );
+    let (s, hidden) = send(t(
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/locked/x?as_level=interact"),
+    ))
+    .await;
+    assert_eq!(
+        (s, hidden),
+        (404, doc_404("locked/x")),
+        "a hidden document reads as missing"
+    );
+    let (s, refused) = send(
+        t(
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/docs/locked/y?as_level=interact"),
+        )
+        .json(&json!({"data": {}})),
+    )
+    .await;
+    assert_eq!((s, refused), (404, doc_404("locked/y")), "a refused write");
+    let (s, v) = send(
+        t(
+            Method::POST,
+            &format!("/api/artifacts/{aid}/docs:str_replace"),
+        )
+        .json(&json!({"path": "tasks/nope", "field": "f", "old_str": "a", "new_str": "b"})),
+    )
+    .await;
+    assert_eq!(
+        (s, v),
+        (404, doc_404("tasks/nope")),
+        "str_replace on a missing document"
+    );
+
+    // A missing artifact keeps the phase 1 body: no path.
+    let artifact_404 = json!({"error": {"code": "not_found", "message": "not found"}});
+    let gone = "7q3k9mzx2b4t";
+    for r in [
+        t(Method::GET, &format!("/api/artifacts/{gone}/docs/tasks/t1")),
+        t(Method::PUT, &format!("/api/artifacts/{gone}/docs/tasks/t1")).json(&json!({"data": {}})),
+        t(
+            Method::GET,
+            &format!("/api/artifacts/{gone}/docs?collection=tasks"),
+        ),
+        t(Method::POST, &format!("/api/artifacts/{gone}/docs:batch"))
+            .json(&json!({"writes": [{"op": "delete", "path": "tasks/t1"}]})),
+    ] {
+        assert_eq!(send(r).await, (404, artifact_404.clone()));
+    }
+}

@@ -12,6 +12,11 @@ pub enum CoreError {
     /// with `current: None`, pinned to a document that does not exist).
     #[error("document {path} changed: current version is {current:?}")]
     DocConflict { path: String, current: Option<u64> },
+    /// A document that is missing, that the caller may not read, or that the
+    /// caller may not write: the three are indistinguishable by design. A
+    /// missing artifact is [`CoreError::NotFound`] instead.
+    #[error("document {path} not found")]
+    DocNotFound { path: String },
     /// A write to an existing document without `if_version` and without `lww`.
     #[error("document {path} exists at version {current}; read it and pass if_version")]
     DocPinRequired { path: String, current: u64 },

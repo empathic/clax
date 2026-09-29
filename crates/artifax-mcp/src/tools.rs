@@ -265,6 +265,7 @@ pub struct DbQueryOpts {
     /// db_query only: one field and a direction; the result is then one page with no cursor.
     pub order_by: Option<DbOrderBy>,
     /// Most documents to return, 1 to 1000 (default 100).
+    #[schemars(range(min = 1, max = 1000))]
     pub limit: Option<u32>,
     /// `next_cursor` from the previous result.
     pub cursor: Option<String>,
@@ -297,6 +298,7 @@ pub struct DbWriteArgs {
     /// A local JSON file whose top-level object is the document. Exactly one of `data` and `file_path`.
     pub file_path: Option<String>,
     /// The version you last read; required when the document exists, omitted only when creating it.
+    #[schemars(range(min = 1))]
     pub if_version: Option<u64>,
     /// Act at this lower access level (`view`, `interact`, or `admin`) to check what the page's rules allow; it narrows your access, never raises it.
     pub as_level: Option<DbLevel>,
@@ -312,6 +314,7 @@ pub struct DbDeleteArgs {
     /// Document ID: one path segment.
     pub doc_id: String,
     /// The version you last read; required when the document exists.
+    #[schemars(range(min = 1))]
     pub if_version: Option<u64>,
     /// Act at this lower access level (`view`, `interact`, or `admin`) to check what the page's rules allow; it narrows your access, never raises it.
     pub as_level: Option<DbLevel>,
@@ -335,6 +338,7 @@ pub struct DbStrReplaceArgs {
     /// Replace every occurrence (default false).
     pub replace_all: Option<bool>,
     /// The version you last read.
+    #[schemars(range(min = 1))]
     pub if_version: Option<u64>,
     /// Act at this lower access level (`view`, `interact`, or `admin`) to check what the page's rules allow; it narrows your access, never raises it.
     pub as_level: Option<DbLevel>,
@@ -363,6 +367,7 @@ pub struct DbBatchWrite {
     /// set and update: a local JSON file whose top-level object is the document.
     pub file_path: Option<String>,
     /// The version you last read; required when the document exists.
+    #[schemars(range(min = 1))]
     pub if_version: Option<u64>,
 }
 
@@ -1179,7 +1184,13 @@ impl ArtifaxTools {
         let path = db_path(&a.collection, &a.doc_id)?;
         let doc = match self.client.doc_get(&id, &path, level(a.as_level)).await {
             Ok(v) => Some(doc_view(&v["doc"])),
-            Err(ClientError::Api { status: 404, error }) if error["code"] == "not_found" => None,
+            // A document's 404 names its path; an artifact's does not, and
+            // passes through as the error it is.
+            Err(ClientError::Api { status: 404, error })
+                if error["code"] == "not_found" && error.get("path").is_some() =>
+            {
+                None
+            }
             Err(e) => return Err(self.fail(e)),
         };
         Ok(
