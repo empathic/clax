@@ -16,15 +16,55 @@ struct Assets;
 /// Where the bridge bundle sits in [`Assets`].
 const BRIDGE: &str = "_artifax/bridge.js";
 
+/// Debug builds only: the directory the web UI is read from in place of
+/// `web/dist` (see [`set_web_dist`]).
+#[cfg(debug_assertions)]
+static WEB_DIST: std::sync::RwLock<Option<std::path::PathBuf>> = std::sync::RwLock::new(None);
+
+/// Debug builds only: serves the web UI from `dir` (laid out like `web/dist`)
+/// instead of `web/dist`, for the whole process. Tests that change the built
+/// files use it, so no test writes the real `web/dist` that `just dev` serves.
+#[cfg(debug_assertions)]
+pub fn set_web_dist(dir: std::path::PathBuf) {
+    *WEB_DIST.write().unwrap_or_else(|e| e.into_inner()) = Some(dir);
+}
+
+/// The directory a debug build reads the web UI from.
+#[cfg(debug_assertions)]
+fn web_dist() -> std::path::PathBuf {
+    WEB_DIST
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+        .unwrap_or_else(|| concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist").into())
+}
+
+/// A file of the web UI (`path` relative to `web/dist`): embedded in a release
+/// build, read from disk (see [`set_web_dist`]) in a debug build.
+fn asset(path: &str) -> Option<rust_embed::EmbeddedFile> {
+    #[cfg(debug_assertions)]
+    if WEB_DIST.read().unwrap_or_else(|e| e.into_inner()).is_some() {
+        let rel = std::path::Path::new(path);
+        if !rel
+            .components()
+            .all(|c| matches!(c, std::path::Component::Normal(_)))
+        {
+            return None;
+        }
+        return rust_embed::utils::read_file_from_fs(&web_dist().join(rel)).ok();
+    }
+    Assets::get(path)
+}
+
 /// A short content hash: the first 12 hex digits of a SHA-256.
 fn short_hash(sha256: &[u8; 32]) -> String {
     sha256[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The short hash of the bridge bundle as [`Assets`] reads it now; empty when
-/// the UI is not built.
+/// The short hash of the bridge bundle as it reads now; empty when the UI is
+/// not built.
 fn hash_bridge() -> String {
-    Assets::get(BRIDGE)
+    asset(BRIDGE)
         .map(|f| short_hash(&f.metadata.sha256_hash()))
         .unwrap_or_default()
 }
@@ -45,20 +85,17 @@ pub fn bridge_version() -> String {
 ///
 /// A debug build reads `web/dist` from disk on every request, and `just dev`
 /// rebuilds the bridge under a running daemon, so the version follows the
-/// file: it is rehashed whenever the file's modification time or size changes.
+/// file: it is rehashed whenever the file's path, modification time or size
+/// changes.
 #[cfg(debug_assertions)]
 pub fn bridge_version() -> String {
-    type Stamp = (Option<std::time::SystemTime>, u64);
+    type Stamp = (std::path::PathBuf, Option<std::time::SystemTime>, u64);
     static SEEN: std::sync::Mutex<Option<(Stamp, String)>> = std::sync::Mutex::new(None);
-    let path = concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../web/dist/",
-        "_artifax/bridge.js"
-    );
-    let Ok(m) = std::fs::metadata(path) else {
+    let path = web_dist().join(BRIDGE);
+    let Ok(m) = std::fs::metadata(&path) else {
         return String::new();
     };
-    let stamp = (m.modified().ok(), m.len());
+    let stamp = (path, m.modified().ok(), m.len());
     let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
     if let Some((s, v)) = seen.as_ref()
         && *s == stamp
@@ -87,7 +124,7 @@ fn bridge_cache_control(query: Option<&str>, served: &str) -> &'static str {
 }
 
 pub async fn shell(req: HeaderMap) -> Result<Response, ApiError> {
-    match Assets::get("index.html") {
+    match asset("index.html") {
         Some(f) => Ok(http_cache::html(&req, &String::from_utf8_lossy(&f.data))),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -106,8 +143,8 @@ pub async fn static_file(
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let path = path(p)?;
-    let asset = format!("_artifax/{path}");
-    let f = Assets::get(&asset).ok_or_else(ApiError::not_found)?;
+    let file = format!("_artifax/{path}");
+    let f = asset(&file).ok_or_else(ApiError::not_found)?;
     let ct = if path.ends_with(".js") {
         "text/javascript".to_string()
     } else {
@@ -115,7 +152,7 @@ pub async fn static_file(
             .first_or_octet_stream()
             .to_string()
     };
-    if asset == BRIDGE {
+    if file == BRIDGE {
         let cc = bridge_cache_control(query.as_deref(), &short_hash(&f.metadata.sha256_hash()));
         return Ok(http_cache::tagged(&req, &f.data, cc, || {
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()

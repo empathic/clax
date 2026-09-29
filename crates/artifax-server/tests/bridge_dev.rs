@@ -1,50 +1,26 @@
-//! A debug build reads the bridge from `web/dist` on every request (as
-//! `just dev` rebuilds it under a running daemon): a rebuilt bridge gets a new
-//! URL in the next page served, and the bridge is never immutable. This test
-//! rewrites the built bridge and restores it; it is its own test binary so no
-//! other test reads the bridge meanwhile.
+//! A debug build reads the bridge from disk on every request (as `just dev`
+//! rebuilds it under a running daemon): a rebuilt bridge gets a new URL in the
+//! next page served, and the bridge is never immutable. The test serves the web
+//! UI from a temporary copy ([`set_web_dist`]) and rewrites that, never the
+//! real `web/dist`; it is its own test binary because the override is
+//! process-wide.
 #![cfg(debug_assertions)]
 
 mod common;
-use artifax_server::routes::shell::bridge_version;
+use artifax_server::routes::shell::{bridge_version, set_web_dist};
 use common::TestServer;
-use std::path::PathBuf;
-
-/// Puts the bridge file back as it was (or removes it) when dropped.
-struct Restore {
-    path: PathBuf,
-    before: Option<Vec<u8>>,
-    made_dir: bool,
-}
-
-impl Drop for Restore {
-    fn drop(&mut self) {
-        match &self.before {
-            Some(b) => std::fs::write(&self.path, b).unwrap(),
-            None => {
-                let _ = std::fs::remove_file(&self.path);
-                if self.made_dir {
-                    let _ = std::fs::remove_dir(self.path.parent().unwrap());
-                }
-            }
-        }
-    }
-}
 
 #[tokio::test]
 async fn a_rebuilt_bridge_gets_a_new_url_and_is_never_immutable() {
-    let path = PathBuf::from(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../web/dist/_artifax/bridge.js"
-    ));
-    let dir = path.parent().unwrap().to_path_buf();
-    let made_dir = !dir.exists();
-    std::fs::create_dir_all(&dir).unwrap();
-    let _restore = Restore {
-        before: std::fs::read(&path).ok(),
-        path: path.clone(),
-        made_dir,
-    };
+    let dist = tempfile::tempdir().unwrap();
+    let real = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/dist"));
+    std::fs::create_dir_all(dist.path().join("_artifax")).unwrap();
+    // A copy of the built bridge when there is one (read only), else a stand-in.
+    let built =
+        std::fs::read(real.join("_artifax/bridge.js")).unwrap_or_else(|_| b"/* built */".to_vec());
+    let path = dist.path().join("_artifax/bridge.js");
+    std::fs::write(&path, &built).unwrap();
+    set_web_dist(dist.path().to_path_buf());
     std::fs::write(&path, "/* bridge A */").unwrap();
 
     let ts = TestServer::spawn().await;
