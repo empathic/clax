@@ -3,6 +3,7 @@
 // through one handler per capability, and relays SSE events to handlers that
 // follow the stream. Every call is answered, with a value or `{code, message}`.
 import type { BridgeToShell, ShellToBridge } from "../../../bridge/src/protocol";
+import type { FileMeta } from "../api";
 import type { ArtifactEvent } from "../events";
 import { type Declared, declaredConfig, isAvailable } from "./availability";
 import { CapError } from "./errors";
@@ -25,10 +26,13 @@ export interface CapEnv {
   post(m: ShellToBridge): void;
   /** Loads the latest version in the shell. */
   reload(): void;
-  /** Set while this view's own `artifact.publish` is in flight, so the SSE
-   * `version` event it causes does not reload the view before the page hears
-   * the result. */
-  ownPublish?: { active: boolean };
+  /** How many of this view's own `artifact.publish` calls are in flight (a
+   * publish that ends in a reload keeps its count), so the SSE `version` event
+   * one causes does not reload the view before the page hears the result.
+   * `settled` runs when the count drops back to 0 without a reload. */
+  ownPublish?: { active: number; settled?(): void };
+  /** The files of the shown version, when known. */
+  files?: Record<string, FileMeta>;
   /** The published file of the page in the frame, from its latest matching
    * hello (null while the frame shows no greeted page); `index.html` when absent. */
   page?(): string | null;

@@ -1,12 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { artifactHandler } from "./artifact";
+import { forgetBudgets } from "./budget";
 import type { CapEnv } from "./host";
 
 const DOC = "<!doctype html><html><body>v2</body></html>";
 const INDEX = "<!doctype html><body>índex</body>";
 
 function env(over: Partial<CapEnv> = {}) {
-  return { aid: "7q3k9mzx2b4t", version: 3, pinned: false, token: "tok", reload: vi.fn(), ownPublish: { active: false }, ...over } as unknown as CapEnv;
+  return { aid: "7q3k9mzx2b4t", version: 3, pinned: false, token: "tok", reload: vi.fn(), ownPublish: { active: 0, settled: vi.fn() }, ...over } as unknown as CapEnv;
 }
 
 const FILES = { "index.html": { content_type: "text/html", size: 10 }, "notes/a b.html": { content_type: "text/html; charset=utf-8", size: 10 } };
@@ -22,8 +23,19 @@ function stub(publish: () => Response, caps: Record<string, unknown> = { artifac
   return bodies;
 }
 
+/** Sets `navigator.userActivation` (undefined: the API is missing). */
+function activation(hasBeenActive: boolean | undefined) {
+  if (hasBeenActive === undefined) delete (navigator as { userActivation?: unknown }).userActivation;
+  else Object.defineProperty(navigator, "userActivation", { value: { hasBeenActive, isActive: false }, configurable: true });
+}
+
+const ok = () => new Response(JSON.stringify({ version: { n: 4 } }), { status: 201 });
+const posts = (calls: { init: RequestInit }[]) => calls.filter(c => c.init.method === "POST").length;
+
 describe("artifact.publish in the shell", () => {
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); });
+  const fresh = () => { sessionStorage.clear(); forgetBudgets(); };
+  beforeEach(fresh);
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); fresh(); activation(undefined); });
 
   it("publishes with the shown version, marks the page as the publisher, and reloads", async () => {
     vi.useFakeTimers();
@@ -37,7 +49,7 @@ describe("artifact.publish in the shell", () => {
     expect((post.init.headers as Record<string, string>).authorization).toBe("Bearer tok");
     vi.runAllTimers();
     expect(e.reload).toHaveBeenCalledTimes(1);
-    expect(e.ownPublish!.active).toBe(true);
+    expect(e.ownPublish!.active).toBe(1);
   });
 
   it("from a sub page replaces that page and carries the index (and every other file) forward", async () => {
@@ -78,6 +90,7 @@ describe("artifact.publish in the shell", () => {
     await expect(artifactHandler(env({ token: null }), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "not_writer" });
     stub(() => new Response("{}", { status: 201 }), { db: {} });
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "not_declared" });
+    fresh();
     stub(() => new Response(JSON.stringify({ version: { n: 4 } }), { status: 201 }), { self: {} });
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
     stub(() => new Response("{}", { status: 201 }));
@@ -106,10 +119,12 @@ describe("artifact.publish in the shell", () => {
     ];
     for (const [status, body, code] of cases) {
       stub(() => new Response(JSON.stringify(body), { status }));
+      fresh();
       const e = env();
       await expect(artifactHandler(e, null as never).call("publish", [DOC])).rejects.toMatchObject({ code });
-      expect(e.ownPublish!.active).toBe(false);
+      expect(e.ownPublish!.active).toBe(0);
     }
+    fresh();
     vi.stubGlobal("fetch", vi.fn(async (_u: string, init: RequestInit = {}) => { if (init.method === "POST") throw new TypeError("offline"); return new Response(JSON.stringify({ artifact: { capabilities: { artifact: {} } }, versions: [] })); }));
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "upstream_error" });
   });
@@ -130,7 +145,8 @@ describe("artifact.publish in the shell", () => {
     vi.runAllTimers();
     expect(e.reload).not.toHaveBeenCalled();
     expect(calls.filter(c => c.init.method === "POST")).toHaveLength(0);
-    expect(e.ownPublish!.active).toBe(false);
+    expect(e.ownPublish!.active).toBe(0);
+    expect(e.ownPublish!.settled).not.toHaveBeenCalled();
     await expect(h.call("publish", [DOC])).rejects.toHaveProperty("code");
   });
 
@@ -143,5 +159,82 @@ describe("artifact.publish in the shell", () => {
     h.dispose!();
     vi.runAllTimers();
     expect(e.reload).not.toHaveBeenCalled();
+  });
+
+  it("allows one publish per 2 s and 10 per minute, then rejects rate_limited with no request", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(1_000_000);
+    const calls = stub(ok);
+    const h = artifactHandler(env(), null as never);
+    await h.call("publish", [DOC]);
+    const before = calls.length;
+    await expect(h.call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: expect.stringMatching(/2 s/) });
+    expect(calls.length).toBe(before);
+    for (let i = 1; i < 10; i++) {
+      vi.setSystemTime(1_000_000 + i * 2_000);
+      await h.call("publish", [DOC]);
+    }
+    expect(posts(calls)).toBe(10);
+    vi.setSystemTime(1_000_000 + 10 * 2_000);
+    const n = calls.length;
+    await expect(h.call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: expect.stringMatching(/40 s/) });
+    expect(calls.length).toBe(n);
+    vi.setSystemTime(1_000_000 + 60_000);
+    await expect(h.call("publish", [DOC])).resolves.toEqual({ version: "4" });
+  });
+
+  it("keeps the budget across a reload of the view", async () => {
+    const calls = stub(ok);
+    await artifactHandler(env(), null as never).call("publish", [DOC]);
+    forgetBudgets(); // a reload loses memory, not sessionStorage
+    const n = calls.length;
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited" });
+    expect(calls.length).toBe(n);
+  });
+
+  it("refuses a publish before the viewer has acted in this page load", async () => {
+    const calls = stub(ok);
+    activation(false);
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: "publish after the viewer acts, never on load" });
+    expect(calls).toHaveLength(0);
+    activation(true);
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
+  });
+
+  it("skips the gesture check where navigator.userActivation is missing", async () => {
+    activation(undefined);
+    stub(ok);
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
+  });
+
+  it("refuses a page whose stored content type is not text/html, with no request", async () => {
+    const calls = stub(ok);
+    const files = { "index.html": { content_type: "text/html", size: 1 }, "data.xml": { content_type: "application/xml", size: 1 }, "b.html": { content_type: "Text/HTML; charset=utf-8", size: 1 } };
+    await expect(artifactHandler(env({ page: () => "data.xml", files }), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "invalid_content" });
+    await expect(artifactHandler(env({ page: () => "gone.html", files }), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "invalid_content" });
+    expect(calls).toHaveLength(0);
+    await expect(artifactHandler(env({ page: () => "index.html", files: { "index.html": files["b.html"] } }), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
+  });
+
+  it("counts overlapping publishes, so one settling cannot release the other", async () => {
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(2_000_000);
+    const e = env();
+    let answerFirst!: (r: Response) => void;
+    const answers = [new Promise<Response>(r => { answerFirst = r; }), Promise.resolve(new Response(JSON.stringify({ error: { code: "internal", message: "x" } }), { status: 500 }))];
+    stub(() => new Response("{}"));
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => (init.method === "POST" ? answers.shift()! : inner(url, init))));
+    const h = artifactHandler(e, null as never);
+    const first = h.call("publish", [DOC]);
+    await vi.waitFor(() => expect(e.ownPublish!.active).toBe(1));
+    vi.setSystemTime(2_003_000);
+    await expect(h.call("publish", [DOC])).rejects.toMatchObject({ code: "upstream_error" });
+    expect(e.ownPublish!.active).toBe(1);
+    expect(e.ownPublish!.settled).not.toHaveBeenCalled();
+    answerFirst(new Response(JSON.stringify({ error: { code: "internal", message: "y" } }), { status: 500 }));
+    await expect(first).rejects.toMatchObject({ code: "upstream_error" });
+    expect(e.ownPublish!.active).toBe(0);
+    expect(e.ownPublish!.settled).toHaveBeenCalledTimes(1);
   });
 });

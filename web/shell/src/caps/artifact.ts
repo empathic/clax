@@ -7,8 +7,15 @@
 // its token; any other view is not a writer. Success and conflict both reload
 // this view to the live version; other open views reload on the SSE `version`
 // event, which carries `by_page`.
+//
+// Two guards run before any request, so a page that publishes on load cannot
+// loop (publish, reload, publish...): the shell window must have seen a user
+// gesture in this page load (sticky activation; a click inside the frame
+// counts), and a per-tab budget kept across reloads allows one publish per
+// [`PUBLISH_GAP_MS`] and [`PUBLISH_PER_MINUTE`] a minute.
 import { INDEX_FILE } from "../../../bridge/src/protocol";
 import { type Version, getArtifact } from "../api";
+import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
 import type { HandlerFactory } from "./host";
 
@@ -17,6 +24,21 @@ export const MAX_PAGE_BYTES = 16 * 1024 * 1024;
 const DOCTYPE = /^[\s﻿]*<!doctype/i;
 /** Delay before reloading, so the call result reaches the page first. */
 export const RELOAD_DELAY_MS = 50;
+
+/** Shortest time between two publishes of one artifact from one tab. */
+export const PUBLISH_GAP_MS = 2_000;
+/** Most publishes of one artifact from one tab in any minute. */
+export const PUBLISH_PER_MINUTE = 10;
+export const NO_GESTURE = "publish after the viewer acts, never on load";
+
+/** Whether the shell window has seen a user gesture in this page load; true
+ * where the browser does not report activation. */
+function viewerActed(): boolean {
+  const ua = (globalThis.navigator as { userActivation?: { hasBeenActive?: boolean } } | undefined)?.userActivation;
+  return ua ? ua.hasBeenActive === true : true;
+}
+
+const isHtml = (contentType: string) => contentType.split(";")[0].trim().toLowerCase() === "text/html";
 
 type FileBody = { content: string; encoding: "utf8" | "base64"; content_type?: string };
 
@@ -39,11 +61,17 @@ function checkHtml(html: unknown): string {
 export const artifactHandler: HandlerFactory = env => {
   let disposed = false;
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
-  // Whether this handler set `env.ownPublish.active` (and so clears it on dispose).
-  let claimed = false;
-  const claim = (on: boolean) => {
-    claimed = on;
-    if (env.ownPublish) env.ownPublish.active = on;
+  // How many of `env.ownPublish.active` this handler holds (released on dispose).
+  let held = 0;
+  const claim = () => {
+    held++;
+    if (env.ownPublish) env.ownPublish.active++;
+  };
+  const release = (notify: boolean) => {
+    held--;
+    if (!env.ownPublish) return;
+    env.ownPublish.active = Math.max(0, env.ownPublish.active - 1);
+    if (notify && env.ownPublish.active === 0) env.ownPublish.settled?.();
   };
   const closed = () => new CapError("upstream_error", "this view has closed");
   const reloadSoon = () => {
@@ -82,8 +110,15 @@ export const artifactHandler: HandlerFactory = env => {
       if (!env.token) throw new CapError("not_writer", "this view can see the page but cannot publish it");
       const page = env.page ? env.page() : INDEX_FILE;
       if (page === null) throw new CapError("upstream_error", "the page in this view is not known yet");
-      // Set before the lookup, so this view's own SSE `version` event cannot reload it first.
-      claim(true);
+      if (env.files && !(Object.hasOwn(env.files, page) && isHtml(env.files[page].content_type))) {
+        throw new CapError("invalid_content", `${page} is not an HTML page of v${env.version}`);
+      }
+      if (!viewerActed()) throw new CapError("rate_limited", NO_GESTURE);
+      const wait = takeSlot(`artifax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });
+      if (wait > 0) throw new CapError("rate_limited", `publishing too often; wait ${seconds(wait)} s and batch changes into one publish`);
+      // Counted before the lookup, so this view's own SSE `version` event cannot reload it first.
+      claim();
+      let reloading = false;
       try {
         const fresh = await getArtifact(env.aid).catch(() => null);
         if (disposed) throw closed();
@@ -106,11 +141,13 @@ export const artifactHandler: HandlerFactory = env => {
         if (disposed) throw closed();
         if (res.status === 201) {
           const v = (await res.json().catch(() => ({}))) as { version?: { n?: number } };
+          reloading = true;
           reloadSoon();
           return { version: String(v.version?.n ?? "") };
         }
         const err = ((await res.json().catch(() => ({}))) as { error?: { code?: string; message?: string; current?: number } }).error ?? {};
         if (res.status === 409) {
+          reloading = true;
           reloadSoon();
           throw new CapError("conflict", "a newer version was published first; this view is reloading to it", { live: String(err.current ?? "") });
         }
@@ -119,15 +156,16 @@ export const artifactHandler: HandlerFactory = env => {
         if (res.status === 400) throw new CapError("invalid_content", err.message ?? "the daemon refused the page");
         throw new CapError("upstream_error", err.message ?? `HTTP ${res.status}`);
       } finally {
-        // A scheduled reload keeps the claim: this view is about to leave.
-        if (reloadTimer === null) claim(false);
+        // A publish that ends in a reload keeps its count: this view is about
+        // to leave. After dispose the count was already released.
+        if (!reloading && !disposed) release(true);
       }
     },
     dispose() {
       disposed = true;
       if (reloadTimer !== null) clearTimeout(reloadTimer);
       reloadTimer = null;
-      if (claimed) claim(false);
+      for (let n = held; n > 0; n--) release(false);
     },
   };
 };

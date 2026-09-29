@@ -9,6 +9,7 @@ import { CapabilityHost } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
+import { nav } from "./nav";
 import { type Ask, PromptDialog, promptQueue } from "./prompt";
 import { artifactOrigin, pageSrc, probeOrigin } from "./origin";
 import { parseShellPath, shellPath } from "./route";
@@ -89,9 +90,20 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
   const hostRef = useRef<CapabilityHost | null>(null);
-  // Set by the `artifact` handler while this view's own page publish is in
-  // flight: the view reloads itself once the page has its result.
-  const ownPublish = useRef({ active: false });
+  // How many of this view's own page publishes are in flight (the `artifact`
+  // handler counts them; one that ends in a reload keeps its count). A page
+  // publish by another view that arrives meanwhile is remembered in
+  // `deferredPublish` (its version) and applied once the count drops to 0
+  // without a reload: a reload to the latest, or the banner when pinned.
+  const ownPublish = useRef<{ active: number; settled?(): void }>({ active: 0 });
+  const deferredPublish = useRef<number | null>(null);
+  ownPublish.current.settled = () => {
+    const n = deferredPublish.current;
+    deferredPublish.current = null;
+    if (n === null) return;
+    if (pinnedVersion === null) nav.assign(here(null));
+    else if (n > latestKnown.current) { latestKnown.current = n; setNewer(n); }
+  };
   // Whether the frame's latest hello named the shown artifact and version: only
   // then are its capability requests answered and events pushed to it, so a
   // document the frame navigated to gets nothing. A frame load with no
@@ -162,9 +174,10 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       declared: (data.artifact.capabilities ?? {}) as Declared,
       prompt,
       post: m => { if (helloOk.current) send(m); },
-      reload: () => location.assign(here(null)),
+      reload: () => nav.assign(here(null)),
       ownPublish: ownPublish.current,
       page: () => fileRef.current,
+      files: data.versions.find(v => v.n === shown)?.files,
     })));
   }, [id, shown, origin, data]);
   hostRef.current = host;
@@ -339,14 +352,18 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
   onEventRef.current = e => {
     hostRef.current?.onEvent(e);
-    if (e.type === "version" && e.by_page && pinnedVersion === null && e.n > shown) {
-      // The page republished itself (artifact.publish): every open view
+    if (e.type === "version" && e.by_page && e.n > shown) {
+      // The page republished itself (artifact.publish): every unpinned view
       // follows at once, on the page it shows (the new version carries every
-      // file forward). The publishing view reloads itself after its call
-      // result is posted.
-      latestKnown.current = Math.max(latestKnown.current, e.n);
-      if (!ownPublish.current.active) location.assign(here(null));
-      return;
+      // file forward); a pinned view gets the banner. The publishing view
+      // reloads itself after its call result is posted; while one of its own
+      // publishes is in flight, another view's publish waits for it to settle.
+      if (ownPublish.current.active > 0) { deferredPublish.current = Math.max(deferredPublish.current ?? 0, e.n); return; }
+      if (pinnedVersion === null) {
+        latestKnown.current = Math.max(latestKnown.current, e.n);
+        nav.assign(here(null));
+        return;
+      }
     }
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
@@ -402,7 +419,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => setCommenting(c => !c)}>Comment</button>
         <button aria-pressed={panel} onClick={() => setPanel(v => !v)}>Threads ({threads.filter(t => t.status === "open").length})</button>
         {!narrow && <ViewerName setNotice={setNotice} onViewer={setMe} />}
-        <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(here(n === latest ? null : n)); }}>
+        <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); nav.assign(here(n === latest ? null : n)); }}>
           {versions.map(v => <option value={v.n} key={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>)}
         </select>
         {deleted
@@ -435,7 +452,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             }
           }} />}
           {newer && !deleted && (
-            <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(here(null))}>Reload</button></div>
+            <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => nav.assign(here(null))}>Reload</button></div>
           )}
           {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={here(null)}>latest</a></div>}
           {notice && (

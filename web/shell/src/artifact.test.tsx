@@ -27,7 +27,7 @@ const page = { content_type: "text/html", size: 1 };
 const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
-async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string) {
+async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
   vi.stubGlobal("EventSource", FakeES);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -35,13 +35,13 @@ async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (
       if (comments) return comments(url, init);
       return new Response(JSON.stringify(url.includes("/threads") ? { threads: [], next_cursor: null } : viewer));
     }
-    return fetchImpl(url);
+    return fetchImpl(url, init);
   }));
   sessionStorage.setItem("artifax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
   const root = document.createElement("div");
   document.body.appendChild(root);
-  render(<ArtifactView id={ID} pinnedVersion={null} file={file} />, root);
+  render(<ArtifactView id={ID} pinnedVersion={pinned} file={file} />, root);
   return root;
 }
 
@@ -63,6 +63,63 @@ describe("ArtifactView", () => {
     render(null, root);
     await waitFor(() => dispose.mock.calls.length === 2, "dispose on unmount");
     expect(new Set(dispose.mock.instances).size).toBe(2);
+  });
+
+  it("follows a page publish at once on the page it shows, unless pinned", async () => {
+    const assign = vi.fn();
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    (await import("./nav")).nav.assign = assign;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    fromFrame(frame.contentWindow!, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
+    const es = await waitFor(() => FakeES.last, "event stream");
+    es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
+    await waitFor(() => assign.mock.calls.length === 1, "the reload");
+    expect(assign).toHaveBeenCalledWith(`/a/${ID}/about.html`);
+    expect(root.querySelector(".banner")).toBeNull();
+    // An agent's publish still offers the banner.
+    es.emit("version", { type: "version", artifact_id: ID, n: 3 });
+    await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v3 published"), "banner");
+    expect(assign).toHaveBeenCalledTimes(1);
+  });
+
+  it("a pinned view shows the banner for a page publish and does not reload", async () => {
+    const assign = vi.fn();
+    history.replaceState(null, "", `/a/${ID}/v/1`);
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))), undefined, undefined, 1);
+    (await import("./nav")).nav.assign = assign;
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    (await waitFor(() => FakeES.last, "event stream")).emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
+    await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v2 published"), "banner");
+    expect(assign).not.toHaveBeenCalled();
+  });
+
+  it("holds another view's page publish until this view's own publish settles", async () => {
+    const assign = vi.fn();
+    let answer!: (r: Response) => void;
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const root = await mount(async (url, init) => {
+      if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
+      if (init?.method === "POST") return new Promise<Response>(r => { answer = r; });
+      return new Response(JSON.stringify(declared));
+    });
+    (await import("./nav")).nav.assign = assign;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string; ok?: boolean }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "artifax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
+    await waitFor(() => answer, "the publish request");
+    const es = await waitFor(() => FakeES.last, "event stream");
+    es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
+    await new Promise(r => setTimeout(r, 30));
+    expect(assign).not.toHaveBeenCalled();
+    answer(new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }));
+    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "p1" && m.ok === false), "the publish result");
+    await waitFor(() => assign.mock.calls.length === 1, "the held reload");
+    expect(assign).toHaveBeenCalledWith(`/a/${ID}`);
   });
 
   it("says not found only for a 404 status", async () => {

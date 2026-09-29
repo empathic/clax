@@ -115,6 +115,66 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: a click inside the frame gives the shell window sticky activation`, async ({ page }) => {
+    // Playwright's evaluate runs as a user gesture, so the shell samples its own
+    // activation and the click is a raw mouse event inside the frame's box.
+    await page.addInitScript(() => {
+      const w = window as unknown as { actSamples: boolean[]; firstActive: number | null };
+      w.actSamples = [];
+      w.firstActive = null;
+      if (window !== window.top) { addEventListener("click", () => { (window as unknown as { clicked: boolean }).clicked = true; }); return; }
+      const tick = () => {
+        const on = navigator.userActivation.hasBeenActive;
+        w.actSamples.push(on);
+        if (on && w.firstActive === null) w.firstActive = Date.now();
+        else setTimeout(tick, 10);
+      };
+      tick();
+    });
+    const { artifact } = await publishWith(d.base, d.token, `Activation ${mode}`, pageHtml("poll.html"), { artifact: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await f.waitForLoadState();
+    await page.waitForTimeout(200);
+    const before = Date.now();
+    await page.mouse.click(300, 400);
+    await page.waitForTimeout(100);
+    const seen = await page.evaluate(() => {
+      const w = window as unknown as { actSamples: boolean[]; firstActive: number | null };
+      return { falseSamples: w.actSamples.filter(x => !x).length, firstActive: w.firstActive };
+    });
+    console.log(`${mode}: shell activation samples before the frame click: ${seen.falseSamples} x false; first true ${seen.firstActive === null ? "never" : `${seen.firstActive - before} ms after the click started`}`);
+    expect(await f.evaluate(() => (window as unknown as { clicked?: boolean }).clicked), "the click landed inside the frame").toBe(true);
+    expect(seen.falseSamples).toBeGreaterThan(10);
+    expect(seen.firstActive).not.toBeNull();
+    expect(seen.firstActive!).toBeGreaterThanOrEqual(before);
+  });
+
+  test(`${mode}: a page that publishes on load publishes nothing`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `On load ${mode}`, pageHtml("publish-on-load.html"), { artifact: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#status")).toHaveText("rate_limited: publish after the viewer acts, never on load");
+    await page.waitForTimeout(500);
+    expect(await current(artifact.id)).toBe(1);
+  });
+
+  test(`${mode}: twelve publishes from one click: one lands, the rest are rate_limited`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Burst ${mode}`, pageHtml("publish-burst.html"), { artifact: {} });
+    const heard: { ok: boolean; error?: { code: string } }[] = [];
+    await page.exposeFunction("artifaxHeard", (m: { ok: boolean; error?: { code: string } }) => { heard.push(m); });
+    await page.addInitScript(() => {
+      addEventListener("message", e => { if (e.data?.type === "artifax:call-result") (window as unknown as { artifaxHeard(m: unknown): void }).artifaxHeard(e.data); });
+    });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await f.locator("#burst").click();
+    await expect.poll(() => heard.length).toBe(12);
+    expect(heard.filter(m => m.ok)).toHaveLength(1);
+    expect(heard.filter(m => !m.ok).map(m => m.error?.code)).toEqual(Array(11).fill("rate_limited"));
+    await expect((await contentFrame(page, artifact.id, 2)).locator("#done")).toHaveText("republished");
+    expect(await current(artifact.id)).toBe(2);
+  });
+}
+
 test("LAN: a view without the token is read-only", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Poll LAN", pageHtml("poll.html"), { artifact: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });

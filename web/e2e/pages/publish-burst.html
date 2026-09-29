@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publish Burst</title>
+</head>
+<body>
+<h1>Publish burst</h1>
+<button id="burst">Publish 12 times</button>
+<script>
+(async () => {
+  const artifact = await claude.use("artifact");
+  document.getElementById("burst").onclick = () => {
+    const page = "<!doctype html>\n<html><body><p id=\"done\">republished</p></body></html>\n";
+    for (let i = 0; i < 12; i++) artifact.publish(page).catch(() => {});
+  };
+})();
+</script>
+</body>
+</html>

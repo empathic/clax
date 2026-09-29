@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetBudgets } from "./budget";
 import { ALLOWED_EXTENSIONS, downloadsHandler, extensionOf, sanitizeFilename, saveBlob } from "./downloads";
 import type { CapEnv } from "./host";
 
@@ -8,10 +9,14 @@ describe("downloads in the shell", () => {
     Object.defineProperty(URL, "createObjectURL", { value: () => "blob:x", configurable: true, writable: true });
     Object.defineProperty(URL, "revokeObjectURL", { value: () => {}, configurable: true, writable: true });
   });
-  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
+  afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); sessionStorage.clear(); forgetBudgets(); });
 
   it("sanitizes filenames", () => {
-    expect(sanitizeFilename("../../etc/pa​ss wd.txt")).toBe(".._.._etc_pass wd.txt");
+    expect(sanitizeFilename("../../etc/pa\u200Bss wd.txt")).toBe("etc_pass wd.txt");
+    expect(sanitizeFilename("..\\..\\x.txt")).toBe("x.txt");
+    expect(sanitizeFilename(" \u200B../.hidden.txt")).toBe("hidden.txt");
+    expect(sanitizeFilename("a/../b.txt")).toBe("a_.._b.txt");
+    expect(sanitizeFilename("a \u200B b.txt")).toBe("a b.txt");
     expect(sanitizeFilename("  a\t\tb.csv ")).toBe("a b.csv");
     const long = sanitizeFilename(`${"é".repeat(200)}.csv`);
     expect(new TextEncoder().encode(long).length).toBeLessThanOrEqual(240);
@@ -44,7 +49,7 @@ describe("downloads in the shell", () => {
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) { clicks.push(this.download); });
     const answers: ("allow" | "deny" | "dismiss")[] = ["allow", "deny", "dismiss"];
     const prompt = vi.fn(async (_p: unknown) => answers.shift()!);
-    const h = downloadsHandler({ prompt } as unknown as CapEnv, null as never);
+    const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
     await expect(h.call("save", [{ filename: "report.csv", blob: new Blob(["a,b"]) }])).resolves.toEqual({ status: "saved" });
     expect(prompt.mock.calls[0][0]).toMatchObject({ body: "report.csv (3 bytes)", allow: "Save" });
     expect(clicks).toEqual(["report.csv"]);
@@ -59,7 +64,7 @@ describe("downloads in the shell", () => {
     const prompt = vi.fn(() => new Promise<"allow">(r => { answer = r; }));
     vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:x");
     vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
-    const h = downloadsHandler({ prompt } as unknown as CapEnv, null as never);
+    const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
     for (const bad of ["run.exe", "app.js", "x.bat", "noext", "a.csv.exe", "   "]) {
       await expect(h.call("save", [{ filename: bad, blob: new Blob(["x"]) }])).rejects.toMatchObject({ code: "rejected_extension" });
     }
@@ -74,7 +79,7 @@ describe("downloads in the shell", () => {
   it("refuses hostile arguments without a prompt or a save", async () => {
     const prompt = vi.fn(async () => "allow" as const);
     const created = vi.spyOn(URL, "createObjectURL");
-    const h = downloadsHandler({ prompt } as unknown as CapEnv, null as never);
+    const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
     const bad: [unknown[], string][] = [
       [[], "bad_request"],
       [[null], "bad_request"],
@@ -95,7 +100,7 @@ describe("downloads in the shell", () => {
     let answer!: (a: "allow") => void;
     const prompt = vi.fn(() => new Promise<"allow">(r => { answer = r; }));
     const created = vi.spyOn(URL, "createObjectURL");
-    const h = downloadsHandler({ prompt } as unknown as CapEnv, null as never);
+    const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
     const p = h.call("save", [{ filename: "a.txt", blob: new Blob(["x"]) }]);
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(1));
     h.dispose!();
@@ -104,5 +109,27 @@ describe("downloads in the shell", () => {
     expect(created).not.toHaveBeenCalled();
     await expect(h.call("save", [{ filename: "a.txt", blob: new Blob(["x"]) }])).rejects.toHaveProperty("code");
     expect(prompt).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows at most 3 prompts per 30 s, saved or declined, then rejects rate_limited with no dialog", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(5_000_000);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const answers: ("allow" | "deny")[] = ["allow", "deny", "deny", "allow"];
+    const prompt = vi.fn(async (_p: unknown) => answers.shift()!);
+    const h = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
+    const save = () => h.call("save", [{ filename: "a.txt", blob: new Blob(["x"]) }]);
+    await expect(save()).resolves.toEqual({ status: "saved" });
+    await expect(save()).rejects.toMatchObject({ code: "declined" });
+    await expect(save()).rejects.toMatchObject({ code: "declined" });
+    await expect(save()).rejects.toMatchObject({ code: "rate_limited", message: expect.stringMatching(/30 s/) });
+    expect(prompt).toHaveBeenCalledTimes(3);
+    // Another handler for the same artifact in this tab (a reload) shares the budget.
+    forgetBudgets();
+    const again = downloadsHandler({ aid: "7q3k9mzx2b4t", prompt } as unknown as CapEnv, null as never);
+    await expect(again.call("save", [{ filename: "a.txt", blob: new Blob(["x"]) }])).rejects.toMatchObject({ code: "rate_limited" });
+    vi.setSystemTime(5_030_000);
+    await expect(save()).resolves.toEqual({ status: "saved" });
+    expect(prompt).toHaveBeenCalledTimes(4);
   });
 });

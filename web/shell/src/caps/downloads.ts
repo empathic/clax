@@ -1,8 +1,11 @@
 // downloads.save in the shell (downloads.d.ts): check the name against the
 // contract's allowlist, show the viewer the final name and size, and hand an
 // accepted file to the browser's download. One undecided prompt at a time
-// (first wins). Ordinary saves have no size limit; export answers (`request`)
+// (first wins), and at most [`PROMPTS_PER_WINDOW`] prompts per
+// [`PROMPT_WINDOW_MS`] per artifact in a tab, saved or declined, so a page
+// cannot loop the dialog. Ordinary saves have no size limit; export answers (`request`)
 // are not issued in Artifax, so any `request` names no open request.
+import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
 import type { PromptAnswer } from "./grants";
 import type { HandlerFactory } from "./host";
@@ -13,6 +16,9 @@ export const ALLOWED_EXTENSIONS = ["gif", "png", "jpg", "jpeg", "webp", "mp4", "
 export const MAX_FILENAME_CHARS = 512;
 /** Longest name the viewer confirms, in bytes of UTF-8. */
 export const MAX_NAME_BYTES = 240;
+/** Most save prompts one artifact may show in a tab within [`PROMPT_WINDOW_MS`]. */
+export const PROMPTS_PER_WINDOW = 3;
+export const PROMPT_WINDOW_MS = 30_000;
 /** How long an object URL outlives the click that started its download. */
 export const REVOKE_AFTER_MS = 60_000;
 
@@ -25,12 +31,13 @@ const MIME: Record<string, string> = {
   xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 };
 
-/** The name the viewer confirms: path separators become `_`, whitespace runs
- * (tabs and newlines included) become one space, control and invisible
- * characters are then dropped, the ends are trimmed, and the name is cut to
+/** The name the viewer confirms: invisible (format) characters are dropped,
+ * whitespace runs (tabs and newlines included) become one space, remaining
+ * control characters are dropped, leading dots, path separators and spaces
+ * are stripped, the other path separators become `_`, and the name is cut to
  * [`MAX_NAME_BYTES`] bytes of UTF-8 keeping its extension. */
 export function sanitizeFilename(name: string): string {
-  let s = name.replace(/[\\/]/g, "_").replace(/\s+/g, " ").replace(/[\p{Cc}\p{Cf}]/gu, "").trim();
+  let s = name.replace(/\p{Cf}/gu, "").replace(/\s+/g, " ").replace(/\p{Cc}/gu, "").replace(/^[.\\/ ]+/, "").replace(/[\\/]/g, "_").trim();
   const enc = new TextEncoder();
   if (enc.encode(s).length > MAX_NAME_BYTES) {
     const dot = s.lastIndexOf(".");
@@ -94,6 +101,8 @@ export const downloadsHandler: HandlerFactory = env => {
         throw new CapError("rejected_extension", `'${name || filename}' needs one of these extensions: ${ALLOWED_EXTENSIONS.join(", ")}`);
       }
       if (open) throw new CapError("rate_limited", "a save prompt is already open");
+      const wait = takeSlot(`artifax.download-prompts.v1:${env.aid}`, { perWindow: { n: PROMPTS_PER_WINDOW, ms: PROMPT_WINDOW_MS } });
+      if (wait > 0) throw new CapError("rate_limited", `too many save prompts; wait ${seconds(wait)} s`);
       open = true;
       let answer: PromptAnswer;
       try {

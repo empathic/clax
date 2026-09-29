@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Publish On Load</title>
+</head>
+<body>
+<h1>Publishes itself on load</h1>
+<p id="status" role="status"></p>
+<script>
+(async () => {
+  const artifact = await claude.use("artifact");
+  const status = document.getElementById("status");
+  try {
+    await artifact.publish(document.documentElement.outerHTML.replace(/^/, "<!doctype html>\n"));
+    status.textContent = "published";
+  } catch (e) {
+    status.textContent = e.code + ": " + e.message;
+  }
+})();
+</script>
+</body>
+</html>
