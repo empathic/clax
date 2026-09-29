@@ -39,14 +39,18 @@ impl Harness {
 }
 
 /// The session registration for `harness`, from the environment variable lookup
-/// `env` and the process's working directory `current_dir`. The harness session
-/// ID is `CLAUDE_CODE_SESSION_ID` under Claude Code, else `ARTIFAX_SESSION_ID`;
-/// the working directory is `CLAUDE_PROJECT_DIR` under Claude Code, else
-/// `current_dir`. Empty variables count as unset.
+/// `env`, the process's working directory `current_dir`, and the parent
+/// process's working directory `parent_cwd`. The harness session ID is
+/// `CLAUDE_CODE_SESSION_ID` under Claude Code, else `ARTIFAX_SESSION_ID`. The
+/// working directory is `CLAUDE_PROJECT_DIR` under Claude Code, else
+/// `current_dir`; under Codex it is `parent_cwd`, else empty, because Codex
+/// starts the shim in the plugin's own directory. Empty variables count as
+/// unset.
 pub fn registration(
     harness: Harness,
     env: impl Fn(&str) -> Option<String>,
     current_dir: Option<PathBuf>,
+    parent_cwd: Option<PathBuf>,
     pid: u32,
     parent_pid: u32,
 ) -> RegisterSession {
@@ -56,10 +60,13 @@ pub fn registration(
         .then(|| var("CLAUDE_CODE_SESSION_ID"))
         .flatten()
         .or_else(|| var("ARTIFAX_SESSION_ID"));
-    let cwd = claude
-        .then(|| var("CLAUDE_PROJECT_DIR"))
-        .flatten()
-        .or_else(|| current_dir.map(|d| d.to_string_lossy().into_owned()))
+    let dir = match harness {
+        Harness::Claude => var("CLAUDE_PROJECT_DIR").map(PathBuf::from).or(current_dir),
+        Harness::Codex => parent_cwd,
+        Harness::Pi => current_dir,
+    };
+    let cwd = dir
+        .map(|d| d.to_string_lossy().into_owned())
         .unwrap_or_default();
     RegisterSession {
         harness: harness.as_str().to_string(),
@@ -68,6 +75,57 @@ pub fn registration(
         pid: Some(pid),
         parent_pid: Some(parent_pid),
     }
+}
+
+/// How long [`process_cwd`] waits for `lsof`.
+#[cfg(not(target_os = "linux"))]
+const LSOF_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The working directory of process `pid`, if it can be determined.
+#[cfg(target_os = "linux")]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
+}
+
+/// The working directory of process `pid`, if it can be determined within
+/// [`LSOF_TIMEOUT`]; read from `lsof -a -p <pid> -d cwd -Fn`, whose `n` line
+/// names the directory.
+#[cfg(not(target_os = "linux"))]
+fn process_cwd(pid: u32) -> Option<PathBuf> {
+    use std::io::Read;
+    let mut child = std::process::Command::new("lsof")
+        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + LSOF_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    parse_lsof_cwd(&out)
+}
+
+/// The directory named by the first `n` line of `lsof -Fn` output.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
+    out.lines()
+        .find_map(|l| l.strip_prefix('n'))
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
 }
 
 /// Runs the shim until stdin closes (or SIGTERM arrives), then ends the
@@ -87,10 +145,18 @@ pub async fn run(
 ) -> anyhow::Result<()> {
     // SAFETY: getppid has no preconditions and cannot fail.
     let parent_pid = unsafe { libc::getppid() } as u32;
+    let parent_cwd = match harness {
+        Harness::Codex => tokio::task::spawn_blocking(move || process_cwd(parent_pid))
+            .await
+            .ok()
+            .flatten(),
+        _ => None,
+    };
     let reg = registration(
         harness,
         |k| std::env::var(k).ok(),
         std::env::current_dir().ok(),
+        parent_cwd,
         std::process::id(),
         parent_pid,
     );
@@ -176,6 +242,7 @@ mod tests {
                 ("ARTIFAX_SESSION_ID", "ax-1"),
             ]),
             Some(PathBuf::from("/here")),
+            None,
             10,
             9,
         );
@@ -200,6 +267,7 @@ mod tests {
                 ("ARTIFAX_SESSION_ID", "ax-1"),
             ]),
             Some(PathBuf::from("/here")),
+            None,
             10,
             9,
         );
@@ -213,9 +281,58 @@ mod tests {
             ("CLAUDE_CODE_SESSION_ID", "cc-1"),
             ("CLAUDE_PROJECT_DIR", "/proj"),
         ]);
-        let r = registration(Harness::Codex, vars, Some(PathBuf::from("/here")), 10, 9);
-        assert_eq!(r.harness, "codex");
+        let r = registration(Harness::Pi, vars, Some(PathBuf::from("/here")), None, 10, 9);
+        assert_eq!(r.harness, "pi");
         assert_eq!(r.harness_session_id, None);
         assert_eq!(r.cwd, "/here");
+    }
+
+    #[test]
+    fn codex_uses_the_parent_cwd_and_ignores_claude_variables() {
+        let vars = env(&[
+            ("CLAUDE_CODE_SESSION_ID", "cc-1"),
+            ("CLAUDE_PROJECT_DIR", "/proj"),
+        ]);
+        let r = registration(
+            Harness::Codex,
+            vars,
+            Some(PathBuf::from("/plugin-cache")),
+            Some(PathBuf::from("/work")),
+            10,
+            9,
+        );
+        assert_eq!(r.harness, "codex");
+        assert_eq!(r.harness_session_id, None);
+        assert_eq!(r.cwd, "/work");
+    }
+
+    #[test]
+    fn lsof_output_names_the_cwd() {
+        assert_eq!(
+            parse_lsof_cwd("p123\nfcwd\nn/work dir\n"),
+            Some(PathBuf::from("/work dir"))
+        );
+        assert_eq!(parse_lsof_cwd("p123\n"), None);
+    }
+
+    #[test]
+    fn this_process_cwd_is_found() {
+        assert_eq!(
+            process_cwd(std::process::id()).map(|p| p.canonicalize().unwrap()),
+            Some(std::env::current_dir().unwrap().canonicalize().unwrap())
+        );
+    }
+
+    #[test]
+    fn codex_without_a_parent_cwd_registers_an_empty_cwd() {
+        let r = registration(
+            Harness::Codex,
+            env(&[]),
+            Some(PathBuf::from("/plugin-cache")),
+            None,
+            10,
+            9,
+        );
+        assert_eq!(r.cwd, "");
     }
 }

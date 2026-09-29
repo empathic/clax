@@ -65,6 +65,8 @@ ok = argv[-4:] == ["exec", "mcp", "--agent", "codex"] and all("exec hook --agent
 # Codex expands no plugin-root variable in .mcp.json but resolves a relative cwd
 # against the plugin root, so the script path is relative to that cwd.
 ok = ok and server.get("cwd") == "./" and argv[1] == "./scripts/ensure-artifax.sh"
+# Hooks run in a shell with PLUGIN_ROOT exported.
+ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-artifax.sh"' in c for c in cmds)
 sys.exit(0 if ok else 1)
 PY
 then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Codex MCP server and hooks must run the shim with --agent codex"; fi

@@ -45,8 +45,9 @@ To approve the artifax tools, add to `~/.codex/config.toml`:
 default_tools_approval_mode = "approve"
 ```
 
-`codex exec` runs with approval policy `never` and refuses tool calls that
-would prompt, so non-interactive use needs this setting.
+This approves every artifax tool, including `delete`. `codex exec` runs with
+approval policy `never` and refuses tool calls that would prompt, so
+non-interactive use needs this setting.
 
 ### Hooks
 

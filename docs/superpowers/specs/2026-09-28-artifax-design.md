@@ -124,10 +124,11 @@ web/
   dist/                            built assets, embedded into artifax-server via rust-embed
 plugins/
   claude-code/                     .claude-plugin/plugin.json, .mcp.json, hooks/, skills/, commands/, scripts/
-  codex/                           .codex-plugin/plugin.json, skills/, config snippets, setup skill
+  artifax/                         Codex plugin: .codex-plugin/plugin.json, .mcp.json, hooks/, skills/, scripts/
+                                   (named artifax because Codex marketplace entries point at ./plugins/<plugin-name>)
   pi/                              npm package @empathic/artifax-pi, extensions/artifax.ts
 .claude-plugin/marketplace.json    Claude Code marketplace pointing at plugins/claude-code
-.codex-plugin/marketplace.json     Codex marketplace pointing at plugins/codex (format to confirm, §18)
+.agents/plugins/marketplace.json   Codex marketplace pointing at plugins/artifax
 docs/superpowers/specs/            this document
 docs/superpowers/plans/            one plan per phase
 docs/contract.md                   the page contract and capability behaviour, for agents and humans
@@ -606,6 +607,13 @@ the session ID in the shim's environment, the shim sends it and the join is
 by ID instead. Claude Code additionally sets `CLAUDE_CODE_SESSION_ID` for
 hook processes, as toolpath's plugin relies on.
 
+The registered `cwd` is `CLAUDE_PROJECT_DIR` (else the shim's own working
+directory) under Claude Code, and the shim's own working directory under Pi.
+Codex starts the shim in the plugin's directory, so under Codex the shim
+registers its parent process's working directory (the Codex session's), read
+from `/proc/<ppid>/cwd` on Linux and `lsof` on macOS, or an empty `cwd` when
+that fails; the `session-start` hook then fills an empty one.
+
 Heartbeats: the shim `PATCH`es `last_seen_at` every 60 s; a session with no
 heartbeat for 5 minutes and a dead PID is marked ended.
 
@@ -661,19 +669,45 @@ harnesses without MCP and for scripts.
   checksum, `exec` subcommand).
 - Root `.claude-plugin/marketplace.json` lists it.
 
-### Codex (`plugins/codex`)
+### Codex (`plugins/artifax`)
 
-- `.codex-plugin/plugin.json`: name `artifax`, `skills: "./skills/"`,
-  `interface` block.
+The directory is named after the plugin because a Codex marketplace entry
+must point at `./plugins/<plugin-name>`.
+
+- `.codex-plugin/plugin.json`: name `artifax`, version, `skills: "./skills/"`,
+  `mcpServers: "./.mcp.json"`, and the `interface` block (display name,
+  descriptions, developer, category, capabilities, three `defaultPrompt`
+  strings). The manifest has no `hooks` key: Codex rejects it there and
+  discovers `hooks/hooks.json` by convention.
+- `.mcp.json`: `{"mcpServers": {"artifax": {"command": "bash", "args":
+  ["./scripts/ensure-artifax.sh", "exec", "mcp", "--agent", "codex"], "cwd":
+  "./", "env_vars": [...]}}}`. Codex expands no plugin-root variable in
+  `.mcp.json` but resolves a relative `cwd` against the installed plugin
+  root. It starts MCP servers with a minimal environment, so `env_vars`
+  forwards `ARTIFAX_HOME`, `ARTIFAX_NO_OPEN`, `ARTIFAX_BIN`,
+  `ARTIFAX_INSTALL_DIR`, `ARTIFAX_CONFIG_DIR`, `ARTIFAX_RELEASE_BASE_URL`,
+  and `ARTIFAX_RELEASE_VERSION`.
+- `hooks/hooks.json` in Claude Code's format: `SessionStart` →
+  `bash "${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex
+  session-start`, `SessionEnd` → the same with `session-end` (Codex caps
+  `SessionEnd` at 3 s). Hooks run in a shell with `PLUGIN_ROOT` exported.
 - `skills/artifax/SKILL.md`: same content as the Claude skill, with Codex
-  tool naming.
-- `skills/artifax-setup/SKILL.md` plus `scripts/setup.sh`: idempotently runs
-  `codex mcp add artifax -- artifax mcp --agent codex` and appends the
-  `[hooks.session_start]` and `[hooks.stop]` entries to `~/.codex/config.toml`
-  (or a project `codex.toml`), following `clash-codex/hooks.toml`.
-- `config.snippet.toml` and `hooks.snippet.toml` for manual install.
-- If the Codex plugin manifest turns out to accept MCP server or hook
-  declarations directly, phase 2 uses them instead of the setup skill (§18).
+  tool naming (`mcp__artifax__<tool>`).
+- `scripts/ensure-artifax.sh`: a copy of the Claude plugin's installer.
+- Root `.agents/plugins/marketplace.json` lists it. Install:
+  `codex plugin marketplace add <repo>` then `codex plugin add artifax@artifax`.
+
+Person-side settings, documented in the plugin README rather than set by the
+plugin:
+
+- Hooks run only with `features.hooks = true` and after the person trusts
+  them (Codex asks in an interactive session; `codex exec` skips untrusted
+  hooks). Without hooks the tools work and the session is registered by the
+  shim alone.
+- Codex asks before each MCP tool call, and `codex exec` (approval policy
+  `never`) refuses such calls. `[plugins."artifax@artifax".mcp_servers.artifax]
+  default_tools_approval_mode = "approve"` approves every artifax tool,
+  including `delete`.
 
 ### Pi (`plugins/pi`), unverified on this machine
 
@@ -778,7 +812,8 @@ harnesses without MCP and for scripts.
   self-publish reload.
 - **Plugins**: shell tests for `ensure-artifax.sh`; a Claude Code smoke test
   that loads the plugin from the repo path and runs a scripted session;
-  Codex setup script idempotency; Pi extension against a mocked
+  structure checks and Codex's plugin validator for the Codex plugin, and a
+  manual Codex smoke test that installs it into a scratch `CODEX_HOME`; Pi extension against a mocked
   `ExtensionAPI` until Pi is installed.
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
   web lint (oxlint) and typecheck, Playwright, and the plugin tests; CI runs
@@ -807,7 +842,7 @@ in the shell, and the version banner appears in an already-open tab.
 **Phase 2: MCP and the three plugins.** Shim, session registration, hooks
 for session-start/end, MCP tools for artifacts and `status`, HTTP MCP on
 the daemon, `ensure-artifax.sh`, Claude Code plugin with skill and
-commands, Codex plugin with setup skill, Pi extension (unverified), release
+commands, Codex plugin, Pi extension (unverified), release
 workflow producing binaries with checksums. Ship when: an agent in Claude
 Code and Codex can publish and update an artifact through MCP, and the Pi
 extension passes its mocked tests.
@@ -849,12 +884,11 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   open is its latency class, decided by whether Codex submits a queued
   message on an idle session, and whether the `stop` hook can block.
   Measured in phase 3; §10 is written to be true in every outcome.
-- **Codex plugin manifest capabilities.** If `.codex-plugin/plugin.json`
-  can declare MCP servers and hooks, the setup skill goes away. Checked at
-  the start of phase 2 against the installed Codex.
-- **Codex marketplace format.** `codex plugin marketplace add` exists; the
-  on-disk marketplace manifest format is confirmed in phase 2 before
-  `.codex-plugin/marketplace.json` is written.
+- **Codex plugin manifest capabilities.** Resolved in phase 2: the manifest
+  declares the MCP server (`mcpServers`) and hooks are discovered from
+  `hooks/hooks.json`, so there is no setup skill (§13).
+- **Codex marketplace format.** Resolved in phase 2:
+  `.agents/plugins/marketplace.json` (§4, §13).
 - **Pi adapter.** Everything in §13 marked unverified.
 - **Claude Code session ID in the shim.** If Claude Code exposes its session
   ID to MCP server processes, the parent-PID join in §11 becomes a

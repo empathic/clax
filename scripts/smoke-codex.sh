@@ -98,15 +98,19 @@ grep -q Smoke "$SCRATCH/page.html" || die "page $BASE/c/$ID/v/1/ does not contai
 echo "smoke: $BASE/a/$ID is 200 and its page contains Smoke"
 
 curl -s "$BASE/api/sessions" > "$SCRATCH/sessions.json"
-python3 - "$SCRATCH/sessions.json" "$HOOKS" <<'PY' || die "session check failed (see above)"
-import json, sys
+python3 - "$SCRATCH/sessions.json" "$HOOKS" "$CWD" <<'PY' || die "session check failed (see above)"
+import json, os, sys
 sessions = [s for s in json.load(open(sys.argv[1]))["sessions"] if s.get("harness") == "codex"]
 hooks = bool(sys.argv[2])
+cwd = os.path.realpath(sys.argv[3])
 if not sessions:
     print("smoke: no codex session in /api/sessions"); sys.exit(1)
 for s in sessions:
     print(f"smoke: codex session {s['id']}: harness_session_id={s.get('harness_session_id')!r} "
           f"cwd={s.get('cwd')!r} ended_at={s.get('ended_at')!r}")
+if not all(s.get("cwd") and os.path.realpath(s["cwd"]) == cwd for s in sessions):
+    print(f"smoke: a codex session's cwd is not {cwd}, where codex exec ran"); sys.exit(1)
+print(f"smoke: the codex session's cwd is {cwd}, where codex exec ran")
 with_id = any(s.get("harness_session_id") for s in sessions)
 if hooks and not with_id:
     print("smoke: hooks were enabled but no codex session carries a harness_session_id"); sys.exit(1)
