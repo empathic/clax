@@ -6,6 +6,9 @@ use artifax_core::Store;
 use axum::http::StatusCode;
 
 impl AppState {
+    /// Runs `f` on the blocking pool. The timeout layer can cancel the awaiting handler future
+    /// after `f` has started, and `f` still runs to completion, so any follow-up work that must
+    /// happen once the store call succeeds (events, cache invalidation) belongs inside `f`.
     pub async fn store_call<T, F>(&self, f: F) -> Result<T, ApiError>
     where
         T: Send + 'static,

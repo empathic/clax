@@ -53,11 +53,17 @@ pub async fn create(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body(req)?)?;
-    let (artifact, version) = s.store_call(move |st| st.create_artifact(p)).await?;
-    s.events.publish(Event::Version {
-        artifact_id: artifact.id.clone(),
-        n: version.n,
-    });
+    let events = s.events.clone();
+    let (artifact, version) = s
+        .store_call(move |st| {
+            let (artifact, version) = st.create_artifact(p)?;
+            events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+            });
+            Ok((artifact, version))
+        })
+        .await?;
     let url = format!("/a/{}", artifact.id);
     Ok((
         StatusCode::CREATED,
@@ -120,12 +126,17 @@ pub async fn delete(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<StatusCode, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let del = id.clone();
-    s.store_call(move |st| st.delete_artifact(&del)).await?;
-    s.wrap_cache.remove_artifact(id.as_str());
-    s.events.publish(Event::ArtifactDeleted {
-        artifact_id: id.as_str().to_string(),
-    });
+    let events = s.events.clone();
+    let cache = s.wrap_cache.clone();
+    s.store_call(move |st| {
+        st.delete_artifact(&id)?;
+        cache.remove_artifact(id.as_str());
+        events.publish(Event::ArtifactDeleted {
+            artifact_id: id.as_str().to_string(),
+        });
+        Ok(())
+    })
+    .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -151,12 +162,17 @@ pub async fn publish(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     let p = validate(body(req)?)?;
-    let pid = id.clone();
-    let (artifact, version) = s.store_call(move |st| st.publish_version(&pid, p)).await?;
-    s.events.publish(Event::Version {
-        artifact_id: artifact.id.clone(),
-        n: version.n,
-    });
+    let events = s.events.clone();
+    let (artifact, version) = s
+        .store_call(move |st| {
+            let (artifact, version) = st.publish_version(&id, p)?;
+            events.publish(Event::Version {
+                artifact_id: artifact.id.clone(),
+                n: version.n,
+            });
+            Ok((artifact, version))
+        })
+        .await?;
     let url = format!("/a/{}", artifact.id);
     Ok((
         StatusCode::CREATED,

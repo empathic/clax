@@ -12,7 +12,7 @@ use crate::state::AppState;
 use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
-    extract::DefaultBodyLimit,
+    extract::{DefaultBodyLimit, State},
     handler::Handler,
     http::StatusCode,
     routing::{delete, get, post},
@@ -30,10 +30,11 @@ async fn timeout_error(err: tower::BoxError, limit: Duration) -> ApiError {
             format!("request exceeded {limit:?}"),
         )
     } else {
+        tracing::error!(error = %err, "request middleware failed");
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal",
-            err.to_string(),
+            "internal error",
         )
     }
 }
@@ -74,7 +75,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             delete(assets::delete),
         );
     #[cfg(feature = "test-routes")]
-    let api_fast = api_fast.route("/api/_test/sleep/{ms}", get(test_sleep));
+    let api_fast = api_fast
+        .route("/api/_test/sleep/{ms}", get(test_sleep))
+        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
     let api_fast = with_timeout(api_fast, state.request_timeout);
     let api_slow = Router::new()
         .route(
@@ -123,4 +126,32 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
 async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> StatusCode {
     tokio::time::sleep(Duration::from_millis(ms)).await;
     StatusCode::OK
+}
+
+/// Creates an artifact after sleeping inside the blocking closure, publishing the event from the
+/// same closure, so tests can observe write side effects surviving a handler timeout.
+#[cfg(feature = "test-routes")]
+async fn test_slow_publish(
+    State(s): State<AppState>,
+    axum::extract::Path(ms): axum::extract::Path<u64>,
+) -> Result<StatusCode, ApiError> {
+    let events = s.events.clone();
+    s.store_call(move |st| {
+        std::thread::sleep(Duration::from_millis(ms));
+        let p = artifax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": "slow",
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .expect("valid publish request"),
+        )?;
+        let (artifact, version) = st.create_artifact(p)?;
+        events.publish(artifax_core::Event::Version {
+            artifact_id: artifact.id,
+            n: version.n,
+        });
+        Ok(())
+    })
+    .await?;
+    Ok(StatusCode::CREATED)
 }

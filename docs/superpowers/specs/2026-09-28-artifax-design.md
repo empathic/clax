@@ -735,6 +735,8 @@ harnesses without MCP and for scripts.
   "call again" result rather than erroring.
 - `codex queue` failure: handled per §10; never retried in a loop, never
   blocks the send request that triggered it (dispatch is asynchronous).
+- Request timeout (408 `timeout`): a 408 on a write route means the outcome
+  is unknown; read the artifact before retrying.
 - Storage corruption: `artifax doctor` runs `PRAGMA integrity_check`,
   verifies files against `versions.files_json`, and reports.
 
