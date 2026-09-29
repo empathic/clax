@@ -2,8 +2,9 @@ import { type Anchor, type AnchorResult, INDEX_FILE } from "../../bridge/src/pro
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { Thread } from "./threads";
 
-/** A pick being commented on; `pickId` keys the composer so each pick starts empty. */
-export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string };
+/** A pick being commented on; `pickId` keys the composer so each pick starts
+ * empty. `label` is a page's words for the spot, shown in place of the quote. */
+export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string };
 
 /** Room a pin keeps from the stage's right edge: its own 22 px plus 16 px for a
  * classic scrollbar in the frame. */
@@ -71,7 +72,7 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
       // the draft stays so the viewer can retry.
       try { await onSubmit(body); } catch { setBusy(false); }
     }}>
-      <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.selector}</p>
+      <p class="composer-quote">{draft.label ?? (quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "custom" ? draft.anchor.custom_name : draft.anchor.selector)}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}

@@ -3,7 +3,8 @@ import { ApiError } from "./api";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 export type FeedbackState = { thread_id: string; state: "sent" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean };
-export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; via_harness: string | null; body: string; created_at: string };
+/** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
+export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
 export type Thread = {
   id: string; artifact_id: string; version_n: number; anchor: Anchor; status: "open" | "resolved"; sent_to_agent: boolean;
   has_clip: boolean; clip_url: string | null; created_at: string; resolved_at: string | null; resolved_by: string | null;
@@ -37,12 +38,14 @@ export async function listThreads(aid: string): Promise<Thread[]> {
   return out;
 }
 
-export async function createThread(aid: string, input: { anchor: Anchor; body: string; version: number; clip: Blob | null }): Promise<{ thread: Thread; clip_error?: string }> {
+/** Starts a thread; `viaPage` marks a first comment the page wrote through the `comments` capability. */
+export async function createThread(aid: string, input: { anchor: Anchor; body: string; version: number; clip: Blob | null; viaPage?: boolean }): Promise<{ thread: Thread; clip_error?: string }> {
   const form = new FormData();
   form.set("anchor", JSON.stringify(input.anchor));
   form.set("body", input.body);
   form.set("version", String(input.version));
   if (input.clip) form.set("clip", input.clip, "clip.png");
+  if (input.viaPage) form.set("via_page", "true");
   return ok(await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: form }));
 }
 export async function addComment(aid: string, tid: string, body: string): Promise<Thread> {

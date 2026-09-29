@@ -167,8 +167,11 @@ pub async fn clip(
         .into_response())
 }
 
-/// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG).
-/// A clip that fails `clip_problem` is dropped and reported as `clip_error`.
+/// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG),
+/// optional `via_page` (`true` when the page wrote the comment through the
+/// `comments` capability: the comment is marked so, and an `@agent` mention in
+/// it sends nothing). A clip that fails `clip_problem` is dropped and reported
+/// as `clip_error`.
 /// A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn create(
     State(s): State<AppState>,
@@ -181,6 +184,7 @@ pub async fn create(
     let id = parse_id(&path(aid)?)?;
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     let (mut anchor, mut text, mut version, mut clip) = (None, None, None, None);
+    let mut via_page = false;
     while let Some(field) = mp
         .next_field()
         .await
@@ -211,6 +215,22 @@ pub async fn create(
                         .await
                         .map_err(|e| multipart_error(e.status(), e.body_text()))?,
                 )
+            }
+            "via_page" => {
+                let v = field
+                    .text()
+                    .await
+                    .map_err(|e| multipart_error(e.status(), e.body_text()))?;
+                via_page = match v.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(ApiError::bad_request(
+                            "invalid_via_page",
+                            "multipart field 'via_page' is true or false",
+                        ));
+                    }
+                };
             }
             "clip" => {
                 clip = Some(
@@ -247,7 +267,7 @@ pub async fn create(
         .store_call(move |st| {
             let author = author_name(st, viewer.0.as_deref())?;
             let body_text = text.unwrap_or_default();
-            let mention = mentions_agent(&body_text);
+            let mention = !via_page && mentions_agent(&body_text);
             let mut t = st.create_thread(
                 &id,
                 NewThread {
@@ -256,6 +276,7 @@ pub async fn create(
                     author_name: author,
                     body: body_text,
                     clip,
+                    via_page,
                 },
             )?;
             if mention {
@@ -280,6 +301,9 @@ pub struct CommentBody {
     body: String,
     #[serde(default)]
     author_kind: Option<String>,
+    /// The page wrote the comment through the `comments` capability.
+    #[serde(default)]
+    via_page: bool,
 }
 
 enum Outcome {
@@ -298,7 +322,10 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// (token and `X-Artifax-Session` naming a live session, else 400
 /// `unknown_session`; only on sent threads, otherwise guidance). A viewer
 /// comment on a sent thread, or one mentioning `@agent`, is forwarded to the
-/// agent. A request with a foreign `Origin` is refused ([`SameOrigin`]).
+/// agent; `via_page: true` marks a viewer comment the page wrote through the
+/// `comments` capability, whose `@agent` mention sends nothing (400
+/// `invalid_via_page` on an agent reply). A request with a foreign `Origin` is
+/// refused ([`SameOrigin`]).
 pub async fn comment(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -320,6 +347,12 @@ pub async fn comment(
             ));
         }
     };
+    if agent && b.via_page {
+        return Err(ApiError::bad_request(
+            "invalid_via_page",
+            "via_page marks viewer comments only",
+        ));
+    }
     let authed = has_token(&headers, &s.token);
     if agent && !authed {
         return Err(ApiError::unauthorized());
@@ -342,6 +375,7 @@ pub async fn comment(
                         author_name: sess.harness,
                         via_session_id: Some(sess.id.clone()),
                         body: b.body,
+                        via_page: false,
                     },
                 )?;
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
@@ -355,9 +389,10 @@ pub async fn comment(
                         author_name: name,
                         via_session_id: None,
                         body: b.body,
+                        via_page: b.via_page,
                     },
                 )?;
-                if t.sent_to_agent || mentions_agent(&c.body) {
+                if t.sent_to_agent || (!c.via_page && mentions_agent(&c.body)) {
                     touched.merge(st.send_to_agent(&tid)?.1);
                 }
                 c
@@ -591,7 +626,7 @@ pub async fn delete(
     }
     require_interact(&s, authed, viewer.0).await?;
     let session = session_header(&headers)?;
-    let events = s.events.clone();
+    let ctx = s.feedback_ctx();
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
@@ -601,11 +636,12 @@ pub async fn delete(
                     return Ok(Outcome::Guidance(GUIDANCE_DELETE));
                 }
             }
-            st.delete_thread(&tid)?;
-            events.publish(Event::ThreadDeleted {
+            let (_, touched) = st.delete_thread_touched(&tid)?;
+            ctx.events.publish(Event::ThreadDeleted {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
             });
+            apply(&ctx, st, &touched);
             Ok(Outcome::Done(json!({"deleted": true, "thread_id": tid})))
         })
         .await?;

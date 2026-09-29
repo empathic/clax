@@ -1242,6 +1242,7 @@ mod tests {
                     author_name: "Alex".into(),
                     body: "x".into(),
                     clip: None,
+                    via_page: false,
                 },
             )
             .unwrap();

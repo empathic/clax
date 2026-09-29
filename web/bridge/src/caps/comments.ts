@@ -94,7 +94,6 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     if (registered) throw invalid("a registration is already live; release it first");
     registered = true;
     let released = false;
-    let modeOn = false;
     let placedOnce = false;
     let lastPlaced: Record<string, DocPoint> = {};
     let frame = 0;
@@ -102,7 +101,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     // Callbacks are cheap and infallible by contract; a throw is discarded.
     const safe = (f: () => void) => { try { f(); } catch { /* discarded */ } };
     const offs = [
-      rpc.on("comments", "mode", d => { modeOn = (d as { on?: unknown })?.on === true; safe(() => (cb.mode as (on: boolean) => void)(modeOn)); }),
+      rpc.on("comments", "mode", d => safe(() => (cb.mode as (on: boolean) => void)((d as { on?: unknown })?.on === true))),
       rpc.on("comments", "threads", d => safe(() => (cb.threads as (l: unknown) => void)((d as { list?: unknown })?.list ?? []))),
       rpc.on("comments", "reveal", d => { if (placedOnce) safe(() => (cb.reveal as (id: string) => void)(String((d as { id?: unknown })?.id))); }),
       rpc.on("comments", "composing", d => { if (typeof cb.composing === "function") safe(() => (cb.composing as (o: boolean) => void)((d as { open?: unknown })?.open === true)); }),
@@ -181,8 +180,9 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         if (!released) void rpc.call("comments", "exitMode", []).catch(() => {});
       },
       release,
+      // Area-anchored comments are not offered yet: `opts.area` is ignored.
       get areas() {
-        return !released && modeOn;
+        return false;
       },
     };
   };

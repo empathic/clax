@@ -669,27 +669,58 @@ A page that declares `capabilities: {comments: {}}` (or `{"composer_only":
 true}`, optionally with `"customAnchors": true`) gets `claude.use("comments")`
 per the 0.2.61 `comments.d.ts`, in every view: Artifax has no public links.
 `openComposer` and `customAnchors().compose` open the shell's composer on the
-page's element, range, or anchor name; the viewer types and posts. The write
+page's element, range, or anchor; the viewer types and posts. The write
 verbs (`create`, `reply`, `sendToClaude`, `resolve`, `delete`) need the full
 form and the viewer's consent, asked once per artifact at the first write
 (allowing is remembered in the browser; "Don't allow" and a dismissed prompt
 last for the page load), and post through the thread routes as this viewer,
 so `resolve(id, false)` and `delete(id)` follow the level rule above.
-Anchors from the page always name the page the frame shows and the version
-the view shows. Text follows the contract's rule (non-blank, at most 4096
-bytes of UTF-8, no control characters but newline and tab); text that
-mentions `@agent` is refused with `invalid` in `create` and `reply`, since
-only `sendToClaude` may send a comment to the agent. `canSendToClaude` is
-`"available"` while the artifact's owner session is live, `"no_session"`
-otherwise, and `"off"` under the composer-only form. Per artifact in a
-browser tab a page may open the composer (or a thread card) 5 times in 10
-seconds and write 10 times a minute; beyond that calls reject
-`rate_limited`. A custom-anchors page is sent, while comment mode is on,
-the threads anchored on its own page only (at most 256), as handles with
-the anchor string, `resolved`, and `active`; never their text, authors, or
-IDs. While it is registered the page places the pins, the bridge's own
-comment mode and anchor resolution stand down, and opening a thread from the
-sidebar asks the page to reveal it instead of scrolling the frame.
+
+- **What the page learns.** The page never sees a thread's store ID: `create`
+  and `sendToClaude` answer opaque handles, and `reply`, `resolve`, `delete`,
+  and `sendToClaude({threadId})` act only on threads the page created in its
+  current document; any other ID is `not_found` with no request. The anchors
+  the shell sends the bridge to position pins carry opaque handles as well,
+  new for every page that greets.
+- **Written by the page.** Comments the page writes carry `via_page: true`
+  (the create multipart field `via_page=true`, the comment body's
+  `"via_page": true`); the sidebar shows "via the page" on them, `comments_read`
+  returns the flag, and the feedback payload marks them. An `@agent` in page
+  text is accepted and inert: only `sendToClaude` sends a page comment to the
+  agent.
+- **The viewer's gesture.** `openComposer` and `compose` resolve `{opened:
+  false}`, `sendToClaude` rejects `claude_unavailable`, and a `reply` into a
+  thread sent to the agent rejects `unavailable`, unless the viewer has just
+  clicked or typed in the shell or the page (the shell window's transient
+  user activation); so a timer or page load can never open the composer or
+  speak to the agent.
+- **Anchors.** Anchors from the page always name the page the frame shows and
+  the version the view shows. Text follows the contract's rule (non-blank, at
+  most 4096 bytes of UTF-8, no control characters but newline and tab).
+- **Sending to the agent.** `canSendToClaude` is `"available"` while the
+  artifact's owner session is live, `"no_session"` otherwise, and `"off"`
+  under the composer-only form; the answer is reused for 30 seconds and asked
+  again after a page load, a new version, a `feedback_state` event, or a
+  stream reconnect.
+- **Budgets.** Per artifact in a browser tab a page may open the composer (or
+  a thread card) 5 times in 10 seconds and write 10 times a minute; beyond
+  that calls reject `rate_limited` (an `open` past the rate is dropped).
+- **Custom anchors.** While comment mode is on, a registered page is sent the
+  threads anchored on its own page only (at most 256), as handles with the
+  anchor string, `resolved`, and `active`; never their text, authors, or
+  IDs, and none in a session the page's own `compose` started. The page
+  places the pins; the handles of the last list it was sent stay valid after
+  comment mode ends, so the pins stay and follow the page's scrolling. The
+  bridge's own comment mode, hover outline, and anchor resolution stand down,
+  and opening a thread from the sidebar asks the page to reveal it instead of
+  scrolling the frame. `compose` is the viewer's click: over an open composer
+  or thread card it closes an empty composer or the card (a composer with
+  typed text stays) and resolves `{opened: false}`; otherwise it opens the
+  composer and starts comment mode. Its `label` is shown in the composer and
+  never stored (`detail` is dropped); the anchor is the name alone, or the
+  `domAnchor` path. `areas` is always false: area-anchored comments are not
+  offered yet, and `opts.area` is ignored. Pins cannot be dragged, so `move`
+  is never called.
 
 ### Shell URLs
 
@@ -727,7 +758,7 @@ entry of the shell's own; copy link includes it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file}, clip_path, comments: [{id, author_kind, author_name, body, created_at}], feedback_state}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
@@ -792,7 +823,9 @@ page's file followed by ` › ` when it is not `index.html`
 selector (`custom:<name>` for a custom anchor) and, when there is one, the
 quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
-40 characters (`Viewer` when empty). A resend says `Comment sent to you
+40 characters (`Viewer` when empty). A comment the page wrote through the
+`comments` capability, as the viewer, has ` (written by the page)` after the
+author's name (`Alex (written by the page): "…"`). A resend says `Comment sent to you
 (resent)`. A thread without a clip says `Clip: none (no screenshot was captured
 for this comment)`. The payload starts with `[artifax] N comments sent to
 you:` (`1 comment` for one) on its own line, followed by the comments

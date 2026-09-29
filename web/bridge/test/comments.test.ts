@@ -64,7 +64,7 @@ describe("comments (page side)", () => {
     f.emit("threads", { list: [{ id: "h1", anchor: "shape-1", resolved: false, active: false }] });
     expect(cb.mode).toHaveBeenCalledWith(true);
     expect(cb.threads).toHaveBeenCalledWith([{ id: "h1", anchor: "shape-1", resolved: false, active: false }]);
-    expect(ctl.areas).toBe(true);
+    expect(ctl.areas).toBe(false); // area anchoring is not offered yet
     f.emit("reveal", { id: "h1" });
     expect(cb.reveal).not.toHaveBeenCalled();
     (ctl.placed as (m: unknown) => void)({ h1: { x: 10, y: 20 } });

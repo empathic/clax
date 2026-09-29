@@ -1,17 +1,26 @@
 // comments.d.ts in the shell. The composer verbs (openComposer, compose) open
-// the phase 3 composer and need no consent; the write verbs (create, reply,
-// sendToClaude, resolve, delete) post through the thread routes as this
-// viewer after the viewer's consent, under the full declaration only;
-// customAnchors hands the page anonymous thread handles and takes pin
-// positions back. Every argument the page supplies is checked here again (a
-// page can post calls without the bridge); an anchor always names the page
-// the frame shows and the version the view shows, whatever the page sent.
-// Artifax has no public links: every view that serves the declaration gets
-// the namespace.
+// the phase 3 composer and need no consent, only the viewer's gesture; the
+// write verbs (create, reply, sendToClaude, resolve, delete) post through the
+// thread routes as this viewer after the viewer's consent, under the full
+// declaration only, marked as written by the page (`via_page`, which also
+// keeps an `@agent` in page text inert). customAnchors hands the page
+// anonymous thread handles and takes pin positions back.
+//
+// The page never sees a thread's store ID: `create` answers an opaque handle,
+// and the write verbs act only on threads this page created in its current
+// document (anything else is `not_found`, with no request). Every argument
+// the page supplies is checked here again (a page can post calls without the
+// bridge); an anchor always names the page the frame shows and the version the
+// view shows. Whatever speaks for the viewer beyond their consent (opening the
+// composer, sending to the agent, a reply the agent will receive) needs the
+// viewer's own recent gesture: the shell window's transient activation, which
+// a click inside the frame gives it. Artifax has no public links: every view
+// that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
 import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
 import { nameProblem, textProblem } from "../../../bridge/src/text-rule";
 import { ApiError, getArtifact } from "../api";
+import type { ArtifactEvent } from "../events";
 import { type Thread, createThread, deleteThread, reopenThread, resolveThread, sendToAgent } from "../threads";
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
@@ -28,32 +37,34 @@ export const OPEN_RATE = { n: 5, ms: 10_000 };
 export const WRITE_RATE = { n: 10, ms: 60_000 };
 /** Most threads one `threads` push lists, and most entries a `placed` report may carry. */
 export const MAX_LISTED = 256;
-/** Longest `label` or `detail`, in UTF-16 code units, and the bytes of UTF-8 of a label kept. */
+/** Longest `label` or `detail`, in UTF-16 code units, and the bytes of UTF-8 of a label shown. */
 export const MAX_LABEL = 1024;
 export const MAX_LABEL_BYTES = 128;
 /** Largest clip a page-opened composer takes (the daemon's `MAX_CLIP_BYTES`). */
 export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
-const THREAD_ID = /^[0-9A-Za-z]{1,64}$/;
+/** How long a `canSendToClaude` answer is reused when no event says the sessions changed. */
+export const CAN_SEND_TTL_MS = 30_000;
 const HTML_HASH = /^sha256:[0-9a-f]{64}$/;
 const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 const invalid = (message: string) => new CapError("invalid", message);
+const notFound = () => new CapError("not_found", "no such thread: the page can act only on threads it created in this visit");
 
-/** Whether `body` mentions `@agent` as a word, by the daemon's rule
- * (`mentions_agent`): such a comment is sent to the agent when posted. */
-export function mentionsAgent(body: string): boolean {
-  const word = (c: string | undefined) => c !== undefined && /[\p{Alphabetic}\p{N}_-]/u.test(c);
-  for (let i = body.indexOf("@agent"); i >= 0; i = body.indexOf("@agent", i + 1)) {
-    const before = [...body.slice(0, i)].at(-1);
-    const [after, next] = [...body.slice(i + "@agent".length, i + "@agent".length + 4)];
-    const beforeOk = before === undefined || (!word(before) && before !== ".");
-    const afterOk = after === undefined || (after === "." ? !word(next) : !word(after));
-    if (beforeOk && afterOk) return true;
-  }
-  return false;
+/** Whether the viewer has just acted in this window or the frame inside it
+ * (transient user activation); false where the browser cannot tell. */
+export function userGesture(): boolean {
+  const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
+  return ua?.isActive === true;
 }
 
-/** The label a composer shows and the anchor keeps as its quote: whitespace
+/** An opaque, unguessable handle. */
+function opaque(prefix: string): string {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return prefix + Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+}
+
+/** The label a page-opened composer shows (it is never stored): whitespace
  * collapsed, control and invisible characters dropped, at most
  * [`MAX_LABEL_BYTES`] of UTF-8; null when no letter or digit remains. */
 export function cleanLabel(label: string | undefined): string | null {
@@ -104,10 +115,6 @@ export function pageAnchor(a: unknown, file: string): Anchor {
   };
 }
 
-function threadId(v: unknown): string {
-  if (typeof v !== "string" || !THREAD_ID.test(v)) throw invalid("threadId is a thread identifier");
-  return v;
-}
 
 function mapped(e: unknown): CapError {
   if (e instanceof CapError) return e;
@@ -128,13 +135,22 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   const cfg = declaredConfig("comments", env.declared) as { composer_only?: unknown; customAnchors?: unknown };
   const composerOnly = cfg.composer_only === true;
   let disposed = false;
+  /** Threads this page created in its current document: opaque handle to store ID. */
+  let created = new Map<string, string>();
   /** A custom-anchors registration of the frame's current document is live. */
   let custom = false;
   let placedOnce = false;
+  /** The page's own compose started the current comment-mode session: it is
+   * sent no thread list (comments.d.ts). */
+  let pageStarted = false;
   let handleToId = new Map<string, string>();
   let idToHandle = new Map<string, string>();
-  /** What the page was last sent, so a push goes only when something changed. */
+  /** What the page was last sent, so a push goes only when something changed.
+   * `listed` holds the handles of the last list, which placements may name
+   * (after comment mode ends too, so pins keep following the page). */
   let sent: { mode: boolean | null; composing: boolean | null; threads: string; listed: Set<string> } = { mode: null, composing: null, threads: "", listed: new Set() };
+  /** The cached `canSendToClaude` answer and when it was asked. */
+  let canSendCache: { at: number; answer: Promise<"available" | "no_session"> } | null = null;
 
   const closed = () => new CapError("unavailable", "this view has closed");
   const ui = () => {
@@ -164,15 +180,15 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     if (p) throw invalid(p);
     return t as string;
   };
-  /** Page text for a plain write: `@agent` would send it to the agent, which
-   * only sendToClaude may do. */
-  const plain = (t: unknown) => {
-    const body = text(t);
-    if (mentionsAgent(body)) throw invalid("text mentioning @agent would send it to the agent; use sendToClaude for that");
-    return body;
-  };
   const writable = () => {
     if (composerOnly) throw new CapError("not_granted", "the composer-only declaration grants no write verbs");
+  };
+  /** The store ID behind a handle `create` gave this document; `not_found` otherwise. */
+  const own = (v: unknown): string => {
+    if (typeof v !== "string" || !v) throw invalid("threadId is the threadId create resolved with");
+    const id = created.get(v);
+    if (!id) throw notFound();
+    return id;
   };
   async function consent(): Promise<void> {
     await grants.request(["comments"]);
@@ -228,10 +244,13 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
       env.post(event("composing", { open: s.composing }));
     }
     if (!s.mode) {
+      // The next session gets the list again; the last list's handles stay
+      // valid for placements, so pins keep following the page.
       sent.threads = "";
-      sent.listed = new Set();
+      pageStarted = false;
       return;
     }
+    if (pageStarted) return;
     const list = threadList();
     const key = JSON.stringify(list);
     if (key === sent.threads) return;
@@ -243,29 +262,48 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     const was = custom;
     custom = false;
     placedOnce = false;
+    pageStarted = false;
     handleToId = new Map();
     idToHandle = new Map();
     sent = { mode: null, composing: null, threads: "", listed: new Set() };
     if (was) env.comments?.setCustom(false);
   };
 
-  async function canSend(): Promise<"available" | "no_session" | "off"> {
-    if (composerOnly) return "off";
-    const a = await getArtifact(env.aid).catch(() => null);
-    return a?.artifact.owner_live ? "available" : "no_session";
+  function canSend(): Promise<"available" | "no_session" | "off"> {
+    if (composerOnly) return Promise.resolve("off");
+    if (!canSendCache || Date.now() - canSendCache.at > CAN_SEND_TTL_MS) {
+      canSendCache = {
+        at: Date.now(),
+        answer: getArtifact(env.aid).then(a => (a.artifact.owner_live ? "available" as const : "no_session" as const), () => "no_session" as const),
+      };
+    }
+    return canSendCache.answer;
   }
-  async function post(target: { anchor?: Anchor; threadId?: string; text: string }): Promise<{ threadId: string; commentId: string; thread: Thread }> {
+  /** Posts page-written text as a new thread or a reply; returns the thread
+   * handle the page may use again, an opaque comment ID, and the thread. */
+  async function post(target: { anchor?: Anchor; threadId?: string; text: string }): Promise<{ handle: string; commentId: string; thread: Thread }> {
     if (target.threadId !== undefined) {
       const tid = target.threadId;
-      const r = await request(() => addCommentFull(env.aid, tid, target.text));
-      env.comments?.upsert(r.thread);
-      return { threadId: tid, commentId: r.commentId, thread: r.thread };
+      const thread = await request(() => addPageComment(env.aid, tid, target.text));
+      env.comments?.upsert(thread);
+      const handle = [...created].find(([, id]) => id === tid)?.[0] ?? opaque("t_");
+      return { handle, commentId: opaque("c_"), thread };
     }
     const anchor = target.anchor!;
-    const { thread } = await request(() => createThread(env.aid, { anchor, body: target.text, version: env.version, clip: null }));
+    const { thread } = await request(() => createThread(env.aid, { anchor, body: target.text, version: env.version, clip: null, viaPage: true }));
     env.comments?.upsert(thread);
-    return { threadId: thread.id, commentId: thread.comments[0]?.id ?? "", thread };
+    const handle = opaque("t_");
+    created.set(handle, thread.id);
+    return { handle, commentId: opaque("c_"), thread };
   }
+  /** A reply into a thread the agent will receive speaks for the viewer to
+   * the agent: it needs their recent gesture. */
+  const replyGesture = (tid: string) => {
+    const t = env.comments?.state().threads.find(x => x.id === tid);
+    if ((t ? t.sent_to_agent : true) && !userGesture()) {
+      throw new CapError("unavailable", "a reply the agent receives needs the viewer's own gesture; call it from their click");
+    }
+  };
 
   return {
     async call(method, args) {
@@ -275,6 +313,8 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const d = (args[0] ?? {}) as { anchor?: unknown; clipPng?: unknown; clipError?: unknown };
           const anchor = pageAnchor(d.anchor, pageFile());
           const u = ui();
+          // Only from the viewer's own gesture: a timer or load never opens (or focuses) it.
+          if (!userGesture()) return { opened: false };
           opening();
           const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;
           const clipError = clip ? undefined : typeof d.clipError === "string" ? d.clipError.slice(0, 200) : d.clipPng instanceof ArrayBuffer ? "the screenshot was too large" : undefined;
@@ -284,23 +324,24 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           writable();
           const d = (args[0] ?? {}) as { anchor?: unknown; text?: unknown };
           const anchor = pageAnchor(d.anchor, pageFile());
-          const body = plain(d.text);
+          const body = text(d.text);
           await consent();
           writing();
           const r = await post({ anchor, text: body });
-          return { threadId: r.threadId, commentId: r.commentId };
+          return { threadId: r.handle, commentId: r.commentId };
         }
         case "reply": {
           writable();
-          const tid = threadId(args[0]);
-          const body = plain(args[1]);
+          const tid = own(args[0]);
+          const body = text(args[1]);
+          replyGesture(tid);
           await consent();
           writing();
           return { commentId: (await post({ threadId: tid, text: body })).commentId };
         }
         case "resolve": {
           writable();
-          const tid = threadId(args[0]);
+          const tid = own(args[0]);
           if (typeof args[1] !== "boolean") throw invalid("resolved is true or false");
           const reopen = args[1] === false;
           await consent();
@@ -311,10 +352,12 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
         }
         case "delete": {
           writable();
-          const tid = threadId(args[0]);
+          const handle = args[0];
+          const tid = own(handle);
           await consent();
           writing();
           await request(() => deleteThread(env.aid, tid, env.token));
+          created.delete(handle as string);
           env.comments?.remove(tid);
           return undefined;
         }
@@ -324,18 +367,21 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           writable();
           const t = (args[0] ?? {}) as { anchor?: unknown; threadId?: unknown; text?: unknown };
           if ((t.threadId === undefined) === (t.anchor === undefined)) throw invalid("sendToClaude takes exactly one of anchor and threadId");
-          const target = t.threadId !== undefined ? { threadId: threadId(t.threadId) } : { anchor: pageAnchor(t.anchor, pageFile()) };
+          const target = t.threadId !== undefined ? { threadId: own(t.threadId) } : { anchor: pageAnchor(t.anchor, pageFile()) };
           const body = text(t.text);
+          // Decided before anything is written: the viewer's own recent
+          // gesture, and a session that can receive it.
+          if (!userGesture()) throw new CapError("claude_unavailable", "sending to the agent needs the viewer's own gesture; nothing was posted");
           if ((await canSend()) !== "available") throw new CapError("claude_unavailable", "no agent session can receive it now; nothing was posted");
           if (disposed) throw closed();
           await consent();
           writing();
           const r = await post({ ...target, text: body });
           if (!r.thread.sent_to_agent) {
-            const sentThread = await request(() => sendToAgent(env.aid, r.threadId));
+            const sentThread = await request(() => sendToAgent(env.aid, r.thread.id));
             env.comments?.upsert(sentThread);
           }
-          return { threadId: r.threadId, commentId: r.commentId };
+          return { threadId: r.handle, commentId: r.commentId };
         }
         case "register":
           if (cfg.customAnchors !== true) throw new CapError("not_granted", "the declaration does not carry \"customAnchors\": true");
@@ -363,12 +409,26 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           }
           const file = pageFile();
           const u = ui();
+          if (!userGesture()) return { opened: false };
+          // The page's compose is the viewer's click: over an open composer or
+          // thread card it closes an empty one (typed text is kept) instead.
+          const s = u.state();
+          if (s.composing || s.selected !== null) {
+            u.dismiss?.();
+            return { opened: false };
+          }
           opening();
-          const base = { quote: cleanLabel(d.label as string | undefined), prefix: null, suffix: null, html_hash: null, rect: null, file };
+          // Only the anchor is stored; the label is shown in the composer.
+          const base = { quote: null, prefix: null, suffix: null, html_hash: null, rect: null, file };
           const anchor: Anchor = dom
             ? { kind: "element", selector: d.anchor as string, custom_name: null, ...base }
             : { kind: "custom", selector: null, custom_name: d.anchor as string, ...base };
-          return { opened: u.openComposer({ anchor, version: env.version, clip: null, clipError: "anchored by the page" }) };
+          if (!s.mode) {
+            pageStarted = true;
+            u.enterMode?.();
+          }
+          const label = cleanLabel(d.label as string | undefined) ?? undefined;
+          return { opened: u.openComposer({ anchor, version: env.version, clip: null, clipError: "anchored by the page", label }) };
         }
         case "openThread": {
           if (typeof args[0] !== "string") throw invalid("open takes a thread handle");
@@ -399,7 +459,9 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           throw new CapError("capability_removed", `comments.${String(method)} is not part of this runtime`);
       }
     },
-    onEvent(e) {
+    onEvent(e: ArtifactEvent) {
+      // Sessions starting or ending show in these; the next check asks again.
+      if (e.type === "version" || e.type === "feedback_state" || e.type === "ready" || e.type === "resync") canSendCache = null;
       if (e.type === "thread" || e.type === "thread_resolved" || e.type === "thread_deleted") pushState();
     },
     uiChanged() {
@@ -414,28 +476,29 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
       return true;
     },
     reset() {
+      created = new Map();
+      canSendCache = null;
       endCustom();
     },
     dispose() {
       disposed = true;
+      created = new Map();
       endCustom();
     },
   };
 };
 
-/** Adds a viewer comment, answering the new comment's ID with the thread
- * (`addComment` in threads.ts answers the thread only). */
-async function addCommentFull(aid: string, tid: string, body: string): Promise<{ thread: Thread; commentId: string }> {
+/** Adds a viewer comment the page wrote (`via_page`); answers the thread. */
+async function addPageComment(aid: string, tid: string, body: string): Promise<Thread> {
   const res = await fetch(`/api/artifacts/${encodeURIComponent(aid)}/threads/${encodeURIComponent(tid)}/comments`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ body }),
+    body: JSON.stringify({ body, via_page: true }),
   });
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error?.message ?? msg; } catch { /* not JSON */ }
     throw new ApiError(res.status, msg);
   }
-  const v = (await res.json()) as { comment: { id: string }; thread: Thread };
-  return { thread: v.thread, commentId: v.comment.id };
+  return ((await res.json()) as { thread: Thread }).thread;
 }

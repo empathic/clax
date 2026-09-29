@@ -88,6 +88,9 @@ pub struct Comment {
     pub author_kind: String,
     pub author_name: String,
     pub via_harness: Option<String>,
+    /// The page wrote it through the `comments` capability, as the viewer.
+    #[serde(default)]
+    pub via_page: bool,
     pub body: String,
     pub created_at: String,
 }

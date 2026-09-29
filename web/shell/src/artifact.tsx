@@ -120,6 +120,17 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     place: rects => setResolved(Object.fromEntries(Object.entries(rects).map(([tid, rect]) => [tid, { id: tid, found: true, method: "custom" as const, rect }]))),
     select: tid => { setPanel(true); setSelected(tid); },
     exitMode: () => { if (!composerText.current.trim()) setCommenting(false); },
+    dismiss: () => {
+      if (draftRef.current) {
+        if (composerText.current.trim()) return false;
+        setDraft(null);
+        return true;
+      }
+      if (selectedRef.current === null) return false;
+      setSelected(null);
+      return true;
+    },
+    enterMode: () => setCommenting(true),
     state: () => ({ mode: commentingRef.current, composing: draftRef.current !== null, threads: threadsRef.current, selected: selectedRef.current }),
   };
   const commentsUi = useMemo<CommentsUi>(() => ({
@@ -131,7 +142,26 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     select: tid => uiRef.current!.select(tid),
     exitMode: () => uiRef.current!.exitMode(),
     state: () => uiRef.current!.state(),
+    dismiss: () => uiRef.current!.dismiss!(),
+    enterMode: () => uiRef.current!.enterMode!(),
   }), []);
+  // Thread anchors go to the frame under opaque handles, new for every page
+  // that greets, so a page never learns a thread's store ID; the frame's
+  // results are mapped back here.
+  const anchorIds = useRef({ byHandle: new Map<string, string>(), byThread: new Map<string, string>() });
+  const forgetAnchorIds = () => { anchorIds.current = { byHandle: new Map(), byThread: new Map() }; };
+  const anchorHandle = (tid: string) => {
+    const ids = anchorIds.current;
+    let h = ids.byThread.get(tid);
+    if (!h) {
+      const b = new Uint8Array(12);
+      crypto.getRandomValues(b);
+      h = `a${Array.from(b, x => x.toString(16).padStart(2, "0")).join("")}`;
+      ids.byThread.set(tid, h);
+      ids.byHandle.set(h, tid);
+    }
+    return h;
+  };
   // How many of this view's own page publishes are in flight (the `artifact`
   // handler counts them; one that ends in a reload keeps its count). A page
   // publish by another view that arrives meanwhile is remembered in
@@ -229,7 +259,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => () => host?.dispose(), [host]);
   const resolveAll = () => {
     if (customLive.current) return;
-    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
+    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: anchorHandle(t.id), anchor: t.anchor })) });
   };
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
@@ -341,6 +371,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         helloOk.current = helloMatches(m, id, shown) && holds(greeted);
         setResolved({});
+        forgetAnchorIds();
         if (!helloOk.current) { setCurrentFile(null); break; }
         helloSinceLoad.current = true;
         hostRef.current?.reset();
@@ -362,7 +393,19 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         break;
       }
       case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
-      case "artifax:anchors": if (customLive.current) break; setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
+      case "artifax:anchors": {
+        if (customLive.current) break;
+        const byHandle = anchorIds.current.byHandle;
+        setResolved(prev => {
+          const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev };
+          for (const r of m.results) {
+            const tid = byHandle.get(r.id);
+            if (tid) next[tid] = { ...r, id: tid };
+          }
+          return next;
+        });
+        break;
+      }
       case "artifax:cancel": setCommenting(false); break;
       case "artifax:hash":
         // The page's fragment moved (a link, a script): the address bar

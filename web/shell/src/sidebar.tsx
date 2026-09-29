@@ -81,7 +81,7 @@ function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onRe
       {t.clip_url && <img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />}
       {t.comments.map(c => (
         <div class={`comment ${c.author_kind === "agent" ? "agent" : "from-viewer"}`} key={c.id}>
-          <div class="author">{c.author_kind === "agent" ? `Agent · via ${c.via_harness ?? c.author_name}` : c.author_name}</div>
+          <div class="author">{c.author_kind === "agent" ? `Agent · via ${c.via_harness ?? c.author_name}` : c.author_name}{c.via_page && <span class="via-page muted small"> · via the page</span>}</div>
           <div class="body">{c.body}</div>
         </div>
       ))}

@@ -280,8 +280,11 @@ Agent- and shell-facing JSON API under `/api`:
 - Comments: `GET /api/artifacts/<aid>/threads` (`include_resolved`,
   `cursor`, `limit`), `GET .../threads/<tid>`, `GET .../threads/<tid>/clip`
   (the PNG; `Content-Security-Policy: sandbox`, `nosniff`), `POST
-  .../threads` (create thread with first comment; no token), `POST
-  .../threads/<tid>/comments` (viewer: no token; agent: W,
+  .../threads` (create thread with first comment; no token; `via_page=true`
+  marks a comment the page wrote through the `comments` capability, whose
+  `@agent` then sends nothing), `POST
+  .../threads/<tid>/comments` (viewer: no token, optional `via_page` as
+  above; agent: W,
   `author_kind=agent`, and `X-Artifax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
   rows), `POST .../threads/<tid>/resolve` (viewer, or agent with W and
@@ -563,11 +566,15 @@ files kept in `web/contract/`:
   thread through the routes in §6, which need `interact` or above. Write
   verbs ask the viewer's consent once per artifact; a page may open the
   composer 5 times in 10 s and write 10 times a minute per artifact in a
-  tab. Page anchors always name the frame's page and the view's version;
-  `create` and `reply` refuse text mentioning `@agent`, which only
-  `sendToClaude` may send. A custom-anchors page is told only the threads on
-  its own page, as handles. The shell renders all threads; the page never
-  lists them.
+  tab. Page anchors always name the frame's page and the view's version.
+  The page never learns a thread's store ID (opaque handles only; the
+  write verbs act only on threads it created in its current document).
+  Page-written comments are stored with `via_page` and shown and forwarded
+  as written by the page; an `@agent` in them is inert. Opening the
+  composer, `sendToClaude`, and a reply into a sent thread need the
+  viewer's recent gesture (the shell's transient user activation). A
+  custom-anchors page is told only the threads on its own page, as handles.
+  The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
@@ -686,6 +693,9 @@ Clip: /Users/alex/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
 Alex: "Make this a two-column layout and drop the third bullet."
 Reply with comments_reply, then comments_resolve when done.
 ```
+
+A comment the page wrote through the `comments` capability, as the viewer,
+is marked in the author line: `Alex (written by the page): "…"`.
 
 ### Delivery tiers (D8)
 

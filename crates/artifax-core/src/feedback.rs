@@ -89,6 +89,8 @@ pub struct FeedbackItem {
     pub anchor: Anchor,
     pub clip_path: Option<String>,
     pub author: String,
+    /// The page wrote the comment through the `comments` capability.
+    pub via_page: bool,
     pub body: String,
     pub resent: bool,
     pub created_at: String,
@@ -177,7 +179,7 @@ pub fn render_item(i: &FeedbackItem) -> String {
         "[artifax] Comment sent to you{resent} on {title} ({url}), thread {tid}\n\
          Anchored on: {anchor}  (v{v})\n\
          Clip: {clip}\n\
-         {author}: {body}\n\
+         {author}{by_page}: {body}\n\
          Reply with comments_reply, then comments_resolve when done.",
         title = quoted(&i.artifact_title),
         url = i.url,
@@ -185,6 +187,11 @@ pub fn render_item(i: &FeedbackItem) -> String {
         anchor = one_line(&i.anchor.summary()),
         v = i.version,
         author = display_name(&i.author),
+        by_page = if i.via_page {
+            " (written by the page)"
+        } else {
+            ""
+        },
         body = quoted(&i.body),
     )
 }
@@ -230,6 +237,7 @@ mod tests {
             })).unwrap(),
             clip_path: Some("/home/a/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9ZZZZZZZZZZZZZZZZZZZZZZ.png".into()),
             author: "Alex".into(),
+            via_page: false,
             body: "Make this a two-column layout and drop the third bullet.".into(),
             resent: false,
             created_at: "2026-09-29T10:00:00.000Z".into(),
@@ -245,6 +253,16 @@ mod tests {
              Clip: /home/a/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9ZZZZZZZZZZZZZZZZZZZZZZ.png\n\
              Alex: \"Make this a two-column layout and drop the third bullet.\"\n\
              Reply with comments_reply, then comments_resolve when done."
+        );
+    }
+
+    #[test]
+    fn a_page_written_comment_is_marked_in_the_author_line() {
+        let mut i = item();
+        i.via_page = true;
+        assert_eq!(
+            render_item(&i).lines().nth(3).unwrap(),
+            "Alex (written by the page): \"Make this a two-column layout and drop the third bullet.\""
         );
     }
 

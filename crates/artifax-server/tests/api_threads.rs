@@ -1136,3 +1136,103 @@ async fn reopen_and_delete_refuse_foreign_origins() {
         .unwrap();
     assert_eq!(r.status(), 403);
 }
+
+/// `POST .../threads` as the shell does for a page's `comments.create`.
+async fn page_thread(ts: &TestServer, aid: &str, body: &str) -> Value {
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", element_anchor().to_string())
+        .text("body", body.to_string())
+        .text("version", "1")
+        .text("via_page", "true");
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    res.json::<Value>().await.unwrap()["thread"].clone()
+}
+
+#[tokio::test]
+async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let t = page_thread(&ts, &aid, "@agent please look").await;
+    assert_eq!(t["sent_to_agent"], false, "a page's @agent is inert");
+    assert_eq!(t["comments"][0]["via_page"], true);
+    let plain = ts.thread(&aid, 1, "by hand").await;
+    assert_eq!(plain["comments"][0]["via_page"], false);
+    let tid = plain["id"].as_str().unwrap();
+    let url = format!("{}/api/artifacts/{aid}/threads/{tid}/comments", ts.base);
+    let v: Value = ts
+        .client
+        .post(&url)
+        .json(&json!({"body": "@agent go", "via_page": true}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["comment"]["via_page"], true);
+    assert_eq!(v["thread"]["sent_to_agent"], false);
+    let res = ts
+        .authed(ts.client.post(&url))
+        .header("x-artifax-session", &sid)
+        .json(&json!({"body": "x", "author_kind": "agent", "via_page": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let bad = reqwest::multipart::Form::new()
+        .text("anchor", element_anchor().to_string())
+        .text("body", "x")
+        .text("version", "1")
+        .text("via_page", "yes");
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .multipart(bad)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+
+    // A page reply into a sent thread is forwarded, and the payload says the
+    // page wrote it.
+    let sent = ts.thread(&aid, 1, "@agent fix the header").await;
+    let stid = sent["id"].as_str().unwrap();
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{stid}/comments",
+            ts.base
+        ))
+        .json(&json!({"body": "and the footer", "via_page": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let fb: Value = ts
+        .authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/feedback?tier=piggyback",
+            ts.base
+        )))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let text = fb["text"].as_str().unwrap();
+    assert!(
+        text.contains("\nViewer: \"@agent fix the header\"\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("\nViewer (written by the page): \"and the footer\"\n"),
+        "{text}"
+    );
+}
