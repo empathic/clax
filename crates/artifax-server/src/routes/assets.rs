@@ -2,34 +2,43 @@
 
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::routes::artifacts::parse_id;
+use crate::routes::artifacts::{parse_id, path};
 use crate::state::AppState;
 use artifax_core::CoreError;
 use axum::Json;
 use axum::body::Body;
+use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Multipart, Path, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
-    r.map(|Path(v)| v)
-        .map_err(|e| ApiError::bad_request("invalid_path_param", e.body_text()))
+fn multipart_error(status: StatusCode, message: String) -> ApiError {
+    if status == StatusCode::PAYLOAD_TOO_LARGE {
+        ApiError::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            "request body exceeds the upload limit",
+        )
+    } else {
+        ApiError::bad_request("invalid_multipart", message)
+    }
 }
 
 pub async fn upload(
     State(s): State<AppState>,
     _t: RequireToken,
     aid: Result<Path<String>, PathRejection>,
-    mut mp: Multipart,
+    mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
+    let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     while let Some(field) = mp
         .next_field()
         .await
-        .map_err(|e| ApiError::bad_request("invalid_multipart", e.to_string()))?
+        .map_err(|e| multipart_error(e.status(), e.body_text()))?
     {
         if field.name() != Some("file") {
             continue;
@@ -46,7 +55,7 @@ pub async fn upload(
         let bytes = field
             .bytes()
             .await
-            .map_err(|e| ApiError::bad_request("invalid_multipart", e.to_string()))?;
+            .map_err(|e| multipart_error(e.status(), e.body_text()))?;
         let asset = s
             .store_call(move |st| st.add_asset(&id, &content_type, &bytes))
             .await?;
@@ -103,10 +112,12 @@ pub async fn blob(
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| ApiError::not_found())?;
+    let len = asset.size.to_string();
     let stream = tokio_util::io::ReaderStream::new(file);
     Ok((
         [
             (header::CONTENT_TYPE, asset.content_type.as_str()),
+            (header::CONTENT_LENGTH, len.as_str()),
             (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
