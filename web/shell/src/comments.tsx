@@ -4,7 +4,26 @@ import { type Thread, areaLabel } from "./threads";
 
 /** A pick being commented on; `pickId` keys the composer so each pick starts
  * empty. `label` is a page's words for the spot, shown in place of the quote. */
-export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string };
+/** `capturing`: its screenshot is still being taken, and arrives under
+ * `clipToken` (`attachClip`). */
+export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string };
+
+/** Largest clip the daemon keeps, in bytes (its `MAX_CLIP_BYTES`). */
+export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
+
+/** The composer after a page asks to open one for `d`: a fresh draft; null
+ * (refused) when the open one holds typed text, unless `opts.area`, which
+ * moves that composer, text kept (same `pickId`), to the new anchor. */
+export function nextDraft(open: Draft | null, typed: string, d: Omit<Draft, "pickId">, opts?: { area?: boolean }, newId = () => `page-${Date.now()}-${Math.random().toString(36).slice(2)}`): Draft | null {
+  if (open && typed.trim()) return opts?.area ? { ...d, pickId: open.pickId } : null;
+  return { pickId: newId(), ...d };
+}
+
+/** The draft with the clip taken for `token`, when it is still the one
+ * waiting for it; else the draft unchanged. */
+export function withClip(dr: Draft | null, token: string, clip: Blob | null, clipError?: string): Draft | null {
+  return dr && dr.clipToken === token ? { ...dr, clip, clipError, capturing: false, clipToken: undefined } : dr;
+}
 
 /** Room a pin keeps from the stage's right edge: its own 22 px plus 16 px for a
  * classic scrollbar in the frame. */
@@ -77,7 +96,7 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
     }}>
       <p class="composer-quote">{draft.label ?? (quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "custom" ? draft.anchor.custom_name : draft.anchor.kind === "area" ? areaLabel(draft.anchor) : draft.anchor.selector)}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
-      {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
+      {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : draft.capturing ? <p class="muted small">Taking the screenshot…</p> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
       <div class="actions">

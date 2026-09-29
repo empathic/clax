@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
-import { Composer, type Draft, Pins } from "./comments";
+import { Composer, type Draft, MAX_CLIP_BYTES, Pins, nextDraft, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
@@ -59,6 +59,11 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // The thread whose card or pin the pointer is over; it, else the selected
   // thread, is the frame's focus (a drawn area is outlined dashed).
   const [hovered, setHovered] = useState<string | null>(null);
+  // Posts and sends to the agent in flight (an area compose waits for none).
+  const [busy, setBusy] = useState(0);
+  const busyRef = useRef(0);
+  busyRef.current = busy;
+  const whileBusy = <T,>(p: Promise<T>): Promise<T> => { setBusy(n => n + 1); return p.finally(() => setBusy(n => n - 1)); };
   const [notice, setNotice] = useState<string | null>(null);
   const [me, setMe] = useState<Viewer | null>(null);
   // A success clears only a notice its own kind of call raised, so the viewer
@@ -113,16 +118,12 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const uiRef = useRef<CommentsUi | null>(null);
   uiRef.current = {
     openComposer: (d, opts) => {
-      const open = draftRef.current;
-      if (open && composerText.current.trim()) {
-        if (!opts?.area) return false;
-        // A drawn area moves the composer holding text: same composer, new anchor.
-        setDraft({ ...d, pickId: open.pickId });
-        return true;
-      }
-      setDraft({ pickId: `page-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...d });
+      const next = nextDraft(draftRef.current, composerText.current, d, opts);
+      if (!next) return false;
+      setDraft(next);
       return true;
     },
+    attachClip: (token, clip, clipError) => setDraft(dr => withClip(dr, token, clip, clipError)),
     upsert: t => changeThreads(ts => upsert(ts, t)),
     remove: tid => { changeThreads(ts => ts.filter(t => t.id !== tid)); setSelected(s => (s === tid ? null : s)); },
     setCustom: live => {
@@ -144,10 +145,11 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       return true;
     },
     enterMode: () => setCommenting(true),
-    state: () => ({ mode: commentingRef.current, composing: draftRef.current !== null, threads: threadsRef.current, selected: selectedRef.current }),
+    state: () => ({ mode: commentingRef.current, composing: draftRef.current !== null, threads: threadsRef.current, selected: selectedRef.current, busy: busyRef.current > 0 }),
   };
   const commentsUi = useMemo<CommentsUi>(() => ({
     openComposer: (d, opts) => uiRef.current!.openComposer(d, opts),
+    attachClip: (token, clip, clipError) => uiRef.current!.attachClip!(token, clip, clipError),
     upsert: t => uiRef.current!.upsert(t),
     remove: tid => uiRef.current!.remove(tid),
     setCustom: live => uiRef.current!.setCustom(live),
@@ -291,7 +293,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       if (ts) setThreads(since.reduce((acc, f) => f(acc), ts));
     });
   };
-  const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
+  const saveThread = (p: Promise<Thread>, prefix: string) => { void report(whileBusy(p), prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
   /** Sends the frame to the page published at `target` (at `hash`, a fragment
    * with its `#`); `replace` keeps the frame's history entry (the shell URL
    * made or moved it). The outgoing document is done: the gate closes and
@@ -370,7 +372,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => { send({ type: "artifax:comment-mode", on: commenting }); }, [commenting]);
   useEffect(() => { sendFocus(); }, [hovered, selected, threads]);
-  useEffect(() => { hostRef.current?.uiChanged(); }, [commenting, draft, selected, threads, file, host]);
+  useEffect(() => { hostRef.current?.uiChanged(); }, [commenting, draft, selected, threads, file, host, busy]);
   useEffect(() => {
     if (typeof matchMedia !== "function") return;
     const mq = matchMedia("(max-width: 480px)");
@@ -414,7 +416,16 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         }
         break;
       }
-      case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
+      case "artifax:pick": {
+        // A pick counts only while the viewer is in comment mode; a clip the
+        // daemon would not keep is dropped here, with the reason shown.
+        if (!commentingRef.current) break;
+        setCommenting(false);
+        const png = m.clipPng instanceof ArrayBuffer && m.clipPng.byteLength > 0 ? m.clipPng : null;
+        const tooBig = !!png && png.byteLength > MAX_CLIP_BYTES;
+        setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: png && !tooBig ? new Blob([png], { type: "image/png" }) : null, clipError: tooBig ? "the screenshot was too large to keep" : m.clipError });
+        break;
+      }
       case "artifax:anchors": {
         if (customLive.current) break;
         const byHandle = anchorIds.current.byHandle;
@@ -467,17 +478,23 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     let overFrame = false;
     const onOver = (e: MouseEvent) => { overFrame = e.target === frameRef.current; };
     const onKey = (e: KeyboardEvent) => {
-      if (e.type === "keydown" && e.key === "Escape") { setCommenting(false); return; }
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.localName === "input" || t.localName === "textarea" || t.isContentEditable);
+      // Escape with the pointer over the frame in comment mode goes to the
+      // page, which drops a drag in progress or else answers artifax:cancel
+      // (ending comment mode); anywhere else it ends comment mode here.
+      if (e.key === "Escape" && !(commentingRef.current && overFrame && !typing)) {
+        if (e.type === "keydown") setCommenting(false);
+        return;
+      }
       // Option widening works with focus in the shell: while comment mode is
       // on and the pointer is over the frame, Option and, with it held, Up
       // and Down are forwarded to the page (not from a text field).
-      if (!commentingRef.current || !overFrame) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.localName === "input" || t.localName === "textarea" || t.isContentEditable)) return;
+      if (!commentingRef.current || !overFrame || typing) return;
       const down = e.type === "keydown";
-      if (e.key === "Alt" || ((e.key === "ArrowUp" || e.key === "ArrowDown") && e.altKey)) {
+      if (e.key === "Alt" || e.key === "Escape" || ((e.key === "ArrowUp" || e.key === "ArrowDown") && e.altKey)) {
         sendRef.current({ type: "artifax:key", key: e.key, down });
-        if (e.key !== "Alt") e.preventDefault();
+        if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
       }
     };
     addEventListener("mouseover", onOver);
@@ -578,8 +595,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} onHover={t => setHovered(t?.id ?? null)} />}
           {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
-              const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
-              noticeFor(POST_FAILED)(null);
+              const { thread, clip_error: clipError } = await whileBusy(createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip }));
+              noticeFor(POST_FAILED)(clipError ? `Posted without its screenshot: ${clipError}` : null);
               changeThreads(ts => upsert(ts, thread));
               setSelected(thread.id);
               setDraft(null);

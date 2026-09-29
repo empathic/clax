@@ -343,8 +343,9 @@ function shortQuote(q: string): string {
 /** Characters of the quote an anchor summary shows (as `artifax_core::anchor`). */
 const SUMMARY_QUOTE_CHARS = 120;
 
-/** A fraction as whole percent, clamped to 0 to 100. */
-const pct = (f: number) => Math.round(Math.min(1, Math.max(0, f)) * 100);
+/** A fraction as whole percent with `%`, clamped to 0 to 100; `<1%` for a
+ * non-zero share that rounds to 0. */
+const pct = (f: number) => { const p = Math.round(Math.min(1, Math.max(0, f)) * 100); return p === 0 && f > 0 ? "<1%" : `${p}%`; };
 
 /** An anchor's one-line summary, as `artifax_core::anchor::Anchor::summary`
  * (the payload's "Anchored on" line): the file and ` › ` when it is not
@@ -356,7 +357,7 @@ function anchorSummary(a: Json): string | null {
   const sel = typeof a.selector === "string" ? a.selector : "";
   let target = sel;
   if (a.kind === "custom") target = `custom:${typeof a.custom_name === "string" ? a.custom_name : ""}`;
-  else if (a.kind === "area") target = a.area && Number.isFinite(a.area.w) && Number.isFinite(a.area.h) ? `area in ${sel} (${pct(a.area.w)}% × ${pct(a.area.h)}%)` : `area in ${sel}`;
+  else if (a.kind === "area") target = a.area && Number.isFinite(a.area.w) && Number.isFinite(a.area.h) ? `area in ${sel} (${pct(a.area.w)} × ${pct(a.area.h)})` : `area in ${sel}`;
   const file = typeof a.file === "string" ? a.file : "index.html";
   if (file !== "index.html") target = `${file} › ${target}`;
   const q = typeof a.quote === "string" ? a.quote.split(WHITESPACE_RUN).filter(w => w !== "").join(" ") : "";

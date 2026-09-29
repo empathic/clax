@@ -2,9 +2,11 @@
 // A drag that starts where there is no text under the pointer (empty space,
 // padding, an image or canvas), or any drag with Shift held, draws a
 // rectangle; its anchor names the smallest element whose border box holds the
-// rectangle and places the rectangle in it as fractions, so it follows that
-// element on later versions. Holding Option (Alt) targets the enclosing
-// element of the hovered target, one ancestor more per Up press.
+// rectangle (an inline `<svg>` or other foreign content counts as one element)
+// and places the rectangle in it as fractions, so it follows that element on
+// later versions; a rectangle no element holds is placed on the document
+// (`html`, its whole scrollable size). Holding Option (Alt) targets the
+// enclosing element of the hovered target, one ancestor more per Up press.
 
 import { OVERLAY_TAG, cssPath, htmlHash } from "./anchor";
 import { blockAncestor } from "./clip";
@@ -12,7 +14,7 @@ import { type Anchor, type AnchorArea, type Box, INDEX_FILE } from "./protocol";
 import { caretAt } from "./target";
 import { readable } from "./text-walk";
 
-/** A drag rectangle narrower and shorter than this, in CSS px, is a click. */
+/** A drag rectangle narrower or shorter than this, in CSS px, is a click. */
 export const AREA_MIN = 8;
 /** How far from the pointer, in CSS px, the text a caret lands on may be and
  * still count as text under the pointer. */
@@ -25,7 +27,9 @@ export interface AreaRect { left: number; top: number; width: number; height: nu
 type Point = { x: number; y: number };
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
-const r4 = (v: number) => Math.round(v * 1e4) / 1e4;
+/** Fractions keep 6 decimal places: under 1 px on elements up to 1,000,000 px. */
+const r6 = (v: number) => Math.round(v * 1e6) / 1e6;
+const XHTML = "http://www.w3.org/1999/xhtml";
 
 /** The rectangle between the drag's start `a` and its current point `b`,
  * both clamped to the viewport `vp`. */
@@ -37,21 +41,22 @@ export function dragRect(a: Point, b: Point, vp: { w: number; h: number }): Area
   return { left: Math.min(ax, bx), top: Math.min(ay, by), width: Math.abs(bx - ax), height: Math.abs(by - ay) };
 }
 
-/** Whether a drag rectangle is too small to be an area (a click). */
+/** Whether a drag rectangle is too small to be an area (a click): narrower
+ * or shorter than `AREA_MIN`. */
 export function isClickSized(r: AreaRect): boolean {
-  return r.width < AREA_MIN && r.height < AREA_MIN;
+  return r.width < AREA_MIN || r.height < AREA_MIN;
 }
 
-/** `r` as fractions of `box` (both in client coordinates), rounded to 4
+/** `r` as fractions of `box` (both in client coordinates), rounded to 6
  * decimal places and clamped into the box, with some width and height. */
 export function areaFractions(r: AreaRect, box: AreaRect): AnchorArea {
   const fx = (v: number) => (box.width > 0 ? clamp((v - box.left) / box.width, 0, 1) : 0);
   const fy = (v: number) => (box.height > 0 ? clamp((v - box.top) / box.height, 0, 1) : 0);
   // A rectangle clamped onto the box's far edge keeps a sliver of width.
-  const x = Math.min(r4(fx(r.left)), 0.9999);
-  const y = Math.min(r4(fy(r.top)), 0.9999);
-  const w = Math.min(Math.max(1e-4, r4(fx(r.left + r.width) - fx(r.left))), r4(1 - x));
-  const h = Math.min(Math.max(1e-4, r4(fy(r.top + r.height) - fy(r.top))), r4(1 - y));
+  const x = Math.min(r6(fx(r.left)), 0.999999);
+  const y = Math.min(r6(fy(r.top)), 0.999999);
+  const w = Math.min(Math.max(1e-6, r6(fx(r.left + r.width) - fx(r.left))), r6(1 - x));
+  const h = Math.min(Math.max(1e-6, r6(fy(r.top + r.height) - fy(r.top))), r6(1 - y));
   return { x, y, w, h };
 }
 
@@ -63,23 +68,46 @@ export function areaBox(area: AnchorArea, box: AreaRect): Box {
 const holds = (b: AreaRect, r: AreaRect) =>
   b.left <= r.left + 0.5 && b.top <= r.top + 0.5 && b.left + b.width >= r.left + r.width - 0.5 && b.top + b.height >= r.top + r.height - 0.5;
 
+/** The box an area is placed in: for `<html>` (the document), the whole
+ * scrollable page in client coordinates; for any other element, its border box. */
+export function boxOf(el: Element): AreaRect {
+  const doc = el.ownerDocument;
+  if (el === doc.documentElement) {
+    const win = doc.defaultView!;
+    const se = doc.scrollingElement ?? doc.documentElement;
+    return { left: -win.scrollX, top: -win.scrollY, width: Math.max(se.scrollWidth, se.clientWidth), height: Math.max(se.scrollHeight, se.clientHeight) };
+  }
+  const b = el.getBoundingClientRect();
+  return { left: b.left, top: b.top, width: b.width, height: b.height };
+}
+
+/** `el`, or for an element inside foreign content (inline SVG, MathML) the
+ * outermost foreign element around it: the `<svg>` of a chart, never one of
+ * its shapes. */
+export function foreignRoot(el: Element): Element {
+  let cur = el;
+  while (cur.namespaceURI !== XHTML && cur.parentElement && cur.parentElement.namespaceURI !== XHTML) cur = cur.parentElement;
+  return cur;
+}
+
 /** The smallest element under the rectangle's centre, or an ancestor of one,
- * whose border box holds all of `r`; the body when none does (the rectangle
- * is then clamped into the body's box by `areaFractions`). */
+ * whose border box holds all of `r`, counting inline SVG and other foreign
+ * content as one element (its outermost foreign element); `<html>` (the
+ * document) when no element in the body holds it. */
 export function containingElement(doc: Document, r: AreaRect): Element {
   const hits = typeof doc.elementsFromPoint === "function" ? doc.elementsFromPoint(r.left + r.width / 2, r.top + r.height / 2) : [];
   let best: Element | null = null;
   let bestArea = Infinity;
   for (const hit of hits) {
     if (hit.closest(OVERLAY_TAG)) continue;
-    for (let e: Element | null = hit; e && e !== doc.documentElement; e = e.parentElement) {
+    for (let e: Element | null = foreignRoot(hit); e && e !== doc.documentElement; e = e.parentElement) {
       const b = e.getBoundingClientRect();
       if (!holds(b, r)) continue;
       if (b.width * b.height < bestArea) { best = e; bestArea = b.width * b.height; }
       break;
     }
   }
-  return best ?? doc.body;
+  return best ?? doc.documentElement;
 }
 
 /** An area anchor for the rectangle `r` (viewport pixels) drawn on the page
@@ -87,9 +115,9 @@ export function containingElement(doc: Document, r: AreaRect): Element {
 export function buildAreaAnchor(doc: Document, r: AreaRect, file: string = INDEX_FILE, el: Element = containingElement(doc, r)): Anchor {
   const win = doc.defaultView!;
   return {
-    kind: "area", selector: cssPath(el), quote: null, prefix: null, suffix: null, html_hash: htmlHash(el),
+    kind: "area", selector: el === doc.documentElement ? "html" : cssPath(el), quote: null, prefix: null, suffix: null, html_hash: el === doc.documentElement ? null : htmlHash(el),
     rect: { x: r.left, y: r.top, w: r.width, h: r.height, scrollX: win.scrollX, scrollY: win.scrollY, viewportW: win.innerWidth },
-    custom_name: null, area: areaFractions(r, el.getBoundingClientRect()), file,
+    custom_name: null, area: areaFractions(r, boxOf(el)), file,
   };
 }
 

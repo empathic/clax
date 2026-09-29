@@ -85,23 +85,36 @@ describe("comments (page side)", () => {
     expect(f.rpc.call.mock.calls.filter(c => c[1] === "release")).toHaveLength(1);
   });
 
-  it("compose sends the area flag only in comment mode, with a clip attempt for a domAnchor path", async () => {
-    const f = fakeRpc(() => ({ opened: true }));
+  it("compose sends the area flag only while areas are possible, asks the shell before rendering, and sends the clip after under the nonce", async () => {
+    const order: string[] = [];
+    const f = fakeRpc(method => { order.push(method); return method === "compose" ? { opened: true, clipNonce: "n1" } : null; });
     const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
     const ctl = await on.customAnchors({ mode() {}, threads() {}, reveal() {} });
     const sent = () => (f.rpc.call.mock.calls.filter(c => c[1] === "compose").at(-1)![2] as Record<string, unknown>[])[0];
     await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
     expect(sent()).not.toHaveProperty("area");
-    f.emit("mode", { on: true });
+    // A post or send in flight: the shell says areas are off.
+    f.emit("mode", { on: true, canArea: false });
+    expect(ctl.areas).toBe(false);
+    await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
+    expect(sent()).not.toHaveProperty("area");
+    f.emit("mode", { on: true, canArea: true });
     expect(ctl.areas).toBe(true);
     await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
-    expect(sent()).toMatchObject({ anchor: "shape-1", dom: false, area: true });
-    expect(sent()).not.toHaveProperty("clipError");
+    expect(sent()).toMatchObject({ anchor: "shape-1", dom: false, area: true, clipPending: false });
     const [path, at] = ctl.domAnchor(document.querySelector("h2")!) as [string, unknown];
-    await ctl.compose(path, at, { area: true });
-    // jsdom cannot render a clip; the attempt's error goes along.
-    expect(sent()).toMatchObject({ anchor: path, dom: true, area: true });
-    expect(typeof sent().clipError).toBe("string");
+    order.length = 0;
+    // The page sees only `opened`, never the nonce.
+    await expect(ctl.compose(path, at, { area: true })).resolves.toEqual({ opened: true });
+    expect(sent()).toMatchObject({ anchor: path, dom: true, area: true, clipPending: true });
+    expect(sent()).not.toHaveProperty("clipPng");
+    // The clip is rendered after the shell answered, and sent under its nonce (jsdom cannot render: its error goes).
+    await vi.waitFor(() => expect(order).toEqual(["compose", "composeClip"]));
+    const clip = (f.rpc.call.mock.calls.find(c => c[1] === "composeClip")![2] as Record<string, unknown>[])[0];
+    expect(clip.nonce).toBe("n1");
+    expect(typeof clip.clipError).toBe("string");
+    f.emit("mode", { on: false });
+    expect(ctl.areas).toBe(false);
     ctl.release();
   });
 

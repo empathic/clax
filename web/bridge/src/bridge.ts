@@ -25,7 +25,7 @@
  * places the pins, and its placements are re-sent on scroll and resize.
  */
 import { AnchorCache, type Resolved, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
-import { areaBox, buildAreaAnchor, containingElement } from "./area";
+import { areaBox, boxOf, buildAreaAnchor, containingElement } from "./area";
 import { acceptFromShell, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
@@ -69,7 +69,7 @@ import { makeUse } from "./use";
   /** Where a resolved anchor is now: an area's rectangle projected onto its
    * element, else the range or element. */
   const placeOf = (anchor: Anchor, r: Resolved): Box => {
-    if (anchor.kind === "area" && anchor.area) { const b = r.element.getBoundingClientRect(); return areaBox(anchor.area, { left: b.left, top: b.top, width: b.width, height: b.height }); }
+    if (anchor.kind === "area" && anchor.area) return areaBox(anchor.area, boxOf(r.element));
     return box(r.range ?? r.element);
   };
 
@@ -117,13 +117,13 @@ import { makeUse } from "./use";
     pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)); },
     pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)); },
     // The clip starts at once, from the page as it is at release: the drawn
-    // rectangle (clamped into its element) cropped out of its element.
+    // rectangle cropped out of a render of its element. The rectangle stays
+    // drawn (as capturing) until the pick is posted.
     pickArea: r => {
       const el = containingElement(document, r);
       const anchor = buildAreaAnchor(document, r, meta.file, el);
-      const b = el.getBoundingClientRect();
-      const clip = renderAreaClip(el, areaBox(anchor.area!, { left: b.left, top: b.top, width: b.width, height: b.height }));
-      void pick(anchor, () => clip);
+      const clip = renderAreaClip(el, areaBox(anchor.area!, boxOf(el)));
+      void pick(anchor, () => clip).finally(() => mode.captured());
     },
     cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
   });
@@ -173,7 +173,7 @@ import { makeUse } from "./use";
       }
       case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; updateFocus(); break;
       case "artifax:key":
-        if ((m.key === "Alt" || m.key === "ArrowUp" || m.key === "ArrowDown") && typeof m.down === "boolean") mode.key(m.key, m.down);
+        if ((m.key === "Alt" || m.key === "ArrowUp" || m.key === "ArrowDown" || m.key === "Escape") && typeof m.down === "boolean") mode.key(m.key, m.down);
         break;
     }
   });

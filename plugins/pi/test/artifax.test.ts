@@ -465,6 +465,9 @@ describe("comments", () => {
     await browserThread(aid, "what is this gap?", daemon.base, { kind: "area", selector: "body > h2", area, file: "index.html" });
     const drawn = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
     expect(drawn.anchor).toMatchObject({ kind: "area", area, summary: "area in body > h2 (42% × 18%)" });
+    await browserThread(aid, "this thin line", daemon.base, { kind: "area", selector: "body > h2", area: { x: 0, y: 0.5, w: 0.4213, h: 0.003 }, file: "index.html" });
+    const thin = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json.threads.at(-1);
+    expect(thin.anchor.summary).toBe("area in body > h2 (42% × <1%)");
     expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });
     expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: sent, text: "Fixed." }, ctx)).json).toMatchObject({ replied: true });
     expect(parts(await pi.callToolAsPi("artifax_comments_resolve", { url_or_id: aid, thread_id: sent }, ctx)).json).toMatchObject({ resolved: true, status: "resolved" });

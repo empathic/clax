@@ -17,6 +17,11 @@ const TALLER = `<!doctype html><html><head><title>Areas</title>${STYLE}</head><b
 const LINES = Array.from({ length: 300 }, (_, i) => `line ${i + 1}: the quick brown fox`).join("\n");
 const LONG = `<!doctype html><html><head><title>Long</title><style>body{margin:0;font:14px/20px monospace}main{padding:8px}pre{margin:0;padding:8px;background:#f1f5f9}</style></head><body><main id="m"><pre id="src">${LINES}</pre></main></body></html>`;
 
+// An inline SVG chart: a pale background rect, a red bar and a blue bar.
+const CHART = `<!doctype html><html><head><title>Chart</title><style>body{margin:0}main{padding:16px}</style></head><body><main><div id="card"><svg id="chart" width="400" height="300"><rect width="400" height="300" fill="#f1f5f9"/><g id="bars"><rect x="60" y="100" width="80" height="200" fill="#dc2626"/><rect x="200" y="50" width="80" height="250" fill="#2563eb"/></g></svg></div></main></body></html>`;
+// A page far shorter than the viewport: one green box 120 px tall.
+const SHORT_PAGE = `<!doctype html><html><head><title>Short</title><style>body{margin:0;background:#fff}#box{height:120px;background:#16a34a}</style></head><body><div id="box"></div></body></html>`;
+
 type R = { x: number; y: number; w: number; h: number };
 const rectOf = (frame: Frame, sel: string) => frame.evaluate(s => { const b = document.querySelector(s)!.getBoundingClientRect(); return { x: b.x, y: b.y, w: b.width, h: b.height }; }, sel);
 const frameBox = async (page: Page) => (await page.locator("iframe.frame").boundingBox())!;
@@ -206,5 +211,81 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await commentMode(page, frame);
     await page.mouse.move(fb.x + 62, fb.y + 202);
     await expect.poll(async () => { const o = await outline(); return o.shown && o.h < 40; }).toBe(true);
+  });
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: an area over an inline SVG chart anchors on the <svg> and its clip is the exact rectangle of the chart`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Chart ${mode}`, { "index.html": CHART });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    const chart = await rectOf(frame, "#chart");
+    // 260 × 120 from inside the red bar's column across into the blue bar.
+    const r: R = { x: chart.x + 40, y: chart.y + 80, w: 260, h: 120 };
+    await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "area", selector: "#chart" });
+    expect(pick.clipError).toBeUndefined();
+    const clip = await expectAreaClip(page, pick.pickId, r.w, r.h);
+    // Cropped, not squashed: the red bar covers about a quarter of the clip
+    // (8,000 of 31,200 px) and the blue one about a third (9,600), where the
+    // whole chart squashed would show 13% and 17%.
+    const red = (await colorStats(page, pick.pickId, [220, 38, 38], 40)).count / (clip.w * clip.h);
+    const blue = (await colorStats(page, pick.pickId, [37, 99, 235], 40)).count / (clip.w * clip.h);
+    expect(red).toBeGreaterThan(0.2);
+    expect(red).toBeLessThan(0.32);
+    expect(blue).toBeGreaterThan(0.24);
+    expect(blue).toBeLessThan(0.37);
+  });
+
+  test(`${mode}: an area drawn below a short page anchors on the document, unclamped, with a clip of what is there`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Short page ${mode}`, { "index.html": SHORT_PAGE });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    const box = await rectOf(frame, "#box");
+    // From inside the green box down into the empty canvas below the page.
+    const r: R = { x: 40, y: box.y + 60, w: 200, h: 340 };
+    await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "area", selector: "html", html_hash: null });
+    expect(pick.clipError).toBeUndefined();
+    const clip = await expectAreaClip(page, pick.pickId, r.w, r.h);
+    // The top 60 px of 340 are green; the rest is the page's white canvas.
+    const green = await colorStats(page, pick.pickId, [22, 163, 74], 40);
+    expect(green.count / (clip.w * clip.h)).toBeGreaterThan(0.13);
+    expect(green.count / (clip.w * clip.h)).toBeLessThan(0.22);
+    expect(green.top).toBe(0);
+    const card = await post(page, "Below the page");
+    const tid = (await card.getAttribute("data-thread"))!;
+    const t = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}`);
+    expect(t.thread.anchor).toMatchObject({ kind: "area", selector: "html" });
+    // Its pin is at the drawn rectangle's top right, not clamped onto the body.
+    const fb = await frameBox(page);
+    await expect.poll(async () => {
+      const p = await page.locator("button.thread-pin").boundingBox();
+      return p ? Math.abs(p.x - (fb.x + r.x + r.w - 12)) < 4 && Math.abs(p.y - (fb.y + r.y - 12)) < 4 : false;
+    }).toBe(true);
+  });
+
+  test(`${mode}: a drag selection made with Option picks the whole paragraph as an element`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Option drag ${mode}`, { "index.html": PAGE });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await commentMode(page, frame);
+    const para = await rectOf(frame, "#para");
+    const fb = await frameBox(page);
+    await page.mouse.move(fb.x + para.x + 2, fb.y + para.y + 12);
+    await page.keyboard.down("Alt");
+    await page.mouse.down();
+    await page.mouse.move(fb.x + para.x + 150, fb.y + para.y + 12, { steps: 6 });
+    await page.mouse.up();
+    await page.keyboard.up("Alt");
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "element", selector: "#para" });
+    expect(pick.anchor.quote).toContain("The quick brown fox jumps over the lazy dog");
+    expect(pick.clipError).toBeUndefined();
+    await expectVisibleClip(page, pick.pickId);
   });
 }

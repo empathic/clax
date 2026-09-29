@@ -17,7 +17,10 @@ export interface CommentsUi {
    * unless `opts.area` (a page's drawn area), which moves that composer to
    * the new anchor with its text. `label` is the page's words for the spot,
    * shown in the composer only. */
-  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string }, opts?: { area?: boolean }): boolean;
+  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string }, opts?: { area?: boolean }): boolean;
+  /** The clip for the composer opened with `clipToken` (dropped when that
+   * composer is gone or was opened again for another pick). */
+  attachClip?(clipToken: string, clip: Blob | null, clipError?: string): void;
   upsert(t: Thread): void;
   /** Drops a thread the page deleted. */
   remove(threadId: string): void;
@@ -28,7 +31,8 @@ export interface CommentsUi {
   select(threadId: string): void;
   /** Leaves comment mode unless a composer holds typed text. */
   exitMode(): void;
-  state(): { mode: boolean; composing: boolean; threads: Thread[]; selected: string | null };
+  /** `busy`: a post or a send to the agent is in flight. */
+  state(): { mode: boolean; composing: boolean; threads: Thread[]; selected: string | null; busy?: boolean };
   /** The viewer's click over an open composer or thread card: closes an empty
    * composer or the card (a composer holding typed text stays); true when
    * something closed. */

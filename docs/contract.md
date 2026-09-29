@@ -625,27 +625,40 @@ viewer comment on it is sent too. A viewer comment on a resolved thread
 reopens it.
 
 A drag in comment mode that starts where no text is under the pointer (empty
-space, padding, an image, a canvas), or any drag with Shift held, draws a
-rectangle instead of selecting text; a drag that starts over text still
-selects it, and a rectangle smaller than 8 × 8 px is a click. The rectangle
-shows while dragging, Escape drops it, and releasing picks an **area**: an
-anchor of kind `area` whose `selector` names the smallest element whose
-border box holds the whole rectangle, whose `area` places the rectangle in
-that box as fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 4 decimal
-places), and whose `rect` holds the rectangle in viewport pixels with the
-page's scroll at draw time. The area's clip is always taken, at release, of
-exactly the rectangle as the page rendered it (its element rendered and
-cropped to it). On a later version the area follows its element (found by
-selector) and is projected onto the element's box then; without the element
-the thread is detached. Area threads get their numbered pin at the area's
-top right, and the page outlines the area dashed while its thread is hovered
-in the sidebar or its pin is hovered, or the thread is selected. Holding
-Option (Alt) targets the enclosing element of the target under the pointer
-(the whole oversized code panel instead of one line); each Up press widens
-one more ancestor, Down narrows back, releasing Option returns to the usual
-target, and a click while widened picks that element. Option, Up, and Down
-work with focus in the page or in the shell while the pointer is over the
-page.
+space, padding, an image, a canvas, an inline SVG), or any drag with Shift
+held, draws a rectangle instead of selecting text; a drag that starts over
+text still selects it, and a rectangle narrower or shorter than 8 px is a
+click. The rectangle shows while dragging, Escape drops it (Escape with no
+drag ends comment mode), and releasing picks an **area**: an anchor of kind
+`area` whose `selector` names the smallest element whose border box holds the
+whole rectangle (an inline `<svg>` counts as one element, never one of its
+shapes; `html`, the whole scrollable page, when no element in the body holds
+it, as below a short page), whose `area` places the rectangle in that box as
+fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 6 decimal places), and whose
+`rect` holds the rectangle in viewport pixels with the page's scroll at draw
+time. The area's clip is always taken, at release, of exactly the rectangle
+as the page rendered it (its nearest HTML element rendered and cropped to
+it); the rectangle stays drawn, dashed, until the clip is taken, and no other
+pick starts meanwhile. A clip over 5 MiB is rendered again at half the scale,
+up to three times; one that still does not fit, or a pick's clip over the cap,
+is dropped with the reason shown in the composer, and a thread the daemon
+kept without its clip says so in the notice banner. On a later version the
+area follows its element (found by selector) and is projected onto the
+element's box then; without the element the thread is detached, and so it is
+when only the selector (not the element's content hash) matched and the
+element's width differs by more than 25% from its width at draw time (while
+the viewport's width is within 5% of what it was). Area threads get their
+numbered pin at the area's top right, and the page outlines the area dashed
+while its thread is hovered in the sidebar or its pin is hovered, or the
+thread is selected. Holding Option (Alt) targets the enclosing element of the
+target under the pointer (the whole oversized code panel instead of one
+line); each Up press widens one more ancestor, Down narrows back, releasing
+Option returns to the usual target, and a click, or a drag selection, while
+widened picks that element (a drag selection is widened at least to its
+block); Option never starts an area drag. Option, Up, Down, and Escape work
+with focus in the page or in the shell while the pointer is over the page.
+Only the viewer's own input counts: the bridge ignores events the page
+dispatched, and the shell takes a pick only while comment mode is on.
 
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
@@ -745,14 +758,19 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   typed text stays) and resolves `{opened: false}`; otherwise it opens the
   composer and starts comment mode. Its `label` is shown in the composer and
   never stored (`detail` is dropped); the anchor is the name alone, or the
-  `domAnchor` path. `areas` reads true while comment mode is on and the
-  registration is live (false after `release`). `compose` with `{area: true}`
-  while it reads true passes the same gesture check, then opens the composer
-  even over an open composer or thread card (a composer with typed text moves
-  to the new anchor, text kept), and on a `domAnchor` path anchors a drawn
-  area covering that whole element (kind `area`, fractions 0, 0, 1, 1) with a
-  clip of the element; on a page-invented name the anchor stays the name.
-  Outside comment mode `opts.area` is ignored. `openComposer` takes no area
+  `domAnchor` path. `areas` reads true while comment mode is on, no post or
+  send to the agent is in flight, and the registration is live (false after
+  `release`); the shell sends it with the mode (`mode` event `canArea`).
+  `compose` with `{area: true}` while it reads true passes the same gesture
+  check before anything is rendered, then opens the composer even over an
+  open composer or thread card (a composer with typed text moves to the new
+  anchor, text kept). The page's rectangle is not known to the shell, so the
+  anchor is the `domAnchor` path's element (kind `element`) or the page's
+  name; for a `domAnchor` path the composer says the screenshot is being
+  taken, and the bridge renders the element's clip only after the shell
+  answered, sending it with a one-shot nonce (`composeClip`) that the page's
+  `compose` result never carries; a clip over 5 MiB is refused with "the
+  screenshot was too large". Otherwise `opts.area` is ignored. `openComposer` takes no area
   form in 0.2.61. Pins cannot be dragged, so `move` is never called.
 
 ### Shell URLs
@@ -857,7 +875,8 @@ page's file followed by ` › ` when it is not `index.html`
 (`Anchored on: source.html › main > h2  «Sources»  (v3)`), the
 selector (`custom:<name>` for a custom anchor; `area in <selector> (<w>% ×
 <h>%)` for a drawn area, its share of the element's width and height in whole
-percent, e.g. `area in main > section:nth-of-type(2) (42% × 18%)`) and, when there is one, the
+percent, `<1%` for a share under half a percent, e.g. `area in main >
+section:nth-of-type(2) (42% × 18%)`) and, when there is one, the
 quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A comment the page wrote through the

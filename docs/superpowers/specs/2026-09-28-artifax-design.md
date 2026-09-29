@@ -500,16 +500,25 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `iframe`, `object`, `embed`, or `picture`), or any drag with Shift held,
   draws a rectangle instead: shown live in the outline's colours, clamped to
   the viewport with all four borders visible; Escape drops it; one narrower
-  and shorter than 8 px is a click. Releasing it creates an area anchor. While
+  or shorter than 8 px is a click. Releasing it creates an area anchor; the
+  rectangle stays drawn, dashed, until its clip is taken, and no other pick
+  starts meanwhile. While
   Option (Alt) is held the target is the enclosing element of the target
   under the pointer (a line's nearest block ancestor, an element's parent);
   each Up press widens one more ancestor (never past `body`), Down narrows
   back, releasing Option returns to the usual target, and a click picks the
-  widened element. The bridge takes Option from its own key events and from
-  the pointer events' `altKey`; the shell forwards Option, and Up and Down
-  while Option is held, as `artifax:key` (`key` one of `Alt`, `ArrowUp`,
-  `ArrowDown`; `down` a boolean; anything else is ignored) while comment mode
-  is on and the pointer is over the frame, unless focus is in a text field.
+  widened element; a drag selection with Option held picks the widened
+  element too (at least the selection's block), and an Option press never
+  starts an area drag or a native image drag. The bridge takes Option from its
+  own key events and from the pointer events' `altKey`; the shell forwards
+  Option, Up and Down while Option is held, and Escape, as `artifax:key`
+  (`key` one of `Alt`, `ArrowUp`, `ArrowDown`, `Escape`; `down` a boolean;
+  anything else is ignored) while comment mode is on and the pointer is over
+  the frame, unless focus is in a text field. A forwarded Escape drops a drag
+  in progress, else the bridge answers `artifax:cancel` and the shell leaves
+  comment mode; Escape elsewhere leaves it at once. The bridge's comment mode
+  acts only on trusted (viewer) events, and the shell takes `artifax:pick`
+  only while comment mode is on.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the
@@ -675,17 +684,25 @@ on its own page. Its summary (the payload's "Anchored on" line) starts with
 An `area` anchor (a rectangle the viewer drew) also carries `"area": {"x",
 "y", "w", "h"}`: the rectangle as fractions of the border box of the smallest
 element that holds all of it (under the rectangle's centre, or an ancestor of
-such an element; `body` when none does, the rectangle then clamped into it),
-each in 0 to 1 with 4 decimal places, `w` and `h` above 0, `x + w` and `y +
-h` at most 1. `selector` names that element (`cssPath`, within the 1024
-limit), `rect` is the rectangle in viewport pixels with the page's scroll at
-draw time, and `quote` is null. The daemon refuses an area anchor without a
+such an element, where an element inside inline SVG or other foreign content
+counts as its outermost foreign element, the `<svg>`), each in 0 to 1 with 6
+decimal places, `w` and `h` above 0, `x + w` and `y + h` at most 1. When no
+element in the body holds it (below a page shorter than the viewport, or
+starting in the margin of a centred body) the area is on the document:
+`selector` is `html`, `html_hash` is null, and the fractions are of the whole
+scrollable page (`scrollingElement`'s scroll size, from the page's top left),
+unclamped. Otherwise `selector` names that element (`cssPath`, within the
+1024 limit). `rect` is the rectangle in viewport pixels with the page's
+scroll at draw time, and `quote` is null. The daemon refuses an area anchor without a
 selector or with fractions out of range, and an `area` on any other kind
 (`invalid_anchor`); `area` is absent from other kinds' JSON. Its summary is
-`area in <selector> (<w>% × <h>%)` (whole percent). An area re-resolves by
-selector (exact with a matching `html_hash`, else selector alone; it has no
-quote to fall back on) and its fractions are projected onto the element's box
-then; otherwise it is detached.
+`area in <selector> (<w>% × <h>%)` (whole percent; `<1%` for a share under
+half a percent). An area re-resolves by selector (exact with a matching
+`html_hash`, else selector alone; it has no quote to fall back on) and its
+fractions are projected onto the element's box then; otherwise it is
+detached. A selector-only match whose element's width differs by more than
+25% from its width at draw time (`rect.w / area.w`) is detached as well,
+unless the viewport's width changed by more than 5% since.
 
 Re-resolution order on a new version: exact `selector` with matching
 `html_hash`; `selector` alone; text `quote` with `prefix`/`suffix` search;
@@ -720,8 +737,16 @@ canvas are dropped from the render; the thread still stores the anchor and
 quote. The clip is saved at `~/.artifax/artifacts/<aid>/clips/<tid>.png` so
 an agent can view it with its own file-reading tool.
 
+Every clip is at most 5 MiB (the daemon's cap): a render over that is repeated
+at half the scale, up to three times, and then given up with the reason shown
+in the composer; the shell drops a pick's clip over the cap with that reason
+too, and says in its notice banner when the daemon kept a thread without its
+clip.
+
 An area's clip is mandatory in intent: at release the bridge renders the
-area's element cropped to exactly the rectangle (clamped into the element),
+area's nearest HTML element (the body for an area on the document; the
+nearest HTML ancestor of an `<svg>`, which modern-screenshot would otherwise
+draw whole) cropped to exactly the rectangle,
 at device pixel ratio capped at 1600 px on the long side, within a 12 s limit
 (longer than other clips, since the element is often the page's main
 column), in both frame modes. A failed render is reported in the composer,

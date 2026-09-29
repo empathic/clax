@@ -94,9 +94,10 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     if (registered) throw invalid("a registration is already live; release it first");
     registered = true;
     let released = false;
-    // Comment mode as the shell last reported it; `areas` and `compose`'s
-    // `area` follow it.
-    let modeOn = false;
+    // Whether an area compose could start, as the shell last reported it
+    // with the mode (comment mode on, no post or send in flight); `areas`
+    // and `compose`'s `area` follow it.
+    let canArea = false;
     let placedOnce = false;
     let lastPlaced: Record<string, DocPoint> = {};
     let frame = 0;
@@ -104,7 +105,11 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     // Callbacks are cheap and infallible by contract; a throw is discarded.
     const safe = (f: () => void) => { try { f(); } catch { /* discarded */ } };
     const offs = [
-      rpc.on("comments", "mode", d => { modeOn = (d as { on?: unknown })?.on === true; safe(() => (cb.mode as (on: boolean) => void)(modeOn)); }),
+      rpc.on("comments", "mode", d => {
+        const on = (d as { on?: unknown })?.on === true;
+        canArea = on && (d as { canArea?: unknown })?.canArea !== false;
+        safe(() => (cb.mode as (on: boolean) => void)(on));
+      }),
       rpc.on("comments", "threads", d => safe(() => (cb.threads as (l: unknown) => void)((d as { list?: unknown })?.list ?? []))),
       rpc.on("comments", "reveal", d => { if (placedOnce) safe(() => (cb.reveal as (id: string) => void)(String((d as { id?: unknown })?.id))); }),
       rpc.on("comments", "composing", d => { if (typeof cb.composing === "function") safe(() => (cb.composing as (o: boolean) => void)((d as { open?: unknown })?.open === true)); }),
@@ -161,17 +166,26 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         }
         const base = { anchor, dom, label: o.label as string | undefined, detail: o.detail as string | undefined, version: commentsContext.version };
         // `area` is honoured only while it could be (comments.d.ts: `areas`).
-        if (o.area !== true || !modeOn) return rpc.call("comments", "compose", [base]);
-        // An area on a domAnchor path covers that element: the shell anchors
-        // it as a drawn area over all of it, with a clip of the element.
-        return (async () => {
-          let clipPng: ArrayBuffer | undefined;
-          let clipError: string | undefined;
-          let el: Element | null = null;
-          if (dom) { try { el = document.querySelector(anchor as string); } catch { el = null; } }
-          if (el) { try { clipPng = await renderTargetClip(el); } catch (e) { clipError = e instanceof Error ? e.message : String(e); } }
-          return rpc.call("comments", "compose", [{ ...base, area: true, ...(dom ? { clipPng, clipError } : {}) }]);
-        })();
+        if (o.area !== true || !canArea) return rpc.call("comments", "compose", [base]);
+        // An area on a domAnchor path: the shell checks the viewer's gesture
+        // and opens the composer at once; the element's clip is rendered only
+        // then and sent after it under the one-shot nonce the shell answered
+        // (never handed to the page).
+        let el: Element | null = null;
+        if (dom) { try { el = document.querySelector(anchor as string); } catch { el = null; } }
+        return rpc.call("comments", "compose", [{ ...base, area: true, clipPending: !!el }]).then(r => {
+          const res = (r ?? {}) as { opened?: unknown; clipNonce?: unknown };
+          const nonce = res.clipNonce;
+          if (el && typeof nonce === "string") {
+            void (async () => {
+              let clipPng: ArrayBuffer | undefined;
+              let clipError: string | undefined;
+              try { clipPng = await renderTargetClip(el); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
+              await rpc.call("comments", "composeClip", [{ nonce, clipPng, clipError }]).catch(() => {});
+            })();
+          }
+          return { opened: res.opened === true };
+        });
       },
       open(id: unknown, at: unknown) {
         if (released) return gone();
@@ -195,9 +209,8 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         if (!released) void rpc.call("comments", "exitMode", []).catch(() => {});
       },
       release,
-      // Area-anchored comments are not offered yet: `opts.area` is ignored.
       get areas() {
-        return !released && modeOn;
+        return !released && canArea;
       },
     };
   };

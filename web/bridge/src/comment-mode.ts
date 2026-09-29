@@ -6,8 +6,13 @@
 // element instead, one ancestor further per Up press and back per Down
 // (`area.ts`). A drag that starts where no text is under the pointer, or any
 // drag with Shift held, draws a rectangle (shown live, clamped to the
-// viewport); one smaller than `AREA_MIN` each way is a click, and Escape
-// drops it. The outline is clamped to the viewport so all four borders show,
+// viewport); one narrower or shorter than `AREA_MIN` is a click, and Escape
+// drops it (Escape with no drag ends comment mode). After release the
+// rectangle stays drawn, dashed, until its clip is taken (`captured`), and no
+// new area drag starts meanwhile. With Option held a drag selection picks the
+// widened element instead of the text, and a press never starts a native
+// drag of an image. Only the viewer's own (trusted) events count, so a page
+// cannot pick for them with synthetic events. The outline is clamped to the viewport so all four borders show,
 // in colours judged from the background behind the target. A selection that
 // already existed when the mode was turned on is not a pick; turning the
 // mode off drops any pending hover, drag, and widening. The overlay lives in
@@ -15,7 +20,7 @@
 // text; it also draws the dashed outline of a focused thread's area.
 
 import { OVERLAY_TAG } from "./anchor";
-import { type AreaRect, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
+import { type AreaRect, REPLACED, Widen, dragRect, isClickSized, nonTextAt, widenedTarget } from "./area";
 import type { Box } from "./protocol";
 import { backgroundBehind, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
@@ -31,6 +36,7 @@ export interface ModeHooks {
 const CSS = `:host{all:initial}
 .o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid var(--ax-border,#c2410c);border-radius:3px;background:var(--ax-tint,rgba(194,65,12,.18));z-index:2147483647;display:none}
 .a{border-radius:0}
+.a.capturing{border-style:dashed;background:none}
 .f{border-style:dashed;border-radius:0;background:none}
 .o.flash,.f.flash{animation:f .9s ease-out 2}
 .pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#c2410c;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2147483647;display:none}
@@ -56,8 +62,14 @@ export class CommentMode {
   private border = "";
   private pointer = { x: 0, y: 0, el: null as Element | null };
   private selectionBefore: Range | null = null;
+  /** A picked area's clip is being taken. */
+  private capturing = false;
+  private readonly trustedOnly: boolean;
 
-  constructor(private readonly doc: Document, private readonly hooks: ModeHooks) {
+  /** `opts.trustedOnly` (default true) ignores events the page dispatched
+   * itself; tests that synthesise input turn it off. */
+  constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean } = {}) {
+    this.trustedOnly = opts.trustedOnly ?? true;
     this.host = doc.createElement(OVERLAY_TAG);
     const root = this.host.attachShadow({ mode: "open" });
     root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div>`;
@@ -98,7 +110,21 @@ export class CommentMode {
       this.base = null;
       this.widen.stop();
       this.endDrag();
+      this.captured();
     }
+  }
+
+  /** The picked area's clip was taken: its rectangle is removed, and new area
+   * drags may start. */
+  captured(): void {
+    this.capturing = false;
+    this.areaBox.classList.remove("capturing");
+    if (!this.drag) this.areaBox.style.display = "none";
+  }
+
+  /** Whether `e` is the viewer's own input (or trust is not required). */
+  private real(e: Event): boolean {
+    return !this.trustedOnly || e.isTrusted;
   }
 
   /** Outlines `target` briefly (after a scroll-to). */
@@ -126,10 +152,17 @@ export class CommentMode {
 
   /** A key pressed (`down`) or released in the shell while the pointer is
    * over the frame, or in the page: Option widens, Up and Down move the
-   * widening while it is on. Whether the key was used (an arrow key's
+   * widening while it is on, Escape drops a drag in progress or else ends
+   * comment mode (`cancel`). Whether the key was used (an arrow key's
    * default, scrolling, is then prevented). */
   key(key: string, down: boolean): boolean {
     if (!this.on) return false;
+    if (key === "Escape") {
+      if (!down) return false;
+      if (this.drag) this.endDrag();
+      else this.hooks.cancel();
+      return true;
+    }
     if (key === "Alt") { this.setAlt(down); return false; }
     if (!down || !this.widen.active) return false;
     if (key === "ArrowUp") this.widen.up();
@@ -201,12 +234,14 @@ export class CommentMode {
     return dragRect({ x: d.x - win.scrollX, y: d.y - win.scrollY }, { x, y }, viewportOf(this.doc));
   }
 
+  /** Drops a drag in progress (a capturing rectangle stays). */
   private endDrag(): void {
     this.drag = null;
-    this.areaBox.style.display = "none";
+    if (!this.capturing) this.areaBox.style.display = "none";
   }
 
   private onMove = (e: MouseEvent) => {
+    if (!this.real(e)) return;
     Object.assign(this.pin.style, { display: "block", left: `${e.clientX}px`, top: `${e.clientY}px` });
     if (this.drag) {
       // The button came up outside the frame: the drag is dropped.
@@ -241,27 +276,40 @@ export class CommentMode {
    * the pointer (the press's default, starting a selection or dragging an
    * image, is then prevented). */
   private onDown = (e: MouseEvent) => {
+    if (!this.real(e)) return;
     this.suppressClick = false;
     this.endDrag();
-    if (e.button !== 0 || this.widen.active) return;
+    if (e.button !== 0) return;
     const el = this.target(e);
+    // With Option held a press widens (a click, or a drag selection picks the
+    // widened element); it never starts a native drag of an image.
+    if (this.widen.active || e.altKey) {
+      if (el?.closest(REPLACED)) e.preventDefault();
+      return;
+    }
     if (!e.shiftKey && !nonTextAt(this.doc, el, e.clientX, e.clientY)) return;
     e.preventDefault();
+    // One area at a time: none starts while the last one's clip is taken.
+    if (this.capturing) return;
     const win = this.doc.defaultView!;
     this.drag = { x: e.clientX + win.scrollX, y: e.clientY + win.scrollY };
     this.colour(el ?? this.doc.body);
   };
 
   private onUp = (e: MouseEvent) => {
+    if (!this.real(e)) return;
     if (this.drag) {
       const r = this.dragRectTo(e.clientX, e.clientY);
-      this.endDrag();
+      this.drag = null;
       if (!isClickSized(r)) {
         this.suppressClick = true;
         this.hovered = null;
+        this.capturing = true;
+        this.areaBox.classList.add("capturing");
         this.hooks.pickArea(r);
         return;
       }
+      this.areaBox.style.display = "none";
     }
     const sel = this.doc.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
@@ -272,13 +320,21 @@ export class CommentMode {
     this.selectionBefore = null;
     this.suppressClick = true;
     sel.removeAllRanges();
+    if (this.widen.active || e.altKey) {
+      // Option widens a drag selection like a click: to the enclosing element.
+      const w = widenedTarget(r, Math.max(1, this.widen.level)).target;
+      if (w instanceof Element) { this.hooks.pickElement(w); return; }
+    }
     this.hooks.pickRange(r);
   };
 
   private onClick = (e: MouseEvent) => {
+    if (!this.real(e)) return;
     e.preventDefault();
     e.stopPropagation();
     if (this.suppressClick) { this.suppressClick = false; return; }
+    // No other pick while an area's clip is being taken.
+    if (this.capturing) return;
     let t = this.choose(this.target(e), e.clientX, e.clientY);
     if (t && (this.widen.active || e.altKey)) t = widenedTarget(t, this.widen.active ? this.widen.level : 1).target;
     if (t instanceof Element) this.hooks.pickElement(t);
@@ -286,15 +342,12 @@ export class CommentMode {
   };
 
   private onKey = (e: KeyboardEvent) => {
-    if (e.key === "Escape") {
-      if (this.drag) this.endDrag();
-      else this.hooks.cancel();
-      return;
-    }
-    if (this.key(e.key, true)) e.preventDefault();
+    if (!this.real(e)) return;
+    if (this.key(e.key, true) && e.key !== "Escape") e.preventDefault();
   };
 
   private onKeyUp = (e: KeyboardEvent) => {
+    if (!this.real(e)) return;
     this.key(e.key, false);
   };
 }

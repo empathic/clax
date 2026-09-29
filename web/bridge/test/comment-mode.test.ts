@@ -23,7 +23,7 @@ beforeEach(() => {
   document.body.innerHTML = `<h2>Quarterly goals</h2><p>Grow revenue</p>`;
   document.getSelection()!.removeAllRanges();
   hooks = { hover: vi.fn(), pickElement: vi.fn(), pickRange: vi.fn(), pickArea: vi.fn(), cancel: vi.fn() };
-  mode = new CommentMode(document, hooks);
+  mode = new CommentMode(document, hooks, { trustedOnly: false });
 });
 afterEach(() => { mode.set(false); });
 
@@ -188,9 +188,74 @@ describe("drawing areas", () => {
     expect([areaBox().style.left, areaBox().style.top, areaBox().style.width, areaBox().style.height]).toEqual(["8px", "8px", "104px", "54px"]);
     at(img, "mouseup", 110, 60);
     expect(hooks.pickArea).toHaveBeenCalledWith({ left: 10, top: 10, width: 100, height: 50 });
-    expect(areaBox().style.display).toBe("none");
     at(img, "click", 110, 60);
     expect(hooks.pickElement).not.toHaveBeenCalled();
+  });
+
+  it("keeps the rectangle drawn, dashed, while its clip is taken, and starts no other pick meanwhile", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    at(img, "mouseup", 110, 60);
+    expect(areaBox().style.display).toBe("block");
+    expect(areaBox().classList.contains("capturing")).toBe(true);
+    // A second drag and a click while capturing pick nothing, and the rectangle stays.
+    at(img, "mousedown", 200, 200);
+    at(img, "mousemove", 300, 300);
+    at(img, "mouseup", 300, 300);
+    at(img, "mousedown", 20, 20);
+    at(img, "mouseup", 20, 20);
+    at(img, "click", 20, 20);
+    expect(hooks.pickArea).toHaveBeenCalledTimes(1);
+    expect(hooks.pickElement).not.toHaveBeenCalled();
+    expect(areaBox().style.left).toBe("8px");
+    mode.captured();
+    expect(areaBox().style.display).toBe("none");
+    expect(areaBox().classList.contains("capturing")).toBe(false);
+    at(img, "mousedown", 200, 200);
+    at(img, "mousemove", 300, 300);
+    at(img, "mouseup", 300, 300);
+    expect(hooks.pickArea).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops a drag whose button was released outside the frame", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    expect(areaBox().style.display).toBe("block");
+    at(img, "mousemove", 120, 70, { buttons: 0 });
+    expect(areaBox().style.display).toBe("none");
+    at(img, "mouseup", 120, 70);
+    expect(hooks.pickArea).not.toHaveBeenCalled();
+  });
+
+  it("treats a drag narrower or shorter than 8 px as a click", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 12, 200);
+    at(img, "mouseup", 12, 200);
+    at(img, "click", 12, 200);
+    expect(hooks.pickArea).not.toHaveBeenCalled();
+    expect(hooks.pickElement).toHaveBeenCalledWith(img);
+  });
+
+  it("takes Escape forwarded by the shell: drops a drag, else ends comment mode", () => {
+    mode.set(true);
+    const img = document.querySelector("#i")!;
+    at(img, "mousedown", 10, 10);
+    at(img, "mousemove", 110, 60);
+    expect(mode.key("Escape", true)).toBe(true);
+    expect(areaBox().style.display).toBe("none");
+    expect(hooks.cancel).not.toHaveBeenCalled();
+    at(img, "mouseup", 110, 60);
+    expect(hooks.pickArea).not.toHaveBeenCalled();
+    mode.key("Escape", false);
+    expect(hooks.cancel).not.toHaveBeenCalled();
+    mode.key("Escape", true);
+    expect(hooks.cancel).toHaveBeenCalledTimes(1);
   });
 
   it("treats a rectangle smaller than 8 × 8 px as a click", () => {
@@ -236,6 +301,29 @@ describe("drawing areas", () => {
   });
 });
 
+describe("trusted input", () => {
+  it("ignores events the page dispatched itself", async () => {
+    mode.set(false);
+    document.querySelectorAll("artifax-overlay").forEach(n => n.remove());
+    const strict = new CommentMode(document, hooks);
+    try {
+      strict.set(true);
+      const h2 = document.querySelector("h2")!;
+      h2.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 5, clientY: 5 }));
+      await nextFrame();
+      const click = new MouseEvent("click", { bubbles: true, cancelable: true });
+      h2.dispatchEvent(click);
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+      expect(hooks.hover).not.toHaveBeenCalled();
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(hooks.cancel).not.toHaveBeenCalled();
+      expect(click.defaultPrevented).toBe(false);
+    } finally {
+      strict.set(false);
+    }
+  });
+});
+
 describe("Option widening", () => {
   const key = (k: string, type = "keydown") => { const e = new KeyboardEvent(type, { key: k, bubbles: true, cancelable: true }); document.dispatchEvent(e); return e; };
   beforeEach(() => {
@@ -261,6 +349,26 @@ describe("Option widening", () => {
     key("Alt", "keyup");
     expect(hooks.hover).toHaveBeenLastCalledWith(p);
     expect(key("ArrowUp").defaultPrevented).toBe(false);
+  });
+
+  it("widens a drag selection made with Option to the enclosing element, and starts no native image drag", () => {
+    document.body.innerHTML = `<main><section id="s"><div id="card"><p id="p">Grow revenue fast</p><img id="i"></div></section></main>`;
+    mode.set(true);
+    const p = document.querySelector("#p")!;
+    const sel = document.getSelection()!;
+    const r = document.createRange();
+    r.setStart(p.firstChild!, 0);
+    r.setEnd(p.firstChild!, 4);
+    p.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, altKey: true }));
+    sel.removeAllRanges();
+    sel.addRange(r);
+    p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, altKey: true }));
+    expect(hooks.pickRange).not.toHaveBeenCalled();
+    // The selection's block: the whole paragraph, as an element pick.
+    expect(hooks.pickElement).toHaveBeenCalledWith(p);
+    const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, altKey: true, buttons: 1 });
+    document.querySelector("#i")!.dispatchEvent(down);
+    expect(down.defaultPrevented).toBe(true);
   });
 
   it("takes Option and arrows forwarded by the shell, and from the pointer's modifier, and picks the widened element", async () => {

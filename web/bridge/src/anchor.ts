@@ -185,6 +185,24 @@ function query(doc: Document, selector: string): Element | null {
   try { return doc.querySelector(selector); } catch { return null; }
 }
 
+/** How far, as a share, an area's element may have changed width since the
+ * area was drawn and still be taken for the same element when only its
+ * selector matched. */
+export const AREA_WIDTH_SLACK = 0.25;
+
+/** Whether `el`'s width is within `AREA_WIDTH_SLACK` of the width area anchor
+ * `a`'s element had at draw time (`rect.w / area.w`). Holds when that is not
+ * known, for the document (`html`), and when the viewport's width changed by
+ * more than 5% since (a responsive element may then legitimately differ). */
+export function areaWidthHolds(a: Anchor, el: Element, doc: Document): boolean {
+  if (!a.area || !a.rect || !(a.area.w > 0) || el === doc.documentElement) return true;
+  const vw = doc.defaultView?.innerWidth ?? 0;
+  if (!a.rect.viewportW || Math.abs(vw - a.rect.viewportW) > 0.05 * a.rect.viewportW) return true;
+  const then = a.rect.w / a.area.w;
+  const now = el.getBoundingClientRect().width;
+  return then <= 0 || Math.abs(now - then) <= AREA_WIDTH_SLACK * then;
+}
+
 /** Where `a` is in `doc`, the page published at `file`; null when it is
  * detached, or when it is on another page (its `file` differs). */
 export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE): Resolved | null {
@@ -197,6 +215,9 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
   const el = a.selector ? query(doc, a.selector) : null;
   if (el) {
     const method: ResolveMethod = a.html_hash && htmlHash(el) === a.html_hash ? "exact" : "selector";
+    // An area has no text to confirm a selector-only match: one on an element
+    // whose width moved away from its width at draw time is on other content.
+    if (method === "selector" && a.kind === "area" && !areaWidthHolds(a, el, doc)) return null;
     let range: Range | null = null;
     if (a.kind === "range" && a.quote) {
       const s = span(idx, el);

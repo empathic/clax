@@ -54,8 +54,10 @@ export type ShellToBridge =
    * for none. Threads that are not area anchors show nothing. */
   | { type: "artifax:focus"; id: string | null }
   /** A key the viewer pressed or released in the shell while comment mode is
-   * on and the pointer is over the frame (Option widening, see `comment-mode.ts`). */
-  | { type: "artifax:key"; key: "Alt" | "ArrowUp" | "ArrowDown"; down: boolean }
+   * on and the pointer is over the frame (Option widening, see
+   * `comment-mode.ts`); Escape drops a drag in progress, else ends comment
+   * mode (the bridge answers `artifax:cancel`). */
+  | { type: "artifax:key"; key: "Alt" | "ArrowUp" | "ArrowDown" | "Escape"; down: boolean }
   | UseResult
   | CallResult
   | CapEvent;

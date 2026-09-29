@@ -160,7 +160,15 @@ export interface ClipOptions {
   style?: Partial<CSSStyleDeclaration>;
 }
 
-/** A PNG of `el` (or of its `crop`); rejects when it has no size or rendering exceeds `timeoutMs`. */
+/** The largest clip the daemon keeps, in bytes (its `MAX_CLIP_BYTES`). */
+export const MAX_CLIP_BYTES = 5 * 1024 * 1024;
+/** How many times a clip over `MAX_CLIP_BYTES` is rendered again at half the scale. */
+export const CLIP_SHRINKS = 3;
+
+/** A PNG of `el` (or of its `crop`) of at most `MAX_CLIP_BYTES`: one over
+ * that is rendered again at half the scale, up to `CLIP_SHRINKS` times.
+ * Rejects when the element has no size, when the PNG is still too large, or
+ * when rendering exceeds `timeoutMs` in all. */
 export async function renderClip(el: Element, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS, opts: ClipOptions = {}): Promise<ArrayBuffer> {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) throw new Error("the anchored element has no size");
@@ -171,9 +179,9 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
   const cropStyle: Partial<CSSStyleDeclaration> = crop
     ? { width: `${r.width}px`, height: `${r.height}px`, transform: `translate(${-crop.x}px, ${-crop.y}px)`, transformOrigin: "0 0" }
     : {};
-  const png = (async () => {
+  const once = async (scale: number) => {
     const ctx = await createContext(el, {
-      scale: clipScale(crop?.w ?? r.width, crop?.h ?? r.height, win.devicePixelRatio || 1),
+      scale,
       filter: n => !crossOriginImage(n, origin),
       fetch: { placeholderImage: TRANSPARENT },
       backgroundColor: clipBackground(el, win),
@@ -183,15 +191,24 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
     });
     if (win.origin === "null") ctx.sandbox = el.ownerDocument.createElement("iframe");
     try {
-      return await domToPng(ctx);
+      return dataUrlToBuffer(await domToPng(ctx));
     } finally {
       destroyContext(ctx);
+    }
+  };
+  const png = (async () => {
+    let scale = clipScale(crop?.w ?? r.width, crop?.h ?? r.height, win.devicePixelRatio || 1);
+    for (let shrinks = 0; ; shrinks++) {
+      const buf = await once(scale);
+      if (buf.byteLength <= MAX_CLIP_BYTES) return buf;
+      if (shrinks >= CLIP_SHRINKS) throw new Error("the screenshot is too large to keep, even scaled down");
+      scale /= 2;
     }
   })();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`clip took longer than ${timeoutMs} ms`)), timeoutMs); });
   try {
-    return dataUrlToBuffer(await Promise.race([png, late]));
+    return await Promise.race([png, late]);
   } finally {
     clearTimeout(timer);
   }
@@ -262,10 +279,26 @@ export function areaCrop(r: { x: number; y: number; w: number; h: number }, box:
   return { x: Math.round(r.x - box.left), y: Math.round(r.y - box.top), w: Math.max(1, Math.round(r.w)), h: Math.max(1, Math.round(r.h)) };
 }
 
-/** A PNG of exactly the drawn area `r` (viewport pixels, within `el`'s box)
- * as the page shows it now: `el` rendered and cropped to `r`. */
+const XHTML = "http://www.w3.org/1999/xhtml";
+
+/** The element an area clip of `el` renders: `el` itself when it is an HTML
+ * element other than `<html>`; the body for `<html>` (an area anchored to the
+ * document); else (an `<svg>`, MathML) its nearest HTML ancestor, since
+ * modern-screenshot draws a foreign element as a whole image and ignores the crop. */
+export function areaRenderRoot(el: Element): Element {
+  const doc = el.ownerDocument;
+  if (el === doc.documentElement) return doc.body;
+  let cur: Element = el;
+  while (cur.namespaceURI !== XHTML && cur.parentElement) cur = cur.parentElement;
+  return cur === doc.documentElement ? doc.body : cur;
+}
+
+/** A PNG of exactly the drawn area `r` (viewport pixels) as the page shows
+ * it now: `areaRenderRoot(el)` rendered and cropped to `r` (which may reach
+ * past it, for an area on the document: that part shows the page's background). */
 export async function renderAreaClip(el: Element, r: { x: number; y: number; w: number; h: number }, win: Window = window, timeoutMs = AREA_CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
-  return renderClip(el, win, timeoutMs, { crop: areaCrop(r, el.getBoundingClientRect()) });
+  const root = areaRenderRoot(el);
+  return renderClip(root, win, timeoutMs, { crop: areaCrop(r, root.getBoundingClientRect()) });
 }
 
 /** The text point at or after (`c`, `o`) in `root`. */

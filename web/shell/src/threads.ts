@@ -142,6 +142,6 @@ export function anchorLabel(a: Anchor): string {
 /** `Area in <selector> (<w>% × <h>%)`: the share of its element's width and
  * height a drawn area covers, in whole percent (as the daemon's summary). */
 export function areaLabel(a: Anchor): string {
-  const pct = (f: number) => Math.round(Math.min(1, Math.max(0, f)) * 100);
-  return `Area in ${a.selector ?? ""}${a.area ? ` (${pct(a.area.w)}% × ${pct(a.area.h)}%)` : ""}`;
+  const pct = (f: number) => { const p = Math.round(Math.min(1, Math.max(0, f)) * 100); return p === 0 && f > 0 ? "<1%" : `${p}%`; };
+  return `Area in ${a.selector ?? ""}${a.area ? ` (${pct(a.area.w)} × ${pct(a.area.h)})` : ""}`;
 }

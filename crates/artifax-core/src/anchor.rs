@@ -132,12 +132,17 @@ pub fn cap(s: &str, n: usize) -> String {
     }
 }
 
-/// `f` (a fraction) as whole percent, clamped to 0 to 100.
-fn pct(f: f64) -> i64 {
+/// `f` (a fraction) as whole percent with `%`, clamped to 0 to 100; `<1%`
+/// for a non-zero share that rounds to 0.
+fn pct(f: f64) -> String {
     // Clamped to 0..=100 first, so the cast cannot truncate or wrap.
     #[allow(clippy::cast_possible_truncation)]
     let p = (f.clamp(0.0, 1.0) * 100.0).round() as i64;
-    p
+    if p == 0 && f > 0.0 {
+        "<1%".to_string()
+    } else {
+        format!("{p}%")
+    }
 }
 
 impl Anchor {
@@ -207,7 +212,8 @@ impl Anchor {
     /// One line naming the anchor: the file and ` › ` when it is not
     /// `index.html`, the selector (or `custom:<name>`, or for an area
     /// `area in <selector> (<w>% × <h>%)`, its share of the element's width
-    /// and height rounded to whole percent), then two
+    /// and height rounded to whole percent, `<1%` for a share under half a
+    /// percent), then two
     /// spaces and the quote in «» when there is one, whitespace collapsed,
     /// `«`/`»` in the quote replaced by `"`, cut to 120 characters with `…`.
     pub fn summary(&self) -> String {
@@ -216,7 +222,7 @@ impl Anchor {
             AnchorKind::Area => {
                 let sel = self.selector.as_deref().unwrap_or("");
                 match &self.area {
-                    Some(a) => format!("area in {sel} ({}% × {}%)", pct(a.w), pct(a.h)),
+                    Some(a) => format!("area in {sel} ({} × {})", pct(a.w), pct(a.h)),
                     None => format!("area in {sel}"),
                 }
             }
@@ -507,6 +513,6 @@ mod tests {
             w: 1.0,
             h: 0.004,
         });
-        assert!(a.summary().ends_with("(100% × 0%)"), "{}", a.summary());
+        assert!(a.summary().ends_with("(100% × <1%)"), "{}", a.summary());
     }
 }

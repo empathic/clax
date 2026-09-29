@@ -215,7 +215,8 @@ those threads reach you, and only those accept your replies. Comments can be
 anchored on any HTML page of the artifact, not only `index.html`; the anchor
 line then starts with that page's path (`about.html › main > h2`). A drawn
 area reads `area in <selector> (<w>% × <h>%)`: the rectangle covers that share
-of the element's width and height, and its clip shows exactly the rectangle.
+of the element's width and height (`html` is the whole page), and its clip
+shows exactly the rectangle.
 
 Sent comments reach you in one of these ways:
 

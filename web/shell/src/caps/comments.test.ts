@@ -28,10 +28,10 @@ const gesture = (on: boolean) => {
 
 function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {
   const posted: ShellToBridge[] = [];
-  const state = { mode: false, composing: false, threads: [T("01J9A"), T("01J9B", { kind: "custom", selector: null, custom_name: "shape-1" }), T("01J9D", { file: "notes.html" })], selected: null as string | null };
+  const state = { mode: false, composing: false, threads: [T("01J9A"), T("01J9B", { kind: "custom", selector: null, custom_name: "shape-1" }), T("01J9D", { file: "notes.html" })], selected: null as string | null, busy: false };
   const ui: Required<CommentsUi> = {
     openComposer: vi.fn(() => true), upsert: vi.fn(), remove: vi.fn(), setCustom: vi.fn(), place: vi.fn(), select: vi.fn(), exitMode: vi.fn(),
-    state: () => state, dismiss: vi.fn(() => true), enterMode: vi.fn(() => { state.mode = true; }),
+    state: () => state, dismiss: vi.fn(() => true), attachClip: vi.fn(), enterMode: vi.fn(() => { state.mode = true; }),
   };
   const prompt = vi.fn(async () => answer);
   const env = { aid: "7q3k9mzx2b4t", version: 1, token: "t", declared, prompt, post: (m: ShellToBridge) => posted.push(m), comments: ui, page: () => "index.html" } as unknown as CapEnv;
@@ -254,11 +254,11 @@ describe("comments in the shell", () => {
     expect((ui.openComposer as Fetch).mock.calls.at(-1)![0].anchor).toMatchObject({ kind: "element", selector: "body > h2", quote: null });
   });
 
-  it("compose with an area passes the gesture check, anchors a domAnchor path as an area over the element, and moves an open composer", async () => {
-    const { h, ui, state } = setup({ comments: { customAnchors: true } });
+  it("compose with an area is gesture-checked before any clip, anchors the element, and takes its clip once by nonce", async () => {
+    const { h, ui, state, posted } = setup({ comments: { customAnchors: true } });
     await h.call("register", []);
     state.mode = true;
-    const areaCall = (extra: Record<string, unknown> = {}) => h.call("compose", [{ anchor: "body > main > h2", dom: true, area: true, version: 1, clipPng: new Uint8Array([137, 80, 78, 71]).buffer, ...extra }]);
+    const areaCall = () => h.call("compose", [{ anchor: "body > main > h2", dom: true, area: true, clipPending: true, version: 1 }]) as Promise<{ opened: boolean; clipNonce?: string }>;
     gesture(false);
     expect(await areaCall()).toEqual({ opened: false });
     expect(ui.openComposer).not.toHaveBeenCalled();
@@ -266,20 +266,46 @@ describe("comments in the shell", () => {
     // Over an open composer or card an area opens (or moves) the composer instead of dismissing.
     state.composing = true;
     state.selected = "01J9A";
-    expect(await areaCall()).toEqual({ opened: true });
+    const r = await areaCall();
+    expect(r.opened).toBe(true);
+    expect(r.clipNonce).toMatch(/^[0-9a-f]{24}$/);
     expect(ui.dismiss).not.toHaveBeenCalled();
     const [d, opts] = (ui.openComposer as Fetch).mock.calls.at(-1)!;
-    expect(d.anchor).toMatchObject({ kind: "area", selector: "body > main > h2", area: { x: 0, y: 0, w: 1, h: 1 }, quote: null, file: "index.html" });
-    expect(d.clip).toBeInstanceOf(Blob);
+    // The page's geometry is unknown: the element, not an area, is stored.
+    expect(d.anchor).toMatchObject({ kind: "element", selector: "body > main > h2", quote: null, file: "index.html" });
+    expect(d.anchor.area).toBeUndefined();
+    expect(d).toMatchObject({ clip: null, capturing: true, clipToken: r.clipNonce });
     expect(opts).toEqual({ area: true });
-    // Outside comment mode the flag is ignored: the usual element anchor, and the open card is dismissed.
-    state.mode = false;
+    // The clip arrives once under the nonce; a replay or an unknown nonce does nothing.
+    await h.call("composeClip", [{ nonce: r.clipNonce, clipPng: new Uint8Array([137, 80, 78, 71]).buffer }]);
+    expect(ui.attachClip).toHaveBeenCalledTimes(1);
+    const [token, blob, err] = (ui.attachClip as Fetch).mock.calls[0];
+    expect(token).toBe(r.clipNonce);
+    expect(blob).toBeInstanceOf(Blob);
+    expect(err).toBeUndefined();
+    await h.call("composeClip", [{ nonce: r.clipNonce, clipPng: new Uint8Array([1]).buffer }]);
+    await h.call("composeClip", [{ nonce: "forged", clipPng: new Uint8Array([1]).buffer }]);
+    expect(ui.attachClip).toHaveBeenCalledTimes(1);
+    // An oversized clip is refused with openComposer's wording.
+    const r2 = await areaCall();
+    await h.call("composeClip", [{ nonce: r2.clipNonce, clipPng: new ArrayBuffer(5 * 1024 * 1024 + 1) }]);
+    expect((ui.attachClip as Fetch).mock.calls.at(-1)!.slice(1)).toEqual([null, "the screenshot was too large"]);
+    // While a post or send is in flight the page is told areas are off, and the flag is ignored.
+    state.busy = true;
+    h.uiChanged!();
+    expect(posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: false } });
     expect(await areaCall()).toEqual({ opened: false });
     expect(ui.dismiss).toHaveBeenCalledTimes(1);
+    state.busy = false;
+    h.uiChanged!();
+    expect(posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: true } });
+    // Outside comment mode the flag is ignored: the usual element anchor, no nonce.
+    state.mode = false;
     state.composing = false;
     state.selected = null;
-    await areaCall();
-    expect((ui.openComposer as Fetch).mock.calls.at(-1)![0].anchor).toMatchObject({ kind: "element" });
+    const r3 = await areaCall();
+    expect(r3.clipNonce).toBeUndefined();
+    expect((ui.openComposer as Fetch).mock.calls.at(-1)![0]).toMatchObject({ anchor: { kind: "element" }, clipError: "anchored by the page" });
   });
 
   it("hostile arguments are refused before any request", async () => {

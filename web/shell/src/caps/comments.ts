@@ -52,6 +52,17 @@ const HTML_HASH = /^sha256:[0-9a-f]{64}$/;
 const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 const invalid = (message: string) => new CapError("invalid", message);
+
+/** Whether an area compose could start now (comments.d.ts `areas`): comment
+ * mode is on and no post or send is in flight. */
+export const canArea = (s: { mode: boolean; busy?: boolean }) => s.mode && !s.busy;
+
+/** A one-shot nonce naming an area compose's pending clip. */
+function clipNonce(): string {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return Array.from(b, x => x.toString(16).padStart(2, "0")).join("");
+}
 const notFound = () => new CapError("not_found", "no such thread: the page can act only on threads it created in this visit");
 
 /** An opaque, unguessable handle. */
@@ -145,7 +156,9 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   /** What the page was last sent, so a push goes only when something changed.
    * `listed` holds the handles of the last list, which placements may name
    * (after comment mode ends too, so pins keep following the page). */
-  let sent: { mode: boolean | null; composing: boolean | null; threads: string; listed: Set<string> } = { mode: null, composing: null, threads: "", listed: new Set() };
+  let sent: { mode: boolean | null; canArea: boolean | null; composing: boolean | null; threads: string; listed: Set<string> } = { mode: null, canArea: null, composing: null, threads: "", listed: new Set() };
+  /** Nonces of area composes whose clip is still to come (`composeClip`). */
+  const pendingClips = new Set<string>();
   /** The cached `canSendToClaude` answer and when it was asked. */
   let canSendCache: { at: number; answer: Promise<"available" | "no_session"> } | null = null;
 
@@ -239,9 +252,10 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   const pushState = () => {
     if (!custom || disposed || !env.comments) return;
     const s = env.comments.state();
-    if (s.mode !== sent.mode) {
+    if (s.mode !== sent.mode || canArea(s) !== sent.canArea) {
       sent.mode = s.mode;
-      env.post(event("mode", { on: s.mode }));
+      sent.canArea = canArea(s);
+      env.post(event("mode", { on: s.mode, canArea: sent.canArea }));
     }
     if (s.composing !== sent.composing) {
       sent.composing = s.composing;
@@ -269,7 +283,8 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     pageStarted = false;
     handleToId = new Map();
     idToHandle = new Map();
-    sent = { mode: null, composing: null, threads: "", listed: new Set() };
+    sent = { mode: null, canArea: null, composing: null, threads: "", listed: new Set() };
+    pendingClips.clear();
     if (was) env.comments?.setCustom(false);
   };
 
@@ -399,10 +414,10 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           return null;
         case "compose": {
           if (!custom) throw invalid("no custom-anchors registration is live");
-          const d = (args[0] ?? {}) as { anchor?: unknown; dom?: unknown; label?: unknown; detail?: unknown; area?: unknown; clipPng?: unknown; clipError?: unknown };
+          const d = (args[0] ?? {}) as { anchor?: unknown; dom?: unknown; label?: unknown; detail?: unknown; area?: unknown; clipPending?: unknown };
           const dom = d.dom === true;
           // `area` (comments.d.ts ComposeOptions) only while comment mode is on.
-          const area = d.area === true && ui().state().mode;
+          const area = d.area === true && canArea(ui().state());
           if (dom) {
             if (typeof d.anchor !== "string" || !d.anchor || d.anchor.length > MAX_SELECTOR || CONTROL.test(d.anchor)) throw invalid("a domAnchor path is a CSS path");
           } else {
@@ -429,13 +444,17 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           // Only the anchor is stored; the label is shown in the composer.
           const base = { quote: null, prefix: null, suffix: null, html_hash: null, rect: null, file };
           const label = cleanLabel(d.label as string | undefined) ?? undefined;
-          // An area on a domAnchor path is a drawn area covering that element,
-          // with the element's clip; an area on a page-invented name stays custom.
-          if (area && dom) {
-            const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;
-            const clipError = clip ? undefined : typeof d.clipError === "string" ? d.clipError.slice(0, 200) : "no screenshot of the element";
-            const anchor: Anchor = { kind: "area", selector: d.anchor as string, custom_name: null, ...base, area: { x: 0, y: 0, w: 1, h: 1 } };
-            return { opened: u.openComposer({ anchor, version: env.version, clip, clipError, label }, { area }) };
+          // The page's rectangle is not known here, so an area on a domAnchor
+          // path is anchored to that element; its clip, of the element, is
+          // rendered after this check passed and arrives through
+          // `composeClip` with the one-shot nonce answered here.
+          if (area && dom && d.clipPending === true) {
+            const nonce = clipNonce();
+            const anchor: Anchor = { kind: "element", selector: d.anchor as string, custom_name: null, ...base };
+            const opened = u.openComposer({ anchor, version: env.version, clip: null, clipError: undefined, label, capturing: true, clipToken: nonce }, { area });
+            if (!opened) return { opened };
+            pendingClips.add(nonce);
+            return { opened, clipNonce: nonce };
           }
           const anchor: Anchor = dom
             ? { kind: "element", selector: d.anchor as string, custom_name: null, ...base }
@@ -445,6 +464,15 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
             u.enterMode?.();
           }
           return { opened: u.openComposer({ anchor, version: env.version, clip: null, clipError: "anchored by the page", label }, area ? { area } : undefined) };
+        }
+        case "composeClip": {
+          // The clip for a composer an area compose opened; a nonce is used once.
+          const d = (args[0] ?? {}) as { nonce?: unknown; clipPng?: unknown; clipError?: unknown };
+          if (typeof d.nonce !== "string" || !pendingClips.delete(d.nonce)) return null;
+          const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;
+          const clipError = clip ? undefined : d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > MAX_CLIP_BYTES ? "the screenshot was too large" : typeof d.clipError === "string" ? d.clipError.slice(0, 200) : "no screenshot was taken";
+          ui().attachClip?.(d.nonce, clip, clipError);
+          return null;
         }
         case "openThread": {
           if (typeof args[0] !== "string") throw invalid("open takes a thread handle");

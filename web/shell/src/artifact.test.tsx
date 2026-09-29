@@ -618,6 +618,12 @@ describe("ArtifactView", () => {
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
+    // A pick counts only in comment mode.
+    fromFrame(win, pick("p0", "Not in comment mode"));
+    await new Promise(r => setTimeout(r, 30));
+    expect(root.querySelector(".composer")).toBeNull();
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
     fromFrame(win, pick("p1", "Quarterly goals"));
     let textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
     textarea.value = "first draft";
@@ -628,10 +634,62 @@ describe("ArtifactView", () => {
     expect(banner.textContent).toContain("Could not post: 500 disk full");
     expect(root.querySelector(".composer .error")).toBeNull();
     expect(root.querySelector(".composer")!.textContent).not.toContain("disk full");
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
     fromFrame(win, pick("p2", "Grow revenue"));
     await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Grow revenue"), "second pick");
     textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     expect(textarea.value).toBe("");
+  });
+
+  it("drops a pick's clip past the daemon's cap with the reason, and says when a thread was posted without its screenshot", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async (url, init) => url.startsWith("/api/viewers/")
+        ? new Response(JSON.stringify(viewer))
+        : init?.method === "POST"
+          ? new Response(JSON.stringify({ thread: { id: "01JX", artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, clip_error: "clip is not a PNG" }), { status: 201 })
+          : new Response(JSON.stringify({ threads: [], next_cursor: null })));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
+    fromFrame(win, { ...pick("big", "Photo"), clipPng: new ArrayBuffer(5 * 1024 * 1024 + 1) });
+    await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: the screenshot was too large to keep"), "the reason");
+    const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    textarea.value = "look";
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => root.querySelector(".banner.notice")?.textContent?.includes("Posted without its screenshot: clip is not a PNG"), "the notice");
+  });
+
+  it("sends Escape to the frame while commenting with the pointer over it, and leaves comment mode only when the page answers", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; key?: string; down?: boolean }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    const comment = buttonNamed(root, "Comment");
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
+    frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    expect(posted.filter(m => m.type === "artifax:key").at(-1)).toEqual({ type: "artifax:key", key: "Escape", down: true });
+    await new Promise(r => setTimeout(r, 30));
+    // The page dropped a drag: comment mode stays on.
+    expect(comment.getAttribute("aria-pressed")).toBe("true");
+    fromFrame(win, { type: "artifax:cancel" });
+    await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off on the page's answer");
+    // Away from the frame, Escape ends comment mode in the shell.
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode again");
+    root.querySelector("header")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    const keys = posted.filter(m => m.type === "artifax:key").length;
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off");
+    expect(posted.filter(m => m.type === "artifax:key")).toHaveLength(keys);
   });
 
   it("focuses the frame on the thread hovered in the list or selected, by its anchor handle, so its drawn area is outlined", async () => {
