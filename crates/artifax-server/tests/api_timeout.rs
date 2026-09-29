@@ -89,3 +89,98 @@ async fn concurrent_publishes_all_succeed() {
     let list: serde_json::Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"].as_array().unwrap().len(), 16);
 }
+
+/// Test builds delay a request by this many milliseconds, inside its route
+/// group's timeout.
+const DELAY: &str = "x-artifax-test-delay-ms";
+
+#[tokio::test]
+async fn publish_routes_run_under_the_publish_timeout() {
+    let ts = TestServer::spawn_with(|state| {
+        state.request_timeout = std::time::Duration::from_millis(100);
+        state.publish_timeout = std::time::Duration::from_secs(2);
+    })
+    .await;
+    // The delay counts against the fast group's timeout.
+    let res = ts
+        .client
+        .get(format!("{}/api/artifacts", ts.base))
+        .header(DELAY, "500")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 408);
+
+    let res = ts
+        .authed(ts.client.post(format!("{}/api/artifacts", ts.base)))
+        .header(DELAY, "500")
+        .json(&serde_json::json!({
+            "title": "slow",
+            "files": {"index.html": {"content": "<p>1"}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    let created: serde_json::Value = res.json().await.unwrap();
+    let id = created["artifact"]["id"].as_str().unwrap();
+
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{id}/versions", ts.base)),
+        )
+        .header(DELAY, "500")
+        .json(&serde_json::json!({
+            "if_version": 1,
+            "files": {"index.html": {"content": "<p>2"}}
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201);
+
+    let part = reqwest::multipart::Part::bytes(vec![1u8, 2, 3])
+        .file_name("a.png")
+        .mime_str("image/png")
+        .unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{id}/assets", ts.base)),
+        )
+        .header(DELAY, "500")
+        .multipart(reqwest::multipart::Form::new().part("file", part))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
+}
+
+#[tokio::test]
+async fn mcp_is_outside_the_request_timeout() {
+    let ts = TestServer::spawn_with(|state| {
+        state.request_timeout = std::time::Duration::from_millis(100);
+    })
+    .await;
+    let res = ts
+        .authed(ts.client.post(format!("{}/mcp", ts.base)))
+        .header("accept", "application/json, text/event-stream")
+        .header(DELAY, "300")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "api-timeout-test", "version": "0"}
+            }
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let text = res.text().await.unwrap();
+    assert!(text.contains("\"serverInfo\""), "{text}");
+}

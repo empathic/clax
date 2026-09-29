@@ -89,6 +89,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
         .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+    #[cfg(feature = "test-routes")]
+    let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = with_timeout(api_fast, state.request_timeout);
     let api_slow = Router::new()
         .route(
@@ -103,7 +105,12 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
         );
+    #[cfg(feature = "test-routes")]
+    let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
     let api_slow = with_timeout(api_slow, state.publish_timeout);
+    let mcp = mcp::router(&state);
+    #[cfg(feature = "test-routes")]
+    let mcp = mcp.layer(axum::middleware::from_fn(test_delay));
     let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
@@ -121,7 +128,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/versions/{n}/files/{*path}",
             get(content::raw_file),
         )
-        .merge(mcp::router(&state));
+        .merge(mcp);
     if let Some(tx) = shutdown {
         let tx = std::sync::Arc::new(tx);
         r = r.route(
@@ -136,6 +143,25 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         );
     }
     r.with_state(state)
+}
+
+/// Sleeps for the milliseconds in the `x-artifax-test-delay-ms` request
+/// header, if any, before handling the request. It sits inside each route
+/// group's timeout layer, so tests can make a real route slow.
+#[cfg(feature = "test-routes")]
+async fn test_delay(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let ms = req
+        .headers()
+        .get("x-artifax-test-delay-ms")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok());
+    if let Some(ms) = ms {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+    next.run(req).await
 }
 
 #[cfg(feature = "test-routes")]
