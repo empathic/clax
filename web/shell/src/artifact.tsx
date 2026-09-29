@@ -83,7 +83,15 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // whenever the page before it greeted before its own load.
   const helloOk = useRef(false);
   const helloSinceLoad = useRef(false);
-  useEffect(() => { helloOk.current = false; helloSinceLoad.current = false; }, [id, shown, origin]);
+  // Reset while rendering, not in an effect: the frame for a new artifact,
+  // version, or origin is inserted by this render, and its hello can arrive
+  // before this render's effects run.
+  const gateFor = useRef("");
+  if (gateFor.current !== `${id}/${shown}/${origin}`) {
+    gateFor.current = `${id}/${shown}/${origin}`;
+    helloOk.current = false;
+    helloSinceLoad.current = false;
+  }
   // The published file of the page in the frame, from its latest matching
   // hello (the URL's file until then): pins, anchor resolution, and scroll-to
   // apply to its threads only, and the shell URL names it. Null while the
@@ -115,9 +123,12 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const pendingScroll = useRef<{ thread: Thread; timer: ReturnType<typeof setTimeout> } | null>(null);
   const clearPending = () => { if (pendingScroll.current) clearTimeout(pendingScroll.current.timer); pendingScroll.current = null; };
   useEffect(() => clearPending, []);
-  useEffect(() => {
-    if (!data || origin === undefined) return;
-    const host = new CapabilityHost(getToken().then(token => ({
+  // Made while rendering, not in an effect, so it exists before the frame it
+  // serves is inserted: a hello and a capability request can arrive before
+  // that render's effects run.
+  const host = useMemo(() => {
+    if (!data || origin === undefined) return null;
+    return new CapabilityHost(getToken().then(token => ({
       aid: id,
       version: shown,
       pinned: pinnedVersion !== null,
@@ -128,9 +139,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       post: m => { if (helloOk.current) send(m); },
       reload: () => location.assign(here(null)),
     })));
-    hostRef.current = host;
-    return () => { if (hostRef.current === host) hostRef.current = null; };
   }, [id, shown, origin, data]);
+  hostRef.current = host;
   const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
@@ -209,61 +219,66 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     mq.addEventListener?.("change", onChange);
     return () => mq.removeEventListener?.("change", onChange);
   }, []);
-  useEffect(() => {
-    const onMessage = (e: MessageEvent) => {
-      const m = acceptFromFrame(e, frameWin(), origin ?? null);
-      if (!m) return;
-      switch (m.type) {
-        case "artifax:hello": {
-          // A stale or foreign document in the frame, or one naming a page
-          // this version does not hold, gets no welcome, no anchors, and no pins.
-          const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
-          helloOk.current = helloMatches(m, id, shown) && holds(greeted);
-          setResolved({});
-          if (!helloOk.current) { setCurrentFile(null); break; }
-          helloSinceLoad.current = true;
-          hostRef.current?.reset();
-          setCurrentFile(greeted);
-          // The address bar follows the frame to another page. A link the page
-          // handed over already pushed its URL; any other navigation (a script,
-          // a form) made the frame's own history entry, so the URL is replaced.
-          const r = parseShellPath(location.pathname);
-          if (r.kind !== "artifact" || r.file !== greeted) history.replaceState(history.state, "", here(pinnedVersion) + location.hash);
-          send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
-          resolveAll();
-          const p = pendingScroll.current;
-          if (p) {
-            // The jump's page greeted: scroll there. Another page greeted: the
-            // viewer moved on, so the jump is dropped without a notice.
-            clearPending();
-            if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
-          }
-          break;
-        }
-        case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
-        case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
-        case "artifax:cancel": setCommenting(false); break;
-        case "artifax:navigate": {
-          // A link the page handed over, from a document that greeted and is
-          // not already leaving (one entry per greeting page). An HTML page of
-          // this version is one history entry; another file of the version
-          // loads in the frame as a plain link would; anything else is ignored.
-          if (!helloOk.current || typeof m.file !== "string" || !holds(m.file)) break;
-          const hash = typeof m.hash === "string" && m.hash.startsWith("#") && m.hash.length <= 512 ? m.hash : "";
+  // The handler is rebuilt on every render and the listener always calls the
+  // latest one, so a hello that arrives before the effects of the render that
+  // inserted the frame have run is judged against the shown artifact and version.
+  const onMessageRef = useRef<(e: MessageEvent) => void>(() => {});
+  onMessageRef.current = (e: MessageEvent) => {
+    const m = acceptFromFrame(e, frameWin(), origin ?? null);
+    if (!m) return;
+    switch (m.type) {
+      case "artifax:hello": {
+        // A stale or foreign document in the frame, or one naming a page
+        // this version does not hold, gets no welcome, no anchors, and no pins.
+        const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
+        helloOk.current = helloMatches(m, id, shown) && holds(greeted);
+        setResolved({});
+        if (!helloOk.current) { setCurrentFile(null); break; }
+        helloSinceLoad.current = true;
+        hostRef.current?.reset();
+        setCurrentFile(greeted);
+        // The address bar follows the frame to another page. A link the page
+        // handed over already pushed its URL; any other navigation (a script,
+        // a form) made the frame's own history entry, so the URL is replaced.
+        const r = parseShellPath(location.pathname);
+        if (r.kind !== "artifact" || r.file !== greeted) history.replaceState(history.state, "", here(pinnedVersion) + location.hash);
+        send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
+        resolveAll();
+        const p = pendingScroll.current;
+        if (p) {
+          // The jump's page greeted: scroll there. Another page greeted: the
+          // viewer moved on, so the jump is dropped without a notice.
           clearPending();
-          if (isPage(m.file)) openPage(m.file, hash);
-          else navigateFrame(m.file, false, hash);
-          break;
+          if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
         }
-        case "artifax:hover": break;
-        case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
+        break;
       }
-    };
+      case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
+      case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
+      case "artifax:cancel": setCommenting(false); break;
+      case "artifax:navigate": {
+        // A link the page handed over, from a document that greeted and is
+        // not already leaving (one entry per greeting page). An HTML page of
+        // this version is one history entry; another file of the version
+        // loads in the frame as a plain link would; anything else is ignored.
+        if (!helloOk.current || typeof m.file !== "string" || !holds(m.file)) break;
+        const hash = typeof m.hash === "string" && m.hash.startsWith("#") && m.hash.length <= 512 ? m.hash : "";
+        clearPending();
+        if (isPage(m.file)) openPage(m.file, hash);
+        else navigateFrame(m.file, false, hash);
+        break;
+      }
+      case "artifax:hover": break;
+      case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
+    }
+  };
+  useEffect(() => {
+    const onMessage = (e: MessageEvent) => onMessageRef.current(e);
     addEventListener("message", onMessage);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCommenting(false); };
     addEventListener("keydown", onKey);
     return () => { removeEventListener("message", onMessage); removeEventListener("keydown", onKey); };
-  }, [origin, commenting, id, shown]);
+  }, []);
 
   const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
   onEventRef.current = e => {

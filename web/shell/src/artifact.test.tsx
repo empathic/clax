@@ -174,6 +174,24 @@ describe("ArtifactView", () => {
     await waitFor(() => posted.some(m => (m as { type: string }).type === "artifax:welcome"), "welcome");
   });
 
+  it("welcomes a hello, and answers a capability request, that arrive as soon as the frame is inserted", async () => {
+    const posted: { type: string; id?: string }[] = [];
+    const seen = new MutationObserver(() => {
+      const frame = document.querySelector<HTMLIFrameElement>("iframe.frame");
+      if (!frame) return;
+      seen.disconnect();
+      const win = frame.contentWindow!;
+      win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+      // Before the render that inserted the frame has run its effects.
+      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
+      fromFrame(win, { type: "artifax:use", id: "early", name: "permissions" });
+    });
+    seen.observe(document.body, { subtree: true, childList: true });
+    await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    await waitFor(() => posted.some(m => m.type === "artifax:use-result" && m.id === "early"), "the answer to the early request");
+  });
+
   it("answers capability requests only after a hello for the shown artifact and version", async () => {
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
