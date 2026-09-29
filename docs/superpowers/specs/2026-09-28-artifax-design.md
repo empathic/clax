@@ -244,8 +244,11 @@ Agent- and shell-facing JSON API under `/api`:
   (viewer: no token; agent: W and `author_kind=agent`), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
   rows), `POST .../threads/<tid>/resolve` (viewer or agent).
-- Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>` (W; long-poll,
-  returns undelivered feedback for that session, marks delivered on return).
+- Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>&tier=<tier>&resends=<0|1>`
+  (W; long-poll, returns undelivered feedback for that session and marks it
+  delivered by the named tier when the response is produced; `resends=1`
+  also includes resend-eligible rows), `POST /api/sessions/<sid>/feedback/ack`
+  (W; acknowledges the named threads).
 - Docs (db capability): `GET/PUT/PATCH/DELETE /api/artifacts/<aid>/docs/<path>`,
   `GET /api/artifacts/<aid>/docs?collection=<c>&where=...&order_by=...&limit=&cursor=`,
   `POST /api/artifacts/<aid>/docs:batch`. Versions enforce `if_version`.
@@ -489,7 +492,7 @@ Rendered as text so it can be dropped into any harness:
 ```
 [artifax] Comment sent to you on "Quarterly Review" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9...
 Anchored on: main > section:nth-of-type(2) > h2  «Quarterly goals»  (v3)
-Clip: ~/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
+Clip: /Users/alex/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
 Alex: "Make this a two-column layout and drop the third bullet."
 Reply with comments_reply, then comments_resolve when done.
 ```
@@ -499,10 +502,10 @@ Reply with comments_reply, then comments_resolve when done.
 | Tier | Mechanism | Harnesses | Latency | Failure modes |
 |---|---|---|---|---|
 | 1 | The shim (or the Pi extension) appends undelivered feedback to every tool result it returns | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
-| 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code (confirmed shape), Codex (stop hook exists; block semantics unverified) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
+| 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code and Codex (both verified: `{"decision":"block","reason":...}` on stdout with exit 0 continues the turn with the reason as input and the hook fires again with `stop_hook_active: true`) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
 | 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
-| 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: the extension API's `sendUserMessage`, which starts a turn when idle (§13). Claude Code: none available to third-party plugins. | seconds when the harness submits the message itself; otherwise the user's next input | See below, and the resend rule. |
+| 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: the extension API's `sendUserMessage`, which starts a turn when idle (§13). Claude Code: none available to third-party plugins. | Codex: under a second when the session's TUI is idle (measured 0.17 s), the end of the running turn when it is busy, never while no TUI is attached; Pi: at once when idle, after the current turn when streaming | See below, and the resend rule. |
 
 ### Delivery and acknowledgement
 
@@ -528,24 +531,28 @@ daemon runs
 codex queue --thread <harness_session_id> --message <payload>
 ```
 
-with the payload from above, a 10 s timeout, and the daemon's environment.
-Exit 0 marks the row delivered with tier `queue`. The thread ID is the
+with the payload from above, a 10 s timeout, and the daemon's environment
+plus the `CODEX_HOME` the Codex `session_start` hook recorded for that
+session (the daemon's own environment lacks it; without a recorded value
+the default `~/.codex` applies). Exit 0 marks the row delivered with tier
+`queue`; it means "queued", not "seen". The thread ID is the
 `session_id` the Codex `session_start` hook received, joined to the shim's
 session record by parent PID (§11).
 
-What is known and not known as of this spec: the command exists in Codex
-0.158 and is documented as "queue a message for an existing session". It
-is not verified whether a queued message is submitted automatically when
-the session is idle at its prompt, only submitted after the current turn
-ends, or held until the user presses enter. Phase 3 measures this on the
-installed Codex and records the result in `docs/contract.md`.
+Measured on Codex 0.158.0 (2026-09-29): the CLI sends the message to the
+shared Codex app-server daemon (starting it if needed; `--no-daemon` is
+refused), which persists it in `$CODEX_HOME/queue_1.sqlite`. Outcomes:
 
-Latency by outcome:
+- The session's TUI is idle at its prompt: the message is submitted with no
+  keystroke about 0.17 s later. This is a true wake.
+- The TUI is mid-turn: the message is submitted when that turn ends (2 ms
+  after `task_complete` in the measurement), with no keystroke.
+- No TUI is attached (the TUI exited, or the thread belongs to
+  `codex exec`): the message is held durably, `codex queue` still exits 0,
+  and it is drained on the next `codex resume <id>`. For such sessions tier
+  5 never wakes anything; tiers 1, 2 and 4 apply.
 
-- Submitted on idle: seconds. This is a true wake.
-- Submitted at end of the current turn only: the end of the turn, the
-  same as tier 2.
-- Held until user input: the user's next message, the same as tier 3.
+`docs/contract.md` records the same result.
 
 Failure modes and what happens in each:
 
@@ -555,11 +562,13 @@ Failure modes and what happens in each:
   tool reports "Codex session ID unknown, native push disabled", and
   `artifax doctor --agent codex` explains how to install and trust the
   hooks. Tiers 1, 2, and 4 still apply.
-- **Session has exited.** `codex queue` exits non-zero. The daemon marks the
-  session ended, clears `target_session_id` on its undelivered rows, and
-  delivers them to the next session that publishes a version of or watches
-  the artifact. The shell shows "agent session ended; waiting for a new
-  one".
+- **`codex queue` fails.** A non-zero exit (the measurement never produced
+  one for an exited session, which is held instead; this path covers a
+  missing app-server, a malformed thread ID, or a CLI failure) makes the
+  daemon mark the session ended, clear `target_session_id` on its
+  undelivered rows, and deliver them to the next session that publishes a
+  version of or watches the artifact. The shell shows "agent session ended;
+  waiting for a new one".
 - **`codex` not on the daemon's PATH.** The daemon was started by a process
   with a minimal environment. Tier 5 is disabled for all Codex sessions and
   `doctor` reports it. The shim passes its own `PATH` when it auto-starts
@@ -567,10 +576,13 @@ Failure modes and what happens in each:
 - **Queued but never surfaced.** Exit 0 but the agent never sees it. The
   acknowledgement and resend rule above catches it: the row is resent
   in-band on the next tool result or stop, up to three times.
-- **Stop hook.** The Codex `stop` hook (`clash-codex/hooks.toml` shows the
-  event exists) runs `artifax hook --agent codex stop`. Whether Codex
-  honours a block decision from it is unverified; if it does not, the hook
-  is a no-op and the tier is skipped on Codex.
+- **Stop hook.** The Codex `Stop` hook runs `artifax hook --agent codex
+  stop`. Codex honours `{"decision":"block","reason":...}` (and exit 2 with
+  the reason on stderr): the turn continues with the reason as a user-role
+  `<hook_prompt>` and the hook fires again with `stop_hook_active: true`
+  (verified on 0.158.0). Hooks from a project's `.codex/hooks.json` are
+  ignored until the project is trusted; the plugin's `hooks/hooks.json` is
+  the delivery path.
 
 Uniform fallback when nothing above fires: the feedback sits in the daemon
 until the agent's next artifax tool call or the user's next message. The
@@ -643,9 +655,11 @@ scope), `delete`, `open` (opens the browser on the machine running the tool
 and reports `opened` from the opener's exit status within 1.5 s), `pin`,
 `unpin`, `asset_upload` (file_path or file_paths).
 
-Comments: `comments_read` (url, thread_id, cursor), `comments_reply` (url,
-thread_id, text), `comments_resolve` (url, thread_id), `watch` (url, on,
-replies), `wait_for_feedback` (url optional, timeout_s default 50).
+Comments: `comments_read` (url_or_id, thread_id, cursor), `comments_reply`
+(url_or_id, thread_id, text), `comments_resolve` (url_or_id, thread_id),
+`watch` (url_or_id, on, replies), `wait_for_feedback` (url_or_id optional,
+timeout_s default 50, maximum 600). The artifact argument keeps the phase 2
+name `url_or_id`.
 
 Data: `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
 `db_str_replace`, `db_batch`, with `collection`, `doc_id`, `data`,
@@ -654,7 +668,8 @@ Data: `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
 Server: `status` (daemon URL, version, this session's ID and watches).
 
 Every tool result is JSON text plus, when present, a trailing
-`---\n[artifax] N comments sent to you:\n...` block (tier 1). URLs in
+`---\n[artifax] N comments sent to you:\n...` block (`1 comment` when N is
+1; tier 1). URLs in
 results are always the daemon's browser URL so they can be pasted to a
 person.
 
@@ -917,13 +932,14 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   fallback make this safe either way, but if Safari fails the fallback
   becomes the common case on macOS and per-artifact `localStorage`
   isolation is lost there.
-- **Phase 3 cookie scoping.** The viewer cookie must be host-only and
-  validated by the shell, since `<aid>.localhost` shares a site with
-  `localhost`.
-- **Codex wake path.** The mechanism is fixed (`codex queue`); what is
-  open is its latency class, decided by whether Codex submits a queued
-  message on an idle session, and whether the `stop` hook can block.
-  Measured in phase 3; §10 is written to be true in every outcome.
+- **Phase 3 cookie scoping.** The viewer cookie is host-only, `HttpOnly`,
+  and validated as a ULID by the daemon (the shell never reads it), since
+  `<aid>.localhost` shares a site with `localhost`.
+- **Codex wake path.** Resolved by measurement on 2026-09-29 (§10): a
+  queued message is submitted at once to an idle attached TUI, at the end of
+  the turn to a busy one, and held for a session with no TUI; the `Stop`
+  hook can block. Open: whether a later Codex delivers a held message to a
+  re-attached `codex exec` thread.
 - **Codex plugin manifest capabilities.** Resolved in phase 2: the manifest
   declares the MCP server (`mcpServers`) and hooks are discovered from
   `hooks/hooks.json`, so there is no setup skill (§13).
