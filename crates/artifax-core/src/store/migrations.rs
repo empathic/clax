@@ -128,6 +128,9 @@ pub const MIGRATIONS: &[&str] = &[
     UPDATE threads SET resolved_by = 'agent:' ||
         COALESCE((SELECT harness FROM sessions WHERE id = substr(threads.resolved_by, 7)), 'unknown')
         WHERE resolved_by LIKE 'agent:%';",
+    // 6: the last `codex queue` failure for a session (cleared by a success).
+    "ALTER TABLE session_env ADD COLUMN push_error TEXT;
+    ALTER TABLE session_env ADD COLUMN push_error_at TEXT;",
 ];
 
 #[cfg(test)]

@@ -198,8 +198,8 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   `target_session_id` is null when no live session was found at send time
   or the target ended before the row was delivered (`untargeted_at` records
   when). `last_sent_at` and `resend_count` drive resends (§10).
-  `push_failed_at` marks a row `codex queue` failed to take (timeout or spawn
-  failure), which is then left to the in-band tiers. `delivery_tier` is one
+  `push_failed_at` marks a row `codex queue` failed to take (non-zero exit,
+  timeout, or spawn failure), which is then left to the in-band tiers. `delivery_tier` is one
   of `piggyback | stop_hook | prompt_hook | wait | queue | inject`.
   `acknowledged_at` is set when the target session reads, replies to, or
   resolves the thread; delivered but unacknowledged rows are resent (§10).
@@ -211,9 +211,11 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   response body, event, thread view, comment, or log. `public_id` (`u_` and
   22 lowercase hex digits from 11 random bytes, unique, assigned on
   creation) is how the viewer is named to anyone else.
-- `session_env(session_id, codex_home)`: per-session environment the daemon
-  needs to push to a harness; `codex_home` is the `CODEX_HOME` the Codex
-  `session_start` hook reported.
+- `session_env(session_id, codex_home, push_error, push_error_at)`:
+  per-session environment the daemon needs to push to a harness;
+  `codex_home` is the `CODEX_HOME` the Codex `session_start` hook reported;
+  `push_error` and `push_error_at` hold the latest `codex queue` failure
+  (cleared by a success).
 
 Content addressing: every version keeps its own files; files omitted from a
 later publish are copied forward as on claude.ai, `null` removes one. A
@@ -606,17 +608,18 @@ Failure modes and what happens in each:
   `artifax doctor --agent codex` explains how to install and trust the
   hooks. Tiers 1 and 4 still apply (tier 2 needs the hooks that did not
   run).
-- **`codex queue` fails.** A non-zero exit (the measurement never produced
-  one for an exited session, which is held instead; this path covers a
-  missing app-server, a malformed thread ID, or a CLI failure) makes the
-  daemon release the claimed rows, mark the session ended, and untarget each
-  of its undelivered rows, or delete it when another live session already
-  targets the same comment; untargeted rows go to the next session that
-  publishes a version of or watches the artifact. The shell shows "agent
-  session ended; waiting for a new one" when no other target remains. A
-  timeout (10 s) or a failure to start `codex` releases the rows and marks
-  them `push_failed_at`: they wait on tiers 1 to 4 and are not queued again
-  until they are retargeted to another session.
+- **`codex queue` fails.** A non-zero exit never means the session exited
+  (the measurement never produced one for an exited session, which is held
+  instead; a non-zero exit is a missing app-server, a malformed thread ID, a
+  logged-out CLI, or another CLI failure), so it is treated like a timeout
+  (10 s) or a failure to start `codex`: the daemon releases the claimed rows
+  and marks them `push_failed_at`, so they wait on tiers 1 to 4 for the same
+  session and are not queued again until they are retargeted to another
+  session. The session stays live with its watches, and the failure is
+  recorded on its push state (`push.last_error`, such as `codex queue exited
+  with code 1`, and `push.last_error_at` in `GET /api/sessions/<id>` and the
+  `status` tool; a later successful run clears both). Dispatch never ends a
+  session.
 - **`codex` not on the daemon's PATH.** The daemon was started by a process
   with a minimal environment. Tier 5 is disabled for all Codex sessions and
   `doctor` reports it. The shim passes its own `PATH` when it auto-starts

@@ -128,7 +128,8 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
         .unwrap();
     assert_eq!(
         sess["push"],
-        json!({"tier": "queue", "available": true, "reason": null, "codex_home": "/tmp/cxh"})
+        json!({"tier": "queue", "available": true, "reason": null, "codex_home": "/tmp/cxh",
+            "last_error": null, "last_error_at": null})
     );
     let push: Value = ts.get("/api/push").await.json().await.unwrap();
     assert_eq!(
@@ -140,8 +141,11 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
     );
 }
 
+/// A non-zero `codex queue` exit never means the session exited (measured,
+/// docs/contract.md): the rows go back to the in-band tiers, the session stays
+/// live, and the failure is recorded on its push state.
 #[tokio::test]
-async fn non_zero_exit_ends_the_session_and_reports_agent_ended() {
+async fn non_zero_exit_releases_the_rows_and_keeps_the_session() {
     let d = tempfile::tempdir().unwrap();
     let ts = server(Some(fake_codex(d.path(), 1, 0)), Duration::from_secs(10)).await;
     let (sid, aid) = codex_owner(&ts, Some("cx-2")).await;
@@ -150,37 +154,41 @@ async fn non_zero_exit_ends_the_session_and_reports_agent_ended() {
     let tid = t["id"].as_str().unwrap();
     loop {
         let e = ev.next_named("feedback_state").await;
-        if e["state"] == "agent_ended" {
+        assert_ne!(e["state"], "agent_ended", "{e}");
+        if e["state"] == "sent" && e["tier"] == "stop_hook" {
             assert_eq!(e["thread_id"], tid);
             break;
         }
     }
+    let s = state_of(&ts, &aid, tid).await;
+    assert_eq!(
+        (s["state"].as_str(), s["tier"].as_str()),
+        (Some("sent"), Some("stop_hook")),
+        "released, waiting on the in-band tiers"
+    );
     let sess: Value = ts
         .get_authed(&format!("/api/sessions/{sid}"))
         .await
         .json()
         .await
         .unwrap();
-    assert!(sess["session"]["ended_at"].is_string());
+    assert!(
+        sess["session"]["ended_at"].is_null(),
+        "the session stays live"
+    );
+    assert_eq!(sess["push"]["available"], true);
+    assert_eq!(sess["push"]["last_error"], "codex queue exited with code 1");
+    assert!(sess["push"]["last_error_at"].is_string());
     let w: Value = ts
         .get_authed(&format!("/api/sessions/{sid}/watches"))
         .await
         .json()
         .await
         .unwrap();
-    assert!(w["watches"].as_array().unwrap().is_empty());
-    let next = ts.register_session("claude", "after").await;
-    let nsid = next["id"].as_str().unwrap();
-    ts.authed(
-        ts.client
-            .put(format!("{}/api/sessions/{nsid}/watches/{aid}", ts.base)),
-    )
-    .send()
-    .await
-    .unwrap();
+    assert_eq!(w["watches"].as_array().unwrap().len(), 1, "the watch stays");
     let fb: Value = ts
         .authed(ts.client.get(format!(
-            "{}/api/sessions/{nsid}/feedback?tier=piggyback",
+            "{}/api/sessions/{sid}/feedback?tier=piggyback",
             ts.base
         )))
         .send()
@@ -191,7 +199,7 @@ async fn non_zero_exit_ends_the_session_and_reports_agent_ended() {
         .unwrap();
     assert_eq!(
         fb["feedback"][0]["thread_id"], tid,
-        "the released row went to the next watcher"
+        "the same session gets the row in-band"
     );
 }
 
@@ -240,6 +248,12 @@ async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
         assert!(
             sess["session"]["ended_at"].is_null(),
             "the session stays live"
+        );
+        let err = sess["push"]["last_error"].as_str().unwrap_or_default();
+        assert!(
+            err.starts_with("codex queue timed out")
+                || err.starts_with("codex queue could not run"),
+            "{err}"
         );
         let fb: Value = ts
             .authed(ts.client.get(format!(

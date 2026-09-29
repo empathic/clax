@@ -157,19 +157,28 @@ pub async fn get(
     id: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = path(id)?;
-    let (session, codex_home) = s
+    let (session, codex_home, push_error) = s
         .store_call(move |st| {
             let session = st.get_session(&id)?.ok_or(CoreError::NotFound)?;
             let codex_home = st.codex_home(&id)?;
-            Ok((session, codex_home))
+            let push_error = st.push_error(&id)?;
+            Ok((session, codex_home, push_error))
         })
         .await?;
-    let push = push_info(&session, &s.codex, codex_home);
+    let push = push_info(&session, &s.codex, codex_home, push_error);
     Ok(Json(json!({"session": session, "push": push})))
 }
 
-/// How feedback can be pushed to this session (tier 5), and why not when it cannot.
-fn push_info(s: &Session, codex: &CodexPush, codex_home: Option<String>) -> Value {
+/// How feedback can be pushed to this session (tier 5), and why not when it
+/// cannot. For Codex, `last_error` and `last_error_at` hold the latest
+/// `codex queue` failure (`null` after a success or before any run); a
+/// failure leaves push available, since the next comment is pushed again.
+fn push_info(
+    s: &Session,
+    codex: &CodexPush,
+    codex_home: Option<String>,
+    push_error: Option<(String, String)>,
+) -> Value {
     match s.harness.as_str() {
         "codex" => {
             let reason = codex.reason().or_else(|| {
@@ -178,7 +187,9 @@ fn push_info(s: &Session, codex: &CodexPush, codex_home: Option<String>) -> Valu
                     .then(|| "Codex session ID unknown, native push disabled".to_string())
             });
             let tier = reason.is_none().then_some("queue");
-            json!({"tier": tier, "available": reason.is_none(), "reason": reason, "codex_home": codex_home})
+            let (last_error, last_error_at) = push_error.unzip();
+            json!({"tier": tier, "available": reason.is_none(), "reason": reason, "codex_home": codex_home,
+                "last_error": last_error, "last_error_at": last_error_at})
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
         _ => {

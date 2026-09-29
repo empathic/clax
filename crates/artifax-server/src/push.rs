@@ -130,6 +130,22 @@ pub enum QueueOutcome {
     SpawnFailed(String),
 }
 
+impl QueueOutcome {
+    /// What went wrong, as recorded in the session's `push.last_error`;
+    /// `None` for [`QueueOutcome::Queued`].
+    pub fn failure(&self) -> Option<String> {
+        match self {
+            QueueOutcome::Queued => None,
+            QueueOutcome::Rejected(Some(code)) => {
+                Some(format!("codex queue exited with code {code}"))
+            }
+            QueueOutcome::Rejected(None) => Some("codex queue was killed by a signal".to_string()),
+            QueueOutcome::TimedOut => Some("codex queue timed out".to_string()),
+            QueueOutcome::SpawnFailed(e) => Some(format!("codex queue could not run: {e}")),
+        }
+    }
+}
+
 /// Runs `<bin> queue --thread <thread> --message <message>` with `CODEX_HOME`
 /// set when known, stdio detached, killed after `timeout`.
 pub async fn run_queue(
@@ -175,13 +191,15 @@ pub async fn run_queue(
 ///
 /// The claim comes first, so no other tier hands the rows over meanwhile: for
 /// up to the timeout (10 s) the rows read `delivered` by `queue` before
-/// `codex queue` has confirmed. Exit 0: the claim stands and the new states
-/// are published. Non-zero exit: the rows are released, the session is ended
-/// (so its rows go to the next session that publishes or watches), and the
-/// states are published (`agent_ended` when no other session remains).
-/// Timeout or spawn failure: the rows are released and marked push-failed, so
-/// they read `sent` waiting on the in-band tiers and `queue` does not take them
-/// again. Never retried.
+/// `codex queue` has confirmed. Exit 0: the claim stands, the session's
+/// recorded push error is cleared, and the new states are published. A
+/// non-zero exit, a timeout, or a spawn failure: the rows are released and
+/// marked push-failed, so they read `sent` waiting on the in-band tiers and
+/// `queue` does not take them again, and the failure is recorded on the
+/// session (`push.last_error` and `push.last_error_at` in
+/// `GET /api/sessions/<id>`). Dispatch never ends a session: a non-zero exit
+/// was measured to mean a CLI or app-server failure, never that the session
+/// is gone (docs/contract.md). Never retried.
 pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
     let Some(bin) = ctx.codex.bin.clone() else {
         return;
@@ -225,27 +243,16 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
             let store = ctx.store.clone();
             let settled = tokio::task::spawn_blocking(move || {
                 let mut touched: Touched = claimed;
-                match &outcome {
-                    QueueOutcome::Queued => {}
-                    QueueOutcome::Rejected(code) => {
-                        tracing::warn!(session = %sid, ?code, "codex queue failed; ending the session");
-                        match store.release_feedback(&ids) {
-                            Ok(t) => touched.merge(t),
-                            Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
-                        }
-                        match store.end_session_touched(&sid) {
-                            Ok((_, t)) => touched.merge(t),
-                            Err(e) => tracing::warn!(error = %e, "ending the Codex session failed"),
-                        }
-                        ctx.waiters.forget(&sid);
+                let error = outcome.failure();
+                if let Some(reason) = &error {
+                    tracing::warn!(session = %sid, reason = %reason, "codex queue failed; leaving the rows to the other tiers");
+                    match store.release_feedback(&ids) {
+                        Ok(t) => touched.merge(t),
+                        Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
                     }
-                    QueueOutcome::TimedOut | QueueOutcome::SpawnFailed(_) => {
-                        tracing::warn!(session = %sid, ?outcome, "codex queue did not run; leaving the rows to the other tiers");
-                        match store.release_feedback(&ids) {
-                            Ok(t) => touched.merge(t),
-                            Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
-                        }
-                    }
+                }
+                if let Err(e) = store.set_push_error(&sid, error.as_deref()) {
+                    tracing::warn!(session = %sid, error = %e, "recording the codex queue outcome failed");
                 }
                 publish_states(&ctx, &store, &touched);
                 ctx.waiters.wake(&touched.targets);

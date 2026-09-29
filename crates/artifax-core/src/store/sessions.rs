@@ -286,6 +286,36 @@ impl Store {
         })
     }
 
+    /// Records the outcome of the latest `codex queue` run for the session:
+    /// `Some(reason)` stores the failure with the current time, `None` (a
+    /// success) clears it.
+    pub fn set_push_error(&self, session_id: &str, error: Option<&str>) -> Result<()> {
+        let at = error.map(|_| Store::now());
+        self.with_conn(|c| {
+            c.execute(
+                "INSERT INTO session_env (session_id, push_error, push_error_at) VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET push_error = excluded.push_error,
+                    push_error_at = excluded.push_error_at",
+                params![session_id, error, at],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// The last `codex queue` failure recorded for the session and when, if
+    /// the latest run failed.
+    pub fn push_error(&self, session_id: &str) -> Result<Option<(String, String)>> {
+        self.with_conn(|c| {
+            Ok(c.query_row(
+                "SELECT push_error, push_error_at FROM session_env
+                 WHERE session_id = ?1 AND push_error IS NOT NULL",
+                params![session_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+        })
+    }
+
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
         self.with_conn(|c| {
             Ok(c.query_row(
@@ -686,6 +716,32 @@ mod tests {
         assert_eq!(
             store.feedback_rows(&t.id).unwrap()[0].target_session_id,
             None
+        );
+    }
+
+    #[test]
+    fn push_errors_are_recorded_and_cleared_without_touching_codex_home() {
+        let (_d, store) = store();
+        let s = store
+            .join_session("codex", 5, "cx-1", Some("/w"), &[])
+            .unwrap();
+        assert_eq!(store.push_error(&s.id).unwrap(), None);
+        store
+            .set_push_error(&s.id, Some("codex queue exited with code 1"))
+            .unwrap();
+        let (e, at) = store.push_error(&s.id).unwrap().unwrap();
+        assert_eq!(e, "codex queue exited with code 1");
+        assert!(!at.is_empty());
+        store.set_codex_home(&s.id, "/tmp/cxh").unwrap();
+        assert!(
+            store.push_error(&s.id).unwrap().is_some(),
+            "codex_home keeps it"
+        );
+        store.set_push_error(&s.id, None).unwrap();
+        assert_eq!(store.push_error(&s.id).unwrap(), None);
+        assert_eq!(
+            store.codex_home(&s.id).unwrap().as_deref(),
+            Some("/tmp/cxh")
         );
     }
 
