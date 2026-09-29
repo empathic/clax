@@ -289,7 +289,7 @@ pub async fn serve(
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<crate::auth::Conn>(),
     )
     .with_graceful_shutdown(async move {
         tokio::select! {

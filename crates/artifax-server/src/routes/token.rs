@@ -1,4 +1,4 @@
-use crate::auth::{is_local_host, is_loopback};
+use crate::auth::{Conn, is_local_host, is_loopback};
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::{
@@ -7,11 +7,13 @@ use axum::{
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
-use std::net::SocketAddr;
-
+/// The bearer token, for the shell on this machine. Beyond the `/api` host
+/// check ([`crate::auth::require_api_host`]), the peer must be a loopback
+/// address and the `Host` a literal local name (not the LAN bind address),
+/// else 403 `not_loopback`.
 pub async fn token(
     State(s): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let host = headers

@@ -67,7 +67,7 @@ impl TestServer {
         tokio::spawn(async move {
             axum::serve(
                 listener,
-                app.into_make_service_with_connect_info::<SocketAddr>(),
+                app.into_make_service_with_connect_info::<crate::auth::Conn>(),
             )
             .await
             .unwrap();

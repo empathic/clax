@@ -864,8 +864,14 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   IDs), need the bearer token from `daemon.json` (0600). Local
   shims, hooks, and the CLI read it; the shell on localhost fetches it from
   `/api/token`, which only answers to loopback connections and also requires
-  a literal local `Host` header (localhost, 127.0.0.1, [::1]) to defeat DNS
-  rebinding. LAN viewers can
+  a literal local `Host` header (localhost, 127.0.0.1, [::1]).
+- Every `/api` route (token or not) refuses DNS rebinding: the `Host`
+  header must be `localhost`, `127.0.0.1` or `[::1]` (with or without the
+  port), or exactly the address and port the connection arrived on (the
+  bind address; for an unspecified bind, the interface address the client
+  reached, as an IP literal). Anything else, any other DNS name included, is
+  403 `forbidden_host`. Artifact hosts (`<aid>.localhost`) never reach
+  `/api`; the shell, content, and `/healthz` are not checked. LAN viewers can
   view, comment, send to agent, resolve, and write `db` docs at
   `interact` level; they cannot publish, delete, upload assets, or write
   `admin`-level docs.

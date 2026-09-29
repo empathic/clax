@@ -90,7 +90,10 @@ async fn token_is_refused_for_non_local_host_header() {
         .unwrap();
     assert_eq!(res.status(), 403);
     let body: serde_json::Value = res.json().await.unwrap();
-    assert_eq!(body["error"]["code"], "not_loopback");
+    assert_eq!(
+        body["error"]["code"], "forbidden_host",
+        "every /api route refuses a foreign Host first"
+    );
 }
 
 #[tokio::test]

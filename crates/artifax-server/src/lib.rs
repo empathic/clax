@@ -28,9 +28,11 @@ pub fn build_router_with_shutdown(
 }
 
 // `Router::layer` runs after route matching, so the host rewrite has to wrap the
-// whole inner router (mounted as the outer fallback) to influence routing.
+// whole inner router (mounted as the outer fallback) to influence routing. The
+// `/api` host check runs after the rewrite (the later `layer` is outermost).
 fn wrap(inner: axum::Router) -> axum::Router {
     axum::Router::new()
         .fallback_service(inner)
+        .layer(axum::middleware::from_fn(auth::require_api_host))
         .layer(axum::middleware::from_fn(host::rewrite_artifact_host))
 }
