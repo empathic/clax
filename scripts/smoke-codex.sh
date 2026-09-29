@@ -72,7 +72,7 @@ echo "smoke: plugin installed; codex mcp list shows artifax"
 # that would prompt, so the scratch home pre-approves the plugin's tools.
 printf '\n[plugins."artifax@artifax".mcp_servers.artifax]\ndefault_tools_approval_mode = "approve"\n' >> "$CODEX_HOME/config.toml"
 
-PROMPT="Publish a one-line HTML page titled Smoke via the artifax publish tool and reply with only its URL"
+PROMPT="Publish a one-line HTML page containing the word Smoke via the artifax publish tool, passing title \"Smoke\", and reply with only its URL"
 EXTRA=()
 if [ -n "$HOOKS" ]; then EXTRA+=(--dangerously-bypass-hook-trust); fi
 echo "smoke: running codex exec${HOOKS:+ (hooks enabled)}"
@@ -97,7 +97,9 @@ CODE="$(curl -s -o "$SCRATCH/page.html" -w '%{http_code}' "$BASE/c/$ID/v/1/")"
 grep -q Smoke "$SCRATCH/page.html" || die "page $BASE/c/$ID/v/1/ does not contain Smoke"
 echo "smoke: $BASE/a/$ID is 200 and its page contains Smoke"
 
-curl -s "$BASE/api/sessions" > "$SCRATCH/sessions.json"
+# Session reads need the daemon's bearer token.
+TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$ARTIFAX_HOME/daemon.json")"
+curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/sessions" > "$SCRATCH/sessions.json"
 python3 - "$SCRATCH/sessions.json" "$HOOKS" "$CWD" <<'PY' || die "session check failed (see above)"
 import json, os, sys
 sessions = [s for s in json.load(open(sys.argv[1]))["sessions"] if s.get("harness") == "codex"]

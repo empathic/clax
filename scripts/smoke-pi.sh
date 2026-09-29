@@ -67,7 +67,9 @@ fi
 INFO="$ARTIFAX_HOME/daemon.json"
 [ -f "$INFO" ] || die "the extension started no daemon ($INFO is missing); see $ARTIFAX_HOME/logs/daemon.log"
 PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$INFO")"
-SESSIONS="$(curl -sf "http://127.0.0.1:$PORT/api/sessions")" || die "GET /api/sessions failed"
+# Session reads need the daemon's bearer token.
+TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$INFO")"
+SESSIONS="$(curl -sf -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/sessions")" || die "GET /api/sessions failed"
 echo "smoke: GET /api/sessions -> $SESSIONS"
 python3 - "$SESSIONS" "$CWD" <<'PY' || die "no pi session was registered"
 import json, sys

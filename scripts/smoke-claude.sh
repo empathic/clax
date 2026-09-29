@@ -46,7 +46,7 @@ echo "smoke: starting daemon in $HOME_DIR"
 BASE="$("$BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')"
 echo "smoke: daemon at $BASE"
 
-PROMPT="Publish a one-line HTML page titled Smoke via the artifax publish tool, then call the artifax status tool. Reply with only the artifact URL."
+PROMPT="Publish a one-line HTML page containing the word Smoke via the artifax publish tool, passing title \"Smoke\", then call the artifax status tool. Reply with only the artifact URL."
 TOOLS="mcp__artifax__publish mcp__artifax__status"
 # A plugin's MCP server is named plugin_<plugin>_<server>.
 PLUGIN_TOOLS="mcp__plugin_artifax_artifax__publish mcp__plugin_artifax_artifax__status"
@@ -83,8 +83,10 @@ CODE="$(curl -s -o "$SCRATCH/page.html" -w '%{http_code}' "$BASE/c/$ID/v/1/")"
 grep -q Smoke "$SCRATCH/page.html" || die "page $BASE/c/$ID/v/1/ does not contain Smoke"
 echo "smoke: $BASE/a/$ID is 200 and its page contains Smoke"
 
+# Session reads need the daemon's bearer token.
+token() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$HOME_DIR/daemon.json"; }
 sessions_check() { # $1: python predicate over `sessions`
-    curl -s "$BASE/api/sessions" | python3 -c "
+    curl -s -H "Authorization: Bearer $(token)" "$BASE/api/sessions" | python3 -c "
 import json, sys
 sessions = [s for s in json.load(sys.stdin)['sessions'] if s.get('harness') == 'claude']
 sys.exit(0 if ($1) else 1)"
