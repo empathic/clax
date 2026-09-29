@@ -42,6 +42,9 @@ pub struct Args {
     pub if_version: Option<u32>,
 }
 
+/// Printed after the URL when no agent session owns the published artifact.
+const NO_SESSION_NOTE: &str = "note: published without an agent session; comments on this page will wait until an agent session watches it";
+
 const TEXT_EXT: &[&str] = &[
     "html", "htm", "css", "js", "mjs", "json", "svg", "md", "txt", "csv", "xml", "map",
 ];
@@ -179,15 +182,25 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         .context("server response lacks artifact.id")?
         .to_string();
     let url = c.browser_url(&format!("/a/{id}"));
+    // The session comments go to: the one this version is attributed to, else
+    // the artifact's owner. The CLI attributes none of its own.
+    let session = res["version"]["session_id"]
+        .as_str()
+        .or(res["artifact"]["owner_session_id"].as_str());
     super::print(
         cli,
-        serde_json::json!({"id": id, "url": url, "version": res["version"]["n"]}),
+        serde_json::json!({"id": id, "url": url, "version": res["version"]["n"], "session": session}),
         |j| {
-            format!(
+            let mut text = format!(
                 "published v{} at {}",
                 j["version"],
                 j["url"].as_str().unwrap_or_default()
-            )
+            );
+            if j["session"].is_null() {
+                text.push_str("\n");
+                text.push_str(NO_SESSION_NOTE);
+            }
+            text
         },
     );
     Ok(())

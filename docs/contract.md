@@ -594,6 +594,15 @@ The daemon's `/mcp` endpoint has no session: publishes have no owner,
 `list` with `scope: "mine"` is empty, `status` reports `null` for `harness`
 and `session`, and relative file paths are rejected.
 
+The `artifax` CLI has no session either: `artifax publish` never attributes a
+publish to one. A new artifact it publishes has no owner, so comments sent to
+the agent on it wait, undelivered, until an agent session watches it (the
+`watch` tool) or publishes a version of it. After the URL the command prints
+`note: published without an agent session; comments on this page will wait
+until an agent session watches it` when neither the new version nor the
+artifact has a session; `--json` reports it as `"session": null`, or the
+session's ID (the version's, else the artifact owner's) when there is one.
+
 ## Comments and feedback
 
 People comment on a page in the browser: comment mode outlines the element

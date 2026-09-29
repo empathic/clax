@@ -1235,3 +1235,90 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         assert!(!text.contains("codex_push"), "{text}");
     }
 }
+
+const NO_SESSION_NOTE: &str = "note: published without an agent session; comments on this page will wait until an agent session watches it";
+
+#[test]
+fn publish_says_when_no_agent_session_will_get_the_comments() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "p/index.html", "<title>Solo</title><p>1");
+    let out = e
+        .cmd()
+        .args(["publish", "--port", "0"])
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(lines[0].starts_with("published v1 at "), "{text}");
+    assert_eq!(lines.get(1), Some(&NO_SESSION_NOTE), "{text}");
+    let v: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["publish", "--port", "0", "--json"])
+            .arg(&index)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert!(v["session"].is_null(), "{v}");
+    assert!(v.get("session").is_some(), "{v}");
+
+    // An artifact an agent session owns: a CLI update keeps its session.
+    let info: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(e.dir.path().join("ax/daemon.json")).unwrap(),
+    )
+    .unwrap();
+    let http = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let base = format!("http://127.0.0.1:{}", info["port"]);
+    let token = info["token"].as_str().unwrap();
+    let session: serde_json::Value = http
+        .post(format!("{base}/api/sessions"))
+        .bearer_auth(token)
+        .json(&serde_json::json!({"harness": "claude", "cwd": "/w"}))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let sid = session["session"]["id"].as_str().unwrap();
+    let created: serde_json::Value = http
+        .post(format!("{base}/api/artifacts"))
+        .bearer_auth(token)
+        .header("X-Artifax-Session", sid)
+        .json(&serde_json::json!({"title": "Owned", "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let out = e
+        .cmd()
+        .args(["publish", "--port", "0", "--id", id])
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let text = String::from_utf8(out).unwrap();
+    assert!(!text.contains("note:"), "{text}");
+    let v: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["publish", "--port", "0", "--json", "--id", id])
+            .arg(&index)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(v["session"], sid, "{v}");
+    e.stop();
+}
