@@ -444,9 +444,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   with the bridge, which greets the shell with its `file`). Over an element
   taller or wider than the viewport, or covering more than 60% of it, the
   target is the text under the pointer (its line in preformatted text, else
-  its block or sentence), picked as a range anchor. An inline element (a
-  token of highlighted code) inside such an element is not a target of its
-  own: the line, block, or sentence around it is. Only the text near the
+  its block or sentence), picked as a range anchor. Text-like inline content
+  (`span`, `code`, `em`, `strong`, `b`, `i`, `mark`, `small`, `sub`, `sup`,
+  `kbd`, `samp`, `var`, `abbr`, `cite`, `q`, `time`, `u`, `s`; a token of
+  highlighted code) inside such an element is not a target of its own: the
+  line, block, or sentence around it is. Controls and replaced elements
+  (`button`, `input`, `select`, `textarea`, `a[href]`, `img`, `svg`, `video`,
+  `audio`, `canvas`, `iframe`, `object`, `[role=button]`, `[contenteditable]`,
+  `label`, `summary`), and anything inside one, stay element targets. Only the text near the
   pointer is read on hover (at most 4,000 characters each way). The outline
   is clamped to the viewport with all four borders visible, a tint of at
   least 16% and a border of at least 3:1 contrast on the background behind
@@ -617,9 +622,11 @@ range's nearest block ancestor when that fits. A range inside a larger block
 as a region around the range: the lines from 120 px above it to 120 px below
 it, at the block's width and at most 2400 px tall, copied (with the elements
 between them and the block, so the page's styles apply) next to the block
-off-screen, rendered, and removed; rendering never walks the rest of the
-block. An element larger than the budget gets no clip, and the thread says
-why. The PNG is at device pixel ratio, capped at 1600 px on the long side,
+off-screen, with the picked text marked by bands of the comment-mode
+outline's tint, rendered, and removed; rendering never walks the rest of
+the block. An element larger than the budget is rendered cropped to its part
+in the viewport at pick time, grown within the element to the budget on each
+axis; no pick goes without a clip merely for its size. The PNG is at device pixel ratio, capped at 1600 px on the long side,
 within a 4 s limit, in both frame modes; the bridge posts the bytes to the
 shell, which uploads them with the thread. Cross-origin images that taint the
 canvas are dropped from the render; the thread still stores the anchor and

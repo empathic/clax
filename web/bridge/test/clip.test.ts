@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_CLIP_REGION, MAX_SIDE, REGION_PAD, blockAncestor, clipBackground, clipRootStyle, clipScale, crossOriginImage, dataUrlToBuffer, fitsClipBudget, regionBounds, renderTargetClip } from "../src/clip";
+import { MAX_CLIP_REGION, MAX_SIDE, REGION_PAD, blockAncestor, clipBackground, clipRootStyle, clipScale, crossOriginImage, dataUrlToBuffer, fitsClipBudget, elementRegion, regionBounds } from "../src/clip";
 
 describe("clip helpers", () => {
   it("renders at device pixel ratio but never past 1600 px on the long side", () => {
@@ -75,10 +75,19 @@ describe("clip helpers", () => {
     // A range taller than the budget is cut at the budget's height.
     expect(regionBounds({ top: 0, bottom: 5000, width: 200, height: 5000 }, block)).toEqual({ top: -120, bottom: -120 + MAX_CLIP_REGION.h });
   });
-  it("gives no clip for an element larger than the budget", async () => {
-    document.body.innerHTML = `<div id="d">x</div>`;
-    const div = document.getElementById("d")!;
-    div.getBoundingClientRect = () => ({ left: 0, top: 0, right: 900, bottom: 21075, width: 900, height: 21075, x: 0, y: 0, toJSON() {} }) as DOMRect;
-    await expect(renderTargetClip(div)).rejects.toThrow("the element is too large to capture");
+  it("crops an element larger than the budget to its part in view, grown to the budget within the element", () => {
+    const vp = { w: 1000, h: 800 };
+    const el = (left: number, top: number, width: number, height: number) => ({ left, top, width, height });
+    // 5,000 px tall, scrolled 2,000 px into it: the 800 px in view plus 800 px above and below.
+    expect(elementRegion(el(0, -2000, 900, 5000), vp)).toEqual({ x: 0, y: 1200, w: 900, h: 2400 });
+    // Its top in view: the growth goes below.
+    expect(elementRegion(el(0, 100, 900, 5000), vp)).toEqual({ x: 0, y: 0, w: 900, h: 2400 });
+    // Its bottom in view: the growth goes above.
+    expect(elementRegion(el(0, -4500, 900, 5000), vp)).toEqual({ x: 0, y: 2600, w: 900, h: 2400 });
+    // Wider than the budget: the same on both axes.
+    expect(elementRegion(el(-1000, 0, 4000, 300), vp)).toEqual({ x: 700, y: 0, w: 1600, h: 300 });
+    // Out of view (a scroll before the pick): grown from the nearest edge.
+    expect(elementRegion(el(0, 900, 900, 5000), vp)).toEqual({ x: 0, y: 0, w: 900, h: 2400 });
+    expect(elementRegion(el(0, -6000, 900, 5000), vp)).toEqual({ x: 0, y: 2600, w: 900, h: 2400 });
   });
 });

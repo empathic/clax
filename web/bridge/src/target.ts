@@ -184,6 +184,17 @@ const isInline = (el: Element) => {
 };
 const isPre = (el: Element) => /^(pre|break-spaces)/.test(el.ownerDocument.defaultView!.getComputedStyle(el).whiteSpace || "") || el.localName === "pre";
 
+/** Inline elements that are only text styling: inside an oversized block, the
+ * line, block, or sentence around them is the target, not the element. */
+export const TEXT_INLINE: ReadonlySet<string> = new Set(["span", "code", "em", "strong", "b", "i", "mark", "small", "sub", "sup", "kbd", "samp", "var", "abbr", "cite", "q", "time", "u", "s"]);
+/** Interactive and replaced elements: always their own targets when they fit
+ * the viewport, as is anything inside one. */
+export const ELEMENT_TARGETS = "button, input, select, textarea, a[href], img, svg, video, audio, canvas, iframe, object, [role=button], [contenteditable], label, summary";
+
+/** Whether `el` is text-like inline content (see `TEXT_INLINE`) outside any
+ * control or replaced element. */
+const textInline = (el: Element) => TEXT_INLINE.has(el.localName) && isInline(el) && !el.closest(ELEMENT_TARGETS);
+
 const LINE_STOP = /\n/g;
 const SENTENCE_STOP = /[.!?](?=\s)|\n/g;
 const SENTENCE_END = /[.!?](?=\s|$)|\n/g;
@@ -217,9 +228,10 @@ function blockOf(el: Element, stop: Element | null = null): Element {
 }
 
 /** What comment mode targets for the pointer at (`x`, `y`) over `el`. An
- * element that fits the viewport is the target, unless it is inline inside an
- * oversized block, which is then treated as the element under the pointer (so
- * the tokens of highlighted code do not each become a target). Over an
+ * element that fits the viewport is the target, unless it is text-like inline
+ * content (`TEXT_INLINE`, outside any `ELEMENT_TARGETS`) inside an oversized
+ * block, which is then treated as the element under the pointer (so the
+ * tokens of highlighted code do not each become a target). Over an
  * oversized element the target is the line under the pointer in preformatted
  * text, the block around the text when that block fits, or the sentence around
  * it; with no text under the pointer, the smallest element under it that fits;
@@ -227,7 +239,7 @@ function blockOf(el: Element, stop: Element | null = null): Element {
  * `WINDOW_CAP` characters each way), never a whole element's. */
 export function chooseTarget(doc: Document, el: Element, x: number, y: number, vp: Viewport = viewportOf(doc)): Element | Range {
   if (!isOversized(el.getBoundingClientRect(), vp)) {
-    if (!isInline(el)) return el;
+    if (!textInline(el)) return el;
     const block = blockOf(el);
     if (block === el || block === doc.body || block === doc.documentElement || !isOversized(block.getBoundingClientRect(), vp)) return el;
     el = block;

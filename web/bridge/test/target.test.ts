@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { OVERSIZED_SHARE, backgroundBehind, chooseTarget, colorLuminance, isOversized, outlineBox, outlineColors } from "../src/target";
+import { ELEMENT_TARGETS, OVERSIZED_SHARE, TEXT_INLINE, backgroundBehind, chooseTarget, colorLuminance, isOversized, outlineBox, outlineColors } from "../src/target";
 
 const VP = { w: 1000, h: 800 };
 const rect = (x: number, y: number, w: number, h: number) => ({ left: x, top: y, right: x + w, bottom: y + h, width: w, height: h });
@@ -130,6 +130,11 @@ describe("chooseTarget", () => {
     expect((t as Range).toString()).toBe("Second one is this!");
   });
 
+  it("names the text-like inline elements and the elements that stay targets", () => {
+    for (const t of ["span", "code", "em", "strong", "b", "i", "mark", "small", "sub", "sup", "kbd", "samp", "var", "abbr", "cite", "q", "time", "u", "s"]) expect(TEXT_INLINE.has(t), t).toBe(true);
+    expect(ELEMENT_TARGETS).toBe("button, input, select, textarea, a[href], img, svg, video, audio, canvas, iframe, object, [role=button], [contenteditable], label, summary");
+  });
+
   it("does not merge two sentences when the caret is on the space after a full stop", () => {
     document.body.innerHTML = `<div>First sentence here. Second one is this! Third.</div>`;
     const div = big(document.querySelector("div")!);
@@ -164,6 +169,19 @@ describe("chooseTarget", () => {
       expect(String(chooseTarget(document, document.querySelector(".c")!, 10, 10, vp))).toBe("// end");
       caret = { node: document.querySelector(".fn")!.firstChild!, offset: 0 };
       expect(String(chooseTarget(document, document.querySelector(".fn")!, 10, 10, vp))).toBe("fn main() {");
+    });
+    it("keeps controls and replaced elements inside an oversized container as their own targets", () => {
+      document.body.innerHTML = `<div id="big">Some text. <button>Save</button> more <img alt="x"> and <a href="#x">a link</a> <span role="button">Go</span> <span id="tok">tok</span> text.</div>`;
+      const div = big(document.getElementById("big")!);
+      for (const sel of ["button", "img", "a", "[role=button]"]) {
+        const el = document.querySelector(sel)!;
+        caret = el.firstChild ? { node: el.firstChild, offset: 1 } : { node: div.firstChild!, offset: 3 };
+        expect(chooseTarget(document, el, 10, 10, vp), sel).toBe(el);
+      }
+      // A text-like span still yields the text around it.
+      const tok = document.getElementById("tok")!;
+      caret = { node: tok.firstChild!, offset: 1 };
+      expect(chooseTarget(document, tok, 10, 10, vp)).toBeInstanceOf(Range);
     });
     it("keeps a token as the target when its block fits the viewport", () => {
       document.body.innerHTML = CODE;

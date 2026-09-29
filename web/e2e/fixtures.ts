@@ -150,3 +150,28 @@ export async function expectVisibleClip(page: Page, pickId: string) {
   expect(s.opaqueShare).toBeGreaterThan(0.01);
   expect(s.ink).toBeGreaterThan(20);
 }
+
+/** Pixels of a recorded clip that show `tint` (RGB) at `alpha` over the clip's
+ * background (its top-left pixel), within a tolerance, and the rows they span. */
+export async function tintStats(page: Page, pickId: string, rgb: [number, number, number], share: number) {
+  return page.evaluate(async ({ id, tint, alpha }) => {
+    const buf = (window as any).artifaxClips[id] as ArrayBuffer;
+    const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
+    const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
+    ctx.drawImage(bmp, 0, 0);
+    const px = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+    const want = [0, 1, 2].map(c => px[c] * (1 - alpha) + tint[c] * alpha);
+    let count = 0;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (let i = 0; i < px.length; i += 4) {
+      if ([0, 1, 2].every(c => Math.abs(px[i + c] - want[c]) <= 10)) {
+        count++;
+        const row = Math.floor(i / 4 / bmp.width);
+        top = Math.min(top, row);
+        bottom = Math.max(bottom, row);
+      }
+    }
+    return { count, top, bottom, h: bmp.height };
+  }, { id: pickId, tint: rgb, alpha: share });
+}

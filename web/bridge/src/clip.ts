@@ -11,11 +11,13 @@
 // element, or a range's nearest block ancestor, that fits is rendered whole;
 // a range in a larger block is rendered as a region around it (the lines
 // within `REGION_PAD` above and below it, at the block's width) from a copy of
-// just those lines, so rendering never walks the rest of the block. An
-// element larger than the budget gets no clip.
+// just those lines, with the range marked, so rendering never walks the rest
+// of the block. An element larger than the budget is rendered cropped to its
+// part in the viewport, grown to the budget within it.
 
 import { createContext, destroyContext, domToPng } from "modern-screenshot";
-import { type TextWindow, nextText, pointAt, prevText, windowAround } from "./text-walk";
+import { backgroundBehind, outlineColors } from "./target";
+import { type TextPoint, type TextWindow, charsBetween, nextText, pointAt, pointInto, prevText, windowAround } from "./text-walk";
 
 export const MAX_SIDE = 1600;
 export const CLIP_TIMEOUT_MS = 4000;
@@ -148,19 +150,34 @@ export function dataUrlToBuffer(url: string): ArrayBuffer {
   return out.buffer;
 }
 
-/** A PNG of `el`; rejects when it has no size or rendering exceeds `timeoutMs`. */
-export async function renderClip(el: Element, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
+/** How `renderClip` renders: `crop`, the part of the element to render
+ * (relative to its top left corner; all of it when absent); `style`, more
+ * inline style for the rendered root. */
+export interface ClipOptions {
+  crop?: { x: number; y: number; w: number; h: number };
+  style?: Partial<CSSStyleDeclaration>;
+}
+
+/** A PNG of `el` (or of its `crop`); rejects when it has no size or rendering exceeds `timeoutMs`. */
+export async function renderClip(el: Element, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS, opts: ClipOptions = {}): Promise<ArrayBuffer> {
   const r = el.getBoundingClientRect();
   if (r.width < 1 || r.height < 1) throw new Error("the anchored element has no size");
   const origin = new URL(win.location.href).origin;
+  const crop = opts.crop;
+  // A crop renders the element at its own size, moved so the crop sits in a
+  // picture of the crop's size (the declarations replace the forced size).
+  const cropStyle: Partial<CSSStyleDeclaration> = crop
+    ? { width: `${r.width}px`, height: `${r.height}px`, transform: `translate(${-crop.x}px, ${-crop.y}px)`, transformOrigin: "0 0" }
+    : {};
   const png = (async () => {
     const ctx = await createContext(el, {
-      scale: clipScale(r.width, r.height, win.devicePixelRatio || 1),
+      scale: clipScale(crop?.w ?? r.width, crop?.h ?? r.height, win.devicePixelRatio || 1),
       filter: n => !crossOriginImage(n, origin),
       fetch: { placeholderImage: TRANSPARENT },
       backgroundColor: clipBackground(el, win),
-      style: clipRootStyle(el, win),
+      style: { ...clipRootStyle(el, win), ...opts.style, ...cropStyle },
       timeout: timeoutMs,
+      ...(crop ? { width: crop.w, height: crop.h } : {}),
     });
     if (win.origin === "null") ctx.sandbox = el.ownerDocument.createElement("iframe");
     try {
@@ -178,14 +195,46 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
   }
 }
 
+/** The span along one axis of an element from `start` of length `size`, in
+ * view from `visStart` to `visEnd`: its part in view (or its edge nearest the
+ * view), grown equally both ways within the element to `min(size, max)`, and
+ * cut at the far end when the part in view alone exceeds `max`. Returns the
+ * offset from `start` and the length. */
+function cropSpan(start: number, size: number, visStart: number, visEnd: number, max: number): [number, number] {
+  const end = start + size;
+  let a = Math.min(end, Math.max(start, visStart));
+  let b = Math.max(a, Math.min(end, Math.max(start, visEnd)));
+  const need = Math.min(size, max);
+  if (b - a > need) b = a + need;
+  let grow = need - (b - a);
+  const up = Math.min(grow / 2, a - start);
+  a -= up; grow -= up;
+  const down = Math.min(grow, end - b);
+  b += down; grow -= down;
+  a -= Math.min(grow, a - start);
+  return [Math.round(a - start), Math.round(b - a)];
+}
+
+/** The part of an element at `r` (client coordinates) a clip of it renders,
+ * relative to its top left corner: all of it within the budget, else its part
+ * in the viewport `vp`, grown within the element to the budget on each axis. */
+export function elementRegion(r: { left: number; top: number; width: number; height: number }, vp: { w: number; h: number }): { x: number; y: number; w: number; h: number } {
+  const [x, w] = cropSpan(r.left, r.width, 0, vp.w, MAX_CLIP_REGION.w);
+  const [y, h] = cropSpan(r.top, r.height, 0, vp.h, MAX_CLIP_REGION.h);
+  return { x, y, w, h };
+}
+
 /** A PNG of `t` within the clip budget: an element that fits it, or a range's
- * nearest block ancestor when that fits, is rendered whole; a range in a
- * larger block is rendered as the region around it (`renderRegion`). Rejects
- * for an element larger than the budget. */
+ * nearest block ancestor when that fits, is rendered whole; a larger element
+ * is rendered cropped to `elementRegion`; a range in a larger block is
+ * rendered as the region around it (`renderRegion`). */
 export async function renderTargetClip(t: Element | Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
   if ("nodeType" in t) {
-    if (!fitsClipBudget(t.getBoundingClientRect())) throw new Error("the element is too large to capture");
-    return renderClip(t, win, timeoutMs);
+    const r = t.getBoundingClientRect();
+    if (fitsClipBudget(r)) return renderClip(t, win, timeoutMs);
+    const doc = t.ownerDocument;
+    const vp = { w: doc.documentElement.clientWidth || win.innerWidth, h: doc.documentElement.clientHeight || win.innerHeight };
+    return renderClip(t, win, timeoutMs, { crop: elementRegion(r, vp) });
   }
   const range = t;
   const block = blockAncestor(range.commonAncestorContainer, win);
@@ -258,8 +307,41 @@ function regionEnd(w: TextWindow, bottom: number): number {
   return lo > w.at && w.text[lo - 1] === "\n" ? lo - 1 : lo;
 }
 
+/** Bands of `tint` over the text of `copy` from `from` characters in to
+ * `from + length` (one band per line), appended to it so they render with it. */
+function markPicked(copy: HTMLElement, from: number, length: number, tint: string): void {
+  const s = pointInto(copy, from);
+  const e = pointInto(copy, from + length);
+  if (!s || !e) return;
+  const r = copy.ownerDocument.createRange();
+  r.setStart(s.node, s.offset);
+  r.setEnd(e.node, e.offset);
+  const lines: { left: number; top: number; right: number; bottom: number }[] = [];
+  const rects = Array.from(r.getClientRects?.() ?? []).filter(b => b.width > 0 && b.height > 0).sort((x, y) => x.top - y.top);
+  for (const b of rects) {
+    const mid = (b.top + b.bottom) / 2;
+    const line = lines.find(l => mid >= l.top && mid <= l.bottom);
+    if (line) Object.assign(line, { left: Math.min(line.left, b.left), right: Math.max(line.right, b.right), top: Math.min(line.top, b.top), bottom: Math.max(line.bottom, b.bottom) });
+    else lines.push({ left: b.left, top: b.top, right: b.right, bottom: b.bottom });
+  }
+  const box = copy.getBoundingClientRect();
+  for (const l of lines) {
+    const band = copy.ownerDocument.createElement("div");
+    const style: Record<string, string> = {
+      position: "absolute", display: "block", margin: "0", padding: "0", border: "0", "border-radius": "2px", "pointer-events": "none",
+      // The rendered copy is not positioned (modern-screenshot drops its
+      // position) and sits at the picture's origin, so the bands are placed
+      // from its border box.
+      left: `${l.left - box.left}px`, top: `${l.top - box.top}px`,
+      width: `${l.right - l.left}px`, height: `${l.bottom - l.top}px`, background: tint,
+    };
+    for (const [k, v] of Object.entries(style)) band.style.setProperty(k, v, "important");
+    copy.appendChild(band);
+  }
+}
+
 /** A PNG of the region around `range` in `block` (see `regionBounds`), at the
- * block's width. The lines in the region are copied into a shallow copy of
+ * block's width, with the picked text marked by bands of the outline's tint. The lines in the region are copied into a shallow copy of
  * the block (with shallow copies of the elements between them, so the page's
  * styles still apply), placed next to it off-screen, rendered, and removed. */
 export async function renderRegion(block: Element, range: Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
@@ -269,6 +351,8 @@ export async function renderRegion(block: Element, range: Range, win: Window = w
   const s = textAfter(block, range.startContainer, range.startOffset);
   const e = textBefore(block, range.endContainer, range.endOffset);
   const part = doc.createRange();
+  // Where the copy's text starts, to find the picked text in it.
+  let origin: TextPoint | null = s;
   if (s && e) {
     const above = windowAround(block, s.node, s.offset, NEVER);
     const below = windowAround(block, e.node, e.offset, NEVER);
@@ -276,7 +360,8 @@ export async function renderRegion(block: Element, range: Range, win: Window = w
     const b = pointAt(below, regionEnd(below, bottom), true);
     part.setStart(a.node, a.offset);
     part.setEnd(b.node, b.offset);
-    if (part.collapsed) { part.setStart(range.startContainer, range.startOffset); part.setEnd(range.endContainer, range.endOffset); }
+    origin = a;
+    if (part.collapsed) { part.setStart(range.startContainer, range.startOffset); part.setEnd(range.endContainer, range.endOffset); origin = s; }
   } else {
     part.setStart(range.startContainer, range.startOffset);
     part.setEnd(range.endContainer, range.endOffset);
@@ -299,6 +384,7 @@ export async function renderRegion(block: Element, range: Range, win: Window = w
   copy.setAttribute("aria-hidden", "true");
   block.after(copy);
   try {
+    if (s && e && origin) markPicked(copy, charsBetween(block, origin, s), charsBetween(block, s, e), outlineColors(backgroundBehind(block)).tint);
     return await renderClip(copy, win, timeoutMs);
   } finally {
     copy.remove();

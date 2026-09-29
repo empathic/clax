@@ -119,3 +119,24 @@ export function trimmedRange(w: TextWindow, start: number, end: number): Range |
   r.setEnd(e.node, e.offset);
   return r;
 }
+
+/** A position in a text node. */
+export interface TextPoint { node: Text; offset: number }
+
+/** How many characters a reader sees from `a` to `b` (`b` at or after `a`) in
+ * `root`, counting at most about `cap`. */
+export function charsBetween(root: Node, a: TextPoint, b: TextPoint, cap = 1_000_000): number {
+  if (a.node === b.node) return Math.max(0, b.offset - a.offset);
+  let n = a.node.length - a.offset;
+  for (let t = nextText(root, a.node); t && t !== b.node && n <= cap; t = nextText(root, t)) n += t.length;
+  return n + b.offset;
+}
+
+/** The point `k` characters a reader sees into `root`, or null past its end. */
+export function pointInto(root: Node, k: number): TextPoint | null {
+  for (let t = nextText(root, root); t; t = nextText(root, t)) {
+    if (k <= t.length) return { node: t, offset: k };
+    k -= t.length;
+  }
+  return null;
+}

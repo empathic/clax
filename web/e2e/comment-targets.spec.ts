@@ -1,5 +1,5 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, clipStats, expectVisibleClip, last, openArtifact, publish, record, startDaemon } from "./fixtures";
+import { api, clipStats, expectVisibleClip, last, openArtifact, publish, record, startDaemon, tintStats } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -67,6 +67,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(clip.h).toBeLessThan(400);
     expect(clip.h).toBeGreaterThan(20);
     await expectVisibleClip(page, pick.pickId);
+    // The picked line is marked with the outline's tint: one band, about a line tall, mid-clip.
+    const band = await tintStats(page, pick.pickId, [194, 65, 12], 0.18);
+    expect(band.count).toBeGreaterThan(500);
+    expect(band.bottom - band.top).toBeLessThan(30);
+    expect(band.top).toBeGreaterThan(clip.h / 4);
+    expect(band.bottom).toBeLessThan((clip.h * 3) / 4);
     await expect(composer.locator("img.clip")).toBeVisible();
     await composer.locator("textarea").fill("Explain this line.");
     await composer.getByRole("button", { name: "Post comment" }).click();
@@ -127,6 +133,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const clip = await clipStats(page, pick.pickId);
     expect(clip.h).toBeLessThan(400);
     await expectVisibleClip(page, pick.pickId);
+    const band = await tintStats(page, pick.pickId, [194, 65, 12], 0.18);
+    expect(band.count).toBeGreaterThan(300);
+    expect(band.bottom - band.top).toBeLessThan(30);
   });
 
   test(`${mode}: a drag selection in a code block taller than the viewport but within the clip budget carries a clip`, async ({ page }) => {
@@ -146,5 +155,31 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect("line 3: the quick brown fox").toContain(pick.anchor.quote);
     expect(pick.clipError).toBeUndefined();
     await expectVisibleClip(page, pick.pickId);
+  });
+}
+
+const TALL = `<!doctype html><html><head><title>Tall</title><style>body{margin:0;background:#fff}#big{position:relative;height:5000px;margin:0 16px;background:repeating-linear-gradient(#fff 0 40px,#1d4ed8 40px 60px)}</style></head><body><section id="big"><i id="mark" style="position:absolute;left:0;width:100px;height:40px;background:#dc2626"></i></section></body></html>`;
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: picking an element taller than the clip budget clips its part in view, grown to the budget`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Tall ${mode}`, { "index.html": TALL });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    // A red mark near the bottom of the view: inside the region in view, and
+    // outside the first 2,400 px of the section.
+    await frame.evaluate(() => { scrollTo(0, 2000); document.getElementById("mark")!.style.top = `${2000 + document.documentElement.clientHeight - 60}px`; });
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    await page.mouse.click(fb.x + 200, fb.y + 200);
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "element", selector: "#big" });
+    expect(pick.clipError).toBeUndefined();
+    const clip = await clipStats(page, pick.pickId);
+    // 2,400 CSS px tall at most, scaled so the long side is at most 1,600 px.
+    expect(clip.h).toBeLessThanOrEqual(1600);
+    expect(clip.h).toBeGreaterThan(clip.w);
+    await expectVisibleClip(page, pick.pickId);
+    expect((await tintStats(page, pick.pickId, [220, 38, 38], 1)).count).toBeGreaterThan(100);
   });
 }
