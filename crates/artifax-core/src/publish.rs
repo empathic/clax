@@ -223,6 +223,9 @@ pub fn require_title(title: Option<&str>) -> Result<()> {
 /// content may contain ASCII whitespace (line breaks from encoders), which is
 /// ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
+    if let Some(caps) = &req.capabilities {
+        crate::capabilities::validate(caps)?;
+    }
     if let Some(label) = &req.label
         && label.chars().count() > MAX_LABEL_CHARS
     {
@@ -535,5 +538,25 @@ mod tests {
             assert_eq!(html_title(html).as_deref(), c["title"].as_str(), "{html:?}");
         }
         assert_eq!(MAX_DERIVED_TITLE_CHARS, 200);
+    }
+
+    #[test]
+    fn invalid_capabilities_are_refused_on_publish() {
+        let mut r = req(&[(
+            "index.html",
+            Some(FileInput {
+                content: "<p>".into(),
+                encoding: Encoding::Utf8,
+                content_type: None,
+            }),
+        )]);
+        r.capabilities = Some(serde_json::json!({"db": {"rules": [{"path": "a/{self}/b"}]}}));
+        assert!(matches!(
+            validate(r).unwrap_err(),
+            CoreError::Invalid {
+                code: "invalid_capabilities",
+                ..
+            }
+        ));
     }
 }

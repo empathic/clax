@@ -1,6 +1,8 @@
 //! Core types and storage for Artifax.
 
 pub mod anchor;
+pub mod capabilities;
+pub mod db;
 pub mod error;
 pub mod events;
 pub mod feedback;
