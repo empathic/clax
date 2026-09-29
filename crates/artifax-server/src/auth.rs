@@ -38,6 +38,11 @@ pub fn has_token(headers: &axum::http::HeaderMap, token: &str) -> bool {
     constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
+/// True when `presented` is the daemon's token (compared in constant time).
+pub fn token_matches(presented: &str, token: &str) -> bool {
+    constant_time_eq(presented.as_bytes(), token.as_bytes())
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() || a.is_empty() {
         return false;

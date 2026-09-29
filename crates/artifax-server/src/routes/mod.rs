@@ -1,6 +1,7 @@
 pub mod artifacts;
 pub mod assets;
 pub mod content;
+pub mod docs;
 pub mod events;
 pub mod feedback;
 pub mod health;
@@ -114,7 +115,24 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/sessions/{id}/watches/{aid}",
             axum::routing::put(watches::put).delete(watches::delete),
         )
-        .route("/api/sessions/{id}/feedback/ack", post(feedback::ack));
+        .route("/api/sessions/{id}/feedback/ack", post(feedback::ack))
+        .route("/api/artifacts/{aid}/docs", get(docs::list))
+        .route(
+            "/api/artifacts/{aid}/docs/{*path}",
+            get(docs::get)
+                .put(docs::put)
+                .patch(docs::patch)
+                .delete(docs::delete),
+        )
+        .route(
+            "/api/artifacts/{aid}/docs:batch",
+            post(docs::batch.layer(DefaultBodyLimit::max(docs::DOCS_BATCH_LIMIT))),
+        )
+        .route(
+            "/api/artifacts/{aid}/docs:str_replace",
+            post(docs::str_replace),
+        )
+        .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))

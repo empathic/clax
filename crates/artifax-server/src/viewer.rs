@@ -22,7 +22,7 @@ impl<S: Send + Sync> FromRequestParts<S> for ViewerCookie {
 
 /// The first `artifax_viewer` cookie whose value is a ULID; malformed ones
 /// (including earlier duplicates) are skipped.
-fn read(headers: &HeaderMap) -> Option<String> {
+pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
     headers
         .get_all(header::COOKIE)
         .iter()

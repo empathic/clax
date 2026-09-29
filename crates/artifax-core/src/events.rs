@@ -40,6 +40,19 @@ pub enum Event {
         resends: u32,
         exhausted: bool,
     },
+    /// A `db` document changed; `version` is `None` after a delete. The body
+    /// is never carried (SSE needs no token). `private_to` names the viewer
+    /// whose private subtree holds `path` (the event goes only to that viewer);
+    /// otherwise it goes only to subscribers at `read_level` or above.
+    Doc {
+        artifact_id: String,
+        path: String,
+        version: Option<u64>,
+        #[serde(skip)]
+        private_to: Option<String>,
+        #[serde(skip)]
+        read_level: crate::db::Level,
+    },
 }
 
 impl Event {
@@ -50,7 +63,8 @@ impl Event {
             | Event::Thread { artifact_id, .. }
             | Event::Comment { artifact_id, .. }
             | Event::ThreadResolved { artifact_id, .. }
-            | Event::FeedbackState { artifact_id, .. } => artifact_id,
+            | Event::FeedbackState { artifact_id, .. }
+            | Event::Doc { artifact_id, .. } => artifact_id,
         }
     }
 
@@ -63,6 +77,7 @@ impl Event {
             Event::Comment { .. } => "comment",
             Event::ThreadResolved { .. } => "thread_resolved",
             Event::FeedbackState { .. } => "feedback_state",
+            Event::Doc { .. } => "doc",
         }
     }
 
@@ -150,9 +165,31 @@ mod tests {
                 resolved_at: "r".into(),
             },
             Event::feedback_state("a".into(), s),
+            Event::Doc {
+                artifact_id: "a".into(),
+                path: "t/1".into(),
+                version: Some(1),
+                private_to: Some("u_x".into()),
+                read_level: crate::db::Level::View,
+            },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());
         }
+    }
+
+    #[test]
+    fn doc_events_never_serialise_their_private_owner() {
+        let ev = Event::Doc {
+            artifact_id: "a".into(),
+            path: "data/users/u_x/p".into(),
+            version: None,
+            private_to: Some("u_x".into()),
+            read_level: crate::db::Level::Admin,
+        };
+        assert_eq!(
+            serde_json::to_value(&ev).unwrap(),
+            serde_json::json!({"type": "doc", "artifact_id": "a", "path": "data/users/u_x/p", "version": null})
+        );
     }
 
     #[test]

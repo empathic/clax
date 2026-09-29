@@ -3,6 +3,7 @@
 pub mod auth;
 pub mod blocking;
 pub mod daemon;
+pub mod db_caller;
 pub mod error;
 pub mod feedback;
 pub mod host;

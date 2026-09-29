@@ -1,6 +1,8 @@
 //! SSE fan-out of the event bus.
 
 use crate::state::AppState;
+use artifax_core::Event;
+use artifax_core::db::{Caller, Level};
 use axum::extract::{Query, State};
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::Stream;
@@ -21,8 +23,14 @@ pub struct EventsQuery {
 /// `GET /api/events`: a Server-Sent Events stream of the event bus.
 ///
 /// The stream opens with `event: ready` (`data: {}`), then carries `version`,
-/// `artifact_deleted`, `thread`, `comment`, `thread_resolved`, and
-/// `feedback_state` events whose data is the JSON-serialised [`artifax_core::Event`].
+/// `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
+/// `feedback_state`, and `doc` events whose data is the JSON-serialised
+/// [`artifax_core::Event`]. A `doc` event carries the path and version only;
+/// one for a private `data/users/<id>/` path reaches only that viewer, and
+/// any other reaches only subscribers whose level may read the path. The
+/// subscriber's level and viewer ([`crate::db_caller::Subscriber`]: the token
+/// from `Authorization` or `?token=`, and the viewer cookie) are fixed when
+/// the stream opens.
 /// A subscriber that falls more than the bus capacity behind receives
 /// `event: resync` with `data: {"dropped": <n>}` and then continues from the oldest
 /// retained event; clients should refetch state on `resync`. A `: keep-alive`
@@ -31,7 +39,16 @@ pub struct EventsQuery {
 pub async fn events(
     State(s): State<AppState>,
     Query(q): Query<EventsQuery>,
+    who: crate::db_caller::Subscriber,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    // Resolved when the stream opens: a name set later takes effect on reconnect.
+    let me = s
+        .store_call(move |st| who.resolve(st))
+        .await
+        .unwrap_or(Caller {
+            level: Level::View,
+            viewer: None,
+        });
     let rx = s.events.subscribe();
     let filter = q.artifact;
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
@@ -48,6 +65,20 @@ pub async fn events(
             && ev.artifact_id() != f
         {
             return None;
+        }
+        if let Event::Doc {
+            private_to,
+            read_level,
+            ..
+        } = &ev
+        {
+            let visible = match private_to {
+                Some(owner) => me.viewer.as_deref() == Some(owner.as_str()),
+                None => me.level >= *read_level,
+            };
+            if !visible {
+                return None;
+            }
         }
         let name = ev.name();
         Some(Ok(SseEvent::default()

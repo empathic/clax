@@ -279,8 +279,30 @@ impl TestServer {
 
     /// Opens `/api/events<query>` and returns a reader past nothing yet.
     pub async fn events(&self, query: &str) -> EventReader {
+        self.events_as(query, None).await
+    }
+
+    /// Like [`TestServer::events`], as the viewer whose cookie value is `cookie`.
+    pub async fn events_as(&self, query: &str, cookie: Option<&str>) -> EventReader {
+        self.events_with(query, |r| match cookie {
+            Some(c) => r.header("cookie", format!("artifax_viewer={c}")),
+            None => r,
+        })
+        .await
+    }
+
+    /// Opens `/api/events<query>` with the request shaped by `build` (headers
+    /// such as a cookie or the token; `query` may carry `&token=`).
+    pub async fn events_with(
+        &self,
+        query: &str,
+        build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder,
+    ) -> EventReader {
         use futures::StreamExt;
-        let res = self.get(&format!("/api/events{query}")).await;
+        let res = build(self.client.get(format!("{}/api/events{query}", self.base)))
+            .send()
+            .await
+            .unwrap();
         assert_eq!(res.status(), 200);
         let stream = res
             .bytes_stream()
