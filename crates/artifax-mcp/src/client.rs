@@ -55,7 +55,8 @@ pub struct Endpoint {
     pub token: String,
 }
 
-/// Finds or starts the daemon. It blocks, so it runs on a blocking thread.
+/// Finds (and, for the auto-start closure, starts) the daemon. It blocks, so it
+/// runs on a blocking thread.
 pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 
 /// A client of one daemon's REST API.
@@ -64,7 +65,8 @@ pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 /// with [`DaemonClient::managed`] finds its daemon with a [`Refresh`] and
 /// registers a harness session there: lazily on first use, and again whenever a
 /// request cannot connect or is refused with 401 (the daemon restarted, on a new
-/// port or with a new token), after which the request is retried once.
+/// port or with a new token), after which the request is retried once. Tool
+/// requests may start a daemon; heartbeats and ending the session only find one.
 #[derive(Clone)]
 pub struct DaemonClient {
     inner: Arc<Inner>,
@@ -76,8 +78,18 @@ struct Inner {
     managed: Option<Managed>,
 }
 
+/// Whether finding the daemon may start one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    AutoStart,
+    DiscoverOnly,
+}
+
 struct Managed {
+    /// Finds or starts the daemon.
     refresh: Refresh,
+    /// Finds a running daemon; errors when there is none.
+    discover: Refresh,
     registration: RegisterSession,
     /// Held while refreshing, so concurrent failures refresh once.
     lock: tokio::sync::Mutex<()>,
@@ -170,15 +182,21 @@ impl DaemonClient {
         }
     }
 
-    /// A client that finds its daemon with `refresh` and registers `registration`
-    /// there before its first request; see [`DaemonClient`].
-    pub fn managed(refresh: Refresh, registration: RegisterSession) -> DaemonClient {
+    /// A client that finds its daemon with `refresh` (which may start one) or
+    /// `discover` (which must not), and registers `registration` there before
+    /// its first request; see [`DaemonClient`].
+    pub fn managed(
+        refresh: Refresh,
+        discover: Refresh,
+        registration: RegisterSession,
+    ) -> DaemonClient {
         DaemonClient {
             inner: Arc::new(Inner {
                 http: http_client(),
                 state: RwLock::new(State::default()),
                 managed: Some(Managed {
                     refresh,
+                    discover,
                     registration,
                     lock: tokio::sync::Mutex::new(()),
                 }),
@@ -214,9 +232,13 @@ impl DaemonClient {
         self.state().session
     }
 
-    /// For a managed client: finds the daemon and registers the session unless
-    /// both are done. Other clients are always ready.
+    /// For a managed client: finds (or starts) the daemon and registers the
+    /// session unless both are done. Other clients are always ready.
     pub async fn ensure_session(&self) -> Result<()> {
+        self.ensure(Mode::AutoStart).await
+    }
+
+    async fn ensure(&self, mode: Mode) -> Result<()> {
         if self.inner.managed.is_none() {
             return Ok(());
         }
@@ -224,12 +246,12 @@ impl DaemonClient {
         if st.endpoint.is_some() && st.registered {
             return Ok(());
         }
-        self.refresh(st.endpoint).await
+        self.refresh(st.endpoint, mode).await
     }
 
     /// Re-discovers the daemon and registers the session there, unless another
     /// caller already moved on from `stale` (the endpoint the failure was seen on).
-    async fn refresh(&self, stale: Option<Endpoint>) -> Result<()> {
+    async fn refresh(&self, stale: Option<Endpoint>, mode: Mode) -> Result<()> {
         let Some(m) = &self.inner.managed else {
             return Ok(());
         };
@@ -238,7 +260,10 @@ impl DaemonClient {
         if st.endpoint.is_some() && st.endpoint != stale && st.registered {
             return Ok(());
         }
-        let refresh = m.refresh.clone();
+        let refresh = match mode {
+            Mode::AutoStart => m.refresh.clone(),
+            Mode::DiscoverOnly => m.discover.clone(),
+        };
         let endpoint = tokio::task::spawn_blocking(move || refresh())
             .await
             .map_err(|e| ClientError::Unreachable(format!("daemon discovery failed: {e}")))?
@@ -286,11 +311,18 @@ impl DaemonClient {
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
     {
-        self.ensure_session().await?;
+        self.send_with(Mode::AutoStart, build).await
+    }
+
+    async fn send_with<F>(&self, mode: Mode, build: F) -> Result<reqwest::Response>
+    where
+        F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
+    {
+        self.ensure(mode).await?;
         let conn = self.conn()?;
         match attempt(build(&conn)).await {
             Err(f) if f.refreshable && self.inner.managed.is_some() => {
-                if self.refresh(Some(conn.endpoint)).await.is_err() {
+                if self.refresh(Some(conn.endpoint), mode).await.is_err() {
                     return Err(f.error);
                 }
                 attempt(build(&self.conn()?)).await.map_err(|f| f.error)
@@ -393,6 +425,8 @@ impl DaemonClient {
         content_type: &str,
         bytes: Vec<u8>,
     ) -> Result<Value> {
+        let bytes = bytes::Bytes::from(bytes);
+        let len = bytes.len() as u64;
         // Validated once up front so that building the part per attempt cannot fail.
         reqwest::multipart::Part::bytes(Vec::new())
             .mime_str(content_type)
@@ -401,7 +435,7 @@ impl DaemonClient {
                 error: json!({"code": "invalid_content_type", "message": e.to_string()}),
             })?;
         self.json(|c| {
-            let part = reqwest::multipart::Part::bytes(bytes.clone())
+            let part = reqwest::multipart::Part::stream_with_length(bytes.clone(), len)
                 .file_name(filename.to_string())
                 .mime_str(content_type)
                 .expect("content type validated above");
@@ -416,31 +450,29 @@ impl DaemonClient {
     }
 
     /// `PATCH /api/sessions/<id>` `{"heartbeat": true}` for a managed client's
-    /// session, registering it first when needed.
+    /// session, registering it first when needed. Never starts a daemon.
     pub async fn heartbeat(&self) -> Result<Session> {
         let res = self
-            .json(|c| {
+            .send_with(Mode::DiscoverOnly, |c| {
                 c.request(reqwest::Method::PATCH, &c.session_path())
                     .json(&json!({"heartbeat": true}))
             })
             .await?;
-        session_of(res)
+        session_of(body_json(res).await?)
     }
 
-    /// `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,
-    /// in one attempt: ending never starts or re-discovers a daemon. `None`
-    /// when no session was registered.
+    /// `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
+    /// Never starts a daemon. `None` when no session was registered.
     pub async fn end_session(&self) -> Result<Option<Session>> {
         if self.state().session.is_none() {
             return Ok(None);
         }
-        let conn = self.conn()?;
-        let res = attempt(
-            conn.request(reqwest::Method::PATCH, &conn.session_path())
-                .json(&json!({"ended": true})),
-        )
-        .await
-        .map_err(|f| f.error)?;
+        let res = self
+            .send_with(Mode::DiscoverOnly, |c| {
+                c.request(reqwest::Method::PATCH, &c.session_path())
+                    .json(&json!({"ended": true}))
+            })
+            .await?;
         session_of(body_json(res).await?).map(Some)
     }
 }

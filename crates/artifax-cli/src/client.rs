@@ -32,9 +32,17 @@ fn http() -> reqwest::blocking::Client {
         .expect("client")
 }
 
-/// True when the daemon described by `info` is not version `ours`.
+/// True when the daemon described by `info` is older than version `ours`. A
+/// newer daemon is kept (it serves older clients), as is one whose version does
+/// not parse.
 fn needs_replacing(info: &DaemonInfo, ours: &str) -> bool {
-    info.version != ours
+    match (
+        semver::Version::parse(&info.version),
+        semver::Version::parse(ours),
+    ) {
+        (Ok(theirs), Ok(ours)) => theirs < ours,
+        _ => false,
+    }
 }
 
 impl Client {
@@ -112,20 +120,25 @@ impl Client {
             }
         }
         let mut child = cmd.spawn().context("spawning artifax serve")?;
+        let child_pid = child.id();
+        // Reap the daemon whenever it exits, so a long-lived caller (the MCP
+        // shim) does not keep a zombie that still looks alive.
+        let (exited_tx, exited) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = exited_tx.send(child.wait());
+        });
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline {
-            if let Some(status) = child.try_wait()? {
+            if let Ok(status) = exited.try_recv() {
+                let status = status?;
                 bail!(
                     "daemon exited during startup ({status}); see {}",
                     home.log_path().display()
                 );
             }
             if let Some(c) = Client::discover_with(home, &probe)
-                && c.info.pid == child.id()
+                && c.info.pid == child_pid
             {
-                // Reap the daemon when it exits, so a long-lived caller (the MCP
-                // shim) does not keep a zombie that still looks alive.
-                std::thread::spawn(move || child.wait());
                 return Ok(c);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -136,12 +149,23 @@ impl Client {
         )
     }
 
-    /// As [`Client::connect`], but a running daemon of another version is
+    /// As [`Client::connect`], but a running daemon older than this binary is
     /// stopped (waiting up to 5 s for it to exit) and replaced by one started
-    /// from this binary.
+    /// from this binary. A newer daemon is kept, with a warning logged once per
+    /// process.
     pub fn connect_matching_version(home: &Home, port: u16) -> anyhow::Result<Client> {
+        let ours = env!("CARGO_PKG_VERSION");
         let c = Client::connect(home, port)?;
-        if !needs_replacing(&c.info, env!("CARGO_PKG_VERSION")) {
+        if !needs_replacing(&c.info, ours) {
+            if c.info.version != ours {
+                static WARNED: std::sync::Once = std::sync::Once::new();
+                WARNED.call_once(|| {
+                    tracing::warn!(
+                        "artifax daemon v{} differs from this binary (v{ours}); keeping it",
+                        c.info.version
+                    )
+                });
+            }
             return Ok(c);
         }
         c.shutdown()
@@ -257,9 +281,11 @@ mod tests {
     }
 
     #[test]
-    fn only_a_daemon_of_another_version_is_replaced() {
-        assert!(!needs_replacing(&info("0.2.0"), "0.2.0"));
+    fn only_an_older_daemon_is_replaced() {
         assert!(needs_replacing(&info("0.1.9"), "0.2.0"));
-        assert!(needs_replacing(&info("0.3.0"), "0.2.0"));
+        assert!(needs_replacing(&info("0.2.0-rc.1"), "0.2.0"));
+        assert!(!needs_replacing(&info("0.2.0"), "0.2.0"));
+        assert!(!needs_replacing(&info("0.3.0"), "0.2.0"));
+        assert!(!needs_replacing(&info("test"), "0.2.0"));
     }
 }

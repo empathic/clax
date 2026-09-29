@@ -589,13 +589,18 @@ impl ArtifaxTools {
     async fn do_status(&self) -> Outcome {
         let h = self.client.healthz().await.map_err(|e| self.fail(e))?;
         let session = self.session();
-        Ok(json!({
+        let mut out = json!({
             "daemon_url": self.browser_base(),
             "version": h["version"],
             "harness": session.as_ref().map(|s| &s.harness),
             "session": session,
             "watches": [],
-        }))
+        });
+        // Version skew between these tools and the daemon they call.
+        if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
+            out["daemon_version"] = h["version"].clone();
+        }
+        Ok(out)
     }
 }
 

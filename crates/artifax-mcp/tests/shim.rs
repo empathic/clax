@@ -313,6 +313,24 @@ async fn a_restarted_daemon_is_found_again_with_the_same_session() {
 }
 
 #[tokio::test]
+async fn heartbeats_never_start_a_daemon_but_tool_calls_do() {
+    let shim = Shim::start(Some(200)).await;
+    let before = ok(&shim.call("status", json!({})).await);
+    shim.stop_daemon();
+    tokio::time::sleep(Duration::from_millis(700)).await;
+    if let Some(info) = read_daemon_info(&shim.home()) {
+        assert!(
+            !artifax_server::daemon::pid_alive(info.pid),
+            "a heartbeat started daemon {info:?}"
+        );
+    }
+    let after = ok(&shim.call("status", json!({})).await);
+    assert!(read_daemon_info(&shim.home()).is_some());
+    assert_eq!(after["session"]["id"], before["session"]["id"]);
+    shim.finish().await;
+}
+
+#[tokio::test]
 async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     // ARTIFAX_HOME is a regular file, so the daemon cannot be started.
     let dir = tempfile::tempdir().unwrap();

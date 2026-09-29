@@ -71,16 +71,18 @@ pub fn registration(
 }
 
 /// Runs the shim until stdin closes (or SIGTERM arrives), then ends the
-/// session. `refresh` finds or starts the daemon (it blocks, so it runs on a
-/// blocking thread, and must not write to stdout); it runs at startup and again
-/// whenever the daemon stops answering, and each time the session is registered
-/// again. When no daemon can be reached the shim serves anyway, and tool calls
+/// session. `refresh` finds or starts the daemon and `discover` only finds a
+/// running one (both block, so they run on a blocking thread, and must not write
+/// to stdout). Startup and tool calls use `refresh`, heartbeats and ending the
+/// session use `discover`; either runs again whenever the daemon stops
+/// answering, and the session is then registered again. When no daemon can be reached the shim serves anyway, and tool calls
 /// retry and report `daemon_unreachable` until one can. The session is marked
 /// seen every `heartbeat`.
 pub async fn run(
     harness: Harness,
     home: &Home,
     refresh: Refresh,
+    discover: Refresh,
     heartbeat: Duration,
 ) -> anyhow::Result<()> {
     // SAFETY: getppid has no preconditions and cannot fail.
@@ -92,7 +94,7 @@ pub async fn run(
         std::process::id(),
         parent_pid,
     );
-    let client = DaemonClient::managed(refresh, reg);
+    let client = DaemonClient::managed(refresh, discover, reg);
     match client.ensure_session().await {
         Ok(()) => tracing::info!(
             session = client.session().map(|s| s.id),

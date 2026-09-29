@@ -46,11 +46,22 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             token: c.token,
         })
     });
+    let discover_home = home.clone();
+    let discover: shim::Refresh = Arc::new(move || {
+        let c = Client::discover(&discover_home)
+            .ok_or_else(|| anyhow::anyhow!("no artifax daemon is running"))?;
+        Ok(Endpoint {
+            browser_base: c.browser_url(""),
+            base: c.base,
+            token: c.token,
+        })
+    });
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(shim::run(
         harness,
         home,
         refresh,
+        discover,
         Duration::from_millis(a.heartbeat_interval_ms.max(1)),
     ));
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
