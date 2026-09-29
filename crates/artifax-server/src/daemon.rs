@@ -16,21 +16,33 @@ pub const DEFAULT_PORT: u16 = 7480;
 pub const PORT_ATTEMPTS: u16 = 21;
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// Discovery record written to `daemon.json` (mode 0600) once at daemon startup;
+/// clients read it to find the port and bearer token of the running daemon.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DaemonInfo {
+    /// TCP port the daemon listens on.
     pub port: u16,
+    /// Process ID of the daemon.
     pub pid: u32,
+    /// Bearer token required by write routes.
     pub token: String,
+    /// RFC 3339 UTC start time.
     pub started_at: String,
+    /// Bind address, as text (normally `127.0.0.1`).
     pub bind: String,
+    /// Version of the daemon binary.
     pub version: String,
 }
 
+/// Reads `daemon.json`; `None` when it is missing, unreadable, or not valid JSON.
 pub fn read_daemon_info(home: &Home) -> Option<DaemonInfo> {
     let text = std::fs::read_to_string(home.daemon_json()).ok()?;
     serde_json::from_str(&text).ok()
 }
 
+/// Atomically replaces `daemon.json` with `info`: writes a 0600 temp file in the
+/// home root, syncs it, and renames it over the old file, so readers never see a
+/// partial record.
 pub fn write_daemon_info(home: &Home, info: &DaemonInfo) -> io::Result<()> {
     use io::Write;
     let tmp = home
@@ -47,10 +59,14 @@ pub fn write_daemon_info(home: &Home, info: &DaemonInfo) -> io::Result<()> {
     std::fs::rename(tmp, home.daemon_json())
 }
 
+/// Removes `daemon.json`, ignoring errors (including a file that is already gone).
 pub fn remove_daemon_info(home: &Home) {
     let _ = std::fs::remove_file(home.daemon_json());
 }
 
+/// True when a process with `pid` exists. Probes with `kill(pid, 0)`: success or
+/// `EPERM` (the process exists but belongs to another user) both count as alive;
+/// `ESRCH` and out-of-range pids (0, or beyond `i32::MAX`) do not.
 pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 || pid > i32::MAX as u32 {
         return false;
@@ -72,15 +88,24 @@ pub fn generate_token() -> String {
 pub struct DaemonLock(#[allow(dead_code)] File);
 
 impl DaemonLock {
+    /// Blocks until the lock is held. A wait interrupted by a signal (`EINTR`) is
+    /// retried; any other `flock` failure is returned.
     pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
         let f = File::create(home.daemon_lock())?;
-        // SAFETY: flock on an owned, open descriptor.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } != 0 {
-            return Err(io::Error::last_os_error());
+        loop {
+            // SAFETY: flock on an owned, open descriptor.
+            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
+                return Ok(DaemonLock(f));
+            }
+            let e = io::Error::last_os_error();
+            if e.kind() != io::ErrorKind::Interrupted {
+                return Err(e);
+            }
         }
-        Ok(DaemonLock(f))
     }
 
+    /// Takes the lock without waiting: `Ok(None)` when another open descriptor
+    /// holds it (`EWOULDBLOCK`, which equals `EAGAIN` on Linux and macOS).
     pub fn try_acquire(home: &Home) -> io::Result<Option<DaemonLock>> {
         let f = File::create(home.daemon_lock())?;
         // SAFETY: as above, non-blocking.
@@ -96,10 +121,16 @@ impl DaemonLock {
     }
 }
 
+/// Parameters for [`serve`].
 pub struct ServeConfig {
+    /// Artifax home the daemon serves from and writes `daemon.json` into.
     pub home: Home,
+    /// Address to listen on.
     pub bind: IpAddr,
+    /// First port tried; up to [`PORT_ATTEMPTS`] consecutive ports are tried
+    /// when it is busy. 0 lets the OS choose.
     pub port: u16,
+    /// Version reported by `/healthz` and recorded in `daemon.json`.
     pub version: &'static str,
     /// How often the stale watcher checks `daemon.json` (30 s in production).
     pub stale_check_interval: std::time::Duration,

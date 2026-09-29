@@ -63,7 +63,58 @@ fn lock_is_exclusive_and_released_on_drop() {
     let a = DaemonLock::acquire(&home).unwrap();
     assert!(DaemonLock::try_acquire(&home).unwrap().is_none());
     drop(a);
-    assert!(DaemonLock::try_acquire(&home).unwrap().is_some());
+    // flock locks belong to the open file description, and a child forked by a
+    // concurrently running test (pid_alive_* spawns `true`) holds a duplicate of
+    // every descriptor until it execs and O_CLOEXEC closes them. The lock is
+    // therefore released once this process's descriptor and any such transient
+    // copies are closed, so poll with a deadline rather than asserting instantly.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if DaemonLock::try_acquire(&home).unwrap().is_some() {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "lock still held 5 s after drop"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+extern "C" fn ignore_signal(_: libc::c_int) {}
+
+#[test]
+fn acquire_retries_when_interrupted_by_a_signal() {
+    // A handler installed without SA_RESTART makes a blocked flock return EINTR.
+    // SAFETY: installs a no-op handler for SIGUSR1, which nothing else in this
+    // test binary uses.
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = ignore_signal as *const () as libc::sighandler_t;
+        sa.sa_flags = 0;
+        libc::sigemptyset(&mut sa.sa_mask);
+        assert_eq!(libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut()), 0);
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    home.ensure_dirs().unwrap();
+    let held = DaemonLock::acquire(&home).unwrap();
+    let waiter = {
+        let home = home.clone();
+        std::thread::spawn(move || DaemonLock::acquire(&home).map(|_| ()))
+    };
+    use std::os::unix::thread::JoinHandleExt;
+    let thread = waiter.as_pthread_t();
+    for _ in 0..5 {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        // SAFETY: the waiter thread has not been joined, so its handle is valid.
+        unsafe { libc::pthread_kill(thread, libc::SIGUSR1) };
+    }
+    drop(held);
+    waiter
+        .join()
+        .unwrap()
+        .expect("acquire succeeds after EINTR once the holder releases");
 }
 
 #[tokio::test]

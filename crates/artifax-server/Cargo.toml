@@ -33,4 +33,5 @@ artifax-server = { path = ".", features = ["test-routes"] }
 bytes = "1"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true
+libc.workspace = true
 tokio = { workspace = true, features = ["full"] }
