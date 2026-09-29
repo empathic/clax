@@ -36,6 +36,22 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(0);
   });
 
+  test(`${mode}: a page polling on a timer cannot ride the viewer's input to the shell`, async ({ page }) => {
+    const poller = `<!doctype html><html><head><title>Poller</title></head><body><h2 id="t">Title</h2><p id="status">0</p>
+<script>(async () => { const c = await claude.use("comments"); let n = 0; const s = document.getElementById("status");
+setInterval(async () => { const r = await c.openComposer({ element: document.getElementById("t") }).catch(e => ({ code: e.code })); n++; s.textContent = n + " " + JSON.stringify(r); }, 150); })();</script></body></html>`;
+    const { artifact } = await publishWith(d.base, d.token, `Poller ${mode}`, poller, { comments: { composer_only: true } });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#status")).toContainText("opened");
+    // The viewer types in the shell while the page polls.
+    const name = page.getByRole("textbox", { name: "Your name" });
+    await name.click();
+    await name.pressSequentially("Sam", { delay: 120 });
+    const seen = Number((await f.locator("#status").textContent())!.split(" ")[0]);
+    await expect.poll(async () => Number((await f.locator("#status").textContent())!.split(" ")[0])).toBeGreaterThan(seen + 2);
+    await expect(page.locator(".composer")).toHaveCount(0);
+  });
+
   test(`${mode}: create asks once, then posts as the viewer`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Notes ${mode}`, BOARD, { comments: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);

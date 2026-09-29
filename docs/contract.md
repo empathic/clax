@@ -691,9 +691,13 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
 - **The viewer's gesture.** `openComposer` and `compose` resolve `{opened:
   false}`, `sendToClaude` rejects `claude_unavailable`, and a `reply` into a
   thread sent to the agent rejects `unavailable`, unless the viewer has just
-  clicked or typed in the shell or the page (the shell window's transient
-  user activation); so a timer or page load can never open the composer or
-  speak to the agent.
+  clicked or typed inside the page: the shell window has transient user
+  activation, focus is in the content frame, and no pointer or key input has
+  reached the shell since focus entered the frame. Input the viewer gives the
+  shell itself (typing a reply, the consent dialog) never counts, so a page
+  calling on a timer or at load can never open the composer or speak to the
+  agent. These refusals count against a budget of 20 per minute per artifact
+  in a tab; past it such calls reject `rate_limited`.
 - **Anchors.** Anchors from the page always name the page the frame shows and
   the version the view shows. Text follows the contract's rule (non-blank, at
   most 4096 bytes of UTF-8, no control characters but newline and tab).
@@ -834,7 +838,9 @@ second text block; the Stop hook's `reason`, the prompt hook's
 `additionalContext`, `codex queue --message`, and Pi's follow-up message carry
 it without `---`. The structured form is each result's `feedback` array:
 `{feedback_id, thread_id, comment_id, artifact_id, artifact_title, url,
-version, anchor, clip_path, author, body, resent, created_at}`.
+version, anchor, clip_path, author, via_page, body, resent, created_at}`;
+`via_page` is true for a comment the page wrote through the `comments`
+capability.
 
 ### Delivery tiers per harness
 

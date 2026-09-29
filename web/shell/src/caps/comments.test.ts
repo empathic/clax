@@ -2,7 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
 import { forgetBudgets } from "./budget";
-import { WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
+import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
+import { forgetGestures, noteShellInput } from "./gesture";
 import { Grants } from "./grants";
 import type { CapEnv, CommentsUi } from "./host";
 
@@ -14,8 +15,16 @@ const T = (id: string, anchor: Partial<Thread["anchor"]> = {}, more: Partial<Thr
   ...more,
 });
 
-/** The shell window's transient user activation, as `navigator.userActivation.isActive`. */
-const gesture = (on: boolean) => Object.defineProperty(navigator, "userActivation", { value: { isActive: on }, configurable: true });
+/** A viewer gesture in the content frame (activation with focus moved into
+ * `iframe.frame`), or none: activation given to a shell control. */
+const frame = document.createElement("iframe");
+frame.className = "frame";
+const control = document.createElement("button");
+document.body.append(frame, control);
+const gesture = (on: boolean) => {
+  Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
+  if (on) { control.focus(); frame.focus(); } else { control.focus(); noteShellInput(); }
+};
 
 function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {
   const posted: ShellToBridge[] = [];
@@ -47,6 +56,7 @@ describe("comments in the shell", () => {
     sessionStorage.clear();
     forgetBudgets();
     delete (navigator as unknown as { userActivation?: unknown }).userActivation;
+    forgetGestures();
   });
 
   it("text rule", () => {
@@ -64,6 +74,26 @@ describe("comments in the shell", () => {
     await expect(h.call("openComposer", [d])).rejects.toMatchObject({ code: "rate_limited" });
     expect(prompt).not.toHaveBeenCalled();
     expect(ui.openComposer).toHaveBeenCalledTimes(5);
+  });
+
+  it("activation the viewer gave the shell is no gesture, and polling without one is cut off", async () => {
+    const { h, ui, prompt } = setup({ comments: {} });
+    const d = { anchor: T("x").anchor, version: 1 };
+    // The viewer is typing in the shell (a reply, the consent dialog).
+    gesture(false);
+    expect(await h.call("openComposer", [d])).toEqual({ opened: false });
+    // Focus in the frame, but the latest input went to the shell.
+    frame.focus();
+    noteShellInput();
+    expect(await h.call("openComposer", [d])).toEqual({ opened: false });
+    for (let i = 2; i < REFUSED_RATE.n; i++) await h.call("sendToClaude", [{ anchor: T("x").anchor, text: "x" }]).catch(() => {});
+    await expect(h.call("openComposer", [d])).rejects.toMatchObject({ code: "rate_limited" });
+    await expect(h.call("sendToClaude", [{ anchor: T("x").anchor, text: "x" }])).rejects.toMatchObject({ code: "rate_limited" });
+    expect(ui.openComposer).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    // A click in the frame is a gesture again.
+    gesture(true);
+    expect(await h.call("openComposer", [d])).toEqual({ opened: true });
   });
 
   it("write verbs ask once, post as written by the page, and answer opaque handles", async () => {

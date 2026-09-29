@@ -13,8 +13,8 @@
 // bridge); an anchor always names the page the frame shows and the version the
 // view shows. Whatever speaks for the viewer beyond their consent (opening the
 // composer, sending to the agent, a reply the agent will receive) needs the
-// viewer's own recent gesture: the shell window's transient activation, which
-// a click inside the frame gives it. Artifax has no public links: every view
+// viewer's own recent gesture inside the frame (gesture.ts); refusals for the
+// lack of one are budgeted, so a page polling on a timer is soon cut off. Artifax has no public links: every view
 // that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
 import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
@@ -25,6 +25,7 @@ import { type Thread, createThread, deleteThread, reopenThread, resolveThread, s
 import { declaredConfig } from "./availability";
 import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
+import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
 export { MAX_TEXT_BYTES, textProblem } from "../../../bridge/src/text-rule";
@@ -35,6 +36,9 @@ export const OPEN_RATE = { n: 5, ms: 10_000 };
 /** Page writes (create, reply, sendToClaude, resolve, delete): at most `n`
  * per `ms` per artifact in a tab. */
 export const WRITE_RATE = { n: 10, ms: 60_000 };
+/** Gesture-gated calls refused for want of a frame gesture: at most `n` per
+ * `ms` per artifact in a tab, then `rate_limited`. */
+export const REFUSED_RATE = { n: 20, ms: 60_000 };
 /** Most threads one `threads` push lists, and most entries a `placed` report may carry. */
 export const MAX_LISTED = 256;
 /** Longest `label` or `detail`, in UTF-16 code units, and the bytes of UTF-8 of a label shown. */
@@ -49,13 +53,6 @@ const CONTROL = /[\p{Cc}\p{Zl}\p{Zp}]/u;
 
 const invalid = (message: string) => new CapError("invalid", message);
 const notFound = () => new CapError("not_found", "no such thread: the page can act only on threads it created in this visit");
-
-/** Whether the viewer has just acted in this window or the frame inside it
- * (transient user activation); false where the browser cannot tell. */
-export function userGesture(): boolean {
-  const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
-  return ua?.isActive === true;
-}
 
 /** An opaque, unguessable handle. */
 function opaque(prefix: string): string {
@@ -163,13 +160,20 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     if (f === null) throw new CapError("unavailable", "the frame shows no page of this artifact");
     return f;
   };
-  const budget = (kind: "opens" | "writes") => {
-    const limits = kind === "opens" ? OPEN_RATE : WRITE_RATE;
+  const budget = (kind: "opens" | "writes" | "refusals") => {
+    const limits = kind === "opens" ? OPEN_RATE : kind === "writes" ? WRITE_RATE : REFUSED_RATE;
     return takeSlot(`artifax.comment-${kind}.v1:${env.aid}`, { perWindow: limits });
   };
   const opening = () => {
     const wait = budget("opens");
     if (wait > 0) throw new CapError("rate_limited", `the page opens the composer too often; wait ${seconds(wait)} s`);
+  };
+  /** Whether the viewer just acted in the frame; a refusal is charged to its budget. */
+  const gestured = (): boolean => {
+    if (frameGesture()) return true;
+    const wait = budget("refusals");
+    if (wait > 0) throw new CapError("rate_limited", `the page calls without the viewer's gesture too often; wait ${seconds(wait)} s`);
+    return false;
   };
   const writing = () => {
     const wait = budget("writes");
@@ -300,7 +304,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
    * the agent: it needs their recent gesture. */
   const replyGesture = (tid: string) => {
     const t = env.comments?.state().threads.find(x => x.id === tid);
-    if ((t ? t.sent_to_agent : true) && !userGesture()) {
+    if ((t ? t.sent_to_agent : true) && !gestured()) {
       throw new CapError("unavailable", "a reply the agent receives needs the viewer's own gesture; call it from their click");
     }
   };
@@ -314,7 +318,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const anchor = pageAnchor(d.anchor, pageFile());
           const u = ui();
           // Only from the viewer's own gesture: a timer or load never opens (or focuses) it.
-          if (!userGesture()) return { opened: false };
+          if (!gestured()) return { opened: false };
           opening();
           const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;
           const clipError = clip ? undefined : typeof d.clipError === "string" ? d.clipError.slice(0, 200) : d.clipPng instanceof ArrayBuffer ? "the screenshot was too large" : undefined;
@@ -371,7 +375,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const body = text(t.text);
           // Decided before anything is written: the viewer's own recent
           // gesture, and a session that can receive it.
-          if (!userGesture()) throw new CapError("claude_unavailable", "sending to the agent needs the viewer's own gesture; nothing was posted");
+          if (!gestured()) throw new CapError("claude_unavailable", "sending to the agent needs the viewer's own gesture; nothing was posted");
           if ((await canSend()) !== "available") throw new CapError("claude_unavailable", "no agent session can receive it now; nothing was posted");
           if (disposed) throw closed();
           await consent();
@@ -409,7 +413,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           }
           const file = pageFile();
           const u = ui();
-          if (!userGesture()) return { opened: false };
+          if (!gestured()) return { opened: false };
           // The page's compose is the viewer's click: over an open composer or
           // thread card it closes an empty one (typed text is kept) instead.
           const s = u.state();
