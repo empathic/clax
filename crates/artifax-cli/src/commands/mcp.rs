@@ -1,6 +1,7 @@
 use crate::client::Client;
 use artifax_core::Home;
 use artifax_mcp::shim::{self, Endpoint, Harness};
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The harness that spawns the shim.
@@ -36,36 +37,23 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         Agent::Codex => Harness::Codex,
         Agent::Pi => Harness::Pi,
     };
-    let (connect_home, port) = (home.clone(), cli.port);
-    let connect = move || {
-        let c = Client::connect(&connect_home, port)?;
-        reap(c.info.pid);
+    let (refresh_home, port) = (home.clone(), cli.port);
+    let refresh: shim::Refresh = Arc::new(move || {
+        let c = Client::connect_matching_version(&refresh_home, port)?;
         Ok(Endpoint {
             browser_base: c.browser_url(""),
             base: c.base,
             token: c.token,
         })
-    };
+    });
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(shim::run(
         harness,
         home,
-        connect,
+        refresh,
         Duration::from_millis(a.heartbeat_interval_ms.max(1)),
     ));
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
     rt.shutdown_timeout(Duration::from_millis(100));
     result
-}
-
-/// Waits on `pid` in the background so that a daemon this process started is
-/// reaped when it exits, instead of lingering as a zombie that still looks alive
-/// to `artifax stop` for as long as the shim runs. A PID that is not our child
-/// returns at once.
-fn reap(pid: u32) {
-    std::thread::spawn(move || {
-        let mut status = 0;
-        // SAFETY: waitpid on a single PID with a valid status pointer.
-        unsafe { libc::waitpid(pid as libc::pid_t, &mut status, 0) };
-    });
 }

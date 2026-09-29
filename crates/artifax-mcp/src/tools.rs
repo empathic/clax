@@ -254,7 +254,7 @@ fn text_prefix(bytes: &[u8], max: usize) -> String {
 }
 
 /// The MCP tool set. Each instance talks to one daemon and attributes its
-/// publishes to `session` (the stdio shim) or to no session (the daemon's `/mcp`).
+/// publishes to a session (the stdio shim) or to no session (the daemon's `/mcp`).
 #[derive(Clone)]
 pub struct ArtifaxTools {
     client: DaemonClient,
@@ -267,7 +267,8 @@ pub struct ArtifaxTools {
 impl ArtifaxTools {
     /// Tools calling the daemon through `client`. `browser_base` (`http://localhost:<port>`)
     /// prefixes the URLs in results; `log_path` is the daemon log named when the
-    /// daemon cannot be reached.
+    /// daemon cannot be reached. A managed client's current browser base and
+    /// registered session take precedence over `browser_base` and `session`.
     pub fn new(
         client: DaemonClient,
         browser_base: String,
@@ -283,12 +284,23 @@ impl ArtifaxTools {
         }
     }
 
+    fn session(&self) -> Option<Session> {
+        self.client.session().or_else(|| self.session.clone())
+    }
+
+    fn browser_base(&self) -> String {
+        self.client
+            .browser_base()
+            .map(|b| b.trim_end_matches('/').to_string())
+            .unwrap_or_else(|| self.browser_base.clone())
+    }
+
     fn fail(&self, e: ClientError) -> CallToolResult {
         render::client_error(e, &self.log_path)
     }
 
     fn artifact_url(&self, id: &str) -> String {
-        format!("{}/a/{id}", self.browser_base)
+        format!("{}/a/{id}", self.browser_base())
     }
 
     /// `p` as given when absolute, else joined to the session's working
@@ -300,7 +312,7 @@ impl ArtifaxTools {
         if path.is_absolute() {
             return Ok(path);
         }
-        match &self.session {
+        match self.session() {
             Some(s) if !s.cwd.is_empty() => Ok(Path::new(&s.cwd).join(path)),
             _ => Err(invalid(format!(
                 "file paths must be absolute when the tool is called without a session working directory (got '{p}')"
@@ -480,13 +492,13 @@ impl ArtifaxTools {
 
     async fn do_list(&self, a: ListArgs) -> Outcome {
         let res = self.client.list().await.map_err(|e| self.fail(e))?;
+        let session_id = self.session().map(|s| s.id);
         let limit = a.limit.map_or(usize::MAX, |l| l as usize);
         let mine = |x: &&Value| match a.scope.unwrap_or_default() {
             ListScope::All => true,
-            ListScope::Mine => self
-                .session
-                .as_ref()
-                .is_some_and(|s| x["owner_session_id"].as_str() == Some(s.id.as_str())),
+            ListScope::Mine => session_id
+                .as_deref()
+                .is_some_and(|s| x["owner_session_id"].as_str() == Some(s)),
         };
         let artifacts: Vec<Value> = res["artifacts"]
             .as_array()
@@ -566,7 +578,7 @@ impl ArtifaxTools {
             let asset = &res["asset"];
             assets.push(json!({
                 "id": asset["id"],
-                "url": format!("{}{}", self.browser_base, res["url"].as_str().unwrap_or_default()),
+                "url": format!("{}{}", self.browser_base(), res["url"].as_str().unwrap_or_default()),
                 "content_type": asset["content_type"],
                 "size": asset["size"],
             }));
@@ -576,11 +588,12 @@ impl ArtifaxTools {
 
     async fn do_status(&self) -> Outcome {
         let h = self.client.healthz().await.map_err(|e| self.fail(e))?;
+        let session = self.session();
         Ok(json!({
-            "daemon_url": self.browser_base,
+            "daemon_url": self.browser_base(),
             "version": h["version"],
-            "session": self.session,
-            "harness": self.session.as_ref().map(|s| &s.harness),
+            "harness": session.as_ref().map(|s| &s.harness),
+            "session": session,
             "watches": [],
         }))
     }

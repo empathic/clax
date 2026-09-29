@@ -5,6 +5,7 @@
 //! Stdout carries the MCP protocol only; diagnostics go to stderr.
 
 use crate::client::DaemonClient;
+pub use crate::client::{Endpoint, Refresh};
 use crate::tools::ArtifaxTools;
 use anyhow::Context;
 use artifax_core::{Home, RegisterSession};
@@ -35,15 +36,6 @@ impl Harness {
             Harness::Pi => "pi",
         }
     }
-}
-
-/// Where the daemon answers: `base` for API calls, `browser_base`
-/// (`http://localhost:<port>`) for URLs shown to the person, and its bearer token.
-#[derive(Clone, Debug)]
-pub struct Endpoint {
-    pub base: String,
-    pub browser_base: String,
-    pub token: String,
 }
 
 /// The session registration for `harness`, from the environment variable lookup
@@ -79,21 +71,18 @@ pub fn registration(
 }
 
 /// Runs the shim until stdin closes (or SIGTERM arrives), then ends the
-/// session. `connect` finds or starts the daemon; it blocks, so it runs on a
-/// blocking thread and must not write to stdout. The session is marked seen
-/// every `heartbeat`.
-pub async fn run<F>(
+/// session. `refresh` finds or starts the daemon (it blocks, so it runs on a
+/// blocking thread, and must not write to stdout); it runs at startup and again
+/// whenever the daemon stops answering, and each time the session is registered
+/// again. When no daemon can be reached the shim serves anyway, and tool calls
+/// retry and report `daemon_unreachable` until one can. The session is marked
+/// seen every `heartbeat`.
+pub async fn run(
     harness: Harness,
     home: &Home,
-    connect: F,
+    refresh: Refresh,
     heartbeat: Duration,
-) -> anyhow::Result<()>
-where
-    F: FnOnce() -> anyhow::Result<Endpoint> + Send + 'static,
-{
-    let endpoint = tokio::task::spawn_blocking(connect)
-        .await
-        .context("daemon connect task")??;
+) -> anyhow::Result<()> {
     // SAFETY: getppid has no preconditions and cannot fail.
     let parent_pid = unsafe { libc::getppid() } as u32;
     let reg = registration(
@@ -103,36 +92,36 @@ where
         std::process::id(),
         parent_pid,
     );
-    let admin = DaemonClient::new(endpoint.base.clone(), endpoint.token.clone(), None);
-    let session = admin
-        .register_session(&reg)
-        .await
-        .context("registering the session with the artifax daemon")?;
-    tracing::info!(session = %session.id, harness = harness.as_str(), "session registered");
-
-    let client = DaemonClient::new(
-        endpoint.base.clone(),
-        endpoint.token.clone(),
-        Some(session.id.clone()),
-    );
-    let tools = ArtifaxTools::new(
-        client,
-        endpoint.browser_base.clone(),
-        Some(session.clone()),
-        home.log_path(),
-    );
+    let client = DaemonClient::managed(refresh, reg);
+    match client.ensure_session().await {
+        Ok(()) => tracing::info!(
+            session = client.session().map(|s| s.id),
+            harness = harness.as_str(),
+            "session registered"
+        ),
+        Err(e) => tracing::warn!("no artifax daemon yet; registration pending: {e}"),
+    }
+    let tools = ArtifaxTools::new(client.clone(), String::new(), None, home.log_path());
 
     let beat = {
-        let admin = admin.clone();
-        let id = session.id.clone();
+        let client = client.clone();
         tokio::spawn(async move {
             let mut every =
                 tokio::time::interval_at(tokio::time::Instant::now() + heartbeat, heartbeat);
             every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            let mut healthy = client.session().is_some();
             loop {
                 every.tick().await;
-                if let Err(e) = admin.heartbeat_session(&id).await {
-                    tracing::warn!(session = %id, "heartbeat failed: {e}");
+                match client.heartbeat().await {
+                    Ok(_) if !healthy => {
+                        healthy = true;
+                        tracing::info!("heartbeat recovered");
+                    }
+                    Err(e) if healthy => {
+                        healthy = false;
+                        tracing::warn!("heartbeat failed: {e}");
+                    }
+                    _ => {}
                 }
             }
         })
@@ -140,10 +129,10 @@ where
 
     let served = serve(tools).await;
     beat.abort();
-    match tokio::time::timeout(END_TIMEOUT, admin.end_session(&session.id)).await {
+    match tokio::time::timeout(END_TIMEOUT, client.end_session()).await {
         Ok(Ok(_)) => {}
-        Ok(Err(e)) => tracing::warn!(session = %session.id, "ending the session failed: {e}"),
-        Err(_) => tracing::warn!(session = %session.id, "ending the session timed out"),
+        Ok(Err(e)) => tracing::warn!("ending the session failed: {e}"),
+        Err(_) => tracing::warn!("ending the session timed out"),
     }
     served
 }

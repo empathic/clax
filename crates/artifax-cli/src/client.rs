@@ -32,6 +32,11 @@ fn http() -> reqwest::blocking::Client {
         .expect("client")
 }
 
+/// True when the daemon described by `info` is not version `ours`.
+fn needs_replacing(info: &DaemonInfo, ours: &str) -> bool {
+    info.version != ours
+}
+
 impl Client {
     fn from_info(info: DaemonInfo) -> Client {
         Client {
@@ -118,6 +123,9 @@ impl Client {
             if let Some(c) = Client::discover_with(home, &probe)
                 && c.info.pid == child.id()
             {
+                // Reap the daemon when it exits, so a long-lived caller (the MCP
+                // shim) does not keep a zombie that still looks alive.
+                std::thread::spawn(move || child.wait());
                 return Ok(c);
             }
             std::thread::sleep(Duration::from_millis(100));
@@ -126,6 +134,23 @@ impl Client {
             "daemon did not become ready within 5s; see {}",
             home.log_path().display()
         )
+    }
+
+    /// As [`Client::connect`], but a running daemon of another version is
+    /// stopped (waiting up to 5 s for it to exit) and replaced by one started
+    /// from this binary.
+    pub fn connect_matching_version(home: &Home, port: u16) -> anyhow::Result<Client> {
+        let c = Client::connect(home, port)?;
+        if !needs_replacing(&c.info, env!("CARGO_PKG_VERSION")) {
+            return Ok(c);
+        }
+        c.shutdown()
+            .with_context(|| format!("stopping artifax daemon v{}", c.info.version))?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline && pid_alive(c.info.pid) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Client::connect(home, port)
     }
 
     /// Errors when the running daemon is bound to a different address than `requested`.
@@ -213,5 +238,28 @@ impl Client {
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))
             .map(|_| ())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(version: &str) -> DaemonInfo {
+        DaemonInfo {
+            port: 1,
+            pid: 2,
+            token: "t".into(),
+            started_at: "2026-09-28T00:00:00Z".into(),
+            bind: "127.0.0.1".into(),
+            version: version.into(),
+        }
+    }
+
+    #[test]
+    fn only_a_daemon_of_another_version_is_replaced() {
+        assert!(!needs_replacing(&info("0.2.0"), "0.2.0"));
+        assert!(needs_replacing(&info("0.1.9"), "0.2.0"));
+        assert!(needs_replacing(&info("0.3.0"), "0.2.0"));
     }
 }

@@ -34,7 +34,10 @@ fn artifax_bin() -> PathBuf {
         }
         let status = cmd.status().expect("run cargo build");
         assert!(status.success(), "cargo build -p artifax-cli failed");
-        // The test executable lives in <target>/<profile>/deps/.
+        // Assumes Cargo's layout: the test executable lives in
+        // <target>/<profile>/deps/, and `cargo build` (which honours
+        // CARGO_TARGET_DIR like the enclosing `cargo test`) puts the binary in
+        // <target>/<profile>/.
         let exe = std::env::current_exe().unwrap();
         let bin = exe.parent().unwrap().parent().unwrap().join("artifax");
         assert!(bin.exists(), "{} missing", bin.display());
@@ -52,7 +55,11 @@ struct Shim {
 
 impl Shim {
     async fn start(heartbeat_ms: Option<u64>) -> Shim {
-        let dir = tempfile::tempdir().unwrap();
+        Shim::start_in(tempfile::tempdir().unwrap(), heartbeat_ms).await
+    }
+
+    /// Starts a shim whose `ARTIFAX_HOME` is `<dir>/ax`.
+    async fn start_in(dir: tempfile::TempDir, heartbeat_ms: Option<u64>) -> Shim {
         std::fs::create_dir_all(dir.path().join("work")).unwrap();
         let home = dir.path().join("ax");
         let work = dir.path().join("work");
@@ -280,10 +287,39 @@ async fn closing_stdin_ends_the_session() {
 }
 
 #[tokio::test]
-async fn a_stopped_daemon_is_reported_as_unreachable() {
-    let mut shim = Shim::start(None).await;
-    ok(&shim.call("list", json!({})).await);
+async fn a_restarted_daemon_is_found_again_with_the_same_session() {
+    let shim = Shim::start(None).await;
+    let before = ok(&shim.call("status", json!({})).await);
+    let old_pid = read_daemon_info(&shim.home()).unwrap().pid;
     shim.stop_daemon();
+
+    // The next call finds no daemon, starts a replacement (a new port and token),
+    // registers the session there again, and succeeds.
+    let published = ok(&shim.call("publish", json!({"html": "<p>again</p>"})).await);
+    let after = ok(&shim.call("status", json!({})).await);
+    assert_ne!(read_daemon_info(&shim.home()).unwrap().pid, old_pid);
+    assert_eq!(after["session"]["id"], before["session"]["id"]);
+    assert_ne!(after["daemon_url"], before["daemon_url"]);
+    assert!(
+        published["url"]
+            .as_str()
+            .unwrap()
+            .starts_with(after["daemon_url"].as_str().unwrap()),
+        "{published}"
+    );
+    let listed = ok(&shim.call("list", json!({"scope": "mine"})).await);
+    assert_eq!(listed["artifacts"].as_array().unwrap().len(), 1, "{listed}");
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
+    // ARTIFAX_HOME is a regular file, so the daemon cannot be started.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("ax"), "not a directory").unwrap();
+    let mut shim = Shim::start_in(dir, None).await;
+
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 9);
     let r = tokio::time::timeout(Duration::from_secs(10), shim.call("list", json!({})))
         .await
         .expect("the tool answers within 10s instead of hanging");
@@ -294,7 +330,7 @@ async fn a_stopped_daemon_is_reported_as_unreachable() {
         v["error"]["log"],
         shim.home().log_path().to_string_lossy().as_ref()
     );
-    // With the daemon gone, the shim still exits promptly on stdin EOF.
+    // With no daemon, the shim still exits promptly on stdin EOF.
     let t = Instant::now();
     shim.client.take().unwrap().cancel().await.unwrap();
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
