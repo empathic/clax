@@ -20,6 +20,7 @@ run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace
 run "cargo test"            cargo test --workspace
+run "comment loop"          scripts/smoke-comment-loop.sh
 run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
 run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
 run "web build"             bash -c 'cd web && npm run build'
