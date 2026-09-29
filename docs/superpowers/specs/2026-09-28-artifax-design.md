@@ -241,7 +241,8 @@ Browser-facing:
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
-  `comment`, `doc`, `room` events. `artifact_deleted` is sent when an
+  `comment`, `doc` events (rooms use their own WebSocket, not SSE).
+  `artifact_deleted` is sent when an
   artifact is deleted, with the artifact's ID in its data. `resync`, with
   `data: {"dropped": n}`, is sent when a subscriber fell behind and `n` events
   were dropped; the client should refetch the state it displays.
@@ -310,8 +311,17 @@ Agent- and shell-facing JSON API under `/api`:
   agent; `thread_deleted` SSE event) for the `comments` capability, and
   `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
   created by a page's `artifact.publish` carries `by_page: true`.
-- Sample: `POST /api/artifacts/<aid>/sample` streams text over SSE.
-- Room (phase 5): `GET /api/artifacts/<aid>/room` WebSocket.
+- Sample (phase 5): `GET /api/artifacts/<aid>/sample` (availability and
+  limits), `POST /api/artifacts/<aid>/sample` streams `text`, `tool_call`,
+  `done`, `error` over SSE, `POST /api/artifacts/<aid>/sample/<call_id>/tool_result`
+  returns a page tool's result for the round.
+- Room (phase 5): `GET /api/artifacts/<aid>/room` WebSocket, opened by the
+  shell in both frame modes (frames never reach `/api`).
+- Streams that cannot carry the bearer header (`/api/events`, the room
+  WebSocket) accept it as a `?token=` query parameter, which is never
+  logged; a valid token with a viewer cookie makes the subscriber `admin`
+  (the owner shell), a valid token without a cookie `owner`, a cookie alone
+  `interact` when named and `view` otherwise.
 
 Health: `GET /healthz` returns `{version, pid, started_at}` on every Host,
 including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
@@ -470,8 +480,8 @@ files kept in `web/contract/`:
   the declaration raise per-path minimums; caller level is `owner` for a
   caller holding the bearer token without a viewer cookie (the agent, the
   CLI, the `db_*` tools), `admin` for the owner shell on localhost (token
-  with a cookie; on the tokenless SSE stream, a loopback peer with a literal
-  local `Host` and a cookie), `interact` for a named viewer, `view` for an
+  with a cookie; on a stream the token travels as `?token=`, see section 6),
+  `interact` for a named viewer, `view` for an
   unnamed one; a viewer's level is fixed when its event stream opens. Token
   callers must pin `if_version` on existing documents; page writes are
   last-writer-wins. `acquire({holder})` is a single-writer lease with a 30 s
@@ -493,14 +503,26 @@ files kept in `web/contract/`:
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
-  over one WebSocket per frame; nothing persisted; topics gated by level.
+  over one WebSocket per content frame, owned by the shell in both frame
+  modes and relayed to the frame over postMessage; nothing persisted;
+  bounded channels drop the oldest message; topics gated by level as
+  `room.d.ts` describes; peers are viewers only (`guest` is always `false`
+  and no agent joins a room in v1).
 - **sample** (phase 5): `sample(input, opts)` and `sample.json`, streaming
   `onText`, `tools` executed by round-tripping tool calls to the page,
-  `modelTier` mapped to configured model IDs, `cache` as a 5-minute
-  in-memory replay. First call asks consent in the shell. Provider trait
-  with an Anthropic implementation; key from `config.toml` (`sample.api_key_env`,
-  default `ANTHROPIC_API_KEY`). No key configured: `use("sample")` resolves
-  `null`.
+  `modelTier` mapped to configured model IDs, `cache` as `sample.d.ts`
+  describes (per viewer, `gcTime` up to 24 h, `refresh`, identical in-flight
+  calls shared), errors `{code, message, text?}` with the `sample.d.ts`
+  codes (`not_granted`, `rate_limited`, `cancelled`, `upstream_error`, …),
+  partial text returned on cancellation. First call asks consent in the
+  shell, which persists the grant per viewer per artifact (claude.ai asks
+  per view). Provider trait with an Anthropic implementation and a `stub`
+  provider for tests; key from `config.toml` (`sample.api_key_env`, default
+  `ANTHROPIC_API_KEY`); `[sample.models] quick|default|complex`; an optional
+  `daily_call_cap` per artifact answers `rate_limited` once spent. No key
+  configured: `use("sample")` resolves `null`. `config.toml` also holds
+  `[server] bind` and `port`, used by `artifax serve` when the flags are
+  absent.
 - **files**, **mcp**: resolve `null`.
 
 The bridge also handles comment mode (hit testing, outline, text selection),
@@ -1074,6 +1096,5 @@ and a `sample()` demo work with a configured key, and `sample` resolves
 - **Agent identity in replies.** Replies show `Agent · via <harness>`. If
   multiple sessions watch one artifact, the shell may need to show which
   session replied; the data model records it, the UI does not yet.
-- **`sample()` cost control.** A per-artifact daily cap in `config.toml`
-  is probably wanted before LAN mode plus a configured key is used with
-  others; not in phase 5 unless asked.
+- **`sample()` cost control.** Resolved: phase 5 builds the optional
+  per-artifact `daily_call_cap` in `config.toml` (section 9).
