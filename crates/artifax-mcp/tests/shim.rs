@@ -361,3 +361,42 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     shim.client.take().unwrap().cancel().await.unwrap();
     assert!(t.elapsed() < Duration::from_secs(3), "{:?}", t.elapsed());
 }
+
+#[tokio::test]
+async fn a_session_ended_under_the_shim_is_replaced_on_the_next_publish() {
+    let shim = Shim::start(None).await;
+    let before = shim.live_sessions().await;
+    assert_eq!(before.len(), 1, "{before:?}");
+    let old_id = before[0]["id"].as_str().unwrap().to_string();
+    let token = read_daemon_info(&shim.home()).unwrap().token;
+    let res = reqwest::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .patch(format!("{}/api/sessions/{old_id}", shim.daemon_base()))
+        .bearer_auth(token)
+        .json(&json!({"ended": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert!(shim.live_sessions().await.is_empty());
+
+    let published = ok(&shim
+        .call("publish", json!({"html": "<p>after", "title": "After"}))
+        .await);
+    let live = shim.live_sessions().await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_ne!(live[0]["id"], old_id.as_str());
+    assert_eq!(live[0]["harness_session_id"], "test-sess");
+    let got = shim
+        .get(&format!(
+            "/api/artifacts/{}",
+            published["artifact_id"].as_str().unwrap()
+        ))
+        .await;
+    assert_eq!(got["artifact"]["owner_session_id"], live[0]["id"]);
+    let status = ok(&shim.call("status", json!({})).await);
+    assert_eq!(status["session"]["id"], live[0]["id"]);
+    shim.finish().await;
+}

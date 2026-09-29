@@ -446,7 +446,7 @@ async fn relative_paths_need_a_session_working_directory() {
         e["error"]["message"]
             .as_str()
             .unwrap()
-            .starts_with("file paths must be absolute when the tool is called without a session working directory"),
+            .starts_with("file paths must be absolute: there is no session working directory"),
         "{e}"
     );
     let mut files = BTreeMap::new();
@@ -681,4 +681,138 @@ async fn a_new_artifact_without_any_title_is_invalid_args_naming_both_remedies()
     }
     let list = ok(t.list(Parameters(ListArgs::default())).await);
     assert!(list["artifacts"].as_array().unwrap().is_empty());
+}
+
+/// Tools over a managed client that registers `registration` with the test
+/// daemon, as the stdio shim does.
+fn managed_tools(
+    ts: &TestServer,
+    registration: artifax_core::RegisterSession,
+) -> (ArtifaxTools, DaemonClient) {
+    let endpoint = artifax_mcp::client::Endpoint {
+        base: ts.base.clone(),
+        browser_base: format!("http://localhost:{}", ts.addr.port()),
+        token: ts.token.clone(),
+    };
+    let find: artifax_mcp::client::Refresh = std::sync::Arc::new(move || Ok(endpoint.clone()));
+    let client = DaemonClient::managed(find.clone(), find, registration);
+    let tools = ArtifaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    (tools, client)
+}
+
+async fn end_session(ts: &TestServer, id: &str) {
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/sessions/{id}", ts.base)))
+        .json(&serde_json::json!({"ended": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+}
+
+async fn live_sessions(ts: &TestServer) -> Vec<Value> {
+    let v: Value = ts
+        .get_authed("/api/sessions?live=true")
+        .await
+        .json()
+        .await
+        .unwrap();
+    v["sessions"].as_array().unwrap().clone()
+}
+
+fn claude_registration() -> artifax_core::RegisterSession {
+    artifax_core::RegisterSession {
+        harness: "claude".into(),
+        harness_session_id: Some("cc-1".into()),
+        cwd: "/work".into(),
+        pid: Some(4_000_000_000),
+        parent_pid: Some(4_000_000_001),
+    }
+}
+
+#[tokio::test]
+async fn a_publish_after_the_session_ended_registers_a_new_session() {
+    let ts = TestServer::spawn().await;
+    let (t, client) = managed_tools(&ts, claude_registration());
+    ok(t.publish(Parameters(html("one", "<p>1"))).await);
+    let first = client.session().unwrap();
+    end_session(&ts, &first.id).await;
+
+    let p = ok(t.publish(Parameters(html("two", "<p>2"))).await);
+    let second = client.session().unwrap();
+    assert_ne!(second.id, first.id);
+    assert!(second.ended_at.is_none());
+    let live = live_sessions(&ts).await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0]["id"], second.id.as_str());
+    assert_eq!(live[0]["harness_session_id"], "cc-1");
+    let got: Value = ts
+        .get(&format!(
+            "/api/artifacts/{}",
+            p["artifact_id"].as_str().unwrap()
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got["artifact"]["owner_session_id"], second.id.as_str());
+}
+
+#[tokio::test]
+async fn a_heartbeat_on_an_ended_session_registers_a_new_session() {
+    let ts = TestServer::spawn().await;
+    let (_t, client) = managed_tools(&ts, claude_registration());
+    client.ensure_session().await.unwrap();
+    let first = client.session().unwrap();
+    end_session(&ts, &first.id).await;
+
+    let beat = client.heartbeat().await.unwrap();
+    assert_ne!(beat.id, first.id);
+    assert!(beat.ended_at.is_none());
+    assert_eq!(client.session().unwrap().id, beat.id);
+    let live = live_sessions(&ts).await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0]["id"], beat.id.as_str());
+}
+
+#[tokio::test]
+async fn a_working_directory_filled_in_later_is_used_after_the_next_heartbeat() {
+    let ts = TestServer::spawn().await;
+    let (t, client) = managed_tools(
+        &ts,
+        artifax_core::RegisterSession {
+            harness: "codex".into(),
+            harness_session_id: None,
+            cwd: String::new(),
+            pid: Some(4_000_000_000),
+            parent_pid: Some(4_000_000_001),
+        },
+    );
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("page.html"), "<title>Later</title>").unwrap();
+    let relative = || PublishArgs {
+        file_path: Some("page.html".into()),
+        ..Default::default()
+    };
+    let e = err(t.publish(Parameters(relative())).await);
+    assert_eq!(e["error"]["code"], "invalid_args");
+    let msg = e["error"]["message"].as_str().unwrap();
+    assert!(msg.contains("has no working directory yet"), "{msg}");
+
+    // The Codex SessionStart hook fills the row's cwd.
+    let res = ts
+        .post_json(
+            "/api/sessions/join",
+            serde_json::json!({
+                "harness": "codex",
+                "parent_pid": 4_000_000_001u32,
+                "harness_session_id": "codex-1",
+                "cwd": dir.path().to_string_lossy(),
+            }),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    client.heartbeat().await.unwrap();
+    let p = ok(t.publish(Parameters(relative())).await);
+    assert_eq!(p["title"], "Later");
 }

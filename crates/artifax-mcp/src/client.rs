@@ -65,8 +65,10 @@ pub type Refresh = Arc<dyn Fn() -> anyhow::Result<Endpoint> + Send + Sync>;
 /// with [`DaemonClient::managed`] finds its daemon with a [`Refresh`] and
 /// registers a harness session there: lazily on first use, and again whenever a
 /// request cannot connect or is refused with 401 (the daemon restarted, on a new
-/// port or with a new token), after which the request is retried once. Tool
-/// requests may start a daemon; heartbeats and ending the session only find one.
+/// port or with a new token) or with `unknown_session` (the session was ended
+/// under it), after which the request is retried once. A heartbeat that finds
+/// its session ended or gone registers again. Tool requests may start a daemon;
+/// heartbeats and ending the session only find one.
 #[derive(Clone)]
 pub struct DaemonClient {
     inner: Arc<Inner>,
@@ -143,8 +145,26 @@ impl Conn<'_> {
     }
 }
 
+/// The endpoint and session a failure was seen with; a refresh is skipped when
+/// the client has already moved on from them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Stale {
+    endpoint: Option<Endpoint>,
+    session_id: Option<String>,
+}
+
+impl Stale {
+    fn of(st: &State) -> Stale {
+        Stale {
+            endpoint: st.endpoint.clone(),
+            session_id: st.session_id.clone(),
+        }
+    }
+}
+
 /// A failed attempt, and whether a refresh may cure it: the connection was not
-/// established (so the request was never sent) or the token was refused.
+/// established (so the request was never sent), the token was refused, or the
+/// session the request named has ended (the daemon refused it before acting).
 struct Failure {
     error: ClientError,
     refreshable: bool,
@@ -227,7 +247,8 @@ impl DaemonClient {
         self.state().endpoint.map(|e| e.browser_base)
     }
 
-    /// The session a managed client last registered, once registered.
+    /// The session a managed client last registered or heartbeat, once
+    /// registered.
     pub fn session(&self) -> Option<Session> {
         self.state().session
     }
@@ -246,18 +267,19 @@ impl DaemonClient {
         if st.endpoint.is_some() && st.registered {
             return Ok(());
         }
-        self.refresh(st.endpoint, mode).await
+        self.refresh(Stale::of(&st), mode).await
     }
 
     /// Re-discovers the daemon and registers the session there, unless another
-    /// caller already moved on from `stale` (the endpoint the failure was seen on).
-    async fn refresh(&self, stale: Option<Endpoint>, mode: Mode) -> Result<()> {
+    /// caller already moved on from `stale` (the endpoint and session the
+    /// failure was seen with).
+    async fn refresh(&self, stale: Stale, mode: Mode) -> Result<()> {
         let Some(m) = &self.inner.managed else {
             return Ok(());
         };
         let _guard = m.lock.lock().await;
         let st = self.state();
-        if st.endpoint.is_some() && st.endpoint != stale && st.registered {
+        if st.endpoint.is_some() && st.registered && Stale::of(&st) != stale {
             return Ok(());
         }
         let refresh = match mode {
@@ -304,6 +326,14 @@ impl DaemonClient {
         })
     }
 
+    /// Registers the session again (a new row when the old one ended) unless
+    /// another caller already did since `stale`.
+    async fn reregister(&self, stale: Stale, mode: Mode) -> Result<Session> {
+        self.refresh(stale, mode).await?;
+        self.session()
+            .ok_or_else(|| ClientError::BadResponse("no session after registering".into()))
+    }
+
     /// Sends the request `build` makes. A managed client first ensures its
     /// session, and on a refreshable failure refreshes and retries once; when
     /// the refresh fails, the original error is returned.
@@ -322,7 +352,11 @@ impl DaemonClient {
         let conn = self.conn()?;
         match attempt(build(&conn)).await {
             Err(f) if f.refreshable && self.inner.managed.is_some() => {
-                if self.refresh(Some(conn.endpoint), mode).await.is_err() {
+                let stale = Stale {
+                    endpoint: Some(conn.endpoint.clone()),
+                    session_id: conn.session_id.clone(),
+                };
+                if self.refresh(stale, mode).await.is_err() {
                     return Err(f.error);
                 }
                 attempt(build(&self.conn()?)).await.map_err(|f| f.error)
@@ -450,15 +484,35 @@ impl DaemonClient {
     }
 
     /// `PATCH /api/sessions/<id>` `{"heartbeat": true}` for a managed client's
-    /// session, registering it first when needed. Never starts a daemon.
+    /// session, registering it first when needed, and keeps the returned row as
+    /// [`DaemonClient::session`] (so a working directory the harness hook filled
+    /// in is used from then on). When the session has ended or no longer exists
+    /// (404), registers again and returns the new row. Never starts a daemon.
     pub async fn heartbeat(&self) -> Result<Session> {
+        self.ensure(Mode::DiscoverOnly).await?;
+        let stale = Stale::of(&self.state());
         let res = self
             .send_with(Mode::DiscoverOnly, |c| {
                 c.request(reqwest::Method::PATCH, &c.session_path())
                     .json(&json!({"heartbeat": true}))
             })
-            .await?;
-        session_of(body_json(res).await?)
+            .await;
+        let session = match res {
+            Ok(res) => session_of(body_json(res).await?)?,
+            Err(ClientError::Api { status: 404, .. }) if self.inner.managed.is_some() => {
+                return self.reregister(stale, Mode::DiscoverOnly).await;
+            }
+            Err(e) => return Err(e),
+        };
+        if session.ended_at.is_some() && self.inner.managed.is_some() {
+            return self.reregister(stale, Mode::DiscoverOnly).await;
+        }
+        self.update(|st| {
+            if st.session_id.as_deref() == Some(session.id.as_str()) {
+                st.session = Some(session.clone());
+            }
+        });
+        Ok(session)
     }
 
     /// `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
@@ -493,8 +547,10 @@ async fn attempt(req: reqwest::RequestBuilder) -> std::result::Result<reqwest::R
             "message": format!("daemon answered HTTP {}", status.as_u16()),
         }),
     };
+    let unknown_session =
+        status == reqwest::StatusCode::BAD_REQUEST && error["code"] == "unknown_session";
     Err(Failure {
-        refreshable: status == reqwest::StatusCode::UNAUTHORIZED,
+        refreshable: status == reqwest::StatusCode::UNAUTHORIZED || unknown_session,
         error: ClientError::Api {
             status: status.as_u16(),
             error,

@@ -305,9 +305,10 @@ impl ArtifaxTools {
     }
 
     /// `p` as given when absolute, else joined to the session's working
-    /// directory. A relative path with no session working directory (the
-    /// daemon's `/mcp`) is an `invalid_args` error: resolving it against the
-    /// daemon's own directory could publish the wrong file.
+    /// directory. A relative path with no session (the daemon's `/mcp`), or a
+    /// session whose working directory is not known yet, is an `invalid_args`
+    /// error: resolving it against the process's own directory could publish
+    /// the wrong file.
     fn local_path(&self, p: &str) -> Result<PathBuf, CallToolResult> {
         let path = PathBuf::from(p);
         if path.is_absolute() {
@@ -315,8 +316,12 @@ impl ArtifaxTools {
         }
         match self.session() {
             Some(s) if !s.cwd.is_empty() => Ok(Path::new(&s.cwd).join(path)),
-            _ => Err(invalid(format!(
-                "file paths must be absolute when the tool is called without a session working directory (got '{p}')"
+            Some(s) => Err(invalid(format!(
+                "file paths must be absolute: session {} has no working directory yet to resolve '{p}' against",
+                s.id
+            ))),
+            None => Err(invalid(format!(
+                "file paths must be absolute: there is no session working directory to resolve '{p}' against"
             ))),
         }
     }
@@ -344,7 +349,23 @@ impl ArtifaxTools {
         Ok(entry)
     }
 
+    /// When any of `paths` is relative, registers a managed client's session
+    /// first, so they resolve against its working directory. A failure is left
+    /// for the daemon call to report.
+    async fn prepare_session<'a>(&self, mut paths: impl Iterator<Item = &'a str>) {
+        if paths.any(|p| Path::new(p).is_relative()) {
+            let _ = self.client.ensure_session().await;
+        }
+    }
+
     async fn do_publish(&self, a: PublishArgs) -> Outcome {
+        let file_paths = a
+            .files
+            .iter()
+            .flatten()
+            .filter_map(|(_, f)| f.as_ref()?.path.as_deref());
+        self.prepare_session(a.file_path.as_deref().into_iter().chain(file_paths))
+            .await;
         let page = match (&a.file_path, &a.html) {
             (Some(p), None) => file_entry(&self.local_path(p)?)?,
             (None, Some(h)) => json!({"content": h, "encoding": "utf8"}),
@@ -564,6 +585,13 @@ impl ArtifaxTools {
 
     async fn do_asset_upload(&self, a: AssetUploadArgs) -> Outcome {
         let id = artifact_id(&a.url_or_id)?;
+        self.prepare_session(
+            a.file_path
+                .iter()
+                .chain(a.file_paths.iter().flatten())
+                .map(String::as_str),
+        )
+        .await;
         let paths: Vec<String> = a
             .file_path
             .into_iter()
