@@ -15,9 +15,10 @@ run() {
 }
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
+run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace
 run "cargo test"            cargo test --workspace
 run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
-run "web typecheck + unit"  bash -c 'cd web && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
+run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
 run "web build"             bash -c 'cd web && npm run build'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
 echo "all gates passed"

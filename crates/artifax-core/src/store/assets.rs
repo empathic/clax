@@ -206,6 +206,7 @@ impl Store {
     }
 
     /// Every asset row of every artifact, deleted ones included, ordered by ID.
+    /// Rows whose artifact ID is not a valid ID are logged and left out.
     ///
     /// # Errors
     /// Database errors only.
@@ -224,17 +225,24 @@ impl Store {
         })?;
         Ok(rows
             .into_iter()
-            .map(|(asset, artifact_deleted)| {
-                let id = ArtifactId::parse(&asset.artifact_id).expect("stored id is valid");
+            .filter_map(|(asset, artifact_deleted)| {
+                let Ok(id) = ArtifactId::parse(&asset.artifact_id) else {
+                    tracing::warn!(
+                        asset = asset.id,
+                        artifact_id = asset.artifact_id,
+                        "skipping asset row with an invalid artifact ID"
+                    );
+                    return None;
+                };
                 let path = self
                     .home
                     .assets_dir(&id)
                     .join(format!("{}.{}", asset.id, asset.ext));
-                AssetRow {
+                Some(AssetRow {
                     asset,
                     path,
                     artifact_deleted,
-                }
+                })
             })
             .collect())
     }

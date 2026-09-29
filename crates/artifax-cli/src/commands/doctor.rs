@@ -1,5 +1,7 @@
 use crate::client::Client;
+use anyhow::Context;
 use artifax_core::{ArtifactId, Home, Store};
+use artifax_server::daemon::DaemonLock;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
@@ -170,15 +172,20 @@ fn remove_dir_if_present(path: &Path) -> anyhow::Result<()> {
     }
 }
 
-/// Applies the repairs listed on [`Args::fix`]; returns one line per repair made.
-fn apply_fixes(store: &Store) -> anyhow::Result<Vec<String>> {
+/// Applies the repairs listed on [`Args::fix`]; returns one line per repair
+/// made, naming the paths and IDs removed.
+fn apply_fixes(home: &Home, store: &Store) -> anyhow::Result<Vec<String>> {
     let mut fixed = vec![];
     let dirs = store.stray_version_dirs()?;
     for d in &dirs {
         remove_dir_if_present(d)?;
     }
     if !dirs.is_empty() {
-        fixed.push(format!("removed {} stale version directories", dirs.len()));
+        let names: Vec<_> = dirs.iter().map(|d| artifact_relative(home, d)).collect();
+        fixed.push(format!(
+            "removed stale version directories: {}",
+            names.join(", ")
+        ));
     }
     let tmps = store.stray_asset_temp_files()?;
     for t in &tmps {
@@ -189,25 +196,46 @@ fn apply_fixes(store: &Store) -> anyhow::Result<Vec<String>> {
         }
     }
     if !tmps.is_empty() {
-        fixed.push(format!("removed {} stray temp files", tmps.len()));
+        let names: Vec<_> = tmps.iter().map(|t| artifact_relative(home, t)).collect();
+        fixed.push(format!("removed stray temp files: {}", names.join(", ")));
     }
-    for (n, what) in [
-        (
-            store.delete_zero_version_artifacts()?,
-            "zero-version artifact rows",
-        ),
-        (
-            store.delete_assets_of_deleted_artifacts()?,
-            "asset rows of deleted artifacts",
-        ),
-        (
-            store.delete_corrupt_deleted_rows()?,
-            "corrupt rows of deleted artifacts",
-        ),
-    ] {
-        if n > 0 {
-            fixed.push(format!("deleted {n} {what}"));
-        }
+    let zero = store.zero_version_artifacts()?;
+    store.delete_zero_version_artifacts()?;
+    if !zero.is_empty() {
+        fixed.push(format!(
+            "deleted zero-version artifact rows: {}",
+            zero.join(", ")
+        ));
+    }
+    let assets: Vec<String> = store
+        .list_all_asset_rows()?
+        .into_iter()
+        .filter(|r| r.artifact_deleted)
+        .map(|r| format!("{}:{}", r.asset.artifact_id, r.asset.id))
+        .collect();
+    store.delete_assets_of_deleted_artifacts()?;
+    if !assets.is_empty() {
+        fixed.push(format!(
+            "deleted asset rows of deleted artifacts: {}",
+            assets.join(", ")
+        ));
+    }
+    let before = store.corrupt_rows()?;
+    store.delete_corrupt_deleted_rows()?;
+    let after = store.corrupt_rows()?;
+    let cleared: Vec<String> = before
+        .iter()
+        .filter(|r| !after.contains(r))
+        .map(|r| match r.version {
+            Some(n) => format!("{}:v{n}:{}", r.artifact_id, r.column),
+            None => format!("{}:{}", r.artifact_id, r.column),
+        })
+        .collect();
+    if !cleared.is_empty() {
+        fixed.push(format!(
+            "deleted corrupt rows of deleted artifacts: {}",
+            cleared.join(", ")
+        ));
     }
     Ok(fixed)
 }
@@ -220,7 +248,18 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             .map(|_| std::fs::remove_file(home.root().join(".doctor")).is_ok())
             .unwrap_or(false);
     checks.push(check("home", writable, home.root().display().to_string()));
+    // Held until the process exits, so an auto-start cannot race the repairs.
+    // Taken before discovery: a daemon that is still starting holds it.
+    let _lock = if args.fix && writable {
+        Some(DaemonLock::acquire(home).context("acquiring daemon lock")?)
+    } else {
+        None
+    };
     let client = Client::discover(home);
+    if args.fix && client.is_some() {
+        eprintln!("error: doctor --fix needs the daemon stopped; run `artifax stop` first");
+        std::process::exit(1);
+    }
     checks.push(check(
         "daemon",
         client.is_some(),
@@ -240,7 +279,7 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     match Store::open(home) {
         Ok(store) => {
             if args.fix {
-                fixed = apply_fixes(&store)?;
+                fixed = apply_fixes(home, &store)?;
             }
             let integrity = store.integrity_check();
             checks.push(check(

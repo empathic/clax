@@ -745,6 +745,11 @@ harnesses without MCP and for scripts.
   "call again" result rather than erroring.
 - `codex queue` failure: handled per §10; never retried in a loop, never
   blocks the send request that triggered it (dispatch is asynchronous).
+- Storage debris: `artifax doctor` reports it and `artifax doctor --fix`
+  removes stray staging directories and temp files, version directories above
+  the current version, zero-version artifact rows, and asset rows and corrupt
+  rows belonging to soft-deleted artifacts. Rows of live artifacts are never
+  deleted, and `--fix` refuses to run while a daemon is live.
 - Request timeout (408 `timeout`): a 408 on a write route means the outcome
   is unknown; read the artifact before retrying.
 - Storage corruption: `artifax doctor` runs `PRAGMA integrity_check`,

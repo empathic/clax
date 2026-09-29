@@ -6,7 +6,7 @@
     "build": "vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
-    "lint": "oxlint shell bridge e2e",
+    "lint": "oxlint --deny-warnings shell bridge e2e vite.shell.config.ts vite.bridge.config.ts vitest.config.ts playwright.config.ts",
     "typecheck": "tsc --noEmit",
     "e2e": "playwright test"
   },

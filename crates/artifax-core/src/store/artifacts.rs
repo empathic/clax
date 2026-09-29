@@ -336,12 +336,15 @@ impl Store {
         self.with_tx(|tx| {
             let mut n = 0;
             for row in corrupt {
-                let deleted: bool = tx.query_row(
-                    "SELECT deleted_at IS NOT NULL FROM artifacts WHERE id = ?1",
-                    params![row.artifact_id],
-                    |r| r.get(0),
-                )?;
-                if !deleted {
+                // A missing artifact row means an earlier entry already removed it.
+                let deleted: Option<bool> = tx
+                    .query_row(
+                        "SELECT deleted_at IS NOT NULL FROM artifacts WHERE id = ?1",
+                        params![row.artifact_id],
+                        |r| r.get(0),
+                    )
+                    .optional()?;
+                if deleted != Some(true) {
                     continue;
                 }
                 match row.version {
@@ -1249,5 +1252,28 @@ mod tests {
         assert_eq!(left.len(), 1);
         assert_eq!(left[0].artifact_id, live.as_str());
         assert_eq!(store.delete_corrupt_deleted_rows().unwrap(), 0);
+    }
+
+    #[test]
+    fn corrupt_artifact_and_version_rows_of_one_deleted_artifact_clear_together() {
+        let (_d, store) = store();
+        let gone = one_version(&store);
+        store.delete_artifact(&gone).unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+                    [gone.as_str()],
+                )?;
+                c.execute(
+                    "UPDATE versions SET files_json = 'nope' WHERE artifact_id = ?1",
+                    [gone.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.corrupt_rows().unwrap().len(), 2);
+        store.delete_corrupt_deleted_rows().unwrap();
+        assert!(store.corrupt_rows().unwrap().is_empty());
     }
 }

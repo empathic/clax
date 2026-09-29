@@ -12,7 +12,7 @@ use crate::state::AppState;
 use axum::error_handling::HandleErrorLayer;
 use axum::{
     Router,
-    extract::{DefaultBodyLimit, State},
+    extract::DefaultBodyLimit,
     handler::Handler,
     http::StatusCode,
     routing::{delete, get, post},
@@ -132,7 +132,7 @@ async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> Status
 /// same closure, so tests can observe write side effects surviving a handler timeout.
 #[cfg(feature = "test-routes")]
 async fn test_slow_publish(
-    State(s): State<AppState>,
+    axum::extract::State(s): axum::extract::State<AppState>,
     axum::extract::Path(ms): axum::extract::Path<u64>,
 ) -> Result<StatusCode, ApiError> {
     let events = s.events.clone();

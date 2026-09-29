@@ -11,7 +11,6 @@
     version: Number(script?.dataset.version ?? "0"),
     contract: script?.dataset.contract ?? "",
   };
-  // oxlint-disable-next-line no-underscore-dangle -- public global read by the shell
   (window as any).__artifax = meta;
 
   const cache = new Map<string, Promise<null>>();

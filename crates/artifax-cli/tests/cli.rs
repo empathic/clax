@@ -642,3 +642,32 @@ fn doctor_lists_the_new_checks() {
         assert_eq!(doctor_check(&e, &[], n)["ok"], true, "{n}");
     }
 }
+
+#[test]
+fn doctor_fix_refuses_while_a_daemon_is_live() {
+    let e = Env::new();
+    e.cmd().args(["serve", "--port", "0"]).assert().success();
+    let versions = {
+        let home = artifax_core::Home::at(e.dir.path().join("ax"));
+        let store = artifax_core::Store::open(&home).unwrap();
+        let id = make_artifact(&store, "A");
+        home.artifact_dir(&id).join("versions")
+    };
+    std::fs::create_dir_all(versions.join(".tmp-x")).unwrap();
+    e.cmd()
+        .args(["doctor", "--fix"])
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "doctor --fix needs the daemon stopped; run `artifax stop` first",
+        ));
+    assert!(versions.join(".tmp-x").exists(), "nothing was touched");
+    e.stop();
+    let out = e.cmd().args(["doctor", "--fix"]).output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains(".tmp-x"),
+        "the summary names the path"
+    );
+    assert!(!versions.join(".tmp-x").exists());
+}
