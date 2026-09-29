@@ -10,9 +10,12 @@ repository root.
 
 ## Install
 
-From a clone of this repository:
+No release has been published yet: install from a clone of this repository.
 
 ```
+cd /path/to/artifax
+just web                      # once: builds the web UI the binary embeds
+cargo build -p artifax-cli    # builds target/debug/artifax
 codex plugin marketplace add /path/to/artifax
 codex plugin add artifax@artifax
 ```
@@ -20,12 +23,67 @@ codex plugin add artifax@artifax
 `codex mcp list` then shows the `artifax` server. Start a new Codex session to
 pick up the tools and the skill.
 
-The plugin bundles a small wrapper (`scripts/ensure-artifax.sh`) that finds the
-`artifax` binary on `PATH`, in `~/.local/bin`, or in `~/.artifax/bin`, and
-otherwise downloads the latest release and installs it on first use. The download is checked against the release's `.sha256` file, which
-comes from the same place as the tarball: the checksum protects integrity, not
-authenticity. Set
-`ARTIFAX_BIN` to an absolute path to run a specific build.
+The plugin runs `artifax` through a small launcher, `scripts/ensure-artifax.sh`,
+which uses the first of:
+
+1. `ARTIFAX_BIN`, an absolute path to a build;
+2. `artifax` on `PATH`;
+3. `~/.local/bin/artifax` (or `$ARTIFAX_INSTALL_DIR/artifax`), then
+   `~/.artifax/bin/artifax`;
+4. the source checkout's `target/release/artifax` or `target/debug/artifax`,
+   whichever is newer (see "Working from a source checkout");
+5. a download of the latest release, checked against its `.sha256` file
+   (which comes from the same place as the tarball, so it protects integrity,
+   not authenticity). This is not available until the first release is
+   published; until then it fails with a message naming the remedies.
+
+Hooks never download anything: when no binary is found they print one line,
+log it to `~/.artifax/logs/hooks.log`, and exit 0, so a missing binary never
+fails a Codex turn.
+
+## Working from a source checkout
+
+- Build once with `cargo build -p artifax-cli`. Codex runs the plugin from its
+  own copy (below), so the launcher finds the checkout through the marketplace
+  source Codex recorded in `$CODEX_HOME/config.toml` (`[marketplaces.artifax]
+  source`), and uses its `target/debug/artifax`, or `target/release/artifax`
+  when that is newer. After a rebuild, new sessions use the new binary.
+- Or run `cargo install --path crates/artifax-cli`, which puts `artifax` in
+  `~/.cargo/bin`; when that is on the `PATH` Codex starts with, it wins over
+  the checkout's build.
+- Or set `ARTIFAX_BIN` to a binary, or `ARTIFAX_SOURCE_DIR` to a checkout, in
+  the environment Codex starts with (`.mcp.json` forwards both to the MCP
+  server).
+
+Codex copies the plugin into `$CODEX_HOME/plugins/cache/artifax/artifax/<version>/`
+when you run `codex plugin add`, and runs that copy. Changing the checkout (the
+skill, the hooks, the launcher) does not change the copy: run
+`codex plugin add artifax@artifax` again, then start a new session.
+`artifax doctor --agent codex` reports a stale copy.
+
+## When something is missing
+
+If the tools are missing, a hook reports an error, or comments do not arrive,
+run
+
+```
+artifax doctor --agent codex        # or /path/to/artifax/target/debug/artifax doctor --agent codex
+```
+
+It checks each layer and names the fix for each failure: `binary` (which
+`artifax` and its version), `plugin` (Codex's installed copy and whether its
+version and launcher match the binary), `skill` (whether the installed skill
+states the binary's tool count and is the skill the binary was built with),
+`mcp` (whether the daemon has a live Codex session, which the MCP server
+registers), `hooks` (the latest Codex lines in `~/.artifax/logs/hooks.log`),
+`feedback` (each live session's watches and push state), and `codex_push` and
+`codex_sessions` (native push, below).
+
+`~/.artifax/logs/hooks.log` (under `$ARTIFAX_HOME` when set) has one line per
+hook run (agent, event, binary, duration, exit code, and the start of any
+error) and one per launcher run that found no binary. It rotates to
+`hooks.log.1` past 1 MiB. The `status` tool reports `plugin_version` and
+`skew: true` when the plugin and the binary differ.
 
 ## What it adds
 
@@ -142,7 +200,7 @@ against the installed plugin root, so `.mcp.json` sets `"cwd": "./"` and runs
 
 Codex starts MCP servers with a minimal environment (`HOME`, `PATH`, and a few
 others), so `.mcp.json` forwards the Artifax variables through `env_vars`:
-`ARTIFAX_HOME`, `ARTIFAX_NO_OPEN`, `ARTIFAX_BIN`, `ARTIFAX_INSTALL_DIR`,
+`ARTIFAX_HOME`, `ARTIFAX_NO_OPEN`, `ARTIFAX_BIN`, `ARTIFAX_SOURCE_DIR`, `ARTIFAX_INSTALL_DIR`,
 `ARTIFAX_CONFIG_DIR`, `ARTIFAX_RELEASE_BASE_URL`, `ARTIFAX_RELEASE_VERSION`,
 `ARTIFAX_CODEX_BIN`. A daemon the MCP server starts inherits that environment,
 including Codex's `PATH`.
@@ -155,7 +213,10 @@ root copy and copy it over. `scripts/test-plugins.sh` also runs Codex's plugin
 validator when `~/.codex/skills/.system/plugin-creator` is installed.
 
 Codex installs a copy of the plugin under `$CODEX_HOME/plugins/cache`; after
-changing files here, run `codex plugin add artifax@artifax` again.
+changing files here, run `codex plugin add artifax@artifax` again. The skill's
+tool list and plugin version are generated: after adding a tool to
+`plugins/pi/test/fixtures/contract.json` or changing the version, run
+`scripts/sync-skill-tools.py`.
 
 `scripts/smoke-codex.sh` (manual, calls a model) installs the marketplace and
 plugin into a scratch `CODEX_HOME`, runs `codex exec` to publish a page, and

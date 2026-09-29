@@ -22,16 +22,22 @@ has no runtime dependencies beyond the modules Pi provides to extensions
 
 The extension needs the `artifax` CLI: it uses `$ARTIFAX_BIN` when set, else
 `artifax` on `PATH`. Install the CLI with `cargo install --path crates/artifax-cli`
-from the clone, or from a release. A release's `.sha256` file comes from the
-same place as its tarball: the checksum protects integrity, not authenticity.
+from the clone (after `just web`, which builds the web UI the binary embeds),
+or set `ARTIFAX_BIN` to the clone's `target/debug/artifax` after
+`cargo build -p artifax-cli`. No release has been published yet.
+`artifax doctor --agent pi` checks the installed package, its skill, and the
+daemon's Pi sessions.
 
 ## What it adds
 
-- Tools `artifax_publish`, `artifax_read`, `artifax_list`, `artifax_delete`,
-  `artifax_open`, `artifax_pin`, `artifax_unpin`, `artifax_asset_upload`,
-  `artifax_status`, `artifax_comments_read`, `artifax_comments_reply`,
-  `artifax_comments_resolve`, `artifax_watch`, and
-  `artifax_wait_for_feedback`. Pi keeps every tool in one namespace, hence the
+- Twenty-two tools: `artifax_publish`, `artifax_read`, `artifax_list`,
+  `artifax_delete`, `artifax_open`, `artifax_pin`, `artifax_unpin`,
+  `artifax_asset_upload`, `artifax_status`, `artifax_comments_read`,
+  `artifax_comments_reply`, `artifax_comments_resolve`, `artifax_watch`,
+  `artifax_wait_for_feedback`, and the data tools `artifax_db_get`,
+  `artifax_db_list`, `artifax_db_query`, `artifax_db_set`,
+  `artifax_db_update`, `artifax_db_delete`, `artifax_db_str_replace`,
+  `artifax_db_batch`. Pi keeps every tool in one namespace, hence the
   prefix. Relative file paths resolve against the Pi session's working
   directory.
 - On session start, the extension finds the daemon for `$ARTIFAX_HOME` (default

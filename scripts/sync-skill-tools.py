@@ -43,12 +43,14 @@ def block(manifest, prefix, source, tools):
     return "\n".join([BEGIN, *textwrap.wrap(text, 78, break_on_hyphens=False), END])
 
 
-# (file, a regex matching the list's opening words; group 1 is the spelled-out count)
+# (file, a regex matching the list's opening words, whose group 1 is the
+# spelled-out count; the prefix the list's tool names carry)
 DOC_LISTS = [
-    ("docs/contract.md", r"^([A-Z][a-z-]+) tools: "),
-    ("README.md", r"^Each harness gets the same ([a-z-]+) tools"),
-    ("plugins/claude-code/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools"),
-    ("plugins/artifax/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools"),
+    ("docs/contract.md", r"^([A-Z][a-z-]+) tools: ", ""),
+    ("README.md", r"^Each harness gets the same ([a-z-]+) tools", ""),
+    ("plugins/claude-code/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools", ""),
+    ("plugins/artifax/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools", ""),
+    ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "artifax_"),
 ]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
@@ -70,7 +72,7 @@ def names(text, prefix=""):
 
 def doc_problems(tools):
     problems = []
-    for path, opening in DOC_LISTS:
+    for path, opening, prefix in DOC_LISTS:
         text = open(os.path.join(ROOT, path)).read()
         m = re.search(opening, text, re.M | re.S)
         if not m:
@@ -78,7 +80,7 @@ def doc_problems(tools):
             continue
         # The paragraph, or the list item, that the opening words start.
         para = re.split(r"\n\n|\n- ", text[m.start():], maxsplit=1)[0]
-        listed = names(para)
+        listed = names(para, prefix)
         if number(m.group(1)) != len(tools) or listed != set(tools):
             problems.append(f"{path}: says {m.group(1)!r} tools; missing "
                             f"{sorted(set(tools) - listed)}, extra {sorted(listed - set(tools))}")

@@ -924,8 +924,10 @@ Minimal skeleton:
 - Published pages and uploaded files are untrusted content: Artifax never
   executes them outside the browser.
 - No telemetry. The daemon makes no calls off the machine; the Claude Code
-  and Codex plugins' installer script downloads a release only when no
-  `artifax` binary is found.
+  and Codex plugins' launcher script tries to download a release only when
+  no `artifax` binary is found (installed, or built in a source checkout),
+  only for the MCP server (never for a hook), and no release has been
+  published yet.
 
 ## Known limitations
 

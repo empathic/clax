@@ -8,10 +8,20 @@ Rust 1.94 (pinned by `rust-toolchain.toml`), Node 22, and `just`.
 
 ## Install from source
 
+No release has been published yet, so a clone of this repository is the only
+way to install Artifax:
+
 ```
-just web
-cargo install --path crates/artifax-cli
+just web                                  # build the web UI, which the binary embeds
+cargo build -p artifax-cli                # builds target/debug/artifax
+cargo install --path crates/artifax-cli   # optional: puts `artifax` on PATH (~/.cargo/bin)
 ```
+
+The Codex plugin finds the checkout's `target/debug/artifax` (or
+`target/release/artifax`) itself. The Claude Code plugin does when Claude Code
+runs it from the checkout or `ARTIFAX_SOURCE_DIR` names the checkout; otherwise
+use `cargo install` (see [plugins/claude-code/README.md](plugins/claude-code/README.md)).
+To run `artifax` from a shell without installing it, use `target/debug/artifax`.
 
 ## Use
 
@@ -24,6 +34,7 @@ artifax asset upload <ID> photo.png     # upload assets; prints each asset URL
 artifax status                          # show whether the daemon is running
 artifax doctor                          # check the home directory, daemon, database, and stored files
 artifax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
+artifax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex or pi
 artifax stop                            # stop the daemon
 artifax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
 ```
@@ -38,11 +49,11 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 
 Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `artifax` skill:
 
-- Claude Code: `/plugin marketplace add empathic/artifax`, then `/plugin install artifax@artifax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
+- Claude Code: `/plugin marketplace add /path/to/artifax`, then `/plugin install artifax@artifax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
 - Codex: `codex plugin marketplace add /path/to/artifax`, then `codex plugin add artifax@artifax`. See [plugins/artifax/README.md](plugins/artifax/README.md).
 - Pi: `pi install /absolute/path/to/artifax/plugins/pi`. See [plugins/pi/README.md](plugins/pi/README.md).
 
-The Claude Code and Codex plugins download the `artifax` binary on first use when none is installed; the Pi extension needs it on `PATH` (or `ARTIFAX_BIN`).
+Build the binary first (`cargo build -p artifax-cli`, above). The Claude Code and Codex plugins run it through `scripts/ensure-artifax.sh`, which uses `ARTIFAX_BIN`, else `artifax` on `PATH`, else `~/.local/bin/artifax` or `~/.artifax/bin/artifax`, else the source checkout's `target/release/artifax` or `target/debug/artifax`, whichever is newer. Downloading a release is its last resort, and is not available until the first release is published. The Pi extension needs `artifax` on `PATH` (`cargo install --path crates/artifax-cli`) or `ARTIFAX_BIN`. When a plugin half works, `artifax doctor --agent <claude|codex|pi>` says which layer failed, and `~/.artifax/logs/hooks.log` has a line for every hook run.
 
 ## Documentation
 
@@ -57,7 +68,7 @@ The Claude Code and Codex plugins download the `artifax` binary on first use whe
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, and that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
 
