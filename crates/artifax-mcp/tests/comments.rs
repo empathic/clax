@@ -282,11 +282,15 @@ async fn reply_and_resolve_follow_the_sent_rule() {
         (
             c["author_kind"].as_str(),
             c["author_name"].as_str(),
-            c["via_session_id"].as_str()
+            c["via_harness"].as_str()
         ),
-        (Some("agent"), Some("claude"), Some(sid.as_str()))
+        (Some("agent"), Some("claude"), Some("claude"))
     );
-    assert_eq!(got["thread"]["resolved_by"], format!("agent:{sid}"));
+    assert_eq!(got["thread"]["resolved_by"], "agent:claude");
+    assert!(
+        !got.to_string().contains(&sid),
+        "no session ID in a public thread view"
+    );
     let bad = t
         .comments_reply(Parameters(CommentsReplyArgs {
             url_or_id: aid,

@@ -111,4 +111,104 @@ pub const MIGRATIONS: &[&str] = &[
     // 4: when `codex queue` failed to take a row (timeout or spawn failure);
     // such a row is left to the in-band tiers and not queued again.
     "ALTER TABLE feedback ADD COLUMN push_failed_at TEXT;",
+    // 5: public IDs for viewers. The cookie is the viewer's credential and
+    // never leaves the daemon; `resolved_by` names viewers by public ID and
+    // agents by harness (`agent:<harness>`), never by session ID. A cookie
+    // that resolved a thread without a viewer row gets one, so its thread can
+    // be rewritten.
+    "INSERT OR IGNORE INTO viewers (id, display_name, created_at)
+        SELECT DISTINCT substr(resolved_by, 8), NULL, strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+        FROM threads WHERE resolved_by LIKE 'viewer:%' AND resolved_by <> 'viewer:anonymous';
+    ALTER TABLE viewers ADD COLUMN public_id TEXT;
+    UPDATE viewers SET public_id = 'u_' || lower(hex(randomblob(11)));
+    CREATE UNIQUE INDEX viewers_public_id ON viewers(public_id);
+    UPDATE threads SET resolved_by = 'viewer:' ||
+        (SELECT public_id FROM viewers WHERE id = substr(threads.resolved_by, 8))
+        WHERE resolved_by LIKE 'viewer:%' AND resolved_by <> 'viewer:anonymous';
+    UPDATE threads SET resolved_by = 'agent:' ||
+        COALESCE((SELECT harness FROM sessions WHERE id = substr(threads.resolved_by, 7)), 'unknown')
+        WHERE resolved_by LIKE 'agent:%';",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::MIGRATIONS;
+    use crate::{Home, Store, is_public_id};
+    use rusqlite::{Connection, params};
+
+    const COOKIE: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAV";
+    const LOST: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const SID: &str = "01ARZ3NDEKTSV4RRFFQ69G5FAX";
+
+    /// A version-4 database with a named viewer, threads resolved by that
+    /// viewer, by a cookie with no viewer row, anonymously, and by an agent.
+    fn version_4(home: &Home) {
+        home.ensure_dirs().unwrap();
+        let c = Connection::open(home.db_path()).unwrap();
+        for sql in &MIGRATIONS[..4] {
+            c.execute_batch(sql).unwrap();
+        }
+        c.pragma_update(None, "user_version", 4).unwrap();
+        c.execute_batch(&format!(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');
+             INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at) VALUES ('{SID}', 'codex', '/w', 'x', 'x');
+             INSERT INTO viewers (id, display_name, created_at) VALUES ('{COOKIE}', 'Alex', 'x');"
+        ))
+        .unwrap();
+        for (tid, by) in [
+            ("t1", format!("viewer:{COOKIE}")),
+            ("t2", format!("viewer:{LOST}")),
+            ("t3", "viewer:anonymous".to_string()),
+            ("t4", format!("agent:{SID}")),
+        ] {
+            c.execute(
+                "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, created_at, resolved_at, resolved_by)
+                 VALUES (?1, '7q3k9mzx2b4t', 1, '{}', 'resolved', 'x', 'x', ?2)",
+                params![tid, by],
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn migration_5_gives_viewers_public_ids_and_rewrites_resolved_by() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        version_4(&home);
+        let st = Store::open(&home).unwrap();
+        let alex = st.get_viewer(COOKIE).unwrap().unwrap();
+        assert!(is_public_id(&alex.public_id), "{}", alex.public_id);
+        let lost = st
+            .get_viewer(LOST)
+            .unwrap()
+            .expect("a row for the cookie that resolved");
+        assert!(is_public_id(&lost.public_id));
+        assert_ne!(lost.public_id, alex.public_id);
+        let by = |tid: &str| {
+            st.with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT resolved_by FROM threads WHERE id = ?1",
+                    params![tid],
+                    |r| r.get::<_, String>(0),
+                )?)
+            })
+            .unwrap()
+        };
+        assert_eq!(by("t1"), format!("viewer:{}", alex.public_id));
+        assert_eq!(by("t2"), format!("viewer:{}", lost.public_id));
+        assert_eq!(by("t3"), "viewer:anonymous");
+        assert_eq!(by("t4"), "agent:codex");
+        let all = st
+            .with_conn(|c| {
+                let mut s = c.prepare("SELECT resolved_by FROM threads")?;
+                Ok(s.query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap()
+            .join(" ");
+        for secret in [COOKIE, LOST, SID] {
+            assert!(!all.contains(secret), "{all}");
+        }
+    }
+}

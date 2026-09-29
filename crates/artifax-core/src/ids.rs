@@ -86,6 +86,32 @@ pub fn is_ulid(s: &str) -> bool {
     ulid::Ulid::from_string(s).is_ok_and(|u| u.to_string() == s)
 }
 
+/// Length of the hex part of a public ID (11 random bytes).
+const PUBLIC_ID_HEX: usize = 22;
+
+/// A new public ID: `u_` and 22 lowercase hex digits from 11 random bytes.
+/// Public IDs name a viewer wherever others can see it; the viewer's cookie
+/// (its credential) never leaves the daemon.
+pub fn new_public_id() -> String {
+    let mut b = [0u8; PUBLIC_ID_HEX / 2];
+    rand::rng().fill_bytes(&mut b);
+    let mut out = String::with_capacity(2 + PUBLIC_ID_HEX);
+    out.push_str("u_");
+    for x in b {
+        out.push_str(&format!("{x:02x}"));
+    }
+    out
+}
+
+/// True when `s` has the form of [`new_public_id`]: `u_` and 22 lowercase hex digits.
+pub fn is_public_id(s: &str) -> bool {
+    s.strip_prefix("u_").is_some_and(|h| {
+        h.len() == PUBLIC_ID_HEX
+            && h.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,6 +152,35 @@ mod tests {
             assert!(pair[0] < pair[1], "{} !< {}", pair[0], pair[1]);
             assert!(is_ulid(&pair[1]));
         }
+    }
+
+    #[test]
+    fn public_ids_are_u_and_22_lowercase_hex() {
+        let a = new_public_id();
+        assert_eq!(a.len(), 24);
+        assert!(a.starts_with("u_"), "{a}");
+        assert!(
+            a[2..]
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)),
+            "{a}"
+        );
+        assert!(is_public_id(&a));
+        assert_ne!(a, new_public_id());
+        for bad in [
+            "",
+            "u_",
+            "U_0123456789abcdef012345",
+            "u_0123456789ABCDEF012345",
+            "u_0123456789abcdef01234",
+            "u_0123456789abcdef0123456",
+            "v_0123456789abcdef012345",
+            "u_0123456789abcdef01234g",
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        ] {
+            assert!(!is_public_id(bad), "{bad}");
+        }
+        assert!(is_public_id("u_0123456789abcdef012345"));
     }
 
     #[test]

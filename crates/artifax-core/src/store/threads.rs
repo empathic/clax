@@ -129,7 +129,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         thread_id: r.get("thread_id")?,
         author_kind: r.get("author_kind")?,
         author_name: r.get("author_name")?,
-        via_session_id: r.get("via_session_id")?,
+        via_harness: r.get("via_harness")?,
         body: r.get("body")?,
         created_at: r.get("created_at")?,
     })
@@ -137,8 +137,9 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
     let mut stmt = c.prepare(
-        "SELECT id, thread_id, author_kind, author_name, via_session_id, body, created_at
-         FROM comments WHERE thread_id = ?1 ORDER BY created_at, id",
+        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, s.harness AS via_harness, c.body, c.created_at
+         FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id
+         WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id",
     )?;
     Ok(stmt
         .query_map(params![thread_id], row_to_comment)?
@@ -257,12 +258,12 @@ impl Store {
             ));
         }
         check_body(&c.body)?;
-        let comment = Comment {
+        let mut comment = Comment {
             id: new_ulid(),
             thread_id: thread_id.to_string(),
             author_kind: c.author_kind.to_string(),
             author_name: c.author_name,
-            via_session_id: c.via_session_id,
+            via_harness: None,
             body: c.body,
             created_at: Store::now(),
         };
@@ -271,8 +272,14 @@ impl Store {
             tx.execute(
                 "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, body, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, comment.via_session_id, comment.body, comment.created_at],
+                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, c.via_session_id, comment.body, comment.created_at],
             )?;
+            comment.via_harness = match &c.via_session_id {
+                Some(sid) => tx
+                    .query_row("SELECT harness FROM sessions WHERE id = ?1", params![sid], |r| r.get(0))
+                    .optional()?,
+                None => None,
+            };
             if comment.author_kind == AUTHOR_VIEWER {
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
@@ -363,7 +370,9 @@ impl Store {
         })
     }
 
-    /// Marks the thread resolved by `by` (`viewer:<id>` or `agent:<session>`).
+    /// Marks the thread resolved by `by` (`viewer:<public ID>`, `viewer:anonymous`,
+    /// or `agent:<harness>`; never a cookie or a session ID, since the value is
+    /// broadcast).
     /// Resolving a resolved thread keeps its first `resolved_at` and `resolved_by`.
     /// Undelivered feedback rows of the thread are deleted: nobody needs to act
     /// on a resolved thread. See [`Store::resolve_thread_touched`].
@@ -567,6 +576,32 @@ mod tests {
         assert_eq!(reopened.status, "open");
         assert_eq!(reopened.resolved_at, None);
         assert_eq!(reopened.comments.len(), 3);
+    }
+
+    #[test]
+    fn agent_comments_name_the_harness_never_the_session() {
+        let (_d, st) = store();
+        let sid = crate::store::test_util::session(&st, "codex", "cx");
+        let aid = artifact(&st, None);
+        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let c = st
+            .add_comment(
+                &t.id,
+                NewComment {
+                    author_kind: AUTHOR_AGENT,
+                    author_name: "codex".into(),
+                    via_session_id: Some(sid.clone()),
+                    body: "done".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(c.via_harness.as_deref(), Some("codex"));
+        let got = st.get_thread(&t.id).unwrap().unwrap();
+        assert_eq!(got.comments[0].via_harness, None, "viewer comments");
+        assert_eq!(got.comments[1].via_harness.as_deref(), Some("codex"));
+        let json = serde_json::to_string(&got).unwrap() + &serde_json::to_string(&c).unwrap();
+        assert!(!json.contains(&sid), "{json}");
+        assert!(!json.contains("via_session_id"), "{json}");
     }
 
     #[test]

@@ -78,14 +78,16 @@ pub struct Thread {
 }
 
 /// `author_kind` is `viewer` or `agent`; an agent comment names the harness in
-/// `author_name` and the replying session in `via_session_id`.
+/// `author_name` and in `via_harness` (`null` on viewer comments). The
+/// replying session's ID is stored but never part of a comment: it would be
+/// broadcast on the unauthenticated `/api/events`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
     pub thread_id: String,
     pub author_kind: String,
     pub author_name: String,
-    pub via_session_id: Option<String>,
+    pub via_harness: Option<String>,
     pub body: String,
     pub created_at: String,
 }
@@ -100,10 +102,15 @@ pub struct Watch {
     pub created_at: String,
 }
 
-/// A browser viewer, keyed by the `artifax_viewer` cookie.
+/// A browser viewer, keyed by the `artifax_viewer` cookie. `id` is the cookie
+/// value, the viewer's credential: it is never serialised, so no response,
+/// event, or log built from a `Viewer` carries it. Others see the viewer as
+/// `public_id` (`u_` and 22 lowercase hex digits).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Viewer {
+    #[serde(skip_serializing, default)]
     pub id: String,
+    pub public_id: String,
     pub display_name: Option<String>,
     pub created_at: String,
 }

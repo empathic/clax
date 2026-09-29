@@ -247,7 +247,7 @@ async fn agent_replies_need_the_token_and_a_sent_thread() {
     let v: Value = res.json().await.unwrap();
     assert_eq!(v["comment"]["author_kind"], "agent");
     assert_eq!(v["comment"]["author_name"], "claude");
-    assert_eq!(v["comment"]["via_session_id"], sid);
+    assert_eq!(v["comment"]["via_harness"], "claude");
     assert_eq!(
         v["thread"]["feedback_state"]["state"], "acknowledged",
         "an agent reply acknowledges"
@@ -349,7 +349,7 @@ async fn resolve_by_viewer_and_agent() {
         .json()
         .await
         .unwrap();
-    assert_eq!(v["thread"]["resolved_by"], format!("agent:{sid}"));
+    assert_eq!(v["thread"]["resolved_by"], "agent:claude");
     let listed: Value = ts
         .get(&format!("/api/artifacts/{aid}/threads"))
         .await
@@ -643,5 +643,167 @@ async fn the_first_valid_viewer_cookie_wins() {
         .await
         .unwrap();
     assert!(res.headers().get("set-cookie").is_none());
-    assert_eq!(res.json::<Value>().await.unwrap()["viewer"]["id"], a);
+    let got = res.json::<Value>().await.unwrap()["viewer"]["public_id"].clone();
+    let only_a: Value = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", format!("artifax_viewer={a}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(got, only_a["viewer"]["public_id"]);
+}
+
+/// The viewer cookie is a credential and the session ID names a live agent:
+/// neither may appear in anything the daemon hands to others.
+#[tokio::test]
+async fn the_viewer_cookie_and_session_ids_never_leave_the_daemon() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let cookie = artifax_core::new_ulid();
+    let pair = format!("artifax_viewer={cookie}");
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let me = ts
+        .client
+        .put(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", &pair)
+        .json(&json!({"display_name": "Alex"}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let me_v: Value = serde_json::from_str(&me).unwrap();
+    let public_id = me_v["viewer"]["public_id"].as_str().unwrap().to_string();
+    assert!(artifax_core::is_public_id(&public_id), "{me}");
+    assert_eq!(me_v["viewer"]["display_name"], "Alex");
+    let get_me = ts
+        .client
+        .get(format!("{}/api/viewers/me", ts.base))
+        .header("cookie", &pair)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let form = reqwest::multipart::Form::new()
+        .text("anchor", element_anchor().to_string())
+        .text("body", "@agent fix this")
+        .text("version", "1");
+    let created: Value = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads", ts.base))
+        .header("cookie", &pair)
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let tid = created["thread"]["id"].as_str().unwrap().to_string();
+    let base = format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base);
+    let reply = ts
+        .authed(ts.client.post(format!("{base}/comments")))
+        .header("x-artifax-session", &sid)
+        .json(&json!({"body": "done", "author_kind": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&reply).unwrap()["comment"]["via_harness"],
+        "claude"
+    );
+    let resolved = ts
+        .client
+        .post(format!("{base}/resolve"))
+        .header("cookie", &pair)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&resolved).unwrap()["thread"]["resolved_by"],
+        format!("viewer:{public_id}")
+    );
+    // A second thread the agent resolves.
+    let other = ts.thread(&aid, 1, "@agent and this").await;
+    let oid = other["id"].as_str().unwrap();
+    let by_agent: Value = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{oid}/resolve",
+            ts.base
+        )))
+        .header("x-artifax-session", &sid)
+        .json(&json!({"as": "agent"}))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(by_agent["thread"]["resolved_by"], "agent:claude");
+    let mut seen = Vec::new();
+    let mut resolved_events = 0;
+    while resolved_events < 2 {
+        let (name, data) = ev.next().await;
+        if name == "thread_resolved" {
+            resolved_events += 1;
+        }
+        seen.push(format!("{name} {data}"));
+    }
+    // The `thread` event that follows each resolve.
+    seen.push(format!("{}", ev.next_named("thread").await));
+    let list = ts
+        .get(&format!(
+            "/api/artifacts/{aid}/threads?include_resolved=true"
+        ))
+        .await
+        .text()
+        .await
+        .unwrap();
+    let list_authed = ts
+        .get_authed(&format!(
+            "/api/artifacts/{aid}/threads?include_resolved=true"
+        ))
+        .await
+        .text()
+        .await
+        .unwrap();
+    let one = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .text()
+        .await
+        .unwrap();
+    let all = [
+        me,
+        get_me,
+        created.to_string(),
+        reply,
+        resolved,
+        by_agent.to_string(),
+        list,
+        list_authed,
+        one,
+    ]
+    .into_iter()
+    .chain(seen)
+    .collect::<Vec<_>>();
+    assert!(all.iter().any(|s| s.contains("thread_resolved")));
+    for text in &all {
+        assert!(!text.contains(&cookie), "the cookie leaked: {text}");
+        assert!(!text.contains(&sid), "the session ID leaked: {text}");
+        assert!(!text.contains("via_session_id"), "{text}");
+    }
 }

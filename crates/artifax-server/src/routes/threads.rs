@@ -407,7 +407,9 @@ struct ResolveBody {
 /// Resolves as the viewer (no token) or, with `{"as": "agent"}`, as the agent
 /// (token and `X-Artifax-Session` naming a live session, else 400
 /// `unknown_session`; only on sent threads, otherwise guidance). An empty body
-/// resolves as the viewer. Undelivered feedback on the thread is withdrawn; a
+/// resolves as the viewer. `resolved_by` is `viewer:<public ID>` (the viewer
+/// row is created for a cookie seen for the first time), `viewer:anonymous`
+/// without a cookie, or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
 /// `feedback_state` event follows when delivered rows remain, and when none
 /// remain the `thread` event carries `feedback_state: null`. A request with a
 /// foreign `Origin` is refused ([`SameOrigin`]).
@@ -453,9 +455,12 @@ pub async fn resolve(
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
-                format!("agent:{}", sess.id)
+                format!("agent:{}", sess.harness)
             } else {
-                format!("viewer:{}", viewer.0.as_deref().unwrap_or("anonymous"))
+                match viewer.0.as_deref() {
+                    Some(cookie) => format!("viewer:{}", st.upsert_viewer(cookie, None)?.public_id),
+                    None => "viewer:anonymous".to_string(),
+                }
             };
             let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
             touched.merge(withdrawn);

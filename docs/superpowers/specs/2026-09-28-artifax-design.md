@@ -184,9 +184,14 @@ SQLite tables (abridged; columns beyond keys are illustrative):
 - `watches(session_id, artifact_id, replies_armed, created_at)`
 - `threads(id, artifact_id, version_n, anchor_json, status, sent_to_agent,
   has_clip, created_at, resolved_at, resolved_by)`; `has_clip` records
-  whether `clips/<thread_id>.png` was stored.
+  whether `clips/<thread_id>.png` was stored. `resolved_by` is
+  `viewer:<public_id>`, `viewer:anonymous` (no cookie), or
+  `agent:<harness>`; it never holds a viewer cookie or a session ID, since
+  thread views and events are unauthenticated.
 - `comments(id, thread_id, author_kind, author_name, via_session_id, body,
-  created_at)` with `author_kind` in `viewer | agent`.
+  created_at)` with `author_kind` in `viewer | agent`. `via_session_id` is
+  stored and never served: comment views carry `via_harness` (the replying
+  session's harness, `null` on viewer comments) instead.
 - `feedback(id, thread_id, comment_id, target_session_id, created_at,
   delivered_at, delivery_tier, acknowledged_at, resend_count, last_sent_at,
   untargeted_at, push_failed_at)`; one row per (comment, target session).
@@ -200,8 +205,12 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   resolves the thread; delivered but unacknowledged rows are resent (§10).
 - `docs(artifact_id, path, json, version, updated_at)` for the `db`
   capability; `path` is the full document path such as `tasks/t1`.
-- `viewers(id, display_name, created_at)` for comment authors and the `user`
-  capability, keyed by a cookie.
+- `viewers(id, public_id, display_name, created_at)` for comment authors and
+  the `user` capability, keyed by the `artifax_viewer` cookie (`id`, a
+  ULID). The cookie is the viewer's credential and never appears in a
+  response body, event, thread view, comment, or log. `public_id` (`u_` and
+  22 lowercase hex digits from 11 random bytes, unique, assigned on
+  creation) is how the viewer is named to anyone else.
 - `session_env(session_id, codex_home)`: per-session environment the daemon
   needs to push to a harness; `codex_home` is the `CODEX_HOME` the Codex
   `session_start` hook reported.
@@ -265,7 +274,8 @@ Agent- and shell-facing JSON API under `/api`:
   the token.
 - Viewers: `GET /api/viewers/me` (creates the viewer and sets the
   `artifax_viewer` cookie on first contact), `PUT /api/viewers/me`
-  (`{display_name}`; empty clears it). No token. The viewer routes (thread
+  (`{display_name}`; empty clears it); both answer `{viewer: {public_id,
+  display_name, created_at}}` and never echo the cookie. No token. The viewer routes (thread
   creation, comments, send, resolve, and these two) refuse a foreign `Origin`
   (§14).
 - Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>&tier=<tier>&resends=<true|false>`
@@ -435,12 +445,14 @@ files kept in `web/contract/`:
   owner shell on localhost, `interact` for a named LAN viewer, `view` for an
   unnamed one. Last-writer-wins with version pins; `acquire({holder})`
   single-writer lease with a 30 s TTL. `data/users/<id>/` is private per
-  viewer ID.
+  viewer public ID.
 - **downloads**: `save({filename, data})` triggers a browser download after
   a shell confirmation.
 - **user**: `id()`, `me()`, `isOwner()`, `canEdit()`, `can(name)`,
-  `profiles(ids)`, `search(q)`. Identity is the viewer cookie; names come
-  from the `viewers` table; `guest` is `false` always.
+  `profiles(ids)`, `search(q)`. Identity is the viewer cookie, exposed to
+  pages only as the viewer's `public_id` (`id()` returns it; the cookie
+  never reaches a page); names come from the `viewers` table; `guest` is
+  `false` always.
 - **comments**: `openComposer({element}|{range})` opens the shell composer
   anchored there; `customAnchors()` lets a page register named anchors for
   canvas content. Write verbs in the full form create threads and comments

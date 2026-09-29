@@ -1,7 +1,8 @@
-//! Browser viewers, keyed by the `artifax_viewer` cookie (a ULID).
+//! Browser viewers, keyed by the `artifax_viewer` cookie (a ULID, the
+//! viewer's credential) and named to others by a public ID.
 
 use super::Store;
-use crate::ids::is_ulid;
+use crate::ids::{is_public_id, is_ulid, new_public_id};
 use crate::model::Viewer;
 use crate::{CoreError, Result};
 use rusqlite::{OptionalExtension, params};
@@ -9,8 +10,20 @@ use rusqlite::{OptionalExtension, params};
 /// Longest accepted display name, in characters.
 pub const MAX_NAME_CHARS: usize = 60;
 
+const VIEWER_SELECT: &str = "SELECT id, public_id, display_name, created_at FROM viewers";
+
+fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
+    Ok(Viewer {
+        id: r.get(0)?,
+        public_id: r.get(1)?,
+        display_name: r.get(2)?,
+        created_at: r.get(3)?,
+    })
+}
+
 impl Store {
-    /// Creates viewer `id` when missing. `display_name`: `None` keeps the
+    /// Creates viewer `id` when missing, with a new public ID
+    /// ([`crate::new_public_id`]) that it keeps for good. `display_name`: `None` keeps the
     /// current name, `Some("")` (after trimming) clears it, any other value
     /// replaces it.
     ///
@@ -35,28 +48,37 @@ impl Store {
         let stored = name.filter(|n| !n.is_empty());
         self.with_tx(|tx| {
             tx.execute(
-                "INSERT INTO viewers (id, display_name, created_at) VALUES (?1, ?2, ?3)
-                 ON CONFLICT(id) DO UPDATE SET display_name = CASE WHEN ?4 THEN excluded.display_name ELSE display_name END",
-                params![id, stored, Store::now(), name.is_some()],
+                "INSERT INTO viewers (id, public_id, display_name, created_at) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(id) DO UPDATE SET display_name = CASE WHEN ?5 THEN excluded.display_name ELSE display_name END",
+                params![id, new_public_id(), stored, Store::now(), name.is_some()],
             )?;
-            Ok(tx.query_row("SELECT id, display_name, created_at FROM viewers WHERE id = ?1", params![id], |r| {
-                Ok(Viewer { id: r.get(0)?, display_name: r.get(1)?, created_at: r.get(2)? })
-            })?)
+            Ok(tx.query_row(&format!("{VIEWER_SELECT} WHERE id = ?1"), params![id], row_to_viewer)?)
         })
     }
 
+    /// The viewer whose cookie is `id`.
     pub fn get_viewer(&self, id: &str) -> Result<Option<Viewer>> {
         self.with_conn(|c| {
             Ok(c.query_row(
-                "SELECT id, display_name, created_at FROM viewers WHERE id = ?1",
+                &format!("{VIEWER_SELECT} WHERE id = ?1"),
                 params![id],
-                |r| {
-                    Ok(Viewer {
-                        id: r.get(0)?,
-                        display_name: r.get(1)?,
-                        created_at: r.get(2)?,
-                    })
-                },
+                row_to_viewer,
+            )
+            .optional()?)
+        })
+    }
+
+    /// The viewer whose public ID is `public_id`; `None` for anything else,
+    /// including a cookie value.
+    pub fn viewer_by_public_id(&self, public_id: &str) -> Result<Option<Viewer>> {
+        if !is_public_id(public_id) {
+            return Ok(None);
+        }
+        self.with_conn(|c| {
+            Ok(c.query_row(
+                &format!("{VIEWER_SELECT} WHERE public_id = ?1"),
+                params![public_id],
+                row_to_viewer,
             )
             .optional()?)
         })
@@ -96,6 +118,41 @@ mod tests {
             st.get_viewer(&id).unwrap().unwrap().created_at,
             v.created_at
         );
+    }
+
+    #[test]
+    fn a_viewer_has_a_stable_public_id_distinct_from_its_cookie() {
+        let (_d, st) = store();
+        let id = new_ulid();
+        let v = st.upsert_viewer(&id, None).unwrap();
+        assert!(crate::is_public_id(&v.public_id), "{}", v.public_id);
+        assert_ne!(v.public_id, id);
+        assert_eq!(
+            st.upsert_viewer(&id, Some("Alex")).unwrap().public_id,
+            v.public_id
+        );
+        let other = st.upsert_viewer(&new_ulid(), None).unwrap();
+        assert_ne!(other.public_id, v.public_id);
+        let found = st.viewer_by_public_id(&v.public_id).unwrap().unwrap();
+        assert_eq!(
+            (found.id.as_str(), found.display_name.as_deref()),
+            (id.as_str(), Some("Alex"))
+        );
+        assert_eq!(
+            st.viewer_by_public_id("u_0123456789abcdef012345").unwrap(),
+            None
+        );
+        assert_eq!(
+            st.viewer_by_public_id(&id).unwrap(),
+            None,
+            "the cookie is not a public ID"
+        );
+        let json = serde_json::to_value(&v).unwrap();
+        assert!(
+            !json.to_string().contains(&id),
+            "a serialised viewer never carries its cookie: {json}"
+        );
+        assert_eq!(json["public_id"], v.public_id.as_str());
     }
 
     #[test]
