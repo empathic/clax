@@ -4,12 +4,12 @@ use artifax_mcp::shim::{self, Endpoint, Harness};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// The harness that spawns the shim.
+/// The harness that spawns the shim. Pi has no MCP client; its extension
+/// calls the daemon directly.
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
 pub enum Agent {
     Claude,
     Codex,
-    Pi,
 }
 
 #[derive(clap::Args)]
@@ -35,7 +35,6 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let harness = match a.agent {
         Agent::Claude => Harness::Claude,
         Agent::Codex => Harness::Codex,
-        Agent::Pi => Harness::Pi,
     };
     let (refresh_home, port) = (home.clone(), cli.port);
     let refresh: shim::Refresh = Arc::new(move || {

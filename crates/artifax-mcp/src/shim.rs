@@ -24,7 +24,6 @@ const END_TIMEOUT: Duration = Duration::from_secs(3);
 pub enum Harness {
     Claude,
     Codex,
-    Pi,
 }
 
 impl Harness {
@@ -33,7 +32,6 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
-            Harness::Pi => "pi",
         }
     }
 }
@@ -63,7 +61,6 @@ pub fn registration(
     let dir = match harness {
         Harness::Claude => var("CLAUDE_PROJECT_DIR").map(PathBuf::from).or(current_dir),
         Harness::Codex => parent_cwd,
-        Harness::Pi => current_dir,
     };
     let cwd = dir
         .map(|d| d.to_string_lossy().into_owned())
@@ -272,18 +269,6 @@ mod tests {
             9,
         );
         assert_eq!(r.harness_session_id.as_deref(), Some("ax-1"));
-        assert_eq!(r.cwd, "/here");
-    }
-
-    #[test]
-    fn other_harnesses_ignore_claude_variables() {
-        let vars = env(&[
-            ("CLAUDE_CODE_SESSION_ID", "cc-1"),
-            ("CLAUDE_PROJECT_DIR", "/proj"),
-        ]);
-        let r = registration(Harness::Pi, vars, Some(PathBuf::from("/here")), None, 10, 9);
-        assert_eq!(r.harness, "pi");
-        assert_eq!(r.harness_session_id, None);
         assert_eq!(r.cwd, "/here");
     }
 

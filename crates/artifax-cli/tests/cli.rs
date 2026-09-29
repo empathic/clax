@@ -903,3 +903,22 @@ fn asset_upload_prints_the_asset_upload_tool_result() {
         .stderr(predicate::str::contains("file_unreadable"));
     e.stop();
 }
+
+#[test]
+fn the_shim_serves_only_claude_and_codex() {
+    let e = Env::new();
+    e.cmd()
+        .args(["mcp", "--agent", "pi"])
+        .write_stdin("")
+        .timeout(std::time::Duration::from_secs(10))
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("invalid value 'pi'"));
+    e.cmd()
+        .args(["hook", "--agent", "pi", "session-start"])
+        .write_stdin("")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("invalid value 'pi'"));
+}

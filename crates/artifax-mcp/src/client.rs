@@ -429,12 +429,6 @@ impl DaemonClient {
             .map(|_| ())
     }
 
-    /// `GET /api/artifacts/<id>/files`: the current version's `{files, version}`.
-    pub async fn files(&self, id: &str) -> Result<Value> {
-        self.json(|c| c.request(reqwest::Method::GET, &format!("/api/artifacts/{id}/files")))
-            .await
-    }
-
     /// The stored bytes of `path` in version `n`, unwrapped
     /// (`GET /api/artifacts/<id>/versions/<n>/files/<path>`).
     pub async fn file_bytes(&self, id: &str, n: u32, path: &str) -> Result<Vec<u8>> {

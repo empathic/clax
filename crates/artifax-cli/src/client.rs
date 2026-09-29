@@ -237,10 +237,6 @@ impl Client {
         }
     }
 
-    #[expect(dead_code)]
-    pub fn healthz(&self) -> anyhow::Result<serde_json::Value> {
-        self.get("/healthz")
-    }
     /// Status code of an unauthenticated GET, or None if unreachable.
     pub fn http_status(&self, path: &str) -> Option<u16> {
         self.http
