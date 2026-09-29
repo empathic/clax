@@ -4,6 +4,7 @@
 
 pub mod artifacts;
 pub mod assets;
+pub mod feedback;
 pub mod migrations;
 pub mod sessions;
 pub mod threads;

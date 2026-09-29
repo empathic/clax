@@ -20,6 +20,13 @@ pub struct RegisterSession {
     pub parent_pid: Option<u32>,
 }
 
+/// What a reaper pass ended and which feedback it released.
+#[derive(Debug, Default)]
+pub struct Reaped {
+    pub ended: Vec<String>,
+    pub touched: crate::feedback::Touched,
+}
+
 const SELECT: &str = "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
     last_seen_at, ended_at FROM sessions";
 
@@ -226,17 +233,31 @@ impl Store {
         })
     }
 
-    /// Ends the session; ending an ended session keeps its first `ended_at`.
+    /// Ends the session, drops its watches, and releases its undelivered
+    /// feedback (see [`Store::end_session_touched`]). Ending an ended session
+    /// keeps its first `ended_at`.
     ///
     /// # Errors
     /// `NotFound` when no such session exists.
     pub fn end_session(&self, id: &str) -> Result<Session> {
+        self.end_session_touched(id).map(|(s, _)| s)
+    }
+
+    /// [`Store::end_session`], also returning the feedback it released: rows
+    /// deleted because another live session is a target of the same comment,
+    /// or untargeted for the next session that publishes or watches.
+    pub fn end_session_touched(&self, id: &str) -> Result<(Session, crate::feedback::Touched)> {
         self.with_tx(|tx| {
-            tx.execute(
+            let n = tx.execute(
                 "UPDATE sessions SET ended_at = ?2 WHERE id = ?1 AND ended_at IS NULL",
                 params![id, Store::now()],
             )?;
-            fetch(tx, id).map_err(not_found)
+            let touched = if n > 0 {
+                super::feedback::release_session(tx, id)?
+            } else {
+                Default::default()
+            };
+            Ok((fetch(tx, id).map_err(not_found)?, touched))
         })
     }
 
@@ -269,8 +290,10 @@ impl Store {
     }
 
     /// Ends live sessions not seen for `idle` whose `pid` is unknown or no
-    /// longer alive. Returns how many were ended.
-    pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<usize> {
+    /// longer alive, releasing their watches and undelivered feedback as
+    /// [`Store::end_session_touched`] does. Returns the sessions ended and the
+    /// feedback released.
+    pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let cutoff =
             (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         self.with_tx(|tx| {
@@ -284,17 +307,21 @@ impl Store {
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             drop(stmt);
             let now = Store::now();
-            let mut n = 0;
+            let mut reaped = Reaped::default();
             for (id, pid) in stale {
                 if pid.is_some_and(pid_alive) {
                     continue;
                 }
-                n += tx.execute(
+                tx.execute(
                     "UPDATE sessions SET ended_at = ?2 WHERE id = ?1",
                     params![id, now],
                 )?;
+                reaped
+                    .touched
+                    .merge(super::feedback::release_session(tx, &id)?);
+                reaped.ended.push(id);
             }
-            Ok(n)
+            Ok(reaped)
         })
     }
 }
@@ -581,21 +608,58 @@ mod tests {
         assert_eq!(
             store
                 .reap_sessions(Duration::from_secs(300), &pid_alive)
-                .unwrap(),
+                .unwrap()
+                .ended
+                .len(),
             0
         );
         std::thread::sleep(Duration::from_millis(20));
         let fresh = store
             .register_session(reg(Some("fresh"), Some(1003), None))
             .unwrap();
-        let n = store
+        let reaped = store
             .reap_sessions(Duration::from_millis(10), &pid_alive)
             .unwrap();
-        assert_eq!(n, 2);
+        assert_eq!(reaped.ended.len(), 2);
         let ended = |id: &str| store.get_session(id).unwrap().unwrap().ended_at.is_some();
         assert!(ended(&dead.id));
         assert!(ended(&hook_only.id));
         assert!(!ended(&alive.id));
         assert!(!ended(&fresh.id));
+    }
+    #[test]
+    fn reaping_releases_watches_and_rows() {
+        use crate::store::test_util::{anchor, artifact};
+        use crate::store::threads::NewThread;
+        let (_d, store) = store();
+        let s = store
+            .register_session(reg(Some("dead"), Some(1001), None))
+            .unwrap();
+        let aid = artifact(&store, Some(&s.id));
+        store.ensure_watch(&s.id, &aid).unwrap();
+        let t = store
+            .create_thread(
+                &aid,
+                NewThread {
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "A".into(),
+                    body: "x".into(),
+                    clip: None,
+                },
+            )
+            .unwrap();
+        store.send_to_agent(&t.id).unwrap();
+        std::thread::sleep(Duration::from_millis(20));
+        let reaped = store
+            .reap_sessions(Duration::from_millis(10), &|_| false)
+            .unwrap();
+        assert_eq!(reaped.ended, vec![s.id.clone()]);
+        assert!(reaped.touched.threads.iter().any(|(_, tid)| *tid == t.id));
+        assert!(store.list_watches(&s.id).unwrap().is_empty());
+        assert_eq!(
+            store.feedback_rows(&t.id).unwrap()[0].target_session_id,
+            None
+        );
     }
 }

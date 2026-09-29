@@ -263,8 +263,8 @@ pub async fn serve(
                 tokio::task::spawn_blocking(move || store.reap_sessions(SESSION_IDLE, &pid_alive))
                     .await;
             match reaped {
-                Ok(Ok(0)) => {}
-                Ok(Ok(n)) => tracing::info!(count = n, "ended idle sessions"),
+                Ok(Ok(r)) if r.ended.is_empty() => {}
+                Ok(Ok(r)) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
                 Ok(Err(e)) => tracing::warn!(error = %e, "session reaper failed"),
                 Err(e) => tracing::warn!(error = %e, "session reaper task failed"),
             }
