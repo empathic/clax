@@ -6,8 +6,29 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
 }
 
-/// Every file recorded for each artifact's current version exists on disk
-/// with the recorded size.
+/// Every stored JSON column parses; the detail lists each failing row as
+/// `<id>[:vN]:<column>`.
+fn corrupt_rows(store: &Store) -> serde_json::Value {
+    match store.corrupt_rows() {
+        Err(e) => check("corrupt_rows", false, e.to_string()),
+        Ok(rows) if rows.is_empty() => check("corrupt_rows", true, "no corrupt rows"),
+        Ok(rows) => check(
+            "corrupt_rows",
+            false,
+            rows.iter()
+                .map(|r| match r.version {
+                    Some(n) => format!("{}:v{n}:{}", r.artifact_id, r.column),
+                    None => format!("{}:{}", r.artifact_id, r.column),
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ),
+    }
+}
+
+/// Every file recorded for each listed artifact's current version exists on
+/// disk with the recorded size. Artifacts with corrupt rows are left out of the
+/// listing and reported by the `corrupt_rows` check instead.
 fn version_files(home: &Home, store: &Store) -> serde_json::Value {
     let artifacts = match store.list_artifacts() {
         Ok(a) => a,
@@ -92,10 +113,12 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
                 matches!(&integrity, Ok(s) if s == "ok"),
                 integrity.unwrap_or_else(|e| e.to_string()),
             ));
+            checks.push(corrupt_rows(&store));
             checks.push(version_files(home, &store));
         }
         Err(e) => {
             checks.push(check("db_integrity", false, e.to_string()));
+            checks.push(check("corrupt_rows", false, "store unavailable"));
             checks.push(check("version_files", false, "store unavailable"));
         }
     }

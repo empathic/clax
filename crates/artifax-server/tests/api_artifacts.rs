@@ -214,3 +214,37 @@ async fn patch_rejects_unknown_fields() {
         "invalid_json"
     );
 }
+
+#[tokio::test]
+async fn corrupt_row_is_left_out_of_the_list_and_named_on_lookup() {
+    let ts = TestServer::spawn().await;
+    let good = ts.publish("Good", &[("index.html", "g")]).await;
+    let bad = ts.publish("Bad", &[("index.html", "b")]).await;
+    let good_id = good["artifact"]["id"].as_str().unwrap().to_string();
+    let bad_id = bad["artifact"]["id"].as_str().unwrap().to_string();
+    rusqlite::Connection::open(ts.home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+            [&bad_id],
+        )
+        .unwrap();
+
+    let res = ts.get("/api/artifacts").await;
+    assert_eq!(res.status(), 200);
+    let list: serde_json::Value = res.json().await.unwrap();
+    let ids: Vec<&str> = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(ids, [good_id.as_str()]);
+
+    let res = ts.get(&format!("/api/artifacts/{bad_id}")).await;
+    assert_eq!(res.status(), 500);
+    let body: serde_json::Value = res.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "corrupt");
+    let message = body["error"]["message"].as_str().unwrap();
+    assert!(message.contains(&bad_id), "{message}");
+}

@@ -20,12 +20,15 @@ impl Event {
     }
 }
 
+/// Events a subscriber may fall behind by before it lags and older events are dropped.
+pub const EVENT_BUS_CAPACITY: usize = 256;
+
 #[derive(Clone)]
 pub struct EventBus(broadcast::Sender<Event>);
 
 impl EventBus {
     pub fn new() -> Self {
-        EventBus(broadcast::channel(256).0)
+        EventBus(broadcast::channel(EVENT_BUS_CAPACITY).0)
     }
     pub fn publish(&self, event: Event) {
         let _ = self.0.send(event);

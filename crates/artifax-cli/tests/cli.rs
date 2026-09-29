@@ -296,6 +296,7 @@ fn doctor_runs_all_checks() {
         "daemon",
         "daemon_json_mode",
         "db_integrity",
+        "corrupt_rows",
         "version_files",
         "ui",
     ] {
@@ -363,4 +364,56 @@ fn missing_artifax_home_and_home_is_an_error() {
         .stderr(predicate::str::contains(
             "neither ARTIFAX_HOME nor HOME is set",
         ));
+}
+
+#[test]
+fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
+    let e = Env::new();
+    let home = artifax_core::Home::at(e.dir.path().join("ax"));
+    let store = artifax_core::Store::open(&home).unwrap();
+    let make = |title: &str| {
+        let p = artifax_core::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "title": title,
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        store.create_artifact(p).unwrap().0.id
+    };
+    let good = make("good");
+    let bad = make("bad");
+    drop(store);
+    rusqlite::Connection::open(home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+            [&bad],
+        )
+        .unwrap();
+    // Remove a file of the good artifact so version_files has something to find.
+    std::fs::remove_file(
+        home.version_dir(&artifax_core::ArtifactId::parse(&good).unwrap(), 1)
+            .join("index.html"),
+    )
+    .unwrap();
+
+    let out = e.cmd().args(["doctor", "--json"]).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let check = |name: &str| {
+        v["checks"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("no {name} check"))
+            .clone()
+    };
+    let corrupt = check("corrupt_rows");
+    assert_eq!(corrupt["ok"], false);
+    assert_eq!(corrupt["detail"], format!("{bad}:capabilities_json"));
+    let files = check("version_files");
+    assert_eq!(files["ok"], false);
+    assert_eq!(files["detail"], format!("missing {good}:index.html"));
 }

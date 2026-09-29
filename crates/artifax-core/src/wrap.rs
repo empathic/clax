@@ -270,9 +270,10 @@ mod tests {
     }
 
     #[test]
-    fn unterminated_raw_text_hides_the_rest_of_the_page() {
+    fn unterminated_comment_or_raw_text_hides_the_rest_of_the_page() {
         let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61");
         for page in [
+            "<!doctype html><!-- x<body>",
             "<!doctype html><script>x<body>",
             "<!doctype html><style>x<body>",
             "<!doctype html><script>let s = 1;</scrip<body>",

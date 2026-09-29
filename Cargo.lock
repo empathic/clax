@@ -101,6 +101,7 @@ dependencies = [
  "libc",
  "predicates",
  "reqwest",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -114,6 +115,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "chrono",
+ "libc",
  "mime_guess",
  "rand",
  "rusqlite",
@@ -141,6 +143,7 @@ dependencies = [
  "mime_guess",
  "rand",
  "reqwest",
+ "rusqlite",
  "rust-embed",
  "serde",
  "serde_json",

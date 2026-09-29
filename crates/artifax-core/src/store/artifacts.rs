@@ -16,19 +16,40 @@ pub struct MetaPatch {
     pub pinned: Option<bool>,
 }
 
-/// Parses the JSON text column `name`; malformed JSON is a
-/// `FromSqlConversionFailure` for that column, not a default value.
-fn json_column<T: serde::de::DeserializeOwned>(r: &Row<'_>, name: &str) -> rusqlite::Result<T> {
-    let text: String = r.get(name)?;
-    serde_json::from_str(&text).map_err(|e| {
-        let idx = r.as_ref().column_index(name).unwrap_or(0);
-        rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, Box::new(e))
-    })
+/// A stored JSON column that does not parse, as found by [`Store::corrupt_rows`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CorruptRow {
+    pub artifact_id: String,
+    /// The version, for `versions.files_json`; `None` for artifact columns.
+    pub version: Option<u32>,
+    pub column: &'static str,
 }
 
-pub(crate) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Artifact> {
-    Ok(Artifact {
-        id: r.get("id")?,
+/// Parses the JSON text column `column`; malformed JSON yields `Corrupt` naming
+/// the row, carried inside `Ok` so callers can skip or report it.
+fn json_column<T: serde::de::DeserializeOwned>(
+    r: &Row<'_>,
+    column: &'static str,
+    artifact_id: &str,
+    version: Option<u32>,
+) -> rusqlite::Result<Result<T>> {
+    let text: String = r.get(column)?;
+    Ok(serde_json::from_str(&text).map_err(|_| CoreError::Corrupt {
+        artifact_id: artifact_id.to_string(),
+        column,
+        version,
+    }))
+}
+
+/// Reads an artifact row; the inner result is `Corrupt` when a JSON column is malformed.
+fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>> {
+    let id: String = r.get("id")?;
+    let capabilities = match json_column(r, "capabilities_json", &id, None)? {
+        Ok(c) => c,
+        Err(e) => return Ok(Err(e)),
+    };
+    Ok(Ok(Artifact {
+        id,
         title: r.get("title")?,
         description: r.get("description")?,
         icon: r.get("icon")?,
@@ -36,36 +57,61 @@ pub(crate) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Artifact> {
         updated_at: r.get("updated_at")?,
         current_version: r.get("current_version")?,
         pinned: r.get::<_, i64>("pinned")? != 0,
-        capabilities: json_column(r, "capabilities_json")?,
+        capabilities,
         contract_version: r.get("contract_version")?,
         owner_session_id: r.get("owner_session_id")?,
-    })
+    }))
+}
+
+/// Keeps the readable rows, logging and dropping the corrupt ones.
+fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        match row {
+            Ok(v) => out.push(v),
+            Err(CoreError::Corrupt {
+                artifact_id,
+                column,
+                version,
+            }) => {
+                tracing::warn!(artifact_id, column, version, "skipping corrupt row");
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(out)
 }
 
 const SELECT: &str = "SELECT id, title, description, icon, created_at, updated_at, current_version,
     owner_session_id, pinned, capabilities_json, contract_version FROM artifacts";
 
 impl Store {
+    /// The live artifact `id` (not deleted, at least one version), or `None`.
+    ///
+    /// # Errors
+    /// `Corrupt` when its `capabilities_json` is malformed.
     pub fn get_artifact(&self, id: &ArtifactId) -> Result<Option<Artifact>> {
         self.with_conn(|c| {
-            Ok(c.query_row(
+            c.query_row(
                 &format!("{SELECT} WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0"),
                 params![id.as_str()],
                 row_to_artifact,
             )
-            .optional()?)
+            .optional()?
+            .transpose()
         })
     }
 
     /// Live artifacts (not deleted, at least one version): pinned first, then
-    /// most recently updated, ties broken by ID.
+    /// most recently updated, ties broken by ID. Rows with a malformed JSON
+    /// column are logged and left out (see [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
-            Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+            skip_corrupt(rows.collect::<rusqlite::Result<Vec<_>>>()?)
         })
     }
 
@@ -105,11 +151,11 @@ impl Store {
             if n == 0 {
                 return Err(CoreError::NotFound);
             }
-            Ok(tx.query_row(
+            tx.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],
                 row_to_artifact,
-            )?)
+            )?
         })
     }
 
@@ -142,6 +188,50 @@ impl Store {
             ),
         }
         Ok(())
+    }
+
+    /// Every row whose `artifacts.capabilities_json` or `versions.files_json`
+    /// does not parse as JSON, including deleted artifacts, ordered by artifact
+    /// ID then version. Reads the raw text, independent of the typed readers.
+    pub fn corrupt_rows(&self) -> Result<Vec<CorruptRow>> {
+        self.with_conn(|c| {
+            let mut out = Vec::new();
+            let mut stmt = c.prepare("SELECT id, capabilities_json FROM artifacts ORDER BY id")?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (artifact_id, text) = row?;
+                if serde_json::from_str::<serde_json::Value>(&text).is_err() {
+                    out.push(CorruptRow {
+                        artifact_id,
+                        version: None,
+                        column: "capabilities_json",
+                    });
+                }
+            }
+            let mut stmt = c.prepare(
+                "SELECT artifact_id, n, files_json FROM versions ORDER BY artifact_id, n",
+            )?;
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, u32>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (artifact_id, n, text) = row?;
+                if serde_json::from_str::<BTreeMap<String, FileMeta>>(&text).is_err() {
+                    out.push(CorruptRow {
+                        artifact_id,
+                        version: Some(n),
+                        column: "files_json",
+                    });
+                }
+            }
+            out.sort_by(|a, b| (&a.artifact_id, a.version).cmp(&(&b.artifact_id, b.version)));
+            Ok(out)
+        })
     }
 
     #[doc(hidden)]
@@ -201,15 +291,22 @@ fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
         .map(|(k, _)| k)
 }
 
-fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Version> {
-    Ok(Version {
-        artifact_id: r.get("artifact_id")?,
-        n: r.get("n")?,
+/// Reads a version row; the inner result is `Corrupt` when `files_json` is malformed.
+fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
+    let artifact_id: String = r.get("artifact_id")?;
+    let n: u32 = r.get("n")?;
+    let files = match json_column(r, "files_json", &artifact_id, Some(n))? {
+        Ok(f) => f,
+        Err(e) => return Ok(Err(e)),
+    };
+    Ok(Ok(Version {
+        artifact_id,
+        n,
         label: r.get("label")?,
         created_at: r.get("created_at")?,
         session_id: r.get("session_id")?,
-        files: json_column(r, "files_json")?,
-    })
+        files,
+    }))
 }
 
 const SELECT_VERSION: &str =
@@ -246,7 +343,8 @@ impl Store {
     /// equal the current version (`Conflict` otherwise, `if_version_required`
     /// when absent). Files of the previous version not named in `p.files` are
     /// carried forward; `Remove` entries drop a path; `index.html` is always
-    /// taken from `p`.
+    /// taken from `p`. `Corrupt` when the artifact or its current version has a
+    /// malformed JSON column.
     pub fn publish_version(
         &self,
         id: &ArtifactId,
@@ -366,12 +464,12 @@ impl Store {
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id.as_str()],
                 row_to_artifact,
-            )?;
+            )??;
             let v = tx.query_row(
                 &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
                 params![id.as_str(), n],
                 row_to_version,
-            )?;
+            )??;
             std::fs::rename(&staging.0, &vdir)?;
             renamed.set(true);
             Ok((a, v))
@@ -384,31 +482,39 @@ impl Store {
         result
     }
 
+    /// Version `n` of artifact `id`, or `None`.
+    ///
+    /// # Errors
+    /// `Corrupt` when its `files_json` is malformed.
     pub fn get_version(&self, id: &ArtifactId, n: u32) -> Result<Option<Version>> {
         self.with_conn(|c| {
-            Ok(c.query_row(
+            c.query_row(
                 &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
                 params![id.as_str(), n],
                 row_to_version,
             )
-            .optional()?)
+            .optional()?
+            .transpose()
         })
     }
 
-    /// Every version of the artifact, oldest first (ascending `n`).
+    /// Every version of the artifact, oldest first (ascending `n`). Versions with
+    /// a malformed `files_json` are logged and left out.
     pub fn list_versions(&self, id: &ArtifactId) -> Result<Vec<Version>> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT_VERSION} WHERE artifact_id = ?1 ORDER BY n"
             ))?;
-            Ok(stmt
-                .query_map(params![id.as_str()], row_to_version)?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
+            skip_corrupt(
+                stmt.query_map(params![id.as_str()], row_to_version)?
+                    .collect::<rusqlite::Result<Vec<_>>>()?,
+            )
         })
     }
 
     /// The on-disk path and metadata of `path` in version `n`, only for files
-    /// recorded in that version.
+    /// recorded in that version. `Corrupt` when that version's `files_json` is
+    /// malformed.
     pub fn file_path(
         &self,
         id: &ArtifactId,
@@ -491,35 +597,98 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_json_columns_are_errors_not_defaults() {
+    fn corrupt_rows_are_skipped_in_lists_and_named_on_lookup() {
         let (_d, store) = store();
-        let (a, _) = store
-            .create_artifact(publish(&[("index.html", Some("v1"))], None))
+        let mk = || {
+            let (a, _) = store
+                .create_artifact(publish(&[("index.html", Some("v1"))], None))
+                .unwrap();
+            crate::ArtifactId::parse(&a.id).unwrap()
+        };
+        let good = mk();
+        let bad = mk();
+        let old_bad = mk();
+        store
+            .publish_version(&old_bad, publish(&[("index.html", Some("v2"))], Some(1)))
             .unwrap();
-        let id = crate::ArtifactId::parse(&a.id).unwrap();
         store
             .with_conn(|c| {
                 c.execute(
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
-                    rusqlite::params![id.as_str()],
+                    rusqlite::params![bad.as_str()],
                 )?;
                 c.execute(
-                    "UPDATE versions SET files_json = '{' WHERE artifact_id = ?1",
-                    rusqlite::params![id.as_str()],
+                    "UPDATE versions SET files_json = '{' WHERE artifact_id = ?1 AND n = 1",
+                    rusqlite::params![old_bad.as_str()],
                 )?;
                 Ok(())
             })
             .unwrap();
-        let conv = |e: crate::CoreError| {
-            matches!(
-                e,
-                crate::CoreError::Db(rusqlite::Error::FromSqlConversionFailure(..))
-            )
-        };
-        assert!(conv(store.get_artifact(&id).unwrap_err()));
-        assert!(conv(store.list_artifacts().unwrap_err()));
-        assert!(conv(store.get_version(&id, 1).unwrap_err()));
-        assert!(conv(store.list_versions(&id).unwrap_err()));
+
+        let mut listed: Vec<String> = store
+            .list_artifacts()
+            .unwrap()
+            .into_iter()
+            .map(|a| a.id)
+            .collect();
+        listed.sort();
+        let mut expected = vec![good.as_str().to_string(), old_bad.as_str().to_string()];
+        expected.sort();
+        assert_eq!(listed, expected);
+        match store.get_artifact(&bad).unwrap_err() {
+            crate::CoreError::Corrupt {
+                artifact_id,
+                column,
+                version,
+            } => {
+                assert_eq!(artifact_id, bad.as_str());
+                assert_eq!(column, "capabilities_json");
+                assert_eq!(version, None);
+            }
+            e => panic!("{e:?}"),
+        }
+
+        let versions: Vec<u32> = store
+            .list_versions(&old_bad)
+            .unwrap()
+            .iter()
+            .map(|v| v.n)
+            .collect();
+        assert_eq!(versions, [2]);
+        assert!(matches!(
+            store.get_version(&old_bad, 1).unwrap_err(),
+            crate::CoreError::Corrupt {
+                version: Some(1),
+                column: "files_json",
+                ..
+            }
+        ));
+        assert!(matches!(
+            store.file_path(&old_bad, 1, "index.html").unwrap_err(),
+            crate::CoreError::Corrupt { .. }
+        ));
+        assert!(matches!(
+            store
+                .publish_version(&bad, publish(&[("index.html", Some("v2"))], Some(1)))
+                .unwrap_err(),
+            crate::CoreError::Corrupt { .. }
+        ));
+
+        let rows = store.corrupt_rows().unwrap();
+        let mut want = vec![
+            super::CorruptRow {
+                artifact_id: bad.as_str().to_string(),
+                version: None,
+                column: "capabilities_json",
+            },
+            super::CorruptRow {
+                artifact_id: old_bad.as_str().to_string(),
+                version: Some(1),
+                column: "files_json",
+            },
+        ];
+        want.sort_by(|a, b| a.artifact_id.cmp(&b.artifact_id));
+        assert_eq!(rows, want);
     }
 
     #[test]
@@ -529,6 +698,12 @@ mod tests {
         let gone = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         store.delete_artifact(&gone).unwrap();
         assert!(store.get_artifact(&gone).unwrap().is_none());
+
+        // SAFETY: geteuid has no preconditions.
+        if unsafe { libc::geteuid() } == 0 {
+            eprintln!("skipping unremovable-directory case: root ignores directory modes");
+            return;
+        }
 
         let stuck = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
         let locked = store.home().artifact_dir(&stuck).join("locked");

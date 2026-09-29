@@ -43,7 +43,10 @@ async fn bearer_scheme_is_case_insensitive() {
             .send()
             .await
             .unwrap();
-        assert_ne!(res.status(), 401, "{scheme}");
+        // Authorised, so the empty body reaches validation.
+        assert_eq!(res.status(), 400, "{scheme}");
+        let body: serde_json::Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "missing_index", "{scheme}");
     }
 }
 

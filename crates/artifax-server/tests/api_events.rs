@@ -149,21 +149,27 @@ async fn lagged_subscriber_receives_resync_with_dropped_count() {
     let ts = TestServer::spawn().await;
     let (mut stream, mut buf) = open_stream(&ts, "").await;
     // Current-thread runtime: the server cannot drain the receiver while this loop
-    // runs, so 300 sends into a 256-slot channel overflow it by 44.
-    for n in 0..300 {
+    // runs, so the sends beyond the bus capacity overflow it.
+    let capacity = artifax_core::EVENT_BUS_CAPACITY as u32;
+    let sent = capacity + 44;
+    for n in 0..sent {
         ts.events.publish(artifax_core::Event::Version {
             artifact_id: "7q3k9mzx2b4t".into(),
             n,
         });
     }
+    let dropped = sent - capacity;
     let (ev, data) = next_event(&mut stream, &mut buf).await;
     assert_eq!(ev, "resync");
     let v: serde_json::Value = serde_json::from_str(&data).unwrap();
-    assert_eq!(v, serde_json::json!({"dropped": 44}));
+    assert_eq!(v, serde_json::json!({ "dropped": dropped }));
     let (ev, data) = next_event(&mut stream, &mut buf).await;
     assert_eq!(ev, "version");
     let v: serde_json::Value = serde_json::from_str(&data).unwrap();
-    assert_eq!(v["n"], 44, "stream resumes at the oldest retained event");
+    assert_eq!(
+        v["n"], dropped,
+        "stream resumes at the oldest retained event"
+    );
 }
 
 #[tokio::test]

@@ -216,7 +216,10 @@ Browser-facing:
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
-  `comment`, `doc`, `room` events.
+  `comment`, `doc`, `room` events. `artifact_deleted` is sent when an
+  artifact is deleted, with the artifact's ID in its data. `resync`, with
+  `data: {"dropped": n}`, is sent when a subscriber fell behind and `n` events
+  were dropped; the client should refetch the state it displays.
 
 Agent- and shell-facing JSON API under `/api`:
 

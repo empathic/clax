@@ -19,4 +19,5 @@ ulid.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
+libc.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "rt"] }
