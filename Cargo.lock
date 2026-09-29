@@ -94,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "artifax-core",
+ "artifax-hooks",
  "artifax-mcp",
  "artifax-server",
  "assert_cmd",
@@ -129,6 +130,17 @@ dependencies = [
  "tokio",
  "tracing",
  "ulid",
+]
+
+[[package]]
+name = "artifax-hooks"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]

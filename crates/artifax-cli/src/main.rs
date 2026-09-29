@@ -47,6 +47,8 @@ pub enum Cmd {
     Doctor(commands::doctor::Args),
     /// Serve the MCP tools over stdin/stdout for one harness session.
     Mcp(commands::mcp::Args),
+    /// Handle a harness lifecycle hook (reads the hook input from stdin).
+    Hook(commands::hook::Args),
 }
 
 fn main() {
@@ -80,6 +82,7 @@ fn main() {
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
+        Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

@@ -5,6 +5,7 @@ members = [
     "crates/artifax-server",
     "crates/artifax-cli",
     "crates/artifax-mcp",
+    "crates/artifax-hooks",
 ]
 
 [workspace.package]
