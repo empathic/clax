@@ -807,3 +807,35 @@ async fn the_viewer_cookie_and_session_ids_never_leave_the_daemon() {
         assert!(!text.contains("via_session_id"), "{text}");
     }
 }
+
+#[tokio::test]
+async fn resolving_as_a_viewer_records_the_public_id() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let v = ts.viewer(Some("Alex")).await;
+    let t = ts.thread(&aid, 1, "plain").await;
+    let mut events = ts.events(&format!("?artifact={aid}")).await;
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{}/resolve",
+            ts.base,
+            t["id"].as_str().unwrap()
+        ))
+        .header("cookie", format!("artifax_viewer={}", v.cookie))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(
+        body["thread"]["resolved_by"],
+        format!("viewer:{}", v.public_id)
+    );
+    let ev = events.next_named("thread_resolved").await;
+    assert_eq!(ev["resolved_by"], format!("viewer:{}", v.public_id));
+    assert!(
+        !ev.to_string().contains(&v.cookie),
+        "the cookie never reaches SSE"
+    );
+}

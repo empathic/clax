@@ -174,6 +174,14 @@ impl Store {
             if n == 0 {
                 return Err(CoreError::NotFound);
             }
+            tx.execute(
+                "DELETE FROM docs WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM leases WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
@@ -299,7 +307,7 @@ impl Store {
         for id in ids {
             let removed = self.with_tx(|tx| {
                 let zero = "SELECT id FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL";
-                for table in ["assets", "versions"] {
+                for table in ["assets", "versions", "docs", "leases"] {
                     tx.execute(
                         &format!("DELETE FROM {table} WHERE artifact_id IN ({zero})"),
                         params![id],
@@ -326,8 +334,8 @@ impl Store {
 
     /// Deletes the [`Store::corrupt_rows`] that belong to soft-deleted
     /// artifacts: a corrupt version row goes alone, a corrupt artifact row goes
-    /// with its versions, assets, watches, threads, and the threads' comments
-    /// and feedback. Rows of live artifacts are never touched.
+    /// with its versions, assets, watches, documents, leases, threads, and the
+    /// threads' comments and feedback. Rows of live artifacts are never touched.
     /// Returns how many corrupt rows were cleared.
     ///
     /// # Errors
@@ -361,6 +369,8 @@ impl Store {
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
                             "DELETE FROM watches WHERE artifact_id = ?1",
+                            "DELETE FROM docs WHERE artifact_id = ?1",
+                            "DELETE FROM leases WHERE artifact_id = ?1",
                         ] {
                             tx.execute(sql, params![row.artifact_id])?;
                         }
@@ -1252,11 +1262,28 @@ mod tests {
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
                     [aid.as_str()],
                 )?;
+                c.execute(
+                    "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                     VALUES (?1, 't/1', 't', '{}', 1, 'x')",
+                    [aid.as_str()],
+                )?;
+                c.execute(
+                    "INSERT INTO leases (artifact_id, path, holder, expires_at) VALUES (?1, 't/1', 'h', 'x')",
+                    [aid.as_str()],
+                )?;
                 Ok(())
             })
             .unwrap();
         assert_eq!(store.delete_corrupt_deleted_rows().unwrap(), 1);
-        for table in ["feedback", "comments", "threads", "watches", "artifacts"] {
+        for table in [
+            "feedback",
+            "comments",
+            "threads",
+            "watches",
+            "docs",
+            "leases",
+            "artifacts",
+        ] {
             let n: i64 = store
                 .with_conn(|c| {
                     Ok(c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?)

@@ -4,6 +4,7 @@
 
 pub mod artifacts;
 pub mod assets;
+pub mod docs;
 pub mod feedback;
 pub mod migrations;
 pub mod sessions;
@@ -100,6 +101,18 @@ pub(crate) mod test_util {
         let (a, _) = store
             .create_artifact(validate(req).unwrap(), session)
             .unwrap();
+        ArtifactId::parse(&a.id).unwrap()
+    }
+
+    /// A one-version artifact declaring `caps`.
+    pub fn artifact_with_caps(store: &Store, caps: serde_json::Value) -> ArtifactId {
+        let req: PublishRequest = serde_json::from_value(serde_json::json!({
+            "title": "Tracker",
+            "capabilities": caps,
+            "files": {"index.html": {"content": "<main></main>", "encoding": "utf8"}}
+        }))
+        .unwrap();
+        let (a, _) = store.create_artifact(validate(req).unwrap(), None).unwrap();
         ArtifactId::parse(&a.id).unwrap()
     }
 

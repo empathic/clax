@@ -8,6 +8,13 @@ pub enum CoreError {
     NotFound,
     #[error("version conflict: current version is {current}")]
     Conflict { current: u32 },
+    /// A document write pinned to a version the document no longer has (or,
+    /// with `current: None`, pinned to a document that does not exist).
+    #[error("document {path} changed: current version is {current:?}")]
+    DocConflict { path: String, current: Option<u64> },
+    /// A write to an existing document without `if_version` and without `lww`.
+    #[error("document {path} exists at version {current}; read it and pass if_version")]
+    DocPinRequired { path: String, current: u64 },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
     /// A stored JSON column of `artifact_id` (and, for version columns, of

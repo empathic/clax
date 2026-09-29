@@ -291,3 +291,41 @@ impl TestServer {
         }
     }
 }
+
+/// A browser viewer created through `GET /api/viewers/me`: its cookie value
+/// (send it as `Cookie: artifax_viewer=<cookie>`) and its public ID.
+pub struct TestViewer {
+    pub cookie: String,
+    pub public_id: String,
+}
+
+impl TestServer {
+    /// Creates a viewer, named `name` when given.
+    pub async fn viewer(&self, name: Option<&str>) -> TestViewer {
+        let res = self.get("/api/viewers/me").await;
+        let set = res.headers()["set-cookie"].to_str().unwrap().to_string();
+        let cookie = set
+            .split(';')
+            .next()
+            .and_then(|kv| kv.strip_prefix("artifax_viewer="))
+            .expect("artifax_viewer cookie")
+            .to_string();
+        let mut v: serde_json::Value = res.json().await.unwrap();
+        if let Some(n) = name {
+            let res = self
+                .client
+                .put(format!("{}/api/viewers/me", self.base))
+                .header("cookie", format!("artifax_viewer={cookie}"))
+                .json(&serde_json::json!({"display_name": n}))
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 200);
+            v = res.json().await.unwrap();
+        }
+        TestViewer {
+            cookie,
+            public_id: v["viewer"]["public_id"].as_str().unwrap().to_string(),
+        }
+    }
+}

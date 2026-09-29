@@ -53,6 +53,32 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("current".into(), json!(current));
                 err
             }
+            CoreError::DocConflict { path, current } => {
+                let mut err = ApiError::new(
+                    StatusCode::CONFLICT,
+                    "conflict",
+                    match current {
+                        Some(n) => format!(
+                            "document {path} is at version {n}; re-read it and redo the write"
+                        ),
+                        None => format!("document {path} does not exist"),
+                    },
+                );
+                err.extra.insert("path".into(), json!(path));
+                err.extra.insert("current".into(), json!(current));
+                err
+            }
+            CoreError::DocPinRequired { path, current } => {
+                let mut err = ApiError::bad_request(
+                    "if_version_required",
+                    format!(
+                        "document {path} exists at version {current}; read it and pass its version as if_version"
+                    ),
+                );
+                err.extra.insert("path".into(), json!(path));
+                err.extra.insert("current".into(), json!(current));
+                err
+            }
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::Corrupt { .. } => {
                 tracing::error!(error = %e, "corrupt row");
@@ -104,5 +130,30 @@ mod tests {
         assert_eq!(api.status, StatusCode::INTERNAL_SERVER_ERROR);
         assert_eq!(api.code, "internal");
         assert_eq!(api.message, "storage error: StorageFull");
+    }
+    #[test]
+    fn document_conflicts_name_the_path_and_current_version() {
+        let e = ApiError::from(CoreError::DocConflict {
+            path: "tasks/t1".into(),
+            current: Some(3),
+        });
+        assert_eq!((e.status, e.code), (StatusCode::CONFLICT, "conflict"));
+        assert_eq!(
+            (e.extra["path"].as_str(), e.extra["current"].as_u64()),
+            (Some("tasks/t1"), Some(3))
+        );
+        let e = ApiError::from(CoreError::DocConflict {
+            path: "t/x".into(),
+            current: None,
+        });
+        assert!(e.extra["current"].is_null());
+        let e = ApiError::from(CoreError::DocPinRequired {
+            path: "tasks/t1".into(),
+            current: 2,
+        });
+        assert_eq!(
+            (e.status, e.code, e.extra["current"].as_u64()),
+            (StatusCode::BAD_REQUEST, "if_version_required", Some(2))
+        );
     }
 }

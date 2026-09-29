@@ -433,6 +433,36 @@ mod tests {
     }
 
     #[test]
+    fn a_phase_3_database_upgrades_with_docs_and_leases() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = super::super::migrations::MIGRATIONS.len() - 1;
+        {
+            let c = rusqlite::Connection::open(home.db_path()).unwrap();
+            for sql in &super::super::migrations::MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+        }
+        let store = Store::open(&home).unwrap();
+        let (version, docs, leases): (u32, i64, i64) = store
+            .with_conn(|c| {
+                Ok((
+                    c.query_row("PRAGMA user_version", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))?,
+                    c.query_row("SELECT COUNT(*) FROM leases", [], |r| r.get(0))?,
+                ))
+            })
+            .unwrap();
+        assert_eq!(
+            (version, docs, leases),
+            (super::super::migrations::MIGRATIONS.len() as u32, 0, 0)
+        );
+    }
+
+    #[test]
     fn phase_2_database_upgrades_to_3() {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));

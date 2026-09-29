@@ -131,6 +131,24 @@ pub const MIGRATIONS: &[&str] = &[
     // 6: the last `codex queue` failure for a session (cleared by a success).
     "ALTER TABLE session_env ADD COLUMN push_error TEXT;
     ALTER TABLE session_env ADD COLUMN push_error_at TEXT;",
+    // 7: the db capability's documents and leases.
+    "CREATE TABLE docs (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        path TEXT NOT NULL,
+        collection TEXT NOT NULL,
+        json TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, path)
+    );
+    CREATE INDEX docs_by_collection ON docs(artifact_id, collection, path);
+    CREATE TABLE leases (
+        artifact_id TEXT NOT NULL REFERENCES artifacts(id),
+        path TEXT NOT NULL,
+        holder TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, path)
+    );",
 ];
 
 #[cfg(test)]
