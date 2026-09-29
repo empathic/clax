@@ -8,6 +8,7 @@
         "ARTIFAX_HOME",
         "ARTIFAX_NO_OPEN",
         "ARTIFAX_BIN",
+        "ARTIFAX_SOURCE_DIR",
         "ARTIFAX_INSTALL_DIR",
         "ARTIFAX_CONFIG_DIR",
         "ARTIFAX_RELEASE_BASE_URL",

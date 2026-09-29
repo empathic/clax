@@ -12,16 +12,33 @@
 #   2. `artifax` on PATH that identifies as the Artifax CLI
 #   3. $ARTIFAX_INSTALL_DIR/artifax (default ~/.local/bin/artifax)
 #   4. $ARTIFAX_CONFIG_DIR/bin/artifax (default ~/.artifax/bin/artifax)
-#   5. Download the latest GitHub release, verify its checksum, and install
+#   5. A source checkout's build: the newer of target/release/artifax and
+#      target/debug/artifax that identifies as the Artifax CLI (used with a
+#      warning when older than MIN_VERSION). The checkout is the first
+#      directory whose Cargo.toml names artifax-cli, searched upwards from
+#      each of: $ARTIFAX_SOURCE_DIR; the `source` path recorded in the plugin
+#      root's .codex-plugin/plugin.json or .claude-plugin/plugin.json (an
+#      optional field no build writes); for a Codex plugin cache copy
+#      (<codex home>/plugins/cache/<marketplace>/<plugin>/<version>), the
+#      `source` of [marketplaces.<marketplace>] in <codex home>/config.toml;
+#      and this script's own directory.
+#   6. Download the latest GitHub release, verify its checksum, and install
 #      to ~/.local/bin — or to ~/.artifax/bin when an unrelated binary
 #      named `artifax` would shadow the ~/.local/bin name.
 #
+# `exec hook ...` never downloads: a lifecycle hook must not install software
+# or fail its harness. With no binary found it prints one line to stderr and
+# exits 0 with empty stdout. Every failure to resolve a binary appends one
+# line to ${ARTIFAX_HOME:-~/.artifax}/logs/hooks.log (rotated to hooks.log.1
+# past 1 MiB); a log that cannot be written is ignored.
+#
 # Environment variables:
 #   ARTIFAX_BIN           Absolute path to a specific `artifax` to use, ahead
-#                         of every other candidate. Intended for running a
-#                         build from a working tree (target/release/artifax)
-#                         without installing it. Set but unusable is a
+#                         of every other candidate. Set but unusable is a
 #                         warning, not a silent fall-through.
+#   ARTIFAX_SOURCE_DIR    A source checkout (or a directory inside one) whose
+#                         target/ build to use when steps 1-4 find nothing
+#   ARTIFAX_HOME          Where hooks.log lives (default ~/.artifax)
 #   ARTIFAX_INSTALL_DIR   Override the global install directory
 #   ARTIFAX_CONFIG_DIR    Override ~/.artifax (fallback bin lives under it)
 #   ARTIFAX_RELEASE_BASE_URL
@@ -41,8 +58,103 @@ RELEASE_BASE_URL="${ARTIFAX_RELEASE_BASE_URL:-https://github.com/${REPO}/release
 # Oldest release whose CLI surface the plugins are written against.
 MIN_VERSION="0.2.0"
 TMPDIR_CLEANUP=""
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+PLUGIN_ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+HOOKS_LOG_MAX_BYTES=1048576
+ARGV="$*"
+MODE="${1:-}"
+if [ "$MODE" = exec ]; then MODE="${2:-exec}"; fi
+if [ -z "$MODE" ]; then MODE="print"; fi
+DOWNLOADING=""
+REMEDY="install with \`cargo install --path crates/artifax-cli\` from the checkout or set ARTIFAX_BIN; see \`artifax doctor\`"
 
 log() { echo "$@" >&2; }
+
+# Appends one line naming this run and $1 (the reason) to hooks.log, rotating
+# the file to hooks.log.1 once it passes HOOKS_LOG_MAX_BYTES. Never fails.
+log_failure() {
+    {
+        local dir file agent="" size prev=""
+        dir="${ARTIFAX_HOME:-$HOME/.artifax}/logs"
+        file="$dir/hooks.log"
+        for a in $ARGV; do
+            if [ "$prev" = "--agent" ]; then agent="$a"; fi
+            prev="$a"
+        done
+        mkdir -p "$dir" || return 0
+        if [ -f "$file" ]; then
+            size="$(wc -c < "$file" | tr -d ' ')"
+            if [ "${size:-0}" -gt "$HOOKS_LOG_MAX_BYTES" ]; then mv -f "$file" "$file.1"; fi
+        fi
+        printf '%s launcher mode=%s agent=%s exit=%s reason="%s" argv="%s"\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODE" "${agent:--}" "$2" "$1" "$ARGV" >> "$file"
+    } 2>/dev/null || true
+}
+
+# The Artifax source checkout at or above $1: the first directory whose
+# Cargo.toml names artifax-cli.
+find_checkout() {
+    local dir="$1"
+    [ -n "$dir" ] && [ -d "$dir" ] || return 1
+    dir="$(cd "$dir" && pwd -P)" || return 1
+    while :; do
+        if [ -f "$dir/Cargo.toml" ] && grep -q "artifax-cli" "$dir/Cargo.toml" 2>/dev/null; then
+            echo "$dir"
+            return 0
+        fi
+        [ "$dir" = "/" ] && return 1
+        dir="$(dirname "$dir")"
+    done
+}
+
+# The `source` path recorded in the plugin root's manifest, if any.
+manifest_source() {
+    local m
+    for m in "$PLUGIN_ROOT_DIR/.codex-plugin/plugin.json" "$PLUGIN_ROOT_DIR/.claude-plugin/plugin.json"; do
+        [ -f "$m" ] || continue
+        sed -n 's/.*"source"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$m" | head -1
+    done
+}
+
+# For a Codex plugin cache copy at <home>/plugins/cache/<marketplace>/<plugin>/<version>,
+# the directory <home>/config.toml records as the marketplace's source.
+codex_marketplace_source() {
+    local version_dir plugin_dir market_dir cache_dir plugins_dir home market
+    version_dir="$PLUGIN_ROOT_DIR"
+    plugin_dir="$(dirname "$version_dir")"
+    market_dir="$(dirname "$plugin_dir")"
+    cache_dir="$(dirname "$market_dir")"
+    plugins_dir="$(dirname "$cache_dir")"
+    [ "${cache_dir##*/}" = cache ] && [ "${plugins_dir##*/}" = plugins ] || return 0
+    home="$(dirname "$plugins_dir")"
+    market="${market_dir##*/}"
+    [ -f "$home/config.toml" ] || return 0
+    awk -v sec="[marketplaces.${market}]" '
+        $0 == sec { on = 1; next }
+        /^[[:space:]]*\[/ { on = 0 }
+        on && /^[[:space:]]*source[[:space:]]*=/ {
+            sub(/^[^=]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print; exit
+        }
+    ' "$home/config.toml"
+}
+
+# The newer of a checkout's release and debug builds that is the Artifax CLI.
+checkout_binary() {
+    local start checkout best="" candidate
+    for start in "${ARTIFAX_SOURCE_DIR:-}" "$(manifest_source)" "$(codex_marketplace_source)" "$SCRIPT_DIR"; do
+        checkout="$(find_checkout "$start")" || continue
+        for candidate in "$checkout/target/release/artifax" "$checkout/target/debug/artifax"; do
+            if [ -x "$candidate" ] && is_artifax "$candidate"; then
+                if [ -z "$best" ] || [ "$candidate" -nt "$best" ]; then best="$candidate"; fi
+            fi
+        done
+        if [ -n "$best" ]; then
+            echo "$best"
+            return 0
+        fi
+    done
+    return 1
+}
 
 is_artifax() {
     "$1" --version 2>/dev/null | head -1 | grep -qi "artifax"
@@ -86,7 +198,7 @@ resolve_existing() {
             return 0
         fi
     done
-    return 1
+    checkout_binary
 }
 
 choose_install_dir() {
@@ -167,6 +279,7 @@ download_and_verify() {
     curl -fsSL "${base_url}/${tarball}" -o "${tmpdir}/${tarball}"
     curl -fsSL "${base_url}/${tarball}.sha256" -o "${tmpdir}/${tarball}.sha256"
 
+    DOWNLOADING="verify"
     (
         cd "$tmpdir"
         log "Verifying checksum..."
@@ -199,26 +312,51 @@ install_artifax() {
     check_dependencies
     local target version dest_dir
     target="$(resolve_target)"
+    DOWNLOADING=1
+    trap on_exit EXIT
     version="$(fetch_latest_version)"
     dest_dir="$(choose_install_dir)"
 
     log "Installing artifax ${version} (${target}) to ${dest_dir}..."
     TMPDIR_CLEANUP="$(mktemp -d)"
-    trap 'rm -rf "$TMPDIR_CLEANUP"' EXIT
 
     download_and_verify "$version" "$target" "$TMPDIR_CLEANUP"
     mkdir -p "$dest_dir"
     mv "${TMPDIR_CLEANUP}/artifax" "${dest_dir}/artifax"
     chmod +x "${dest_dir}/artifax"
 
+    DOWNLOADING=""
     log "Installed artifax to ${dest_dir}/artifax"
     path_hint "$dest_dir"
     RESOLVED_BIN="${dest_dir}/artifax"
 }
 
+# Removes the download's temp directory; after a failed download, says why in
+# plain words and logs it.
+on_exit() {
+    local rc=$?
+    if [ -n "$TMPDIR_CLEANUP" ]; then rm -rf "$TMPDIR_CLEANUP"; fi
+    if [ "$rc" != 0 ] && [ -n "$DOWNLOADING" ]; then
+        if [ "$DOWNLOADING" = verify ]; then
+            log "artifax: no binary found, and the downloaded release failed verification."
+        else
+            log "artifax: no binary found, and the release download failed: no Artifax release has been published yet."
+        fi
+        log "artifax: ${REMEDY}"
+        log_failure "no binary found; release download failed" 1
+        exit 1
+    fi
+    exit "$rc"
+}
+
 main() {
     local bin
     if ! bin="$(resolve_existing)"; then
+        if [ "${1:-}" = exec ] && [ "${2:-}" = hook ]; then
+            log "artifax: no binary found; ${REMEDY}"
+            log_failure "no binary found" 0
+            exit 0
+        fi
         install_artifax
         bin="$RESOLVED_BIN"
     fi
