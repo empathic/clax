@@ -2,13 +2,14 @@
 // follows the pointer, a click to pick it, a text selection to pick a range,
 // Escape to cancel. The target is the element under the pointer, or, inside
 // an oversized element, the text under it (see `target.ts`); the outline is
-// clamped to the viewport so all four borders show. A selection that already existed when the mode was
+// clamped to the viewport so all four borders show, in colours judged from
+// the background behind the target. A selection that already existed when the mode was
 // turned on is not a pick; turning the mode off drops any pending hover. The
 // overlay lives in a shadow root on <html>, so it never changes the page's
 // body, selectors, or text.
 
 import { OVERLAY_TAG } from "./anchor";
-import { chooseTarget, outlineBox, outlineColors, pageBackground, rectOf, viewportOf } from "./target";
+import { backgroundBehind, chooseTarget, outlineBox, outlineColors, rectOf, viewportOf } from "./target";
 
 export interface ModeHooks {
   hover(target: Element | Range | null): void;
@@ -31,6 +32,7 @@ export class CommentMode {
   private suppressClick = false;
   private frame = 0;
   private hovered: Element | Range | null = null;
+  private border = "";
   private pointer = { x: 0, y: 0, el: null as Element | null };
   private selectionBefore: Range | null = null;
 
@@ -60,9 +62,6 @@ export class CommentMode {
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
     this.suppressClick = false;
     if (on) {
-      const c = outlineColors(pageBackground(this.doc));
-      this.host.style.setProperty("--ax-border", c.border);
-      this.host.style.setProperty("--ax-tint", c.tint);
       const sel = this.doc.getSelection();
       this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     } else {
@@ -77,7 +76,7 @@ export class CommentMode {
 
   /** Outlines `target` briefly (after a scroll-to). */
   flash(target: Element | Range): void {
-    this.place(rectOf(target));
+    this.place(target);
     this.outline.classList.add("flash");
     setTimeout(() => {
       this.outline.classList.remove("flash");
@@ -85,8 +84,16 @@ export class CommentMode {
     }, 1800);
   }
 
-  private place(r: DOMRect): void {
-    const b = outlineBox(r, viewportOf(this.doc));
+  /** Outlines `t`, in colours that stand out on the background behind it. */
+  private place(t: Element | Range): void {
+    const el = t instanceof Element ? t : t.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? (t.commonAncestorContainer as Element) : t.commonAncestorContainer.parentElement;
+    const c = outlineColors(el ? backgroundBehind(el) : "#ffffff");
+    if (c.border !== this.border) {
+      this.border = c.border;
+      this.host.style.setProperty("--ax-border", c.border);
+      this.host.style.setProperty("--ax-tint", c.tint);
+    }
+    const b = outlineBox(rectOf(t), viewportOf(this.doc));
     if (!b) { this.outline.style.display = "none"; return; }
     Object.assign(this.outline.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
   }
@@ -112,7 +119,7 @@ export class CommentMode {
       const t = this.choose(this.pointer.el, this.pointer.x, this.pointer.y);
       if (sameTarget(t, this.hovered)) return;
       this.hovered = t;
-      if (t) this.place(rectOf(t));
+      if (t) this.place(t);
       else this.outline.style.display = "none";
       this.hooks.hover(t);
     });

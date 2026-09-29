@@ -1,5 +1,5 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, publish, startDaemon } from "./fixtures";
+import { api, clipStats, expectVisibleClip, last, openArtifact, publish, record, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -36,6 +36,7 @@ async function hoverLine(page: Page, frame: Frame, n: number) {
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: inside an oversized <pre>, comment mode targets the line under the pointer`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `Long ${mode}`, { "index.html": LONG });
+    await record(page);
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await frame.evaluate(() => scrollTo(0, 3000));
     await page.getByRole("button", { name: "Comment", exact: true }).click();
@@ -59,6 +60,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.click(fb.x + r.x + 30, fb.y + r.y + r.h / 2);
     const composer = page.locator(".composer");
     await expect(composer.locator(".composer-quote")).toHaveText("«line 161: the quick brown fox»");
+    // The clip is the region around the line, not the whole 6,000 px block.
+    const pick = await last(page, "artifax:pick");
+    expect(pick.clipError).toBeUndefined();
+    const clip = await clipStats(page, pick.pickId);
+    expect(clip.h).toBeLessThan(400);
+    expect(clip.h).toBeGreaterThan(20);
+    await expectVisibleClip(page, pick.pickId);
+    await expect(composer.locator("img.clip")).toBeVisible();
     await composer.locator("textarea").fill("Explain this line.");
     await composer.getByRole("button", { name: "Post comment" }).click();
     const card = page.locator(".thread-card").filter({ hasText: "Explain this line." });
@@ -69,5 +78,73 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const now = await lineRect(frame, 161);
     // A pin sits 12 px above the top of its region.
     expect(Math.abs(pin.y + 12 - (fb.y + now.y))).toBeLessThan(4);
+  });
+}
+
+const HL_LINES = Array.from({ length: 2000 }, (_, i) => `<span class="k">let</span> <span class="v">v${i + 1}</span> = <span class="s">"line ${i + 1}"</span>;`).join("\n");
+const HIGHLIGHTED = `<!doctype html><html><head><title>Code</title><style>body{margin:0;font:14px/20px monospace;background:#fafafa}pre{margin:0;padding:8px}.k{color:#a626a4;font-weight:bold}.v{color:#4078f2}.s{color:#50a14f}</style></head><body><main><pre id="src"><code>${HL_LINES}</code></pre></main></body></html>`;
+const SHORT = `<!doctype html><html><head><title>Short</title><style>body{margin:0;font:14px/20px monospace}pre{margin:0;padding:8px}</style></head><body><pre id="src">${Array.from({ length: 36 }, (_, i) => `line ${i + 1}: the quick brown fox`).join("\n")}</pre></body></html>`;
+
+/** The rectangle, in the frame's viewport, of highlighted line `n`'s first token and of its whole line. */
+const hlLine = (frame: Frame, n: number) => frame.evaluate(line => {
+  const k = document.querySelectorAll(".k")[line - 1];
+  const b = k.getBoundingClientRect();
+  return { x: b.x, y: b.y, w: b.width, h: b.height };
+}, n);
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: in 2,000 lines of highlighted code, the outline is one line from tokens and gaps, hover stays fast, and a pick clips its region`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Highlighted ${mode}`, { "index.html": HIGHLIGHTED });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await frame.evaluate(() => document.querySelectorAll(".k")[999].scrollIntoView({ block: "center" }));
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    const r = await hlLine(frame, 1000);
+    // Over a token, then over the gap after "let", then over the string: the same one-line outline.
+    for (const dx of [5, r.w + 3, r.w + 90]) {
+      await page.mouse.move(fb.x + r.x + dx, fb.y + r.y + r.h / 2);
+      await expect.poll(async () => { const o = await outline(frame); return o.shown && Math.abs(o.top - (r.y - 2)) < 3; }).toBe(true);
+      const o = await outline(frame);
+      expect(o.height).toBeLessThan(30);
+    }
+    // 60 moves across 30 lines, back and forth, then the outline settles on the last line.
+    const t0 = Date.now();
+    for (let i = 0; i < 60; i++) {
+      const line = await hlLine(frame, 985 + (i % 30));
+      await page.mouse.move(fb.x + line.x + 5 + (i % 7) * 12, fb.y + line.y + line.h / 2);
+    }
+    const end = await hlLine(frame, 985 + 59 % 30);
+    await expect.poll(async () => { const o = await outline(frame); return o.shown && Math.abs(o.top - (end.y - 2)) < 3; }).toBe(true);
+    expect(Date.now() - t0).toBeLessThan(3000);
+
+    await page.mouse.click(fb.x + r.x + 5, fb.y + r.y + r.h / 2);
+    await expect(page.locator(".composer .composer-quote")).toHaveText(`«let v1000 = "line 1000";»`);
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "range", quote: `let v1000 = "line 1000";` });
+    expect(pick.clipError).toBeUndefined();
+    const clip = await clipStats(page, pick.pickId);
+    expect(clip.h).toBeLessThan(400);
+    await expectVisibleClip(page, pick.pickId);
+  });
+
+  test(`${mode}: a drag selection in a code block taller than the viewport but within the clip budget carries a clip`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Short ${mode}`, { "index.html": SHORT });
+    await record(page);
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    const r = await lineRect(frame, 3);
+    await page.mouse.move(fb.x + r.x + 2, fb.y + r.y + r.h / 2);
+    await page.mouse.down();
+    await page.mouse.move(fb.x + r.x + 120, fb.y + r.y + r.h / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
+    const pick = await last(page, "artifax:pick");
+    expect("line 3: the quick brown fox").toContain(pick.anchor.quote);
+    expect(pick.clipError).toBeUndefined();
+    await expectVisibleClip(page, pick.pickId);
   });
 }

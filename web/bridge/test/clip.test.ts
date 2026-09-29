@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_SIDE, blockAncestor, clipBackground, clipRootStyle, clipScale, crossOriginImage, dataUrlToBuffer } from "../src/clip";
+import { MAX_CLIP_REGION, MAX_SIDE, REGION_PAD, blockAncestor, clipBackground, clipRootStyle, clipScale, crossOriginImage, dataUrlToBuffer, fitsClipBudget, regionBounds, renderTargetClip } from "../src/clip";
 
 describe("clip helpers", () => {
   it("renders at device pixel ratio but never past 1600 px on the long side", () => {
@@ -56,5 +56,29 @@ describe("clip helpers", () => {
     expect(clipRootStyle(document.getElementById("m")!, window)).toEqual({ margin: "0" });
     document.body.innerHTML = `<main id="m" style="display: flex"><h3 style="margin-top: 18px">x</h3></main>`;
     expect(clipRootStyle(document.getElementById("m")!, window)).toEqual({ margin: "0" });
+  });
+
+  it("captures any region within the budget, and only those", () => {
+    expect(MAX_CLIP_REGION).toEqual({ w: 1600, h: 2400 });
+    expect(fitsClipBudget({ width: 900, height: 820 }), "a 40-line code block").toBe(true);
+    expect(fitsClipBudget({ width: 1600, height: 2400 })).toBe(true);
+    expect(fitsClipBudget({ width: 900, height: 21075 })).toBe(false);
+    expect(fitsClipBudget({ width: 1700, height: 100 })).toBe(false);
+  });
+  it("frames a range in a larger block with the padding above and below, inside the block", () => {
+    const block = { top: -2630, bottom: 18445, width: 900, height: 21075 };
+    expect(REGION_PAD).toBe(120);
+    expect(regionBounds({ top: 300, bottom: 320, width: 200, height: 20 }, block)).toEqual({ top: 180, bottom: 440 });
+    // At the block's top and bottom edges.
+    expect(regionBounds({ top: -2620, bottom: -2600, width: 200, height: 20 }, block)).toEqual({ top: -2630, bottom: -2480 });
+    expect(regionBounds({ top: 18400, bottom: 18440, width: 200, height: 40 }, block)).toEqual({ top: 18280, bottom: 18445 });
+    // A range taller than the budget is cut at the budget's height.
+    expect(regionBounds({ top: 0, bottom: 5000, width: 200, height: 5000 }, block)).toEqual({ top: -120, bottom: -120 + MAX_CLIP_REGION.h });
+  });
+  it("gives no clip for an element larger than the budget", async () => {
+    document.body.innerHTML = `<div id="d">x</div>`;
+    const div = document.getElementById("d")!;
+    div.getBoundingClientRect = () => ({ left: 0, top: 0, right: 900, bottom: 21075, width: 900, height: 21075, x: 0, y: 0, toJSON() {} }) as DOMRect;
+    await expect(renderTargetClip(div)).rejects.toThrow("the element is too large to capture");
   });
 });

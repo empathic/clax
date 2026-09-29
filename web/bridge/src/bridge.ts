@@ -9,22 +9,21 @@
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
- * clips), anchor resolution, and scroll-to (see `protocol.ts`). Every HTML
+ * clips within the budget in `clip.ts`), anchor resolution, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
  * file, and anchors on other files never resolve here. Once welcomed, a plain
  * click on a link to another page of the version that the page did not cancel
  * is cancelled and handed to the shell (`artifax:navigate`), which follows it
  * with one history entry; a link to this page under another spelling of its
- * path (`index.html` for `/v/<n>/`) is followed in place. After the welcome and
+ * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
  * on every `hashchange` it reports the page's fragment (`artifax:hash`).
  */
 import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
 import { acceptFromShell, shellOrigins } from "./channel";
-import { blockAncestor, renderClip } from "./clip";
+import { blockAncestor, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
-import { isOversized, viewportOf } from "./target";
 import { hashFor, helloFor, readMeta } from "./meta";
-import { linkToHandOver } from "./nav";
+import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
 import { makeUse } from "./use";
@@ -77,22 +76,17 @@ import { makeUse } from "./use";
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  const pick = async (anchor: Anchor, clipOf: Element | null) => {
+  const pick = async (anchor: Anchor, target: Element | Range) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
-    if (!clipOf) clipError = "the commented text is inside an element too large to capture";
-    else try { clipPng = await renderClip(clipOf); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
+    try { clipPng = await renderTargetClip(target); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
     post({ type: "artifax:pick", pickId, version: meta.version, anchor, clipPng, clipError }, clipPng ? [clipPng] : []);
   };
   const mode = new CommentMode(document, {
     hover: t => post({ type: "artifax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
     pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), el); },
-    pickRange: r => {
-      // An oversized block (a whole file in one <pre>) is not rendered as the clip.
-      const block = blockAncestor(r.commonAncestorContainer, window);
-      void pick(buildRangeAnchor(document, r, meta.file), isOversized(block.getBoundingClientRect(), viewportOf(document)) ? null : block);
-    },
+    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), r); },
     cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
   });
 
@@ -104,11 +98,7 @@ import { makeUse } from "./use";
     if (!link) return;
     e.preventDefault();
     if (link.kind === "page") post({ type: "artifax:navigate", file: link.file, ...(link.hash ? { hash: link.hash } : {}) });
-    // This page under another spelling: a fragment scrolls here (the browser's
-    // own fragment navigation); no fragment reloads in place, as a link to the
-    // page's own URL would.
-    else if (link.hash) location.hash = link.hash;
-    else location.reload();
+    else followInPlace(link.hash, location);
   });
 
   // The shell keeps its address bar's fragment in step with the page's.

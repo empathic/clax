@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { linkToHandOver, linkedPage } from "../src/nav";
+import { type PlaceLocation, followInPlace, linkToHandOver, linkedPage } from "../src/nav";
 
 const SUB = "http://7q3k9mzx2b4t.localhost:7480/v/2/";
 const MAIN = "http://localhost:7480/c/7q3k9mzx2b4t/v/2/";
@@ -82,5 +82,33 @@ describe("linkToHandOver", () => {
     for (const href of ["javascript:void(0)", "data:text/html,x", `blob:${SUB}0f7c`]) {
       expect(click(`<a href="${href}">x</a>`), href).toBeNull();
     }
+  });
+});
+
+describe("followInPlace", () => {
+  const at = (hash: string) => {
+    const calls: string[] = [];
+    const loc = {
+      pathname: "/v/2/", search: "", hash,
+      get href() { return `http://h/v/2/${this.hash}`; },
+      set href(v: string) { calls.push(`href ${v}`); },
+      replace(v: string | URL) { calls.push(`replace ${v}`); },
+    };
+    return { calls, loc: new Proxy(loc, { set(t, k, v) { if (k === "hash") calls.push(`hash ${v}`); return Reflect.set(t, k, v); } }) as unknown as PlaceLocation };
+  };
+  it("moves to a new fragment as a fragment navigation", () => {
+    const { calls, loc } = at("#a");
+    followInPlace("#b", loc);
+    expect(calls).toEqual(["hash #b"]);
+  });
+  it("scrolls to the current fragment again, which setting the same hash would not", () => {
+    const { calls, loc } = at("#team");
+    followInPlace("#team", loc);
+    expect(calls).toEqual(["href /v/2/#team"]);
+  });
+  it("loads the page's URL without a fragment in place of this entry, not a reload", () => {
+    const { calls, loc } = at("#team");
+    followInPlace("", loc);
+    expect(calls).toEqual(["replace /v/2/"]);
   });
 });

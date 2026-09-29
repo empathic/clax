@@ -284,6 +284,53 @@ describe("ArtifactView", () => {
     expect(location.pathname).toBe(`/a/${ID}/about.html`);
   });
 
+  it("copies a burst of frame fragments into the address bar once per animation frame, the latest one", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    win.postMessage = (() => {}) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await new Promise(r => setTimeout(r, 20));
+    const replace = vi.spyOn(history, "replaceState");
+    try {
+      for (let i = 0; i < 40; i++) fromFrame(win, { type: "artifax:hash", hash: `#h${i}` });
+      await waitFor(() => location.hash === "#h39", "the latest fragment");
+      expect(replace).toHaveBeenCalledTimes(1);
+    } finally {
+      replace.mockRestore();
+    }
+  });
+
+  it("survives a browser that refuses history calls, and still moves the frame to a handed-over page", async () => {
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    const refuse = () => { throw new DOMException("Attempt to use history.pushState() more than 100 times per 10 seconds", "SecurityError"); };
+    const push = vi.spyOn(history, "pushState").mockImplementation(refuse);
+    const replace = vi.spyOn(history, "replaceState").mockImplementation(refuse);
+    const errors: unknown[] = [];
+    const onError = (e: ErrorEvent) => { errors.push(e.error); };
+    window.addEventListener("error", onError);
+    try {
+      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+      await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "the welcome");
+      fromFrame(win, { type: "artifax:hash", hash: "#x" });
+      await new Promise(r => setTimeout(r, 40));
+      fromFrame(win, { type: "artifax:navigate", file: "about.html" });
+      await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/about.html`, "the frame on the about page");
+      expect(push).toHaveBeenCalled();
+      expect(replace).toHaveBeenCalled();
+      expect(errors).toEqual([]);
+      expect(location.pathname).toBe(`/a/${ID}`);
+    } finally {
+      window.removeEventListener("error", onError);
+      push.mockRestore();
+      replace.mockRestore();
+    }
+  });
+
   it("puts the page the frame greets from in the address bar, and ignores a page the version does not hold", async () => {
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");

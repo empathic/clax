@@ -444,9 +444,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   with the bridge, which greets the shell with its `file`). Over an element
   taller or wider than the viewport, or covering more than 60% of it, the
   target is the text under the pointer (its line in preformatted text, else
-  its block or sentence), picked as a range anchor; the outline is clamped to
-  the viewport with all four borders visible, a tint of at least 16% and a
-  border of at least 3:1 contrast on light and dark pages. The bridge
+  its block or sentence), picked as a range anchor. An inline element (a
+  token of highlighted code) inside such an element is not a target of its
+  own: the line, block, or sentence around it is. Only the text near the
+  pointer is read on hover (at most 4,000 characters each way). The outline
+  is clamped to the viewport with all four borders visible, a tint of at
+  least 16% and a border of at least 3:1 contrast on the background behind
+  the target (its nearest ancestor with an opaque background, else the
+  page's colour scheme), in any CSS colour syntax. The bridge
   highlights the hovered element with an outline
   and shows a floating pin cursor. Click selects that element; drag-select
   text creates a range anchor. The composer opens in the shell with the
@@ -604,12 +609,19 @@ that version and stays attached to the version it was made on.
 
 ### Clips
 
-On composer open the bridge renders the anchored element (for a range, its
-nearest block ancestor, unless that block is oversized as defined in §8
-"Comment mode", in which case no clip is taken and the thread says why)
-with `modern-screenshot` to a PNG at device pixel
-ratio, capped at 1600 px on the long side, and posts the bytes to the shell,
-which uploads them with the thread. Cross-origin images that taint the
+On composer open the bridge renders a clip of the anchored region with
+`modern-screenshot` whenever the region it renders fits the clip budget of
+1600 × 2400 CSS px: an element that fits is rendered whole, and so is a
+range's nearest block ancestor when that fits. A range inside a larger block
+(a line of a whole file in one `<pre>`, a drag selection in it) is captured
+as a region around the range: the lines from 120 px above it to 120 px below
+it, at the block's width and at most 2400 px tall, copied (with the elements
+between them and the block, so the page's styles apply) next to the block
+off-screen, rendered, and removed; rendering never walks the rest of the
+block. An element larger than the budget gets no clip, and the thread says
+why. The PNG is at device pixel ratio, capped at 1600 px on the long side,
+within a 4 s limit, in both frame modes; the bridge posts the bytes to the
+shell, which uploads them with the thread. Cross-origin images that taint the
 canvas are dropped from the render; the thread still stores the anchor and
 quote. The clip is saved at `~/.artifax/artifacts/<aid>/clips/<tid>.png` so
 an agent can view it with its own file-reading tool.

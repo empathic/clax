@@ -56,6 +56,43 @@ describe("CommentMode", () => {
     }
   });
 
+  it("outlines a line of oversized highlighted code from its tokens and gaps alike, reading no whole-block text", async () => {
+    document.body.innerHTML = `<pre style="white-space: pre"><code>${Array.from({ length: 2000 }, (_, i) => `<span class="k">let</span> v${i} = <span class="n">${i}</span>;`).join("\n")}</code></pre>`;
+    const pre = document.querySelector("pre")!;
+    pre.getBoundingClientRect = () => ({ left: 0, top: -2630, right: 900, bottom: 37370, width: 900, height: 40000, x: 0, y: -2630, toJSON() {} }) as DOMRect;
+    const token = document.querySelectorAll(".n")[700];
+    const gap = token.previousSibling as Text;
+    const d = document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range };
+    d.caretRangeFromPoint = x => { const r = document.createRange(); if (x < 50) r.setStart(token.firstChild!, 1); else r.setStart(gap, 1); return r; };
+    const walker = vi.spyOn(document, "createTreeWalker");
+    try {
+      mode.set(true);
+      token.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 20 }));
+      await nextFrame();
+      expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("let v700 = 700;");
+      const calls = hooks.hover.mock.calls.length;
+      pre.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 60, clientY: 20 }));
+      await nextFrame();
+      expect(hooks.hover.mock.calls.length, "the same line: no new hover").toBe(calls);
+      expect(walker).not.toHaveBeenCalled();
+    } finally {
+      delete d.caretRangeFromPoint;
+      walker.mockRestore();
+    }
+  });
+
+  it("colours the outline for the background behind the target", async () => {
+    document.body.innerHTML = `<div style="background-color: rgb(20, 22, 24)"><h3>Dark</h3></div><h3 id="l">Light</h3>`;
+    mode.set(true);
+    fire(document.querySelector("h3")!, "mousemove");
+    await nextFrame();
+    const host = document.querySelector<HTMLElement>("artifax-overlay")!;
+    expect(host.style.getPropertyValue("--ax-border")).toBe("#fdba74");
+    fire(document.getElementById("l")!, "mousemove");
+    await nextFrame();
+    expect(host.style.getPropertyValue("--ax-border")).toBe("#c2410c");
+  });
+
   it("keeps the outline of an oversized element inside the viewport", async () => {
     document.body.innerHTML = `<div>x</div>`;
     const div = document.querySelector("div")!;

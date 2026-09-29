@@ -22,6 +22,19 @@ type Props = { id: string; pinnedVersion: number | null; file?: string };
 /** A fragment the frame may report or a link may carry: "" or `#…`, at most 512 characters. */
 const validHash = (h: unknown): h is string => typeof h === "string" && (h === "" || h.startsWith("#")) && h.length <= 512;
 
+/** Replaces (or, with `push`, adds) the shell's history entry for `url`;
+ * false when the browser refuses (Safari and Firefox throw a SecurityError
+ * past their rate limits), leaving the address bar as it was. */
+function setUrl(url: string, push = false): boolean {
+  try {
+    if (push) history.pushState(null, "", url);
+    else history.replaceState(history.state, "", url);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** How long a page the shell sent the frame to may take to greet before the
  * jump is given up (settable for tests). */
 export const pageWait = { ms: 5000 };
@@ -127,6 +140,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // The URL fragment the frame opens at, and the frame's latest known fragment.
   const [startHash] = useState(() => location.hash);
   const frameHash = useRef(startHash);
+  // The pending animation frame that copies `frameHash` into the address bar.
+  const hashFrame = useRef(0);
+  useEffect(() => () => { if (hashFrame.current) cancelAnimationFrame(hashFrame.current); }, []);
   const clearPending = () => { if (pendingScroll.current) clearTimeout(pendingScroll.current.timer); pendingScroll.current = null; };
   useEffect(() => clearPending, []);
   // Made while rendering, not in an effect, so it exists before the frame it
@@ -187,10 +203,12 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   /** Shows `target`, an HTML page of this version, as one history entry: the
    * shell URL is pushed and the frame is moved without an entry of its own, so
    * back and forward (through `popstate`) move between pages, also after the
-   * shell document was reloaded. */
+   * shell document was reloaded. When the browser refuses the push, the frame
+   * still moves, with an entry of its own (the page's greeting then updates
+   * the address bar in place). */
   const openPage = (target: string, hash = "") => {
-    history.pushState(null, "", shellPath(id, pinnedVersion, target, shown) + hash);
-    navigateFrame(target, true, hash);
+    const pushed = setUrl(shellPath(id, pinnedVersion, target, shown) + hash, true);
+    navigateFrame(target, pushed, hash);
   };
   /** Whether `f` is an HTML page of the shown version. */
   const isPage = (f: string) => {
@@ -258,7 +276,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // handed over already pushed its URL; any other navigation (a script,
         // a form) made the frame's own history entry, so the URL is replaced.
         const r = parseShellPath(location.pathname);
-        if (r.kind !== "artifact" || r.file !== greeted) history.replaceState(history.state, "", here(pinnedVersion) + location.hash);
+        if (r.kind !== "artifact" || r.file !== greeted) setUrl(here(pinnedVersion) + location.hash);
         send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
         resolveAll();
         const p = pendingScroll.current;
@@ -275,10 +293,16 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       case "artifax:cancel": setCommenting(false); break;
       case "artifax:hash":
         // The page's fragment moved (a link, a script): the address bar
-        // follows in place; the frame's own history entry carries the move.
+        // follows in place, once per animation frame with the latest
+        // fragment; the frame's own history entry carries the move.
         if (!helloOk.current || !validHash(m.hash)) break;
         frameHash.current = m.hash;
-        if (location.hash !== m.hash) history.replaceState(history.state, "", location.pathname + location.search + m.hash);
+        if (!hashFrame.current) {
+          hashFrame.current = requestAnimationFrame(() => {
+            hashFrame.current = 0;
+            if (location.hash !== frameHash.current) setUrl(location.pathname + location.search + frameHash.current);
+          });
+        }
         break;
       case "artifax:navigate": {
         // A link the page handed over, from a document that greeted and is

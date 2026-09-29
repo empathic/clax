@@ -611,8 +611,11 @@ to that range. Over an element taller or wider than the viewport, or covering
 more than 60% of it (a whole file in one `<pre>`), comment mode targets the
 text under the pointer instead: its line in preformatted text, else the block
 or sentence around it, anchored as a range; the outline always stays inside
-the viewport. The bridge records the anchor (spec §9) and a PNG clip of the
-region (none for text inside such an oversized element), stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
+the viewport. The bridge records the anchor (spec §9) and a PNG clip
+whenever the region it renders fits 1600 × 2400 CSS px: the element, or a
+range's nearest block, when that fits; for a range inside a larger block, the
+lines from 120 px above to 120 px below it at the block's width. An element
+larger than that gets no clip. Clips are stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
 thread is plain until the person presses **Send to agent** or writes `@agent`
 (as a word, not inside an address) in a comment; from then on, every later
 viewer comment on it is sent too. A viewer comment on a resolved thread
