@@ -128,6 +128,65 @@ impl Drop for Daemon {
     }
 }
 
+impl Daemon {
+    fn base(&self) -> String {
+        format!("http://127.0.0.1:{}", self.info()["port"])
+    }
+    fn http(&self) -> reqwest::blocking::Client {
+        reqwest::blocking::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+    }
+    fn token(&self) -> String {
+        self.info()["token"].as_str().unwrap().to_string()
+    }
+
+    /// Registers the session a shim would, then publishes as it (which
+    /// watches the artifact, replies armed).
+    fn session_with_artifact(&self, harness: &str, hsid: &str) -> (String, String) {
+        let s: Value = self
+            .http()
+            .post(format!("{}/api/sessions", self.base()))
+            .bearer_auth(self.token())
+            .json(&serde_json::json!({"harness": harness, "harness_session_id": hsid, "cwd": "/tmp/project"}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        let sid = s["session"]["id"].as_str().unwrap().to_string();
+        let a: Value = self
+            .http()
+            .post(format!("{}/api/artifacts", self.base()))
+            .bearer_auth(self.token())
+            .header("x-artifax-session", &sid)
+            .json(&serde_json::json!({"title": "Hooked", "files": {"index.html": {"content": "<h2>Goals</h2>", "encoding": "utf8"}}}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        (sid, a["artifact"]["id"].as_str().unwrap().to_string())
+    }
+
+    /// A thread sent to the agent (its body mentions @agent).
+    fn sent_thread(&self, aid: &str, body: &str) {
+        let form = reqwest::blocking::multipart::Form::new()
+            .text(
+                "anchor",
+                r#"{"kind":"element","selector":"body > h2","quote":"Goals"}"#,
+            )
+            .text("body", format!("@agent {body}"))
+            .text("version", "1");
+        let res = self
+            .http()
+            .post(format!("{}/api/artifacts/{aid}/threads", self.base()))
+            .multipart(form)
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 201);
+    }
+}
+
 fn one_line_json(out: &str) -> Value {
     assert_eq!(out.lines().count(), 1, "{out:?}");
     serde_json::from_str(out).unwrap()
@@ -184,7 +243,7 @@ fn codex_session_lifecycle() {
 fn unusable_stdin_prints_nothing() {
     let d = Daemon::start();
     for name in ["malformed.json", "empty.json"] {
-        for event in ["session-start", "session-end"] {
+        for event in ["session-start", "session-end", "stop", "prompt"] {
             let r = hook(&d.home(), "claude", event, &fixture(name));
             assert_eq!(r.code, Some(0), "{name} {event}");
             assert_eq!(r.stdout, "", "{name} {event}");
@@ -198,7 +257,7 @@ fn unusable_stdin_prints_nothing() {
 fn no_daemon_prints_nothing_and_starts_none() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
-    for event in ["session-start", "session-end"] {
+    for event in ["session-start", "session-end", "stop", "prompt"] {
         let r = hook(
             &home,
             "claude",
@@ -351,4 +410,96 @@ fn session_end_gives_up_within_codexs_three_second_cap() {
         "{:?}",
         r.elapsed
     );
+}
+
+fn stop_loop(agent: &str, hsid: &str) {
+    let d = Daemon::start();
+    let (_sid, aid) = d.session_with_artifact(agent, hsid);
+    let stop = fixture(&format!("{agent}-stop.json"));
+    let active = fixture(&format!("{agent}-stop-active.json"));
+
+    let r = hook(&d.home(), agent, "stop", &stop);
+    assert_eq!(
+        (r.code, r.stdout.as_str()),
+        (Some(0), ""),
+        "nothing pending: allow the stop"
+    );
+
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(&d.home(), agent, "stop", &stop);
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["decision"], "block");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(
+        reason.starts_with(
+            "[artifax] 1 comment sent to you:\n[artifax] Comment sent to you on \"Hooked\""
+        ),
+        "{reason}"
+    );
+    assert!(
+        reason.contains("Viewer: \"@agent make it two columns\""),
+        "{reason}"
+    );
+    assert!(r.elapsed < Duration::from_secs(5));
+
+    let r = hook(&d.home(), agent, "stop", &active);
+    assert_eq!(r.stdout, "", "stop_hook_active with nothing new: allow");
+
+    d.sent_thread(&aid, "and the footer");
+    let r = hook(&d.home(), agent, "stop", &active);
+    assert_eq!(
+        one_line_json(&r.stdout)["decision"],
+        "block",
+        "stop_hook_active with a new row: block once"
+    );
+    let r = hook(&d.home(), agent, "stop", &active);
+    assert_eq!(r.stdout, "", "then allow");
+}
+
+#[test]
+fn claude_stop_blocks_once_per_new_comment() {
+    stop_loop("claude", "cc-hook-1");
+}
+
+#[test]
+fn codex_stop_blocks_once_per_new_comment() {
+    stop_loop("codex", "cx-hook-1");
+}
+
+#[test]
+fn prompt_hook_adds_pending_feedback_even_without_armed_replies() {
+    let d = Daemon::start();
+    let (sid, aid) = d.session_with_artifact("claude", "cc-hook-1");
+    let res = d
+        .http()
+        .put(format!("{}/api/sessions/{sid}/watches/{aid}", d.base()))
+        .bearer_auth(d.token())
+        .json(&serde_json::json!({"replies_armed": false}))
+        .send()
+        .unwrap();
+    assert!(res.status().is_success());
+    d.sent_thread(&aid, "tighten the spacing");
+    let r = hook(&d.home(), "claude", "stop", &fixture("claude-stop.json"));
+    assert_eq!(r.stdout, "", "unarmed: the Stop hook stays out of the way");
+    let r = hook(
+        &d.home(),
+        "claude",
+        "prompt",
+        &fixture("claude-prompt.json"),
+    );
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit");
+    assert!(
+        v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .contains("tighten the spacing")
+    );
+    let r = hook(
+        &d.home(),
+        "claude",
+        "prompt",
+        &fixture("claude-prompt.json"),
+    );
+    assert_eq!(r.stdout, "", "delivered once");
 }

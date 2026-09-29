@@ -16,6 +16,12 @@ const START_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 const END_DEADLINE: Duration = Duration::from_millis(2500);
 /// Each `session-end` daemon request is abandoned after this long.
 const END_REQUEST_TIMEOUT: Duration = Duration::from_millis(2000);
+/// A Stop hook invocation is abandoned after this long (the plugins give it 10 s).
+const STOP_DEADLINE: Duration = Duration::from_secs(8);
+/// A prompt-submit hook invocation is abandoned after this long.
+const PROMPT_DEADLINE: Duration = Duration::from_secs(4);
+/// Each daemon request of the Stop and prompt hooks is abandoned after this long.
+const FEEDBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
 
@@ -57,6 +63,8 @@ impl Event {
         match self {
             Event::SessionStart => (START_DEADLINE, START_REQUEST_TIMEOUT),
             Event::SessionEnd => (END_DEADLINE, END_REQUEST_TIMEOUT),
+            Event::Stop => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
+            Event::Prompt => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
         }
     }
 }
@@ -76,6 +84,10 @@ pub enum Event {
     SessionStart,
     /// A harness session ended.
     SessionEnd,
+    /// The agent is about to stop; hand it pending feedback by blocking the stop.
+    Stop,
+    /// The person submitted a prompt; add pending feedback as context.
+    Prompt,
 }
 
 #[derive(clap::Args)]
@@ -142,5 +154,7 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
             &client,
         ),
         Event::SessionEnd => events::session_end(agent.harness(), &input, &client),
+        Event::Stop => events::stop(agent.harness(), &input, &client),
+        Event::Prompt => events::prompt(agent.harness(), &input, &client),
     }
 }

@@ -1,4 +1,5 @@
-//! Lifecycle events: join and end the session the MCP shim registered.
+//! Hook events: join and end the session the MCP shim registered, and hand
+//! pending feedback to the agent from the Stop and prompt-submit hooks.
 
 use crate::input::HookInput;
 use crate::output::HookOutput;
@@ -15,7 +16,9 @@ pub trait Daemon {
 
 /// Joins the harness's session ID to the session registered for the same
 /// harness process (`parent_pid` is the hook's parent; `ancestor_pids`, nearest
-/// first, cover a wrapper shell between the hook and the harness).
+/// first, cover a wrapper shell between the hook and the harness). The
+/// context names the daemon and, when the joined session has pending
+/// `prompt_hook` feedback, appends its rendered text.
 pub fn session_start(
     harness: &str,
     parent_pid: u32,
@@ -37,14 +40,18 @@ pub fn session_start(
     if let Some(cwd) = &input.cwd {
         body["cwd"] = json!(cwd);
     }
-    daemon.post("/api/sessions/join", &body)?;
-    Ok(HookOutput::additional_context(
-        "SessionStart",
-        &format!(
-            "Artifax daemon at {}; artifacts publish with the `publish` tool.",
-            daemon.browser_url("/")
-        ),
-    ))
+    let joined = daemon.post("/api/sessions/join", &body)?;
+    let mut context = format!(
+        "Artifax daemon at {}; artifacts publish with the `publish` tool.",
+        daemon.browser_url("/")
+    );
+    if let Some(sid) = joined["session"]["id"].as_str()
+        && let Ok(Some(text)) = feedback_text(daemon, sid, "tier=prompt_hook")
+    {
+        context.push_str("\n\n");
+        context.push_str(&text);
+    }
+    Ok(HookOutput::additional_context("SessionStart", &context))
 }
 
 /// Ends the live session for `(harness, session_id)`, if there is one.
@@ -67,6 +74,66 @@ pub fn session_end(
         daemon.patch(&format!("/api/sessions/{id}"), &json!({"ended": true}))?;
     }
     Ok(HookOutput::none())
+}
+
+/// The ID of the live Artifax session for `(harness, input.session_id)`, if any.
+///
+/// # Errors
+/// When the input has no `session_id` or the daemon cannot be asked.
+fn live_session(
+    harness: &str,
+    input: &HookInput,
+    daemon: &dyn Daemon,
+) -> anyhow::Result<Option<String>> {
+    let Some(hsid) = input.session_id.as_deref().filter(|s| !s.is_empty()) else {
+        bail!("hook input has no session_id");
+    };
+    let listed = daemon.get("/api/sessions?live=true")?;
+    Ok(listed["sessions"]
+        .as_array()
+        .context("sessions listing is not an array")?
+        .iter()
+        .find(|s| s["harness"] == harness && s["harness_session_id"].as_str() == Some(hsid))
+        .and_then(|s| s["id"].as_str())
+        .map(str::to_string))
+}
+
+/// The rendered feedback the daemon hands over for `query`, if any. The text
+/// is the daemon's, passed through unchanged.
+fn feedback_text(daemon: &dyn Daemon, sid: &str, query: &str) -> anyhow::Result<Option<String>> {
+    let res = daemon.get(&format!("/api/sessions/{sid}/feedback?{query}"))?;
+    Ok(res["text"]
+        .as_str()
+        .filter(|t| !t.is_empty())
+        .map(str::to_string))
+}
+
+/// Tier 2. Blocks the stop with the pending feedback as the reason; allows it
+/// (prints nothing) when nothing is pending. Only watches with replies armed
+/// count. While `stop_hook_active` is set, only never-delivered rows can block,
+/// so a stop is blocked at most once per new comment.
+pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    let Some(sid) = live_session(harness, input, daemon)? else {
+        return Ok(HookOutput::none());
+    };
+    let resends = !input.stop_hook_active.unwrap_or(false);
+    Ok(
+        match feedback_text(daemon, &sid, &format!("tier=stop_hook&resends={resends}"))? {
+            Some(text) => HookOutput::block(&text),
+            None => HookOutput::none(),
+        },
+    )
+}
+
+/// Tier 3. Adds pending feedback to the prompt as additional context.
+pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    let Some(sid) = live_session(harness, input, daemon)? else {
+        return Ok(HookOutput::none());
+    };
+    Ok(match feedback_text(daemon, &sid, "tier=prompt_hook")? {
+        Some(text) => HookOutput::additional_context("UserPromptSubmit", &text),
+        None => HookOutput::none(),
+    })
 }
 
 #[cfg(test)]
@@ -143,5 +210,116 @@ mod tests {
         let patches: Vec<_> = calls.iter().filter(|c| c.0 == "PATCH").collect();
         assert_eq!(patches.len(), 1);
         assert_eq!(patches[0].1, "/api/sessions/a");
+    }
+
+    struct FeedbackFake {
+        text: Option<&'static str>,
+        seen: RefCell<Vec<String>>,
+    }
+    impl Daemon for FeedbackFake {
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, path: &str) -> anyhow::Result<Value> {
+            self.seen.borrow_mut().push(path.to_string());
+            if path.starts_with("/api/sessions?") {
+                return Ok(
+                    json!({"sessions": [{"id": "S", "harness": "claude", "harness_session_id": "s1"}]}),
+                );
+            }
+            Ok(
+                json!({"feedback": if self.text.is_some() { json!([{}]) } else { json!([]) }, "text": self.text, "waited_s": 0}),
+            )
+        }
+        fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+    fn fake(text: Option<&'static str>) -> FeedbackFake {
+        FeedbackFake {
+            text,
+            seen: RefCell::new(vec![]),
+        }
+    }
+
+    #[test]
+    fn stop_blocks_with_the_payload_and_excludes_resends_when_active() {
+        let d = fake(Some("[artifax] 1 comment sent to you:\nX"));
+        let out = stop(
+            "claude",
+            &HookInput::parse(r#"{"session_id":"s1","stop_hook_active":false}"#),
+            &d,
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            HookOutput::block("[artifax] 1 comment sent to you:\nX")
+        );
+        assert!(
+            d.seen
+                .borrow()
+                .iter()
+                .any(|p| p == "/api/sessions/S/feedback?tier=stop_hook&resends=true")
+        );
+        let d = fake(None);
+        let out = stop(
+            "claude",
+            &HookInput::parse(r#"{"session_id":"s1","stop_hook_active":true}"#),
+            &d,
+        )
+        .unwrap();
+        assert_eq!(out, HookOutput::none());
+        assert!(
+            d.seen
+                .borrow()
+                .iter()
+                .any(|p| p == "/api/sessions/S/feedback?tier=stop_hook&resends=false")
+        );
+    }
+
+    #[test]
+    fn unknown_sessions_and_other_harnesses_print_nothing() {
+        let d = fake(Some("x"));
+        assert_eq!(
+            stop("codex", &HookInput::parse(r#"{"session_id":"s1"}"#), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert_eq!(
+            prompt("claude", &HookInput::parse(r#"{"session_id":"nope"}"#), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert!(
+            stop("claude", &HookInput::default(), &d).is_err(),
+            "no session_id"
+        );
+    }
+
+    #[test]
+    fn prompt_adds_context() {
+        let d = fake(Some("P"));
+        assert_eq!(
+            prompt("claude", &HookInput::parse(r#"{"session_id":"s1"}"#), &d).unwrap(),
+            HookOutput::additional_context("UserPromptSubmit", "P")
+        );
+        assert!(
+            d.seen
+                .borrow()
+                .iter()
+                .any(|p| p == "/api/sessions/S/feedback?tier=prompt_hook")
+        );
+    }
+
+    #[test]
+    fn session_start_appends_pending_feedback() {
+        let d = fake(Some("PENDING"));
+        let out = session_start("claude", 1, &[], &input("s1"), &d).unwrap();
+        let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.ends_with("\n\nPENDING"), "{text}");
     }
 }

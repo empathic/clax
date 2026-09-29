@@ -1,0 +1,1 @@
+{"session_id":"cx-hook-1","turn_id":"t1","transcript_path":"/tmp/cx/rollout.jsonl","cwd":"/tmp/project","hook_event_name":"Stop","model":"gpt","permission_mode":"bypassPermissions","stop_hook_active":false,"last_assistant_message":"Hello!"}
