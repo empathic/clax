@@ -273,11 +273,11 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     assert_eq!(res.headers()["content-security-policy"], csp);
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_artifax/bridge.js").count(), 1, "{html}");
-    // The bridge goes first in the page's <head>.
+    // The bridge goes right after the doctype, before any page script.
     let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version());
     assert!(
         html.starts_with(&format!(
-            "<!doctype html><html><head>{tag}<title>About</title>"
+            "<!doctype html>{tag}<html><head><title>About</title>"
         )),
         "{html}"
     );

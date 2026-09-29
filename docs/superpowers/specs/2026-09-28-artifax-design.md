@@ -516,15 +516,17 @@ data-version="<n>" data-contract="0.2.61" data-file="<path>">` as the first elem
 `<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
 (case-insensitive), it is a complete document and is served as-is with the
-bridge script inserted immediately after the first real `<head ...>` tag
-before any `<body ...>` tag (after the first `<body ...>` tag when there is
-no head, after the doctype when there is neither; tags inside comments,
-`<script>` and `<style>` do not count, and `<header>` is not `<head>`), so
-`window.claude` exists before any page script, as `claude.d.ts` promises;
-otherwise it is a fragment and is wrapped. Sub pages are placed by the same
-rule. One bridge runs per document: a second copy stands down. Running from
-`<head>`, the bridge defers shell orders that read the page's content
-(anchor resolution, scroll-to) until the document has parsed. A
+bridge script inserted immediately after the doctype (never before it, which
+would switch the page into quirks mode), so `window.claude` exists before any
+page script, as `claude.d.ts` promises, whether or not the page writes a
+`<head>` tag and wherever its scripts sit; otherwise it is a fragment and is
+wrapped. The parser builds `<html>` and `<head>` around the bridge: a later
+`<html>` tag's attributes (`lang`) are merged onto the root, and the one cost
+is that a later `<head>` tag's attributes are dropped. Sub pages are placed by
+the same rule. Only the first daemon bridge tag in a document runs; any other
+copy stands down. Running before the page's content, the bridge defers shell
+orders that read it (anchor resolution, scroll-to) until the document has
+parsed. A
 republished document that already carries a bridge tag (at the versioned
 URL or, from before the URL carried a version, the bare one) keeps exactly
 one, for the new version at the current bridge URL (§6, browser caching). This is what makes a self-republished page (which sends
