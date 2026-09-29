@@ -84,26 +84,31 @@ interface RequestOptions {
   headers?: Record<string, string>;
   body?: Buffer | string;
   timeoutMs?: number;
+  /** Cancels the request; a cancelled request fails `unreachable` and is not retried. */
+  signal?: AbortSignal;
 }
 
-/** Sends one request. Transport failures reject with a [`Failure`]: a
+/** Sends one request. Transport failures reject with a [`Failure`]: a request
+ * cancelled through `opts.signal` is `unreachable` and not retried, a
  * connection that was never established is `unreachable` and refreshable, a
  * request past its deadline is `timeout`, anything else (such as a connection
  * dropped mid-request) is `unreachable` but not retried, since the request may
  * have taken effect. Proxies are never used. */
 function send(url: string, opts: RequestOptions): Promise<RawResponse> {
   const deadline = AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  const signal = opts.signal ? AbortSignal.any([deadline, opts.signal]) : deadline;
   return new Promise<RawResponse>((resolve, reject) => {
     let connected = false;
     let connectTimer: NodeJS.Timeout | undefined;
     const fail = (e: unknown) => {
       clearTimeout(connectTimer);
       const msg = e instanceof Error ? e.message : String(e);
-      if (deadline.aborted) reject(new Failure(new ClientError("timeout", `request to ${url} timed out`), false));
+      if (opts.signal?.aborted) reject(new Failure(new ClientError("unreachable", "request cancelled"), false));
+      else if (deadline.aborted) reject(new Failure(new ClientError("timeout", `request to ${url} timed out`), false));
       else if (!connected) reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), true));
       else reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), false));
     };
-    const req = httpRequest(url, { method: opts.method, headers: opts.headers, signal: deadline }, res => {
+    const req = httpRequest(url, { method: opts.method, headers: opts.headers, signal }, res => {
       const chunks: Buffer[] = [];
       res.on("data", (c: Buffer) => chunks.push(c));
       res.on("error", fail);
@@ -402,6 +407,69 @@ export class DaemonClient {
       body,
       timeoutMs: PUBLISH_TIMEOUT_MS,
     });
+  }
+
+  /** `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`. */
+  threads(id: string, includeResolved: boolean, cursor?: string): Promise<any> {
+    const q = new URLSearchParams({ include_resolved: String(includeResolved) });
+    if (cursor !== undefined) q.set("cursor", cursor);
+    return this.json(`/api/artifacts/${id}/threads?${q}`, { method: "GET" });
+  }
+
+  /** `GET /api/artifacts/<id>/threads/<tid>`: `{thread}`. */
+  thread(id: string, tid: string): Promise<any> {
+    return this.json(`/api/artifacts/${id}/threads/${tid}`, { method: "GET" });
+  }
+
+  /** An agent reply: `{comment, thread}`, or `{guidance}` on a thread not sent to the agent. */
+  reply(id: string, tid: string, text: string): Promise<any> {
+    return this.json(`/api/artifacts/${id}/threads/${tid}/comments`, this.jsonBody("POST", { body: text, author_kind: "agent" }));
+  }
+
+  /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent. */
+  resolve(id: string, tid: string): Promise<any> {
+    return this.json(`/api/artifacts/${id}/threads/${tid}/resolve`, this.jsonBody("POST", { as: "agent" }));
+  }
+
+  /** `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`. */
+  watch(id: string, replies: boolean): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/watches/${id}`, this.jsonBody("PUT", { replies_armed: replies }));
+  }
+
+  /** `DELETE /api/sessions/<sid>/watches/<id>`. */
+  async unwatch(id: string): Promise<void> {
+    await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
+  }
+
+  /** `GET /api/sessions/<sid>/watches`: `{watches}`. */
+  watches(): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/watches`, { method: "GET" });
+  }
+
+  /** `GET /api/sessions/<sid>`: `{session, push}`. */
+  sessionInfo(): Promise<any> {
+    return this.json(this.sessionPath, { method: "GET" });
+  }
+
+  /** `GET /api/sessions/<sid>/feedback` for `tier`, waiting up to `waitS`
+   * seconds (`artifact` narrows it to one artifact): `{feedback, text,
+   * waited_s}`. The deadline is `waitS` plus 10 s; `signal` cancels it. */
+  feedback(tier: string, waitS: number, artifact?: string, signal?: AbortSignal): Promise<any> {
+    const q = new URLSearchParams({ tier, wait: String(waitS) });
+    if (artifact !== undefined) q.set("artifact", artifact);
+    return this.json(() => `${this.sessionPath()}/feedback?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000, signal });
+  }
+
+  /** `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges every
+   * row of the session on these threads. */
+  ack(threadIds: string[]): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { thread_ids: threadIds }));
+  }
+
+  /** `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges the
+   * session's rows for these comments only. */
+  ackComments(commentIds: string[]): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/feedback/ack`, this.jsonBody("POST", { comment_ids: commentIds }));
   }
 
   /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,

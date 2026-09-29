@@ -1,6 +1,7 @@
 // A stand-in for the subset of Pi's ExtensionAPI the extension uses (`on`,
-// `registerTool`, `registerCommand`), capturing what it registers so tests can
-// fire events, call tools, and run commands the way Pi does.
+// `registerTool`, `registerCommand`, `sendUserMessage`), capturing what it
+// registers and sends so tests can fire events, call tools, and run commands
+// the way Pi does.
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ToolDefinition } from "@mariozechner/pi-coding-agent";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => unknown;
@@ -34,6 +35,8 @@ export class FakePi {
   readonly handlers = new Map<string, Handler[]>();
   readonly tools = new Map<string, ToolDefinition>();
   readonly commands = new Map<string, Command>();
+  /** Messages passed to `pi.sendUserMessage`. */
+  readonly sent: { content: unknown; options: unknown }[] = [];
 
   get api(): ExtensionAPI {
     const api = {
@@ -42,6 +45,7 @@ export class FakePi {
       },
       registerTool: (tool: ToolDefinition) => { this.tools.set(tool.name, tool); },
       registerCommand: (name: string, options: Command) => { this.commands.set(name, options); },
+      sendUserMessage: (content: unknown, options?: unknown) => { this.sent.push({ content, options }); },
     };
     return api as unknown as ExtensionAPI;
   }
@@ -62,6 +66,19 @@ export class FakePi {
     } catch (e) {
       return { content: [{ type: "text", text: e instanceof Error ? e.message : String(e) }], isError: true };
     }
+  }
+
+  /** Calls tool `name`, then runs the `tool_result` handlers over its result
+   * in registration order, each seeing the content the previous one returned,
+   * as Pi's agent loop does. */
+  async callToolAsPi(name: string, params: unknown, ctx: ExtensionContext): Promise<ToolOutcome> {
+    const out = await this.callTool(name, params, ctx);
+    let content = out.content;
+    for (const h of this.handlers.get("tool_result") ?? []) {
+      const patch = (await h({ type: "tool_result", toolName: name, toolCallId: "call-1", input: params, content, isError: out.isError, details: undefined }, ctx)) as { content?: ToolOutcome["content"] } | undefined;
+      if (patch?.content) content = patch.content;
+    }
+    return { content, isError: out.isError };
   }
 
   async runCommand(name: string, args: string, ctx: ExtensionCommandContext): Promise<void> {

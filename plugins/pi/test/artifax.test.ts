@@ -5,7 +5,8 @@ import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { artifactRef, artifaxExtension, htmlTitle, isText, textPrefix } from "../src/artifax.ts";
 import { ensure } from "../src/daemon.ts";
 import { api, artifaxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
@@ -33,8 +34,17 @@ afterAll(async () => {
 function load(home: string, sessionId: string, cwd = scratch) {
   const pi = new FakePi();
   artifaxExtension({ home, env: withBin(artifaxBin) })(pi.api);
-  return { pi, ...fakeContext(cwd, sessionId) };
+  const built = { pi, ...fakeContext(cwd, sessionId) };
+  loaded.push({ pi, ctx: built.ctx });
+  return built;
 }
+
+/** Every extension `load` built in the current test; each is shut down after
+ * the test, so no feedback long-poll outlives it. */
+const loaded: { pi: FakePi; ctx: ExtensionContext }[] = [];
+afterEach(async () => {
+  for (const l of loaded.splice(0)) await l.pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, l.ctx);
+});
 
 /** This process's environment with `ARTIFAX_BIN` set to `bin` and Codex push
  * off (`ARTIFAX_CODEX_BIN` empty) for any daemon it starts. */
@@ -87,7 +97,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("artifax Pi extension", () => {
-  it("registers the nine tools with one-line prompt snippets, and the artifax command", () => {
+  it("registers the fourteen tools with one-line prompt snippets, and the artifax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -356,6 +366,11 @@ describe("artifax Pi extension", () => {
       artifax_unpin: [{ url_or_id: id }],
       artifax_asset_upload: [{ url_or_id: id, file_path: "a.png" }, { url_or_id: id, file_paths: ["a.png", "b.mp4"] }],
       artifax_status: [{}],
+      artifax_comments_read: [{ url_or_id: id }, { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W", include_resolved: true }],
+      artifax_comments_reply: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", text: "done" }],
+      artifax_comments_resolve: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
+      artifax_watch: [{ url_or_id: id }, { url_or_id: id, on: false, replies: false }],
+      artifax_wait_for_feedback: [{}, { url_or_id: id, timeout_s: 50 }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       artifax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -367,6 +382,11 @@ describe("artifax Pi extension", () => {
       artifax_unpin: [{ url_or_id: id, bogus: 1 }],
       artifax_asset_upload: [{ url_or_id: id, file_path: "a.png", bogus: 1 }],
       artifax_status: [{ bogus: 1 }],
+      artifax_comments_read: [{}, { url_or_id: id, bogus: 1 }],
+      artifax_comments_reply: [{ url_or_id: id, thread_id: "x" }, { url_or_id: id, thread_id: "x", text: "t", bogus: 1 }],
+      artifax_comments_resolve: [{ url_or_id: id }],
+      artifax_watch: [{ url_or_id: id, on: "yes" }],
+      artifax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -388,6 +408,125 @@ describe("artifax Pi extension", () => {
     expect(notes.at(-1)?.message).toContain("usage: /artifax open [ID] | list | status");
   });
 });
+
+/** Creates a thread on version 1 as a browser does; `@agent` in `body` sends it. */
+async function browserThread(aid: string, body: string): Promise<string> {
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals" }));
+  form.set("body", body);
+  form.set("version", "1");
+  const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+  expect(res.status).toBe(201);
+  return (await res.json()).thread.id;
+}
+
+/** The JSON block and the trailing block of a tool result. */
+function parts(o: { content: { type: string; text?: string }[]; isError: boolean }) {
+  expect(o.isError).toBe(false);
+  return { json: JSON.parse(o.content[0].text!), trailing: o.content[1]?.text };
+}
+
+describe("comments", () => {
+  it("tier 1: artifax tool results carry pending feedback once", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tier1");
+    const p = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi loop" }, ctx)).json;
+    await browserThread(p.artifact_id, "@agent make it two columns");
+    const r = parts(await pi.callToolAsPi("artifax_list", {}, ctx));
+    expect(r.json.feedback).toHaveLength(1);
+    expect(r.trailing).toMatch(/^---\n\[artifax\] 1 comment sent to you:\n\[artifax\] Comment sent to you on "Pi loop"/);
+    const again = await pi.callToolAsPi("artifax_list", {}, ctx);
+    expect(again.content).toHaveLength(1);
+    expect(parts(again).json.feedback).toEqual([]);
+  });
+
+  it("read, reply, resolve, and watch match the MCP tools", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-comments");
+    const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi threads" }, ctx)).json.artifact_id;
+    const plain = await browserThread(aid, "plain note");
+    const sent = await browserThread(aid, "@agent fix it");
+    const read = parts(await pi.callToolAsPi("artifax_comments_read", { url_or_id: aid }, ctx)).json;
+    expect(read.threads.map((t: any) => t.thread_id)).toEqual([plain, sent]);
+    expect(read.note).toContain("people viewing the page");
+    expect(read.feedback).toEqual([]);
+    expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: plain, text: "ok" }, ctx)).json).toMatchObject({ replied: false });
+    expect(parts(await pi.callToolAsPi("artifax_comments_reply", { url_or_id: aid, thread_id: sent, text: "Fixed." }, ctx)).json).toMatchObject({ replied: true });
+    expect(parts(await pi.callToolAsPi("artifax_comments_resolve", { url_or_id: aid, thread_id: sent }, ctx)).json).toMatchObject({ resolved: true, status: "resolved" });
+    const t = await api(daemon, `/api/artifacts/${aid}/threads/${sent}`);
+    expect(t.thread.comments[1]).toMatchObject({ author_kind: "agent", author_name: "pi" });
+    expect(parts(await pi.callToolAsPi("artifax_watch", { url_or_id: aid, replies: false }, ctx)).json).toMatchObject({ watching: true, replies_armed: false });
+    const status = parts(await pi.callToolAsPi("artifax_status", {}, ctx)).json;
+    expect(status.watches[0]).toMatchObject({ artifact_id: aid, replies_armed: false });
+    expect(status.push).toMatchObject({ tier: "inject", available: true });
+  });
+
+  it("wait_for_feedback returns within a second of a send and asks to call again", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-wait");
+    const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi wait" }, ctx)).json.artifact_id;
+    const waiting = pi.callToolAsPi("artifax_wait_for_feedback", { url_or_id: aid, timeout_s: 5 }, ctx);
+    // The timestamp is taken before the send starts, so it exists whichever finishes first.
+    const sending = (async () => {
+      await new Promise(r => setTimeout(r, 300));
+      const at = Date.now();
+      await browserThread(aid, "@agent live");
+      return at;
+    })();
+    const r = parts(await waiting);
+    const answered = Date.now();
+    const sentAt = await sending;
+    expect(answered - sentAt).toBeLessThan(1000);
+    expect(r.json).toMatchObject({ call_again: false });
+    expect(r.json.feedback).toHaveLength(1);
+    expect(parts(await pi.callToolAsPi("artifax_wait_for_feedback", { timeout_s: 1 }, ctx)).json).toEqual({ feedback: [], waited_s: 1, call_again: true });
+  }, 20_000);
+
+  it("tier 5: the extension long-polls and hands comments to Pi as a follow-up", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-inject");
+    await pi.emit("session_start", {}, ctx);
+    const aid = parts(await pi.callTool("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi inject" }, ctx)).json.artifact_id;
+    await browserThread(aid, "@agent please shorten it");
+    await expect.poll(() => pi.sent.length, { timeout: 5000 }).toBe(1);
+    expect(pi.sent[0].options).toEqual({ deliverAs: "followUp" });
+    expect(String(pi.sent[0].content)).toMatch(/^\[artifax\] 1 comment sent to you:\n\[artifax\] Comment sent to you on "Pi inject"/);
+    const started = Date.now();
+    await pi.emit("session_shutdown", {}, ctx);
+    expect(Date.now() - started).toBeLessThan(3500);
+    await browserThread(aid, "@agent one more");
+    await new Promise(r => setTimeout(r, 500));
+    expect(pi.sent).toHaveLength(1);
+  }, 20_000);
+
+  it("the tool schemas match the daemon's /mcp schemas", async () => {
+    const mcp = await mcpTools(daemon);
+    const { pi } = load(daemon.home, "pi-schemas");
+    const base = (t: unknown) => (Array.isArray(t) ? t.filter(x => x !== "null") : [t]).map(x => (x === "number" ? "integer" : x)).sort().join("|");
+    for (const name of TOOLS) {
+      const ours = (pi.tools.get(name)!.parameters as any);
+      const theirs = mcp.get(name.replace(/^artifax_/, ""))!;
+      expect(Object.keys(ours.properties ?? {}).sort(), name).toEqual(Object.keys(theirs.properties ?? {}).sort());
+      expect([...(ours.required ?? [])].sort(), name).toEqual([...(theirs.required ?? [])].sort());
+      for (const [k, v] of Object.entries<any>(theirs.properties ?? {})) {
+        if (v.type !== undefined && ours.properties[k].type !== undefined) expect(base(ours.properties[k].type), `${name}.${k}`).toBe(base(v.type));
+      }
+    }
+  });
+});
+
+/** The daemon's /mcp `tools/list`, as input schemas by tool name. */
+async function mcpTools(d: { base: string; token: string }): Promise<Map<string, any>> {
+  const headers: Record<string, string> = { authorization: `Bearer ${d.token}`, "content-type": "application/json", accept: "application/json, text/event-stream" };
+  const rpc = async (body: unknown) => {
+    const res = await fetch(`${d.base}/mcp`, { method: "POST", headers, body: JSON.stringify(body) });
+    const sid = res.headers.get("mcp-session-id");
+    if (sid) headers["mcp-session-id"] = sid;
+    const text = await res.text();
+    const data = text.split("\n").filter(l => l.startsWith("data: ")).map(l => l.slice(6)).find(l => l.includes("\"id\""));
+    return data ? JSON.parse(data) : text ? JSON.parse(text) : {};
+  };
+  await rpc({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "pi-test", version: "0" } } });
+  await rpc({ jsonrpc: "2.0", method: "notifications/initialized" });
+  const list = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" });
+  return new Map(list.result.tools.map((t: any) => [t.name, t.inputSchema]));
+}
 
 describe("helpers match the shared contract fixture", () => {
   it("artifactRef", () => {
