@@ -79,9 +79,11 @@ pub fn new_ulid() -> String {
         .to_string()
 }
 
-/// True when `s` is a canonical ULID string.
+/// True when `s` is a ULID in canonical form: 26 uppercase Crockford base32
+/// characters that parse and render back to `s` (so the first character is at
+/// most `7`).
 pub fn is_ulid(s: &str) -> bool {
-    s.len() == 26 && ulid::Ulid::from_string(s).is_ok()
+    ulid::Ulid::from_string(s).is_ok_and(|u| u.to_string() == s)
 }
 
 #[cfg(test)]
@@ -124,5 +126,18 @@ mod tests {
             assert!(pair[0] < pair[1], "{} !< {}", pair[0], pair[1]);
             assert!(is_ulid(&pair[1]));
         }
+    }
+
+    #[test]
+    fn is_ulid_accepts_only_canonical_strings() {
+        assert!(is_ulid("01ARZ3NDEKTSV4RRFFQ69G5FAV"));
+        assert!(!is_ulid("01arz3ndektsv4rrffq69g5fav"), "lowercase");
+        assert!(
+            !is_ulid("81ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            "first character past 7 overflows"
+        );
+        assert!(!is_ulid("01ARZ3NDEKTSV4RRFFQ69G5FA"), "short");
+        assert!(!is_ulid("01ARZ3NDEKTSV4RRFFQ69G5FAU"), "U is not Crockford");
+        assert!(!is_ulid(""));
     }
 }

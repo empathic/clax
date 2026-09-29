@@ -175,8 +175,7 @@ pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
 fn write_clip(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     std::fs::create_dir_all(dir)?;
     let tmp = path.with_extension("png.tmp");
-    std::fs::write(&tmp, bytes)?;
-    if let Err(e) = std::fs::rename(&tmp, path) {
+    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
@@ -245,8 +244,18 @@ impl Store {
     /// agent comment never changes the thread's status.
     ///
     /// # Errors
-    /// `NotFound` when the thread or its artifact is gone; `invalid_comment`.
+    /// `NotFound` when the thread or its artifact is gone; `invalid_author_kind`
+    /// or `invalid_comment` for bad input.
     pub fn add_comment(&self, thread_id: &str, c: NewComment) -> Result<Comment> {
+        if c.author_kind != AUTHOR_VIEWER && c.author_kind != AUTHOR_AGENT {
+            return Err(CoreError::invalid(
+                "invalid_author_kind",
+                format!(
+                    "author_kind is {AUTHOR_VIEWER} or {AUTHOR_AGENT}, not {}",
+                    c.author_kind
+                ),
+            ));
+        }
         check_body(&c.body)?;
         let comment = Comment {
             id: new_ulid(),
@@ -290,7 +299,8 @@ impl Store {
     /// logged and left out, so a page can hold fewer than `limit` threads.
     ///
     /// # Errors
-    /// `NotFound` for a missing or deleted artifact.
+    /// `NotFound` for a missing or deleted artifact; `invalid_cursor` when
+    /// `cursor` is not a thread of `id`.
     pub fn list_threads(
         &self,
         id: &ArtifactId,
@@ -302,6 +312,19 @@ impl Store {
         self.with_conn(|c| {
             if !artifact_live(c, id.as_str())? {
                 return Err(CoreError::NotFound);
+            }
+            if let Some(cursor) = cursor {
+                let known: bool = c.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM threads WHERE id = ?1 AND artifact_id = ?2)",
+                    params![cursor, id.as_str()],
+                    |r| r.get(0),
+                )?;
+                if !known {
+                    return Err(CoreError::invalid(
+                        "invalid_cursor",
+                        format!("{cursor} is not a thread of artifact {id}"),
+                    ));
+                }
             }
             let mut stmt = c.prepare(&format!(
                 "{THREAD_SELECT} AND t.artifact_id = ?1 AND (?2 OR t.status = 'open')
@@ -661,5 +684,54 @@ mod tests {
             Err(CoreError::Io(_))
         ));
         assert_eq!(thread_rows(&st), 0);
+    }
+
+    #[test]
+    fn unknown_cursor_is_refused() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let e = st
+            .list_threads(&aid, true, Some(&new_ulid()), 10)
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                CoreError::Invalid {
+                    code: "invalid_cursor",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_author_kind_is_refused() {
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let t = st.create_thread(&aid, new_thread("x", None)).unwrap();
+        let e = st
+            .add_comment(
+                &t.id,
+                NewComment {
+                    author_kind: "robot",
+                    author_name: "r".into(),
+                    via_session_id: None,
+                    body: "hi".into(),
+                },
+            )
+            .unwrap_err();
+        assert!(
+            matches!(
+                e,
+                CoreError::Invalid {
+                    code: "invalid_author_kind",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        assert_eq!(st.get_thread(&t.id).unwrap().unwrap().comments.len(), 1);
     }
 }

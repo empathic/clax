@@ -326,7 +326,8 @@ impl Store {
 
     /// Deletes the [`Store::corrupt_rows`] that belong to soft-deleted
     /// artifacts: a corrupt version row goes alone, a corrupt artifact row goes
-    /// with its versions and assets. Rows of live artifacts are never touched.
+    /// with its versions, assets, watches, threads, and the threads' comments
+    /// and feedback. Rows of live artifacts are never touched.
     /// Returns how many corrupt rows were cleared.
     ///
     /// # Errors
@@ -355,6 +356,14 @@ impl Store {
                         )?;
                     }
                     None => {
+                        for sql in [
+                            "DELETE FROM feedback WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM threads WHERE artifact_id = ?1",
+                            "DELETE FROM watches WHERE artifact_id = ?1",
+                        ] {
+                            tx.execute(sql, params![row.artifact_id])?;
+                        }
                         for table in ["assets", "versions"] {
                             tx.execute(
                                 &format!("DELETE FROM {table} WHERE artifact_id = ?1"),
@@ -1206,6 +1215,55 @@ mod tests {
         )
         .unwrap();
         crate::ArtifactId::parse(&store.create_artifact(p, None).unwrap().0.id).unwrap()
+    }
+
+    #[test]
+    fn corrupt_deleted_artifact_with_threads_and_watches_is_cleared() {
+        let (_d, store) = store();
+        let aid = one_version(&store);
+        let session = crate::store::test_util::session(&store, "claude", "h1");
+        store.watch(&session, &aid, true).unwrap();
+        let t = store
+            .create_thread(
+                &aid,
+                crate::NewThread {
+                    version_n: 1,
+                    anchor: crate::store::test_util::anchor(),
+                    author_name: "Alex".into(),
+                    body: "x".into(),
+                    clip: None,
+                },
+            )
+            .unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![crate::new_ulid(), t.id, t.comments[0].id, session, Store::now()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        store.delete_artifact(&aid).unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+                    [aid.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.delete_corrupt_deleted_rows().unwrap(), 1);
+        for table in ["feedback", "comments", "threads", "watches", "artifacts"] {
+            let n: i64 = store
+                .with_conn(|c| {
+                    Ok(c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?)
+                })
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
     }
 
     #[test]

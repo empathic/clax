@@ -367,7 +367,7 @@ mod tests {
         let version: u32 = store
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version, 3);
+        assert_eq!(version, super::super::migrations::MIGRATIONS.len() as u32);
         for table in [
             "watches",
             "threads",
