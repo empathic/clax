@@ -58,12 +58,14 @@ impl From<CoreError> for ApiError {
                 tracing::error!(error = %e, "corrupt row");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "corrupt", e.to_string())
             }
+            // The kind (such as `StorageFull`) tells a caller whether a retry
+            // can help; the message, which may name paths, stays in the log.
             CoreError::Io(e) => {
                 tracing::error!(error = %e, "io");
                 ApiError::new(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
-                    "storage error",
+                    format!("storage error: {:?}", e.kind()),
                 )
             }
             CoreError::Db(e) => {
@@ -85,5 +87,22 @@ impl IntoResponse for ApiError {
         err.insert("message".into(), json!(self.message));
         err.extend(self.extra);
         (self.status, axum::Json(json!({"error": err}))).into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn io_errors_name_their_kind_but_no_path() {
+        let e = std::io::Error::new(
+            std::io::ErrorKind::StorageFull,
+            "/home/me/.artifax/blobs/ab: no space left on device",
+        );
+        let api = ApiError::from(CoreError::Io(e));
+        assert_eq!(api.status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(api.code, "internal");
+        assert_eq!(api.message, "storage error: StorageFull");
     }
 }
