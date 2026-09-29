@@ -360,6 +360,11 @@ decoded bytes (the HTTP body limit is 96 MiB to cover base64 inflation) and
 a single file is capped at 16 MB, as on claude.ai. Assets use multipart at
 `POST /api/artifacts/<aid>/assets`.
 
+A file path is relative: one or more non-empty segments separated by `/`,
+no `.` or `..` segment, no backslash, and no control characters or U+2028 /
+U+2029 line and paragraph separators (a path appears in anchor summaries and
+payload lines, which must stay one line); anything else is `invalid_path`.
+
 ## 7. Daemon discovery and lifecycle
 
 1. A client reads `~/.artifax/daemon.json`, calls `/healthz` on that port,
@@ -460,7 +465,6 @@ the full skeleton) round-trip without nesting. Wrapping is pure and cached
 per version and file. The bridge greets the shell with its page's `file`,
 records it on every anchor it builds, and never resolves an anchor whose
 `file` is another page.
-
 
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.

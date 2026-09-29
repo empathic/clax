@@ -47,7 +47,6 @@ export type ShellToBridge =
 
 export type BridgeToShell =
   | { type: "artifax:hello"; artifact: string; version: number; file: string }
-
   | { type: "artifax:hover"; selector: string | null; rect: Box | null }
   | { type: "artifax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "artifax:anchors"; requestId: string | null; results: AnchorResult[] }

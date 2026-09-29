@@ -105,7 +105,7 @@ impl Anchor {
     /// U+2028 or U+2029 line or paragraph separators; lengths
     /// are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`], and [`MAX_AFFIX`].
     /// `file` is a safe relative path ([`crate::publish::check_path`]) of at
-    /// most [`MAX_FILE`] bytes with no line or paragraph separators; whether
+    /// most [`MAX_FILE`] bytes; whether
     /// the version holds it is the store's check.
     ///
     /// # Errors
@@ -125,9 +125,7 @@ impl Anchor {
         if self.file.len() > MAX_FILE {
             return Err(bad(format!("file is longer than {MAX_FILE} bytes")));
         }
-        if crate::publish::check_path(&self.file).is_err()
-            || self.file.contains(['\u{2028}', '\u{2029}'])
-        {
+        if crate::publish::check_path(&self.file).is_err() {
             return Err(bad("file is not a safe relative path"));
         }
         for (name, v) in [
@@ -167,7 +165,6 @@ impl Anchor {
         } else {
             format!("{} › {target}", self.file)
         };
-
         match self
             .quote
             .as_deref()

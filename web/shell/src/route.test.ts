@@ -48,5 +48,4 @@ describe("shellPath", () => {
     expect(shellPath(ID, null, "v/12/x.html", 5)).toBe(`/a/${ID}/v/5/v/12/x.html`);
     expect(shellPath(ID, null, "v/x.html", 5)).toBe(`/a/${ID}/v/x.html`);
   });
-
 });

@@ -73,7 +73,8 @@ pub struct ValidatedPublish {
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
-/// `..` segments, no control characters, and forward slashes only.
+/// `..` segments, no control characters or U+2028/U+2029 line and paragraph
+/// separators, and forward slashes only.
 pub fn check_path(path: &str) -> Result<()> {
     let bad = || {
         CoreError::invalid(
@@ -85,7 +86,13 @@ pub fn check_path(path: &str) -> Result<()> {
         return Err(bad());
     }
     for seg in path.split('/') {
-        if seg.is_empty() || seg == "." || seg == ".." || seg.chars().any(|c| c.is_control()) {
+        if seg.is_empty()
+            || seg == "."
+            || seg == ".."
+            || seg
+                .chars()
+                .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+        {
             return Err(bad());
         }
     }
@@ -361,6 +368,8 @@ mod tests {
             "",
             "a/",
             "a/../b",
+            "a\u{2028}b.html",
+            "a\u{2029}b.html",
         ] {
             let e = validate(req(&[("index.html", utf8("<p>")), (bad, utf8("x"))])).unwrap_err();
             assert!(

@@ -290,7 +290,6 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(here(null))}>Reload</button></div>
           )}
           {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={shellPath(id, null, file, shown)}>latest</a></div>}
-
           {notice && (
             <div class="banner notice" role="alert"><span>{notice}</span><button onClick={() => setNotice(null)}>Dismiss</button></div>
           )}
