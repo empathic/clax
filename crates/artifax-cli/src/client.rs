@@ -55,6 +55,16 @@ impl Client {
         }
     }
 
+    /// This client with every request bounded by `timeout`.
+    pub fn with_timeout(mut self, timeout: Duration) -> Client {
+        self.http = reqwest::blocking::Client::builder()
+            .no_proxy()
+            .timeout(timeout)
+            .build()
+            .expect("client");
+        self
+    }
+
     /// A live daemon named by daemon.json that answers `/healthz`, or None.
     /// Never starts one.
     pub fn discover(home: &Home) -> Option<Client> {

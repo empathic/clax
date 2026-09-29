@@ -3,12 +3,42 @@ use artifax_core::Home;
 use artifax_hooks::events::{self, Daemon};
 use artifax_hooks::input::HookInput;
 use artifax_hooks::output::HookOutput;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
 /// The whole hook invocation is abandoned after this long.
 const DEADLINE: Duration = Duration::from_secs(4);
+/// Each daemon request is abandoned after this long.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// How many ancestors above the hook's parent are reported for session joining.
+const MAX_ANCESTORS: usize = 6;
+
+/// The parent of `pid`, if it can be determined.
+fn parent_of(pid: u32) -> Option<u32> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "ppid=", "-p", &pid.to_string()])
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    String::from_utf8(out.stdout).ok()?.trim().parse().ok()
+}
+
+/// Ancestors of `pid`, nearest first, up to [`MAX_ANCESTORS`], stopping at pid 1.
+fn ancestors(pid: u32) -> Vec<u32> {
+    let mut chain = Vec::new();
+    let mut cur = pid;
+    while chain.len() < MAX_ANCESTORS {
+        match parent_of(cur) {
+            Some(p) if p > 1 && !chain.contains(&p) && p != pid => {
+                chain.push(p);
+                cur = p;
+            }
+            _ => break,
+        }
+    }
+    chain
+}
 
 #[derive(Clone, Copy, clap::ValueEnum)]
 pub enum Agent {
@@ -70,7 +100,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     match rx.recv_timeout(DEADLINE) {
         Ok(Ok(out)) => {
             if let Some(line) = out.to_line() {
-                println!("{line}");
+                let _ = writeln!(std::io::stdout(), "{line}");
             }
         }
         Ok(Err(e)) => eprintln!("artifax hook: {e:#}"),
@@ -84,10 +114,17 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
-    let client =
-        Client::discover(home).ok_or_else(|| anyhow::anyhow!("no artifax daemon is running"))?;
+    let client = Client::discover(home)
+        .ok_or_else(|| anyhow::anyhow!("no artifax daemon is running"))?
+        .with_timeout(REQUEST_TIMEOUT);
     match event {
-        Event::SessionStart => events::session_start(agent.harness(), parent_pid, &input, &client),
+        Event::SessionStart => events::session_start(
+            agent.harness(),
+            parent_pid,
+            &ancestors(parent_pid),
+            &input,
+            &client,
+        ),
         Event::SessionEnd => events::session_end(agent.harness(), &input, &client),
     }
 }

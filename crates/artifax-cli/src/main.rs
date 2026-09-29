@@ -51,11 +51,30 @@ pub enum Cmd {
     Hook(commands::hook::Args),
 }
 
+/// True when the command line names the `hook` subcommand: a hook must never
+/// fail its harness, so its startup failures exit 0.
+fn is_hook_invocation() -> bool {
+    let mut args = std::env::args().skip(1);
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "hook" => return true,
+            "--port" => {
+                args.next();
+            }
+            s if s.starts_with('-') => {}
+            _ => return false,
+        }
+    }
+    false
+}
+
 fn main() {
+    let hook = is_hook_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
             let code = match e.kind() {
+                _ if hook => 0,
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
                 _ => 1,
             };
@@ -67,7 +86,7 @@ fn main() {
         Ok(home) => home,
         Err(e) => {
             eprintln!("error: {e}");
-            std::process::exit(1);
+            std::process::exit(if hook { 0 } else { 1 });
         }
     };
     let result = match &cli.cmd {

@@ -36,6 +36,9 @@ pub struct JoinBody {
     harness_session_id: String,
     #[serde(default)]
     cwd: Option<String>,
+    /// The caller's ancestors, nearest first, tried after `parent_pid`.
+    #[serde(default)]
+    ancestor_pids: Vec<u32>,
 }
 
 pub async fn join(
@@ -57,6 +60,7 @@ pub async fn join(
                 b.parent_pid,
                 &b.harness_session_id,
                 b.cwd.as_deref(),
+                &b.ancestor_pids,
             )
         })
         .await?;

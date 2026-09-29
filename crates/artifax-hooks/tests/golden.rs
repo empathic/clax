@@ -146,8 +146,10 @@ fn lifecycle(agent: &str, harness_session_id: &str) {
     assert_eq!(live[0]["parent_pid"], std::process::id());
 
     // Idempotent.
+    let first_id = live[0]["id"].clone();
     let r = hook(&d.home(), agent, "session-start", &start);
     assert_eq!(r.code, Some(0));
+    assert_eq!(d.sessions(true)[0]["id"], first_id);
     assert_eq!(d.sessions(true).len(), 1);
 
     let end = fixture(&format!("{agent}-session-end.json"));
@@ -201,4 +203,60 @@ fn no_daemon_prints_nothing_and_starts_none() {
     }
     std::thread::sleep(Duration::from_millis(500));
     assert!(!home.join("daemon.json").exists());
+}
+
+#[test]
+fn hook_behind_a_wrapper_shell_joins_the_shim_row() {
+    let d = Daemon::start();
+    let c = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let info = d.info();
+    let res = c
+        .post(format!("http://127.0.0.1:{}/api/sessions", info["port"]))
+        .bearer_auth(info["token"].as_str().unwrap())
+        .json(&serde_json::json!({
+            "harness": "codex",
+            "cwd": "/tmp/project",
+            "pid": 424242,
+            "parent_pid": std::process::id(),
+        }))
+        .send()
+        .unwrap();
+    assert!(res.status().is_success());
+    let shim_id = res.json::<Value>().unwrap()["session"]["id"].clone();
+
+    // `; true` keeps the shell from exec-optimising, so the hook's parent is
+    // the shell and the harness (this process) is its parent.
+    let mut child = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "'{}' hook --agent codex session-start; true",
+            artifax_bin().display()
+        ))
+        .env("ARTIFAX_HOME", d.home())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&fixture("codex-session-start.json"))
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(
+        String::from_utf8(out.stdout)
+            .unwrap()
+            .contains("Artifax daemon")
+    );
+
+    let all = d.sessions(false);
+    assert_eq!(all.len(), 1, "{all:?}");
+    assert_eq!(all[0]["id"], shim_id);
+    assert_eq!(all[0]["harness_session_id"], "cx-hook-1");
+    assert_eq!(all[0]["pid"], 424242);
 }

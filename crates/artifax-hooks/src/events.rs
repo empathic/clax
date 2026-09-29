@@ -14,10 +14,12 @@ pub trait Daemon {
 }
 
 /// Joins the harness's session ID to the session registered for the same
-/// harness process (`parent_pid` is the harness, the hook's parent).
+/// harness process (`parent_pid` is the hook's parent; `ancestor_pids`, nearest
+/// first, cover a wrapper shell between the hook and the harness).
 pub fn session_start(
     harness: &str,
     parent_pid: u32,
+    ancestor_pids: &[u32],
     input: &HookInput,
     daemon: &dyn Daemon,
 ) -> anyhow::Result<HookOutput> {
@@ -29,6 +31,9 @@ pub fn session_start(
         "parent_pid": parent_pid,
         "harness_session_id": session_id,
     });
+    if !ancestor_pids.is_empty() {
+        body["ancestor_pids"] = json!(ancestor_pids);
+    }
     if let Some(cwd) = &input.cwd {
         body["cwd"] = json!(cwd);
     }
@@ -108,12 +113,12 @@ mod tests {
     #[test]
     fn start_joins_and_reports_url() {
         let d = Fake::default();
-        let out = session_start("claude", 42, &input("s1"), &d).unwrap();
+        let out = session_start("claude", 42, &[7, 1], &input("s1"), &d).unwrap();
         let calls = d.calls.borrow();
         assert_eq!(calls[0].1, "/api/sessions/join");
         assert_eq!(
             calls[0].2,
-            json!({"harness": "claude", "parent_pid": 42, "harness_session_id": "s1", "cwd": "/w"})
+            json!({"harness": "claude", "parent_pid": 42, "ancestor_pids": [7, 1], "harness_session_id": "s1", "cwd": "/w"})
         );
         let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -125,7 +130,7 @@ mod tests {
     #[test]
     fn start_without_session_id_errors() {
         let d = Fake::default();
-        assert!(session_start("claude", 1, &HookInput::default(), &d).is_err());
+        assert!(session_start("claude", 1, &[], &HookInput::default(), &d).is_err());
         assert!(d.calls.borrow().is_empty());
     }
 
