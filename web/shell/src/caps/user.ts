@@ -75,9 +75,16 @@ export const userHandler: HandlerFactory = env => {
   /** The level this frame document was given at its first use of it (user.d.ts:
    * fixed for the life of a view); a new document (`reset`) takes a new one. */
   let level: Promise<string> | null = null;
-  /** The newest `search()`: its number and its result; older calls resolve with it. */
+  /** The newest `search()`'s number; an older call's own result is dropped. */
   let searchGen = 0;
-  let newest: Promise<Profile[]> = Promise.resolve([]);
+  /** The promise every call since the last settled search returns: the newest
+   * call resolves it, so superseded calls settle with it, at the same moment. */
+  let burst: { promise: Promise<Profile[]>; resolve(r: Profile[]): void } | null = null;
+  /** The newest search's request, aborted when a newer call supersedes it. */
+  let searchAc: AbortController | null = null;
+  /** The frame document's number (`reset` starts a new one); a search started
+   * in an older document never adds names to the current one. */
+  let docEpoch = 0;
   const timers = new Set<{ id: ReturnType<typeof setTimeout>; done(): void }>();
 
   /** The viewer, or none when the lookup fails. */
@@ -97,9 +104,8 @@ export const userHandler: HandlerFactory = env => {
     return { id, name, avatarUrl: avatarFor(name, color), color, email: null, isOwner: owner, canEdit: owner };
   }
 
-  async function get(url: string, headers: Record<string, string> = {}): Promise<ApiViewer[] | null> {
-    if (disposed) return null;
-    const ac = new AbortController();
+  async function get(url: string, headers: Record<string, string> = {}, ac = new AbortController()): Promise<ApiViewer[] | null> {
+    if (disposed || ac.signal.aborted) return null;
     inflight.add(ac);
     try {
       const r = await fetch(url, { headers, signal: ac.signal });
@@ -165,19 +171,30 @@ export const userHandler: HandlerFactory = env => {
   });
 
   /** `search()` per user.d.ts: a call superseded by a newer one resolves with
-   * the newer call's result, when that one resolves. */
+   * the newer call's result, at the same moment; its own request is aborted
+   * and never waited on. */
   function search(q: unknown): Promise<Profile[]> {
     const gen = ++searchGen;
-    const own = runSearch(q, () => gen === searchGen);
-    newest = own;
-    const settle = async (p: Promise<Profile[]>, g: number): Promise<Profile[]> => {
-      const r = await p;
-      return g === searchGen ? r : settle(newest, searchGen);
-    };
-    return settle(own, gen);
+    searchAc?.abort();
+    const ac = new AbortController();
+    searchAc = ac;
+    let b = burst;
+    if (!b) {
+      let resolve!: (r: Profile[]) => void;
+      const promise = new Promise<Profile[]>(r => { resolve = r; });
+      b = burst = { promise, resolve };
+    }
+    const mine = b;
+    void runSearch(q, () => gen === searchGen, ac, docEpoch).catch((): Profile[] => []).then(r => {
+      if (gen !== searchGen) return;
+      if (burst === mine) burst = null;
+      if (searchAc === ac) searchAc = null;
+      mine.resolve(r);
+    });
+    return mine.promise;
   }
 
-  async function runSearch(q: unknown, current: () => boolean): Promise<Profile[]> {
+  async function runSearch(q: unknown, current: () => boolean, ac: AbortController, epoch: number): Promise<Profile[]> {
     if (typeof q !== "string" || !owner || !profileScope || disposed) return [];
     const v = await viewer();
     if (!v) return [];
@@ -189,8 +206,8 @@ export const userHandler: HandlerFactory = env => {
     if ([...text].length > MAX_QUERY_CHARS) return [];
     // A newer call within the pause takes over; this one asks nothing.
     if (!(await pause()) || !current()) return [];
-    const vs = await get(`/api/viewers?q=${encodeURIComponent(text)}`, { authorization: `Bearer ${env.token}` });
-    if (!vs) return [];
+    const vs = await get(`/api/viewers?q=${encodeURIComponent(text)}`, { authorization: `Bearer ${env.token}` }, ac);
+    if (!vs || epoch !== docEpoch) return [];
     remember(vs);
     return vs.map(x => profile(x.id, x.id === v.publicId ? (v.name ?? "") : (x.display_name ?? ""), v.publicId)).filter(p => p.name).slice(0, MAX_HITS);
   }
@@ -232,6 +249,13 @@ export const userHandler: HandlerFactory = env => {
       cache = new Map();
       pending = new Map();
       level = null;
+      // The old document's searches end: nothing of theirs reaches the new one.
+      docEpoch++;
+      searchGen++;
+      searchAc?.abort();
+      searchAc = null;
+      burst?.resolve([]);
+      burst = null;
     },
     dispose() {
       disposed = true;
