@@ -23,13 +23,23 @@ pub fn parse_id(raw: &str) -> Result<ArtifactId, ApiError> {
     ArtifactId::parse(raw).map_err(ApiError::from)
 }
 
+/// The JSON body of a route with axum's default body limit; see [`body_within`].
 pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+    body_within(r, "the request body limit")
+}
+
+/// The JSON body, or 413 `body_too_large` naming `limit` (the route's own
+/// cap, such as "the publish limit"), or 400 `invalid_json`.
+pub(crate) fn body_within<T>(
+    r: Result<Json<T>, JsonRejection>,
+    limit: &str,
+) -> Result<T, ApiError> {
     r.map(|Json(v)| v).map_err(|e| {
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 "body_too_large",
-                "request body exceeds the publish limit",
+                format!("request body exceeds {limit}"),
             )
         } else {
             ApiError::bad_request("invalid_json", e.body_text())
@@ -120,7 +130,7 @@ pub async fn create(
     headers: HeaderMap,
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let p = validate(body(req)?)?;
+    let p = validate(body_within(req, "the publish limit")?)?;
     require_title(p.title.as_deref())?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
@@ -247,7 +257,7 @@ pub async fn publish(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let p = validate(body(req)?)?;
+    let p = validate(body_within(req, "the publish limit")?)?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();

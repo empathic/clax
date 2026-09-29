@@ -4,7 +4,7 @@
 //! write the rules refuse answers 404 too. Each change publishes the `doc`
 //! SSE event, which carries the path and version but never the body.
 
-use super::artifacts::{body, parse_id, path};
+use super::artifacts::{body, body_within, parse_id, path};
 use crate::db_caller::CallerParts;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -48,6 +48,8 @@ pub struct WriteBody {
     lww: bool,
 }
 
+/// The document: `{doc: {path, collection, id, data, version, updated_at}}`;
+/// 404 when it is missing or the caller may not read it.
 pub async fn get(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -242,7 +244,7 @@ pub async fn batch(
     req: Result<Json<BatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let b = body(req)?;
+    let b = body_within(req, "the docs batch limit")?;
     let ops: Vec<String> = b.writes.iter().map(|w| w.op.clone()).collect();
     let writes = b
         .writes
@@ -301,6 +303,9 @@ pub struct StrReplaceBody {
     lww: bool,
 }
 
+/// Replaces `old_str` with `new_str` in the string field `field` (every
+/// occurrence with `replace_all`, else exactly one): `{doc}`, the updated
+/// document.
 pub async fn str_replace(
     State(s): State<AppState>,
     _o: SameOrigin,

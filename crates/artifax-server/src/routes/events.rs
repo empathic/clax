@@ -45,9 +45,12 @@ pub async fn events(
     let me = s
         .store_call(move |st| who.resolve(st))
         .await
-        .unwrap_or(Caller {
-            level: Level::View,
-            viewer: None,
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = ?e, "resolving an event subscriber failed; streaming at view");
+            Caller {
+                level: Level::View,
+                viewer: None,
+            }
         });
     let rx = s.events.subscribe();
     let filter = q.artifact;

@@ -14,8 +14,10 @@ use artifax_core::db::{Caller, Level};
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 
-/// The value of the first `key=` parameter of `parts`' query string, undecoded.
-fn query_param<'a>(parts: &'a Parts, key: &str) -> Option<&'a str> {
+/// The value of the first `key=` parameter of `parts`' query string,
+/// percent-decoded (`+` is a space). `Some(None)` when the value's encoding
+/// is invalid (a malformed `%` escape or bytes that are not UTF-8).
+fn query_param(parts: &Parts, key: &str) -> Option<Option<String>> {
     parts
         .uri
         .query()
@@ -23,7 +25,34 @@ fn query_param<'a>(parts: &'a Parts, key: &str) -> Option<&'a str> {
         .split('&')
         .filter_map(|kv| kv.split_once('='))
         .find(|(k, _)| *k == key)
-        .map(|(_, v)| v)
+        .map(|(_, v)| percent_decode(v))
+}
+
+/// `raw` with `+` as a space and each `%XX` as its byte; `None` when an
+/// escape is malformed or the result is not UTF-8.
+fn percent_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' => {
+                let hex = bytes.get(i + 1..i + 3)?;
+                let hex = std::str::from_utf8(hex).ok()?;
+                out.push(u8::from_str_radix(hex, 16).ok()?);
+                i += 3;
+            }
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).ok()
 }
 
 /// The level and viewer of a caller that holds the token (`token`) and/or
@@ -49,8 +78,9 @@ fn base_caller(st: &Store, token: bool, cookie: Option<&str>) -> artifax_core::R
 }
 
 /// Who is making a `db` request: whether it carries the bearer token, its
-/// viewer cookie, and the `?as_level=` it narrows to. Rejects an `as_level`
-/// other than `view`, `interact`, or `admin` with 400 `invalid_argument`.
+/// viewer cookie, and the `?as_level=` it narrows to (percent-decoded).
+/// Rejects an `as_level` other than `view`, `interact`, or `admin`, or one
+/// not validly encoded, with 400 `invalid_argument`.
 pub struct CallerParts {
     pub token: bool,
     pub cookie: Option<String>,
@@ -61,15 +91,26 @@ impl FromRequestParts<AppState> for CallerParts {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let as_level = query_param(parts, "as_level")
-            .map(|v| match v {
-                "view" | "interact" | "admin" => Ok(Level::parse(v).expect("a listed level")),
-                _ => Err(ApiError::bad_request(
+        let as_level = match query_param(parts, "as_level") {
+            None => None,
+            Some(Some(v)) => match v.as_str() {
+                "view" => Some(Level::View),
+                "interact" => Some(Level::Interact),
+                "admin" => Some(Level::Admin),
+                _ => {
+                    return Err(ApiError::bad_request(
+                        "invalid_argument",
+                        format!("as_level is view, interact, or admin, not '{v}'"),
+                    ));
+                }
+            },
+            Some(None) => {
+                return Err(ApiError::bad_request(
                     "invalid_argument",
-                    format!("as_level is view, interact, or admin, not '{v}'"),
-                )),
-            })
-            .transpose()?;
+                    "as_level is not validly percent-encoded",
+                ));
+            }
+        };
         Ok(CallerParts {
             token: has_token(&parts.headers, &state.token),
             cookie: crate::viewer::read(&parts.headers),
@@ -92,7 +133,8 @@ impl CallerParts {
 
 /// Who is subscribing to `/api/events`, for filtering `doc` events. An
 /// `EventSource` cannot send headers, so the token is accepted as `?token=`
-/// as well as in `Authorization`; a wrong or missing token counts as none.
+/// (percent-decoded) as well as in `Authorization`; a wrong, missing, or
+/// invalidly encoded token counts as none.
 /// The query string of this route must never be logged.
 pub struct Subscriber {
     token: bool,
@@ -106,9 +148,10 @@ impl FromRequestParts<AppState> for Subscriber {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        // The token is 64 hex characters, so the query value needs no decoding.
+        // A value that is not validly encoded is no token.
         let query_token = query_param(parts, "token")
-            .is_some_and(|v| crate::auth::token_matches(v, &state.token));
+            .flatten()
+            .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
         Ok(Subscriber {
             token: query_token || has_token(&parts.headers, &state.token),
             cookie: crate::viewer::read(&parts.headers),
@@ -123,5 +166,18 @@ impl Subscriber {
     /// is `view`.
     pub fn resolve(&self, st: &Store) -> artifax_core::Result<Caller> {
         base_caller(st, self.token, self.cookie.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::percent_decode;
+
+    #[test]
+    fn percent_decoding_fails_closed() {
+        assert_eq!(percent_decode("%61dmin+x").as_deref(), Some("admin x"));
+        for bad in ["%zz", "%6", "%", "%ff", "a%c3"] {
+            assert_eq!(percent_decode(bad), None, "{bad}");
+        }
     }
 }

@@ -684,3 +684,136 @@ async fn private_doc_events_skip_the_owner_shell_and_agents() {
     assert_eq!(shell.next_named("doc").await["path"], "shared/s");
     assert_eq!(agent.next_named("doc").await["path"], "shared/s");
 }
+
+#[tokio::test]
+async fn a_wrong_stream_token_counts_as_none() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "team", "read": "interact"}]}}),
+    )
+    .await;
+    let a = ts.viewer(Some("A")).await;
+    let mut wrong = ts
+        .events(&format!("?artifact={aid}&token=not-the-token"))
+        .await;
+    let mut garbled = ts
+        .events(&format!("?artifact={aid}&token=%zz{}", ts.token))
+        .await;
+    let private = format!("data/users/{}/p", a.public_id);
+    send(
+        req(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/docs/{private}"),
+            &Who::Viewer(&a),
+        )
+        .json(&json!({"data": {}, "lww": true})),
+    )
+    .await;
+    for path in ["team/t", "open/o"] {
+        send(
+            req(
+                &ts,
+                Method::PUT,
+                &format!("/api/artifacts/{aid}/docs/{path}"),
+                &Who::Token,
+            )
+            .json(&json!({"data": {}})),
+        )
+        .await;
+    }
+    assert_eq!(
+        wrong.next_named("doc").await["path"],
+        "open/o",
+        "view, no viewer: neither the private nor the interact document"
+    );
+    assert_eq!(
+        garbled.next_named("doc").await["path"],
+        "open/o",
+        "an invalid encoding is no token"
+    );
+}
+
+#[tokio::test]
+async fn query_values_are_percent_decoded() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "secret", "read": "owner", "write": "owner"}]}}),
+    )
+    .await;
+    let encoded: String = ts.token.bytes().map(|b| format!("%{b:02X}")).collect();
+    let mut agent = ts.events(&format!("?artifact={aid}&token={encoded}")).await;
+    send(
+        req(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/docs/secret/s"),
+            &Who::Token,
+        )
+        .json(&json!({"data": {}})),
+    )
+    .await;
+    assert_eq!(
+        agent.next_named("doc").await["path"],
+        "secret/s",
+        "an encoded token is the token"
+    );
+    let narrowed = req(
+        &ts,
+        Method::PUT,
+        &format!("/api/artifacts/{aid}/docs/notes/n?as_level=%69nteract"),
+        &Who::Token,
+    )
+    .json(&json!({"data": {}}));
+    let (s, v) = send(narrowed).await;
+    assert_eq!(s, 200, "interact may write an undeclared path: {v}");
+    let narrowed = req(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/secret/s?as_level=%61dmin"),
+        &Who::Token,
+    );
+    assert_eq!(send(narrowed).await.0, 404, "an encoded as_level narrows");
+    let (s, v) = send(req(
+        &ts,
+        Method::GET,
+        &format!("/api/artifacts/{aid}/docs/secret/s?as_level=%zz"),
+        &Who::Token,
+    ))
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (400, Some("invalid_argument")),
+        "an invalid encoding is refused"
+    );
+}
+
+#[tokio::test]
+async fn an_oversized_batch_names_the_docs_batch_limit() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let big = "x".repeat(15 * 1024 * 1024);
+    let (s, v) = send(
+        req(
+            &ts,
+            Method::POST,
+            &format!("/api/artifacts/{aid}/docs:batch"),
+            &Who::Token,
+        )
+        .json(&json!({"writes": [{"op": "set", "path": "t/1", "data": {"s": big}}]})),
+    )
+    .await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (413, Some("body_too_large"))
+    );
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("the docs batch limit"),
+        "{v}"
+    );
+}
