@@ -526,8 +526,11 @@ fn write_in(
     }
 }
 
-fn update_body(cur: Option<&Doc>, patch: Value) -> Result<Option<Value>> {
-    let cur = cur.ok_or(CoreError::NotFound)?;
+/// `patch` merged into the document at `path`; `invalid_argument` when it
+/// does not exist (an update never creates).
+fn update_body(path: &str, cur: Option<&Doc>, patch: Value) -> Result<Option<Value>> {
+    let cur = cur
+        .ok_or_else(|| invalid_argument(format!("{path} does not exist; use set to create it")))?;
     Ok(Some(merged(&cur.data, patch)))
 }
 
@@ -559,7 +562,11 @@ impl Store {
         })
     }
 
-    /// Merges `patch` into the existing document (`NotFound` when absent).
+    /// Merges `patch` into the existing document.
+    ///
+    /// # Errors
+    /// `invalid_argument` ("<path> does not exist; use set to create it")
+    /// when the document is absent; `NotFound` when `caller` may not write it.
     pub fn doc_update(
         &self,
         id: &ArtifactId,
@@ -572,7 +579,7 @@ impl Store {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             write_in(tx, id, &rules, caller, path, pin, |cur| {
-                update_body(cur, patch)
+                update_body(path, cur, patch)
             })
         })
     }
@@ -734,7 +741,7 @@ impl Store {
                         }
                         BatchOp::Update(patch) => {
                             write_in(tx, id, &rules, caller, &w.path, pin, |cur| {
-                                update_body(cur, patch)
+                                update_body(&w.path, cur, patch)
                             })
                         }
                         BatchOp::Delete => {
@@ -938,13 +945,29 @@ mod tests {
             d.data,
             json!({"a": {"x": 1, "z": 3}, "b": [3], "c": "keep", "n": {}})
         );
+        match st.doc_update(&id, "c/missing", json!({"a": 1}), page(), &admin()) {
+            Err(CoreError::Invalid {
+                code: "invalid_argument",
+                message,
+            }) => assert_eq!(message, "c/missing does not exist; use set to create it"),
+            other => panic!("update needs an existing document: {other:?}"),
+        }
+        let batch = vec![BatchWrite {
+            path: "c/missing".into(),
+            op: BatchOp::Update(json!({"a": 1})),
+            if_version: None,
+        }];
         assert!(
             matches!(
-                st.doc_update(&id, "c/missing", json!({"a": 1}), page(), &admin()),
-                Err(CoreError::NotFound)
+                st.doc_batch(&id, batch, true, &admin()),
+                Err(CoreError::Invalid {
+                    code: "invalid_argument",
+                    ..
+                })
             ),
-            "update needs an existing document"
+            "a batched update needs an existing document too"
         );
+        assert_eq!(st.doc_get(&id, "c/missing", &admin()).unwrap(), None);
         assert!(
             matches!(
                 st.doc_update(
