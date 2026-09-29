@@ -16,4 +16,4 @@ User arguments: $ARGUMENTS
 
 - An artifact given (ID, URL, or title hint): pass it as `url_or_id` to `wait_for_feedback`; otherwise wait on every artifact this session watches.
 - Tell the person once that you are waiting for their comments and that they can press "Send to agent" or write `@agent` on a thread.
-- Loop: call `wait_for_feedback`; when comments arrive, act on each (change, `comments_reply`, `comments_resolve`); when the result has `call_again: true`, call it again. Stop when the person tells you to.
+- Loop: call `wait_for_feedback`; when comments arrive, act on each (change, `comments_reply`, `comments_resolve`); then call it again after handling the result, whatever `call_again` says, while the person wants live feedback. Stop when the person tells you to.

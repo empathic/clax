@@ -500,8 +500,10 @@ harness session ID on its next tool call (see `unknown_session`), and a shim
 heartbeat that finds its row ended or gone registers again; a shim that
 reaches a restarted daemon registers again.
 
-When a row ends, its watches are dropped and its undelivered comments go to
-other sessions (see "Comments and feedback").
+When a row ends, its watches are dropped, and each of its comments not yet
+handed over is deleted when another live session is already a target of the
+same comment, and otherwise waits untargeted for the next session that
+publishes or watches the artifact (see "Comments and feedback").
 
 The hooks give up rather than hold up the harness: `session-start` after 4 s
 (3 s per daemon request), `session-end` after 2.5 s (2 s per request, inside
@@ -544,9 +546,11 @@ forward), its parent process
 `SessionStart` hook runs under a shell, so its parent is that shell; it sends
 the Codex session ID from its input, its parent PID, and its ancestors, and
 the daemon gives the ID to the shim's row by matching Codex's PID among them.
-The hook also fills an empty `cwd`, and records its `CODEX_HOME` (when set)
-for `codex queue`. The `Stop` hook (`artifax hook --agent codex stop`) hands
-comments over at the end of a turn. The `SessionEnd` hook ends the row by the
+The hook also fills an empty `cwd`, records its `CODEX_HOME` (when set) for
+`codex queue`, and adds the daemon URL and any comments already waiting for
+the session (those tier 3 would carry) to the session context. The `Stop`
+hook (`artifax hook --agent codex stop`) hands comments over at the end of a
+turn. The `SessionEnd` hook ends the row by the
 Codex session ID.
 
 Hooks run only when the person enables and trusts them. Without them the row
@@ -592,7 +596,7 @@ reopens it.
 A sent comment goes to every live target session: the session that created
 the artifact, and every session that watches it. Publishing (a new artifact or
 a new version) makes the publishing session watch the artifact with replies
-on; the `watch` tool adds or removes a watch. Agent replies and resolves need
+on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
 a live session and work only on sent threads.
 
 ### Tools
@@ -638,8 +642,9 @@ artifact), `invalid_args` (a `thread_id` that is not a thread ID, empty
 (a `cursor` that is not a thread of the artifact), `not_found` (the artifact
 or thread is gone), `no_session` (`watch` and `wait_for_feedback` through
 `/mcp`), `unknown_session` (`comments_reply` and `comments_resolve` through
-`/mcp`, which sends no session). Replies and resolves on a thread that was not
-sent to the agent are not errors: the result carries `guidance` and nothing
+`/mcp`, which sends no session; this is checked before whether the thread was
+sent). Through a session, replies and resolves on a thread that was not sent
+to the agent are not errors: the result carries `guidance` and nothing
 changes.
 
 ### Payload
@@ -679,7 +684,7 @@ Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 |---|---|---|---|
 | 1, tool result | next artifax tool call (shim) | next artifax tool call (shim) | next `artifax_*` tool call (`tool_result` handler) |
 | 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | none |
-| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`) | not wired | none |
+| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none |
 | 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting |
 | 5, native push | none: an idle Claude Code session is not woken | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
 
@@ -690,13 +695,16 @@ the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
 
 Tier 5 for Codex needs the Codex session ID (from the `SessionStart` hook, so
-hooks must be enabled and trusted), `codex` from `ARTIFAX_CODEX_BIN` (an
-executable file) or else the daemon's `PATH` (`ARTIFAX_CODEX_BIN` set empty
-turns Codex push off), and the session's `CODEX_HOME` (passed by the hook when
-set; otherwise `codex` uses its default). `artifax doctor --agent codex`
-checks the first two, naming where `codex` came from, and so does
-`GET /api/push` (which needs no token and names the binary). `status`
-reports `push` with the reason when it is off. Tier 5 is skipped while the
+hooks must be enabled and trusted), `codex` from `ARTIFAX_CODEX_BIN` when it
+is set, else from the daemon's `PATH`, and the session's `CODEX_HOME` (passed
+by the hook when set; otherwise `codex` uses its default). A set
+`ARTIFAX_CODEX_BIN` is never followed by a `PATH` search: the empty string
+turns Codex push off on purpose, and a value that is not an executable file
+turns it off with a reason naming that value. `artifax doctor --agent codex`
+checks the first two, naming where `codex` came from. `GET /api/push` (which
+needs no token) reports only the daemon's `codex`: its path, where it came
+from, and why push is off when it is. `status` reports `push` for the session
+with the reason when it is off. Tier 5 is skipped while the
 session is inside `wait_for_feedback`, which delivers instead. The comments
 read "delivered via codex queue" from the moment `codex queue` starts until
 it finishes (at most 10 s). A `codex queue` that exits non-zero ends the

@@ -236,7 +236,8 @@ Tools:
   `resolved: false` with `guidance` on a thread that was not sent to you.
 - `watch` (`url_or_id`; `on` default true; `replies` default true): follow an
   artifact you did not publish, or stop following one. Publishing already
-  watches with replies on. `replies: false` keeps comments out of your Stop
+  watches with replies on (an existing watch keeps its setting).
+  `replies: false` keeps comments out of your Stop
   hook and out of native push; they still arrive on tool results, with the
   person's next message, and from `wait_for_feedback`.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
@@ -244,7 +245,8 @@ Tools:
 
 When the person wants to iterate live ("watch for my comments", "I'll leave
 comments on it"), loop: call `wait_for_feedback`, handle whatever arrives, and
-call it again after `call_again: true`, until the person says to stop. Each
+call it again after handling the result, whatever `call_again` says, while the
+person wants live feedback; stop when the person says to stop. Each
 call returns within `timeout_s` because harnesses cap a single tool call
 (Codex at 60 seconds).
 
@@ -254,3 +256,4 @@ call returns within `timeout_s` because harnesses cap a single tool call
   phase 4, and `capabilities` on `publish` is stored with the artifact but has
   no effect until phase 4. Do not build pages that depend on shared state, live
   data, or asking the agent questions.
+- Rooms and `sample()` (phase 5): not available.

@@ -533,7 +533,7 @@ Reply with comments_reply, then comments_resolve when done.
 |---|---|---|---|---|
 | 1 | Undelivered feedback is appended to every successful tool result of a session-bound shim or Pi extension (errors and the sessionless `/mcp` carry none; `wait_for_feedback`'s own result is tier 4) | all three | next tool call | Nothing arrives while the agent is idle or not using artifax tools. |
 | 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code and Codex (both verified: `{"decision":"block","reason":...}` on stdout with exit 0 continues the turn with the reason as input and the hook fires again with `stop_hook_active: true`) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
-| 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
+| 3 | Prompt-submit hook adds pending feedback as additional context; the `SessionStart` hook also adds what is pending when a session starts | Claude Code (`UserPromptSubmit` and `SessionStart`); Codex (`SessionStart` only) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
 | 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: the extension API's `sendUserMessage`, which starts a turn when idle (§13). Claude Code: none available to third-party plugins. | Codex: under a second when the session's TUI is idle (measured 0.17 s), the end of the running turn when it is busy, never while no TUI is attached; Pi: at once when idle, after the current turn when streaming | See below, and the resend rule. Tier 5 is skipped while the target session is inside a `wait_for_feedback` call; tier 4 delivers instead. |
 
@@ -592,7 +592,8 @@ Failure modes and what happens in each:
   registered the ID. The daemon skips tier 5 for that session, the `status`
   tool reports "Codex session ID unknown, native push disabled", and
   `artifax doctor --agent codex` explains how to install and trust the
-  hooks. Tiers 1, 2, and 4 still apply.
+  hooks. Tiers 1 and 4 still apply (tier 2 needs the hooks that did not
+  run).
 - **`codex queue` fails.** A non-zero exit (the measurement never produced
   one for an exited session, which is held instead; this path covers a
   missing app-server, a malformed thread ID, or a CLI failure) makes the
@@ -762,7 +763,9 @@ must point at `./plugins/<plugin-name>`.
   shim starts inherits, §10).
 - `hooks/hooks.json` in Claude Code's format: `SessionStart` →
   `bash "${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex
-  session-start`, `Stop` → the same with `stop` (tier 2, timeout 10 s; the
+  session-start` (joins the session, records `CODEX_HOME`, and prints the
+  daemon URL and any pending `prompt_hook` feedback as context; Codex has no
+  `UserPromptSubmit` hook wired), `Stop` → the same with `stop` (tier 2, timeout 10 s; the
   hook gives up after 8 s), `SessionEnd` → the same with `session-end` (Codex
   caps `SessionEnd` at 3 s, so `session-end` gives up after 2.5 s). Hooks run
   in a shell with `PLUGIN_ROOT` exported.

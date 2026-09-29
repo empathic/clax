@@ -38,7 +38,8 @@ authenticity. Set
   loop.
 - Hooks (`hooks/hooks.json`), run as `artifax hook --agent codex <event>`:
   `SessionStart` (`session-start`) registers the Codex session with the daemon
-  and records its Codex session ID and `CODEX_HOME`; `Stop` (`stop`, 10 s;
+  and records its Codex session ID and `CODEX_HOME`, and adds any comments
+  already waiting for the session to its context; `Stop` (`stop`, 10 s;
   gives up after 8 s) hands over comments sent to the session at the end of a
   turn; `SessionEnd` (`session-end`) ends the session. Hooks never start a
   daemon. They are optional; see below.
@@ -49,6 +50,8 @@ People comment on a page in the browser and send a thread to the agent with
 **Send to agent** or `@agent`. Those comments reach a Codex session:
 
 - on the next artifax tool result;
+- when a session starts, from the `SessionStart` hook, if comments were
+  already waiting for it;
 - at the end of a turn, from the `Stop` hook, which blocks the stop with the
   comments as the reason so Codex continues the turn with them (only on
   artifacts the session watches with replies on);
@@ -105,8 +108,9 @@ once; a busy one runs it as its next turn. This needs:
   through from the hook's environment when set; otherwise `codex` uses its
   default home);
 - `codex` on the daemon's `PATH`, or named by `ARTIFAX_CODEX_BIN` (an
-  executable file). `ARTIFAX_CODEX_BIN` set to the empty string turns native
-  push off. The daemon reads both when it starts, so after changing them run
+  executable file). When `ARTIFAX_CODEX_BIN` is set, `PATH` is not searched:
+  a value that is not an executable file turns native push off with a reason
+  naming it, and the empty string turns it off on purpose. The daemon reads both when it starts, so after changing them run
   `artifax stop` and let the next tool call start it again;
 - a Codex TUI attached to the session. `codex exec` sessions, and TUIs that
   have exited, hold queued messages until `codex resume <session ID>`; the
