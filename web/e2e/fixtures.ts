@@ -175,3 +175,24 @@ export async function tintStats(page: Page, pickId: string, rgb: [number, number
     return { count, top, bottom, h: bmp.height };
   }, { id: pickId, tint: rgb, alpha: share });
 }
+
+/** Pixels of a recorded clip within `tol` of `rgb` on every channel, counted
+ * in rows `fromRow` to `toRow` (all rows when absent), and the rows they span. */
+export async function colorStats(page: Page, pickId: string, rgb: [number, number, number], tol: number, fromRow = 0, toRow = Infinity) {
+  return page.evaluate(async ({ id, want, near, from, to }) => {
+    const buf = (window as any).artifaxClips[id] as ArrayBuffer;
+    const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
+    const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
+    ctx.drawImage(bmp, 0, 0);
+    const px = ctx.getImageData(0, 0, bmp.width, bmp.height).data;
+    let count = 0;
+    let top = Infinity;
+    let bottom = -Infinity;
+    for (let i = 0; i < px.length; i += 4) {
+      const row = Math.floor(i / 4 / bmp.width);
+      if (row < from || row > to) continue;
+      if ([0, 1, 2].every(c => Math.abs(px[i + c] - want[c]) <= near)) { count++; top = Math.min(top, row); bottom = Math.max(bottom, row); }
+    }
+    return { count, top, bottom };
+  }, { id: pickId, want: rgb, near: tol, from: fromRow, to: Number.isFinite(toRow) ? toRow : 1e9 });
+}

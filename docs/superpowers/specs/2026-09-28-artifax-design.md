@@ -451,7 +451,9 @@ file under `v/<digits>/` is reachable only through the versioned form):
   line, block, or sentence around it is. Controls and replaced elements
   (`button`, `input`, `select`, `textarea`, `a[href]`, `img`, `svg`, `video`,
   `audio`, `canvas`, `iframe`, `object`, `[role=button]`, `[contenteditable]`,
-  `label`, `summary`), and anything inside one, stay element targets. Only the text near the
+  `label`, `summary`) stay element targets, and text-like content inside one
+  targets it, unless it is itself oversized (an editable article), which is
+  then treated as any other oversized element. Only the text near the
   pointer is read on hover (at most 4,000 characters each way). The outline
   is clamped to the viewport with all four borders visible, a tint of at
   least 16% and a border of at least 3:1 contrast on the background behind
@@ -620,13 +622,20 @@ On composer open the bridge renders a clip of the anchored region with
 range's nearest block ancestor when that fits. A range inside a larger block
 (a line of a whole file in one `<pre>`, a drag selection in it) is captured
 as a region around the range: the lines from 120 px above it to 120 px below
-it, at the block's width and at most 2400 px tall, copied (with the elements
-between them and the block, so the page's styles apply) next to the block
-off-screen, with the picked text marked by bands of the comment-mode
-outline's tint, rendered, and removed; rendering never walks the rest of
-the block. An element larger than the budget is rendered cropped to its part
-in the viewport at pick time, grown within the element to the budget on each
-axis; no pick goes without a clip merely for its size. The PNG is at device pixel ratio, capped at 1600 px on the long side,
+it, at the block's width and at most 2400 px tall (for a range taller than
+that, the 2400 px from 120 px above its start, never copying the rest of the
+range), copied (with the elements between them and the block, so the page's
+styles apply) next to the block off-screen, with the picked text marked by
+bands of the comment-mode outline's tint, rendered, and removed; rendering
+never walks the rest of the block. Before the copy is connected it is made
+inert: form controls and forms lose `name` and `form` (so a copied checked
+radio cannot uncheck the reader's), media, embedded content, and defined
+custom elements become empty placeholders of their size, nothing keeps
+`autofocus`, and the copy is `inert` and `aria-hidden`. An element larger
+than the budget is rendered whole, scaled down, when it is wholly in view on
+every axis over the budget; otherwise each such axis is cropped to the
+element's part in the viewport at pick time, grown within the element to the
+budget. No pick goes without a clip merely for its size. The PNG is at device pixel ratio, capped at 1600 px on the long side,
 within a 4 s limit, in both frame modes; the bridge posts the bytes to the
 shell, which uploads them with the thread. Cross-origin images that taint the
 canvas are dropped from the render; the thread still stores the anchor and

@@ -12,8 +12,10 @@
 // a range in a larger block is rendered as a region around it (the lines
 // within `REGION_PAD` above and below it, at the block's width) from a copy of
 // just those lines, with the range marked, so rendering never walks the rest
-// of the block. An element larger than the budget is rendered cropped to its
-// part in the viewport, grown to the budget within it.
+// of the block; the copy is made inert before it is connected
+// (`neutraliseCopy`). An element larger than the budget is rendered cropped
+// to its part in the viewport, grown to the budget within it, on each axis
+// over the budget that is not wholly in view.
 
 import { createContext, destroyContext, domToPng } from "modern-screenshot";
 import { backgroundBehind, outlineColors } from "./target";
@@ -196,12 +198,14 @@ export async function renderClip(el: Element, win: Window = window, timeoutMs = 
 }
 
 /** The span along one axis of an element from `start` of length `size`, in
- * view from `visStart` to `visEnd`: its part in view (or its edge nearest the
- * view), grown equally both ways within the element to `min(size, max)`, and
- * cut at the far end when the part in view alone exceeds `max`. Returns the
- * offset from `start` and the length. */
+ * view from `visStart` to `visEnd`: all of it when it is at most `max` or
+ * wholly in view; else its part in view (or its edge nearest the view), grown
+ * equally both ways within the element to `max`, and cut at the far end when
+ * the part in view alone exceeds `max`. Returns the offset from `start` and
+ * the length. */
 function cropSpan(start: number, size: number, visStart: number, visEnd: number, max: number): [number, number] {
   const end = start + size;
+  if (size <= max || (start >= visStart && end <= visEnd)) return [0, Math.round(size)];
   let a = Math.min(end, Math.max(start, visStart));
   let b = Math.max(a, Math.min(end, Math.max(start, visEnd)));
   const need = Math.min(size, max);
@@ -216,8 +220,10 @@ function cropSpan(start: number, size: number, visStart: number, visEnd: number,
 }
 
 /** The part of an element at `r` (client coordinates) a clip of it renders,
- * relative to its top left corner: all of it within the budget, else its part
- * in the viewport `vp`, grown within the element to the budget on each axis. */
+ * relative to its top left corner. Each axis is whole when it is within the
+ * budget or wholly in the viewport `vp` (the picture is then scaled down);
+ * otherwise it is the element's part in view, grown within the element to the
+ * budget. */
 export function elementRegion(r: { left: number; top: number; width: number; height: number }, vp: { w: number; h: number }): { x: number; y: number; w: number; h: number } {
   const [x, w] = cropSpan(r.left, r.width, 0, vp.w, MAX_CLIP_REGION.w);
   const [y, h] = cropSpan(r.top, r.height, 0, vp.h, MAX_CLIP_REGION.h);
@@ -226,7 +232,8 @@ export function elementRegion(r: { left: number; top: number; width: number; hei
 
 /** A PNG of `t` within the clip budget: an element that fits it, or a range's
  * nearest block ancestor when that fits, is rendered whole; a larger element
- * is rendered cropped to `elementRegion`; a range in a larger block is
+ * is rendered cropped to `elementRegion` (whole, scaled down, when that crops
+ * nothing); a range in a larger block is
  * rendered as the region around it (`renderRegion`). */
 export async function renderTargetClip(t: Element | Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
   if ("nodeType" in t) {
@@ -234,7 +241,9 @@ export async function renderTargetClip(t: Element | Range, win: Window = window,
     if (fitsClipBudget(r)) return renderClip(t, win, timeoutMs);
     const doc = t.ownerDocument;
     const vp = { w: doc.documentElement.clientWidth || win.innerWidth, h: doc.documentElement.clientHeight || win.innerHeight };
-    return renderClip(t, win, timeoutMs, { crop: elementRegion(r, vp) });
+    const crop = elementRegion(r, vp);
+    const whole = crop.x === 0 && crop.y === 0 && crop.w === Math.round(r.width) && crop.h === Math.round(r.height);
+    return renderClip(t, win, timeoutMs, whole ? {} : { crop });
   }
   const range = t;
   const block = blockAncestor(range.commonAncestorContainer, win);
@@ -307,15 +316,92 @@ function regionEnd(w: TextWindow, bottom: number): number {
   return lo > w.at && w.text[lo - 1] === "\n" ? lo - 1 : lo;
 }
 
+/** The first text point at or after `from` in `root` whose character ends
+ * below `y` (client coordinates), measuring whole text nodes until one reaches
+ * below it; null when none does. */
+function pointBelow(root: Node, from: TextPoint, y: number): TextPoint | null {
+  const r = root.ownerDocument!.createRange();
+  let off = from.offset;
+  for (let t: Text | null = from.node, n = 0; t && n < 100_000; t = nextText(root, t), n++, off = 0) {
+    if (off >= t.length) continue;
+    r.setStart(t, off);
+    r.setEnd(t, t.length);
+    const b = typeof r.getBoundingClientRect === "function" ? r.getBoundingClientRect() : null;
+    if (!b || (!b.width && !b.height) || b.bottom <= y) continue;
+    const w: TextWindow = { segs: [{ node: t, from: 0, to: t.length }], text: t.data, at: off };
+    let lo = off;
+    let hi = t.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      const c = charRect(w, mid, 1);
+      if (!c || c.bottom > y) hi = mid; else lo = mid + 1;
+    }
+    return { node: t, offset: lo };
+  }
+  return null;
+}
+
+/** Media and embedded content, replaced by placeholders in a region copy. */
+const EMBEDS = "iframe, video, audio, object, embed";
+/** Elements whose `name` or `form` would tie a copy to the page's forms. */
+const FORM_PARTS = "input, select, textarea, button, fieldset, output, object, form";
+
+/** Whether `el` is an autonomous custom element its window has defined. */
+function definedCustom(el: Element): boolean {
+  return el.localName.includes("-") && !!el.ownerDocument.defaultView?.customElements?.get(el.localName);
+}
+
+/** Whether `el` becomes a placeholder in a region copy. */
+export const replacedInCopy = (el: Element) => el.matches(EMBEDS) || definedCustom(el);
+
+/** A `div` (or `span`, for an inline `el`) with `el`'s attributes but `is`:
+ * a copy of `el` that runs no custom element code. */
+export function plainCopy(el: Element): HTMLElement {
+  const doc = el.ownerDocument;
+  const inline = (doc.defaultView?.getComputedStyle(el).display || "inline").startsWith("inline");
+  const out = doc.createElement(inline ? "span" : "div");
+  for (const a of Array.from(el.attributes)) if (a.name !== "is") out.setAttribute(a.name, a.value);
+  return out;
+}
+
+/** Makes a region copy inert before it is connected, so connecting it changes
+ * nothing on the page: media, embedded content, and defined custom elements
+ * become empty placeholders of the size of `originals` (the page's elements
+ * they were copied from, in document order; their width and height attributes
+ * when those do not line up); form controls and forms lose `name` and `form`
+ * (a copied checked radio would otherwise uncheck the reader's); nothing keeps
+ * `autofocus`; and the copy is `inert` and `aria-hidden`. */
+export function neutraliseCopy(copy: HTMLElement, originals: Element[]): void {
+  const doc = copy.ownerDocument;
+  const replaced = Array.from(copy.querySelectorAll("*")).filter(replacedInCopy);
+  const sized = originals.length === replaced.length;
+  replaced.forEach((el, i) => {
+    if (!copy.contains(el)) return; // inside one already replaced
+    const b = sized ? originals[i].getBoundingClientRect() : null;
+    const w = b ? b.width : Number(el.getAttribute("width")) || 0;
+    const h = b ? b.height : Number(el.getAttribute("height")) || 0;
+    const ph = doc.createElement("span");
+    for (const [k, v] of Object.entries({ display: "inline-block", width: `${w}px`, height: `${h}px`, "vertical-align": "bottom" })) ph.style.setProperty(k, v, "important");
+    el.replaceWith(ph);
+  });
+  for (const el of [copy, ...Array.from(copy.querySelectorAll("*"))]) {
+    if (el.matches(FORM_PARTS)) { el.removeAttribute("name"); el.removeAttribute("form"); }
+    el.removeAttribute("autofocus");
+  }
+  copy.setAttribute("inert", "");
+  copy.setAttribute("aria-hidden", "true");
+}
+
 /** Bands of `tint` over the text of `copy` from `from` characters in to
  * `from + length` (one band per line), appended to it so they render with it. */
 function markPicked(copy: HTMLElement, from: number, length: number, tint: string): void {
   const s = pointInto(copy, from);
+  if (!s) return;
+  // A pick longer than the region is marked to the region's end.
   const e = pointInto(copy, from + length);
-  if (!s || !e) return;
   const r = copy.ownerDocument.createRange();
   r.setStart(s.node, s.offset);
-  r.setEnd(e.node, e.offset);
+  if (e) r.setEnd(e.node, e.offset); else r.setEnd(copy, copy.childNodes.length);
   const lines: { left: number; top: number; right: number; bottom: number }[] = [];
   const rects = Array.from(r.getClientRects?.() ?? []).filter(b => b.width > 0 && b.height > 0).sort((x, y) => x.top - y.top);
   for (const b of rects) {
@@ -347,15 +433,20 @@ function markPicked(copy: HTMLElement, from: number, length: number, tint: strin
 export async function renderRegion(block: Element, range: Range, win: Window = window, timeoutMs = CLIP_TIMEOUT_MS): Promise<ArrayBuffer> {
   const doc = block.ownerDocument;
   const br = block.getBoundingClientRect();
-  const { top, bottom } = regionBounds(range.getBoundingClientRect(), br);
+  const tr = range.getBoundingClientRect();
+  const { top, bottom } = regionBounds(tr, br);
   const s = textAfter(block, range.startContainer, range.startOffset);
   const e = textBefore(block, range.endContainer, range.endOffset);
+  // A range taller than the budget: the region ends near its own bottom, not
+  // at the range's end, so the rest of the range is never copied.
+  const cut = bottom < Math.min(br.bottom, tr.bottom + REGION_PAD);
   const part = doc.createRange();
   // Where the copy's text starts, to find the picked text in it.
   let origin: TextPoint | null = s;
   if (s && e) {
     const above = windowAround(block, s.node, s.offset, NEVER);
-    const below = windowAround(block, e.node, e.offset, NEVER);
+    const endNear = (cut && pointBelow(block, s, bottom)) || e;
+    const below = windowAround(block, endNear.node, endNear.offset, NEVER);
     const a = pointAt(above, regionStart(above, top), false);
     const b = pointAt(below, regionEnd(below, bottom), true);
     part.setStart(a.node, a.offset);
@@ -366,22 +457,30 @@ export async function renderRegion(block: Element, range: Range, win: Window = w
     part.setStart(range.startContainer, range.startOffset);
     part.setEnd(range.endContainer, range.endOffset);
   }
+  // Copying runs the constructors of defined custom elements inside the part
+  // (cloning creates them); the copy then replaces them before it is
+  // connected, so their connected callbacks never run.
   let inner: Node = part.cloneContents();
   const common = part.commonAncestorContainer;
-  for (let a: Element | null = common.nodeType === Node.ELEMENT_NODE ? (common as Element) : common.parentElement; a && a !== block && block.contains(a); a = a.parentElement) {
-    const copy = a.cloneNode(false);
-    copy.appendChild(inner);
-    inner = copy;
+  const commonEl = common.nodeType === Node.ELEMENT_NODE ? (common as Element) : common.parentElement;
+  for (let a = commonEl; a && a !== block && block.contains(a); a = a.parentElement) {
+    const wrap = definedCustom(a) ? plainCopy(a) : a.cloneNode(false);
+    wrap.appendChild(inner);
+    inner = wrap;
   }
-  const copy = block.cloneNode(false) as HTMLElement;
+  const copy = definedCustom(block) ? plainCopy(block) : (block.cloneNode(false) as HTMLElement);
   copy.appendChild(inner);
+  // The page's elements behind the copy's placeholders, looked up only when there are any.
+  const originals = copy.querySelector("*") && Array.from(copy.querySelectorAll("*")).some(replacedInCopy) && commonEl
+    ? Array.from(commonEl.querySelectorAll("*")).filter(el => replacedInCopy(el) && part.intersectsNode(el))
+    : [];
+  neutraliseCopy(copy, originals);
   const fixed: Record<string, string> = {
     position: "fixed", left: "-100000px", top: "0", width: `${br.width}px`, "box-sizing": "border-box",
     height: "auto", "min-height": "0", "max-height": "none", margin: "0", overflow: "hidden",
     transform: "none", "pointer-events": "none",
   };
   for (const [k, v] of Object.entries(fixed)) copy.style?.setProperty(k, v, "important");
-  copy.setAttribute("aria-hidden", "true");
   block.after(copy);
   try {
     if (s && e && origin) markPicked(copy, charsBetween(block, origin, s), charsBetween(block, s, e), outlineColors(backgroundBehind(block)).tint);

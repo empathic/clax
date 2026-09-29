@@ -191,9 +191,17 @@ export const TEXT_INLINE: ReadonlySet<string> = new Set(["span", "code", "em", "
  * the viewport, as is anything inside one. */
 export const ELEMENT_TARGETS = "button, input, select, textarea, a[href], img, svg, video, audio, canvas, iframe, object, [role=button], [contenteditable], label, summary";
 
-/** Whether `el` is text-like inline content (see `TEXT_INLINE`) outside any
- * control or replaced element. */
-const textInline = (el: Element) => TEXT_INLINE.has(el.localName) && isInline(el) && !el.closest(ELEMENT_TARGETS);
+/** Whether `el` is text-like inline content (see `TEXT_INLINE`). */
+const textInline = (el: Element) => TEXT_INLINE.has(el.localName) && isInline(el);
+
+/** The nearest of `el` and its ancestors matching `ELEMENT_TARGETS` that is
+ * not oversized (an editable article is not a control), or null. */
+function controlOf(el: Element, vp: Viewport): Element | null {
+  for (let c = el.closest(ELEMENT_TARGETS); c; c = c.parentElement?.closest(ELEMENT_TARGETS) ?? null) {
+    if (!isOversized(c.getBoundingClientRect(), vp)) return c;
+  }
+  return null;
+}
 
 const LINE_STOP = /\n/g;
 const SENTENCE_STOP = /[.!?](?=\s)|\n/g;
@@ -229,9 +237,11 @@ function blockOf(el: Element, stop: Element | null = null): Element {
 
 /** What comment mode targets for the pointer at (`x`, `y`) over `el`. An
  * element that fits the viewport is the target, unless it is text-like inline
- * content (`TEXT_INLINE`, outside any `ELEMENT_TARGETS`) inside an oversized
- * block, which is then treated as the element under the pointer (so the
- * tokens of highlighted code do not each become a target). Over an
+ * content (`TEXT_INLINE`) inside an oversized block: then the nearest
+ * enclosing control or replaced element (`ELEMENT_TARGETS`) that is not
+ * oversized is the target, and without one the block is treated as the
+ * element under the pointer (so the tokens of highlighted code do not each
+ * become a target). Over an
  * oversized element the target is the line under the pointer in preformatted
  * text, the block around the text when that block fits, or the sentence around
  * it; with no text under the pointer, the smallest element under it that fits;
@@ -242,6 +252,8 @@ export function chooseTarget(doc: Document, el: Element, x: number, y: number, v
     if (!textInline(el)) return el;
     const block = blockOf(el);
     if (block === el || block === doc.body || block === doc.documentElement || !isOversized(block.getBoundingClientRect(), vp)) return el;
+    const control = controlOf(el, vp);
+    if (control) return control;
     el = block;
   }
   const caret = caretAt(doc, x, y);

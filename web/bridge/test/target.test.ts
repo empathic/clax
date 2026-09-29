@@ -183,6 +183,22 @@ describe("chooseTarget", () => {
       caret = { node: tok.firstChild!, offset: 1 };
       expect(chooseTarget(document, tok, 10, 10, vp)).toBeInstanceOf(Range);
     });
+    it("resolves a token inside a link in an oversized <pre> to the link", () => {
+      document.body.innerHTML = `<pre id="src">first line\ncall <a href="#fn"><code>fn</code></a>() here\nlast</pre>`;
+      big(document.getElementById("src")!);
+      const code = document.querySelector("code")!;
+      caret = { node: code.firstChild!, offset: 1 };
+      expect(chooseTarget(document, code, 10, 10, vp)).toBe(document.querySelector("a"));
+    });
+    it("ignores an oversized editable region as a control: its lines are the targets", () => {
+      for (const editable of ["true", "false"]) {
+        document.body.innerHTML = `<div id="ed" contenteditable="${editable}" style="white-space: pre">alpha <span>one</span>\nbeta <b>two</b>\ngamma</div>`;
+        big(document.getElementById("ed")!);
+        const b = document.querySelector("b")!;
+        caret = { node: b.firstChild!, offset: 1 };
+        expect(String(chooseTarget(document, b, 10, 10, vp)), editable).toBe("beta two");
+      }
+    });
     it("keeps a token as the target when its block fits the viewport", () => {
       document.body.innerHTML = CODE;
       const kw = document.querySelector(".kw")!;
