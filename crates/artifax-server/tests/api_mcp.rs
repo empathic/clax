@@ -231,3 +231,85 @@ async fn mcp_accepts_the_daemons_own_address_when_bound_to_it() {
         .unwrap();
     assert_eq!(res.status(), 403);
 }
+
+/// Initializes an MCP session on `/mcp`; the `mcp-session-id`, if any.
+async fn mcp_session(ts: &TestServer) -> Option<String> {
+    let res = mcp_post(ts, &initialize())
+        .bearer_auth(&ts.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let session = res
+        .headers()
+        .get("mcp-session-id")
+        .map(|v| v.to_str().unwrap().to_string());
+    rpc_message(res).await;
+    let mut req = mcp_post(
+        ts,
+        &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+    )
+    .bearer_auth(&ts.token);
+    if let Some(s) = &session {
+        req = req.header("mcp-session-id", s);
+    }
+    assert!(req.send().await.unwrap().status().is_success());
+    session
+}
+
+async fn mcp_call(
+    ts: &TestServer,
+    session: &Option<String>,
+    id: u32,
+    name: &str,
+    args: Value,
+) -> Value {
+    let mut req = mcp_post(
+        ts,
+        &json!({"jsonrpc": "2.0", "id": id, "method": "tools/call", "params": {"name": name, "arguments": args}}),
+    )
+    .bearer_auth(&ts.token);
+    if let Some(s) = session {
+        req = req.header("mcp-session-id", s);
+    }
+    let res = req.send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    rpc_message(res).await
+}
+
+/// The daemon's `/mcp` has no harness session, so agent replies and resolves
+/// fail with `unknown_session` and write nothing.
+#[tokio::test]
+async fn mcp_reply_and_resolve_without_a_session_are_unknown_session() {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("Doc", &[("index.html", "<h2>x</h2>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let t = ts.thread(&aid, 1, "@agent fix").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let session = mcp_session(&ts).await;
+    for (id, name, args) in [
+        (
+            2,
+            "comments_reply",
+            json!({"url_or_id": aid, "thread_id": tid, "text": "done"}),
+        ),
+        (
+            3,
+            "comments_resolve",
+            json!({"url_or_id": aid, "thread_id": tid}),
+        ),
+    ] {
+        let call = mcp_call(&ts, &session, id, name, args).await;
+        assert_eq!(call["result"]["isError"], true, "{name}: {call}");
+        let text = call["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("unknown_session"), "{name}: {text}");
+    }
+    let after: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(after["thread"]["status"], "open");
+    assert_eq!(after["thread"]["comments"].as_array().unwrap().len(), 1);
+}
