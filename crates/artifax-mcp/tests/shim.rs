@@ -400,3 +400,30 @@ async fn a_session_ended_under_the_shim_is_replaced_on_the_next_publish() {
     assert_eq!(status["session"]["id"], live[0]["id"]);
     shim.finish().await;
 }
+
+#[tokio::test]
+async fn an_older_daemon_is_replaced_on_the_same_bind() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let out = std::process::Command::new(artifax_bin())
+        .args(["--port", "0", "serve", "--bind", "0.0.0.0"])
+        .env("ARTIFAX_HOME", &home)
+        .env("HOME", dir.path())
+        .output()
+        .expect("run artifax serve");
+    assert!(out.status.success(), "{out:?}");
+    // Make the running daemon look older than the shim.
+    let path = home.join("daemon.json");
+    let mut info: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let old_pid = info["pid"].as_u64().unwrap();
+    info["version"] = json!("0.0.1");
+    std::fs::write(&path, info.to_string()).unwrap();
+
+    let shim = Shim::start_in(dir, None).await;
+    ok(&shim.call("status", json!({})).await);
+    let now = read_daemon_info(&shim.home()).unwrap();
+    assert_ne!(u64::from(now.pid), old_pid, "the older daemon was replaced");
+    assert_eq!(now.bind, "0.0.0.0");
+    assert!(!artifax_server::daemon::pid_alive(old_pid as u32));
+    shim.finish().await;
+}

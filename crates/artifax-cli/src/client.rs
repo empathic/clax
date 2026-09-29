@@ -161,8 +161,8 @@ impl Client {
 
     /// As [`Client::connect`], but a running daemon older than this binary is
     /// stopped (waiting up to 5 s for it to exit) and replaced by one started
-    /// from this binary. A newer daemon is kept, with a warning logged once per
-    /// process.
+    /// from this binary on the old daemon's bind address (logged at info). A
+    /// newer daemon is kept, with a warning logged once per process.
     pub fn connect_matching_version(home: &Home, port: u16) -> anyhow::Result<Client> {
         let ours = env!("CARGO_PKG_VERSION");
         let c = Client::connect(home, port)?;
@@ -178,13 +178,23 @@ impl Client {
             }
             return Ok(c);
         }
+        let bind: IpAddr = c
+            .info
+            .bind
+            .parse()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        tracing::info!(
+            "replacing artifax daemon v{} (pid {}) with v{ours} bound to {bind}",
+            c.info.version,
+            c.info.pid
+        );
         c.shutdown()
             .with_context(|| format!("stopping artifax daemon v{}", c.info.version))?;
         let deadline = Instant::now() + Duration::from_secs(5);
         while Instant::now() < deadline && pid_alive(c.info.pid) {
             std::thread::sleep(Duration::from_millis(50));
         }
-        Client::connect(home, port)
+        Client::connect_with_bind(home, port, bind)
     }
 
     /// Errors when the running daemon is bound to a different address than `requested`.
