@@ -1,0 +1,77 @@
+import { test, expect, type Page } from "@playwright/test";
+import { startDaemon, publish } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+
+const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
+
+/** Records every artifax:* message the shell page receives; clips are reduced to their byte length. */
+async function record(page: Page) {
+  await page.addInitScript(() => {
+    (window as any).artifaxMsgs = [];
+    addEventListener("message", e => {
+      const m = e.data;
+      if (m && typeof m.type === "string" && m.type.startsWith("artifax:")) {
+        (window as any).artifaxMsgs.push({ ...m, clipPng: undefined, clipBytes: m.clipPng ? m.clipPng.byteLength : 0 });
+      }
+    });
+  });
+}
+
+async function last(page: Page, type: string): Promise<any> {
+  await expect.poll(() => page.evaluate(t => (window as any).artifaxMsgs.some((m: any) => m.type === t), type), { timeout: 10_000 }).toBe(true);
+  return page.evaluate(t => (window as any).artifaxMsgs.filter((m: any) => m.type === t).at(-1), type);
+}
+
+async function toFrame(page: Page, msg: unknown) {
+  await page.evaluate(m => (document.querySelector("iframe.frame") as HTMLIFrameElement).contentWindow!.postMessage(m, "*"), msg);
+}
+
+async function contentFrame(page: Page, id: string, n: number) {
+  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
+  return page.frame({ url })!;
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: hover outlines, element and range picks carry anchors and clips`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Bridge ${mode}`, { "index.html": PAGE });
+    await record(page);
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch {} });
+    await page.goto(`${d.base}/a/${artifact.id}`);
+    const frame = await contentFrame(page, artifact.id, 1);
+    expect((await last(page, "artifax:hello")).version).toBe(1);
+
+    await toFrame(page, { type: "artifax:comment-mode", on: true });
+    await frame.locator("h2").hover();
+    await expect(frame.locator("artifax-overlay .o")).toBeVisible();
+    expect((await last(page, "artifax:hover")).selector).toBe("body > main > h2");
+
+    await frame.locator("h2").click();
+    const pick = await last(page, "artifax:pick");
+    expect(pick.anchor).toMatchObject({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals" });
+    expect(pick.clipError).toBeUndefined();
+    expect(pick.clipBytes).toBeGreaterThan(0);
+
+    const box = (await frame.locator("p").boundingBox())!;
+    await page.mouse.move(box.x + 3, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + 90, box.y + box.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
+    const range = await last(page, "artifax:pick");
+    expect(range.anchor.quote.length).toBeGreaterThan(0);
+    expect("Grow revenue and keep costs flat this quarter.").toContain(range.anchor.quote);
+
+    await toFrame(page, { type: "artifax:resolve-anchors", requestId: "r1", anchors: [{ id: "t1", anchor: pick.anchor }] });
+    const res = await last(page, "artifax:anchors");
+    expect(res.requestId).toBe("r1");
+    expect(res.results[0]).toMatchObject({ id: "t1", found: true, method: "exact" });
+
+    await toFrame(page, { type: "artifax:comment-mode", on: false });
+    await frame.locator("h2").hover();
+    await expect(frame.locator("artifax-overlay .o")).toBeHidden();
+  });
+}

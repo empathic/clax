@@ -1,0 +1,208 @@
+// Anchor creation and re-resolution (spec §9 "Anchors"). Resolution order:
+// selector with a matching html_hash ("exact"), the selector alone
+// ("selector"), the quote located by prefix and suffix ("quote"), a
+// registered custom name ("custom"); otherwise the anchor is detached.
+
+import type { Anchor, AnchorRect, ResolveMethod } from "./protocol";
+import { sha256Hex } from "./sha256";
+
+export const AFFIX = 32;
+export const MAX_QUOTE = 2000;
+/** The daemon's limit on selector length, in characters. */
+export const MAX_SELECTOR = 1024;
+export const OVERLAY_TAG = "artifax-overlay";
+const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
+const SIMPLE_TAG = /^[a-z][a-z0-9-]*$/;
+
+const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff;
+const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff;
+/** `text.slice(start, end)`, narrowed so it never starts or ends inside a
+ * surrogate pair (the daemon's JSON parser rejects lone surrogates). */
+function cut(text: string, start: number, end: number): string {
+  if (start > 0 && start < text.length && isLow(text.charCodeAt(start)) && isHigh(text.charCodeAt(start - 1))) start++;
+  if (end > start && end < text.length && isHigh(text.charCodeAt(end - 1)) && isLow(text.charCodeAt(end))) end--;
+  return text.slice(start, Math.max(start, end));
+}
+
+interface Piece { node: Text; start: number }
+export interface TextIndex { text: string; pieces: Piece[] }
+export interface Resolved { method: ResolveMethod; element: Element; range: Range | null }
+
+/** The concatenated data of the text nodes under `root` that a reader sees
+ * (not in scripts, styles, or the Artifax overlay), with each node's offset. */
+export function textIndex(root: Node): TextIndex {
+  const doc = root.ownerDocument ?? (root as Document);
+  const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    acceptNode: n => {
+      const p = n.parentElement;
+      return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    },
+  });
+  const pieces: Piece[] = [];
+  let text = "";
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+    pieces.push({ node: n as Text, start: text.length });
+    text += (n as Text).data;
+  }
+  return { text, pieces };
+}
+
+function boundaryOffset(idx: TextIndex, container: Node, offset: number): number {
+  if (container.nodeType === Node.TEXT_NODE) {
+    const p = idx.pieces.find(x => x.node === container);
+    if (p) return p.start + Math.min(offset, p.node.data.length);
+  }
+  const point = container.ownerDocument!.createRange();
+  point.setStart(container, offset);
+  point.collapse(true);
+  for (const p of idx.pieces) if (point.comparePoint(p.node, 0) >= 0) return p.start;
+  return idx.text.length;
+}
+
+function rangeAt(idx: TextIndex, start: number, end: number): Range | null {
+  if (!idx.pieces.length) return null;
+  const locate = (off: number, atEnd: boolean) => {
+    for (const p of idx.pieces) {
+      const stop = p.start + p.node.data.length;
+      if (off < stop || (atEnd && off === stop)) return { node: p.node, offset: off - p.start };
+    }
+    const lastPiece = idx.pieces[idx.pieces.length - 1];
+    return { node: lastPiece.node, offset: lastPiece.node.data.length };
+  };
+  const s = locate(start, false);
+  const e = locate(end, true);
+  const r = s.node.ownerDocument!.createRange();
+  r.setStart(s.node, s.offset);
+  r.setEnd(e.node, e.offset);
+  return r;
+}
+
+/** A selector from `body` (or the nearest ancestor with a unique, simple ID),
+ * adding `:nth-of-type(k)` only where a parent has several children of the tag.
+ * A tag name that is not plain ASCII becomes `:nth-child(k)`, so the selector
+ * never holds control characters or line separators. A path longer than
+ * `MAX_SELECTOR` keeps only its trailing steps (best effort: it may then match
+ * an earlier element too). */
+export function cssPath(el: Element): string {
+  const full = fullPath(el);
+  if (full.length <= MAX_SELECTOR) return full;
+  const steps = full.split(" > ");
+  while (steps.length > 1 && steps.join(" > ").length > MAX_SELECTOR) steps.shift();
+  return steps.join(" > ");
+}
+
+function fullPath(el: Element): string {
+  const doc = el.ownerDocument;
+  const parts: string[] = [];
+  let cur: Element | null = el;
+  while (cur && cur !== doc.body && cur !== doc.documentElement) {
+    if (cur.id && /^[A-Za-z][\w-]*$/.test(cur.id) && doc.querySelectorAll(`#${cur.id}`).length === 1) {
+      parts.unshift(`#${cur.id}`);
+      return parts.join(" > ");
+    }
+    const tag = cur.tagName.toLowerCase();
+    const parent: Element | null = cur.parentElement;
+    let step = tag;
+    if (!SIMPLE_TAG.test(tag)) {
+      step = `:nth-child(${(parent ? Array.from(parent.children).indexOf(cur) : 0) + 1})`;
+    } else if (parent) {
+      const same = Array.from(parent.children).filter(c => c.tagName === cur!.tagName);
+      if (same.length > 1) step += `:nth-of-type(${same.indexOf(cur) + 1})`;
+    }
+    parts.unshift(step);
+    cur = parent;
+  }
+  return parts.length ? `body > ${parts.join(" > ")}` : "body";
+}
+
+const htmlHash = (el: Element) => `sha256:${sha256Hex(el.outerHTML)}`;
+
+function anchorRect(target: Element | Range, win: Window): AnchorRect {
+  const r = typeof target.getBoundingClientRect === "function" ? target.getBoundingClientRect() : null;
+  return { x: r?.x ?? 0, y: r?.y ?? 0, w: r?.width ?? 0, h: r?.height ?? 0, scrollX: win.scrollX, scrollY: win.scrollY, viewportW: win.innerWidth };
+}
+
+function span(idx: TextIndex, el: Element): [number, number] | null {
+  const inside = idx.pieces.filter(p => el.contains(p.node));
+  if (!inside.length) return null;
+  const lastPiece = inside[inside.length - 1];
+  return [inside[0].start, lastPiece.start + lastPiece.node.data.length];
+}
+
+function affixes(idx: TextIndex, start: number, quote: string) {
+  return { prefix: cut(idx.text, Math.max(0, start - AFFIX), start), suffix: cut(idx.text, start + quote.length, start + quote.length + AFFIX) };
+}
+
+export function buildElementAnchor(doc: Document, el: Element): Anchor {
+  const idx = textIndex(doc.body);
+  const s = span(idx, el);
+  let quote: string | null = null;
+  let prefix: string | null = null;
+  let suffix: string | null = null;
+  if (s && idx.text.slice(s[0], s[1]).trim()) {
+    quote = cut(idx.text, s[0], Math.min(s[1], s[0] + MAX_QUOTE));
+    ({ prefix, suffix } = affixes(idx, s[0], quote));
+  }
+  return { kind: "element", selector: cssPath(el), quote, prefix, suffix, html_hash: htmlHash(el), rect: anchorRect(el, doc.defaultView!), custom_name: null };
+}
+
+export function buildRangeAnchor(doc: Document, range: Range): Anchor {
+  const idx = textIndex(doc.body);
+  const start = boundaryOffset(idx, range.startContainer, range.startOffset);
+  const end = Math.max(start, boundaryOffset(idx, range.endContainer, range.endOffset));
+  const quote = cut(idx.text, start, Math.min(end, start + MAX_QUOTE));
+  const c = range.commonAncestorContainer;
+  const el = c.nodeType === Node.ELEMENT_NODE ? (c as Element) : c.parentElement!;
+  return { kind: "range", selector: cssPath(el), quote, ...affixes(idx, start, quote), html_hash: htmlHash(el), rect: anchorRect(range, doc.defaultView!), custom_name: null };
+}
+
+const commonSuffix = (a: string, b: string) => { let n = 0; while (n < a.length && n < b.length && a[a.length - 1 - n] === b[b.length - 1 - n]) n++; return n; };
+const commonPrefix = (a: string, b: string) => { let n = 0; while (n < a.length && n < b.length && a[n] === b[n]) n++; return n; };
+
+/** The occurrence of `quote` in `idx.text` (inside `within` when given) whose
+ * surroundings best match `prefix` and `suffix`; the first on a tie. */
+export function findQuote(idx: TextIndex, quote: string, prefix: string, suffix: string, within?: [number, number]): [number, number] | null {
+  if (!quote) return null;
+  const [lo, hi] = within ?? [0, idx.text.length];
+  let best: [number, number] | null = null;
+  let bestScore = -1;
+  for (let i = idx.text.indexOf(quote, lo); i !== -1 && i + quote.length <= hi; i = idx.text.indexOf(quote, i + 1)) {
+    const score = commonSuffix(idx.text.slice(Math.max(0, i - prefix.length), i), prefix)
+      + commonPrefix(idx.text.slice(i + quote.length, i + quote.length + suffix.length), suffix);
+    if (score > bestScore) { best = [i, i + quote.length]; bestScore = score; }
+  }
+  return best;
+}
+
+function query(doc: Document, selector: string): Element | null {
+  try { return doc.querySelector(selector); } catch { return null; }
+}
+
+export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map()): Resolved | null {
+  if (a.kind === "custom") {
+    const el = a.custom_name ? custom.get(a.custom_name) : undefined;
+    return el ? { method: "custom", element: el, range: null } : null;
+  }
+  const idx = textIndex(doc.body);
+  const el = a.selector ? query(doc, a.selector) : null;
+  if (el) {
+    const method: ResolveMethod = a.html_hash && htmlHash(el) === a.html_hash ? "exact" : "selector";
+    let range: Range | null = null;
+    if (a.kind === "range" && a.quote) {
+      const s = span(idx, el);
+      const hit = s && findQuote(idx, a.quote, a.prefix ?? "", a.suffix ?? "", s);
+      range = hit ? rangeAt(idx, hit[0], hit[1]) : null;
+    }
+    return { method, element: el, range };
+  }
+  if (a.quote) {
+    const hit = findQuote(idx, a.quote, a.prefix ?? "", a.suffix ?? "");
+    const range = hit && rangeAt(idx, hit[0], hit[1]);
+    if (range) {
+      const c = range.commonAncestorContainer;
+      const element = c.nodeType === Node.ELEMENT_NODE ? (c as Element) : c.parentElement!;
+      return { method: "quote", element, range: a.kind === "range" ? range : null };
+    }
+  }
+  return null;
+}

@@ -21,6 +21,7 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "modern-screenshot": "^4.6.0",
     "preact": "^10.25.0"
   }
 }
