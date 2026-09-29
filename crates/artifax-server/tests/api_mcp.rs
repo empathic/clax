@@ -67,7 +67,7 @@ async fn mcp_refuses_a_non_local_host() {
 }
 
 #[tokio::test]
-async fn mcp_lists_the_nine_tools() {
+async fn mcp_lists_the_fourteen_tools() {
     let ts = TestServer::spawn().await;
     let res = mcp_post(&ts, &initialize())
         .bearer_auth(&ts.token)
@@ -121,6 +121,9 @@ async fn mcp_lists_the_nine_tools() {
         names,
         [
             "asset_upload",
+            "comments_read",
+            "comments_reply",
+            "comments_resolve",
             "delete",
             "list",
             "open",
@@ -128,7 +131,9 @@ async fn mcp_lists_the_nine_tools() {
             "publish",
             "read",
             "status",
-            "unpin"
+            "unpin",
+            "wait_for_feedback",
+            "watch"
         ]
     );
 

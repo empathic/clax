@@ -204,6 +204,9 @@ async fn serves_the_tools_and_registers_the_harness_session() {
         names,
         [
             "asset_upload",
+            "comments_read",
+            "comments_reply",
+            "comments_resolve",
             "delete",
             "list",
             "open",
@@ -211,7 +214,9 @@ async fn serves_the_tools_and_registers_the_harness_session() {
             "publish",
             "read",
             "status",
-            "unpin"
+            "unpin",
+            "wait_for_feedback",
+            "watch"
         ]
     );
 
@@ -348,7 +353,7 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     std::fs::write(dir.path().join("ax"), "not a directory").unwrap();
     let mut shim = Shim::start_in(dir, None).await;
 
-    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 9);
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 14);
     let r = tokio::time::timeout(Duration::from_secs(10), shim.call("list", json!({})))
         .await
         .expect("the tool answers within 10s instead of hanging");
@@ -429,5 +434,64 @@ async fn an_older_daemon_is_replaced_on_the_same_bind() {
     assert_ne!(u64::from(now.pid), old_pid, "the older daemon was replaced");
     assert_eq!(now.bind, "0.0.0.0");
     assert!(!artifax_server::daemon::pid_alive(old_pid as u32));
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn piggyback_and_wait_through_the_shim() {
+    let shim = Shim::start(None).await;
+    let p = ok(&shim
+        .call(
+            "publish",
+            json!({"html": "<main><h2>Goals</h2></main>", "title": "Loop"}),
+        )
+        .await);
+    let aid = p["artifact_id"].as_str().unwrap().to_string();
+    let base = shim.daemon_base();
+    let http = reqwest::Client::builder().no_proxy().build().unwrap();
+    let thread = |body: &'static str| {
+        let form = reqwest::multipart::Form::new()
+            .text(
+                "anchor",
+                artifax_server::testing::element_anchor().to_string(),
+            )
+            .text("body", body)
+            .text("version", "1");
+        http.post(format!("{base}/api/artifacts/{aid}/threads"))
+            .multipart(form)
+            .send()
+    };
+    assert_eq!(thread("@agent two columns").await.unwrap().status(), 201);
+    let r = shim.call("list", json!({})).await;
+    assert_eq!(r.content.len(), 2, "{r:?}");
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["feedback"][0]["body"], "@agent two columns");
+    let trailing = &r.content[1].as_text().unwrap().text;
+    assert!(
+        trailing.starts_with(
+            "---\n[artifax] 1 comment sent to you:\n[artifax] Comment sent to you on \"Loop\""
+        ),
+        "{trailing}"
+    );
+    assert!(
+        trailing.contains("\nViewer: \"@agent two columns\"\n"),
+        "{trailing}"
+    );
+
+    let waiting = shim.call("wait_for_feedback", json!({"timeout_s": 10}));
+    let sending = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(thread("@agent and the footer").await.unwrap().status(), 201);
+        Instant::now()
+    };
+    let (r, sent) = tokio::join!(waiting, sending);
+    assert!(Instant::now().saturating_duration_since(sent) < Duration::from_secs(1));
+    let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(v["feedback"][0]["body"], "@agent and the footer");
+    assert_eq!(v["call_again"], false);
+    let v = ok(&shim
+        .call("wait_for_feedback", json!({"timeout_s": 1}))
+        .await);
+    assert_eq!(v["call_again"], true);
     shim.finish().await;
 }

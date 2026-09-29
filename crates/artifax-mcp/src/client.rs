@@ -477,6 +477,136 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`.
+    pub async fn threads(
+        &self,
+        id: &str,
+        include_resolved: bool,
+        cursor: Option<&str>,
+    ) -> Result<Value> {
+        let mut q: Vec<(&str, String)> = vec![("include_resolved", include_resolved.to_string())];
+        if let Some(c) = cursor {
+            q.push(("cursor", c.to_string()));
+        }
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{id}/threads"),
+            )
+            .query(&q)
+        })
+        .await
+    }
+
+    /// `GET /api/artifacts/<id>/threads/<tid>`: `{thread}` (with `clip_path`,
+    /// since the token is sent).
+    pub async fn thread(&self, id: &str, tid: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("/api/artifacts/{id}/threads/{tid}"),
+            )
+        })
+        .await
+    }
+
+    /// An agent reply: `{comment, thread}`, or `{guidance}` on a thread not
+    /// sent to the agent.
+    pub async fn reply(&self, id: &str, tid: &str, text: &str) -> Result<Value> {
+        let body = json!({"body": text, "author_kind": "agent"});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("/api/artifacts/{id}/threads/{tid}/comments"),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// Resolves as the agent: `{thread}`, or `{guidance}` on a thread not sent
+    /// to the agent.
+    pub async fn resolve(&self, id: &str, tid: &str) -> Result<Value> {
+        let body = json!({"as": "agent"});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("/api/artifacts/{id}/threads/{tid}/resolve"),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `PUT /api/sessions/<sid>/watches/<id>`: `{watch}`.
+    pub async fn watch(&self, id: &str, replies: bool) -> Result<Value> {
+        let body = json!({"replies_armed": replies});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/watches/{id}", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/watches/<id>`.
+    pub async fn unwatch(&self, id: &str) -> Result<()> {
+        self.send(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/watches/{id}", c.session_path()),
+            )
+        })
+        .await
+        .map(|_| ())
+    }
+
+    /// `GET /api/sessions/<sid>/watches`: `{watches}`.
+    pub async fn watches(&self) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("{}/watches", c.session_path()),
+            )
+        })
+        .await
+    }
+
+    /// `GET /api/sessions/<sid>/feedback?tier=<tier>&wait=<wait_s>[&artifact=<id>]`:
+    /// `{feedback, text, waited_s}`; the deadline is `wait_s` plus 10 s.
+    pub async fn feedback(&self, tier: &str, wait_s: u64, artifact: Option<&str>) -> Result<Value> {
+        let mut q: Vec<(&str, String)> =
+            vec![("tier", tier.to_string()), ("wait", wait_s.to_string())];
+        if let Some(a) = artifact {
+            q.push(("artifact", a.to_string()));
+        }
+        let deadline = Duration::from_secs(wait_s + 10);
+        self.json(|c| {
+            c.request(
+                reqwest::Method::GET,
+                &format!("{}/feedback", c.session_path()),
+            )
+            .query(&q)
+            .timeout(deadline)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/feedback/ack`: `{acknowledged}`.
+    pub async fn ack(&self, thread_ids: &[String]) -> Result<Value> {
+        let body = json!({"thread_ids": thread_ids});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/feedback/ack", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
     /// `PATCH /api/sessions/<id>` `{"heartbeat": true}` for a managed client's
     /// session, registering it first when needed, and keeps the returned row as
     /// [`DaemonClient::session`] (so a working directory the harness hook filled

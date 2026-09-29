@@ -1,11 +1,13 @@
-//! Tool result rendering: every result is one text block holding a pretty-printed
-//! JSON object that carries a `feedback` array (empty until comments exist).
+//! Tool result rendering: every result's first text block holds a pretty-printed
+//! JSON object that carries a `feedback` array; a success that hands over
+//! feedback adds a second, trailing text block that describes it as prose.
 
 use crate::client::ClientError;
 use rmcp::model::{CallToolResult, ContentBlock};
 use serde_json::{Map, Value, json};
 use std::path::Path;
 
+/// The error block: `obj` with an empty `feedback` array.
 fn text(mut obj: Map<String, Value>) -> ContentBlock {
     obj.insert("feedback".into(), json!([]));
     ContentBlock::text(
@@ -13,12 +15,28 @@ fn text(mut obj: Map<String, Value>) -> ContentBlock {
     )
 }
 
-/// A success result for `value`, which must be a JSON object.
+/// A success result for `value`, which must be a JSON object, with an empty
+/// `feedback` array.
 pub fn success(value: Value) -> CallToolResult {
-    let Value::Object(obj) = value else {
+    success_with(value, Vec::new(), None)
+}
+
+/// A success result for `value` (a JSON object) whose `feedback` array is
+/// `feedback`. When `feedback` is not empty and `text` is given, a second text
+/// block `---\n<text>` follows: the trailing block agents read as prose.
+pub fn success_with(value: Value, feedback: Vec<Value>, text: Option<String>) -> CallToolResult {
+    let Value::Object(mut obj) = value else {
         panic!("tool results are JSON objects");
     };
-    CallToolResult::success(vec![text(obj)])
+    let trailing = text
+        .filter(|_| !feedback.is_empty())
+        .map(|t| ContentBlock::text(format!("---\n{t}")));
+    obj.insert("feedback".into(), Value::Array(feedback));
+    let mut blocks = vec![ContentBlock::text(
+        serde_json::to_string_pretty(&Value::Object(obj)).expect("JSON values serialise"),
+    )];
+    blocks.extend(trailing);
+    CallToolResult::success(blocks)
 }
 
 /// An error result `{error: {code, message, ..extra}}`, where `extra` is a JSON
