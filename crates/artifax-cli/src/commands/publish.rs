@@ -197,7 +197,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 j["url"].as_str().unwrap_or_default()
             );
             if j["session"].is_null() {
-                text.push_str("\n");
+                text.push('\n');
                 text.push_str(NO_SESSION_NOTE);
             }
             text
