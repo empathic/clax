@@ -35,6 +35,8 @@ from the clone, or from a release.
   directory). Publishes are attributed to that session. When no daemon can be
   started then, the first tool call tries again. On session shutdown the session
   is ended.
+- The `artifax` skill (`skills/artifax/SKILL.md`): when to publish and the
+  page contract.
 - The `/artifax` command: `/artifax open [id]` opens the gallery or an
   artifact, `/artifax list` lists artifacts, `/artifax status` shows the daemon
   and session.

@@ -8,9 +8,11 @@ description: Use when the user wants a web page, app, dashboard, or visual they 
 Artifax runs a local server that hosts HTML pages ("artifacts") published by
 agents. Every publish is stored as a numbered version. The person opens the
 artifact URL in a browser; you never need to serve or preview the page yourself.
-The tools are exposed as the `artifax` MCP server (`publish`, `read`, `list`,
-`delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`); in Codex they are
-named `mcp__artifax__<tool>`, for example `mcp__artifax__publish`.
+The tools come from the Artifax Pi extension and are named `artifax_<tool>`:
+`artifax_publish`, `artifax_read`, `artifax_list`, `artifax_delete`,
+`artifax_open`, `artifax_pin`, `artifax_unpin`, `artifax_asset_upload`,
+`artifax_status`. The sections below name each tool without the prefix. The
+person can also type `/artifax open [id]`, `/artifax list`, or `/artifax status`.
 
 ## When to publish
 
@@ -81,8 +83,8 @@ Minimal skeleton:
 
 Results are one JSON object in a text block, with a `feedback` array (empty until
 comments exist). Failures are `{"error": {"code", "message", ...}}` with the
-tool result marked as an error. Use absolute paths for every local file
-argument.
+tool result marked as an error. Local file arguments may be absolute or
+relative to the Pi session's working directory (a leading `@` is dropped).
 
 ### publish
 
@@ -90,10 +92,10 @@ Publishes an HTML page as a new artifact or as a new version of an existing one.
 
 Arguments:
 
-- `html` (string) or `file_path` (absolute path to a local HTML file): exactly
+- `html` (string) or `file_path` (path to a local HTML file): exactly
   one. Published as `index.html`.
 - `files` (object, optional): supporting files keyed by published relative path.
-  Each value is `{ "path": "<absolute local file>" }` or
+  Each value is `{ "path": "<local file>" }` or
   `{ "content": "...", "encoding": "utf8" | "base64" }` (exactly one of `path`
   and `content`), plus optional `content_type` (inferred from the extension
   otherwise). A `null` value removes a file carried forward from the previous
@@ -161,7 +163,7 @@ Returns `artifact_id` and `pinned`.
 Uploads local files (images, video, fonts, data) as assets of an artifact.
 
 Arguments: `url_or_id` (required), and `file_path` or `file_paths`
-(absolute paths). Returns `assets`: objects with `id`, `url`, `content_type`,
+(local paths). Returns `assets`: objects with `id`, `url`, `content_type`,
 `size`. Reference an asset from a page by the `url` exactly as returned. Use
 `files` in `publish` instead for files that belong to a version (styles,
 scripts, small images).

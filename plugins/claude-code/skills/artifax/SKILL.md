@@ -9,7 +9,9 @@ Artifax runs a local server that hosts HTML pages ("artifacts") published by
 agents. Every publish is stored as a numbered version. The person opens the
 artifact URL in a browser; you never need to serve or preview the page yourself.
 The tools are exposed as the `artifax` MCP server (`publish`, `read`, `list`,
-`delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`).
+`delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`); installed as a
+plugin they are named `mcp__plugin_artifax_artifax__<tool>`, for example
+`mcp__plugin_artifax_artifax__publish`.
 
 ## When to publish
 
@@ -28,8 +30,9 @@ call `open` only when they want it shown in their browser.
 Every page follows this contract so it renders well in the gallery, in light and
 dark mode, and on a phone:
 
-- A `<title>` element with a short name (two to four words). It becomes the
-  artifact's title unless you pass `title`.
+- A `<title>` element with a short name (two to four words). Pass the same
+  name as `title` when you first publish: the daemon does not read the page's
+  `<title>`, and an artifact created without `title` is titled "Untitled".
 - Colors and other design values are CSS custom properties (tokens) on `:root`.
 - Dark mode is provided twice, so both the system setting and the person's
   explicit choice work:
@@ -175,5 +178,6 @@ reachable.
 - Comments: reading the person's comments on a page arrives in phase 3. Until
   then `feedback` is always empty; do not promise that you will see comments.
 - Capabilities: `window.claude.use(name)` resolves `null` for every name until
-  phase 4, and `capabilities` on `publish` is stored with the artifact; it has no effect until phase 4. Do not build pages that
-  depend on shared state, live data, or asking Claude questions.
+  phase 4, and `capabilities` on `publish` is stored with the artifact but has
+  no effect until phase 4. Do not build pages that depend on shared state, live
+  data, or asking the agent questions.

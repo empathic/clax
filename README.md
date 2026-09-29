@@ -30,6 +30,20 @@ The daemon starts automatically on first use. Data lives in `~/.artifax`; set `A
 
 To serve on the LAN, stop a running daemon first, then run `artifax serve --bind 0.0.0.0`.
 
+## Use from an agent
+
+Each harness gets the same nine tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`) and the `artifax` skill:
+
+- Claude Code: `/plugin marketplace add empathic/artifax`, then `/plugin install artifax@artifax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
+- Codex: `codex plugin marketplace add /path/to/artifax`, then `codex plugin add artifax@artifax`. See [plugins/artifax/README.md](plugins/artifax/README.md).
+- Pi: `pi install /absolute/path/to/artifax/plugins/pi`. See [plugins/pi/README.md](plugins/pi/README.md).
+
+The Claude Code and Codex plugins download the `artifax` binary on first use when none is installed; the Pi extension needs it on `PATH` (or `ARTIFAX_BIN`).
+
+## Documentation
+
+[docs/contract.md](docs/contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
+
 ## Development
 
 - `just help` (or bare `just`) lists every recipe with a description.
@@ -37,7 +51,7 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: `cargo fmt`, clippy with `-D warnings`, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
 
@@ -45,4 +59,4 @@ Writes need the token in `~/.artifax/daemon.json` (mode 0600, served only to loc
 
 Design: [docs/superpowers/specs/2026-09-28-artifax-design.md](docs/superpowers/specs/2026-09-28-artifax-design.md)
 
-Comments, agent plugins, and runtime capabilities arrive in later phases.
+Comments and runtime capabilities arrive in later phases.

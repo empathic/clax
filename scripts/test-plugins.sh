@@ -134,6 +134,49 @@ for f in "${skills[@]}"; do
     done
 done
 
+# The three skill copies (Claude Code, Codex, Pi) share the page contract word
+# for word, and docs/contract.md carries the same section.
+skill_copies=(plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md plugins/pi/skills/artifax/SKILL.md)
+# The lines from "## <heading>" up to, not including, the next "## " heading.
+section() {
+    awk -v h="## $2" '
+        $0 == h { on = 1; print; next }
+        on && /^## / { exit }
+        on { print }
+    ' "$1"
+}
+for f in "${skill_copies[@]}"; do
+    if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
+    if [ "$(frontmatter "$f" name)" = "artifax" ]; then pass "$f is named artifax"; else fail "$f frontmatter name is not artifax"; fi
+    if [ -n "$(frontmatter "$f" description)" ]; then pass "$f has a description"; else fail "$f has no frontmatter description"; fi
+    if [ -n "$(section "$f" "Page contract")" ]; then pass "$f has a Page contract section"; else fail "$f has no '## Page contract' section"; fi
+done
+same_section() {
+    local heading="$1"; shift
+    local first="$1" f
+    [ -f "$first" ] || return
+    for f in "${@:2}"; do
+        if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
+        if cmp -s <(section "$first" "$heading") <(section "$f" "$heading"); then
+            pass "'## $heading' in $f matches $first"
+        else
+            fail "'## $heading' in $f differs from $first"
+            diff <(section "$first" "$heading") <(section "$f" "$heading") | head -20
+        fi
+    done
+}
+# Pi reads only the resources its package.json manifest lists once it has one,
+# so the skills directory must be listed and shipped.
+if python3 - plugins/pi/package.json 2>/dev/null <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1]))
+ok = "skills" in d.get("pi", {}).get("skills", []) and "skills/" in d.get("files", [])
+sys.exit(0 if ok else 1)
+PY2
+then pass "plugins/pi/package.json lists and ships skills/"; else fail "plugins/pi/package.json must list skills in pi.skills and skills/ in files"; fi
+same_section "Page contract" "${skill_copies[@]}" docs/contract.md
+same_section "What is not yet available" plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md
+
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then
     if out="$(python3 "$validator" plugins/artifax 2>&1)"; then

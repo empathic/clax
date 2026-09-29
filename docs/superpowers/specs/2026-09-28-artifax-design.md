@@ -58,7 +58,7 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D11 | Write endpoints require a bearer token stored in `~/.artifax/daemon.json` (mode 0600); read and comment endpoints do not | LAN viewers can view and comment; only local processes can publish, delete, or administer. |
 | D12 | MCP tool names mirror claude.ai's tools (`publish`, `read`, `list`, `comments_read`, `db_get`, ...) | Agents that already know the Artifact tools transfer that knowledge; skill files carry the contract. |
 | D13 | Five phases, each shippable; phase 1 has no comments, no capabilities | Per the standing instruction; comments and capabilities are the churn-prone parts. |
-| D14 | Pi adapter is specified against the published extension API and clash-pi, marked unverified on this machine | Pi is not installed here. |
+| D14 | Pi adapter is specified against the published extension API and clash-pi, and verified against Pi 0.73.1 in phase 2 (§13) | Pi was not installed when this was designed. |
 
 ## 3. Architecture
 
@@ -126,12 +126,14 @@ plugins/
   claude-code/                     .claude-plugin/plugin.json, .mcp.json, hooks/, skills/, commands/, scripts/
   artifax/                         Codex plugin: .codex-plugin/plugin.json, .mcp.json, hooks/, skills/, scripts/
                                    (named artifax because Codex marketplace entries point at ./plugins/<plugin-name>)
-  pi/                              npm package @empathic/artifax-pi, extensions/artifax.ts
+  pi/                              npm package @empathic/artifax-pi: src/artifax.ts (the extension),
+                                   skills/ (the artifax skill)
 .claude-plugin/marketplace.json    Claude Code marketplace pointing at plugins/claude-code
 .agents/plugins/marketplace.json   Codex marketplace pointing at plugins/artifax
 docs/superpowers/specs/            this document
 docs/superpowers/plans/            one plan per phase
-docs/contract.md                   the page contract and capability behaviour, for agents and humans
+docs/contract.md                   the tool contract, sessions, page contract, and security model,
+                                   for agents and humans
 justfile, scripts/quality_gates.sh same gate style as toolpath
 ```
 
@@ -500,7 +502,7 @@ Reply with comments_reply, then comments_resolve when done.
 | 2 | Stop hook: if undelivered feedback exists for a watched artifact, output "block" with the payload as reason | Claude Code (confirmed shape), Codex (stop hook exists; block semantics unverified) | end of the current turn | Only fires when a turn ends; an idle session is not woken. Loop guard: a feedback row is delivered once, and the hook allows the stop when nothing new exists, honouring `stop_hook_active`. |
 | 3 | Prompt-submit hook adds pending feedback as additional context | Claude Code (`UserPromptSubmit`) | the user's next message | Depends on the user typing something. |
 | 4 | `wait_for_feedback` tool: long-polls the daemon for up to `timeout_s` | all three | immediate while waiting | Harness tool timeouts cap a single call (Codex defaults to 60 s), so the tool defaults to 50 s and returns "nothing yet, call again"; the skill tells the agent to loop while the user wants live feedback. |
-| 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: extension message injection (API name unverified, §13). Claude Code: none available to third-party plugins. | seconds when the harness submits the message itself; otherwise the user's next input | See below, and the resend rule. |
+| 5 | Native push | Codex: `codex queue --thread <id> --message` (below). Pi: the extension API's `sendUserMessage`, which starts a turn when idle (§13). Claude Code: none available to third-party plugins. | seconds when the harness submits the message itself; otherwise the user's next input | See below, and the resend rule. |
 
 ### Delivery and acknowledgement
 
@@ -597,18 +599,24 @@ The shim registers a session on start:
  "pid":48213,"parent_pid":48200}
 ```
 
-Harness session IDs are often unknown to the shim (Claude Code does not
-pass its session ID to MCP servers; Codex does not either). The hooks do
-receive them. `artifax hook --agent <x> session-start` therefore registers
-`{harness, harness_session_id, cwd, parent_pid}` and the daemon joins the
-two records on `(harness, parent_pid)`, since both the shim and the hook
-process are children of the same harness process. Where a harness exposes
+Claude Code passes `CLAUDE_CODE_SESSION_ID` (with `CLAUDE_PID` and
+`CLAUDE_PROJECT_DIR`) to MCP servers, so under Claude Code the shim registers
+with the harness session ID and the hook joins by that ID. Codex does not: it
+passes MCP servers only `PATH`, `PWD` and the variables the plugin's
+`env_vars` lists, so the Codex shim registers without one. The hooks do
+receive it. `artifax hook --agent <x> session-start` therefore registers
+`{harness, harness_session_id, cwd, parent_pid, ancestor_pids}` and the
+daemon joins the two records on `(harness, parent_pid)`, trying the hook's
+ancestors nearest first when its parent is a wrapper shell (Codex runs hooks
+under `bash`), since both the shim and the hook descend from the same harness
+process. Where a harness exposes
 the session ID in the shim's environment, the shim sends it and the join is
 by ID instead. Claude Code additionally sets `CLAUDE_CODE_SESSION_ID` for
 hook processes, as toolpath's plugin relies on.
 
 The registered `cwd` is `CLAUDE_PROJECT_DIR` (else the shim's own working
-directory) under Claude Code, and the shim's own working directory under Pi.
+directory) under Claude Code. Pi has no shim: its extension registers
+`{harness: "pi", harness_session_id, cwd, pid, parent_pid}` itself (§13).
 Codex starts the shim in the plugin's directory, so under Codex the shim
 registers its parent process's working directory (the Codex session's), read
 from `/proc/<ppid>/cwd` on Linux and `lsof` on macOS, or an empty `cwd` when
@@ -620,7 +628,11 @@ heartbeat for 5 minutes and a dead PID is marked ended.
 ## 12. MCP tool surface
 
 Exposed by the shim (stdio) and the daemon (HTTP). Names are shared across
-harnesses; Claude Code shows them as `mcp__artifax__<name>`.
+harnesses; each harness prefixes them: Claude Code shows them as
+`mcp__plugin_artifax_artifax__<name>` when installed as a plugin and as
+`mcp__artifax__<name>` from a plain `.mcp.json` entry named `artifax`, Codex
+as `mcp__artifax__<name>`, and the Pi extension registers them as
+`artifax_<name>`.
 
 Artifacts: `publish` (file_path or html, files map, title, description,
 icon, capabilities, url to update, if_version, label), `read` (url or id,
@@ -709,36 +721,45 @@ plugin:
   default_tools_approval_mode = "approve"` approves every artifax tool,
   including `delete`.
 
-### Pi (`plugins/pi`), unverified on this machine
+### Pi (`plugins/pi`)
 
-- npm package `@empathic/artifax-pi`, `pi.extensions: ["extensions/artifax.ts"]`,
-  installed with `pi install npm:@empathic/artifax-pi`, following clash-pi.
-- `extensions/artifax.ts`: on `session_start` runs `artifax hook --agent pi
-  session-start` with the Pi session ID; registers tools through the
-  extension API that call `artifax <cmd> --json`, or configures the stdio
-  MCP shim if Pi's extension API exposes MCP registration; on `tool_result`
-  appends pending feedback; for tier 5 uses the extension API's
-  message-injection call if one exists.
-- Pi is not installed on the machine this was designed on. Before the Pi
-  tasks of the phase 2 plan run, install Pi and re-check each item below
-  against the installed `@mariozechner/pi-coding-agent` types, recording
-  the answer in the plan:
-  1. Event names. `session_start`, `tool_call`, `tool_result` are confirmed
-     by clash-pi; confirm they still exist and their payload fields
-     (`event.sessionId`, `event.toolName`, `event.input`).
-  2. Tool registration. Whether the extension API can register a tool with
-     a JSON schema and an async handler, and what the return shape is.
-  3. MCP registration. Whether an extension can register a stdio MCP server;
-     if yes, the shim is used and item 2 is unnecessary.
-  4. Message injection. Whether an extension can submit a user-role message
-     into the running session, and whether that starts a turn when idle.
-     This decides whether Pi has tier 5.
-  5. Session ID propagation. Whether Pi exposes its session ID in the
-     environment of spawned processes; if not, parent-PID join per §11.
-  6. Install path. Whether `pi install npm:<pkg>` is still the install
-     command and how `package.json`'s `pi.extensions` is read.
-  7. UI. Whether `ctx.hasUI` and `ctx.ui.select` exist for a "watch this
-     artifact?" prompt; optional.
+- npm package `@empathic/artifax-pi` with `pi.extensions: ["src/artifax.ts"]`
+  and `pi.skills: ["skills"]` (Pi reads only the resources a `pi` manifest
+  lists once one exists). Installed from a clone with
+  `pi install /absolute/path/to/artifax/plugins/pi`, or loaded for one run
+  with `pi -e <path>`. It needs the `artifax` CLI on `PATH` or `ARTIFAX_BIN`.
+- `src/artifax.ts` registers `artifax_<tool>` for the nine tools through
+  `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
+  identical to the MCP tools. The tools call the daemon's REST API over
+  `node:http`, finding the daemon through `daemon.json` and starting it with
+  `artifax serve` when none is running. A tool error is thrown, so Pi marks the
+  result `isError`, with the JSON error body intact as its text.
+- On `session_start` the extension registers
+  `{harness: "pi", harness_session_id: <Pi session ID>, cwd, pid, parent_pid}`
+  within a 3 s budget (the first tool call registers when that does not
+  finish); on `session_shutdown` it ends the session with a 3 s deadline. It
+  sends no heartbeat: a row left behind when Pi exits uncleanly lapses through
+  the daemon's reaper.
+- The `/artifax open [id] | list | status` command.
+- `skills/artifax/SKILL.md`: the same skill as the other plugins, with
+  `artifax_<tool>` names, relative file paths resolved against the Pi session's
+  working directory, and the `/artifax` command.
+
+Verified against `@mariozechner/pi-coding-agent` 0.73.1:
+
+1. Events: `session_start`, `session_shutdown`, `tool_call` and `tool_result`
+   exist.
+2. Tools: `registerTool` takes a TypeBox parameter schema and an async
+   `execute` returning `{content, details}`.
+3. MCP: an extension cannot register an MCP server, hence the direct REST
+   calls.
+4. Message injection: `sendUserMessage` exists and starts a turn when the
+   agent is idle, so tier 5 is possible for Pi in phase 3.
+5. Session ID: read with `ctx.sessionManager.getSessionId()`; Pi does not put
+   it in spawned processes' environment.
+6. Install: `pi install <path>` (or `npm:<pkg>`); `package.json`'s
+   `pi.extensions` is read.
+7. UI: `ctx.hasUI` and `ctx.ui.notify` exist.
 
 ## 14. Security model
 
@@ -842,7 +863,7 @@ in the shell, and the version banner appears in an already-open tab.
 **Phase 2: MCP and the three plugins.** Shim, session registration, hooks
 for session-start/end, MCP tools for artifacts and `status`, HTTP MCP on
 the daemon, `ensure-artifax.sh`, Claude Code plugin with skill and
-commands, Codex plugin, Pi extension (unverified), release
+commands, Codex plugin, Pi extension, release
 workflow producing binaries with checksums. Ship when: an agent in Claude
 Code and Codex can publish and update an artifact through MCP, and the Pi
 extension passes its mocked tests.
@@ -889,10 +910,11 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   `hooks/hooks.json`, so there is no setup skill (§13).
 - **Codex marketplace format.** Resolved in phase 2:
   `.agents/plugins/marketplace.json` (§4, §13).
-- **Pi adapter.** Everything in §13 marked unverified.
-- **Claude Code session ID in the shim.** If Claude Code exposes its session
-  ID to MCP server processes, the parent-PID join in §11 becomes a
-  fallback only.
+- **Pi adapter.** Resolved in phase 2: the extension calls the REST API
+  directly and each §13 item is verified against Pi 0.73.1.
+- **Claude Code session ID in the shim.** Resolved in phase 2: Claude Code
+  passes `CLAUDE_CODE_SESSION_ID` to MCP servers, so the parent-PID join in
+  §11 is used only by Codex.
 - **Clip fidelity.** DOM-to-canvas rendering misses some CSS (backdrop
   filters, some SVG). If clips are frequently wrong, a headless-Chrome
   option behind a flag is the fallback; it is not in v1.

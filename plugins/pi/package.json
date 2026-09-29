@@ -12,10 +12,14 @@
   "pi": {
     "extensions": [
       "src/artifax.ts"
+    ],
+    "skills": [
+      "skills"
     ]
   },
   "files": [
-    "src/"
+    "src/",
+    "skills/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
