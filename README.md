@@ -33,7 +33,7 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 ## Development
 
 - `just help` (or bare `just`) lists every recipe with a description.
-- `just dev` runs an auto-reloading server on port 7480 and can be left running. A Rust change rebuilds and restarts the daemon; a web change rebuilds `web/dist` (reload the browser to see it). Extra arguments go to `serve`, for example `just dev --bind 0.0.0.0`. It needs `cargo-watch` (`cargo install cargo-watch`).
+- `just dev` runs an auto-reloading server on port 7480 and can be left running. A Rust change rebuilds and restarts the daemon; a web change rebuilds `web/dist` (reload the browser to see it). Extra arguments go to `serve`, for example `just dev --bind 0.0.0.0`. Ctrl-C stops everything. A daemon already on port 7480 must be stopped first (`just stop`). It needs `cargo-watch` (`cargo install cargo-watch`).
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 

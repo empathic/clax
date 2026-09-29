@@ -7,7 +7,7 @@ default: help
 help:
     @just --list --unsorted
 
-# Run an auto-reloading server: Rust changes restart the daemon, web changes rebuild
+# Run a server that reloads on Rust and web changes
 dev *ARGS:
     ./scripts/dev.sh {{ARGS}}
 
