@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "artifax": {
+      "command": "bash",
+      "args": ["./scripts/ensure-artifax.sh", "exec", "mcp", "--agent", "codex"],
+      "cwd": "./",
+      "env_vars": [
+        "ARTIFAX_HOME",
+        "ARTIFAX_NO_OPEN",
+        "ARTIFAX_BIN",
+        "ARTIFAX_INSTALL_DIR",
+        "ARTIFAX_CONFIG_DIR",
+        "ARTIFAX_RELEASE_BASE_URL",
+        "ARTIFAX_RELEASE_VERSION"
+      ]
+    }
+  }
+}

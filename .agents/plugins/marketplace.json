@@ -1,0 +1,20 @@
+{
+  "name": "artifax",
+  "interface": {
+    "displayName": "Artifax"
+  },
+  "plugins": [
+    {
+      "name": "artifax",
+      "source": {
+        "source": "local",
+        "path": "./plugins/artifax"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
