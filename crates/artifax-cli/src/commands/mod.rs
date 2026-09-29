@@ -1,3 +1,4 @@
+pub mod asset;
 pub mod delete;
 pub mod doctor;
 pub mod hook;
@@ -6,9 +7,11 @@ pub mod mcp;
 pub mod open;
 pub mod pin;
 pub mod publish;
+pub mod read;
 pub mod serve;
 pub mod status;
 pub mod stop;
+pub mod tools;
 
 use crate::client::Client;
 

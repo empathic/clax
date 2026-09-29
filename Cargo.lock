@@ -103,6 +103,7 @@ dependencies = [
  "libc",
  "predicates",
  "reqwest",
+ "rmcp",
  "rusqlite",
  "semver",
  "serde",

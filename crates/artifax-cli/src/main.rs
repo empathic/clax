@@ -35,6 +35,11 @@ pub enum Cmd {
     Publish(commands::publish::Args),
     /// List artifacts, or the files of one.
     List(commands::list::Args),
+    /// Read a published file of an artifact.
+    Read(commands::read::Args),
+    /// Manage an artifact's assets.
+    #[command(subcommand)]
+    Asset(commands::asset::Cmd),
     /// Open an artifact in the browser.
     Open(commands::open::Args),
     /// Delete an artifact.
@@ -95,6 +100,8 @@ fn main() {
         Cmd::Status(a) => commands::status::run(&cli, &home, a),
         Cmd::Publish(a) => commands::publish::run(&cli, &home, a),
         Cmd::List(a) => commands::list::run(&cli, &home, a),
+        Cmd::Read(a) => commands::read::run(&cli, &home, a),
+        Cmd::Asset(c) => commands::asset::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),

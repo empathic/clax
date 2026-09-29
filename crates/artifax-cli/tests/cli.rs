@@ -773,3 +773,133 @@ fn open_fails_when_the_opener_fails() {
         .stdout(predicate::str::contains(format!("/a/{id}")));
     e.stop();
 }
+
+#[test]
+fn read_prints_the_read_tool_result() {
+    let e = Env::new();
+    let page = write(e.dir.path(), "r/index.html", "<title>Read</title><p>v1");
+    write(e.dir.path(), "r/app.js", "console.log(1)");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0", "--file"])
+        .arg(e.dir.path().join("r/app.js"))
+        .arg(&page)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let pubd: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    let id = pubd["id"].as_str().unwrap().to_string();
+    write(e.dir.path(), "r/index.html", "<title>Read</title><p>v2");
+    e.cmd()
+        .args(["publish", "--id", &id])
+        .arg(&page)
+        .assert()
+        .success();
+    let json = |args: &[&str]| -> serde_json::Value {
+        serde_json::from_slice(&e.cmd().args(args).assert().success().get_output().stdout).unwrap()
+    };
+    let r = json(&["read", "--json", &id]);
+    assert_eq!(
+        r,
+        serde_json::json!({
+            "artifact_id": id,
+            "version": 2,
+            "path": "index.html",
+            "content_type": "text/html",
+            "truncated": false,
+            "size": 24,
+            "content": "<title>Read</title><p>v2",
+            "feedback": [],
+        })
+    );
+    let r = json(&[
+        "read",
+        "--json",
+        pubd["url"].as_str().unwrap(),
+        "--version",
+        "1",
+        "--path",
+        "app.js",
+        "--max-bytes",
+        "7",
+    ]);
+    assert_eq!(r["version"], 1);
+    assert_eq!(r["path"], "app.js");
+    assert_eq!(r["truncated"], true);
+    assert_eq!(r["content"], "console");
+
+    e.cmd()
+        .args(["read", &id])
+        .assert()
+        .success()
+        .stdout("<title>Read</title><p>v2");
+    e.cmd()
+        .args(["read", &id, "--path", "nope.css"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("not_found"));
+    e.stop();
+}
+
+#[test]
+fn asset_upload_prints_the_asset_upload_tool_result() {
+    let e = Env::new();
+    let page = write(e.dir.path(), "index.html", "<title>Assets</title>");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0"])
+        .arg(&page)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    std::fs::write(e.dir.path().join("a.png"), [1u8, 2, 3]).unwrap();
+    std::fs::write(e.dir.path().join("b.txt"), "hello").unwrap();
+    // Relative paths resolve against the working directory.
+    let out = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .args(["asset", "upload", "--json", &id, "a.png", "b.txt"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let r: serde_json::Value = serde_json::from_slice(&out).unwrap();
+    assert_eq!(r["feedback"], serde_json::json!([]));
+    let assets = r["assets"].as_array().unwrap();
+    assert_eq!(assets.len(), 2, "{r}");
+    assert_eq!(assets[0]["content_type"], "image/png");
+    assert_eq!(assets[0]["size"], 3);
+    assert_eq!(assets[1]["content_type"], "text/plain");
+    assert!(assets[0]["id"].is_string());
+    let url = assets[0]["url"].as_str().unwrap();
+    assert!(
+        url.starts_with("http://localhost:") && url.contains("/_blob/"),
+        "{url}"
+    );
+
+    let text = e
+        .cmd()
+        .current_dir(e.dir.path())
+        .args(["asset", "upload", &id, "a.png"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert!(String::from_utf8(text).unwrap().contains("/_blob/"));
+    e.cmd()
+        .args(["asset", "upload", &id, "/no/such/file.png"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("file_unreadable"));
+    e.stop();
+}
