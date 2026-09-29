@@ -495,6 +495,32 @@ describe("comments", () => {
     expect(pi.sent).toHaveLength(1);
   }, 20_000);
 
+  it("tier 5 yields to wait_for_feedback: the comment goes to the wait and the loop pauses", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-inject-wait");
+    await pi.emit("session_start", {}, ctx);
+    const aid = parts(await pi.callTool("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi inject wait" }, ctx)).json.artifact_id;
+    await new Promise(r => setTimeout(r, 300));
+    let pauses = 0;
+    const set = vi.spyOn(globalThis, "setTimeout");
+    set.mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      if (ms === INJECT_RETRY_MS) pauses++;
+      return realSetTimeout(fn, ms, ...rest);
+    }) as typeof setTimeout);
+    try {
+      const waiting = pi.callToolAsPi("artifax_wait_for_feedback", { url_or_id: aid, timeout_s: 5 }, ctx);
+      await new Promise(r => realSetTimeout(r, 300));
+      await browserThread(aid, "@agent during the wait");
+      const got = parts(await waiting).json;
+      expect(got.feedback).toHaveLength(1);
+      expect(pi.sent).toHaveLength(0);
+      // The daemon answered the loop's inject poll `{feedback: [], text: null, waited_s: 0}` during the wait.
+      expect(pauses).toBeGreaterThanOrEqual(1);
+    } finally {
+      set.mockRestore();
+      await pi.emit("session_shutdown", {}, ctx);
+    }
+  }, 20_000);
+
   it("tier 1 leaves error results alone and the feedback pending", async () => {
     const { pi, ctx } = load(daemon.home, "pi-tier1-error");
     const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi error" }, ctx)).json.artifact_id;
@@ -570,6 +596,26 @@ describe("comments", () => {
       await new Promise(r => setTimeout(r, 1500));
       expect(polls).toBeGreaterThanOrEqual(1);
       expect(polls).toBeLessThanOrEqual(2);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("status passes the push object through, including a codex queue failure", async () => {
+    const push = { tier: "queue", available: true, last_error: "codex queue exited with code 1", last_error_at: "2026-09-29T10:00:00Z" };
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) return reply({ feedback: [], text: null, waited_s: 0 });
+      if (req.url === "/api/sessions/s1/watches") return reply({ watches: [] });
+      if (req.url === "/api/sessions/s1") return reply({ session: { id: "s1" }, push });
+      return false;
+    });
+    try {
+      const pi = new FakePi();
+      artifaxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-artifax")) })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-status-push");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      expect(parts(await pi.callTool("artifax_status", {}, ctx)).json.push).toEqual(push);
     } finally {
       fake.close();
     }
