@@ -41,10 +41,11 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const threadsRef = useRef<Thread[]>([]);
   threadsRef.current = threads;
   // Thread changes (events and this shell's own writes) since the latest
-  // `listThreads` request: its answer may predate them, so they are replayed
-  // on top of it. Only the latest request's answer is applied.
-  const threadLoad = useRef<{ n: number; since: ((ts: Thread[]) => Thread[])[] }>({ n: 0, since: [] });
-  const changeThreads = (f: (ts: Thread[]) => Thread[]) => { threadLoad.current.since.push(f); setThreads(f); };
+  // `listThreads` request, kept while it is in flight: its answer may predate
+  // them, so they are replayed on top of it. Only the latest request's answer
+  // is applied; once it answers or fails, nothing more is kept.
+  const threadLoad = useRef<{ n: number; since: ((ts: Thread[]) => Thread[])[] | null }>({ n: 0, since: null });
+  const changeThreads = (f: (ts: Thread[]) => Thread[]) => { threadLoad.current.since?.push(f); setThreads(f); };
 
   useEffect(() => {
     getArtifact(id).then(d => {
@@ -66,6 +67,11 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
   const hostRef = useRef<CapabilityHost | null>(null);
+  // Whether the frame's latest hello named the shown artifact and version: only
+  // then are its capability requests answered and events pushed to it, so a
+  // document the frame navigated to gets nothing.
+  const helloOk = useRef(false);
+  useEffect(() => { helloOk.current = false; }, [id, shown, origin]);
   useEffect(() => {
     if (!data || origin === undefined) return;
     const host = new CapabilityHost(getToken().then(token => ({
@@ -76,7 +82,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       viewer: currentViewer,
       declared: (data.artifact.capabilities ?? {}) as Declared,
       prompt,
-      post: send,
+      post: m => { if (helloOk.current) send(m); },
       reload: () => location.assign(`/a/${id}`),
     })));
     hostRef.current = host;
@@ -84,10 +90,13 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   }, [id, shown, origin, data]);
   const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.map(t => ({ id: t.id, anchor: t.anchor })) });
   const loadThreads = () => {
-    const load = { n: threadLoad.current.n + 1, since: [] as ((ts: Thread[]) => Thread[])[] };
+    const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
     threadLoad.current = load;
     void report(listThreads(id), LOAD_FAILED, noticeFor(LOAD_FAILED)).then(ts => {
-      if (ts && threadLoad.current.n === load.n) setThreads(load.since.reduce((acc, f) => f(acc), ts));
+      if (threadLoad.current !== load) return;
+      const since = load.since ?? [];
+      load.since = null;
+      if (ts) setThreads(since.reduce((acc, f) => f(acc), ts));
     });
   };
   const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
@@ -110,7 +119,8 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       switch (m.type) {
         case "artifax:hello":
           // A stale or foreign document in the frame gets no welcome and no anchors.
-          if (!helloMatches(m, id, shown)) break;
+          helloOk.current = helloMatches(m, id, shown);
+          if (!helloOk.current) break;
           hostRef.current?.reset();
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
@@ -119,7 +129,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
         case "artifax:cancel": setCommenting(false); break;
         case "artifax:hover": break;
-        case "artifax:use": case "artifax:call": void hostRef.current?.handle(m); break;
+        case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
       }
     };
     addEventListener("message", onMessage);

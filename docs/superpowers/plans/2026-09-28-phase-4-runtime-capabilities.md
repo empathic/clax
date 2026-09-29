@@ -4830,7 +4830,7 @@ export const REGISTRY: Record<string, HandlerFactory> = {
 
 (`host.ts` imports `REGISTRY` only as a default parameter value; the cycle `host → registry → permissions → host` is type-only on the `permissions` side and resolves at runtime. If the bundler warns, move the default into `artifact.tsx`.)
 
-`web/shell/src/prompt.tsx`:
+`web/shell/src/prompt.tsx` (focus rule: the dialog opens with focus on "Don't allow", and "Allow" stays disabled for the first 500 ms (`ALLOW_DELAY_MS`), so a keystroke meant for the page cannot grant consent; Escape dismisses at any time; the listing below predates this rule, and the committed file implements it):
 
 ```tsx
 import { useEffect, useRef } from "preact/hooks";

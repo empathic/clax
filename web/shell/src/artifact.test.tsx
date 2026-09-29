@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "preact";
-import { forgetViewer } from "./threads";
 
 class FakeES {
   static last: FakeES | undefined;
@@ -46,7 +45,9 @@ async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (
 }
 
 describe("ArtifactView", () => {
-  beforeEach(() => { vi.resetModules(); forgetViewer(); FakeES.last = undefined; });
+  // `forgetViewer` comes from the fresh module registry, the same `threads`
+  // module the test's `import("./artifact")` then loads.
+  beforeEach(async () => { vi.resetModules(); (await import("./threads")).forgetViewer(); FakeES.last = undefined; });
   afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
 
   it("says not found only for a 404 status", async () => {
@@ -169,6 +170,61 @@ describe("ArtifactView", () => {
     expect(posted.filter(m => (m as { type: string }).type === "artifax:welcome")).toHaveLength(0);
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2 });
     await waitFor(() => posted.some(m => (m as { type: string }).type === "artifax:welcome"), "welcome");
+  });
+
+  it("answers capability requests only after a hello for the shown artifact and version", async () => {
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    const results = () => posted.filter(m => m.type === "artifax:use-result").map(m => m.id);
+    await new Promise(r => setTimeout(r, 30));
+    fromFrame(win, { type: "artifax:use", id: "before", name: "permissions" });
+    await new Promise(r => setTimeout(r, 30));
+    expect(results()).toEqual([]);
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2 });
+    fromFrame(win, { type: "artifax:use", id: "matched", name: "permissions" });
+    await waitFor(() => results().includes("matched"), "use answer after the hello");
+    // The frame navigated to another document, which greets as something else.
+    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2 });
+    fromFrame(win, { type: "artifax:use", id: "foreign", name: "permissions" });
+    fromFrame(win, { type: "artifax:call", id: "foreign-call", ns: "permissions", method: "state", args: [] });
+    await new Promise(r => setTimeout(r, 30));
+    expect(results()).toEqual(["matched"]);
+    expect(posted.some(m => m.type === "artifax:call-result")).toBe(false);
+  });
+
+  it("drops the thread changes it kept once the latest list answered or failed", async () => {
+    let lists = 0;
+    let failNext = false;
+    const t = (id: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] });
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async url => {
+        if (!url.includes("/threads")) return new Response(JSON.stringify(viewer));
+        lists++;
+        if (failNext) return new Response(JSON.stringify({ error: { code: "internal", message: "db locked" } }), { status: 500 });
+        return new Response(JSON.stringify({ threads: [], next_cursor: null }));
+      });
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    const es = await waitFor(() => FakeES.last, "event stream");
+    await waitFor(() => lists >= 1, "initial list");
+    await new Promise(r => setTimeout(r, 20));
+    // Answered: an event now is not replayed onto the next list, which no longer has it.
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: t("01JA") });
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "event thread");
+    es.emit("ready", {});
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (0)", "the list replaces the answered event");
+    // Failed: the changes kept for it are dropped, so a later list does not replay them.
+    failNext = true;
+    es.emit("ready", {});
+    await waitFor(() => root.querySelector(".banner.notice"), "failed load");
+    es.emit("thread", { type: "thread", artifact_id: ID, thread: t("01JB") });
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "event after the failure");
+    failNext = false;
+    es.emit("ready", {});
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (0)", "the next list is not patched with dropped changes");
   });
 
   it("starts each pick with an empty composer and shows a failed post only in the banner", async () => {

@@ -76,3 +76,4 @@ select { font: inherit; background: var(--card); color: var(--fg); border: 1px s
 .prompt h2 { font-size: 16px; margin: 0 0 8px; }
 .prompt p { margin: 0 0 12px; overflow-wrap: anywhere; }
 .prompt .actions { display: flex; gap: 8px; justify-content: flex-end; }
+.prompt button:disabled { opacity: .5; cursor: default; }

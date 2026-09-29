@@ -1,17 +1,25 @@
-import { useEffect, useRef } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import type { Prompt, PromptAnswer } from "./caps/grants";
 
 export type Ask = { prompt: Prompt; answer(a: PromptAnswer): void };
 
+/** How long "Allow" stays disabled after the dialog opens. */
+export const ALLOW_DELAY_MS = 500;
+
 /** The one modal the shell shows for a page: a capability's consent or a
- * download's confirmation. Escape dismisses it (neither allow nor deny). */
+ * download's confirmation. It opens with focus on the refusing button, and
+ * "Allow" stays disabled for [`ALLOW_DELAY_MS`], so a keystroke meant for the
+ * page cannot grant consent. Escape dismisses it (neither allow nor deny). */
 export function PromptDialog({ ask }: { ask: Ask }) {
-  const allow = useRef<HTMLButtonElement>(null);
+  const deny = useRef<HTMLButtonElement>(null);
+  const [armed, setArmed] = useState(false);
   useEffect(() => {
-    allow.current?.focus();
+    setArmed(false);
+    deny.current?.focus();
+    const timer = setTimeout(() => setArmed(true), ALLOW_DELAY_MS);
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") ask.answer("dismiss"); };
     addEventListener("keydown", onKey);
-    return () => removeEventListener("keydown", onKey);
+    return () => { clearTimeout(timer); removeEventListener("keydown", onKey); };
   }, [ask]);
   return (
     <div class="prompt-backdrop">
@@ -19,8 +27,8 @@ export function PromptDialog({ ask }: { ask: Ask }) {
         <h2 id="prompt-title">{ask.prompt.title}</h2>
         <p id="prompt-body">{ask.prompt.body}</p>
         <div class="actions">
-          <button type="button" onClick={() => ask.answer("deny")}>{ask.prompt.deny}</button>
-          <button type="button" class="primary" ref={allow} onClick={() => ask.answer("allow")}>{ask.prompt.allow}</button>
+          <button type="button" ref={deny} onClick={() => ask.answer("deny")}>{ask.prompt.deny}</button>
+          <button type="button" class="primary" disabled={!armed} onClick={() => { if (armed) ask.answer("allow"); }}>{ask.prompt.allow}</button>
         </div>
       </div>
     </div>
