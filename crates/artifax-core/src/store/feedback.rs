@@ -88,6 +88,7 @@ struct Pending {
     author: String,
     body: String,
     created_at: String,
+    via_page: bool,
 }
 
 fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> Tier {
@@ -181,7 +182,7 @@ impl Store {
             let mut stmt = tx.prepare(
                 "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
-                        c.author_name, c.body, c.created_at
+                        c.author_name, c.body, c.created_at, c.via_page
                  FROM feedback f
                  JOIN threads t ON t.id = f.thread_id
                  JOIN comments c ON c.id = f.comment_id
@@ -223,6 +224,7 @@ impl Store {
                             author: r.get(9)?,
                             body: r.get(10)?,
                             created_at: r.get(11)?,
+                            via_page: r.get::<_, i64>(12)? != 0,
                         })
                     },
                 )?
@@ -285,6 +287,7 @@ impl Store {
                 anchor,
                 clip_path,
                 author: p.author,
+                via_page: p.via_page,
                 body: p.body,
                 resent: p.delivered,
                 created_at: p.created_at,
@@ -558,6 +561,7 @@ mod tests {
                 author_name: "Alex".into(),
                 body: body.into(),
                 clip: None,
+                via_page: false,
             },
         )
         .unwrap()
@@ -669,6 +673,7 @@ mod tests {
                 author_name: "Alex".into(),
                 via_session_id: None,
                 body: "unseen".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -681,6 +686,7 @@ mod tests {
                 author_name: "Alex".into(),
                 via_session_id: None,
                 body: "reopening".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -709,6 +715,7 @@ mod tests {
                 author_name: "claude".into(),
                 via_session_id: Some(owner.clone()),
                 body: "on it".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -725,6 +732,7 @@ mod tests {
                 author_name: "Alex".into(),
                 via_session_id: None,
                 body: "second".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -885,6 +893,7 @@ mod tests {
                     author_name: "Alex".into(),
                     via_session_id: None,
                     body: "later".into(),
+                    via_page: false,
                 },
             )
             .unwrap();
@@ -1127,6 +1136,7 @@ mod tests {
                     author_name: "A".into(),
                     body: "bad".into(),
                     clip,
+                    via_page: false,
                 },
             )
             .unwrap()
@@ -1221,6 +1231,7 @@ mod tests {
                     author_name: "".into(),
                     body: "one".into(),
                     clip: Some(b"\x89PNG\r\n\x1a\nx".to_vec()),
+                    via_page: false,
                 },
             )
             .unwrap();

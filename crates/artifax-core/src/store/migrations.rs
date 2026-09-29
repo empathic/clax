@@ -156,6 +156,8 @@ pub const MIGRATIONS: &[&str] = &[
     "ALTER TABLE artifacts ADD COLUMN doc_seq INTEGER NOT NULL DEFAULT 0;
     UPDATE artifacts SET doc_seq =
         COALESCE((SELECT MAX(version) FROM docs WHERE docs.artifact_id = artifacts.id), 0);",
+    // 9: comments a page wrote through the `comments` capability, as the viewer.
+    "ALTER TABLE comments ADD COLUMN via_page INTEGER NOT NULL DEFAULT 0;",
 ];
 
 #[cfg(test)]

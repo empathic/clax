@@ -15,8 +15,9 @@ import { REGISTRY } from "./registry";
 export interface CommentsUi {
   /** Opens the composer for a pick; false when a composer holds typed text,
    * unless `opts.area` (a page's drawn area), which moves that composer to
-   * the new anchor with its text. */
-  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string }, opts?: { area?: boolean }): boolean;
+   * the new anchor with its text. `label` is the page's words for the spot,
+   * shown in the composer only. */
+  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string }, opts?: { area?: boolean }): boolean;
   upsert(t: Thread): void;
   /** Drops a thread the page deleted. */
   remove(threadId: string): void;
@@ -28,6 +29,12 @@ export interface CommentsUi {
   /** Leaves comment mode unless a composer holds typed text. */
   exitMode(): void;
   state(): { mode: boolean; composing: boolean; threads: Thread[]; selected: string | null };
+  /** The viewer's click over an open composer or thread card: closes an empty
+   * composer or the card (a composer holding typed text stays); true when
+   * something closed. */
+  dismiss?(): boolean;
+  /** Starts comment mode (the page's own compose did). */
+  enterMode?(): void;
 }
 
 export type ViewerInfo = { publicId: string; name: string | null };

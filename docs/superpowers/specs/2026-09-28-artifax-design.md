@@ -240,13 +240,39 @@ Browser-facing:
   `GET /c/<aid>/v/<n>/<path>` supporting files; a file stored as
   `text/html` is wrapped exactly like the index (the bridge tag carries
   `data-file="<path>"`, `index.html` for the index; cached per artifact,
-  version, and file; `Cache-Control: no-store`), every other file is served
-  as stored. Also served at
+  version, and file), every other file is served as stored. Also served at
   `http://<aid>.localhost:<port>/v/<n>/...` for D5. On `<aid>.localhost` the
   daemon serves `/v/...`, `/healthz`, `/_artifax/*`, and `/_blob/*` and
   404s everything else.
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
+
+Browser caching (every route above):
+
+- Every HTML response (the shell's own document on every `/` and `/a/...`
+  path, and every wrapped page, `/c/...` and `/v/...` on an artifact host
+  alike, including a `text/html` file that is not UTF-8 and so is served as
+  stored) carries `Cache-Control: no-cache` and an `ETag`: the browser may
+  store it but revalidates it on every load, and the daemon answers
+  `304 Not Modified` when the `If-None-Match` it sends is current. No HTML
+  response is ever `immutable` or given a long `max-age`, so a page, and the
+  bridge tag inside it, is never older than the daemon serving it.
+- Bridge tags name the bridge by version:
+  `/_artifax/bridge.js?v=<first 12 hex digits of the bundle's SHA-256>`,
+  computed once when a release daemon starts (a debug build reads the
+  bundle from `web/dist` on every request, so it rehashes whenever the
+  file's modification time or size changes and the wrap cache drops pages
+  naming an older version). In a release build that URL is served
+  `public, max-age=31536000, immutable`; the bare `/_artifax/bridge.js`, a
+  `?v=` naming another bundle, and every bridge URL of a debug build are
+  served `no-cache` (with an `ETag`). A bridge tag is recognised only in the
+  exact form the daemon writes (`<script src="/_artifax/bridge.js"` or
+  `...bridge.js?v=<hex>"`, then ` data-artifact="`), so a page's own string
+  or comment containing the URL is kept.
+- Non-HTML supporting files (`/c/<aid>/v/<n>/<path>`) and `/_blob/<asset_id>`
+  are `public, max-age=31536000, immutable`: their URLs name one version's
+  or one asset's bytes, which never change. The shell's own bundles under
+  `/_artifax/shell/` have content-hashed names.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
   `comment`, `thread_resolved`, `thread_deleted`, `feedback_state`, `doc` events (rooms use their own WebSocket, not SSE).
   `artifact_deleted` is sent when an
@@ -280,8 +306,11 @@ Agent- and shell-facing JSON API under `/api`:
 - Comments: `GET /api/artifacts/<aid>/threads` (`include_resolved`,
   `cursor`, `limit`), `GET .../threads/<tid>`, `GET .../threads/<tid>/clip`
   (the PNG; `Content-Security-Policy: sandbox`, `nosniff`), `POST
-  .../threads` (create thread with first comment; no token), `POST
-  .../threads/<tid>/comments` (viewer: no token; agent: W,
+  .../threads` (create thread with first comment; no token; `via_page=true`
+  marks a comment the page wrote through the `comments` capability, whose
+  `@agent` then sends nothing), `POST
+  .../threads/<tid>/comments` (viewer: no token, optional `via_page` as
+  above; agent: W,
   `author_kind=agent`, and `X-Artifax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
   rows), `POST .../threads/<tid>/resolve` (viewer, or agent with W and
@@ -501,7 +530,7 @@ must not be stubbed into phase 1.
 The daemon wraps every HTML page of a version (`index.html` and every
 supporting file stored as `text/html`) at serve time into the
 document skeleton claude.ai uses (doctype, charset, viewport, the small
-reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
+reset), inserts `<script src="/_artifax/bridge.js?v=<bridge version>" data-artifact="<aid>"
 data-version="<n>" data-contract="0.2.61" data-file="<path>">` as the first element of
 `<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
@@ -510,8 +539,9 @@ bridge script inserted immediately after the first `<head ...>` tag (after
 the first `<body ...>` tag when there is no head, after the doctype when
 there is neither), so `window.claude` exists before any page script, as
 `claude.d.ts` promises; otherwise it is a fragment and is wrapped. A
-republished document that already carries a bridge tag keeps exactly one,
-for the new version. This is what makes a self-republished page (which sends
+republished document that already carries a bridge tag (at the versioned
+URL or, from before the URL carried a version, the bare one) keeps exactly
+one, for the new version at the current bridge URL (§6, browser caching). This is what makes a self-republished page (which sends
 the full skeleton) round-trip without nesting. Wrapping is pure and cached
 per version and file. The bridge greets the shell with its page's `file`,
 records it on every anchor it builds, and never resolves an anchor whose
@@ -582,11 +612,15 @@ files kept in `web/contract/`:
   thread through the routes in §6, which need `interact` or above. Write
   verbs ask the viewer's consent once per artifact; a page may open the
   composer 5 times in 10 s and write 10 times a minute per artifact in a
-  tab. Page anchors always name the frame's page and the view's version;
-  `create` and `reply` refuse text mentioning `@agent`, which only
-  `sendToClaude` may send. A custom-anchors page is told only the threads on
-  its own page, as handles. The shell renders all threads; the page never
-  lists them.
+  tab. Page anchors always name the frame's page and the view's version.
+  The page never learns a thread's store ID (opaque handles only; the
+  write verbs act only on threads it created in its current document).
+  Page-written comments are stored with `via_page` and shown and forwarded
+  as written by the page; an `@agent` in them is inert. Opening the
+  composer, `sendToClaude`, and a reply into a sent thread need the
+  viewer's recent gesture (the shell's transient user activation). A
+  custom-anchors page is told only the threads on its own page, as handles.
+  The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
@@ -727,6 +761,9 @@ Clip: /Users/alex/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
 Alex: "Make this a two-column layout and drop the third bullet."
 Reply with comments_reply, then comments_resolve when done.
 ```
+
+A comment the page wrote through the `comments` capability, as the viewer,
+is marked in the author line: `Alex (written by the page): "…"`.
 
 ### Delivery tiers (D8)
 

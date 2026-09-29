@@ -31,6 +31,16 @@ describe("Sidebar", () => {
     root.remove();
   });
 
+  it("says which comments the page wrote", () => {
+    const t: Thread = { ...base, id: "p", anchor, status: "open", sent_to_agent: false, comments: [{ ...comment("1", "viewer", "Alex", "from the page"), via_page: true }, comment("2", "viewer", "Alex", "by hand")] };
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    render(<Sidebar threads={[t]} resolved={{}} selected={null} onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />, root);
+    expect(Array.from(root.querySelectorAll(".comment .author"), a => a.textContent)).toEqual(["Alex · via the page", "Alex"]);
+    render(null, root);
+    root.remove();
+  });
+
   it("names who resolved a thread without exposing identifiers", () => {
     const me = { public_id: "u_0123456789abcdef012345", display_name: "Alex", created_at: base.created_at };
     const resolved = (id: string, by: string): Thread => ({ ...base, id, anchor, status: "resolved", sent_to_agent: false, resolved_at: base.created_at, resolved_by: by, comments: [comment(id, "viewer", "Viewer", "x")] });

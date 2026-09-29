@@ -143,23 +143,48 @@ describe("user in the shell", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  it("a superseded search resolves with the newest call's result, at the same moment", async () => {
+  it("a superseded search resolves with the newest call's result, at the same moment, never waiting on its own request", async () => {
     const replies: ((r: Response) => void)[] = [];
     const urls: string[] = [];
-    vi.stubGlobal("fetch", vi.fn((url: string) => { urls.push(url); return new Promise<Response>(r => { replies.push(r); }); }));
+    const signals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string, init: RequestInit) => {
+      urls.push(url);
+      signals.push(init.signal as AbortSignal);
+      return new Promise<Response>(r => { replies.push(r); });
+    }));
     const h = userHandler(env("tok", "Alex"), null as never);
     const reply = (name: string) => new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: name }] }));
     const done: string[] = [];
     const first = h.call("search", ["sa"]).then(r => { done.push("first"); return r; });
     await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
     const second = h.call("search", ["sam"]).then(r => { done.push("second"); return r; });
+    expect(signals[0].aborted).toBe(true);
     await vi.waitFor(() => expect(replies).toHaveLength(2), { timeout: 5_000 });
+    // The first request never answers; the first call still settles with the second.
     replies[1](reply("Sam B"));
     const newest = await second;
-    replies[0](reply("Sam A"));
+    expect(done).toEqual(["first", "second"]);
     const older = await first;
     expect([older, newest].map(r => (r as { name: string }[])[0].name)).toEqual(["Sam B", "Sam B"]);
     expect(urls).toEqual(["/api/viewers?q=sa", "/api/viewers?q=sam"]);
+  });
+
+  it("a search from the previous frame document does not add names to the new one", async () => {
+    const replies: ((r: Response) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { replies.push(r); })));
+    const h = userHandler(env("tok", "Alex"), null as never);
+    const old = h.call("search", ["sa"]);
+    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    h.reset?.();
+    expect(await old).toEqual([]);
+    // The stale request still answers (this fetch ignores the abort); once its
+    // body is read, only microtasks remain before the old search would remember.
+    let read = false;
+    replies[0]({ ok: true, json: async () => { read = true; return { viewers: [{ id: OTHER, display_name: "Sam" }] }; } } as unknown as Response);
+    await vi.waitFor(() => expect(read).toBe(true), { timeout: 5_000 });
+    await new Promise(r => setTimeout(r, 0));
+    const seeded = (await h.call("search", [""])) as { id: string }[];
+    expect(seeded.map(p => p.id)).toEqual([ME]);
   });
 
   it("a superseded search waiting for the newest resolves no earlier than it", async () => {

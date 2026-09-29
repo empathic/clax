@@ -478,6 +478,7 @@ fn thread_summary(t: &Value) -> Value {
                 "id": c["id"],
                 "author_kind": c["author_kind"],
                 "author_name": c["author_name"],
+                "via_page": c["via_page"].as_bool().unwrap_or(false),
                 "body": c["body"],
                 "created_at": c["created_at"],
             })

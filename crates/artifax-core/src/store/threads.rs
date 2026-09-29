@@ -26,6 +26,8 @@ pub struct NewThread {
     pub author_name: String,
     pub body: String,
     pub clip: Option<Vec<u8>>,
+    /// The page wrote the first comment through the `comments` capability.
+    pub via_page: bool,
 }
 
 /// A comment to add. `author_kind` is [`AUTHOR_VIEWER`] or [`AUTHOR_AGENT`].
@@ -35,6 +37,8 @@ pub struct NewComment {
     pub author_name: String,
     pub via_session_id: Option<String>,
     pub body: String,
+    /// The page wrote it through the `comments` capability (viewer comments only).
+    pub via_page: bool,
 }
 
 /// Why `bytes` cannot be stored as a clip (not a PNG, or over [`MAX_CLIP_BYTES`]),
@@ -130,6 +134,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         author_kind: r.get("author_kind")?,
         author_name: r.get("author_name")?,
         via_harness: r.get("via_harness")?,
+        via_page: r.get::<_, i64>("via_page")? != 0,
         body: r.get("body")?,
         created_at: r.get("created_at")?,
     })
@@ -137,7 +142,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
     let mut stmt = c.prepare(
-        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, s.harness AS via_harness, c.body, c.created_at
+        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, s.harness AS via_harness, c.via_page, c.body, c.created_at
          FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id
          WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id",
     )?;
@@ -241,9 +246,9 @@ impl Store {
                 params![tid, id.as_str(), t.version_n, anchor_json, t.clip.is_some(), now],
             )?;
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, body, created_at)
-                 VALUES (?1, ?2, 'viewer', ?3, NULL, ?4, ?5)",
-                params![new_ulid(), tid, t.author_name, t.body, now],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, via_page, body, created_at)
+                 VALUES (?1, ?2, 'viewer', ?3, NULL, ?4, ?5, ?6)",
+                params![new_ulid(), tid, t.author_name, t.via_page, t.body, now],
             )?;
             // Written last, still inside the transaction: a failed write rolls
             // the rows back, and a failed commit removes the file below.
@@ -284,15 +289,16 @@ impl Store {
             author_kind: c.author_kind.to_string(),
             author_name: c.author_name,
             via_harness: None,
+            via_page: c.via_page && c.author_kind == AUTHOR_VIEWER,
             body: c.body,
             created_at: Store::now(),
         };
         self.with_tx(|tx| {
             thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, body, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, c.via_session_id, comment.body, comment.created_at],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, via_page, body, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, c.via_session_id, comment.via_page, comment.body, comment.created_at],
             )?;
             comment.via_harness = match &c.via_session_id {
                 Some(sid) => tx
@@ -462,18 +468,31 @@ impl Store {
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone.
     pub fn delete_thread(&self, thread_id: &str) -> Result<Thread> {
-        let t = self.with_tx(|tx| {
+        self.delete_thread_touched(thread_id).map(|(t, _)| t)
+    }
+
+    /// [`Store::delete_thread`], also returning what it changed: `targets`
+    /// are the sessions that held undelivered rows of the thread (their
+    /// waits and pushes learn the rows are gone); `threads` is empty, since a
+    /// deleted thread has no feedback state.
+    pub fn delete_thread_touched(
+        &self,
+        thread_id: &str,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
+        let (t, targets) = self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
-            tx.execute(
-                "DELETE FROM feedback WHERE thread_id = ?1",
-                params![thread_id],
-            )?;
-            tx.execute(
-                "DELETE FROM comments WHERE thread_id = ?1",
-                params![thread_id],
-            )?;
+            let targets = {
+                let mut stmt = tx.prepare(
+                    "SELECT DISTINCT target_session_id FROM feedback
+                     WHERE thread_id = ?1 AND delivered_at IS NULL AND target_session_id IS NOT NULL",
+                )?;
+                stmt.query_map(params![thread_id], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?
+            };
+            tx.execute("DELETE FROM feedback WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
-            Ok(t)
+            Ok((t, targets))
         })?;
         if t.has_clip {
             let id = ArtifactId::parse(&t.artifact_id)?;
@@ -488,7 +507,13 @@ impl Store {
                 ),
             }
         }
-        Ok(t)
+        Ok((
+            t,
+            crate::feedback::Touched {
+                targets,
+                ..Default::default()
+            },
+        ))
     }
 }
 
@@ -506,6 +531,7 @@ mod tests {
             author_name: "Alex".into(),
             body: body.into(),
             clip,
+            via_page: false,
         }
     }
 
@@ -670,6 +696,7 @@ mod tests {
                 author_name: "claude".into(),
                 via_session_id: None,
                 body: "done".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -685,6 +712,7 @@ mod tests {
                 author_name: "Alex".into(),
                 via_session_id: None,
                 body: "not quite".into(),
+                via_page: false,
             },
         )
         .unwrap();
@@ -708,6 +736,7 @@ mod tests {
                     author_name: "codex".into(),
                     via_session_id: Some(sid.clone()),
                     body: "done".into(),
+                    via_page: false,
                 },
             )
             .unwrap();
@@ -897,6 +926,7 @@ mod tests {
                     author_name: "r".into(),
                     via_session_id: None,
                     body: "hi".into(),
+                    via_page: false,
                 },
             )
             .unwrap_err();
@@ -926,6 +956,7 @@ mod tests {
                     author_name: "Alex".into(),
                     body: "b".into(),
                     clip: Some(b"\x89PNG\r\n\x1a\nclip".to_vec()),
+                    via_page: false,
                 },
             )
             .unwrap();
@@ -964,5 +995,55 @@ mod tests {
         assert_eq!(left, 0);
         assert!(matches!(st.delete_thread(&t.id), Err(CoreError::NotFound)));
         assert!(matches!(st.reopen_thread(&t.id), Err(CoreError::NotFound)));
+    }
+
+    #[test]
+    fn deleting_names_the_sessions_whose_rows_vanished_and_page_comments_are_marked() {
+        let (_d, st) = store();
+        let sid = crate::store::test_util::session(&st, "claude", "h1");
+        let id = artifact(&st, Some(&sid));
+        let mut nt = new_thread("from the page", None);
+        nt.via_page = true;
+        let t = st.create_thread(&id, nt).unwrap();
+        assert!(t.comments[0].via_page);
+        let c = st
+            .add_comment(
+                &t.id,
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: "Alex".into(),
+                    via_session_id: None,
+                    body: "typed by hand".into(),
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        assert!(!c.via_page);
+        let agent = st
+            .add_comment(
+                &t.id,
+                NewComment {
+                    author_kind: AUTHOR_AGENT,
+                    author_name: "claude".into(),
+                    via_session_id: None,
+                    body: "on it".into(),
+                    via_page: true,
+                },
+            )
+            .unwrap();
+        assert!(!agent.via_page, "only viewer comments are page-written");
+        let stored = st.get_thread(&t.id).unwrap().unwrap();
+        assert_eq!(
+            stored
+                .comments
+                .iter()
+                .map(|c| c.via_page)
+                .collect::<Vec<_>>(),
+            [true, false, false]
+        );
+        st.send_to_agent(&t.id).unwrap();
+        let (_, touched) = st.delete_thread_touched(&t.id).unwrap();
+        assert_eq!(touched.targets.into_iter().collect::<Vec<_>>(), [sid]);
+        assert!(touched.threads.is_empty());
     }
 }

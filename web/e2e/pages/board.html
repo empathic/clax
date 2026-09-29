@@ -37,6 +37,7 @@
   const shape = { name: "shape-red", x: 50, y: 50 };
   let handles = [];
   let ctl = null;
+  let commenting = false;
   const place = () => {
     const r = canvas.getBoundingClientRect();
     const map = {};
@@ -45,13 +46,13 @@
   };
   try {
     ctl = await comments.customAnchors({
-      mode(on) { status.textContent = "mode " + on; },
+      mode(on) { commenting = on; status.textContent = "mode " + on; },
       threads(list) { handles = list; place(); },
       reveal() {},
     });
   } catch (e) { status.textContent = "custom " + e.code; return; }
   canvas.onclick = async ev => {
-    if (!ctl.areas) return;
+    if (!commenting) return;
     await ctl.compose(shape.name, { x: ev.clientX + scrollX, y: ev.clientY + scrollY }, { label: "Red square" });
   };
 })();

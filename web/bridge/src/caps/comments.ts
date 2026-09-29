@@ -94,6 +94,8 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     if (registered) throw invalid("a registration is already live; release it first");
     registered = true;
     let released = false;
+    // Comment mode as the shell last reported it; `areas` and `compose`'s
+    // `area` follow it.
     let modeOn = false;
     let placedOnce = false;
     let lastPlaced: Record<string, DocPoint> = {};
@@ -193,6 +195,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         if (!released) void rpc.call("comments", "exitMode", []).catch(() => {});
       },
       release,
+      // Area-anchored comments are not offered yet: `opts.area` is ignored.
       get areas() {
         return !released && modeOn;
       },

@@ -733,6 +733,7 @@ mod tests {
                     author_name: "A".into(),
                     body: "x".into(),
                     clip: None,
+                    via_page: false,
                 },
             )
             .unwrap();

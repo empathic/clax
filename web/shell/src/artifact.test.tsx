@@ -293,11 +293,16 @@ describe("ArtifactView", () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tI", "index.html"), t("tA", "about.html")], next_cursor: null } : viewer)));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    const posted: { type: string; anchors?: { id: string }[]; anchor?: { file: string } }[] = [];
+    const posted: { type: string; anchors?: { id: string; anchor: { quote: string } }[]; anchor?: { file: string } }[] = [];
     // jsdom gives the frame a new window when it navigates; a browser keeps one WindowProxy.
     const tap = () => { const w = frame.contentWindow!; w.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof w.postMessage; return w; };
     let win = tap();
-    const lastResolve = () => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.map(a => a.id);
+    // Anchors go under opaque handles, never the threads' store IDs; the quote names the thread here.
+    const lastResolve = () => {
+      const anchors = posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors;
+      for (const a of anchors ?? []) expect(a.id).toMatch(/^a[0-9a-f]{24}$/);
+      return anchors?.map(a => a.anchor.quote.replace("Goals ", ""));
+    };
     await waitFor(() => root.querySelector('[data-thread="tA"]'), "threads in the sidebar");
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => lastResolve()?.join() === "tI", "resolution of the index's threads only");
@@ -429,11 +434,27 @@ describe("ArtifactView", () => {
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    win.postMessage = (() => {}) as typeof win.postMessage;
+    const sent: { type: string; anchors?: { id: string }[] }[] = [];
+    win.postMessage = ((m: (typeof sent)[number]) => { sent.push(m); }) as typeof win.postMessage;
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread loaded");
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    fromFrame(win, { type: "artifax:anchors", requestId: "r1", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    const handle = (await waitFor(() => sent.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "anchors sent")).id;
+    expect(handle).not.toBe("tI");
+    // A result naming the store ID (which the frame never learns) places nothing.
+    fromFrame(win, { type: "artifax:anchors", requestId: "r0", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    await new Promise(r => setTimeout(r, 20));
+    expect(root.querySelector("button.thread-pin")).toBeNull();
+    fromFrame(win, { type: "artifax:anchors", requestId: "r1", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await waitFor(() => root.querySelector("button.thread-pin"), "the pin");
+    // Every greeting page gets new handles; the old ones no longer place pins.
+    const count = sent.filter(m => m.type === "artifax:resolve-anchors").length;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    const again = (await waitFor(() => sent.filter(m => m.type === "artifax:resolve-anchors")[count]?.anchors?.[0], "anchors sent again")).id;
+    expect(again).not.toBe(handle);
+    fromFrame(win, { type: "artifax:anchors", requestId: "r2", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    await waitFor(() => !root.querySelector("button.thread-pin"), "a stale handle places nothing");
+    fromFrame(win, { type: "artifax:anchors", requestId: "r3", results: [{ id: again, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    await waitFor(() => root.querySelector("button.thread-pin"), "the pin again");
     frame.dispatchEvent(new Event("load"));
     expect(root.querySelector("button.thread-pin")).not.toBeNull();
     frame.dispatchEvent(new Event("load"));
@@ -613,7 +634,7 @@ describe("ArtifactView", () => {
     expect(textarea.value).toBe("");
   });
 
-  it("focuses the frame on the thread hovered in the list or selected, so its drawn area is outlined", async () => {
+  it("focuses the frame on the thread hovered in the list or selected, by its anchor handle, so its drawn area is outlined", async () => {
     stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
     const t = { id: "tZ", artifact_id: ID, version_n: 1, anchor: { kind: "area", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, area: { x: 0, y: 0, w: 0.5, h: 0.5 }, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
@@ -622,19 +643,23 @@ describe("ArtifactView", () => {
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    const posted: { type: string; id?: string | null }[] = [];
+    const posted: { type: string; id?: string | null; anchors?: { id: string }[] }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
     const card = await waitFor(() => root.querySelector('[data-thread="tZ"]'), "the card");
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    // The frame knows the thread only by the opaque handle it was sent.
+    const handle = (await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "the resolve request")).id;
+    expect(handle).not.toBe("tZ");
     const lastFocus = () => posted.filter(m => m.type === "artifax:focus").at(-1);
     expect(lastFocus()).toEqual({ type: "artifax:focus", id: null });
     card.dispatchEvent(new MouseEvent("mouseenter"));
-    await waitFor(() => lastFocus()?.id === "tZ", "focus on the hovered card");
+    await waitFor(() => lastFocus()?.id === handle, "focus on the hovered card");
     card.dispatchEvent(new MouseEvent("mouseleave"));
     await waitFor(() => lastFocus()?.id === null, "focus cleared");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
-    await waitFor(() => lastFocus()?.id === "tZ", "focus on the selected thread");
+    await waitFor(() => lastFocus()?.id === handle, "focus on the selected thread");
+    expect(posted.some(m => m.type === "artifax:focus" && m.id === "tZ")).toBe(false);
   });
 
   it("forwards Option and, with it, Up and Down to the frame while commenting with the pointer over it", async () => {

@@ -24,6 +24,8 @@ struct Inner {
     /// Least recently used first.
     order: VecDeque<Key>,
     bytes: usize,
+    /// The bridge version the cached pages name (see [`WrapCache::follow_bridge`]).
+    bridge: String,
 }
 
 /// What an entry counts against the budget: its key's bytes, plus the wrapped
@@ -52,6 +54,7 @@ impl WrapCache {
                 map: HashMap::new(),
                 order: VecDeque::new(),
                 bytes: 0,
+                bridge: String::new(),
             }),
             max_bytes,
         }
@@ -107,6 +110,20 @@ impl WrapCache {
     pub fn contains(&self, artifact_id: &str, n: u32, file: &str) -> bool {
         let key = (artifact_id.to_string(), n, file.to_string());
         self.inner.lock().unwrap().map.contains_key(&key)
+    }
+
+    /// Drops every cached page when `bridge` is not the bridge version they
+    /// were wrapped with, so pages name the current bridge URL. A release
+    /// build's version never changes; a debug build's follows the file on
+    /// disk (`just dev` rebuilds it under a running daemon).
+    pub fn follow_bridge(&self, bridge: &str) {
+        let mut g = self.inner.lock().unwrap();
+        if g.bridge != bridge {
+            g.map.clear();
+            g.order.clear();
+            g.bytes = 0;
+            g.bridge = bridge.to_string();
+        }
     }
 
     /// Bytes the cached entries count against the budget (keys included).
@@ -183,6 +200,19 @@ mod tests {
         });
         assert!(e.is_err());
         assert!(!c.contains("x", 1, "gone.html"), "errors are not cached");
+    }
+
+    #[test]
+    fn a_new_bridge_version_drops_every_page() {
+        let c = WrapCache::new(1 << 20);
+        c.follow_bridge("aaaaaaaaaaaa");
+        c.get_or_wrap("a", 1, "index.html", || Ok(Some("x".into())))
+            .unwrap();
+        c.follow_bridge("aaaaaaaaaaaa");
+        assert!(c.contains("a", 1, "index.html"), "same version: kept");
+        c.follow_bridge("bbbbbbbbbbbb");
+        assert!(!c.contains("a", 1, "index.html"), "new version: dropped");
+        assert_eq!(c.bytes(), 0);
     }
 
     #[test]
