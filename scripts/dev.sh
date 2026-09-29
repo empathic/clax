@@ -6,6 +6,12 @@ cd "$(dirname "$0")/.."
 PORT=7480
 ARGS="$*"
 
+if [ -n "${ARTIFAX_HOME:-}" ]; then
+    echo "Artifax dev: serving ARTIFAX_HOME=$ARTIFAX_HOME"
+else
+    echo "Artifax dev: serving ARTIFAX_HOME=$HOME/.artifax (the default home; ARTIFAX_HOME=<scratch dir> just dev keeps it untouched)"
+fi
+
 if ! cargo watch --version >/dev/null 2>&1; then
     echo "cargo-watch is required: cargo install cargo-watch" >&2
     exit 1

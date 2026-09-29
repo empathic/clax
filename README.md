@@ -17,8 +17,10 @@ cargo install --path crates/artifax-cli
 
 ```
 artifax publish index.html --dir site   # publish a directory; prints the artifact URL (--json gives the ID)
-artifax open <id>                       # open an artifact in the browser
+artifax open <ID>                       # open an artifact in the browser
 artifax list                            # list artifacts
+artifax read <ID> --path style.css      # print a published file (--json gives the read tool's result)
+artifax asset upload <ID> photo.png     # upload assets; prints each asset URL
 artifax status                          # show whether the daemon is running
 artifax doctor                          # check the home directory, daemon, database, and stored files
 artifax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
@@ -27,6 +29,8 @@ artifax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemo
 ```
 
 The daemon starts automatically on first use. Data lives in `~/.artifax`; set `ARTIFAX_HOME` to use a different directory.
+
+A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
 To serve on the LAN, stop a running daemon first, then run `artifax serve --bind 0.0.0.0`.
 
@@ -48,14 +52,16 @@ The Claude Code and Codex plugins download the `artifax` binary on first use whe
 
 - `just help` (or bare `just`) lists every recipe with a description.
 - `just dev` runs an auto-reloading server on port 7480 and can be left running. A Rust change rebuilds and restarts the daemon; a web change rebuilds `web/dist` (reload the browser to see it). Extra arguments go to `serve`, for example `just dev --bind 0.0.0.0`. Ctrl-C stops everything. A daemon already on port 7480 must be stopped first (`just stop`). It needs `cargo-watch` (`cargo install cargo-watch`).
+  - It serves the home in `ARTIFAX_HOME` (default `~/.artifax`, the one your agents' plugins use) and prints which at start. Run `ARTIFAX_HOME=<scratch dir> just dev` to keep development off the real home.
+  - While a Rust change rebuilds, no daemon is running. A plugin's MCP server or the Pi extension that calls the same home in that gap starts its own daemon from its own binary; when the dev daemon comes back the two contend for `daemon.json` and one of them exits, often the dev daemon. A scratch `ARTIFAX_HOME` avoids this.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, and that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
 
-Writes need the token in `~/.artifax/daemon.json` (mode 0600, served only to localhost browsers), so LAN viewers can only read. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
+Writes, and reads of the session list (working directories, process IDs, harness session IDs), need the token in `~/.artifax/daemon.json` (mode 0600, served only to localhost browsers), so LAN viewers can only read artifacts. Published content is isolated on `<id>.localhost` origins or sandboxed. Content and asset URLs are fetchable by anyone who knows the unguessable ID.
 
 Design: [docs/superpowers/specs/2026-09-28-artifax-design.md](docs/superpowers/specs/2026-09-28-artifax-design.md)
 
