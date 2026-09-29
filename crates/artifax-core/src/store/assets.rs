@@ -20,6 +20,17 @@ fn row_to_asset(r: &Row<'_>) -> rusqlite::Result<Asset> {
     })
 }
 
+/// The entries of `dir`, or none when it does not exist.
+pub(super) fn read_dir_or_empty(dir: &std::path::Path) -> Result<Vec<PathBuf>> {
+    match std::fs::read_dir(dir) {
+        Ok(rd) => Ok(rd
+            .map(|e| e.map(|e| e.path()))
+            .collect::<std::io::Result<Vec<_>>>()?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 /// Whether `content_type` (parameters after `;` ignored) is an accepted asset type.
 pub fn is_supported(content_type: &str) -> bool {
     let ct = content_type.split(';').next().unwrap_or("").trim();
@@ -59,6 +70,25 @@ fn ext_for(content_type: &str) -> String {
 }
 
 const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_at FROM assets";
+
+/// An asset row with where its bytes belong on disk, as listed by
+/// [`Store::list_all_asset_rows`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssetRow {
+    pub asset: Asset,
+    /// Where the bytes belong; not checked for existence.
+    pub path: PathBuf,
+    /// Whether the owning artifact is soft-deleted.
+    pub artifact_deleted: bool,
+}
+
+fn remove_file_if_present(path: &std::path::Path) -> Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
 
 impl Store {
     /// Stores `bytes` as a new asset of artifact `id`.
@@ -168,15 +198,84 @@ impl Store {
         let Some((_, path)) = self.get_asset(asset_id)? else {
             return Err(CoreError::NotFound);
         };
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(e.into()),
-        }
+        remove_file_if_present(&path)?;
         self.with_conn(|c| {
             c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
             Ok(())
         })
+    }
+
+    /// Every asset row of every artifact, deleted ones included, ordered by ID.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn list_all_asset_rows(&self) -> Result<Vec<AssetRow>> {
+        let rows = self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at,
+                        r.deleted_at IS NOT NULL AS artifact_deleted
+                 FROM assets a JOIN artifacts r ON r.id = a.artifact_id ORDER BY a.id",
+            )?;
+            Ok(stmt
+                .query_map([], |r| {
+                    Ok((row_to_asset(r)?, r.get::<_, bool>("artifact_deleted")?))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        Ok(rows
+            .into_iter()
+            .map(|(asset, artifact_deleted)| {
+                let id = ArtifactId::parse(&asset.artifact_id).expect("stored id is valid");
+                let path = self
+                    .home
+                    .assets_dir(&id)
+                    .join(format!("{}.{}", asset.id, asset.ext));
+                AssetRow {
+                    asset,
+                    path,
+                    artifact_deleted,
+                }
+            })
+            .collect())
+    }
+
+    /// Leftover `*.tmp` files in any artifact's assets directory (an upload that
+    /// died between write and rename), sorted.
+    ///
+    /// # Errors
+    /// I/O errors other than a missing directory.
+    pub fn stray_asset_temp_files(&self) -> Result<Vec<PathBuf>> {
+        let mut out = Vec::new();
+        for artifact in read_dir_or_empty(&self.home.root().join("artifacts"))? {
+            for entry in read_dir_or_empty(&artifact.join("assets"))? {
+                if entry.extension().is_some_and(|e| e == "tmp") {
+                    out.push(entry);
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// Removes the asset rows, and their files, of soft-deleted artifacts.
+    /// Returns how many rows were removed. Missing files are tolerated.
+    ///
+    /// # Errors
+    /// I/O or database errors.
+    pub fn delete_assets_of_deleted_artifacts(&self) -> Result<usize> {
+        let mut n = 0;
+        for row in self.list_all_asset_rows()? {
+            if !row.artifact_deleted {
+                continue;
+            }
+            remove_file_if_present(&row.path)?;
+            self.with_conn(|c| {
+                c.execute("DELETE FROM assets WHERE id = ?1", params![row.asset.id])?;
+                Ok(())
+            })?;
+            n += 1;
+        }
+        Ok(n)
     }
 }
 
@@ -304,5 +403,52 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         store.delete_asset(&a.id).unwrap();
         assert!(store.get_asset(&a.id).unwrap().is_none());
+    }
+
+    #[test]
+    fn all_rows_report_owner_state_and_path() {
+        let (_d, store) = store();
+        let live = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
+        let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
+        let a = store.add_asset(&live, "image/png", &[1]).unwrap();
+        let b = store.add_asset(&gone, "image/png", &[1, 2]).unwrap();
+        store.delete_artifact(&gone).unwrap();
+        let rows = store.list_all_asset_rows().unwrap();
+        assert_eq!(rows.len(), 2);
+        let ra = rows.iter().find(|r| r.asset.id == a.id).unwrap();
+        let rb = rows.iter().find(|r| r.asset.id == b.id).unwrap();
+        assert!(!ra.artifact_deleted && ra.path.exists());
+        assert!(rb.artifact_deleted && !rb.path.exists());
+    }
+
+    #[test]
+    fn stray_temp_files_are_listed() {
+        let (_d, store) = store();
+        let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
+        assert!(store.stray_asset_temp_files().unwrap().is_empty());
+        let a = store.add_asset(&id, "image/png", &[1]).unwrap();
+        let tmp = store.home().assets_dir(&id).join("X.png.tmp");
+        std::fs::write(&tmp, b"x").unwrap();
+        assert_eq!(store.stray_asset_temp_files().unwrap(), vec![tmp]);
+        assert!(store.get_asset(&a.id).unwrap().unwrap().1.exists());
+    }
+
+    #[test]
+    fn deleted_artifacts_lose_their_asset_rows_and_files() {
+        let (_d, store) = store();
+        let live = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
+        let gone = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
+        let keep = store.add_asset(&live, "image/png", &[1]).unwrap();
+        let drop_row = store.add_asset(&gone, "image/png", &[2]).unwrap();
+        let (_, drop_path) = store.get_asset(&drop_row.id).unwrap().unwrap();
+        store.delete_artifact(&gone).unwrap();
+        // Simulate a directory removal that failed: the file is still there.
+        std::fs::create_dir_all(drop_path.parent().unwrap()).unwrap();
+        std::fs::write(&drop_path, b"x").unwrap();
+        assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 1);
+        assert!(!drop_path.exists());
+        assert!(store.get_asset(&drop_row.id).unwrap().is_none());
+        assert!(store.get_asset(&keep.id).unwrap().is_some());
+        assert_eq!(store.delete_assets_of_deleted_artifacts().unwrap(), 0);
     }
 }

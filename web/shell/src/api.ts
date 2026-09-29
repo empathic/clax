@@ -6,11 +6,19 @@ export type Artifact = {
 export type FileMeta = { content_type: string; size: number };
 export type Version = { artifact_id: string; n: number; label: string | null; created_at: string; files: Record<string, FileMeta> };
 
+/** A non-OK API response; `status` is the HTTP status code. */
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(`${status} ${message}`);
+    this.name = "ApiError";
+  }
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = res.statusText;
     try { msg = (await res.json()).error?.message ?? msg; } catch { /* not json */ }
-    throw new Error(`${res.status} ${msg}`);
+    throw new ApiError(res.status, msg);
   }
   return res.json() as Promise<T>;
 }

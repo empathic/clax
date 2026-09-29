@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 
+use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -43,11 +44,21 @@ pub enum Cmd {
     /// Unpin an artifact.
     Unpin(commands::pin::Args),
     /// Check the installation and storage.
-    Doctor,
+    Doctor(commands::doctor::Args),
 }
 
 fn main() {
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let code = match e.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,
+                _ => 1,
+            };
+            let _ = e.print();
+            std::process::exit(code);
+        }
+    };
     let home = match artifax_core::Home::from_env() {
         Ok(home) => home,
         Err(e) => {
@@ -65,7 +76,7 @@ fn main() {
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),
         Cmd::Unpin(a) => commands::pin::run(&cli, &home, a, false),
-        Cmd::Doctor => commands::doctor::run(&cli, &home),
+        Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

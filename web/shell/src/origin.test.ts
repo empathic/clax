@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { artifactOrigin, probeOrigin, contentSrc } from "./origin";
 
 const loc = (hostname: string, port = "7480") => ({ hostname, port, protocol: "http:" } as unknown as Location);
@@ -13,14 +13,28 @@ describe("artifactOrigin", () => {
 });
 
 describe("probeOrigin", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
   it("is true on 200, false on error or timeout", async () => {
     sessionStorage.clear();
     expect(await probeOrigin("http://x.localhost:1", async () => new Response("{}", { status: 200 }))).toBe(true);
     sessionStorage.clear();
     expect(await probeOrigin("http://x.localhost:1", async () => { throw new TypeError("dns"); })).toBe(false);
     sessionStorage.clear();
-    const never = (_: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_, rej) => init?.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError"))));
+    const never = (_: RequestInfo | URL, init?: RequestInit) => new Promise<Response>((_resolve, rej) => init?.signal?.addEventListener("abort", () => rej(new DOMException("aborted", "AbortError"))));
     expect(await probeOrigin("http://x.localhost:1", never as typeof fetch, 20)).toBe(false);
+  });
+  it("is false when the probe answers with a non-OK status", async () => {
+    sessionStorage.clear();
+    expect(await probeOrigin("http://x.localhost:1", async () => new Response("no", { status: 502 }))).toBe(false);
+    expect(sessionStorage.getItem("artifax.origin-ok")).toBe("0");
+  });
+  it("still answers when storage throws on read and write", async () => {
+    const boom = () => { throw new DOMException("denied", "SecurityError"); };
+    vi.stubGlobal("sessionStorage", { getItem: boom, setItem: boom, clear: boom });
+    const f = vi.fn(async () => new Response("{}"));
+    expect(await probeOrigin("http://x.localhost:1", f)).toBe(true);
+    expect(await probeOrigin("http://x.localhost:1", f)).toBe(true);
+    expect(f).toHaveBeenCalledTimes(2);
   });
   it("caches the answer per session", async () => {
     sessionStorage.clear();

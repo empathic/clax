@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { subscribe } from "./events";
 
 class FakeES {
@@ -12,6 +12,8 @@ class FakeES {
 }
 
 describe("subscribe", () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
   it("opens a filtered stream, forwards parsed events, and closes on unsubscribe", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
@@ -22,5 +24,13 @@ describe("subscribe", () => {
     expect(seen).toEqual([{ type: "version", artifact_id: "7q3k9mzx2b4t", n: 4 }, { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" }]);
     off();
     expect(FakeES.last.closed).toBe(true);
+  });
+
+  it("turns a resync event into a typed event carrying the dropped count", () => {
+    vi.stubGlobal("EventSource", FakeES);
+    const seen: unknown[] = [];
+    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    FakeES.last.emit("resync", { dropped: 7 });
+    expect(seen).toEqual([{ type: "resync", dropped: 7 }]);
   });
 });

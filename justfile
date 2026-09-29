@@ -13,7 +13,7 @@ web: web-install
     cd web && npm run build
 
 web-test: web-install
-    cd web && npm run typecheck && npm test
+    cd web && npm run lint && npm run typecheck && npm test
 
 web-e2e: web
     cd web && npx playwright install --with-deps chromium && npm run e2e

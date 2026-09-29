@@ -19,7 +19,7 @@ export default function Gallery() {
     <>
       <header class="topbar">
         <h1>Artifax</h1><span class="muted hide-sm">local artifacts</span>
-        <input type="search" class="search" placeholder="Search artifacts" value={query}
+        <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query}
           onInput={e => setQuery((e.currentTarget as HTMLInputElement).value)} />
       </header>
       <main class="wrap">
@@ -46,7 +46,7 @@ export default function Gallery() {
                 </a>
                 {token && (
                   <div class="card-tools">
-                    <button type="button" title={a.pinned ? "Unpin" : "Pin"}
+                    <button type="button" title={a.pinned ? "Unpin" : "Pin"} aria-label={a.pinned ? `Unpin ${a.title}` : `Pin ${a.title}`}
                       onClick={() => act(() => patchArtifact(a.id, { pinned: !a.pinned }, token))}>{a.pinned ? "★" : "☆"}</button>
                     <button type="button" title="Delete"
                       onClick={() => { if (confirm(`Delete "${a.title}"? This removes every version.`)) act(() => deleteArtifact(a.id, token)); }}>Delete</button>

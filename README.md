@@ -20,7 +20,8 @@ artifax publish index.html --dir site   # publish a directory; prints the artifa
 artifax open <id>                       # open an artifact in the browser
 artifax list                            # list artifacts
 artifax status                          # show whether the daemon is running
-artifax doctor                          # check the home directory, daemon, and database
+artifax doctor                          # check the home directory, daemon, database, and stored files
+artifax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
 artifax stop                            # stop the daemon
 artifax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
 ```
@@ -28,6 +29,10 @@ artifax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemo
 The daemon starts automatically on first use. Data lives in `~/.artifax`; set `ARTIFAX_HOME` to use a different directory.
 
 To serve on the LAN, stop a running daemon first, then run `artifax serve --bind 0.0.0.0`.
+
+## Development
+
+`scripts/quality_gates.sh` runs every check CI runs: `cargo fmt`, clippy with `-D warnings`, `cargo test`, the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 ## Security model
 

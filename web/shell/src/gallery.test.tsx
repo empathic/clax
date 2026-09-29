@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "preact";
 import { relativeTime } from "./format";
 
@@ -13,7 +13,16 @@ describe("relativeTime", () => {
   });
 });
 
-const settle = () => new Promise(r => setTimeout(r, 50));
+/** Polls until `check` returns a truthy value; fails after 2 s. */
+async function waitFor<T>(check: () => T | null | undefined | false, what = "condition"): Promise<T> {
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    const v = check();
+    if (v) return v;
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await new Promise(r => setTimeout(r, 10));
+  }
+}
 const ARTIFACTS = [
   { id: "7q3k9mzx2b4t", title: "Pinned one", description: "d", icon: "chart", pinned: true, current_version: 3, updated_at: "2026-09-28T11:00:00Z" },
   { id: "aaaaaaaaaaaa", title: "Other", description: "sales report", icon: null, pinned: false, current_version: 1, updated_at: "2026-09-27T11:00:00Z" },
@@ -38,12 +47,13 @@ async function mount() {
   const root = document.createElement("div");
   document.body.appendChild(root);
   render(<Gallery />, root);
-  await settle();
+  await waitFor(() => root.querySelector("a.card, .empty"), "gallery to render");
   return root;
 }
 
 describe("Gallery", () => {
   beforeEach(() => { vi.resetModules(); });
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
   it("renders cards with title, version, and link in API order", async () => {
     stubApi();
@@ -69,22 +79,23 @@ describe("Gallery", () => {
     const root = await mount();
     const input = root.querySelector("input[type=search]") as HTMLInputElement;
     expect(input.placeholder).toBe("Search artifacts");
+    expect(input.getAttribute("aria-label")).toBe("Search artifacts");
     input.value = "SALES";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
+    await waitFor(() => root.querySelectorAll("a.card").length === 1, "one card");
     const cards = root.querySelectorAll("a.card");
-    expect(cards.length).toBe(1);
     expect(cards[0].textContent).toContain("Other");
     input.value = "pinned";
     input.dispatchEvent(new Event("input", { bubbles: true }));
-    await settle();
+    await waitFor(() => root.querySelector("a.card")?.textContent?.includes("Pinned one"), "pinned card");
     expect(root.querySelectorAll("a.card").length).toBe(1);
-    expect(root.querySelector("a.card")!.textContent).toContain("Pinned one");
   });
 
   it("without a token renders no buttons", async () => {
-    stubApi(403);
+    const calls = stubApi(403);
     const root = await mount();
+    await waitFor(() => calls.some(c => c.url.endsWith("/api/token")), "token request");
+    await new Promise(r => setTimeout(r, 0));
     expect(root.querySelectorAll(".card-wrap").length).toBe(2);
     expect(root.querySelectorAll(".card-tools button").length).toBe(0);
   });
@@ -92,14 +103,15 @@ describe("Gallery", () => {
   it("pin button sends PATCH with pinned true and refetches", async () => {
     const calls = stubApi();
     const root = await mount();
-    const wraps = root.querySelectorAll(".card-wrap");
-    expect(wraps[1].querySelector("a button")).toBeNull();
-    (wraps[1].querySelector('button[title="Pin"]') as HTMLButtonElement).click();
-    await settle();
+    const pin = await waitFor(() => root.querySelectorAll(".card-wrap")[1]?.querySelector('button[title="Pin"]') as HTMLButtonElement | null, "pin button");
+    const wrap = root.querySelectorAll(".card-wrap")[1];
+    expect(wrap.querySelector("a button")).toBeNull();
+    expect(pin.getAttribute("aria-label")).toBe("Pin Other");
+    pin.click();
+    await waitFor(() => calls.filter(c => c.url.endsWith("/api/artifacts") && c.method === "GET").length === 2, "refetch after PATCH");
     const patch = calls.find(c => c.method === "PATCH")!;
     expect(patch.url).toBe("/api/artifacts/aaaaaaaaaaaa");
     expect(JSON.parse(patch.body!)).toEqual({ pinned: true });
-    expect(calls.filter(c => c.url.endsWith("/api/artifacts") && c.method === "GET").length).toBe(2);
   });
 
   it("delete calls DELETE only after confirm", async () => {
@@ -107,21 +119,20 @@ describe("Gallery", () => {
     const confirmSpy = vi.fn(() => false);
     vi.stubGlobal("confirm", confirmSpy);
     const root = await mount();
-    const del = root.querySelector('button[title="Delete"]') as HTMLButtonElement;
+    const del = await waitFor(() => root.querySelector('button[title="Delete"]') as HTMLButtonElement | null, "delete button");
     del.click();
-    await settle();
     expect(confirmSpy).toHaveBeenCalledWith('Delete "Pinned one"? This removes every version.');
     expect(calls.some(c => c.method === "DELETE")).toBe(false);
     confirmSpy.mockReturnValue(true);
     del.click();
-    await settle();
-    const d = calls.find(c => c.method === "DELETE")!;
+    const d = await waitFor(() => calls.find(c => c.method === "DELETE"), "DELETE request");
     expect(d.url).toBe("/api/artifacts/7q3k9mzx2b4t");
   });
 });
 
 describe("getToken", () => {
   beforeEach(() => { vi.resetModules(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
 
   it("retries after a transient failure", async () => {
     let n = 0;

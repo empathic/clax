@@ -291,8 +291,9 @@ a single file is capped at 16 MB, as on claude.ai. Assets use multipart at
    ports if busy, and writes `daemon.json` atomically. `artifax serve` itself
    does not take the lock.
 4. `artifax stop` sends `POST /api/admin/shutdown` (W). The daemon also
-   exits if `daemon.json` is replaced by a newer daemon (checked every 30 s),
-   so a stale process cannot shadow a new one.
+   exits if `daemon.json` is replaced by a newer daemon (checked every 30 s)
+   and exits when `daemon.json` is missing on two consecutive checks, so a
+   stale process cannot shadow a new one.
 5. Version skew: the shim compares `/healthz` version with its own; on
    mismatch it asks the daemon to shut down and restarts it. Storage
    migrations run on daemon start.
@@ -315,8 +316,12 @@ Artifact shell (`/a/<aid>`):
   `src` is `/c/<aid>/v/<n>/` with `sandbox="allow-scripts allow-forms
   allow-modals allow-popups allow-downloads"` and no `allow-same-origin`,
   so the content runs in an opaque origin. Content on the main origin
-  (`/c/...`) and `/_blob/...` responses carry a `Content-Security-Policy:
-  sandbox` header so a top-level navigation cannot reach the API same-origin.
+  (`/c/...`) carries `Content-Security-Policy: sandbox allow-scripts
+  allow-forms allow-modals allow-popups allow-downloads` and `/_blob/...`
+  responses carry `Content-Security-Policy: sandbox`, so a top-level
+  navigation cannot reach the API same-origin. A bare sandbox stops Chrome
+  rendering PDFs top-level; assets are meant for `<img>`, `<video>`,
+  `<a download>`, and fonts.
 - Live updates: the shell subscribes to `/api/events`; a new version shows a
   "v4 published, reload" banner unless the page published it itself via the
   `artifact` capability, in which case it reloads immediately as on
@@ -713,9 +718,11 @@ harnesses without MCP and for scripts.
   `interact` level; they cannot publish, delete, upload assets, or write
   `admin`-level docs.
 - Content isolation per D5. In LAN mode content runs with an opaque origin.
-  Content on the main origin (`/c/...`) and `/_blob/...` responses carry a
-  `Content-Security-Policy: sandbox` header so a top-level navigation cannot
-  reach the API same-origin.
+  Content on the main origin (`/c/...`) carries `Content-Security-Policy:
+  sandbox allow-scripts allow-forms allow-modals allow-popups
+  allow-downloads` and `/_blob/...` responses carry
+  `Content-Security-Policy: sandbox` (see section 8 for the PDF note), so a
+  top-level navigation cannot reach the API same-origin.
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
   results wrap them in a clearly labelled block and the skills say so.
 - `sample()` spends the configured key; consent is per viewer per artifact
@@ -767,8 +774,8 @@ harnesses without MCP and for scripts.
   Codex setup script idempotency; Pi extension against a mocked
   `ExtensionAPI` until Pi is installed.
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
-  web typecheck, Playwright, and the plugin tests; CI runs the same
-  script.
+  web lint (oxlint) and typecheck, Playwright, and the plugin tests; CI runs
+  the same script.
 
 ## 17. Phases
 

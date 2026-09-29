@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 pub struct Args {
     /// The page to publish as index.html.
     pub index: PathBuf,
-    /// Extra file, optionally renamed: path or path=published/name. Repeatable.
+    /// Extra file, optionally renamed: path or path=published/name. The text is
+    /// split at the first `=` only when what precedes it is an existing file;
+    /// otherwise the whole text is the path. Repeatable.
     #[arg(long = "file")]
     pub files: Vec<String>,
     /// Include every file under this directory (except index.html) at its relative path.
@@ -88,6 +90,23 @@ fn collect_dir(
     Ok(())
 }
 
+/// The source path and published name of a `--file` spec: split at the first
+/// `=` when the text before it names an existing file, else the whole spec is
+/// the source and its file name is the published name.
+fn split_file_spec(spec: &str) -> anyhow::Result<(PathBuf, String)> {
+    if let Some((src, dest)) = spec.split_once('=')
+        && Path::new(src).is_file()
+    {
+        return Ok((PathBuf::from(src), dest.to_string()));
+    }
+    let dest = Path::new(spec)
+        .file_name()
+        .context("--file needs a file name")?
+        .to_string_lossy()
+        .to_string();
+    Ok((PathBuf::from(spec), dest))
+}
+
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let mut files = serde_json::Map::new();
     files.insert("index.html".into(), file_entry(&a.index)?);
@@ -95,17 +114,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         collect_dir(dir, dir, &mut files)?;
     }
     for spec in &a.files {
-        let (src, dest) = match spec.split_once('=') {
-            Some((s, d)) => (PathBuf::from(s), d.to_string()),
-            None => (
-                PathBuf::from(spec),
-                Path::new(spec)
-                    .file_name()
-                    .context("--file needs a file name")?
-                    .to_string_lossy()
-                    .to_string(),
-            ),
-        };
+        let (src, dest) = split_file_spec(spec)?;
         files.insert(dest, file_entry(&src)?);
     }
     let c = Client::connect(home, cli.port)?;
@@ -167,4 +176,30 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         },
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_spec_splits_on_first_equals_only_for_an_existing_source() {
+        let dir = tempfile::tempdir().unwrap();
+        let odd = dir.path().join("a=b.js");
+        std::fs::write(&odd, "1").unwrap();
+        let src = dir.path().join("src.js");
+        std::fs::write(&src, "2").unwrap();
+
+        let spec = odd.to_string_lossy().to_string();
+        assert_eq!(
+            split_file_spec(&spec).unwrap(),
+            (odd.clone(), "a=b.js".into())
+        );
+        let spec = format!("{}=lib/dest.js", src.display());
+        assert_eq!(split_file_spec(&spec).unwrap(), (src, "lib/dest.js".into()));
+        assert_eq!(
+            split_file_spec("nope=dest.js").unwrap(),
+            (PathBuf::from("nope=dest.js"), "nope=dest.js".into())
+        );
+    }
 }

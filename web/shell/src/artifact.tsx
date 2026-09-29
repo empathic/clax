@@ -1,6 +1,6 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
-import { type Artifact, type Version, getArtifact } from "./api";
+import { ApiError, type Artifact, type Version, getArtifact } from "./api";
 import { subscribe } from "./events";
 import { Frame } from "./frame";
 import { artifactOrigin, contentSrc, probeOrigin } from "./origin";
@@ -21,7 +21,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       latestKnown.current = Math.max(latestKnown.current, d.artifact.current_version);
       setNewer(prev => (prev !== null && prev <= d.artifact.current_version ? null : prev));
       setData(d);
-    }, e => setError(String(e).includes("404") ? "Artifact not found" : String(e)));
+    }, e => setError(e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e)));
   }, [id]);
   useEffect(() => {
     const o = artifactOrigin(id);
@@ -33,6 +33,12 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   useEffect(() => subscribe(id, e => {
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
+    if (e.type === "resync") {
+      getArtifact(id).then(d => {
+        const n = d.artifact.current_version;
+        if (n > latestKnown.current) { latestKnown.current = n; setNewer(n); }
+      }, err => { if (err instanceof ApiError && err.status === 404) setDeleted(true); });
+    }
   }), [id]);
 
   if (error) return <Shell title="Artifax"><p class="empty">{error}</p></Shell>;

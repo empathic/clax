@@ -1,6 +1,17 @@
 use crate::client::Client;
 use artifax_core::{ArtifactId, Home, Store};
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+
+#[derive(clap::Args)]
+pub struct Args {
+    /// Repair what is safe to repair: remove stray staging and temp files and
+    /// version directories no row accounts for, delete zero-version artifact
+    /// rows, and delete assets and corrupt rows that belong to deleted
+    /// artifacts. Live artifacts' rows are never deleted.
+    #[arg(long)]
+    pub fix: bool,
+}
 
 fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
@@ -81,8 +92,129 @@ fn version_files(home: &Home, store: &Store) -> serde_json::Value {
     )
 }
 
-pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
+/// `<artifact>:<path under the artifact directory>` for a path inside `artifacts/`.
+fn artifact_relative(home: &Home, path: &Path) -> String {
+    let rel = path
+        .strip_prefix(home.root().join("artifacts"))
+        .unwrap_or(path)
+        .to_string_lossy()
+        .into_owned();
+    rel.replacen('/', ":", 1)
+}
+
+/// Staging directories, version directories above `current_version`, and
+/// zero-version artifact rows; nothing here is reachable through the API.
+fn stale_files(home: &Home, store: &Store) -> serde_json::Value {
+    let dirs = store.stray_version_dirs();
+    let zero = store.zero_version_artifacts();
+    let (dirs, zero) = match (dirs, zero) {
+        (Ok(d), Ok(z)) => (d, z),
+        (Err(e), _) | (_, Err(e)) => return check("stale_files", false, e.to_string()),
+    };
+    let problems: Vec<String> = dirs
+        .iter()
+        .map(|d| artifact_relative(home, d))
+        .chain(
+            zero.iter()
+                .map(|id| format!("{id}: zero-version artifact row")),
+        )
+        .collect();
+    check(
+        "stale_files",
+        problems.is_empty(),
+        if problems.is_empty() {
+            "no stale files".into()
+        } else {
+            problems.join(", ")
+        },
+    )
+}
+
+/// Every asset row of a live artifact has its file with the recorded size, and
+/// no upload temp files linger. Rows of deleted artifacts are not reported: their
+/// files are gone by design, and `--fix` deletes the rows.
+fn assets(home: &Home, store: &Store) -> serde_json::Value {
+    let (rows, tmps) = match (store.list_all_asset_rows(), store.stray_asset_temp_files()) {
+        (Ok(r), Ok(t)) => (r, t),
+        (Err(e), _) | (_, Err(e)) => return check("assets", false, e.to_string()),
+    };
+    let mut problems = vec![];
+    for row in rows.iter().filter(|r| !r.artifact_deleted) {
+        let name = format!("{}:{}", row.asset.artifact_id, row.asset.id);
+        match std::fs::metadata(&row.path) {
+            Err(_) => problems.push(format!("missing {name}")),
+            Ok(m) if m.len() != row.asset.size => problems.push(format!("size mismatch {name}")),
+            Ok(_) => {}
+        }
+    }
+    problems.extend(
+        tmps.iter()
+            .map(|t| format!("temp file {}", artifact_relative(home, t))),
+    );
+    check(
+        "assets",
+        problems.is_empty(),
+        if problems.is_empty() {
+            "all asset files present".into()
+        } else {
+            problems.join(", ")
+        },
+    )
+}
+
+fn remove_dir_if_present(path: &Path) -> anyhow::Result<()> {
+    match std::fs::remove_dir_all(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Applies the repairs listed on [`Args::fix`]; returns one line per repair made.
+fn apply_fixes(store: &Store) -> anyhow::Result<Vec<String>> {
+    let mut fixed = vec![];
+    let dirs = store.stray_version_dirs()?;
+    for d in &dirs {
+        remove_dir_if_present(d)?;
+    }
+    if !dirs.is_empty() {
+        fixed.push(format!("removed {} stale version directories", dirs.len()));
+    }
+    let tmps = store.stray_asset_temp_files()?;
+    for t in &tmps {
+        match std::fs::remove_file(t) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if !tmps.is_empty() {
+        fixed.push(format!("removed {} stray temp files", tmps.len()));
+    }
+    for (n, what) in [
+        (
+            store.delete_zero_version_artifacts()?,
+            "zero-version artifact rows",
+        ),
+        (
+            store.delete_assets_of_deleted_artifacts()?,
+            "asset rows of deleted artifacts",
+        ),
+        (
+            store.delete_corrupt_deleted_rows()?,
+            "corrupt rows of deleted artifacts",
+        ),
+    ] {
+        if n > 0 {
+            fixed.push(format!("deleted {n} {what}"));
+        }
+    }
+    Ok(fixed)
+}
+
+pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     let mut checks = vec![];
+    let mut fixed = vec![];
     let writable = home.ensure_dirs().is_ok()
         && std::fs::write(home.root().join(".doctor"), b"")
             .map(|_| std::fs::remove_file(home.root().join(".doctor")).is_ok())
@@ -107,6 +239,9 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
     ));
     match Store::open(home) {
         Ok(store) => {
+            if args.fix {
+                fixed = apply_fixes(&store)?;
+            }
             let integrity = store.integrity_check();
             checks.push(check(
                 "db_integrity",
@@ -115,11 +250,15 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
             ));
             checks.push(corrupt_rows(&store));
             checks.push(version_files(home, &store));
+            checks.push(stale_files(home, &store));
+            checks.push(assets(home, &store));
         }
         Err(e) => {
             checks.push(check("db_integrity", false, e.to_string()));
             checks.push(check("corrupt_rows", false, "store unavailable"));
             checks.push(check("version_files", false, "store unavailable"));
+            checks.push(check("stale_files", false, "store unavailable"));
+            checks.push(check("assets", false, "store unavailable"));
         }
     }
     let ui = client
@@ -136,26 +275,32 @@ pub fn run(cli: &crate::Cli, home: &Home) -> anyhow::Result<()> {
         },
     ));
     let ok = checks.iter().all(|c| c["ok"].as_bool().unwrap());
-    super::print(cli, serde_json::json!({"ok": ok, "checks": checks}), |j| {
-        j["checks"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|c| {
-                format!(
-                    "{} {:<18} {}",
-                    if c["ok"].as_bool().unwrap() {
-                        "ok  "
-                    } else {
-                        "FAIL"
-                    },
-                    c["name"].as_str().unwrap(),
-                    c["detail"].as_str().unwrap()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n")
-    });
+    super::print(
+        cli,
+        serde_json::json!({"ok": ok, "checks": checks, "fixed": fixed}),
+        |j| {
+            let fixes = j["fixed"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|f| format!("fix  {}", f.as_str().unwrap()));
+            fixes
+                .chain(j["checks"].as_array().unwrap().iter().map(|c| {
+                    format!(
+                        "{} {:<18} {}",
+                        if c["ok"].as_bool().unwrap() {
+                            "ok  "
+                        } else {
+                            "FAIL"
+                        },
+                        c["name"].as_str().unwrap(),
+                        c["detail"].as_str().unwrap()
+                    )
+                }))
+                .collect::<Vec<_>>()
+                .join("\n")
+        },
+    );
     if !ok {
         std::process::exit(1);
     }

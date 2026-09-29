@@ -298,6 +298,8 @@ fn doctor_runs_all_checks() {
         "db_integrity",
         "corrupt_rows",
         "version_files",
+        "stale_files",
+        "assets",
         "ui",
     ] {
         assert!(names.contains(&n), "{n}");
@@ -416,4 +418,227 @@ fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
     let files = check("version_files");
     assert_eq!(files["ok"], false);
     assert_eq!(files["detail"], format!("missing {good}:index.html"));
+}
+
+fn make_artifact(store: &artifax_core::Store, title: &str) -> artifax_core::ArtifactId {
+    let p = artifax_core::publish::validate(
+        serde_json::from_value(serde_json::json!({
+            "title": title,
+            "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    artifax_core::ArtifactId::parse(&store.create_artifact(p).unwrap().0.id).unwrap()
+}
+
+fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
+    let out = e
+        .cmd()
+        .arg("doctor")
+        .args(args)
+        .arg("--json")
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == name)
+        .unwrap_or_else(|| panic!("no {name} check"))
+        .clone()
+}
+
+#[test]
+fn doctor_fix_clears_stale_files() {
+    let e = Env::new();
+    let home = artifax_core::Home::at(e.dir.path().join("ax"));
+    let store = artifax_core::Store::open(&home).unwrap();
+    let id = make_artifact(&store, "A");
+    drop(store);
+    let versions = home.artifact_dir(&id).join("versions");
+    std::fs::create_dir_all(versions.join(".tmp-x")).unwrap();
+    std::fs::create_dir_all(versions.join("99")).unwrap();
+    rusqlite::Connection::open(home.db_path())
+        .unwrap()
+        .execute(
+            "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+             VALUES ('zzzzzzzzzzzz', 'z', 'x', 'x', 0, '1')",
+            [],
+        )
+        .unwrap();
+
+    let before = doctor_check(&e, &[], "stale_files");
+    assert_eq!(before["ok"], false);
+    let detail = before["detail"].as_str().unwrap();
+    assert!(detail.contains(".tmp-x"), "{detail}");
+    assert!(detail.contains("versions/99"), "{detail}");
+    assert!(detail.contains("zzzzzzzzzzzz"), "{detail}");
+
+    let fixed = doctor_check(&e, &["--fix"], "stale_files");
+    assert_eq!(fixed["ok"], true, "{fixed}");
+    assert!(!versions.join(".tmp-x").exists());
+    assert!(!versions.join("99").exists());
+    assert!(versions.join("1").exists(), "live version is kept");
+    assert_eq!(doctor_check(&e, &[], "stale_files")["ok"], true);
+}
+
+#[test]
+fn doctor_fix_clears_asset_problems() {
+    let e = Env::new();
+    let home = artifax_core::Home::at(e.dir.path().join("ax"));
+    let store = artifax_core::Store::open(&home).unwrap();
+    let live = make_artifact(&store, "live");
+    let gone = make_artifact(&store, "gone");
+    let missing = store.add_asset(&live, "image/png", &[1, 2, 3]).unwrap();
+    let wrong = store.add_asset(&live, "image/png", &[1, 2, 3]).unwrap();
+    let fine = store.add_asset(&live, "image/png", &[1]).unwrap();
+    store.add_asset(&gone, "image/png", &[9]).unwrap();
+    store.delete_artifact(&gone).unwrap();
+    std::fs::remove_file(store.get_asset(&missing.id).unwrap().unwrap().1).unwrap();
+    std::fs::write(
+        store.get_asset(&wrong.id).unwrap().unwrap().1,
+        b"longer than recorded",
+    )
+    .unwrap();
+    let tmp = home.assets_dir(&live).join("X.png.tmp");
+    std::fs::write(&tmp, b"x").unwrap();
+    drop(store);
+
+    let before = doctor_check(&e, &[], "assets");
+    assert_eq!(before["ok"], false);
+    let detail = before["detail"].as_str().unwrap();
+    assert!(
+        detail.contains(&format!("{live}:{}", missing.id)),
+        "{detail}"
+    );
+    assert!(detail.contains(&format!("{live}:{}", wrong.id)), "{detail}");
+    assert!(!detail.contains(&fine.id), "{detail}");
+    assert!(detail.contains("X.png.tmp"), "{detail}");
+
+    // Rows of the soft-deleted artifact are cleared; the live artifact's broken
+    // rows are reported but never deleted, so the check still fails on them.
+    let after = doctor_check(&e, &["--fix"], "assets");
+    assert!(!tmp.exists());
+    let detail = after["detail"].as_str().unwrap();
+    assert!(!detail.contains("X.png.tmp"), "{detail}");
+    assert!(detail.contains(&missing.id), "{detail}");
+    let store = artifax_core::Store::open(&home).unwrap();
+    let rows = store.list_all_asset_rows().unwrap();
+    assert!(rows.iter().all(|r| !r.artifact_deleted));
+    assert_eq!(rows.len(), 3);
+
+    // Once the live problems are repaired by hand the check passes.
+    store.delete_asset(&missing.id).unwrap();
+    store.delete_asset(&wrong.id).unwrap();
+    drop(store);
+    assert_eq!(doctor_check(&e, &[], "assets")["ok"], true);
+}
+
+#[test]
+fn doctor_fix_deletes_corrupt_rows_of_deleted_artifacts_only() {
+    let e = Env::new();
+    let home = artifax_core::Home::at(e.dir.path().join("ax"));
+    let store = artifax_core::Store::open(&home).unwrap();
+    let live = make_artifact(&store, "live");
+    let gone = make_artifact(&store, "gone");
+    store.delete_artifact(&gone).unwrap();
+    drop(store);
+    let db = rusqlite::Connection::open(home.db_path()).unwrap();
+    db.execute(
+        "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+        [gone.as_str()],
+    )
+    .unwrap();
+    drop(db);
+
+    let before = doctor_check(&e, &[], "corrupt_rows");
+    assert_eq!(before["ok"], false);
+    assert_eq!(before["detail"], format!("{gone}:capabilities_json"));
+    assert_eq!(doctor_check(&e, &["--fix"], "corrupt_rows")["ok"], true);
+    assert_eq!(doctor_check(&e, &[], "corrupt_rows")["ok"], true);
+
+    rusqlite::Connection::open(home.db_path())
+        .unwrap()
+        .execute(
+            "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+            [live.as_str()],
+        )
+        .unwrap();
+    let still = doctor_check(&e, &["--fix"], "corrupt_rows");
+    assert_eq!(still["ok"], false, "live rows are never deleted");
+    assert_eq!(still["detail"], format!("{live}:capabilities_json"));
+}
+
+#[test]
+fn usage_errors_exit_1_and_help_and_version_exit_0() {
+    let e = Env::new();
+    e.cmd()
+        .arg("frobnicate")
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("Usage"));
+    e.cmd().assert().failure().code(1);
+    e.cmd()
+        .args(["publish", "--if-version", "x", "a.html"])
+        .assert()
+        .failure()
+        .code(1);
+    e.cmd()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("publish"));
+    e.cmd()
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("artifax"));
+}
+
+#[test]
+fn file_spec_splits_only_when_the_source_exists() {
+    let e = Env::new();
+    let index = write(e.dir.path(), "index.html", "<p>x</p>");
+    let odd = write(e.dir.path(), "a=b.js", "1");
+    let src = write(e.dir.path(), "src.js", "2");
+    let out = e
+        .cmd()
+        .args(["publish", "--json", "--port", "0", "--file"])
+        .arg(&odd)
+        .arg("--file")
+        .arg(format!("{}=lib/dest.js", src.display()))
+        .arg(&index)
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let id = serde_json::from_slice::<serde_json::Value>(&out).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let files: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["list", "--json", "--files", &id])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert!(files["files"]["a=b.js"].is_object(), "{files}");
+    assert!(files["files"]["lib/dest.js"].is_object(), "{files}");
+    assert!(files["files"]["src.js"].is_null(), "{files}");
+    e.stop();
+}
+
+#[test]
+fn doctor_lists_the_new_checks() {
+    let e = Env::new();
+    for n in ["stale_files", "assets"] {
+        assert_eq!(doctor_check(&e, &[], n)["ok"], true, "{n}");
+    }
 }

@@ -1,9 +1,16 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { startDaemon, publish } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
 test.afterAll(async () => { await d?.stop(); });
+
+/** The artifact's content frame for version `n`, once it exists; locators on it auto-wait. */
+async function contentFrame(page: Page, id: string, n: number) {
+  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  await expect.poll(() => page.frame({ url }) !== null).toBe(true);
+  return page.frame({ url })!;
+}
 
 // Must run first: it expects an empty daemon.
 test("gallery shows an empty state then a card", async ({ page }) => {
@@ -18,10 +25,10 @@ test("gallery shows an empty state then a card", async ({ page }) => {
 test("viewer renders content with the bridge, and shows a banner on republish", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Live", { "index.html": `<link rel="stylesheet" href="style.css"><h1 id=h>v1</h1><script>document.title = typeof window.claude.use</script>`, "style.css": "#h{color:rgb(0,128,0)}" });
   await page.goto(`${d.base}/a/${artifact.id}`);
-  const frame = page.frameLocator("iframe.frame");
+  const frame = await contentFrame(page, artifact.id, 1);
   await expect(frame.locator("#h")).toHaveText("v1");
   await expect(frame.locator("#h")).toHaveCSS("color", "rgb(0, 128, 0)");
-  await expect.poll(async () => await page.frame({ url: /\/v\/1\/$/ })?.title()).toBe("function");
+  await expect.poll(async () => await frame.title()).toBe("function");
   const src = (await page.locator("iframe.frame").getAttribute("src")) ?? "";
   const sandbox = await page.locator("iframe.frame").getAttribute("sandbox");
   if (src.includes(".localhost:")) { console.log("frame mode: subdomain"); expect(sandbox).toBeNull(); }
@@ -30,10 +37,10 @@ test("viewer renders content with the bridge, and shows a banner on republish", 
   await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v2</h1>" }, 1, artifact.id);
   await expect(page.getByText("v2 published")).toBeVisible({ timeout: 5000 });
   await page.getByRole("button", { name: "Reload" }).click();
-  await expect(page.frameLocator("iframe.frame").locator("#h")).toHaveText("v2");
+  await expect((await contentFrame(page, artifact.id, 2)).locator("#h")).toHaveText("v2");
   await page.selectOption("select", "1");
   await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
-  await expect(page.frameLocator("iframe.frame").locator("#h")).toHaveText("v1");
+  await expect((await contentFrame(page, artifact.id, 1)).locator("#h")).toHaveText("v1");
 });
 
 test("fallback mode uses the sandboxed path-based frame", async ({ page }) => {
@@ -44,7 +51,7 @@ test("fallback mode uses the sandboxed path-based frame", async ({ page }) => {
   await expect(iframe).toHaveAttribute("sandbox", /allow-scripts/);
   const src = await iframe.getAttribute("src");
   expect(src).toMatch(new RegExp(`/c/${artifact.id}/v/1/`));
-  await expect(page.frameLocator("iframe.frame").locator("#p")).toHaveText("fallback");
+  await expect((await contentFrame(page, artifact.id, 1)).locator("#p")).toHaveText("fallback");
   const res = await page.request.get(new URL(src!, d.base).toString());
   expect(res.headers()["content-security-policy"]).toContain("sandbox");
 });

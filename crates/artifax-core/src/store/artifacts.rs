@@ -234,6 +234,142 @@ impl Store {
         })
     }
 
+    /// Directories under any `artifacts/<id>/versions/` that no version row
+    /// accounts for: `.tmp-*` staging directories, and numbered directories above
+    /// the artifact's `current_version`. Sorted.
+    ///
+    /// # Errors
+    /// Database errors, and I/O errors other than a missing directory.
+    pub fn stray_version_dirs(&self) -> Result<Vec<PathBuf>> {
+        let currents: Vec<(String, u32)> = self.with_conn(|c| {
+            let mut stmt = c.prepare("SELECT id, current_version FROM artifacts ORDER BY id")?;
+            Ok(stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        let mut out = Vec::new();
+        for (id, current) in currents {
+            let Ok(id) = ArtifactId::parse(&id) else {
+                continue;
+            };
+            let versions = self.home.artifact_dir(&id).join("versions");
+            for path in super::assets::read_dir_or_empty(&versions)? {
+                if !path.is_dir() {
+                    continue;
+                }
+                let name = path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let stray =
+                    name.starts_with(".tmp-") || name.parse::<u32>().is_ok_and(|n| n > current);
+                if stray {
+                    out.push(path);
+                }
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
+    /// IDs of live-looking artifact rows that never recorded a version (a
+    /// creation that died before version 1), sorted.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn zero_version_artifacts(&self) -> Result<Vec<String>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(
+                "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL ORDER BY id",
+            )?;
+            Ok(stmt
+                .query_map([], |r| r.get(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+
+    /// Deletes the rows (and any files) of [`Store::zero_version_artifacts`].
+    /// Returns how many artifacts were removed.
+    ///
+    /// # Errors
+    /// Database errors, and I/O errors other than a missing directory.
+    pub fn delete_zero_version_artifacts(&self) -> Result<usize> {
+        let ids = self.zero_version_artifacts()?;
+        let mut n = 0;
+        for id in ids {
+            let removed = self.with_tx(|tx| {
+                let zero = "SELECT id FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL";
+                for table in ["assets", "versions"] {
+                    tx.execute(
+                        &format!("DELETE FROM {table} WHERE artifact_id IN ({zero})"),
+                        params![id],
+                    )?;
+                }
+                Ok(tx.execute(
+                    "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
+                    params![id],
+                )?)
+            })?;
+            if removed > 0 {
+                n += 1;
+                if let Ok(aid) = ArtifactId::parse(&id) {
+                    match std::fs::remove_dir_all(self.home.artifact_dir(&aid)) {
+                        Ok(()) => {}
+                        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(e.into()),
+                    }
+                }
+            }
+        }
+        Ok(n)
+    }
+
+    /// Deletes the [`Store::corrupt_rows`] that belong to soft-deleted
+    /// artifacts: a corrupt version row goes alone, a corrupt artifact row goes
+    /// with its versions and assets. Rows of live artifacts are never touched.
+    /// Returns how many corrupt rows were cleared.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn delete_corrupt_deleted_rows(&self) -> Result<usize> {
+        let corrupt = self.corrupt_rows()?;
+        self.with_tx(|tx| {
+            let mut n = 0;
+            for row in corrupt {
+                let deleted: bool = tx.query_row(
+                    "SELECT deleted_at IS NOT NULL FROM artifacts WHERE id = ?1",
+                    params![row.artifact_id],
+                    |r| r.get(0),
+                )?;
+                if !deleted {
+                    continue;
+                }
+                match row.version {
+                    Some(v) => {
+                        tx.execute(
+                            "DELETE FROM versions WHERE artifact_id = ?1 AND n = ?2",
+                            params![row.artifact_id, v],
+                        )?;
+                    }
+                    None => {
+                        for table in ["assets", "versions"] {
+                            tx.execute(
+                                &format!("DELETE FROM {table} WHERE artifact_id = ?1"),
+                                params![row.artifact_id],
+                            )?;
+                        }
+                        tx.execute(
+                            "DELETE FROM artifacts WHERE id = ?1",
+                            params![row.artifact_id],
+                        )?;
+                    }
+                }
+                n += 1;
+            }
+            Ok(n)
+        })
+    }
+
     #[doc(hidden)]
     pub fn insert_artifact_for_test(&self, title: &str, at: &str) -> ArtifactId {
         let id = ArtifactId::generate();
@@ -1029,5 +1165,89 @@ mod tests {
             .filter(|n| n.starts_with(".tmp-"))
             .collect();
         assert!(leftovers.is_empty(), "{leftovers:?}");
+    }
+
+    fn one_version(store: &Store) -> crate::ArtifactId {
+        let p = crate::publish::validate(
+            serde_json::from_value(serde_json::json!({
+                "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        crate::ArtifactId::parse(&store.create_artifact(p).unwrap().0.id).unwrap()
+    }
+
+    #[test]
+    fn stray_version_dirs_finds_staging_and_future_versions_only() {
+        let (_d, store) = store();
+        let id = one_version(&store);
+        assert!(store.stray_version_dirs().unwrap().is_empty());
+        let versions = store.home().artifact_dir(&id).join("versions");
+        std::fs::create_dir_all(versions.join(".tmp-x")).unwrap();
+        std::fs::create_dir_all(versions.join("99")).unwrap();
+        std::fs::create_dir_all(versions.join("notes")).unwrap();
+        assert_eq!(
+            store.stray_version_dirs().unwrap(),
+            vec![versions.join(".tmp-x"), versions.join("99")]
+        );
+    }
+
+    #[test]
+    fn zero_version_artifacts_are_listed_and_deleted_but_deleted_ones_are_not() {
+        let (_d, store) = store();
+        let live = one_version(&store);
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                     VALUES ('zzzzzzzzzzzz', 'z', 'x', 'x', 0, '1')",
+                    [],
+                )?;
+                c.execute(
+                    "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version, deleted_at)
+                     VALUES ('yyyyyyyyyyyy', 'y', 'x', 'x', 0, '1', 'x')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            store.zero_version_artifacts().unwrap(),
+            vec!["zzzzzzzzzzzz"]
+        );
+        assert_eq!(store.delete_zero_version_artifacts().unwrap(), 1);
+        assert!(store.zero_version_artifacts().unwrap().is_empty());
+        assert!(store.get_artifact(&live).unwrap().is_some());
+        assert_eq!(store.delete_zero_version_artifacts().unwrap(), 0);
+    }
+
+    #[test]
+    fn only_corrupt_rows_of_deleted_artifacts_are_deleted() {
+        let (_d, store) = store();
+        let live = one_version(&store);
+        let gone_caps = one_version(&store);
+        let gone_files = one_version(&store);
+        store.delete_artifact(&gone_caps).unwrap();
+        store.delete_artifact(&gone_files).unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE artifacts SET capabilities_json = 'nope' WHERE id IN (?1, ?2)",
+                    [live.as_str(), gone_caps.as_str()],
+                )?;
+                c.execute(
+                    "UPDATE versions SET files_json = 'nope' WHERE artifact_id = ?1",
+                    [gone_files.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(store.corrupt_rows().unwrap().len(), 3);
+        assert_eq!(store.delete_corrupt_deleted_rows().unwrap(), 2);
+        let left = store.corrupt_rows().unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].artifact_id, live.as_str());
+        assert_eq!(store.delete_corrupt_deleted_rows().unwrap(), 0);
     }
 }
