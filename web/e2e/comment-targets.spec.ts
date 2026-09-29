@@ -240,9 +240,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const sel = getSelection()!;
       sel.removeAllRanges();
       sel.addRange(r);
-      document.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
       return pre.getBoundingClientRect().width;
     });
+    // Released with the real mouse: comment mode acts on the viewer's own input only.
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    await page.mouse.move(fb.x + 200, fb.y + 200);
+    await page.mouse.up();
     await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
     const pick = await last(page, "artifax:pick");
     expect(pick.clipError).toBeUndefined();
