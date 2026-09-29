@@ -8,7 +8,7 @@
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips), anchor resolution, and scroll-to (see `protocol.ts`).
  */
-import { buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
+import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
 import { acceptFromShell, shellOrigins } from "./channel";
 import { blockAncestor, renderClip } from "./clip";
 import { CommentMode } from "./comment-mode";
@@ -53,10 +53,14 @@ import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
     window.parent.postMessage(m, shellOrigin ?? "*", transfer);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
+  // Anchors are resolved once per shell request; scroll and resize only
+  // re-measure, unless the DOM under a resolved element changed since.
   let anchors: { id: string; anchor: Anchor }[] = [];
+  let resolutions: AnchorCache | null = null;
   const resolveAll = (requestId: string | null) => {
+    const resolved = resolutions ??= new AnchorCache(document);
     const results: AnchorResult[] = anchors.map(({ id, anchor }) => {
-      const r = resolveAnchor(document, anchor);
+      const r = resolved.resolve(id, anchor);
       return r ? { id, found: true, method: r.method, rect: box(r.range ?? r.element) } : { id, found: false, method: null, rect: null };
     });
     post({ type: "artifax:anchors", requestId, results });
@@ -90,7 +94,7 @@ import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
     switch (m.type) {
       case "artifax:welcome": mode.set(m.mode === "comment"); break;
       case "artifax:comment-mode": mode.set(m.on); break;
-      case "artifax:resolve-anchors": anchors = m.anchors; resolveAll(m.requestId); break;
+      case "artifax:resolve-anchors": anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
       case "artifax:scroll-to": {
         const r = resolveAnchor(document, m.anchor);
         if (r) { r.element.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => mode.flash(r.range ?? r.element), 350); }

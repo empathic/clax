@@ -1,7 +1,9 @@
 // Comment mode inside the page: an outline on the hovered element, a pin that
 // follows the pointer, a click to pick an element, a text selection to pick a
-// range, Escape to cancel. The overlay lives in a shadow root on <html>, so it
-// never changes the page's body, selectors, or text.
+// range, Escape to cancel. A selection that already existed when the mode was
+// turned on is not a pick; turning the mode off drops any pending hover. The
+// overlay lives in a shadow root on <html>, so it never changes the page's
+// body, selectors, or text.
 
 import { OVERLAY_TAG } from "./anchor";
 
@@ -26,6 +28,7 @@ export class CommentMode {
   private suppressClick = false;
   private frame = 0;
   private hovered: Element | null = null;
+  private selectionBefore: Range | null = null;
 
   constructor(private readonly doc: Document, private readonly hooks: ModeHooks) {
     this.host = doc.createElement(OVERLAY_TAG);
@@ -41,6 +44,7 @@ export class CommentMode {
     this.on = on;
     const listeners: [string, EventListener][] = [
       ["mousemove", this.onMove as EventListener],
+      ["mousedown", this.onDown as EventListener],
       ["mouseup", this.onUp as EventListener],
       ["click", this.onClick as EventListener],
       ["keydown", this.onKey as EventListener],
@@ -50,7 +54,14 @@ export class CommentMode {
       else this.doc.removeEventListener(type, fn, true);
     }
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
-    if (!on) {
+    this.suppressClick = false;
+    if (on) {
+      const sel = this.doc.getSelection();
+      this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
+    } else {
+      if (this.frame) cancelAnimationFrame(this.frame);
+      this.frame = 0;
+      this.selectionBefore = null;
       this.outline.style.display = "none";
       this.pin.style.display = "none";
       this.hovered = null;
@@ -83,6 +94,7 @@ export class CommentMode {
     if (t === this.hovered || this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
+      if (!this.on) return;
       this.hovered = t;
       if (t) this.place(t.getBoundingClientRect());
       else this.outline.style.display = "none";
@@ -90,11 +102,19 @@ export class CommentMode {
     });
   };
 
+  /** A new press ends any click suppression left by a drag that produced no click. */
+  private onDown = () => {
+    this.suppressClick = false;
+  };
+
   private onUp = () => {
     const sel = this.doc.getSelection();
     if (!sel || sel.isCollapsed || !sel.rangeCount) return;
     const r = sel.getRangeAt(0).cloneRange();
     if (!this.doc.body.contains(r.commonAncestorContainer)) return;
+    const before = this.selectionBefore;
+    if (before && sameRange(before, r)) return; // selected before the mode was on
+    this.selectionBefore = null;
     this.suppressClick = true;
     sel.removeAllRanges();
     this.hooks.pickRange(r);
@@ -112,3 +132,6 @@ export class CommentMode {
     if (e.key === "Escape") this.hooks.cancel();
   };
 }
+
+const sameRange = (a: Range, b: Range) =>
+  a.startContainer === b.startContainer && a.startOffset === b.startOffset && a.endContainer === b.endContainer && a.endOffset === b.endOffset;

@@ -12,7 +12,7 @@ export const MAX_QUOTE = 2000;
 export const MAX_SELECTOR = 1024;
 export const OVERLAY_TAG = "artifax-overlay";
 const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
-const SIMPLE_TAG = /^[a-z][a-z0-9-]*$/;
+const SIMPLE_TAG = /^[A-Za-z][A-Za-z0-9-]*$/;
 
 const isHigh = (c: number) => c >= 0xd800 && c <= 0xdbff;
 const isLow = (c: number) => c >= 0xdc00 && c <= 0xdfff;
@@ -79,8 +79,10 @@ function rangeAt(idx: TextIndex, start: number, end: number): Range | null {
 
 /** A selector from `body` (or the nearest ancestor with a unique, simple ID),
  * adding `:nth-of-type(k)` only where a parent has several children of the tag.
- * A tag name that is not plain ASCII becomes `:nth-child(k)`, so the selector
- * never holds control characters or line separators. A path longer than
+ * Element names keep their case (`linearGradient`), since selectors match
+ * non-HTML names case-sensitively. A name that is not plain ASCII, or one too
+ * long to fit within `MAX_SELECTOR`, becomes `:nth-child(k)`, so the selector never
+ * holds control characters or line separators. A path longer than
  * `MAX_SELECTOR` keeps only its trailing steps (best effort: it may then match
  * an earlier element too). */
 export function cssPath(el: Element): string {
@@ -96,17 +98,17 @@ function fullPath(el: Element): string {
   const parts: string[] = [];
   let cur: Element | null = el;
   while (cur && cur !== doc.body && cur !== doc.documentElement) {
-    if (cur.id && /^[A-Za-z][\w-]*$/.test(cur.id) && doc.querySelectorAll(`#${cur.id}`).length === 1) {
+    if (cur.id && cur.id.length < MAX_SELECTOR && /^[A-Za-z][\w-]*$/.test(cur.id) && doc.querySelectorAll(`#${cur.id}`).length === 1) {
       parts.unshift(`#${cur.id}`);
       return parts.join(" > ");
     }
-    const tag = cur.tagName.toLowerCase();
+    const tag = cur.localName;
     const parent: Element | null = cur.parentElement;
     let step = tag;
-    if (!SIMPLE_TAG.test(tag)) {
+    if (!SIMPLE_TAG.test(tag) || tag.length > MAX_SELECTOR - 32) {
       step = `:nth-child(${(parent ? Array.from(parent.children).indexOf(cur) : 0) + 1})`;
     } else if (parent) {
-      const same = Array.from(parent.children).filter(c => c.tagName === cur!.tagName);
+      const same = Array.from(parent.children).filter(c => c.localName === cur!.localName && c.namespaceURI === cur!.namespaceURI);
       if (same.length > 1) step += `:nth-of-type(${same.indexOf(cur) + 1})`;
     }
     parts.unshift(step);
@@ -205,4 +207,42 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
     }
   }
   return null;
+}
+
+/** Resolutions of the shell's anchors by thread ID, kept until the DOM under
+ * the resolved element changes (a detached anchor is retried after any change
+ * under `body`) or `reset` is called, so scroll and resize only re-measure. */
+export class AnchorCache {
+  private readonly entries = new Map<string, { anchor: Anchor; res: Resolved | null }>();
+  private readonly observer: MutationObserver;
+
+  constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map()) {
+    const win = doc.defaultView!;
+    this.observer = new win.MutationObserver(records => this.invalidate(records));
+    this.observer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true });
+  }
+
+  resolve(id: string, anchor: Anchor): Resolved | null {
+    const hit = this.entries.get(id);
+    if (hit && hit.anchor === anchor) return hit.res;
+    const res = resolveAnchor(this.doc, anchor, this.custom);
+    this.entries.set(id, { anchor, res });
+    return res;
+  }
+
+  reset(): void {
+    this.entries.clear();
+  }
+
+  disconnect(): void {
+    this.observer.disconnect();
+    this.entries.clear();
+  }
+
+  private invalidate(records: MutationRecord[]): void {
+    for (const [id, { res }] of this.entries) {
+      const el = res?.element;
+      if (!el || !el.isConnected || records.some(r => el.contains(r.target))) this.entries.delete(id);
+    }
+  }
 }

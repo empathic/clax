@@ -1,5 +1,5 @@
-import { beforeEach, describe, expect, it } from "vitest";
-import { buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor, textIndex } from "../src/anchor";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor, textIndex } from "../src/anchor";
 
 const PAGE = `<main><section><h2>Intro</h2><p>Hello there.</p></section><section><h2>Quarterly goals</h2><ul><li>Ship it</li><li>Grow</li><li>Drop this</li></ul></section></main>`;
 const h2 = () => document.querySelectorAll("h2")[1];
@@ -111,10 +111,65 @@ describe("daemon limits", () => {
     expect(sel.length).toBeLessThanOrEqual(1024);
     expect(document.querySelector(sel)).toBe(p);
   });
+  it("replaces a single step longer than the cap with :nth-child", () => {
+    const long = `x-${"a".repeat(1100)}`;
+    document.body.innerHTML = `<div><p>a</p><${long}>b</${long}></div>`;
+    const el = document.querySelector("div")!.children[1];
+    expect(cssPath(el)).toBe("body > div > :nth-child(2)");
+    document.body.innerHTML = `<div><p id="${"i".repeat(1100)}">a</p></div>`;
+    const p = document.querySelector("p")!;
+    expect(cssPath(p)).toBe("body > div > p");
+    expect(document.querySelector(cssPath(p))).toBe(p);
+  });
+  it("keeps the case of SVG element names so selectors match", () => {
+    document.body.innerHTML = `<svg><defs><linearGradient></linearGradient></defs><foreignObject><p>x</p></foreignObject></svg>`;
+    const lg = document.querySelector("defs")!.firstElementChild!;
+    expect(cssPath(lg)).toBe("body > svg > defs > linearGradient");
+    expect(document.querySelector(cssPath(lg))).toBe(lg);
+    expect(cssPath(document.querySelector("p")!)).toBe("body > svg > foreignObject > p");
+  });
   it("never splits a surrogate pair in quotes or affixes", () => {
     document.body.innerHTML = `<p>${"😀".repeat(40)}b</p><h2>x</h2><p>b${"😀".repeat(40)}</p>`;
     const a = buildElementAnchor(document, document.querySelector("h2")!);
     expect(a.prefix).toMatch(/^(?:[\ud800-\udbff][\udc00-\udfff])+b$/);
     expect(a.suffix).toMatch(/^b(?:[\ud800-\udbff][\udc00-\udfff])+$/);
+  });
+});
+
+describe("AnchorCache", () => {
+  const flush = () => new Promise<void>(r => setTimeout(r, 0));
+  it("resolves each anchor once until the DOM under it changes or it is reset", async () => {
+    const a = buildElementAnchor(document, h2());
+    const cache = new AnchorCache(document);
+    const walks = vi.spyOn(document, "createTreeWalker");
+    expect(cache.resolve("t1", a)).toMatchObject({ method: "exact", element: h2() });
+    expect(cache.resolve("t1", a)).toMatchObject({ method: "exact", element: h2() });
+    expect(walks).toHaveBeenCalledTimes(1);
+
+    document.querySelector("p")!.textContent = "Elsewhere";
+    await flush();
+    cache.resolve("t1", a);
+    expect(walks).toHaveBeenCalledTimes(1);
+
+    h2().textContent = "Quarterly goals (revised)";
+    await flush();
+    expect(cache.resolve("t1", a)?.method).toBe("selector");
+    expect(walks).toHaveBeenCalledTimes(2);
+
+    cache.reset();
+    cache.resolve("t1", a);
+    expect(walks).toHaveBeenCalledTimes(3);
+    cache.disconnect();
+    walks.mockRestore();
+  });
+  it("retries detached anchors after any change", async () => {
+    const a = buildElementAnchor(document, h2());
+    document.body.innerHTML = `<p>nothing</p>`;
+    const cache = new AnchorCache(document);
+    expect(cache.resolve("t1", a)).toBeNull();
+    document.body.insertAdjacentHTML("beforeend", "<h3>Quarterly goals</h3>");
+    await flush();
+    expect(cache.resolve("t1", a)?.method).toBe("quote");
+    cache.disconnect();
   });
 });
