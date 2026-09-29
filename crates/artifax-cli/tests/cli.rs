@@ -976,3 +976,107 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
     );
     e.stop();
 }
+
+/// Waits up to `timeout` for `fd` to reach EOF (every write end closed).
+fn read_end_hits_eof(fd: libc::c_int, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let left = deadline.saturating_duration_since(std::time::Instant::now());
+        let mut p = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: `p` is one valid pollfd for the duration of the call.
+        let n = unsafe { libc::poll(&mut p, 1, left.as_millis() as libc::c_int) };
+        if n <= 0 {
+            return false;
+        }
+        let mut buf = [0u8; 64];
+        // SAFETY: `buf` is a writable buffer of the stated length.
+        let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
+        if r == 0 {
+            return true;
+        }
+        if r < 0 || std::time::Instant::now() >= deadline {
+            return false;
+        }
+    }
+}
+
+/// A close-on-exec pipe, as std makes them.
+fn cloexec_pipe() -> (libc::c_int, libc::c_int) {
+    let mut fds = [0 as libc::c_int; 2];
+    // SAFETY: `fds` has room for the two descriptors pipe writes; fcntl only
+    // sets flags on them.
+    unsafe {
+        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
+        libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
+        libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
+    }
+    (fds[0], fds[1])
+}
+
+/// Passes `fd` to the command's child as an extra inherited descriptor: the
+/// state a concurrent fork catches a std pipe in on platforms without `pipe2`.
+/// Only this child inherits it, so other tests' children cannot hold it.
+fn inherit(cmd: &mut std::process::Command, fd: libc::c_int) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: fcntl is async-signal-safe and touches only the child's copy.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[test]
+fn an_auto_started_daemon_does_not_hold_inherited_descriptors() {
+    let e = Env::new();
+    let (r, w) = cloexec_pipe();
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("artifax"));
+    cmd.env("ARTIFAX_HOME", e.dir.path().join("ax"))
+        .env("ARTIFAX_CODEX_BIN", "")
+        .env("HOME", e.dir.path())
+        .args(["status", "--start", "--json", "--port", "0"])
+        .stdin(std::process::Stdio::null());
+    inherit(&mut cmd, w);
+    let out = cmd.output().unwrap();
+    // SAFETY: `w` is this test's own write end, closed once.
+    unsafe { libc::close(w) };
+    assert!(out.status.success(), "{out:?}");
+    let eof = read_end_hits_eof(r, std::time::Duration::from_secs(3));
+    // SAFETY: `r` is this test's own read end, closed once.
+    unsafe { libc::close(r) };
+    e.stop();
+    assert!(eof, "the daemon kept an inherited pipe write end open");
+}
+
+#[test]
+fn a_foreground_daemon_closes_inherited_descriptors() {
+    let e = Env::new();
+    let (r, w) = cloexec_pipe();
+    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("artifax"));
+    cmd.env("ARTIFAX_HOME", e.dir.path().join("ax"))
+        .env("ARTIFAX_CODEX_BIN", "")
+        .env("HOME", e.dir.path())
+        .args(["serve", "--foreground", "--port", "0"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    inherit(&mut cmd, w);
+    let mut child = cmd.spawn().unwrap();
+    // SAFETY: `w` is this test's own write end, closed once.
+    unsafe { libc::close(w) };
+    let eof = read_end_hits_eof(r, std::time::Duration::from_secs(3));
+    // SAFETY: `r` is this test's own read end, closed once.
+    unsafe { libc::close(r) };
+    let alive = child.try_wait().unwrap().is_none();
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(alive, "the daemon kept running after closing descriptors");
+    assert!(eof, "the daemon kept an inherited pipe write end open");
+}

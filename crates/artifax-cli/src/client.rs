@@ -104,6 +104,11 @@ impl Client {
             .create(true)
             .append(true)
             .open(home.log_path())?;
+        // Stdio is set explicitly and no other descriptor is passed on
+        // purpose. A descriptor can still reach the child by accident (a pipe
+        // another thread was creating when this fork happened, on platforms
+        // without `pipe2`), so `serve --foreground` closes every inherited
+        // descriptor above stdio at startup.
         let exe = std::env::current_exe()?;
         let mut cmd = Command::new(exe);
         cmd.args([
