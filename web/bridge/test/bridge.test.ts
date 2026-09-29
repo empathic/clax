@@ -45,7 +45,6 @@ describe("bridge", () => {
     expect(readMeta(null).file).toBe("index.html");
   });
 
-
   it("logs once and does not throw when window.claude cannot be redefined", async () => {
     const installed = window.claude;
     vi.resetModules();

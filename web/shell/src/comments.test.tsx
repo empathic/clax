@@ -55,7 +55,6 @@ describe("Pins", () => {
   });
 
   it("keeps a full-width region's pin inside the stage and clear of the frame's scrollbar", () => {
-
     const wide = { a: { id: "a", found: true, method: "exact" as const, rect: { x: 0, y: 40, w: 400, h: 20 } } };
     const { root, done } = mount(<Pins threads={[thread("a")]} resolved={wide} onSelect={vi.fn()} width={400} />);
     expect(root.querySelector<HTMLElement>("button.thread-pin")!.style.left).toBe(`${400 - PIN_RIGHT_ROOM}px`);

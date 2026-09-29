@@ -231,7 +231,6 @@ export class AnchorCache {
     const hit = this.entries.get(id);
     if (hit && hit.anchor === anchor) return hit.res;
     const res = resolveAnchor(this.doc, anchor, this.custom, this.file);
-
     this.entries.set(id, { anchor, res });
     return res;
   }

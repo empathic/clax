@@ -76,7 +76,6 @@ describe("Sidebar", () => {
   });
 
   it("selects a thread from its keyboard-reachable header button", () => {
-
     const onSelect = vi.fn();
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
     const root = document.createElement("div");

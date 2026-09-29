@@ -101,6 +101,5 @@ import { makeUse } from "./use";
     }
   });
   post(helloFor(meta));
-
 })();
 

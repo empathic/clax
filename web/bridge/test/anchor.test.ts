@@ -121,7 +121,6 @@ describe("files", () => {
 });
 
 describe("daemon limits", () => {
-
   it("keeps selectors free of control characters and line separators", () => {
     document.body.innerHTML = `<div><x\u0001y>a</x\u0001y><x\u2028y>b</x\u2028y></div>`;
     for (const el of Array.from(document.querySelector("div")!.children)) {

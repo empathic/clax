@@ -629,6 +629,12 @@ labelled "on <file>", and opening one takes the frame to that page and scrolls
 to the thread. A thread detaches only when its anchor is not found on its own
 page.
 
+A sent comment goes to every live target session: the session that created
+the artifact, and every session that watches it. Publishing (a new artifact or
+a new version) makes the publishing session watch the artifact with replies
+on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
+a live session and work only on sent threads.
+
 ### Shell URLs
 
 `/a/<id>` shows the latest version and `/a/<id>/v/<n>` version `n`; either may
@@ -643,13 +649,6 @@ forward move the frame between pages. A page the version does not hold shows
 a message instead of the frame. The `url` in tool results and payloads stays
 the artifact URL (`/a/<id>`); every `url_or_id` argument accepts the page form
 too (the page is ignored; a version in it is used where the tool takes one).
-
-
-A sent comment goes to every live target session: the session that created
-the artifact, and every session that watches it. Publishing (a new artifact or
-a new version) makes the publishing session watch the artifact with replies
-on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
-a live session and work only on sent threads.
 
 ### Tools
 
@@ -718,7 +717,6 @@ escaped too), so a comment is always one line. The anchor line holds the
 page's file followed by ` › ` when it is not `index.html`
 (`Anchored on: source.html › main > h2  «Sources»  (v3)`), the
 selector (`custom:<name>` for a custom anchor) and, when there is one, the
-
 quote with whitespace collapsed, `«` and `»` replaced by `"`, and cut to 120
 characters followed by `…`. Author names lose control characters, `"` and `:`, and are cut to
 40 characters (`Viewer` when empty). A resend says `Comment sent to you

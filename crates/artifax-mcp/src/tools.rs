@@ -398,7 +398,6 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
 /// or a URL of one of these forms (query and fragment ignored):
 /// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
 /// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the per-artifact
-
 /// origin `http://<id>.localhost:<port>/v/<n>/...`.
 fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();
@@ -494,7 +493,6 @@ fn thread_summary(t: &Value) -> Value {
             "custom_name": t["anchor"]["custom_name"],
             "file": t["anchor"]["file"].as_str().unwrap_or(artifax_core::anchor::INDEX_FILE),
         },
-
         "clip_path": t["clip_path"],
         "comments": comments,
         "feedback_state": t["feedback_state"],

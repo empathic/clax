@@ -68,7 +68,6 @@ export function Composer({ draft, onCancel, onSubmit }: { draft: Draft; onCancel
     }}>
       <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.selector}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
-
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />

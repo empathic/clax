@@ -77,7 +77,6 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // its load event (after it for some sandboxed loads), so this never shuts
   // out a wrapped page, and it shuts out a document without the bridge
   // whenever the page before it greeted before its own load.
-
   const helloOk = useRef(false);
   const helloSinceLoad = useRef(false);
   useEffect(() => { helloOk.current = false; helloSinceLoad.current = false; }, [id, shown, origin]);
@@ -298,7 +297,6 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           {ask && <PromptDialog ask={ask} />}
         </div>
         {panel && <Sidebar threads={threads} resolved={resolved} selected={selected} file={file}
-
           me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}
           onSelect={scrollTo}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}

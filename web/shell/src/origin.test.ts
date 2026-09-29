@@ -54,7 +54,6 @@ describe("pageSrc", () => {
 });
 
 describe("contentSrc", () => {
-
   it("picks the origin or the same-origin path", () => {
     expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/");
     expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");

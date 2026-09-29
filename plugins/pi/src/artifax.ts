@@ -246,7 +246,6 @@ const ID_RE = /^[0-9abcdefghjkmnpqrstvwxyz]{12}$/;
  * or a URL of one of these forms (query and fragment ignored): `.../a/<id>`,
  * `.../a/<id>/v/<n>`, either followed by a page's path (`.../a/<id>/about.html`),
  * `.../c/<id>/v/<n>/...`, and the per-artifact origin
-
  * `http://<id>.localhost:<port>/v/<n>/...`. */
 export function artifactRef(urlOrId: string): { id: string; version?: number } {
   const s = urlOrId.trim().split(/[?#]/)[0] ?? "";
@@ -357,7 +356,6 @@ function threadSummary(t: Json): Json {
       custom_name: t.anchor?.custom_name ?? null,
       file: typeof t.anchor?.file === "string" ? t.anchor.file : "index.html",
     },
-
     clip_path: t.clip_path ?? null,
     comments: (t.comments ?? []).map((c: Json) => ({
       id: c.id ?? null, author_kind: c.author_kind ?? null, author_name: c.author_name ?? null, body: c.body ?? null, created_at: c.created_at ?? null,

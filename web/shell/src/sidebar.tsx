@@ -69,7 +69,6 @@ function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onRe
           {n !== undefined && <span class="thread-num">{n}</span>}
           <span class="anchor-label">{anchorLabel(t.anchor)}</span>
           {t.anchor.file !== file && <span class="file-label muted small">on {t.anchor.file}</span>}
-
           <span class="muted small">v{t.version_n}</span>
         </button>
       </header>

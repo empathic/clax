@@ -578,7 +578,6 @@ on its own page. Its summary (the payload's "Anchored on" line) starts with
 `<file> › ` when the file is not `index.html`.
 
 Re-resolution order on a new version: exact `selector` with matching
-
 `html_hash`; `selector` alone; text `quote` with `prefix`/`suffix` search;
 `custom_name` for custom anchors. Nothing found: the thread is detached for
 that version and stays attached to the version it was made on.

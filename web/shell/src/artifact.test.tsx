@@ -258,7 +258,6 @@ describe("ArtifactView", () => {
   });
 
   it("closes the capability gate on a frame load that no hello preceded", async () => {
-
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
@@ -278,7 +277,6 @@ describe("ArtifactView", () => {
   });
 
   it("drops the thread changes it kept once the latest list answered or failed", async () => {
-
     let lists = 0;
     let failNext = false;
     const t = (id: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },

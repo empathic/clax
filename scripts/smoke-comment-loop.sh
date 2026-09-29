@@ -257,7 +257,6 @@ if read["threads"][0]["anchor"]["file"] != "about.html":
     fail(f"comments_read anchor: {read['threads'][0]['anchor']}")
 ok(f"a thread on about.html (v{v2['version']}) reached the agent as '{want}'")
 
-
 # 7. Tier 5 (Codex): a Codex session known through its SessionStart hook gets `codex queue`.
 join = http("POST", "/api/sessions/join", {"harness": "codex", "parent_pid": 999999, "harness_session_id": "cx-smoke", "cwd": SCRATCH}, token=True)
 csid = join["session"]["id"]
