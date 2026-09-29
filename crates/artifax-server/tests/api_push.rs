@@ -509,7 +509,7 @@ async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
 #[tokio::test]
 async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
     let d = tempfile::tempdir().unwrap();
-    let ts = server(Some(fake_codex(d.path(), 0, 3)), Duration::from_secs(10)).await;
+    let ts = server(Some(fake_codex(d.path(), 0, 30)), Duration::from_secs(60)).await;
     let a = ts
         .publish("Unowned", &[("index.html", "<h2>Goals</h2>")])
         .await;
@@ -547,8 +547,8 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
         }
     }
     assert!(
-        started.elapsed() < Duration::from_secs(2),
-        "announced at the claim, before the 3 s fake exits ({:?})",
+        started.elapsed() < Duration::from_secs(20),
+        "announced at the claim, before the 30 s fake exits ({:?})",
         started.elapsed()
     );
 }

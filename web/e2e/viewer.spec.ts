@@ -35,7 +35,7 @@ test("viewer renders content with the bridge, and shows a banner on republish", 
   else { console.log("frame mode: sandboxed fallback"); expect(sandbox).not.toBeNull(); }
   expect(src).toMatch(new RegExp(`(${artifact.id}\\.localhost:\\d+/v/1/|/c/${artifact.id}/v/1/)$`));
   await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v2</h1>" }, 1, artifact.id);
-  await expect(page.getByText("v2 published")).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText("v2 published")).toBeVisible();
   await page.getByRole("button", { name: "Reload" }).click();
   await expect((await contentFrame(page, artifact.id, 2)).locator("#h")).toHaveText("v2");
   await page.selectOption("select", "1");
@@ -62,7 +62,7 @@ test("viewer shows the deleted state", async ({ page }) => {
   await expect(page.locator("iframe.frame")).toBeVisible();
   const res = await page.request.delete(`${d.base}/api/artifacts/${artifact.id}`, { headers: { authorization: `Bearer ${d.token}` } });
   expect(res.ok()).toBeTruthy();
-  await expect(page.getByText("This artifact was deleted")).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText("This artifact was deleted")).toBeVisible();
 });
 
 test("gallery and viewer fit a phone in dark mode", async ({ page }) => {

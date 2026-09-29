@@ -68,14 +68,14 @@ fn lock_is_exclusive_and_released_on_drop() {
     // every descriptor until it execs and O_CLOEXEC closes them. The lock is
     // therefore released once this process's descriptor and any such transient
     // copies are closed, so poll with a deadline rather than asserting instantly.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     loop {
         if DaemonLock::try_acquire(&home).unwrap().is_some() {
             break;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "lock still held 5 s after drop"
+            "lock still held 20 s after drop"
         );
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -152,7 +152,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
         .await
         .unwrap()
         .unwrap()
@@ -195,7 +195,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         .await
         .unwrap();
     assert_eq!(res.status(), 202);
-    tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
         .await
         .expect("serve exits while SSE client is still connected")
         .unwrap()
@@ -221,7 +221,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
     std::fs::remove_file(home.daemon_json()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(3), handle)
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
         .await
         .expect("serve exits once daemon.json stays missing")
         .unwrap()
@@ -295,7 +295,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
                 .is_string()
         }
     };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while !ended(dead.clone()).await {
         assert!(std::time::Instant::now() < deadline, "reaper never ran");
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;

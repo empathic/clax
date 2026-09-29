@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommentMode, type ModeHooks } from "../src/comment-mode";
 
+// A backstop for a loaded machine; no test here times anything.
+vi.setConfig({ testTimeout: 20_000 });
+
 let hooks: { [K in keyof ModeHooks]: ReturnType<typeof vi.fn> };
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
@@ -57,27 +60,32 @@ describe("CommentMode", () => {
   });
 
   it("outlines a line of oversized highlighted code from its tokens and gaps alike, reading no whole-block text", async () => {
-    document.body.innerHTML = `<pre style="white-space: pre"><code>${Array.from({ length: 2000 }, (_, i) => `<span class="k">let</span> v${i} = <span class="n">${i}</span>;`).join("\n")}</code></pre>`;
+    document.body.innerHTML = `<pre style="white-space: pre"><code>${Array.from({ length: 200 }, (_, i) => `<span class="k">let</span> v${i} = <span class="n">${i}</span>;`).join("\n")}</code></pre>`;
     const pre = document.querySelector("pre")!;
     pre.getBoundingClientRect = () => ({ left: 0, top: -2630, right: 900, bottom: 37370, width: 900, height: 40000, x: 0, y: -2630, toJSON() {} }) as DOMRect;
-    const token = document.querySelectorAll(".n")[700];
+    const token = document.querySelectorAll(".n")[70];
+    const textNodes = document.evaluate("count(//pre//text())", document, null, XPathResult.NUMBER_TYPE, null).numberValue;
     const gap = token.previousSibling as Text;
     const d = document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range };
     d.caretRangeFromPoint = x => { const r = document.createRange(); if (x < 50) r.setStart(token.firstChild!, 1); else r.setStart(gap, 1); return r; };
     const walker = vi.spyOn(document, "createTreeWalker");
+    const reads = vi.spyOn(CharacterData.prototype, "data", "get");
     try {
       mode.set(true);
       token.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 20 }));
       await nextFrame();
-      expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("let v700 = 700;");
+      expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("let v70 = 70;");
       const calls = hooks.hover.mock.calls.length;
       pre.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 60, clientY: 20 }));
       await nextFrame();
       expect(hooks.hover.mock.calls.length, "the same line: no new hover").toBe(calls);
       expect(walker).not.toHaveBeenCalled();
+      // Two hovers read a few nodes each; indexing the block would read every one.
+      expect(reads.mock.calls.length, `text reads, of ${textNodes} text nodes`).toBeLessThan(textNodes / 4);
     } finally {
       delete d.caretRangeFromPoint;
       walker.mockRestore();
+      reads.mockRestore();
     }
   });
 

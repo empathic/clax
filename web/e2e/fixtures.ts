@@ -77,7 +77,7 @@ export type FrameMode = "subdomain" | "sandbox";
 /** The content frame showing version `n` of artifact `id`, in either frame mode. */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
   const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
+  await expect.poll(() => page.frame({ url }) !== null, { timeout: 30_000 }).toBe(true);
   return page.frame({ url })!;
 }
 
@@ -120,7 +120,7 @@ export async function record(page: Page) {
 }
 
 export async function last(page: Page, type: string): Promise<any> {
-  await expect.poll(() => page.evaluate(t => (window as any).artifaxMsgs.some((m: any) => m.type === t), type), { timeout: 10_000 }).toBe(true);
+  await expect.poll(() => page.evaluate(t => (window as any).artifaxMsgs.some((m: any) => m.type === t), type), { timeout: 30_000 }).toBe(true);
   return page.evaluate(t => (window as any).artifaxMsgs.filter((m: any) => m.type === t).at(-1), type);
 }
 

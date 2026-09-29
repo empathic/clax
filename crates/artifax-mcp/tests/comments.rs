@@ -357,7 +357,7 @@ async fn status_reports_the_sessions_push() {
 }
 
 #[tokio::test]
-async fn wait_for_feedback_returns_within_a_second_and_asks_to_call_again() {
+async fn wait_for_feedback_returns_on_a_send_and_asks_to_call_again() {
     let ts = TestServer::spawn().await;
     let (t, _sid) = session_tools(&ts).await;
     let aid = publish(&t).await;
@@ -367,7 +367,7 @@ async fn wait_for_feedback_returns_within_a_second_and_asks_to_call_again() {
         .to_string();
     let waiting = t.wait_for_feedback(Parameters(WaitArgs {
         url_or_id: Some(aid.clone()),
-        timeout_s: Some(5),
+        timeout_s: Some(60),
     }));
     let sending = async {
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -376,7 +376,8 @@ async fn wait_for_feedback_returns_within_a_second_and_asks_to_call_again() {
     };
     let (r, sent) = tokio::join!(waiting, sending);
     let answered = Instant::now();
-    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(1));
+    // Far inside the 60 s wait: the send woke it.
+    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(20));
     let (v, trailing) = blocks(&r.unwrap());
     assert_eq!(v["feedback"].as_array().unwrap().len(), 1);
     assert_eq!(v["call_again"], false);

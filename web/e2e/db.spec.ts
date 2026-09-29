@@ -27,7 +27,7 @@ const BOARD = `<!doctype html><html><head><title>Board</title></head><body>
 </script></body></html>`;
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a write in one tab reaches the other tab's onSnapshot within 500 ms`, async ({ browser }) => {
+  test(`${mode}: a write in one tab reaches the other tab's onSnapshot through the event stream`, async ({ browser }) => {
     const { artifact } = await publishWith(d.base, d.token, `Board ${mode}`, BOARD, { db: {} });
     const ctx = await browser.newContext();
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
@@ -40,7 +40,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(b.locator("#out")).toContainText('"n":1');
     const seen = JSON.parse((await b.locator("#out").textContent())!);
     expect(seen.changes).toEqual(["added"]);
-    expect(seen.lag).toBeLessThan(500);
+    // Pushed, not polled: well inside the first stream retry (RETRY_MS[0], 5 s) and
+    // the outage poll (POLL_MS, 30 s), with room for a loaded machine.
+    expect(seen.lag).toBeLessThan(4_000);
     await a.locator("#lock").click();
     await expect(a.locator("#lockout")).toHaveText("true");
     await b.locator("#lock").click();

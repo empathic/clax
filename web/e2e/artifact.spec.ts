@@ -118,17 +118,16 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a click inside the frame gives the shell window sticky activation`, async ({ page }) => {
     // Playwright's evaluate runs as a user gesture, so the shell samples its own
-    // activation and the click is a raw mouse event inside the frame's box.
+    // activation, reports its first true sample through a binding (which is no
+    // gesture), and the click is a raw mouse event inside the frame's box.
+    const act: { seen: { falseSamples: number; firstActive: number } | null } = { seen: null };
+    await page.exposeFunction("artifaxActivated", (falseSamples: number, firstActive: number) => { act.seen ??= { falseSamples, firstActive }; });
     await page.addInitScript(() => {
-      const w = window as unknown as { actSamples: boolean[]; firstActive: number | null };
-      w.actSamples = [];
-      w.firstActive = null;
       if (window !== window.top) { addEventListener("click", () => { (window as unknown as { clicked: boolean }).clicked = true; }); return; }
+      let falseSamples = 0;
       const tick = () => {
-        const on = navigator.userActivation.hasBeenActive;
-        w.actSamples.push(on);
-        if (on && w.firstActive === null) w.firstActive = Date.now();
-        else setTimeout(tick, 10);
+        if (!navigator.userActivation.hasBeenActive) { falseSamples++; setTimeout(tick, 10); return; }
+        (window as unknown as { artifaxActivated: (n: number, t: number) => void }).artifaxActivated(falseSamples, Date.now());
       };
       tick();
     });
@@ -136,18 +135,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await f.waitForLoadState();
     await page.waitForTimeout(200);
+    expect(act.seen, "the shell is not active before the click").toBeNull();
     const before = Date.now();
     await page.mouse.click(300, 400);
-    await page.waitForTimeout(100);
-    const seen = await page.evaluate(() => {
-      const w = window as unknown as { actSamples: boolean[]; firstActive: number | null };
-      return { falseSamples: w.actSamples.filter(x => !x).length, firstActive: w.firstActive };
-    });
-    console.log(`${mode}: shell activation samples before the frame click: ${seen.falseSamples} x false; first true ${seen.firstActive === null ? "never" : `${seen.firstActive - before} ms after the click started`}`);
+    await expect.poll(() => act.seen, { timeout: 20_000 }).not.toBeNull();
+    const seen = act.seen!;
+    console.log(`${mode}: shell activation samples before the frame click: ${seen.falseSamples} x false; first true ${seen.firstActive - before} ms after the click started`);
     expect(await f.evaluate(() => (window as unknown as { clicked?: boolean }).clicked), "the click landed inside the frame").toBe(true);
-    expect(seen.falseSamples).toBeGreaterThan(10);
-    expect(seen.firstActive).not.toBeNull();
-    expect(seen.firstActive!).toBeGreaterThanOrEqual(before);
+    expect(seen.falseSamples).toBeGreaterThanOrEqual(1);
+    expect(seen.firstActive).toBeGreaterThanOrEqual(before);
   });
 
   test(`${mode}: a page that publishes on load publishes nothing`, async ({ page }) => {

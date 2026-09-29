@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { artifactHandler } from "./artifact";
+import { MAX_PAGE_BYTES, artifactHandler } from "./artifact";
 import { forgetBudgets } from "./budget";
 import type { CapEnv } from "./host";
 
@@ -28,6 +28,15 @@ function activation(hasBeenActive: boolean | undefined) {
   if (hasBeenActive === undefined) delete (navigator as { userActivation?: unknown }).userActivation;
   else Object.defineProperty(navigator, "userActivation", { value: { hasBeenActive, isActive: false }, configurable: true });
 }
+
+/** Makes every Blob measure `pad` bytes more than its content, so a page a few
+ * bytes long stands in for one at the size limit without allocating it. */
+function padBlobs(pad: number) {
+  const Real = globalThis.Blob;
+  vi.stubGlobal("Blob", class extends Real { get size() { return super.size + pad; } });
+}
+/** The padding that puts `DOC` exactly at the page size limit. */
+const AT_LIMIT = MAX_PAGE_BYTES - new Blob([DOC]).size;
 
 const ok = () => new Response(JSON.stringify({ version: { n: 4 } }), { status: 201 });
 const posts = (calls: { init: RequestInit }[]) => calls.filter(c => c.init.method === "POST").length;
@@ -95,14 +104,26 @@ describe("artifact.publish in the shell", () => {
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
     stub(() => new Response("{}", { status: 201 }));
     await expect(artifactHandler(env(), null as never).call("publish", ["<p>x"])).rejects.toMatchObject({ code: "invalid_content" });
-    await expect(artifactHandler(env(), null as never).call("publish", [DOC + " ".repeat(16 * 1024 * 1024)])).rejects.toMatchObject({ code: "too_large" });
     await expect(artifactHandler(env(), null as never).call("edit", [[]])).rejects.toMatchObject({ code: "invalid_content" });
   });
 
+  it("refuses a page one byte over the size limit and makes no request for it, and publishes one at the limit", async () => {
+    padBlobs(AT_LIMIT);
+    let calls = stub(() => new Response(JSON.stringify({ version: { n: 4 } }), { status: 201 }));
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC + " "])).rejects.toMatchObject({ code: "too_large" });
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC.replace("v2", "vé")])).rejects.toMatchObject({ code: "too_large" });
+    expect(calls, "an oversized page is refused before any request").toHaveLength(0);
+    fresh();
+    calls = stub(() => new Response(JSON.stringify({ version: { n: 4 } }), { status: 201 }));
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
+    expect(posts(calls)).toBe(1);
+  });
+
   it("makes no request for hostile arguments", async () => {
+    padBlobs(AT_LIMIT);
     const calls = stub(() => new Response("{}", { status: 201 }));
     const h = artifactHandler(env(), null as never);
-    for (const args of [[], [null], [{ "../../x": "y" }], [["<!doctype html>"]], [42], ["<p>no doctype</p>"], ["<!doctype html>" + "x".repeat(16 * 1024 * 1024)]]) {
+    for (const args of [[], [null], [{ "../../x": "y" }], [["<!doctype html>"]], [42], ["<p>no doctype</p>"], [DOC + " "]]) {
       await expect(h.call("publish", args)).rejects.toHaveProperty("code");
     }
     await expect(h.call("__proto__", [DOC])).rejects.toMatchObject({ code: "capability_removed" });

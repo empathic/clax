@@ -30,7 +30,7 @@ async fn events_stream_is_exempt_from_the_timeout() {
     );
 }
 
-/// Reads the stream until `needle` appears, within 2 s.
+/// Reads the stream until `needle` appears, within 20 s.
 async fn saw_event(
     stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
     needle: &str,
@@ -46,7 +46,7 @@ async fn saw_event(
         }
         false
     };
-    tokio::time::timeout(std::time::Duration::from_secs(2), read)
+    tokio::time::timeout(std::time::Duration::from_secs(20), read)
         .await
         .unwrap_or(false)
 }

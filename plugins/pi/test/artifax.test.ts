@@ -497,7 +497,7 @@ describe("comments", () => {
     await pi.emit("session_start", {}, ctx);
     const aid = parts(await pi.callTool("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi inject" }, ctx)).json.artifact_id;
     await browserThread(aid, "@agent please shorten it");
-    await expect.poll(() => pi.sent.length, { timeout: 5000 }).toBe(1);
+    await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
     expect(pi.sent[0].options).toEqual({ deliverAs: "followUp" });
     expect(String(pi.sent[0].content)).toMatch(/^\[artifax\] 1 comment sent to you:\n\[artifax\] Comment sent to you on "Pi inject"/);
     const started = Date.now();
@@ -606,13 +606,14 @@ describe("comments", () => {
       const { ctx } = fakeContext(scratch, "pi-inject-empty");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
+      await expect.poll(() => polls, { timeout: 20_000 }).toBeGreaterThanOrEqual(1);
+      // Paused: no more than one further poll in the next 1.5 s (INJECT_RETRY_MS is 5 s).
       await new Promise(r => setTimeout(r, 1500));
-      expect(polls).toBeGreaterThanOrEqual(1);
       expect(polls).toBeLessThanOrEqual(2);
     } finally {
       fake.close();
     }
-  });
+  }, 30_000);
 
   it("status passes the push object through, including a codex queue failure", async () => {
     const push = { tier: "queue", available: true, last_error: "codex queue exited with code 1", last_error_at: "2026-09-29T10:00:00Z" };
@@ -657,7 +658,7 @@ describe("comments", () => {
       const aid = (await api(d, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Back", files: { "index.html": { content: "<h2>Goals</h2>", encoding: "utf8" } } }) })).artifact.id;
       await api(d, `/api/sessions/${sid}/watches/${aid}`, { method: "PUT", body: JSON.stringify({ replies_armed: true }) });
       await browserThread(aid, "@agent welcome back", d.base);
-      await expect.poll(() => pi.sent.length, { timeout: 8000 }).toBe(1);
+      await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
     } finally {
       stop();
     }

@@ -3,7 +3,7 @@ use common::TestServer;
 use futures::StreamExt;
 use std::time::Duration;
 
-const READ_TIMEOUT: Duration = Duration::from_secs(5);
+const READ_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// Appends the next body chunk to `buf`, failing the test if none arrives within
 /// `READ_TIMEOUT` or the stream ends.
@@ -13,7 +13,7 @@ async fn read_chunk(
 ) {
     let chunk = tokio::time::timeout(READ_TIMEOUT, stream.next())
         .await
-        .expect("SSE chunk within 5 s")
+        .expect("SSE chunk within 20 s")
         .expect("stream still open")
         .unwrap();
     buf.push_str(std::str::from_utf8(&chunk).unwrap());
@@ -135,13 +135,13 @@ async fn delete_emits_artifact_deleted() {
 async fn idle_stream_sends_keep_alive_comments() {
     let ts = TestServer::spawn_with(|s| s.sse_keep_alive = Duration::from_millis(200)).await;
     let (mut stream, mut buf) = open_stream(&ts, "").await;
-    tokio::time::timeout(Duration::from_secs(2), async {
+    tokio::time::timeout(Duration::from_secs(20), async {
         while !buf.contains(": keep-alive\n\n") {
             read_chunk(&mut stream, &mut buf).await;
         }
     })
     .await
-    .expect("keep-alive comment within 2 s");
+    .expect("keep-alive comment within 20 s");
 }
 
 #[tokio::test]

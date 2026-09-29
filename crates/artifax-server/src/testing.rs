@@ -179,9 +179,9 @@ impl EventReader {
                     serde_json::from_str(data).expect("event data is JSON"),
                 );
             }
-            let chunk = tokio::time::timeout(Duration::from_secs(5), self.stream.next())
+            let chunk = tokio::time::timeout(Duration::from_secs(20), self.stream.next())
                 .await
-                .expect("SSE chunk within 5 s")
+                .expect("SSE chunk within 20 s")
                 .expect("stream still open")
                 .expect("chunk readable");
             self.buf

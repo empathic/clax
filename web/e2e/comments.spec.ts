@@ -89,7 +89,7 @@ test("republish while composing records the picked version", async ({ page }) =>
   await page.goto(`${d.base}/a/${artifact.id}`);
   await pickHeading(page, artifact.id, 1);
   await publishAs(d.base, d.token, s.id, "Race", { "index.html": PAGE.replace("costs flat", "costs down") }, 1, artifact.id);
-  await expect(page.getByText("v2 published")).toBeVisible({ timeout: 5000 });
+  await expect(page.getByText("v2 published")).toBeVisible();
   await page.locator(".composer textarea").fill("composed on v1");
   await page.locator(".composer").getByRole("button", { name: "Post comment" }).click();
   const card = page.locator(".thread-card").filter({ hasText: "composed on v1" });

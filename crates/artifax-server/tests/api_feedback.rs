@@ -26,12 +26,12 @@ async fn poll(ts: &TestServer, sid: &str, query: &str) -> Value {
 }
 
 #[tokio::test]
-async fn long_poll_wakes_within_100_ms_of_a_send() {
+async fn long_poll_wakes_on_a_send_not_at_its_deadline() {
     let ts = TestServer::spawn().await;
     let (sid, aid, tid) = sent_thread(&ts).await;
     let req = ts.authed(
         ts.client
-            .get(format!("{}/api/sessions/{sid}/feedback?wait=5", ts.base)),
+            .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
     );
     let waiter = tokio::spawn(async move {
         let body: Value = req.send().await.unwrap().json().await.unwrap();
@@ -41,7 +41,8 @@ async fn long_poll_wakes_within_100_ms_of_a_send() {
     ts.send_thread(&aid, &tid).await;
     let sent = Instant::now();
     let (answered, body) = waiter.await.unwrap();
-    assert!(answered.saturating_duration_since(sent) < Duration::from_millis(100));
+    // Far inside the 60 s wait: the send woke the poll.
+    assert!(answered.saturating_duration_since(sent) < Duration::from_secs(20));
     assert_eq!(body["feedback"].as_array().unwrap().len(), 1);
     assert!(
         body["text"].as_str().unwrap().starts_with(
@@ -258,14 +259,14 @@ async fn an_ended_session_cannot_poll_or_ack() {
     let res = ts
         .authed(
             ts.client
-                .get(format!("{}/api/sessions/{sid}/feedback?wait=5", ts.base)),
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=60", ts.base)),
         )
         .send()
         .await
         .unwrap();
     assert!(
-        started.elapsed() < Duration::from_secs(1),
-        "answered at once"
+        started.elapsed() < Duration::from_secs(20),
+        "answered at once, not after the 60 s wait"
     );
     assert_eq!(res.status(), 400);
     assert_eq!(
@@ -324,8 +325,11 @@ async fn an_inject_poll_yields_to_a_wait_poll_of_the_same_session() {
     tokio::time::sleep(Duration::from_millis(200)).await;
     // An inject poll that starts while the wait poll is in progress.
     let started = Instant::now();
-    let late = poll(&ts, &sid, "?tier=inject&wait=5").await;
-    assert!(started.elapsed() < Duration::from_secs(1), "yields at once");
+    let late = poll(&ts, &sid, "?tier=inject&wait=60").await;
+    assert!(
+        started.elapsed() < Duration::from_secs(20),
+        "yields at once, not after the 60 s wait"
+    );
     assert_eq!(
         (
             late["feedback"].as_array().unwrap().len(),

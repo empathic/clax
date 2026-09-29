@@ -1025,6 +1025,33 @@ fn read_end_hits_eof(fd: libc::c_int, timeout: std::time::Duration) -> bool {
     }
 }
 
+/// How long a step that is immediate on an idle machine may take on a loaded one.
+const LOADED_BOUND: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Waits for a foreground daemon under `home` to write a daemon.json naming
+/// its pid; false if it exits first or `timeout` passes.
+fn wait_for_daemon_json(
+    home: &std::path::Path,
+    child: &mut std::process::Child,
+    timeout: std::time::Duration,
+) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        let pid = std::fs::read_to_string(home.join("daemon.json"))
+            .ok()
+            .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+            .and_then(|v| v["pid"].as_u64());
+        if pid == Some(u64::from(child.id())) {
+            return true;
+        }
+        if child.try_wait().unwrap().is_some() {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    false
+}
+
 /// A close-on-exec pipe, as std makes them.
 fn cloexec_pipe() -> (libc::c_int, libc::c_int) {
     let mut fds = [0 as libc::c_int; 2];
@@ -1069,7 +1096,8 @@ fn an_auto_started_daemon_does_not_hold_inherited_descriptors() {
     // SAFETY: `w` is this test's own write end, closed once.
     unsafe { libc::close(w) };
     assert!(out.status.success(), "{out:?}");
-    let eof = read_end_hits_eof(r, std::time::Duration::from_secs(3));
+    // `status --start` returns once the daemon answers, so only the read is bounded.
+    let eof = read_end_hits_eof(r, LOADED_BOUND);
     // SAFETY: `r` is this test's own read end, closed once.
     unsafe { libc::close(r) };
     e.stop();
@@ -1092,12 +1120,17 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
     let mut child = cmd.spawn().unwrap();
     // SAFETY: `w` is this test's own write end, closed once.
     unsafe { libc::close(w) };
-    let eof = read_end_hits_eof(r, std::time::Duration::from_secs(3));
+    // The daemon closes inherited descriptors before it serves, so once it has
+    // written daemon.json the pipe is already at EOF; the EOF bound only
+    // covers the read itself on a loaded machine.
+    let ready = wait_for_daemon_json(&e.dir.path().join("ax"), &mut child, LOADED_BOUND);
+    let eof = ready && read_end_hits_eof(r, LOADED_BOUND);
     // SAFETY: `r` is this test's own read end, closed once.
     unsafe { libc::close(r) };
     let alive = child.try_wait().unwrap().is_none();
     let _ = child.kill();
     let _ = child.wait();
+    assert!(ready, "the daemon did not write daemon.json");
     assert!(alive, "the daemon kept running after closing descriptors");
     assert!(eof, "the daemon kept an inherited pipe write end open");
 }

@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+// A backstop for a loaded machine; no test here times anything.
+vi.setConfig({ testTimeout: 20_000 });
 import { ELEMENT_TARGETS, OVERSIZED_SHARE, TEXT_INLINE, backgroundBehind, chooseTarget, colorLuminance, isOversized, outlineBox, outlineColors } from "../src/target";
 
 const VP = { w: 1000, h: 800 };
@@ -206,15 +209,33 @@ describe("chooseTarget", () => {
       expect(chooseTarget(document, kw, 10, 10, vp)).toBe(kw);
     });
     it("reads only the text near the pointer: no tree walker, whatever the block's length", () => {
-      document.body.innerHTML = `<pre id="src"><code>${Array.from({ length: 3000 }, (_, i) => `<span class="n">${i}</span> = <span class="s">"v"</span>;`).join("\n")}</code></pre>`;
-      const pre = big(document.getElementById("src")!);
-      const walker = vi.spyOn(document, "createTreeWalker");
-      const token = document.querySelectorAll(".s")[1500];
-      caret = { node: token.firstChild!, offset: 1 };
-      // Speed is checked in a browser (comment-targets.spec); jsdom's styles are too slow to time.
-      for (let i = 0; i < 60; i++) expect(String(chooseTarget(document, i % 2 ? token : pre, 10, 10, vp))).toBe(`1500 = "v";`);
-      expect(walker).not.toHaveBeenCalled();
-      walker.mockRestore();
+      // Counts, not timings: hovering a token builds no whole-block index (the
+      // anchor index is a tree walker), and reads the same text and styles in a
+      // block ten times as long. Speed is checked in a browser (comment-targets.spec).
+      const hover = (lines: number) => {
+        document.body.innerHTML = `<pre id="src"><code>${Array.from({ length: lines }, (_, i) => `<span class="n">${i}</span> = <span class="s">"v"</span>;`).join("\n")}</code></pre>`;
+        const pre = big(document.getElementById("src")!);
+        const mid = Math.floor(lines / 2);
+        const token = document.querySelectorAll(".s")[mid];
+        caret = { node: token.firstChild!, offset: 1 };
+        const walker = vi.spyOn(document, "createTreeWalker");
+        const reads = vi.spyOn(CharacterData.prototype, "data", "get");
+        const styles = vi.spyOn(window, "getComputedStyle");
+        try {
+          for (let i = 0; i < 4; i++) expect(String(chooseTarget(document, i % 2 ? token : pre, 10, 10, vp))).toBe(`${mid} = "v";`);
+          return { walker: walker.mock.calls.length, reads: reads.mock.calls.length, styles: styles.mock.calls.length };
+        } finally {
+          walker.mockRestore();
+          reads.mockRestore();
+          styles.mockRestore();
+        }
+      };
+      const short = hover(40);
+      const long = hover(400);
+      expect(short.walker).toBe(0);
+      expect(long.walker).toBe(0);
+      expect(short.reads).toBeGreaterThan(0);
+      expect(long, "the same work in a block ten times as long").toEqual(short);
     });
   });
 
