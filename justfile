@@ -31,7 +31,7 @@ web-e2e: web
 
 # Run the Pi extension tests
 pi-test:
-    @echo "Pi extension arrives in phase 2 Task 12"
+    cd plugins/pi && npm ci && npm run typecheck && npm test
 
 # Run the installer script tests
 installer-test:

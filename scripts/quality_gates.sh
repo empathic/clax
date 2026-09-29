@@ -23,5 +23,6 @@ run "cargo test"            cargo test --workspace
 run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
 run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
 run "web build"             bash -c 'cd web && npm run build'
+run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
 echo "all gates passed"

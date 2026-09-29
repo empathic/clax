@@ -1,0 +1,395 @@
+// HTTP client for the Artifax daemon's REST API.
+//
+// Requests go through node:http rather than fetch because fetch cannot bound
+// connection setup separately from the whole request.
+import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+
+/** Deadline for ordinary requests. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+/** Deadline for publishes and asset uploads. */
+export const PUBLISH_TIMEOUT_MS = 120_000;
+/** Deadline for establishing a connection; a live daemon on loopback accepts at once. */
+export const CONNECT_TIMEOUT_MS = 2_000;
+
+/** Why a daemon call failed:
+ * - `unreachable`: no connection (refused, not established within the connect
+ *   timeout, or dropped before a response);
+ * - `timeout`: connected, but the request did not complete within its deadline,
+ *   so a write may or may not have taken effect;
+ * - `bad_response`: a success status with a body that is not the expected JSON;
+ * - `api`: an error status; `error` is the body's `error` object (`code`,
+ *   `message`, and any extra fields such as `current`). */
+export type ClientErrorKind = "unreachable" | "timeout" | "bad_response" | "api";
+
+export class ClientError extends Error {
+  constructor(
+    readonly kind: ClientErrorKind,
+    message: string,
+    readonly status = 0,
+    readonly error: Record<string, unknown> = {},
+  ) {
+    super(message);
+    this.name = "ClientError";
+  }
+}
+
+/** Where a daemon answers: `base` (`http://127.0.0.1:<port>`) for API calls,
+ * `browserBase` (`http://localhost:<port>`) for URLs shown to the person, and
+ * its bearer token. */
+export interface Endpoint {
+  base: string;
+  browserBase: string;
+  token: string;
+}
+
+/** The body of `POST /api/sessions`. */
+export interface Registration {
+  harness: string;
+  harness_session_id: string | null;
+  cwd: string;
+  pid: number;
+  parent_pid: number;
+}
+
+/** A harness session as the daemon reports it. */
+export interface Session {
+  id: string;
+  harness: string;
+  harness_session_id: string | null;
+  cwd: string;
+  pid: number | null;
+  parent_pid: number | null;
+  started_at: string;
+  last_seen_at: string;
+  ended_at: string | null;
+}
+
+export interface RawResponse {
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}
+
+/** A failed attempt, and whether a refresh may cure it: the connection was not
+ * established (so the request was never sent) or the token was refused. */
+class Failure {
+  constructor(readonly error: ClientError, readonly refreshable: boolean) {}
+}
+
+interface RequestOptions {
+  method: string;
+  headers?: Record<string, string>;
+  body?: Buffer | string;
+  timeoutMs?: number;
+}
+
+/** Sends one request. Transport failures reject with a [`Failure`]: a
+ * connection that was never established is `unreachable` and refreshable, a
+ * request past its deadline is `timeout`, anything else (such as a connection
+ * dropped mid-request) is `unreachable` but not retried, since the request may
+ * have taken effect. Proxies are never used. */
+function send(url: string, opts: RequestOptions): Promise<RawResponse> {
+  const deadline = AbortSignal.timeout(opts.timeoutMs ?? REQUEST_TIMEOUT_MS);
+  return new Promise<RawResponse>((resolve, reject) => {
+    let connected = false;
+    let connectTimer: NodeJS.Timeout | undefined;
+    const fail = (e: unknown) => {
+      clearTimeout(connectTimer);
+      const msg = e instanceof Error ? e.message : String(e);
+      if (deadline.aborted) reject(new Failure(new ClientError("timeout", `request to ${url} timed out`), false));
+      else if (!connected) reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), true));
+      else reject(new Failure(new ClientError("unreachable", `${url}: ${msg}`), false));
+    };
+    const req = httpRequest(url, { method: opts.method, headers: opts.headers, signal: deadline }, res => {
+      const chunks: Buffer[] = [];
+      res.on("data", (c: Buffer) => chunks.push(c));
+      res.on("error", fail);
+      res.on("end", () => {
+        if (!res.complete) return fail(new Error("connection closed mid-response"));
+        resolve({ status: res.statusCode ?? 0, headers: res.headers, body: Buffer.concat(chunks) });
+      });
+    });
+    req.on("socket", socket => {
+      if (!socket.connecting) {
+        connected = true;
+        return;
+      }
+      connectTimer = setTimeout(
+        () => req.destroy(new Error(`not connected within ${CONNECT_TIMEOUT_MS} ms`)),
+        CONNECT_TIMEOUT_MS,
+      );
+      socket.once("connect", () => {
+        connected = true;
+        clearTimeout(connectTimer);
+      });
+    });
+    req.on("error", fail);
+    req.end(opts.body);
+  });
+}
+
+/** Sends a request; a non-success status becomes an `api` failure carrying the
+ * body's `error` object, refreshable when the token was refused (401). */
+async function attempt(url: string, opts: RequestOptions): Promise<RawResponse> {
+  const res = await send(url, opts);
+  if (res.status >= 200 && res.status < 300) return res;
+  let error: Record<string, unknown> | undefined;
+  try {
+    const body = JSON.parse(res.body.toString("utf8"));
+    if (body && typeof body.error === "object" && body.error !== null && !Array.isArray(body.error)) error = body.error;
+  } catch { /* not JSON */ }
+  error ??= { code: "http_error", message: `daemon answered HTTP ${res.status}` };
+  throw new Failure(new ClientError("api", `HTTP ${res.status}: ${JSON.stringify(error)}`, res.status, error), res.status === 401);
+}
+
+function bodyJson(res: RawResponse): any {
+  if (res.status === 204) return {};
+  try {
+    return JSON.parse(res.body.toString("utf8"));
+  } catch (e) {
+    throw new ClientError("bad_response", e instanceof Error ? e.message : String(e));
+  }
+}
+
+function sessionOf(res: any): Session {
+  const s = res?.session;
+  if (!s || typeof s.id !== "string") throw new ClientError("bad_response", "session: missing");
+  return s as Session;
+}
+
+/** A GET to `url` with a 1 s deadline: true when it answers with a success status. */
+export async function probe(url: string): Promise<boolean> {
+  try {
+    const res = await send(url, { method: "GET", timeoutMs: 1_000 });
+    return res.status >= 200 && res.status < 300;
+  } catch {
+    return false;
+  }
+}
+
+/** A request path, or a function giving it per attempt (for paths naming the
+ * session, which a refresh may replace). */
+type Path = string | (() => string);
+
+/** Finds (and, for `refresh`, may start) the daemon. */
+export type Find = () => Promise<Endpoint>;
+
+/** Percent-encodes every byte of `path` outside the RFC 3986 unreserved set,
+ * keeping `/` as the segment separator. */
+export function encodePath(path: string): string {
+  let out = "";
+  for (const b of Buffer.from(path, "utf8")) {
+    const c = String.fromCharCode(b);
+    out += /[A-Za-z0-9\-._~/]/.test(c) ? c : `%${b.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return out;
+}
+
+/**
+ * A client of one daemon's REST API that finds its daemon with `refresh`
+ * (which may start one) or `discover` (which must not), and registers a harness
+ * session there: lazily on first use, and again whenever a request cannot
+ * connect or is refused with 401 (the daemon restarted, on a new port or with a
+ * new token), after which the request is retried once. Tool requests may start
+ * a daemon; heartbeats and ending the session only find one. Every request
+ * carries `X-Artifax-Session` once a session is registered.
+ */
+export class DaemonClient {
+  private endpoint: Endpoint | undefined;
+  private sessionId: string | undefined;
+  private registeredSession: Session | undefined;
+  /** True when the session is registered with the daemon at `endpoint`. */
+  private registered = false;
+  /** The refresh in flight, so concurrent failures refresh once. */
+  private refreshing: Promise<void> | undefined;
+
+  constructor(
+    private readonly refreshFn: Find,
+    private readonly discoverFn: Find,
+    private readonly registration: Registration,
+  ) {}
+
+  /** The browser base URL of the current daemon, once known. */
+  browserBase(): string | undefined {
+    return this.endpoint?.browserBase;
+  }
+
+  /** The session last registered, once registered. */
+  session(): Session | undefined {
+    return this.registeredSession;
+  }
+
+  /** Finds (or starts) the daemon and registers the session unless both are done. */
+  ensureSession(): Promise<void> {
+    return this.ensure(this.refreshFn);
+  }
+
+  private async ensure(find: Find): Promise<void> {
+    if (this.endpoint && this.registered) return;
+    await this.refresh(this.endpoint, find);
+  }
+
+  /** Re-discovers the daemon and registers the session there, unless another
+   * caller already moved on from `stale` (the endpoint the failure was seen on). */
+  private async refresh(stale: Endpoint | undefined, find: Find): Promise<void> {
+    while (this.refreshing) await this.refreshing.catch(() => {});
+    if (this.endpoint && this.endpoint !== stale && this.registered) return;
+    const run = (async () => {
+      let endpoint: Endpoint;
+      try {
+        endpoint = await find();
+      } catch (e) {
+        throw new ClientError("unreachable", e instanceof Error ? e.message : String(e));
+      }
+      this.endpoint = endpoint;
+      this.registered = false;
+      let res: RawResponse;
+      try {
+        res = await attempt(`${endpoint.base}/api/sessions`, {
+          method: "POST",
+          headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
+          body: JSON.stringify(this.registration),
+        });
+      } catch (e) {
+        throw e instanceof Failure ? e.error : e;
+      }
+      const session = sessionOf(bodyJson(res));
+      this.sessionId = session.id;
+      this.registeredSession = session;
+      this.registered = true;
+    })();
+    this.refreshing = run;
+    try {
+      await run;
+    } finally {
+      this.refreshing = undefined;
+    }
+  }
+
+  private headers(endpoint: Endpoint, extra: Record<string, string> = {}): Record<string, string> {
+    const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, ...extra };
+    if (this.sessionId) h["x-artifax-session"] = this.sessionId;
+    return h;
+  }
+
+  /** Sends a request after ensuring the session; on a refreshable failure,
+   * refreshes and retries once. When the refresh fails, the original error is
+   * thrown. */
+  private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn): Promise<RawResponse> {
+    await this.ensure(find);
+    const endpoint = this.endpoint;
+    if (!endpoint) throw new ClientError("unreachable", "no daemon found");
+    const go = (ep: Endpoint) =>
+      attempt(`${ep.base}${typeof path === "function" ? path() : path}`, { ...opts, headers: this.headers(ep, opts.headers) });
+    try {
+      return await go(endpoint);
+    } catch (e) {
+      if (!(e instanceof Failure)) throw e;
+      if (!e.refreshable) throw e.error;
+      try {
+        await this.refresh(endpoint, find);
+      } catch {
+        throw e.error;
+      }
+      try {
+        return await go(this.endpoint!);
+      } catch (e2) {
+        throw e2 instanceof Failure ? e2.error : e2;
+      }
+    }
+  }
+
+  private async json(path: Path, opts: RequestOptions, find?: Find): Promise<any> {
+    return bodyJson(await this.request(path, opts, find));
+  }
+
+  private jsonBody(method: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): RequestOptions {
+    return { method, headers: { "content-type": "application/json" }, body: JSON.stringify(body), timeoutMs };
+  }
+
+  /** `GET /healthz`: `{version, pid, started_at}`. */
+  healthz(): Promise<any> {
+    return this.json("/healthz", { method: "GET" });
+  }
+
+  /** `GET /api/artifacts`: `{artifacts: [..]}`, pinned first, then most recently updated. */
+  list(): Promise<any> {
+    return this.json("/api/artifacts", { method: "GET" });
+  }
+
+  /** `GET /api/artifacts/<id>`: `{artifact, versions, owner_session}`. */
+  get(id: string): Promise<any> {
+    return this.json(`/api/artifacts/${id}`, { method: "GET" });
+  }
+
+  /** `POST /api/artifacts`: creates an artifact; `{artifact, version, url}`. */
+  create(body: unknown): Promise<any> {
+    return this.json("/api/artifacts", this.jsonBody("POST", body, PUBLISH_TIMEOUT_MS));
+  }
+
+  /** `POST /api/artifacts/<id>/versions`: publishes a new version; `{artifact, version, url}`. */
+  publishVersion(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}/versions`, this.jsonBody("POST", body, PUBLISH_TIMEOUT_MS));
+  }
+
+  /** `PATCH /api/artifacts/<id>` with metadata fields; `{artifact}`. */
+  patch(id: string, body: unknown): Promise<any> {
+    return this.json(`/api/artifacts/${id}`, this.jsonBody("PATCH", body));
+  }
+
+  /** `DELETE /api/artifacts/<id>`. */
+  async delete(id: string): Promise<void> {
+    await this.request(`/api/artifacts/${id}`, { method: "DELETE" });
+  }
+
+  /** `GET /api/artifacts/<id>/files`: the current version's `{files, version}`. */
+  files(id: string): Promise<any> {
+    return this.json(`/api/artifacts/${id}/files`, { method: "GET" });
+  }
+
+  /** The stored bytes of `path` in version `n`, unwrapped
+   * (`GET /api/artifacts/<id>/versions/<n>/files/<path>`). */
+  async fileBytes(id: string, n: number, path: string): Promise<Buffer> {
+    return (await this.request(`/api/artifacts/${id}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
+  }
+
+  /** `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`. */
+  uploadAsset(id: string, filename: string, contentType: string, bytes: Buffer): Promise<any> {
+    if (/[\r\n"]/.test(contentType)) {
+      throw new ClientError("api", "invalid content type", 400, { code: "invalid_content_type", message: `invalid content type '${contentType}'` });
+    }
+    const boundary = `artifax-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+    const name = filename.replace(/["\r\n\\]/g, "_");
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      bytes,
+      Buffer.from(`\r\n--${boundary}--\r\n`),
+    ]);
+    return this.json(`/api/artifacts/${id}/assets`, {
+      method: "POST",
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+      body,
+      timeoutMs: PUBLISH_TIMEOUT_MS,
+    });
+  }
+
+  /** `PATCH /api/sessions/<id>` `{"heartbeat": true}`, registering the session
+   * first when needed. Never starts a daemon. */
+  async heartbeat(): Promise<Session> {
+    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ heartbeat: true }), this.discoverFn));
+  }
+
+  /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
+   * Never starts a daemon. `undefined` when no session was registered. */
+  async endSession(): Promise<Session | undefined> {
+    if (!this.registeredSession) return undefined;
+    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn));
+  }
+
+  private sessionPatch(body: unknown): RequestOptions {
+    return this.jsonBody("PATCH", body);
+  }
+
+  /** The path of this client's session (`/api/sessions/<id>`), as of the attempt. */
+  private readonly sessionPath = () => `/api/sessions/${this.sessionId ?? ""}`;
+}

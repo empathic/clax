@@ -17,7 +17,7 @@ frontmatter() {
 }
 
 json_files=()
-while IFS= read -r f; do json_files+=("$f"); done < <(find plugins -type f -name '*.json' | sort)
+while IFS= read -r f; do json_files+=("$f"); done < <(find plugins -name node_modules -prune -o -type f -name '*.json' -print | sort)
 json_files+=(.claude-plugin/marketplace.json .agents/plugins/marketplace.json)
 for f in "${json_files[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
