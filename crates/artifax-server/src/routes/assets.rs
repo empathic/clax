@@ -14,7 +14,7 @@ use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde_json::{Value, json};
 
-fn multipart_error(status: StatusCode, message: String) -> ApiError {
+pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
     if status == StatusCode::PAYLOAD_TOO_LARGE {
         ApiError::new(
             StatusCode::PAYLOAD_TOO_LARGE,

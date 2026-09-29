@@ -57,6 +57,7 @@ impl TestServer {
             sse_keep_alive: Duration::from_secs(15),
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
+            feedback_waiters: Arc::new(Default::default()),
         };
         f(&mut state);
         let events = state.events.clone();
@@ -130,5 +131,161 @@ impl TestServer {
             .await;
         assert_eq!(res.status(), 201, "{}", res.text().await.unwrap());
         res.json().await.unwrap()
+    }
+}
+
+/// Bytes that pass the daemon's PNG check (signature only); not a decodable image.
+pub const FAKE_PNG: &[u8] = b"\x89PNG\r\n\x1a\nartifax-test-clip";
+
+/// An element anchor on `body > main > h2` quoting "Quarterly goals".
+pub fn element_anchor() -> serde_json::Value {
+    serde_json::json!({"kind": "element", "selector": "body > main > h2", "quote": "Quarterly goals",
+        "prefix": "", "suffix": "", "html_hash": "sha256:00", "rect": null, "custom_name": null})
+}
+
+/// Reads Server-Sent Events from one `/api/events` response.
+pub struct EventReader {
+    stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>, String>> + Send>>,
+    buf: String,
+}
+
+impl EventReader {
+    /// The next event other than `ready` and keep-alive comments, as (name, data), within 5 s.
+    pub async fn next(&mut self) -> (String, serde_json::Value) {
+        use futures::StreamExt;
+        loop {
+            if let Some(end) = self.buf.find("\n\n") {
+                let block = self.buf[..end].to_string();
+                self.buf.drain(..end + 2);
+                if block.starts_with(':') {
+                    continue;
+                }
+                let name = block
+                    .lines()
+                    .find_map(|l| l.strip_prefix("event: "))
+                    .unwrap_or("message")
+                    .to_string();
+                let data = block
+                    .lines()
+                    .find_map(|l| l.strip_prefix("data: "))
+                    .unwrap_or("null");
+                if name == "ready" {
+                    continue;
+                }
+                return (
+                    name,
+                    serde_json::from_str(data).expect("event data is JSON"),
+                );
+            }
+            let chunk = tokio::time::timeout(Duration::from_secs(5), self.stream.next())
+                .await
+                .expect("SSE chunk within 5 s")
+                .expect("stream still open")
+                .expect("chunk readable");
+            self.buf
+                .push_str(std::str::from_utf8(&chunk).expect("UTF-8 events"));
+        }
+    }
+
+    /// Skips events until one named `name`; returns its data.
+    pub async fn next_named(&mut self, name: &str) -> serde_json::Value {
+        loop {
+            let (n, d) = self.next().await;
+            if n == name {
+                return d;
+            }
+        }
+    }
+}
+
+impl TestServer {
+    /// Registers a live session; returns the session object.
+    pub async fn register_session(&self, harness: &str, hsid: &str) -> serde_json::Value {
+        let res = self
+            .post_json(
+                "/api/sessions",
+                serde_json::json!({"harness": harness, "harness_session_id": hsid, "cwd": "/w"}),
+            )
+            .await;
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["session"].clone()
+    }
+
+    /// Creates an artifact attributed to `session_id` (so the session owns and watches it).
+    pub async fn publish_as(&self, session_id: &str, title: &str, html: &str) -> serde_json::Value {
+        let res = self
+            .authed(self.client.post(format!("{}/api/artifacts", self.base)))
+            .header("x-artifax-session", session_id)
+            .json(&serde_json::json!({"title": title, "files": {"index.html": {"content": html, "encoding": "utf8"}}}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        res.json().await.unwrap()
+    }
+
+    /// `POST /api/artifacts/<aid>/threads` as a browser does, with [`element_anchor`].
+    pub async fn create_thread(
+        &self,
+        aid: &str,
+        version: u32,
+        body: &str,
+        clip: Option<&[u8]>,
+    ) -> reqwest::Response {
+        let mut form = reqwest::multipart::Form::new()
+            .text("anchor", element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", version.to_string());
+        if let Some(bytes) = clip {
+            form = form.part(
+                "clip",
+                reqwest::multipart::Part::bytes(bytes.to_vec())
+                    .file_name("clip.png")
+                    .mime_str("image/png")
+                    .unwrap(),
+            );
+        }
+        self.client
+            .post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// Creates a thread without a clip; returns the thread view.
+    pub async fn thread(&self, aid: &str, version: u32, body: &str) -> serde_json::Value {
+        let res = self.create_thread(aid, version, body, None).await;
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+
+    /// Presses "Send to agent"; returns the thread view.
+    pub async fn send_thread(&self, aid: &str, tid: &str) -> serde_json::Value {
+        let res = self
+            .client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/send",
+                self.base
+            ))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+
+    /// Opens `/api/events<query>` and returns a reader past nothing yet.
+    pub async fn events(&self, query: &str) -> EventReader {
+        use futures::StreamExt;
+        let res = self.get(&format!("/api/events{query}")).await;
+        assert_eq!(res.status(), 200);
+        let stream = res
+            .bytes_stream()
+            .map(|r| r.map(|b| b.to_vec()).map_err(|e| e.to_string()));
+        EventReader {
+            stream: Box::pin(stream),
+            buf: String::new(),
+        }
     }
 }

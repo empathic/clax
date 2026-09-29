@@ -26,4 +26,6 @@ pub struct AppState {
     /// Base URL a browser on this machine uses to reach the daemon; tool results
     /// build artifact URLs from it.
     pub browser_base: String,
+    /// Long-polls waiting for feedback, by session.
+    pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
 }

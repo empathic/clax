@@ -4,11 +4,13 @@ pub mod auth;
 pub mod blocking;
 pub mod daemon;
 pub mod error;
+pub mod feedback;
 pub mod host;
 pub mod routes;
 pub mod state;
 #[cfg(feature = "test-support")]
 pub mod testing;
+pub mod viewer;
 pub mod wrap_cache;
 
 pub use state::AppState;

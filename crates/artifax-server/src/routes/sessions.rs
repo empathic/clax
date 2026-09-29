@@ -102,10 +102,14 @@ pub async fn patch(
             "send {\"heartbeat\": true} or {\"ended\": true}",
         ));
     }
+    let ctx = s.feedback_ctx();
     let session = s
         .store_call(move |st| {
             if b.ended {
-                st.end_session(&id)
+                let (session, touched) = st.end_session_touched(&id)?;
+                crate::feedback::apply(&ctx, st, &touched);
+                ctx.waiters.forget(&id);
+                Ok(session)
             } else {
                 st.heartbeat(&id)
             }

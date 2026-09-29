@@ -46,6 +46,7 @@ fn fixture(name: &str) -> Vec<u8> {
 fn artifax(home: &Path) -> Command {
     let mut c = Command::new(artifax_bin());
     c.env("ARTIFAX_HOME", home)
+        .env("ARTIFAX_CODEX_BIN", "")
         .env("ARTIFAX_NO_OPEN", "1")
         .env("RUST_LOG", "error");
     c
@@ -243,6 +244,7 @@ fn hook_behind_a_wrapper_shell_joins_the_shim_row() {
             artifax_bin().display()
         ))
         .env("ARTIFAX_HOME", d.home())
+        .env("ARTIFAX_CODEX_BIN", "")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())

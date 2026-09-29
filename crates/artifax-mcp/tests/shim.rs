@@ -66,6 +66,7 @@ impl Shim {
         let cmd = tokio::process::Command::new(artifax_bin()).configure(|c| {
             c.args(["--port", "0", "mcp", "--agent", "claude"])
                 .env("ARTIFAX_HOME", &home)
+                .env("ARTIFAX_CODEX_BIN", "")
                 .env("HOME", dir.path())
                 .env("CLAUDE_CODE_SESSION_ID", "test-sess")
                 .env("ARTIFAX_NO_OPEN", "1")
@@ -143,6 +144,7 @@ impl Shim {
         let out = std::process::Command::new(artifax_bin())
             .args(["--json", "stop"])
             .env("ARTIFAX_HOME", self.dir.path().join("ax"))
+            .env("ARTIFAX_CODEX_BIN", "")
             .env("HOME", self.dir.path())
             .output()
             .expect("run artifax stop");
@@ -165,6 +167,7 @@ impl Drop for Shim {
         let _ = std::process::Command::new(artifax_bin())
             .arg("stop")
             .env("ARTIFAX_HOME", self.dir.path().join("ax"))
+            .env("ARTIFAX_CODEX_BIN", "")
             .env("HOME", self.dir.path())
             .output();
     }
@@ -408,6 +411,7 @@ async fn an_older_daemon_is_replaced_on_the_same_bind() {
     let out = std::process::Command::new(artifax_bin())
         .args(["--port", "0", "serve", "--bind", "0.0.0.0"])
         .env("ARTIFAX_HOME", &home)
+        .env("ARTIFAX_CODEX_BIN", "")
         .env("HOME", dir.path())
         .output()
         .expect("run artifax serve");

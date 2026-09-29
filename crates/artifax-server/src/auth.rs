@@ -15,23 +15,26 @@ impl FromRequestParts<AppState> for RequireToken {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, ApiError> {
-        let header = parts
-            .headers
-            .get(axum::http::header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        let presented = match header.split_once(' ') {
-            Some((scheme, token)) if scheme.eq_ignore_ascii_case("bearer") => {
-                token.trim_start_matches(' ')
-            }
-            _ => "",
-        };
-        if constant_time_eq(presented.as_bytes(), state.token.as_bytes()) {
+        if has_token(&parts.headers, &state.token) {
             Ok(RequireToken)
         } else {
             Err(ApiError::unauthorized())
         }
     }
+}
+
+/// True when `headers` carry `Authorization: Bearer <token>` (scheme matched
+/// case-insensitively, token compared in constant time).
+pub fn has_token(headers: &axum::http::HeaderMap, token: &str) -> bool {
+    let header = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let presented = match header.split_once(' ') {
+        Some((scheme, t)) if scheme.eq_ignore_ascii_case("bearer") => t.trim_start_matches(' '),
+        _ => "",
+    };
+    constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

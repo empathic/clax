@@ -20,8 +20,9 @@ pub struct EventsQuery {
 
 /// `GET /api/events`: a Server-Sent Events stream of the event bus.
 ///
-/// The stream opens with `event: ready` (`data: {}`), then carries `version` and
-/// `artifact_deleted` events whose data is the JSON-serialised [`artifax_core::Event`].
+/// The stream opens with `event: ready` (`data: {}`), then carries `version`,
+/// `artifact_deleted`, `thread`, `comment`, `thread_resolved`, and
+/// `feedback_state` events whose data is the JSON-serialised [`artifax_core::Event`].
 /// A subscriber that falls more than the bus capacity behind receives
 /// `event: resync` with `data: {"dropped": <n>}` and then continues from the oldest
 /// retained event; clients should refetch state on `resync`. A `: keep-alive`
@@ -48,10 +49,7 @@ pub async fn events(
         {
             return None;
         }
-        let name = match &ev {
-            artifax_core::Event::Version { .. } => "version",
-            artifax_core::Event::ArtifactDeleted { .. } => "artifact_deleted",
-        };
+        let name = ev.name();
         Some(Ok(SseEvent::default()
             .event(name)
             .data(serde_json::to_string(&ev).unwrap())))

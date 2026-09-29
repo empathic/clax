@@ -417,7 +417,7 @@ describe("ensure", () => {
       expect(info.port).toBeGreaterThan(0);
       expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
     } finally {
-      execFileSync(artifaxBin, ["stop"], { env: { ...process.env, ARTIFAX_HOME: home }, stdio: "ignore" });
+      execFileSync(artifaxBin, ["stop"], { env: { ...process.env, ARTIFAX_HOME: home, ARTIFAX_CODEX_BIN: "" }, stdio: "ignore" });
     }
   }, 30_000);
 

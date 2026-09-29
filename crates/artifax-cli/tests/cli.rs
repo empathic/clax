@@ -13,6 +13,7 @@ impl Env {
     fn cmd(&self) -> Command {
         let mut c = Command::cargo_bin("artifax").unwrap();
         c.env("ARTIFAX_HOME", self.dir.path().join("ax"))
+            .env("ARTIFAX_CODEX_BIN", "")
             .env("HOME", self.dir.path());
         c
     }
@@ -124,6 +125,7 @@ fn concurrent_auto_starts_yield_one_daemon() {
             std::thread::spawn(move || {
                 let mut c = Command::cargo_bin("artifax").unwrap();
                 c.env("ARTIFAX_HOME", home)
+                    .env("ARTIFAX_CODEX_BIN", "")
                     .env("HOME", hd)
                     .args(["status", "--start", "--json", "--port", "0"]);
                 let out = c.assert().success().get_output().stdout.clone();

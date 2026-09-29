@@ -26,7 +26,7 @@ futures = "0.3"
 mime_guess.workspace = true
 artifax-mcp = { path = "../artifax-mcp" }
 rmcp = { workspace = true }
-reqwest = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["stream"] }
 tempfile = { workspace = true, optional = true }
 
 [features]

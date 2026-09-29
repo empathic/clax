@@ -50,7 +50,10 @@ pub const SESSION_HEADER: &str = "x-artifax-session";
 /// # Errors
 /// `unknown_session` when the header is not valid text, or names a session that
 /// does not exist or has ended.
-fn publishing_session(st: &Store, header: &Option<String>) -> Result<Option<String>, CoreError> {
+pub(crate) fn publishing_session(
+    st: &Store,
+    header: &Option<String>,
+) -> Result<Option<String>, CoreError> {
     let Some(id) = header else {
         return Ok(None);
     };
@@ -65,7 +68,7 @@ fn publishing_session(st: &Store, header: &Option<String>) -> Result<Option<Stri
 
 /// The raw `X-Artifax-Session` value; a value that is not UTF-8 is
 /// `unknown_session`.
-fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
     headers
         .get(SESSION_HEADER)
         .map(|v| {
@@ -121,10 +124,17 @@ pub async fn create(
     require_title(p.title.as_deref())?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
+    let ctx = s.feedback_ctx();
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session)?;
             let (artifact, version) = st.create_artifact(p, session.as_deref())?;
+            if let Some(sid) = &session {
+                let aid = ArtifactId::parse(&artifact.id)?;
+                st.ensure_watch(sid, &aid)?;
+                let touched = st.retarget_untargeted(&aid, sid)?;
+                crate::feedback::apply(&ctx, st, &touched);
+            }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
@@ -240,10 +250,17 @@ pub async fn publish(
     let p = validate(body(req)?)?;
     let session = session_header(&headers)?;
     let events = s.events.clone();
+    let ctx = s.feedback_ctx();
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session)?;
             let (artifact, version) = st.publish_version(&id, p, session.as_deref())?;
+            if let Some(sid) = &session {
+                let aid = ArtifactId::parse(&artifact.id)?;
+                st.ensure_watch(sid, &aid)?;
+                let touched = st.retarget_untargeted(&aid, sid)?;
+                crate::feedback::apply(&ctx, st, &touched);
+            }
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,

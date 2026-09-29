@@ -219,7 +219,9 @@ pub async fn serve(
         sse_keep_alive: Duration::from_secs(15),
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
+        feedback_waiters: Arc::new(Default::default()),
     };
+    let fctx = state.feedback_ctx();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -259,9 +261,16 @@ pub async fn serve(
         loop {
             tokio::time::sleep(reap_interval).await;
             let store = reaper_store.clone();
-            let reaped =
-                tokio::task::spawn_blocking(move || store.reap_sessions(SESSION_IDLE, &pid_alive))
-                    .await;
+            let ctx = fctx.clone();
+            let reaped = tokio::task::spawn_blocking(move || {
+                let r = store.reap_sessions(SESSION_IDLE, &pid_alive)?;
+                crate::feedback::apply(&ctx, &store, &r.touched);
+                for id in &r.ended {
+                    ctx.waiters.forget(id);
+                }
+                Ok::<_, artifax_core::CoreError>(r)
+            })
+            .await;
             match reaped {
                 Ok(Ok(r)) if r.ended.is_empty() => {}
                 Ok(Ok(r)) => tracing::info!(count = r.ended.len(), "ended idle sessions"),

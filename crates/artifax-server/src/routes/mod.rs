@@ -2,11 +2,15 @@ pub mod artifacts;
 pub mod assets;
 pub mod content;
 pub mod events;
+pub mod feedback;
 pub mod health;
 pub mod mcp;
 pub mod sessions;
 pub mod shell;
+pub mod threads;
 pub mod token;
+pub mod viewers;
+pub mod watches;
 
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -84,7 +88,32 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/assets/{asset_id}",
             delete(assets::delete),
-        );
+        )
+        .route("/api/artifacts/{aid}/threads", get(threads::list))
+        .route("/api/artifacts/{aid}/threads/{tid}", get(threads::get))
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}/clip",
+            get(threads::clip),
+        )
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}/comments",
+            post(threads::comment),
+        )
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}/send",
+            post(threads::send),
+        )
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}/resolve",
+            post(threads::resolve),
+        )
+        .route("/api/viewers/me", get(viewers::me).put(viewers::set_me))
+        .route("/api/sessions/{id}/watches", get(watches::list))
+        .route(
+            "/api/sessions/{id}/watches/{aid}",
+            axum::routing::put(watches::put).delete(watches::delete),
+        )
+        .route("/api/sessions/{id}/feedback/ack", post(feedback::ack));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
@@ -104,6 +133,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/assets",
             post(assets::upload.layer(asset_limit)),
+        )
+        .route(
+            "/api/artifacts/{aid}/threads",
+            post(threads::create.layer(DefaultBodyLimit::max(threads::THREAD_BODY_LIMIT))),
         );
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
@@ -114,6 +147,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
+        .route("/api/sessions/{id}/feedback", get(feedback::poll))
         .merge(api_fast)
         .merge(api_slow)
         .route("/", get(shell::shell))

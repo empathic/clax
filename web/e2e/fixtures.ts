@@ -9,7 +9,7 @@ const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 export async function startDaemon() {
   const home = mkdtempSync(join(tmpdir(), "artifax-e2e-"));
   const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "artifax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
-    { cwd: repoRoot, env: { ...process.env, ARTIFAX_HOME: home }, stdio: ["ignore", "inherit", "inherit"] });
+    { cwd: repoRoot, env: { ...process.env, ARTIFAX_HOME: home, ARTIFAX_CODEX_BIN: "" }, stdio: ["ignore", "inherit", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";
