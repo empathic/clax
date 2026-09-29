@@ -17,7 +17,7 @@
 - Every phase 1–3 constraint holds: Rust edition 2024; `cargo fmt --all -- --check`; `cargo clippy --workspace --all-targets -- -D warnings`; `ARTIFAX_HOME` points at a temporary directory in every test and script; every harness that starts a daemon sets `ARTIFAX_CODEX_BIN=` (empty); the JSON error shape `{"error": {"code", "message", ...}}`; write routes (W) require `Authorization: Bearer <token>`; "ID" (never "id") in prose, doc comments, and UI copy; doc comments describe the contract, never the conversation or history; commits use `git commit --no-gpg-sign` with messages that describe the change.
 - Store work from async handlers goes through `AppState::store_call`; events that must follow a successful store change are published inside the `store_call` closure.
 - Viewer routes (every route a browser calls without the token, the new Docs routes included) take the `SameOrigin` extractor and refuse a foreign `Origin` with 403 `forbidden_origin`. Artifact origins (`<aid>.localhost`) are foreign: every capability call reaches the daemon through the shell, never from the frame.
-- SSE (`/api/events`) needs no token, so nothing it carries may be private: thread views carry no clip paths (phase 3), and `doc` events carry a path and a version and never a body. `/api/events` filters `doc` events by the subscriber's level, computed on the SSE request as for the Docs routes (the token without a viewer cookie → `owner`; the token with one → `admin`; a loopback connection with a local `Host` and a viewer cookie, which is the owner shell's `EventSource`, → `admin`; a named viewer → `interact`; else `view`): an event for a path inside a private `data/users/<id>/` (or declared `{self}`) subtree goes only to that viewer, never to the owner shell or an agent; any other event goes only to subscribers whose level meets the path's read minimum.
+- SSE (`/api/events`) needs no token, so nothing it carries may be private: thread views carry no clip paths (phase 3), and `doc` events carry a path and a version and never a body. `/api/events` filters `doc` events by the subscriber's level, computed on the SSE request as for the Docs routes. An `EventSource` cannot send headers, so on tokenless streams (`GET /api/events`, and phase 5's room WebSocket) the shell sends the bearer token as a `?token=` query parameter, which the daemon accepts like the `Authorization` header and never logs (no request log may record that route's query string). A valid token with a viewer cookie → `admin` (the owner shell); a valid token without one → `owner` (an agent, the CLI); a cookie only → `interact` if the viewer is named, else `view`; neither → `view`: an event for a path inside a private `data/users/<id>/` (or declared `{self}`) subtree goes only to that viewer, never to the owner shell or an agent; any other event goes only to subscribers whose level meets the path's read minimum.
 - The `artifax_viewer` cookie value is a credential. It is never sent to a page, never broadcast on SSE, never stored in a document, and never returned by any route (the viewer routes answer `{viewer: {public_id, display_name, created_at}}`; the phase 3 fix wave marks `Viewer.id` skip-serializing). Pages, `db` paths, `user.id()`, `profiles()`, and `resolved_by` use the viewer's public ID (`u_` plus 22 lowercase hex characters).
 - `use()` never rejects; undeclared (other than `permissions` and `user`, which resolve for every framed page), unknown, and unavailable names resolve `null`; resolution is asynchronous (never during the page's first synchronous run); `use("x")` returns the same promise object on every call; resolved namespaces are frozen; a framed page whose shell never answers resolves `null` after 10 s; an unframed page resolves `null` for every name.
 - Permission prompts happen on a capability's first consent-gated call or on `permissions.request()`, never on `use()`. A viewer's denial is final for the page load. `permissions.state()` and `request()` are built in and resolve for every framed page, declared or not.
@@ -55,7 +55,7 @@
 
 Errors: `invalid_argument` (400: path grammar, body, query), `if_version_required` (400, with `path` and `current`), `conflict` (409, with `path` and `current`, `null` when the document does not exist), `quota_exceeded` (400), `not_found` (404: absent, unreadable, or a write the rules refuse — a refused write reads exactly like a missing document), `forbidden_origin` (403).
 
-**SSE `doc` event:** `{"type":"doc","artifact_id":"7q3k9mzx2b4t","path":"tasks/t1","version":3}`; `version` is `null` after a delete; filtered per subscriber as in Global Constraints. **SSE `version` event** gains `by_page`: `{"type":"version","artifact_id":"…","n":4,"by_page":true}` when the version came from the `artifact` capability.
+**SSE `doc` event:** `{"type":"doc","artifact_id":"7q3k9mzx2b4t","path":"tasks/t1","version":3}`; `version` is `null` after a delete; filtered per subscriber as in Global Constraints. **`GET /api/events?artifact=<aid>&token=<bearer token>`:** the owner shell's subscription (the token is 64 hex characters, so it needs no encoding); `Authorization: Bearer` works too. **SSE `version` event** gains `by_page`: `{"type":"version","artifact_id":"…","n":4,"by_page":true}` when the version came from the `artifact` capability.
 
 **Viewer lookups:** `GET /api/viewers?ids=u_…,u_…` (SameOrigin, ≤ 64 IDs) → `{viewers: [{id, display_name}]}` where `id` is the public ID; `GET /api/viewers?q=<text>` (W) → up to 8 named viewers. `GET/PUT /api/viewers/me` return `{viewer: {public_id, display_name, created_at}}` and never echo the cookie.
 
@@ -1935,7 +1935,7 @@ git commit --no-gpg-sign -m "Store db documents with versions, rules, batches, q
 - Consumes (Tasks 1–2): `Caller`, `Level`, every `Store::doc_*` method, `Pin`, `DocQuery`, `parse_where`, `BatchWrite`, `BatchOp`, `StrReplace`, `Acquire`, `DocChange`, `TestViewer`, `TestServer::viewer`.
 - Produces:
   - `artifax_core::Event::Doc { artifact_id: String, path: String, version: Option<u64>, #[serde(skip)] private_to: Option<String>, #[serde(skip)] read_level: Level }`, SSE name `doc`.
-  - `artifax_server::db_caller::Subscriber` (an extractor for `/api/events`) with `Subscriber::resolve(&self, st: &Store) -> artifax_core::Result<Caller>`; `TestServer::events_with(&self, query: &str, build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder) -> EventReader`.
+  - `artifax_server::auth::token_matches(presented: &str, token: &str) -> bool`; `artifax_server::db_caller::Subscriber` (an extractor for `/api/events`, reading the token from `Authorization` or `?token=`) with `Subscriber::resolve(&self, st: &Store) -> artifax_core::Result<Caller>`; `TestServer::events_with(&self, query: &str, build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder) -> EventReader`.
   - `artifax_server::db_caller::CallerParts { token: bool, cookie: Option<String>, as_level: Option<Level> }` (an extractor), `CallerParts::resolve(&self, st: &Store) -> artifax_core::Result<Caller>`.
   - The Docs routes of the Shared contract (`artifax_server::routes::docs::{get, put, patch, delete, list, batch, str_replace, acquire}`).
   - `TestServer::events_as(&self, query: &str, cookie: Option<&str>) -> EventReader`.
@@ -2628,35 +2628,49 @@ In `crates/artifax-server/src/routes/mod.rs`, add `pub mod docs;` and, in `api_f
 
 - [ ] **Step 6: Filter `doc` events per subscriber**
 
-Add to `crates/artifax-server/src/db_caller.rs` the subscriber side (an `EventSource` cannot send the token, so the owner shell is recognised as `/api/token` recognises it: a loopback connection with a literal local `Host`, here with its viewer cookie):
+Add to `crates/artifax-server/src/auth.rs` a public comparison next to `has_token` (the same constant-time check):
 
 ```rust
-use crate::auth::{is_local_host, is_loopback};
-use axum::extract::ConnectInfo;
-use std::net::SocketAddr;
+/// True when `presented` is the daemon's token (compared in constant time).
+pub fn token_matches(presented: &str, token: &str) -> bool {
+    constant_time_eq(presented.as_bytes(), token.as_bytes())
+}
+```
 
+Add to `crates/artifax-server/src/db_caller.rs` the subscriber side. An `EventSource` cannot send headers, so on this tokenless stream the owner shell sends the bearer token as `?token=`; the daemon accepts it like the `Authorization` header. Nothing may log this route's query string (the daemon has no request log today; do not add one that records it). The extractor reads no connection information: `ConnectInfo<Conn>` is not needed.
+
+```rust
 /// Who is subscribing to `/api/events`, for filtering `doc` events.
 pub struct Subscriber {
     token: bool,
     cookie: Option<String>,
-    /// A loopback connection with a literal local `Host` (the owner shell).
-    local: bool,
 }
 
 impl FromRequestParts<AppState> for Subscriber {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let local = parts.extensions.get::<ConnectInfo<SocketAddr>>().is_some_and(|c| is_loopback(c.0))
-            && parts.headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).is_some_and(is_local_host);
-        Ok(Subscriber { token: has_token(&parts.headers, &state.token), cookie: crate::viewer::read(&parts.headers), local })
+        // The token is 64 hex characters, so the query value needs no decoding.
+        let query_token = parts
+            .uri
+            .query()
+            .unwrap_or("")
+            .split('&')
+            .filter_map(|kv| kv.split_once('='))
+            .find(|(k, _)| *k == "token")
+            .is_some_and(|(_, v)| crate::auth::token_matches(v, &state.token));
+        Ok(Subscriber {
+            token: query_token || has_token(&parts.headers, &state.token),
+            cookie: crate::viewer::read(&parts.headers),
+        })
     }
 }
 
 impl Subscriber {
-    /// The subscriber's level and viewer: the token without a cookie is
-    /// `owner`, with one `admin`; the owner shell (local, with a cookie naming
-    /// a viewer) is `admin`; a named viewer `interact`; anyone else `view`.
+    /// The subscriber's level and viewer: a valid token with a viewer cookie
+    /// is `admin` (the owner shell), without one `owner` (an agent, the CLI);
+    /// a cookie alone is `interact` for a named viewer, else `view`; neither
+    /// is `view`.
     pub fn resolve(&self, st: &Store) -> artifax_core::Result<Caller> {
         let viewer = match &self.cookie {
             Some(c) => st.get_viewer(c)?,
@@ -2664,7 +2678,7 @@ impl Subscriber {
         };
         let level = if self.token && self.cookie.is_none() {
             Level::Owner
-        } else if self.token || (self.local && viewer.is_some()) {
+        } else if self.token {
             Level::Admin
         } else if viewer.as_ref().is_some_and(|v| v.display_name.is_some()) {
             Level::Interact
@@ -2675,6 +2689,8 @@ impl Subscriber {
     }
 }
 ```
+
+The `EventsQuery` struct of `routes/events.rs` does not deny unknown fields, so `token` passes its `Query` extractor.
 
 In `crates/artifax-server/src/routes/events.rs`, resolve the subscriber once and filter `doc` events by it:
 
@@ -2712,7 +2728,7 @@ In `crates/artifax-server/src/testing.rs`, `events_as` delegates to a general bu
 
 ```rust
     /// Opens `/api/events<query>` with the request shaped by `build` (headers
-    /// such as a cookie, the token, or a non-local `Host`).
+    /// such as a cookie or the token; `query` may carry `&token=`).
     pub async fn events_with(&self, query: &str, build: impl FnOnce(reqwest::RequestBuilder) -> reqwest::RequestBuilder) -> EventReader {
         use futures::StreamExt;
         let res = build(self.client.get(format!("{}/api/events{query}", self.base))).send().await.unwrap();
@@ -2724,10 +2740,9 @@ In `crates/artifax-server/src/testing.rs`, `events_as` delegates to a general bu
 
 with `events_as(query, cookie)` calling `events_with(query, |r| match cookie { Some(c) => r.header("cookie", format!("artifax_viewer={c}")), None => r })`.
 
-Add to `crates/artifax-server/tests/api_docs.rs` (a LAN subscriber is simulated with a non-local `Host`, which the test daemon accepts):
+Add to `crates/artifax-server/tests/api_docs.rs` (every request keeps a local `Host`; a LAN viewer is a cookie without the token, the owner shell a cookie with `?token=`, an agent the token alone):
 
 ```rust
-const LAN_HOST: &str = "192.168.1.5:7480";
 
 #[tokio::test]
 async fn doc_events_follow_the_subscribers_level() {
@@ -2740,9 +2755,10 @@ async fn doc_events_follow_the_subscribers_level() {
     let named = ts.viewer(Some("Sam")).await;
     let shell_viewer = ts.viewer(Some("Owner")).await;
     let q = format!("?artifact={aid}");
-    let mut view = ts.events_with(&q, |r| r.header("host", LAN_HOST)).await;
-    let mut interact = ts.events_with(&q, |r| r.header("host", LAN_HOST).header("cookie", format!("artifax_viewer={}", named.cookie))).await;
-    let mut shell = ts.events_as(&q, Some(&shell_viewer.cookie)).await;
+    let shell_q = format!("{q}&token={}", ts.token);
+    let mut view = ts.events(&q).await;
+    let mut interact = ts.events_as(&q, Some(&named.cookie)).await;
+    let mut shell = ts.events_as(&shell_q, Some(&shell_viewer.cookie)).await;
     let mut agent = ts.events_with(&q, |r| r.bearer_auth(&ts.token)).await;
     for path in ["secret/s", "staff/s", "team/t", "open/o"] {
         send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/{path}"), &Who::Token).json(&json!({"data": {}}))).await;
@@ -2761,17 +2777,20 @@ async fn doc_events_follow_the_subscribers_level() {
 #[tokio::test]
 async fn a_subscribers_level_is_fixed_when_its_stream_opens() {
     // The shell opens its stream only after the viewer lookup has set the
-    // cookie (Task 5): a stream opened without it stays at `view`.
+    // cookie (Task 5). A stream opened with the token but before the cookie
+    // is `owner` with no viewer, so it never hears its own viewer's private
+    // documents; the stream opened after the cookie does.
     let ts = TestServer::spawn().await;
     let aid = artifact(&ts, json!({"db": {"rules": [{"path": "staff", "read": "admin", "write": "admin"}]}})).await;
-    let q = format!("?artifact={aid}");
-    let mut before_cookie = ts.events(&q).await;
+    let shell_q = format!("?artifact={aid}&token={}", ts.token);
+    let mut before_cookie = ts.events(&shell_q).await;
     let owner = ts.viewer(Some("Owner")).await;
-    let mut after_cookie = ts.events_as(&q, Some(&owner.cookie)).await;
-    for path in ["staff/s", "open/o"] {
-        send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/{path}"), &Who::Token).json(&json!({"data": {}}))).await;
-    }
-    assert_eq!(before_cookie.next_named("doc").await["path"], "open/o");
+    let mut after_cookie = ts.events_as(&shell_q, Some(&owner.cookie)).await;
+    let private = format!("data/users/{}/p", owner.public_id);
+    send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/{private}"), &Who::Viewer(&owner)).json(&json!({"data": {}, "lww": true}))).await;
+    send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/staff/s"), &Who::Token).json(&json!({"data": {}}))).await;
+    assert_eq!(before_cookie.next_named("doc").await["path"], "staff/s");
+    assert_eq!(after_cookie.next_named("doc").await["path"], private.as_str());
     assert_eq!(after_cookie.next_named("doc").await["path"], "staff/s");
 }
 
@@ -2782,9 +2801,9 @@ async fn private_doc_events_skip_the_owner_shell_and_agents() {
     let a = ts.viewer(Some("A")).await;
     let owner = ts.viewer(Some("Owner")).await;
     let q = format!("?artifact={aid}");
-    let mut shell = ts.events_as(&q, Some(&owner.cookie)).await;
-    let mut agent = ts.events_with(&q, |r| r.bearer_auth(&ts.token)).await;
-    let mut mine = ts.events_with(&q, |r| r.header("host", LAN_HOST).header("cookie", format!("artifax_viewer={}", a.cookie))).await;
+    let mut shell = ts.events_as(&format!("{q}&token={}", ts.token), Some(&owner.cookie)).await;
+    let mut agent = ts.events(&format!("{q}&token={}", ts.token)).await;
+    let mut mine = ts.events_as(&q, Some(&a.cookie)).await;
     let private = format!("data/users/{}/p", a.public_id);
     send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/{private}"), &Who::Viewer(&a)).json(&json!({"data": {}, "lww": true}))).await;
     send(req(&ts, Method::PUT, &format!("/api/artifacts/{aid}/docs/shared/s"), &Who::Viewer(&a)).json(&json!({"data": {}, "lww": true}))).await;
@@ -4976,22 +4995,38 @@ Replace phase 3's `useEffect(() => subscribe(id, e => { ... }), [id]);` with a s
   useEffect(() => {
     let live = true;
     let stop: (() => void) | null = null;
-    const open = (resync: boolean) => {
+    const open = async (resync: boolean) => {
+      // The owner shell passes its token (null on a LAN view) so the daemon
+      // counts its stream as the owner shell's.
+      const token = await getToken();
+      if (!live) return;
       stop?.();
-      stop = subscribe(id, e => onEventRef.current(e));
+      stop = subscribe(id, e => onEventRef.current(e), token);
       // Events between the old and the new stream are lost: refetch as on a resync.
       if (resync) onEventRef.current({ type: "resync", dropped: 0 });
     };
     // The daemon reads the viewer cookie when the stream opens (its level for
     // `doc` events is fixed then), so open it once the lookup has set the
     // cookie, and reopen when a later lookup or a rename changes the viewer.
-    void getViewer().then(() => { if (live && !stop) open(false); }, () => { if (live && !stop) open(false); });
-    const off = onViewer(() => { if (live && stop) open(true); });
+    void getViewer().then(() => { if (live && !stop) void open(false); }, () => { if (live && !stop) void open(false); });
+    const off = onViewer(() => { if (live && stop) void open(true); });
     return () => { live = false; off(); stop?.(); };
   }, [id]);
 ```
 
-(import `getViewer` and `onViewer` from `./threads` and `type ArtifactEvent` from `./events`). In `artifact.test.tsx`, tests that emit through `FakeES.last` wait for it to exist first (it is created after the viewer lookup resolves). Render the dialog last inside `.stage`: `{ask && <PromptDialog ask={ask} />}`.
+(import `getViewer` and `onViewer` from `./threads`, `getToken` from `./api`, and `type ArtifactEvent` from `./events`). In `web/shell/src/events.ts`, `subscribe` takes the token and appends it:
+
+```ts
+/** Subscribes to the artifact's events. `token` (the owner shell's, from
+ * `/api/token`) goes in the query, since an EventSource cannot send headers;
+ * the daemon then counts the stream as the owner shell's. */
+export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => void, token: string | null = null): () => void {
+  const q = new URLSearchParams({ artifact: artifactId });
+  if (token) q.set("token", token);
+  const es = new EventSource(`/api/events?${q}`);
+  // ... the phase 3 listeners, unchanged ...
+}
+``` In `artifact.test.tsx`, tests that emit through `FakeES.last` wait for it to exist first (it is created after the viewer lookup resolves). Render the dialog last inside `.stage`: `{ask && <PromptDialog ask={ask} />}`.
 
 - [ ] **Step 9: Run the shell unit tests to verify they pass**
 
@@ -9231,9 +9266,9 @@ In `docs/contract.md` `## Security model`, add:
   body. An event for a path inside a viewer's private subtree goes only to
   that viewer's stream (never to the owner's browser or an agent); any other
   goes only to subscribers whose level meets the path's read rule, with the
-  level worked out as for the `db` routes (the owner's browser, which cannot
-  send the token on an event stream, is recognised by a loopback connection
-  with a local `Host`, as `GET /api/token` recognises it).
+  level worked out as for the `db` routes. The owner's browser cannot send
+  headers on an event stream, so it sends the token as `?token=`; the daemon
+  never logs that route's query string.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page.
 ```
