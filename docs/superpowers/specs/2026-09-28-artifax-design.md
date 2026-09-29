@@ -240,13 +240,32 @@ Browser-facing:
   `GET /c/<aid>/v/<n>/<path>` supporting files; a file stored as
   `text/html` is wrapped exactly like the index (the bridge tag carries
   `data-file="<path>"`, `index.html` for the index; cached per artifact,
-  version, and file; `Cache-Control: no-store`), every other file is served
-  as stored. Also served at
+  version, and file), every other file is served as stored. Also served at
   `http://<aid>.localhost:<port>/v/<n>/...` for D5. On `<aid>.localhost` the
   daemon serves `/v/...`, `/healthz`, `/_artifax/*`, and `/_blob/*` and
   404s everything else.
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
+
+Browser caching (every route above):
+
+- Every HTML response (the shell's own document on every `/` and `/a/...`
+  path, and every wrapped page, `/c/...` and `/v/...` on an artifact host
+  alike, including a `text/html` file that is not UTF-8 and so is served as
+  stored) carries `Cache-Control: no-cache` and an `ETag`: the browser may
+  store it but revalidates it on every load, and the daemon answers
+  `304 Not Modified` when the `If-None-Match` it sends is current. No HTML
+  response is ever `immutable` or given a long `max-age`, so a page, and the
+  bridge tag inside it, is never older than the daemon serving it.
+- Bridge tags name the bridge by version:
+  `/_artifax/bridge.js?v=<first 12 hex digits of the bundle's SHA-256>`,
+  computed once when the daemon starts. That URL is served
+  `public, max-age=31536000, immutable`; the bare `/_artifax/bridge.js`, and
+  a `?v=` naming another bundle, are served `no-cache` (with an `ETag`).
+- Non-HTML supporting files (`/c/<aid>/v/<n>/<path>`) and `/_blob/<asset_id>`
+  are `public, max-age=31536000, immutable`: their URLs name one version's
+  or one asset's bytes, which never change. The shell's own bundles under
+  `/_artifax/shell/` have content-hashed names.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
   `comment`, `thread_resolved`, `thread_deleted`, `feedback_state`, `doc` events (rooms use their own WebSocket, not SSE).
   `artifact_deleted` is sent when an
@@ -482,7 +501,7 @@ must not be stubbed into phase 1.
 The daemon wraps every HTML page of a version (`index.html` and every
 supporting file stored as `text/html`) at serve time into the
 document skeleton claude.ai uses (doctype, charset, viewport, the small
-reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
+reset), inserts `<script src="/_artifax/bridge.js?v=<bridge version>" data-artifact="<aid>"
 data-version="<n>" data-contract="0.2.61" data-file="<path>">` as the first element of
 `<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
@@ -491,8 +510,9 @@ bridge script inserted immediately after the first `<head ...>` tag (after
 the first `<body ...>` tag when there is no head, after the doctype when
 there is neither), so `window.claude` exists before any page script, as
 `claude.d.ts` promises; otherwise it is a fragment and is wrapped. A
-republished document that already carries a bridge tag keeps exactly one,
-for the new version. This is what makes a self-republished page (which sends
+republished document that already carries a bridge tag (at the versioned
+URL or, from before the URL carried a version, the bare one) keeps exactly
+one, for the new version at the current bridge URL (§6, browser caching). This is what makes a self-republished page (which sends
 the full skeleton) round-trip without nesting. Wrapping is pure and cached
 per version and file. The bridge greets the shell with its page's `file`,
 records it on every anchor it builds, and never resolves an anchor whose

@@ -1036,6 +1036,24 @@ Minimal skeleton:
   only for the MCP server (never for a hook), and no release has been
   published yet.
 
+## Browser caching
+
+- Every HTML response the daemon serves (the gallery and viewer shell, and
+  every published page, the index and each supporting HTML file, on
+  `/c/...` or an artifact's `<id>.localhost` origin) is sent with
+  `Cache-Control: no-cache` and an `ETag`. The browser revalidates it on
+  every load and gets `304 Not Modified` when its copy is current. No HTML
+  response is ever `immutable` or long-lived, so a page never runs with a
+  bridge older than the daemon's.
+- The bridge tag names the bridge by version:
+  `/_artifax/bridge.js?v=<hash>`, a short hash of the bridge bundle. That
+  URL is immutable (`public, max-age=31536000, immutable`); the bare
+  `/_artifax/bridge.js`, or a `?v=` naming another bundle, is `no-cache`.
+  A page republished from its served DOM keeps exactly one bridge tag, at
+  the current URL, whichever form it carried.
+- Supporting files that are not HTML, and uploaded assets (`/_blob/...`),
+  are immutable: their URLs name bytes that never change.
+
 ## Known limitations
 
 - Content inside a nested `<iframe>` within a page is a dead zone in comment

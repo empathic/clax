@@ -3,7 +3,9 @@
 
 use crate::error::ApiError;
 use crate::host::OnArtifactOrigin;
+use crate::http_cache;
 use crate::routes::artifacts::{parse_id, path};
+use crate::routes::shell::bridge_version;
 use crate::state::AppState;
 use artifax_core::model::CONTRACT_VERSION;
 use artifax_core::model::FileMeta;
@@ -13,8 +15,8 @@ use artifax_core::{ArtifactId, CoreError};
 use axum::body::Body;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};
-use axum::http::{HeaderValue, StatusCode, header};
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
+use axum::response::{IntoResponse, Redirect, Response};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -42,25 +44,18 @@ pub async fn redirect_to_slash(
 pub async fn index(
     State(s): State<AppState>,
     origin: Option<Extension<OnArtifactOrigin>>,
+    req: HeaderMap,
     p: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
-        Served::Page(html) => Ok(sandboxed(page_response(&html), &origin)),
+        Served::Page(html) => Ok(sandboxed(http_cache::html(&req, &html), &origin)),
         Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "index.html is not UTF-8",
         )))),
     }
-}
-
-fn page_response(html: &str) -> Response {
-    (
-        [(header::CACHE_CONTROL, "no-store")],
-        Html(html.to_string()),
-    )
-        .into_response()
 }
 
 /// Whether a stored content type is `text/html` (parameters ignored).
@@ -100,9 +95,16 @@ async fn lookup(
         }
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
-            Ok(String::from_utf8(std::fs::read(&disk)?)
-                .ok()
-                .map(|page| wrap_page(&page, id.as_str(), n, CONTRACT_VERSION, &file)))
+            Ok(String::from_utf8(std::fs::read(&disk)?).ok().map(|page| {
+                wrap_page(
+                    &page,
+                    id.as_str(),
+                    n,
+                    CONTRACT_VERSION,
+                    &file,
+                    bridge_version(),
+                )
+            }))
         });
         match wrapped {
             Ok(Some(html)) => Ok(Served::Page(html)),
@@ -115,12 +117,14 @@ async fn lookup(
 }
 
 /// A supporting file of a version. A `text/html` file in UTF-8 is served like
-/// the index: wrapped with the bridge (`data-file` naming its path), uncached
-/// by the browser, cached by the daemon per file. Any other file is streamed
-/// as stored, cached as immutable.
+/// the index: wrapped with the bridge (`data-file` naming its path),
+/// revalidated by the browser on every load, cached by the daemon per file.
+/// Any other file is streamed as stored: immutable, except an HTML file that
+/// is not UTF-8, which is revalidated like every page.
 pub async fn file(
     State(s): State<AppState>,
     origin: Option<Extension<OnArtifactOrigin>>,
+    req: HeaderMap,
     p: Result<Path<(String, u32, String)>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let (aid, n, rel) = path(p)?;
@@ -129,18 +133,24 @@ pub async fn file(
         return Ok(Redirect::permanent("./").into_response());
     }
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
-        Served::Page(html) => return Ok(sandboxed(page_response(&html), &origin)),
+        Served::Page(html) => return Ok(sandboxed(http_cache::html(&req, &html), &origin)),
         Served::Raw(disk, meta) => (disk, meta),
     };
     let f = tokio::fs::File::open(&disk)
         .await
         .map_err(|_| ApiError::not_found())?;
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
+    // An HTML file that is not UTF-8 is still a page: revalidated, never immutable.
+    let cache_control = if is_html(&meta.content_type) {
+        http_cache::REVALIDATE
+    } else {
+        http_cache::IMMUTABLE
+    };
     let res = (
         StatusCode::OK,
         [
             (header::CONTENT_TYPE, meta.content_type.as_str()),
-            (header::CACHE_CONTROL, "public, max-age=31536000, immutable"),
+            (header::CACHE_CONTROL, cache_control),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*"),
         ],
