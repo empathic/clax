@@ -8,6 +8,8 @@ import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
 export const REQUEST_TIMEOUT_MS = 30_000;
 /** Deadline for publishes and asset uploads. */
 export const PUBLISH_TIMEOUT_MS = 120_000;
+/** Deadline for ending the session, so a hung daemon cannot hold up the harness. */
+export const END_TIMEOUT_MS = 3_000;
 /** Deadline for establishing a connection; a live daemon on loopback accepts at once. */
 export const CONNECT_TIMEOUT_MS = 2_000;
 
@@ -167,6 +169,11 @@ export async function probe(url: string): Promise<boolean> {
   }
 }
 
+/** `fallback` ms, or less when `deadline` (epoch ms) comes sooner; at least 1. */
+function remaining(deadline: number | undefined, fallback: number): number {
+  return deadline === undefined ? fallback : Math.max(1, Math.min(fallback, deadline - Date.now()));
+}
+
 /** A request path, or a function giving it per attempt (for paths naming the
  * session, which a refresh may replace). */
 type Path = string | (() => string);
@@ -219,19 +226,21 @@ export class DaemonClient {
     return this.registeredSession;
   }
 
-  /** Finds (or starts) the daemon and registers the session unless both are done. */
-  ensureSession(): Promise<void> {
-    return this.ensure(this.refreshFn);
+  /** Finds (or starts) the daemon and registers the session unless both are
+   * done. With `timeoutMs`, the registration request is cut off at that long
+   * after the call (finding the daemon is bounded by its own timeouts). */
+  ensureSession(timeoutMs?: number): Promise<void> {
+    return this.ensure(this.refreshFn, timeoutMs === undefined ? undefined : Date.now() + timeoutMs);
   }
 
-  private async ensure(find: Find): Promise<void> {
+  private async ensure(find: Find, deadline?: number): Promise<void> {
     if (this.endpoint && this.registered) return;
-    await this.refresh(this.endpoint, find);
+    await this.refresh(this.endpoint, find, deadline);
   }
 
   /** Re-discovers the daemon and registers the session there, unless another
    * caller already moved on from `stale` (the endpoint the failure was seen on). */
-  private async refresh(stale: Endpoint | undefined, find: Find): Promise<void> {
+  private async refresh(stale: Endpoint | undefined, find: Find, deadline?: number): Promise<void> {
     while (this.refreshing) await this.refreshing.catch(() => {});
     if (this.endpoint && this.endpoint !== stale && this.registered) return;
     const run = (async () => {
@@ -249,6 +258,7 @@ export class DaemonClient {
           method: "POST",
           headers: { authorization: `Bearer ${endpoint.token}`, "content-type": "application/json" },
           body: JSON.stringify(this.registration),
+          timeoutMs: remaining(deadline, REQUEST_TIMEOUT_MS),
         });
       } catch (e) {
         throw e instanceof Failure ? e.error : e;
@@ -275,19 +285,23 @@ export class DaemonClient {
   /** Sends a request after ensuring the session; on a refreshable failure,
    * refreshes and retries once. When the refresh fails, the original error is
    * thrown. */
-  private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn): Promise<RawResponse> {
-    await this.ensure(find);
+  private async request(path: Path, opts: RequestOptions, find: Find = this.refreshFn, deadline?: number): Promise<RawResponse> {
+    await this.ensure(find, deadline);
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
     const go = (ep: Endpoint) =>
-      attempt(`${ep.base}${typeof path === "function" ? path() : path}`, { ...opts, headers: this.headers(ep, opts.headers) });
+      attempt(`${ep.base}${typeof path === "function" ? path() : path}`, {
+        ...opts,
+        headers: this.headers(ep, opts.headers),
+        timeoutMs: remaining(deadline, opts.timeoutMs ?? REQUEST_TIMEOUT_MS),
+      });
     try {
       return await go(endpoint);
     } catch (e) {
       if (!(e instanceof Failure)) throw e;
       if (!e.refreshable) throw e.error;
       try {
-        await this.refresh(endpoint, find);
+        await this.refresh(endpoint, find, deadline);
       } catch {
         throw e.error;
       }
@@ -299,8 +313,8 @@ export class DaemonClient {
     }
   }
 
-  private async json(path: Path, opts: RequestOptions, find?: Find): Promise<any> {
-    return bodyJson(await this.request(path, opts, find));
+  private async json(path: Path, opts: RequestOptions, find?: Find, deadline?: number): Promise<any> {
+    return bodyJson(await this.request(path, opts, find, deadline));
   }
 
   private jsonBody(method: string, body: unknown, timeoutMs = REQUEST_TIMEOUT_MS): RequestOptions {
@@ -353,15 +367,17 @@ export class DaemonClient {
     return (await this.request(`/api/artifacts/${id}/versions/${n}/files/${encodePath(path)}`, { method: "GET" })).body;
   }
 
-  /** `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`. */
-  uploadAsset(id: string, filename: string, contentType: string, bytes: Buffer): Promise<any> {
-    if (/[\r\n"]/.test(contentType)) {
+  /** `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`.
+   * Without `contentType` the part carries none and the daemon infers it from
+   * `filename`. */
+  uploadAsset(id: string, filename: string, contentType: string | undefined, bytes: Buffer): Promise<any> {
+    if (contentType !== undefined && /[\r\n"]/.test(contentType)) {
       throw new ClientError("api", "invalid content type", 400, { code: "invalid_content_type", message: `invalid content type '${contentType}'` });
     }
     const boundary = `artifax-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
     const name = filename.replace(/["\r\n\\]/g, "_");
     const body = Buffer.concat([
-      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\nContent-Type: ${contentType}\r\n\r\n`),
+      Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n${contentType === undefined ? "" : `Content-Type: ${contentType}\r\n`}\r\n`),
       bytes,
       Buffer.from(`\r\n--${boundary}--\r\n`),
     ]);
@@ -379,11 +395,12 @@ export class DaemonClient {
     return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ heartbeat: true }), this.discoverFn));
   }
 
-  /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session.
+  /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,
+   * within `timeoutMs` (default [`END_TIMEOUT_MS`]) for the requests.
    * Never starts a daemon. `undefined` when no session was registered. */
-  async endSession(): Promise<Session | undefined> {
+  async endSession(timeoutMs = END_TIMEOUT_MS): Promise<Session | undefined> {
     if (!this.registeredSession) return undefined;
-    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn));
+    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ ended: true }), this.discoverFn, Date.now() + timeoutMs));
   }
 
   private sessionPatch(body: unknown): RequestOptions {

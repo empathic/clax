@@ -11,8 +11,9 @@ export const INSTALL_HINT =
   "install it with `cargo install --path crates/artifax-cli` from a clone of https://github.com/empathic/artifax " +
   "(or download a release from https://github.com/empathic/artifax/releases), or set ARTIFAX_BIN to its path";
 
-/** How long `artifax serve --json` may take to start the daemon. */
-const SERVE_TIMEOUT_MS = 30_000;
+/** How long `artifax serve --json` may take; it gives up on its own after
+ * about 5 s when the daemon does not become ready. */
+const SERVE_TIMEOUT_MS = 10_000;
 
 /** The contents of `<home>/daemon.json`. */
 export interface DaemonInfo {

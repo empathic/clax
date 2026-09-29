@@ -23,18 +23,6 @@ const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", impor
  * file is sent as base64. */
 const TEXT_EXT = new Set(["html", "htm", "css", "js", "mjs", "json", "svg", "md", "txt", "csv", "xml", "map"]);
 
-/** Content types for asset uploads by extension; others are
- * `application/octet-stream`. */
-const CONTENT_TYPES: Record<string, string> = {
-  avif: "image/avif", bmp: "image/bmp", gif: "image/gif", ico: "image/x-icon", jpeg: "image/jpeg", jpg: "image/jpeg",
-  png: "image/png", svg: "image/svg+xml", webp: "image/webp",
-  mp4: "video/mp4", webm: "video/webm", mov: "video/quicktime", mp3: "audio/mpeg", wav: "audio/wav", ogg: "audio/ogg",
-  woff: "font/woff", woff2: "font/woff2", ttf: "font/ttf", otf: "font/otf",
-  pdf: "application/pdf", json: "application/json", wasm: "application/wasm", xml: "text/xml",
-  csv: "text/csv", txt: "text/plain", md: "text/markdown", html: "text/html", htm: "text/html", css: "text/css",
-  js: "text/javascript", mjs: "text/javascript",
-};
-
 // ---- Tool schemas ----------------------------------------------------------
 
 const strict = { additionalProperties: false } as const;
@@ -112,16 +100,21 @@ function toolError(code: string, message: string, extra: Json = {}): ToolError {
 }
 
 const invalid = (message: string) => toolError("invalid_args", message);
+
+/** An error result for an unexpected exception, so every error stays JSON. */
+function internal(e: unknown): ToolError {
+  return e instanceof ToolError ? e : toolError("internal", e instanceof Error ? e.message : String(e));
+}
 const notFound = (message: string) => toolError("not_found", message);
 
 /** The error result for a failed daemon call. An unreachable daemon is
  * `daemon_unreachable` naming `log`; a request past its deadline is `timeout`
  * (also naming `log`); an unparseable success body is `bad_response`; an API
  * error passes the daemon's `error` object through unchanged (so a conflict
- * keeps its `current`). Anything else is rethrown. */
+ * keeps its `current`). Anything else is `internal`. */
 function clientError(e: unknown, log: string): ToolError {
   if (e instanceof ToolError) return e;
-  if (!(e instanceof ClientError)) throw e;
+  if (!(e instanceof ClientError)) return internal(e);
   switch (e.kind) {
     case "unreachable":
       return toolError("daemon_unreachable", `the artifax daemon did not respond (${e.message}); see its log`, { log });
@@ -207,10 +200,6 @@ export function isText(contentType: string): boolean {
 export function textPrefix(bytes: Buffer, max: number): string {
   const decoder = new TextDecoder("utf-8", { ignoreBOM: true });
   return max < bytes.length ? decoder.decode(bytes.subarray(0, max), { stream: true }) : decoder.decode(bytes);
-}
-
-function contentTypeFor(name: string): string {
-  return CONTENT_TYPES[extname(name).slice(1).toLowerCase()] ?? "application/octet-stream";
 }
 
 /** Starts the platform opener on `url` detached. True when it started. */
@@ -457,7 +446,7 @@ class Tools {
     const c = this.clientFor(ctx);
     const assets: Json[] = [];
     for (const { name, bytes } of files) {
-      const res = await this.call(() => c.uploadAsset(id, name, contentTypeFor(name), bytes));
+      const res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
       const asset = res.asset ?? {};
       assets.push({
         id: asset.id ?? null,
@@ -486,6 +475,9 @@ class Tools {
   }
 }
 
+/** How long session_start may spend finding the daemon and registering. */
+const START_BUDGET_MS = 3_000;
+
 /** The `/artifax` command's usage line. */
 const USAGE = "usage: /artifax open [id] | list | status";
 
@@ -494,12 +486,20 @@ export function artifaxExtension(opts: ArtifaxOptions = {}): (pi: ExtensionAPI) 
   return pi => {
     const tools = new Tools(opts.home ?? artifaxHome(opts.env ?? process.env), opts);
 
+    // Pi awaits this handler before it continues, so registration gets at most
+    // START_BUDGET_MS; the first tool call registers when this did not.
     pi.on("session_start", async (_event, ctx) => {
+      let timer: NodeJS.Timeout | undefined;
+      const budget = new Promise<"timeout">(r => { timer = setTimeout(() => r("timeout"), START_BUDGET_MS); });
       try {
-        await tools.clientFor(ctx).ensureSession();
+        const registered = tools.clientFor(ctx).ensureSession(START_BUDGET_MS);
+        // A registration still running when the budget ends may fail later, unobserved.
+        registered.catch(() => undefined);
+        await Promise.race([registered, budget]);
       } catch (e) {
-        // Registration is retried by the first tool call.
         if (ctx.hasUI) ctx.ui.notify(`artifax: no daemon yet (${e instanceof Error ? e.message : String(e)})`, "warning");
+      } finally {
+        clearTimeout(timer);
       }
     });
 
@@ -522,7 +522,12 @@ export function artifaxExtension(opts: ArtifaxOptions = {}): (pi: ExtensionAPI) 
         promptSnippet,
         parameters,
         async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-          const result = await run(ctx, params as Static<P>);
+          let result: Json;
+          try {
+            result = await run(ctx, params as Static<P>);
+          } catch (e) {
+            throw internal(e);
+          }
           return { content: [{ type: "text", text: render(result) }], details: {} };
         },
       });

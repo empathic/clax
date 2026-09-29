@@ -1,6 +1,8 @@
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
+import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -35,6 +37,27 @@ function load(home: string, sessionId: string, cwd = scratch) {
 /** This process's environment with `ARTIFAX_BIN` set to `bin`. */
 function withBin(bin: string): NodeJS.ProcessEnv {
   return { ...process.env, ARTIFAX_BIN: bin };
+}
+
+/** An Artifax home whose daemon answers `/healthz` and then never answers
+ * `POST /api/sessions` (`hang: "register"`) or any `PATCH` (`hang: "patch"`). */
+async function hungHome(hang: "register" | "patch") {
+  const home = join(scratch, `hung-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(home, { recursive: true });
+  const server = createHttpServer((req, res) => {
+    const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+    if (req.url === "/healthz") return reply({ version: "0.1.0" });
+    if (req.method === "POST" && req.url === "/api/sessions" && hang !== "register") {
+      return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+    }
+    // Otherwise never answer.
+  });
+  await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  writeFileSync(join(home, "daemon.json"), JSON.stringify({
+    port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
+  }));
+  return { home, close: () => { server.closeAllConnections(); server.close(); } };
 }
 
 async function sessions(): Promise<any[]> {
@@ -185,6 +208,92 @@ describe("artifax Pi extension", () => {
     expect(res.assets[0]).toMatchObject({ content_type: "image/png", size: png.length });
     const got = await fetch(res.assets[0].url.replace("localhost", "127.0.0.1"));
     expect(Buffer.from(await got.arrayBuffer())).toEqual(png);
+  });
+
+  it("leaves the asset content type to the daemon, which infers it from the file name", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tiff");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const p = json(await pi.callTool("artifax_publish", { html: "<title>tiff</title>" }, ctx));
+    // The part carries no Content-Type; the daemon infers image/tiff from the name.
+    writeFileSync(join(scratch, "scan.tiff"), Buffer.from("II*\0\x08\0\0\0"));
+    const res = json(await pi.callTool("artifax_asset_upload", { url_or_id: p.artifact_id, file_path: "scan.tiff" }, ctx));
+    expect(res.assets[0].content_type).toBe("image/tiff");
+  });
+
+  it("reports an unexpected exception as an internal error result", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-internal");
+    const res = await pi.callTool("artifax_list", null, ctx);
+    expect(res.isError).toBe(true);
+    const body = json(res);
+    expect(body.feedback).toEqual([]);
+    expect(body.error.code).toBe("internal");
+    expect(body.error.message).toEqual(expect.any(String));
+  });
+
+  it("gives up registering at session_start after about 3 s when the daemon hangs", async () => {
+    const hung = await hungHome("register");
+    try {
+      const pi = new FakePi();
+      artifaxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-artifax")) })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-hung-start");
+      const t0 = Date.now();
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      expect(Date.now() - t0).toBeLessThan(4_500);
+    } finally {
+      hung.close();
+    }
+  });
+
+  it("gives up ending the session after about 3 s when the daemon hangs", async () => {
+    const hung = await hungHome("patch");
+    try {
+      const pi = new FakePi();
+      artifaxExtension({ home: hung.home, env: withBin(join(scratch, "no-such-artifax")) })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-hung-end");
+      await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+      const t0 = Date.now();
+      await pi.emit("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+      expect(Date.now() - t0).toBeLessThan(4_500);
+    } finally {
+      hung.close();
+    }
+  });
+
+  it("Pi's argument validation accepts valid arguments and rejects unknown keys", () => {
+    const { pi } = load(daemon.home, "pi-validate");
+    const id = "7q3k9mzx2b4t";
+    const valid: Record<string, Record<string, unknown>[]> = {
+      artifax_publish: [
+        { html: "<title>x</title>" },
+        { file_path: "page.html", id, if_version: 2, title: "t", description: "d", icon: "chart", label: "l", capabilities: { db: {} },
+          files: { "a.css": { content: "body{}" }, "b.png": { content: "iVBORw0K", encoding: "base64", content_type: "image/png" }, "c.js": { path: "c.js" }, "old.txt": null } },
+        { html: "<p>", url: `http://localhost:7480/a/${id}` },
+      ],
+      artifax_read: [{ url_or_id: id }, { url_or_id: id, path: "a.css", version: 1, max_bytes: 10 }],
+      artifax_list: [{}, { limit: 5, scope: "mine" }, { scope: "all" }],
+      artifax_delete: [{ url_or_id: id }],
+      artifax_open: [{ url_or_id: id }],
+      artifax_pin: [{ url_or_id: id }],
+      artifax_unpin: [{ url_or_id: id }],
+      artifax_asset_upload: [{ url_or_id: id, file_path: "a.png" }, { url_or_id: id, file_paths: ["a.png", "b.mp4"] }],
+      artifax_status: [{}],
+    };
+    const invalid: Record<string, Record<string, unknown>[]> = {
+      artifax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
+      artifax_read: [{ url_or_id: id, bogus: 1 }, {}],
+      artifax_list: [{ scope: "theirs" }, { bogus: 1 }],
+      artifax_delete: [{ url_or_id: id, bogus: 1 }],
+      artifax_open: [{ url_or_id: id, bogus: 1 }],
+      artifax_pin: [{ url_or_id: id, bogus: 1 }],
+      artifax_unpin: [{ url_or_id: id, bogus: 1 }],
+      artifax_asset_upload: [{ url_or_id: id, file_path: "a.png", bogus: 1 }],
+      artifax_status: [{ bogus: 1 }],
+    };
+    expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
+    const check = (name: string, args: Record<string, unknown>) =>
+      validateToolArguments(pi.tools.get(name) as unknown as Tool, { type: "toolCall", id: "1", name, arguments: structuredClone(args) });
+    for (const [name, cases] of Object.entries(valid)) for (const args of cases) expect(() => check(name, args), `${name} ${JSON.stringify(args)}`).not.toThrow();
+    for (const [name, cases] of Object.entries(invalid)) for (const args of cases) expect(() => check(name, args), `${name} ${JSON.stringify(args)}`).toThrow();
   });
 
   it("the artifax command reports status and lists artifacts", async () => {
