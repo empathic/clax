@@ -151,6 +151,15 @@ async fn exit_0_delivers_by_queue_with_the_payload_and_codex_home() {
         ),
         (json!(true), json!("env"))
     );
+    assert!(
+        push["codex"].get("bin").is_none(),
+        "the daemon's codex path needs the token: {push}"
+    );
+    let authed: Value = ts.get_authed("/api/push").await.json().await.unwrap();
+    assert_eq!(
+        authed["codex"]["bin"],
+        d.path().join("codex").to_string_lossy().as_ref()
+    );
 }
 
 /// A non-zero `codex queue` exit never means the session exited (measured,
@@ -339,8 +348,11 @@ async fn no_push_without_a_session_id_or_armed_replies_or_codex() {
     let push: Value = bare.get("/api/push").await.json().await.unwrap();
     assert_eq!(
         push,
-        json!({"codex": {"available": false, "bin": null, "source": "not_found", "reason": "codex is not on the daemon's PATH; native push disabled"}})
+        json!({"codex": {"available": false, "source": "not_found", "reason": "codex is not on the daemon's PATH; native push disabled"}})
     );
+    let authed: Value = bare.get_authed("/api/push").await.json().await.unwrap();
+    assert_eq!(authed["codex"]["bin"], Value::Null);
+    assert_eq!(authed["codex"]["source"], "not_found");
     let claude = bare.register_session("claude", "c").await;
     let sess: Value = bare
         .get_authed(&format!("/api/sessions/{}", claude["id"].as_str().unwrap()))

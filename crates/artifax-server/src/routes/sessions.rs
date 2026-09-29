@@ -198,13 +198,23 @@ fn push_info(
     }
 }
 
-/// `GET /api/push`: the daemon's `codex`, where it came from, and why push is
-/// unavailable when it is.
-pub async fn push_status(State(s): State<AppState>) -> Json<Value> {
-    Json(json!({"codex": {
+/// `GET /api/push`: whether the daemon can push to Codex, where its `codex`
+/// came from, and why push is unavailable when it is. `bin`, the path of the
+/// daemon's `codex` (it usually names the user's home), is included only for
+/// a request with the token.
+pub async fn push_status(State(s): State<AppState>, headers: axum::http::HeaderMap) -> Json<Value> {
+    let mut codex = json!({
         "available": s.codex.available(),
-        "bin": s.codex.bin.as_ref().map(|p| p.to_string_lossy().into_owned()),
         "source": s.codex.source,
         "reason": s.codex.reason(),
-    }}))
+    });
+    if crate::auth::has_token(&headers, &s.token) {
+        codex["bin"] = json!(
+            s.codex
+                .bin
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+        );
+    }
+    Json(json!({ "codex": codex }))
 }

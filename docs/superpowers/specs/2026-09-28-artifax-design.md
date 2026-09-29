@@ -259,9 +259,11 @@ Agent- and shell-facing JSON API under `/api`:
   `GET /api/sessions` (token), `GET /api/sessions/<id>` (token; `{session,
   push}`, where `push` is `{tier, available, reason}` plus `codex_home` for
   Codex: whether and how tier 5 reaches the session).
-- Push: `GET /api/push` (no token): `{codex: {available, bin, source,
-  reason}}`, the daemon's `codex` binary, where it came from (`env`, `path`,
-  `disabled`, `not_found`), and why push is off when it is.
+- Push: `GET /api/push` (no token): `{codex: {available, source, reason}}`,
+  whether the daemon can push to Codex, where its `codex` came from (`env`,
+  `path`, `disabled`, `not_found`), and why push is off when it is; with the
+  token the object also carries `bin`, the path of the daemon's `codex`
+  (`null` when it has none).
 - Watches: `PUT /api/sessions/<sid>/watches/<aid>` (W), `DELETE` same (W),
   `GET /api/sessions/<sid>/watches`.
 - Comments: `GET /api/artifacts/<aid>/threads` (`include_resolved`,
@@ -885,8 +887,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   origins, `null`, and other origins are refused) with 403
   `forbidden_origin`, so a published page cannot comment, send, or resolve
   on the person's behalf. Requests without an `Origin` header are allowed.
-  The daemon is HTTP only. `GET /api/push` needs no token and names the
-  daemon's `codex` binary.
+  The daemon is HTTP only. `GET /api/push` needs no token but names the
+  daemon's `codex` path (which usually contains the user name) only to
+  requests with the token.
 - Content isolation per D5. In LAN mode content runs with an opaque origin.
   Content on the main origin (`/c/...`) carries `Content-Security-Policy:
   sandbox allow-scripts allow-forms allow-modals allow-popups
