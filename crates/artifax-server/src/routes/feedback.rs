@@ -127,10 +127,16 @@ pub async fn poll(
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AckBody {
-    thread_ids: Vec<String>,
+    #[serde(default)]
+    thread_ids: Option<Vec<String>>,
+    #[serde(default)]
+    comment_ids: Option<Vec<String>>,
 }
 
-/// Acknowledges the session's rows on `thread_ids`; `{acknowledged: <threads>}`.
+/// Acknowledges the session's rows on `thread_ids` (every row on those
+/// threads) and on `comment_ids` (only rows for those comments, so a comment
+/// the caller has not seen stays pending); either or both, and a body with
+/// neither is 400 `invalid_json`. `{acknowledged: <threads touched>}`.
 /// Unknown session: 404; ended session: 400 `unknown_session`.
 pub async fn ack(
     State(s): State<AppState>,
@@ -140,11 +146,20 @@ pub async fn ack(
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;
     let b = body(req)?;
+    if b.thread_ids.is_none() && b.comment_ids.is_none() {
+        return Err(ApiError::bad_request(
+            "invalid_json",
+            "pass thread_ids, comment_ids, or both",
+        ));
+    }
     let ctx = s.feedback_ctx();
     let n = s
         .store_call(move |st| {
             live_session(st, &sid)?;
-            let touched = st.acknowledge(&sid, &b.thread_ids)?;
+            let mut touched = st.acknowledge(&sid, b.thread_ids.as_deref().unwrap_or_default())?;
+            touched.merge(
+                st.acknowledge_comments(&sid, b.comment_ids.as_deref().unwrap_or_default())?,
+            );
             apply(&ctx, st, &touched);
             Ok(touched.threads.len())
         })

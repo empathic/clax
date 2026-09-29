@@ -10,15 +10,22 @@ use artifax_server::testing::{FAKE_PNG, TestServer};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Tools attributed to a fresh `claude` session, and that session's ID.
 async fn session_tools(ts: &TestServer) -> (ArtifaxTools, String) {
+    session_tools_via(ts, &ts.base).await
+}
+
+/// Like [`session_tools`], sending API calls to `base` (such as a [`Proxy`]).
+async fn session_tools_via(ts: &TestServer, base: &str) -> (ArtifaxTools, String) {
     let s: Session =
         serde_json::from_value(ts.register_session("claude", "tools-1").await).unwrap();
     let sid = s.id.clone();
     let tools = ArtifaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(sid.clone())),
+        DaemonClient::new(base.to_string(), ts.token.clone(), Some(sid.clone())),
         format!("http://localhost:{}", ts.addr.port()),
         Some(s),
         ts.home.log_path(),
@@ -34,6 +41,83 @@ fn blocks(r: &CallToolResult) -> (Value, Option<String>) {
         v,
         r.content.get(1).map(|b| b.as_text().unwrap().text.clone()),
     )
+}
+
+/// A pass-through proxy in front of a test daemon that can fail the feedback
+/// poll, and records each feedback acknowledgement body, first running a hook
+/// (to land a request between a tool's read and its acknowledgement).
+struct Proxy {
+    upstream: String,
+    http: reqwest::Client,
+    fail_feedback: AtomicBool,
+    before_ack: Mutex<Option<(String, Value)>>,
+    acks: Mutex<Vec<Value>>,
+}
+
+impl Proxy {
+    async fn start(upstream: &str) -> (Arc<Proxy>, String) {
+        let p = Arc::new(Proxy {
+            upstream: upstream.to_string(),
+            http: reqwest::Client::builder().no_proxy().build().unwrap(),
+            fail_feedback: AtomicBool::new(false),
+            before_ack: Mutex::new(None),
+            acks: Mutex::new(Vec::new()),
+        });
+        let app = axum::Router::new().fallback(forward).with_state(p.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (p, base)
+    }
+}
+
+async fn forward(
+    axum::extract::State(p): axum::extract::State<Arc<Proxy>>,
+    req: axum::extract::Request,
+) -> axum::response::Response {
+    use axum::http::{Method, StatusCode, header};
+    use axum::response::IntoResponse;
+    let (parts, body) = req.into_parts();
+    let bytes = axum::body::to_bytes(body, usize::MAX).await.unwrap();
+    let route = parts.uri.path();
+    if parts.method == Method::GET
+        && route.ends_with("/feedback")
+        && p.fail_feedback.load(Ordering::SeqCst)
+    {
+        let err = json!({"error": {"code": "internal", "message": "injected"}});
+        return (StatusCode::INTERNAL_SERVER_ERROR, axum::Json(err)).into_response();
+    }
+    if parts.method == Method::POST && route.ends_with("/feedback/ack") {
+        p.acks
+            .lock()
+            .unwrap()
+            .push(serde_json::from_slice(&bytes).unwrap());
+        let hook = p.before_ack.lock().unwrap().take();
+        if let Some((url, body)) = hook {
+            let res = p.http.post(url).json(&body).send().await.unwrap();
+            assert_eq!(res.status(), 201);
+        }
+    }
+    let target = format!(
+        "{}{}",
+        p.upstream,
+        parts.uri.path_and_query().map_or("/", |x| x.as_str())
+    );
+    let mut rb = p.http.request(parts.method.clone(), target);
+    for (k, v) in &parts.headers {
+        if k != header::HOST && k != header::CONTENT_LENGTH {
+            rb = rb.header(k, v);
+        }
+    }
+    let res = rb.body(bytes).send().await.unwrap();
+    let mut out = axum::http::Response::builder().status(res.status());
+    for (k, v) in res.headers() {
+        if k != header::TRANSFER_ENCODING && k != header::CONTENT_LENGTH {
+            out = out.header(k, v);
+        }
+    }
+    out.body(axum::body::Body::from(res.bytes().await.unwrap()))
+        .unwrap()
 }
 
 async fn publish(t: &ArtifaxTools) -> String {
@@ -293,6 +377,21 @@ async fn wait_for_feedback_returns_within_a_second_and_asks_to_call_again() {
         json!({"feedback": [], "waited_s": 1, "call_again": true})
     );
     assert!(trailing.is_none());
+    // `timeout_s: 0` waits the one-second minimum, so a loop cannot spin.
+    let started = Instant::now();
+    let (v, _) = blocks(
+        &t.wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(0),
+        }))
+        .await
+        .unwrap(),
+    );
+    assert!(started.elapsed() >= Duration::from_secs(1));
+    assert_eq!(
+        v,
+        json!({"feedback": [], "waited_s": 1, "call_again": true})
+    );
 }
 
 #[tokio::test]
@@ -334,4 +433,94 @@ async fn session_tools_without_a_session_say_so() {
         .unwrap(),
     );
     assert_eq!(v["threads"], json!([]));
+}
+
+#[tokio::test]
+async fn a_comment_added_between_read_and_ack_is_still_delivered() {
+    let ts = TestServer::spawn().await;
+    let (proxy, base) = Proxy::start(&ts.base).await;
+    let (t, _sid) = session_tools_via(&ts, &base).await;
+    let aid = publish(&t).await;
+    let th = ts.thread(&aid, 1, "@agent first").await;
+    let tid = th["id"].as_str().unwrap().to_string();
+    let first = th["comments"][0]["id"].as_str().unwrap().to_string();
+    // The viewer's second comment lands after the tool's read, before its ack.
+    *proxy.before_ack.lock().unwrap() = Some((
+        format!("{}/api/artifacts/{aid}/threads/{tid}/comments", ts.base),
+        json!({"body": "and the footer"}),
+    ));
+    let (v, trailing) = blocks(
+        &t.comments_read(Parameters(CommentsReadArgs {
+            url_or_id: aid.clone(),
+            ..Default::default()
+        }))
+        .await
+        .unwrap(),
+    );
+    let bodies: Vec<&str> = v["threads"][0]["comments"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| c["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["@agent first"]);
+    assert_eq!(
+        *proxy.acks.lock().unwrap(),
+        vec![json!({"comment_ids": [first]})]
+    );
+    let fed: Vec<&str> = v["feedback"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        fed,
+        ["and the footer"],
+        "the unseen comment still reaches the agent"
+    );
+    assert!(trailing.is_some());
+}
+
+#[tokio::test]
+async fn a_failed_piggyback_fetch_leaves_the_result_a_success() {
+    let ts = TestServer::spawn().await;
+    let (proxy, base) = Proxy::start(&ts.base).await;
+    let (t, _sid) = session_tools_via(&ts, &base).await;
+    let aid = publish(&t).await;
+    ts.thread(&aid, 1, "@agent pending").await;
+    proxy.fail_feedback.store(true, Ordering::SeqCst);
+    let r = t.list(Parameters(ListArgs::default())).await.unwrap();
+    assert_eq!(r.content.len(), 1, "{r:?}");
+    let (v, _) = blocks(&r);
+    assert_eq!(v["feedback"], json!([]));
+    assert_eq!(v["artifacts"][0]["id"], aid);
+    proxy.fail_feedback.store(false, Ordering::SeqCst);
+    let (v, _) = blocks(&t.list(Parameters(ListArgs::default())).await.unwrap());
+    assert_eq!(v["feedback"][0]["body"], "@agent pending");
+}
+
+#[tokio::test]
+async fn pending_feedback_does_not_attach_to_an_error_result() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let aid = publish(&t).await;
+    ts.thread(&aid, 1, "@agent pending").await;
+    let bad = t
+        .comments_reply(Parameters(CommentsReplyArgs {
+            url_or_id: aid,
+            thread_id: "nope".into(),
+            text: "x".into(),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(bad.is_error, Some(true));
+    assert_eq!(bad.content.len(), 1);
+    let e: Value = serde_json::from_str(&bad.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(e["feedback"], json!([]));
+    let (v, _) = blocks(&t.list(Parameters(ListArgs::default())).await.unwrap());
+    assert_eq!(
+        v["feedback"][0]["body"], "@agent pending",
+        "still pending after the error"
+    );
 }

@@ -307,19 +307,46 @@ impl Store {
     /// resolved them). Rows not yet delivered are marked delivered by
     /// `piggyback`, the in-band tool path.
     pub fn acknowledge(&self, session_id: &str, thread_ids: &[String]) -> Result<Touched> {
+        self.acknowledge_where("thread_id", session_id, thread_ids)
+    }
+
+    /// Like [`Store::acknowledge`], for `session_id`'s rows on exactly the
+    /// comments `comment_ids`: a row for any other comment on the same thread
+    /// (one the session has not seen) stays pending.
+    pub fn acknowledge_comments(
+        &self,
+        session_id: &str,
+        comment_ids: &[String],
+    ) -> Result<Touched> {
+        self.acknowledge_where("comment_id", session_id, comment_ids)
+    }
+
+    /// Acknowledges `session_id`'s unacknowledged rows whose `column`
+    /// (`thread_id` or `comment_id`) is one of `ids`.
+    fn acknowledge_where(&self, column: &str, session_id: &str, ids: &[String]) -> Result<Touched> {
+        debug_assert!(matches!(column, "thread_id" | "comment_id"));
         let now = Store::now();
         let mut touched = Touched::default();
+        let update = format!(
+            "UPDATE feedback SET acknowledged_at = ?3, delivered_at = COALESCE(delivered_at, ?3),
+                delivery_tier = COALESCE(delivery_tier, 'piggyback'), last_sent_at = COALESCE(last_sent_at, ?3)
+             WHERE {column} = ?1 AND target_session_id = ?2 AND acknowledged_at IS NULL
+             RETURNING thread_id"
+        );
         self.with_tx(|tx| {
-            for tid in thread_ids {
-                let n = tx.execute(
-                    "UPDATE feedback SET acknowledged_at = ?3, delivered_at = COALESCE(delivered_at, ?3),
-                        delivery_tier = COALESCE(delivery_tier, 'piggyback'), last_sent_at = COALESCE(last_sent_at, ?3)
-                     WHERE thread_id = ?1 AND target_session_id = ?2 AND acknowledged_at IS NULL",
-                    params![tid, session_id, now],
-                )?;
-                if n > 0 {
-                    let aid: String = tx.query_row("SELECT artifact_id FROM threads WHERE id = ?1", params![tid], |r| r.get(0))?;
-                    touched.threads.insert((aid, tid.clone()));
+            for id in ids {
+                let tids: Vec<String> = {
+                    let mut stmt = tx.prepare(&update)?;
+                    stmt.query_map(params![id, session_id, now], |r| r.get(0))?
+                        .collect::<rusqlite::Result<Vec<_>>>()?
+                };
+                for tid in tids {
+                    let aid: String = tx.query_row(
+                        "SELECT artifact_id FROM threads WHERE id = ?1",
+                        params![tid],
+                        |r| r.get(0),
+                    )?;
+                    touched.threads.insert((aid, tid));
                 }
             }
             Ok(())
@@ -775,6 +802,61 @@ mod tests {
         assert_eq!(
             st.feedback_state(&tid, false).unwrap().unwrap().state,
             FeedbackPhase::Acknowledged
+        );
+    }
+
+    #[test]
+    fn acknowledging_comments_leaves_rows_for_later_comments_unacked() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let other = session(&st, "codex", "x");
+        let aid = artifact(&st, Some(&owner));
+        let tid = thread(&st, &aid, "first");
+        st.send_to_agent(&tid).unwrap();
+        let first = st.get_thread(&tid).unwrap().unwrap().comments[0].id.clone();
+        let later = st
+            .add_comment(
+                &tid,
+                NewComment {
+                    author_kind: AUTHOR_VIEWER,
+                    author_name: "Alex".into(),
+                    via_session_id: None,
+                    body: "later".into(),
+                },
+            )
+            .unwrap();
+        st.send_to_agent(&tid).unwrap();
+        assert!(
+            st.acknowledge_comments(&other, std::slice::from_ref(&first))
+                .unwrap()
+                .is_empty(),
+            "another session's acknowledgement touches nothing"
+        );
+        let touched = st
+            .acknowledge_comments(&owner, std::slice::from_ref(&first))
+            .unwrap();
+        assert!(
+            touched
+                .threads
+                .contains(&(aid.as_str().to_string(), tid.clone()))
+        );
+        let rows = st.feedback_rows(&tid).unwrap();
+        let acked = |cid: &str| {
+            rows.iter()
+                .find(|r| r.comment_id == cid)
+                .unwrap()
+                .acknowledged_at
+                .is_some()
+        };
+        assert!(acked(&first));
+        assert!(
+            !acked(&later.id),
+            "a comment the reader never saw stays pending"
+        );
+        let items = take(&st, &owner, Tier::Piggyback);
+        assert_eq!(
+            items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
+            ["later"]
         );
     }
 

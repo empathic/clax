@@ -248,7 +248,9 @@ Agent- and shell-facing JSON API under `/api`:
   (W; long-poll, returns undelivered feedback for that session and marks it
   delivered by the named tier when the response is produced; `resends=1`
   also includes resend-eligible rows), `POST /api/sessions/<sid>/feedback/ack`
-  (W; acknowledges the named threads).
+  (W; `{thread_ids?, comment_ids?}`: acknowledges every row on the named
+  threads, and only the named comments' rows, so a comment the caller has not
+  seen stays pending).
 - Docs (db capability): `GET/PUT/PATCH/DELETE /api/artifacts/<aid>/docs/<path>`,
   `GET /api/artifacts/<aid>/docs?collection=<c>&where=...&order_by=...&limit=&cursor=`,
   `POST /api/artifacts/<aid>/docs:batch`. Versions enforce `if_version`.

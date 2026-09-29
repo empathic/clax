@@ -594,7 +594,22 @@ impl DaemonClient {
         .await
     }
 
-    /// `POST /api/sessions/<sid>/feedback/ack`: `{acknowledged}`.
+    /// `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges
+    /// only the rows for those comments; `{acknowledged}`.
+    pub async fn ack_comments(&self, comment_ids: &[String]) -> Result<Value> {
+        let body = json!({"comment_ids": comment_ids});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/feedback/ack", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges
+    /// every row on those threads; `{acknowledged}`.
     pub async fn ack(&self, thread_ids: &[String]) -> Result<Value> {
         let body = json!({"thread_ids": thread_ids});
         self.json(|c| {

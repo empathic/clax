@@ -150,6 +150,61 @@ async fn ack_acknowledges_threads() {
 }
 
 #[tokio::test]
+async fn ack_by_comment_ids_leaves_later_comments_pending() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid, tid) = sent_thread(&ts).await;
+    ts.send_thread(&aid, &tid).await;
+    let view: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let first = view["thread"]["comments"][0]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let later = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            ts.base
+        ))
+        .json(&serde_json::json!({"body": "and the footer"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(later.status(), 201);
+    let ack = |body: Value| {
+        ts.authed(
+            ts.client
+                .post(format!("{}/api/sessions/{sid}/feedback/ack", ts.base)),
+        )
+        .json(&body)
+        .send()
+    };
+    let res = ack(serde_json::json!({"comment_ids": [first]}))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.json::<Value>().await.unwrap()["acknowledged"], 1);
+    let left = poll(&ts, &sid, "?tier=piggyback").await;
+    let bodies: Vec<&str> = left["feedback"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["body"].as_str().unwrap())
+        .collect();
+    assert_eq!(bodies, ["and the footer"]);
+    let res = ack(serde_json::json!({})).await.unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_json"
+    );
+}
+
+#[tokio::test]
 async fn feedback_route_errors() {
     let ts = TestServer::spawn().await;
     let (sid, _aid, _tid) = sent_thread(&ts).await;

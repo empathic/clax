@@ -149,6 +149,9 @@ pub struct StatusArgs {}
 pub const DEFAULT_WAIT_S: u64 = 50;
 /// Largest `timeout_s` of `wait_for_feedback`; larger values are capped.
 pub const MAX_WAIT_S: u64 = 600;
+/// Smallest `timeout_s` of `wait_for_feedback`; `0` is raised to it, so an
+/// agent calling it again in a loop always waits.
+pub const MIN_WAIT_S: u64 = 1;
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -199,7 +202,7 @@ pub struct WatchArgs {
 pub struct WaitArgs {
     /// Only comments on this artifact (URL or ID); any watched artifact when absent.
     pub url_or_id: Option<String>,
-    /// Seconds to wait, default 50, at most 600.
+    /// Seconds to wait, from 1 to 600 (default 50).
     pub timeout_s: Option<u64>,
 }
 
@@ -264,6 +267,22 @@ fn check_thread_id(tid: &str) -> Result<(), CallToolResult> {
     } else {
         Err(invalid(format!("'{tid}' is not a thread ID")))
     }
+}
+
+/// The IDs of the comments in `threads` (daemon thread views) that were sent
+/// to the agent.
+fn sent_comment_ids(threads: &[Value]) -> Vec<String> {
+    threads
+        .iter()
+        .filter(|t| t["sent_to_agent"] == true)
+        .flat_map(|t| {
+            t["comments"]
+                .as_array()
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+        })
+        .filter_map(|c| c["id"].as_str().map(str::to_string))
+        .collect()
 }
 
 /// A daemon thread view as `comments_read` returns it: the quote shortened,
@@ -844,13 +863,11 @@ impl ArtifaxTools {
             }
         };
         if self.session().is_some() {
-            let sent: Vec<String> = threads
-                .iter()
-                .filter(|t| t["sent_to_agent"] == true)
-                .filter_map(|t| t["id"].as_str().map(str::to_string))
-                .collect();
-            if !sent.is_empty()
-                && let Err(e) = self.client.ack(&sent).await
+            // By comment, not thread: a comment added after the read above
+            // was not seen, so it must stay pending.
+            let seen = sent_comment_ids(&threads);
+            if !seen.is_empty()
+                && let Err(e) = self.client.ack_comments(&seen).await
             {
                 tracing::debug!(error = %e, "acknowledging read threads failed");
             }
@@ -934,7 +951,10 @@ impl ArtifaxTools {
         if let Err(e) = self.require_session().await {
             return e;
         }
-        let secs = a.timeout_s.unwrap_or(DEFAULT_WAIT_S).min(MAX_WAIT_S);
+        let secs = a
+            .timeout_s
+            .unwrap_or(DEFAULT_WAIT_S)
+            .clamp(MIN_WAIT_S, MAX_WAIT_S);
         match self
             .client
             .feedback("wait", secs, artifact.as_deref())
@@ -1120,7 +1140,7 @@ impl ArtifaxTools {
     }
 
     #[tool(
-        description = "Wait up to `timeout_s` seconds (default 50, at most 600) for comments the person sends to you, on one artifact or any you watch. Returns them in `feedback` as soon as they arrive, or `call_again: true` when none did; call it again while the person wants live feedback."
+        description = "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch. Returns them in `feedback` as soon as they arrive, or `call_again: true` when none did; call it again while the person wants live feedback."
     )]
     pub async fn wait_for_feedback(
         &self,
