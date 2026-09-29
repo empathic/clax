@@ -88,7 +88,7 @@ Components:
   events, hosts MCP over HTTP, runs `sample()` calls. Started on demand by
   any CLI or shim invocation that finds no live daemon; stays up until
   `artifax stop` or reboot.
-- **Shim** (`artifax mcp --agent <claude|codex|pi>`). A stdio MCP server the
+- **Shim** (`artifax mcp --agent <claude|codex>`). A stdio MCP server the
   harness spawns per session. On start it ensures the daemon is up,
   registers a session record, and proxies every tool call to the daemon
   over HTTP with the token. It appends undelivered feedback to tool results
@@ -635,10 +635,13 @@ as `mcp__artifax__<name>`, and the Pi extension registers them as
 `artifax_<name>`.
 
 Artifacts: `publish` (file_path or html, files map, title, description,
-icon, capabilities, url to update, if_version, label), `read` (url or id,
-optional path), `list` (limit, scope mine|all, files scope), `delete`,
-`open` (opens the browser on the daemon host), `pin`, `unpin`,
-`asset_upload` (file_path or file_paths).
+icon, capabilities, url to update, if_version, label; creating an artifact
+needs a title, which the tool takes from the page's first `<title>` when
+`title` is omitted and refuses with `invalid_args` when there is neither),
+`read` (url or id, optional path), `list` (limit, scope mine|all, files
+scope), `delete`, `open` (opens the browser on the machine running the tool
+and reports `opened` from the opener's exit status within 1.5 s), `pin`,
+`unpin`, `asset_upload` (file_path or file_paths).
 
 Comments: `comments_read` (url, thread_id, cursor), `comments_reply` (url,
 thread_id, text), `comments_resolve` (url, thread_id), `watch` (url, on,
@@ -655,8 +658,10 @@ Every tool result is JSON text plus, when present, a trailing
 results are always the daemon's browser URL so they can be pasted to a
 person.
 
-The daemon also exposes the same operations as `artifax <cmd> --json` for
-harnesses without MCP and for scripts.
+The CLI exposes the same operations as `artifax <cmd> --json` for harnesses
+without MCP and for scripts, including `artifax read` and `artifax asset
+upload`, whose `--json` output is the `read` and `asset_upload` tool's result
+object. The other commands print their own JSON shape.
 
 ## 13. Plugins
 
@@ -702,7 +707,8 @@ must point at `./plugins/<plugin-name>`.
 - `hooks/hooks.json` in Claude Code's format: `SessionStart` →
   `bash "${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex
   session-start`, `SessionEnd` → the same with `session-end` (Codex caps
-  `SessionEnd` at 3 s). Hooks run in a shell with `PLUGIN_ROOT` exported.
+  `SessionEnd` at 3 s, so `session-end` gives up after 2.5 s). Hooks run in a
+  shell with `PLUGIN_ROOT` exported.
 - `skills/artifax/SKILL.md`: same content as the Claude skill, with Codex
   tool naming (`mcp__artifax__<tool>`).
 - `scripts/ensure-artifax.sh`: a copy of the Claude plugin's installer.
@@ -730,9 +736,10 @@ plugin:
   with `pi -e <path>`. It needs the `artifax` CLI on `PATH` or `ARTIFAX_BIN`.
 - `src/artifax.ts` registers `artifax_<tool>` for the nine tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
-  identical to the MCP tools except one: `status` compares the daemon's
-  version with the Pi package's own version, so it reports `daemon_version`
-  on every call. The tools call the daemon's REST API over
+  identical to the MCP tools. The package carries the Artifax version, so
+  `status` compares the daemon's version with the Artifax version and
+  reports `daemon_version` only on real skew. The tools call the daemon's
+  REST API over
   `node:http`, finding the daemon through `daemon.json` and starting it with
   `artifax serve` when none is running. A tool error is thrown, so Pi marks the
   result `isError`, with the JSON error body intact as its text.
@@ -741,7 +748,9 @@ plugin:
   within a 3 s budget (the first tool call registers when that does not
   finish); on `session_shutdown` it ends the session with a 3 s deadline. It
   sends no heartbeat: a row left behind when Pi exits uncleanly lapses through
-  the daemon's reaper.
+  the daemon's reaper. A tool call whose session was ended under it
+  (`unknown_session`) registers a new session and retries once, as the shim
+  does.
 - In phase 3 the extension appends undelivered feedback to its own tool
   results (tier 1), as the shim does.
 - The `/artifax open [id] | list | status` command.
@@ -773,7 +782,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - Default bind `127.0.0.1`. `artifax serve --bind 0.0.0.0` or
   `config.toml` opts into LAN. The gallery header shows the LAN URL when
   bound.
-- Write endpoints need the bearer token from `daemon.json` (0600). Local
+- Write endpoints, and the session reads (`GET /api/sessions` and
+  `GET /api/sessions/<id>`, whose rows carry working directories and process
+  IDs), need the bearer token from `daemon.json` (0600). Local
   shims, hooks, and the CLI read it; the shell on localhost fetches it from
   `/api/token`, which only answers to loopback connections and also requires
   a literal local `Host` header (localhost, 127.0.0.1, [::1]) to defeat DNS
