@@ -52,8 +52,21 @@ describe("bridge", () => {
     expect(readMeta(null).file).toBe("index.html");
   });
 
+  it("a second bridge in the same document does nothing", async () => {
+    const installed = window.claude;
+    const meta = window.__artifax;
+    vi.resetModules();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await import("../src/bridge");
+    expect(warn).not.toHaveBeenCalled();
+    expect(window.claude).toBe(installed);
+    expect(window.__artifax).toBe(meta);
+  });
+
   it("logs once and does not throw when window.claude cannot be redefined", async () => {
     const installed = window.claude;
+    // Without the first bridge's marker the second load runs in full.
+    delete (window as { __artifax?: unknown }).__artifax;
     vi.resetModules();
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(import("../src/bridge")).resolves.toBeDefined();

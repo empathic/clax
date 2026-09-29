@@ -36,6 +36,17 @@ describe("CommentMode", () => {
     expect(outline().style.display).toBe("block");
   });
 
+  it("moves an overlay created before <body> to the end of the document when it outlines", async () => {
+    const root = document.documentElement;
+    const overlay = document.querySelector("artifax-overlay")!;
+    root.insertBefore(overlay, document.body);
+    mode.set(true);
+    fire(document.querySelector("h2")!, "mousemove");
+    await nextFrame();
+    expect(root.lastElementChild).toBe(overlay);
+    expect(outline().style.display).toBe("block");
+  });
+
   it("targets the line under the pointer in an oversized preformatted element, and picks it as a range", async () => {
     document.body.innerHTML = `<main><pre style="white-space: pre">alpha one\nbeta two\ngamma three</pre></main>`;
     const pre = document.querySelector("pre")!;

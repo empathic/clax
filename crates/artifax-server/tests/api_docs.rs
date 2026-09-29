@@ -894,3 +894,28 @@ async fn document_404s_name_the_path_and_artifact_404s_do_not() {
         assert_eq!(send(r).await, (404, artifact_404.clone()));
     }
 }
+
+#[tokio::test]
+async fn rules_changed_by_patch_apply_to_the_next_call() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, json!({"db": {}})).await;
+    let named = ts.viewer(Some("Sam")).await;
+    let put = || {
+        req(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{aid}/docs/notes/n1"),
+            &Who::Viewer(&named),
+        )
+        .json(&json!({"data": {"n": 1}, "lww": true}))
+    };
+    assert_eq!(send(put()).await.0, 200);
+    let res = ts
+        .authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+        .json(&json!({"capabilities": {"db": {"rules": [{"path": "", "write": "admin"}]}}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(send(put()).await.0, 404);
+}

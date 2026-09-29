@@ -86,6 +86,10 @@ export class CommentMode {
 
   /** Outlines `t`, in colours that stand out on the background behind it. */
   private place(t: Element | Range): void {
+    // Created from `<head>`, the overlay precedes `<body>`; it moves last so it
+    // stacks above page content at the same z-index.
+    const root = this.doc.documentElement;
+    if (root.lastElementChild !== this.host) root.appendChild(this.host);
     const el = t instanceof Element ? t : t.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? (t.commonAncestorContainer as Element) : t.commonAncestorContainer.parentElement;
     const c = outlineColors(el ? backgroundBehind(el) : "#ffffff");
     if (c.border !== this.border) {

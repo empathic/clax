@@ -273,10 +273,12 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     assert_eq!(res.headers()["content-security-policy"], csp);
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_artifax/bridge.js").count(), 1, "{html}");
-    assert!(html.starts_with("<!doctype html><html><head><title>About</title>"));
+    // The bridge goes first in the page's <head>.
     let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version());
     assert!(
-        html.contains(&format!("<body>{tag}<h2>About</h2>")),
+        html.starts_with(&format!(
+            "<!doctype html><html><head>{tag}<title>About</title>"
+        )),
         "{html}"
     );
 
@@ -286,11 +288,15 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .text()
         .await
         .unwrap();
+    // A fragment gets the skeleton, with the bridge first in its <head>.
+    let tag = bridge_tag_for(id, 1, "0.2.61", "docs/part.htm", &bridge_version());
     assert!(
-        part.starts_with("<!doctype html><html><head>"),
-        "a fragment gets the skeleton"
+        part.starts_with(&format!(
+            "<!doctype html><html><head>{tag}<meta charset=utf8>"
+        )),
+        "{part}"
     );
-    assert!(part.contains("data-file=\"docs/part.htm\"></script><p>part</p>"));
+    assert!(part.contains("<body><p>part</p></body>"), "{part}");
 
     for (path, ct, body) in [
         ("a.css", "text/css", "p{}"),

@@ -186,7 +186,8 @@ pub async fn get(
     ))
 }
 
-/// Capabilities are set through publish until the runtime bridge honours them.
+/// Metadata edits. `capabilities` replaces the whole declaration (omitted
+/// keeps, `{}` clears) and is validated like a publish's.
 #[derive(Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct PatchBody {
@@ -194,6 +195,7 @@ pub struct PatchBody {
     description: Option<String>,
     icon: Option<String>,
     pinned: Option<bool>,
+    capabilities: Option<Value>,
 }
 
 pub async fn patch(
@@ -204,6 +206,9 @@ pub async fn patch(
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
     let b = body(req)?;
+    if let Some(c) = &b.capabilities {
+        artifax_core::capabilities::validate(c)?;
+    }
     let artifact = s
         .store_call(move |st| {
             st.update_meta(
@@ -213,6 +218,7 @@ pub async fn patch(
                     description: b.description,
                     icon: b.icon,
                     pinned: b.pinned,
+                    capabilities: b.capabilities,
                 },
             )
         })

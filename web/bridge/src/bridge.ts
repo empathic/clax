@@ -17,6 +17,9 @@
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
  * on every `hashchange` it reports the page's fragment (`artifax:hash`).
+ * The daemon serves it first in `<head>`, once per document (a second copy
+ * stands down), so `window.claude` exists before any page script; shell
+ * orders that read the page's content wait until the document has parsed.
  * While the page holds a `comments.customAnchors` registration, the bridge's
  * own comment mode, anchor resolution, and scroll-to stand down: the page
  * places the pins, and its placements are re-sent on scroll and resize.
@@ -30,9 +33,13 @@ import { hashFor, helloFor, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
+import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
 (() => {
+  // One bridge per document: a copy the page carried in (a republished served
+  // DOM) or a second injection stands down.
+  if ((window as { __artifax?: unknown }).__artifax) return;
   const meta = readMeta(document.currentScript as HTMLScriptElement | null);
   (window as any).__artifax = meta;
   commentsContext.version = meta.version;
@@ -126,13 +133,18 @@ import { makeUse } from "./use";
       case "artifax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
       case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
       case "artifax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
-      case "artifax:resolve-anchors": if (commentsContext.live) break; anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
-      case "artifax:scroll-to": {
+      case "artifax:resolve-anchors": {
         if (commentsContext.live) break;
-        const r = resolveAnchor(document, m.anchor, undefined, meta.file);
-        if (r) { r.element.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => mode.flash(r.range ?? r.element), 350); }
+        anchors = m.anchors;
+        const requestId = m.requestId;
+        whenParsed(document, () => { if (anchors !== m.anchors) return; resolutions?.reset(); resolveAll(requestId); });
         break;
       }
+      case "artifax:scroll-to": whenParsed(document, () => {
+        if (commentsContext.live) return;
+        const r = resolveAnchor(document, m.anchor, undefined, meta.file);
+        if (r) { r.element.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => mode.flash(r.range ?? r.element), 350); }
+      }); break;
     }
   });
   post(helloFor(meta));

@@ -14,6 +14,8 @@ pub struct MetaPatch {
     pub description: Option<String>,
     pub icon: Option<String>,
     pub pinned: Option<bool>,
+    /// A full-set capabilities declaration that replaces the stored one.
+    pub capabilities: Option<serde_json::Value>,
 }
 
 /// A stored JSON column that does not parse, as found by [`Store::corrupt_rows`].
@@ -125,8 +127,10 @@ impl Store {
         )
     }
 
-    /// Overwrites each field that is `Some` in `patch` and leaves the others
-    /// untouched; a field therefore cannot be cleared through this call. Does not
+    /// Overwrites each field that is `Some` in `patch` (a `capabilities` value
+    /// replaces the whole declaration; `{}` clears it) and leaves the others
+    /// untouched; any other field therefore cannot be cleared through this
+    /// call. The caller validates `capabilities`. Does not
     /// bump `updated_at` (metadata edits are not new content).
     ///
     /// # Errors
@@ -138,14 +142,16 @@ impl Store {
                     title = COALESCE(?2, title),
                     description = COALESCE(?3, description),
                     icon = COALESCE(?4, icon),
-                    pinned = COALESCE(?5, pinned)
+                    pinned = COALESCE(?5, pinned),
+                    capabilities_json = COALESCE(?6, capabilities_json)
                  WHERE id = ?1 AND deleted_at IS NULL",
                 params![
                     id.as_str(),
                     patch.title,
                     patch.description,
                     patch.icon,
-                    patch.pinned.map(|b| b as i64)
+                    patch.pinned.map(|b| b as i64),
+                    patch.capabilities.as_ref().map(|c| c.to_string())
                 ],
             )?;
             if n == 0 {
