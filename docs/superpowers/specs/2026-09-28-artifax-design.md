@@ -912,8 +912,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   version's content summary so the agent can merge, as claude.ai does.
 - Anchor not found: thread marked detached, never dropped.
 - Clip failure: thread saved without a clip; the payload says so.
-- Hook timeouts: every hook finishes within 5 s or exits 0 silently, and
-  the daemon call inside uses a 3 s timeout.
+- Hook timeouts: every hook exits 0, silently, when its budget runs out:
+  SessionStart 4 s, SessionEnd 2.5 s (Codex kills it at 3 s), Stop 8 s
+  (inside the plugins' 10 s hook timeout), prompt submit 4 s. Each daemon
+  call inside uses a 3 s timeout (2 s in SessionEnd).
 - `wait_for_feedback` past the harness's limit: returns early with a
   "call again" result rather than erroring.
 - `codex queue` failure: handled per §10; never retried in a loop, never
