@@ -14,6 +14,8 @@ use tokio::sync::{oneshot, watch};
 
 pub const DEFAULT_PORT: u16 = 7480;
 pub const PORT_ATTEMPTS: u16 = 21;
+/// A session unseen for this long, with no live process, is ended by the reaper.
+const SESSION_IDLE: Duration = Duration::from_secs(300);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Discovery record written to `daemon.json` (mode 0600) once at daemon startup;
@@ -134,6 +136,8 @@ pub struct ServeConfig {
     pub version: &'static str,
     /// How often the stale watcher checks `daemon.json` (30 s in production).
     pub stale_check_interval: std::time::Duration,
+    /// How often idle sessions with dead processes are ended (60 s in production).
+    pub reap_interval: std::time::Duration,
 }
 
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
@@ -163,6 +167,7 @@ pub async fn serve(
     let listener = bind_first_free(cfg.bind, cfg.port).await?;
     let port = listener.local_addr()?.port();
     let store = Arc::new(Store::open(&cfg.home)?);
+    let reaper_store = store.clone();
     let token = generate_token();
     let started_at = Store::now();
     let info = DaemonInfo {
@@ -224,6 +229,23 @@ pub async fn serve(
         }
     });
 
+    let reap_interval = cfg.reap_interval;
+    let reaper = tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(reap_interval).await;
+            let store = reaper_store.clone();
+            let reaped =
+                tokio::task::spawn_blocking(move || store.reap_sessions(SESSION_IDLE, &pid_alive))
+                    .await;
+            match reaped {
+                Ok(Ok(0)) => {}
+                Ok(Ok(n)) => tracing::info!(count = n, "ended idle sessions"),
+                Ok(Err(e)) => tracing::warn!(error = %e, "session reaper failed"),
+                Err(e) => tracing::warn!(error = %e, "session reaper task failed"),
+            }
+        }
+    });
+
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
@@ -260,6 +282,7 @@ pub async fn serve(
         res = server => res?,
         _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
     }
+    reaper.abort();
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }

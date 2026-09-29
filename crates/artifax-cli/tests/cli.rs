@@ -382,7 +382,7 @@ fn doctor_names_corrupt_rows_and_still_checks_good_artifacts() {
             .unwrap(),
         )
         .unwrap();
-        store.create_artifact(p).unwrap().0.id
+        store.create_artifact(p, None).unwrap().0.id
     };
     let good = make("good");
     let bad = make("bad");
@@ -429,7 +429,7 @@ fn make_artifact(store: &artifax_core::Store, title: &str) -> artifax_core::Arti
         .unwrap(),
     )
     .unwrap();
-    artifax_core::ArtifactId::parse(&store.create_artifact(p).unwrap().0.id).unwrap()
+    artifax_core::ArtifactId::parse(&store.create_artifact(p, None).unwrap().0.id).unwrap()
 }
 
 fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {

@@ -130,6 +130,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         port: busy_port,
         version: "test",
         stale_check_interval: std::time::Duration::from_secs(30),
+        reap_interval: std::time::Duration::from_secs(60),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -171,6 +172,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         port: 0,
         version: "test",
         stale_check_interval: std::time::Duration::from_secs(30),
+        reap_interval: std::time::Duration::from_secs(60),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -208,6 +210,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         port: 0,
         version: "test",
         stale_check_interval: std::time::Duration::from_millis(100),
+        reap_interval: std::time::Duration::from_secs(60),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -217,4 +220,83 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         .expect("serve exits once daemon.json stays missing")
         .unwrap()
         .unwrap();
+}
+
+#[tokio::test]
+async fn reaper_ends_idle_sessions_whose_process_is_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = Home::at(dir.path().join("ax"));
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let cfg = ServeConfig {
+        home: home.clone(),
+        bind: IpAddr::V4(Ipv4Addr::LOCALHOST),
+        port: 0,
+        version: "test",
+        stale_check_interval: std::time::Duration::from_secs(30),
+        reap_interval: std::time::Duration::from_millis(100),
+    };
+    let handle = tokio::spawn(serve(cfg, Some(tx)));
+    let info = rx.await.unwrap();
+    let client = reqwest::Client::new();
+    let base = format!("http://127.0.0.1:{}", info.port);
+    let register = |pid: u32| {
+        let client = client.clone();
+        let base = base.clone();
+        let token = info.token.clone();
+        async move {
+            let res = client
+                .post(format!("{base}/api/sessions"))
+                .bearer_auth(token)
+                .json(&serde_json::json!({"harness": "codex", "cwd": "/", "pid": pid}))
+                .send()
+                .await
+                .unwrap();
+            res.json::<serde_json::Value>().await.unwrap()["session"]["id"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+    };
+    // Beyond i32::MAX, so never a live process.
+    let dead = register(4_000_000_000).await;
+    let alive = register(std::process::id()).await;
+    let recent = register(4_000_000_001).await;
+    // Age two of the rows past the idle limit through a second connection.
+    let conn = rusqlite::Connection::open(home.db_path()).unwrap();
+    for id in [&dead, &alive] {
+        conn.execute(
+            "UPDATE sessions SET last_seen_at = '2000-01-01T00:00:00.000Z' WHERE id = ?1",
+            [id],
+        )
+        .unwrap();
+    }
+    let ended = |id: String| {
+        let client = client.clone();
+        let url = format!("{base}/api/sessions/{id}");
+        async move {
+            client
+                .get(url)
+                .send()
+                .await
+                .unwrap()
+                .json::<serde_json::Value>()
+                .await
+                .unwrap()["session"]["ended_at"]
+                .is_string()
+        }
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !ended(dead.clone()).await {
+        assert!(std::time::Instant::now() < deadline, "reaper never ran");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(!ended(alive).await, "a live process keeps its session");
+    assert!(!ended(recent).await, "a recently seen session is kept");
+    client
+        .post(format!("{base}/api/admin/shutdown"))
+        .bearer_auth(&info.token)
+        .send()
+        .await
+        .unwrap();
+    handle.await.unwrap().unwrap();
 }

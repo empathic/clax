@@ -44,4 +44,18 @@ pub struct Asset {
     pub created_at: String,
 }
 
+/// One harness conversation (Claude Code, Codex, Pi) that publishes artifacts.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Session {
+    pub id: String,
+    pub harness: String,
+    pub harness_session_id: Option<String>,
+    pub cwd: String,
+    pub pid: Option<u32>,
+    pub parent_pid: Option<u32>,
+    pub started_at: String,
+    pub last_seen_at: String,
+    pub ended_at: Option<String>,
+}
+
 pub const CONTRACT_VERSION: &str = "0.2.61";

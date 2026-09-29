@@ -3,6 +3,7 @@ pub mod assets;
 pub mod content;
 pub mod events;
 pub mod health;
+pub mod sessions;
 pub mod shell;
 pub mod token;
 
@@ -54,6 +55,15 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/artifacts", get(artifacts::list))
+        .route(
+            "/api/sessions",
+            get(sessions::list).post(sessions::register),
+        )
+        .route("/api/sessions/join", post(sessions::join))
+        .route(
+            "/api/sessions/{id}",
+            get(sessions::get).patch(sessions::patch),
+        )
         .route(
             "/api/artifacts/{aid}",
             get(artifacts::get)
@@ -145,7 +155,7 @@ async fn test_slow_publish(
             }))
             .expect("valid publish request"),
         )?;
-        let (artifact, version) = st.create_artifact(p)?;
+        let (artifact, version) = st.create_artifact(p, None)?;
         events.publish(artifax_core::Event::Version {
             artifact_id: artifact.id,
             n: version.n,

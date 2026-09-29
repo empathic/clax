@@ -34,4 +34,18 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE INDEX assets_by_artifact ON assets(artifact_id);",
+    // 2: sessions
+    "CREATE TABLE sessions (
+        id TEXT PRIMARY KEY,
+        harness TEXT NOT NULL,
+        harness_session_id TEXT,
+        cwd TEXT NOT NULL,
+        pid INTEGER,
+        parent_pid INTEGER,
+        started_at TEXT NOT NULL,
+        last_seen_at TEXT NOT NULL,
+        ended_at TEXT
+    );
+    CREATE UNIQUE INDEX sessions_harness_id ON sessions(harness, harness_session_id)
+        WHERE harness_session_id IS NOT NULL AND ended_at IS NULL;",
 ];

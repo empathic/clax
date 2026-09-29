@@ -67,6 +67,22 @@ describe("Gallery", () => {
     expect(root.textContent).toContain("published from the command line");
   });
 
+  it("labels agent-published cards with the harness and a green dot only while the session is live", async () => {
+    const owned = (id: string, live: boolean) => ({ ...ARTIFACTS[1], id, owner_session_id: "s" + id, owner_live: live, owner_harness: "claude-code" });
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [owned("live00000000", true), owned("gone00000000", false), ARTIFACTS[1]] }));
+      return new Response("{}", { status: 404 });
+    }));
+    const root = await mount();
+    const cards = root.querySelectorAll("a.card");
+    expect(cards[0].querySelector(".publisher")?.textContent).toContain("published by claude-code session");
+    expect(cards[0].querySelector(".live-dot")).not.toBeNull();
+    expect(cards[1].querySelector(".publisher")?.textContent).toContain("published by claude-code session");
+    expect(cards[1].querySelector(".live-dot")).toBeNull();
+    expect(cards[2].querySelector(".publisher")).toBeNull();
+    expect(cards[2].textContent).toContain("published from the command line");
+  });
+
   it("shows an empty state", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ artifacts: [] }))));
     const root = await mount();

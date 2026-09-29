@@ -5,6 +5,7 @@
 pub mod artifacts;
 pub mod assets;
 pub mod migrations;
+pub mod sessions;
 
 use crate::{Home, Result};
 use rusqlite::Connection;

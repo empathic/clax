@@ -15,3 +15,4 @@ pub use home::Home;
 pub use ids::{ArtifactId, new_ulid};
 pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
+pub use store::sessions::RegisterSession;

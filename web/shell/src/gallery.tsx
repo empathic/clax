@@ -41,7 +41,12 @@ export default function Gallery() {
                   <div class="meta">
                     <span>v{a.current_version}</span>
                     <span>{relativeTime(a.updated_at)}</span>
-                    <span>{a.owner_session_id ? "published by an agent" : "published from the command line"}</span>
+                    {a.owner_session_id ? (
+                      <span class="publisher">
+                        {a.owner_live && <span class="live-dot" role="img" aria-label="session is live" title="Session is live" />}
+                        published by {a.owner_harness ? `${a.owner_harness} session` : "an agent session"}
+                      </span>
+                    ) : <span>published from the command line</span>}
                   </div>
                 </a>
                 {token && (

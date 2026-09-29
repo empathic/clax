@@ -454,8 +454,13 @@ const SELECT_VERSION: &str =
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
     /// nothing is carried forward. The artifact is invisible until version 1 is
-    /// recorded.
-    pub fn create_artifact(&self, p: ValidatedPublish) -> Result<(Artifact, Version)> {
+    /// recorded. `session_id` becomes the artifact's `owner_session_id` and the
+    /// version's `session_id`.
+    pub fn create_artifact(
+        &self,
+        p: ValidatedPublish,
+        session_id: Option<&str>,
+    ) -> Result<(Artifact, Version)> {
         let id = ArtifactId::generate();
         let now = Store::now();
         let title = p
@@ -469,13 +474,13 @@ impl Store {
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
-                    pinned, capabilities_json, contract_version)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7)",
-                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION],
+                    pinned, capabilities_json, contract_version, owner_session_id)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?5, 0, 0, ?6, ?7, ?8)",
+                params![id.as_str(), title, p.description, p.icon, now, caps.to_string(), CONTRACT_VERSION, session_id],
             )?;
             Ok(())
         })?;
-        self.write_version(&id, 0, &p, &BTreeMap::new())
+        self.write_version(&id, 0, &p, &BTreeMap::new(), session_id)
     }
 
     /// Publishes the next version of an existing artifact. `p.if_version` must
@@ -483,11 +488,12 @@ impl Store {
     /// when absent). Files of the previous version not named in `p.files` are
     /// carried forward; `Remove` entries drop a path; `index.html` is always
     /// taken from `p`. `Corrupt` when the artifact or its current version has a
-    /// malformed JSON column.
+    /// malformed JSON column. `session_id` is recorded on the new version.
     pub fn publish_version(
         &self,
         id: &ArtifactId,
         p: ValidatedPublish,
+        session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
         let current = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
         let Some(expected) = p.if_version else {
@@ -505,7 +511,7 @@ impl Store {
             .get_version(id, current.current_version)?
             .map(|v| v.files)
             .unwrap_or_default();
-        self.write_version(id, current.current_version, &p, &prev)
+        self.write_version(id, current.current_version, &p, &prev, session_id)
     }
 
     /// Stages the files of version `expected + 1` in a private directory,
@@ -519,6 +525,7 @@ impl Store {
         expected: u32,
         p: &ValidatedPublish,
         prev: &BTreeMap<String, FileMeta>,
+        session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
         let n = expected + 1;
         let carried: Vec<&String> = prev
@@ -581,8 +588,8 @@ impl Store {
             }
             tx.execute(
                 "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json)
-                 VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
-                params![id.as_str(), n, p.label, now, files_json],
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![id.as_str(), n, p.label, now, session_id, files_json],
             )?;
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
@@ -740,7 +747,7 @@ mod tests {
         let (_d, store) = store();
         let mk = || {
             let (a, _) = store
-                .create_artifact(publish(&[("index.html", Some("v1"))], None))
+                .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
                 .unwrap();
             crate::ArtifactId::parse(&a.id).unwrap()
         };
@@ -748,7 +755,11 @@ mod tests {
         let bad = mk();
         let old_bad = mk();
         store
-            .publish_version(&old_bad, publish(&[("index.html", Some("v2"))], Some(1)))
+            .publish_version(
+                &old_bad,
+                publish(&[("index.html", Some("v2"))], Some(1)),
+                None,
+            )
             .unwrap();
         store
             .with_conn(|c| {
@@ -808,7 +819,7 @@ mod tests {
         ));
         assert!(matches!(
             store
-                .publish_version(&bad, publish(&[("index.html", Some("v2"))], Some(1)))
+                .publish_version(&bad, publish(&[("index.html", Some("v2"))], Some(1)), None)
                 .unwrap_err(),
             crate::CoreError::Corrupt { .. }
         ));
@@ -896,18 +907,18 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         let store = Store::open(&home).unwrap();
 
-        // After first open, user_version should be 1
+        // After first open, user_version is the number of migrations
         let version: u32 = store
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version, 1);
+        assert_eq!(version, 2);
 
         // Opening a second time should not re-run migrations or error
         let store2 = Store::open(&home).unwrap();
         let version2: u32 = store2
             .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
-        assert_eq!(version2, 1);
+        assert_eq!(version2, 2);
     }
 
     use crate::publish::{Encoding, FileInput, PublishRequest, validate};
@@ -946,10 +957,13 @@ mod tests {
     fn create_writes_version_1_and_files() {
         let (_d, store) = store();
         let (a, v) = store
-            .create_artifact(publish(
-                &[("index.html", Some("<p>hi")), ("app.js", Some("1"))],
+            .create_artifact(
+                publish(
+                    &[("index.html", Some("<p>hi")), ("app.js", Some("1"))],
+                    None,
+                ),
                 None,
-            ))
+            )
             .unwrap();
         assert_eq!(a.current_version, 1);
         assert_eq!(v.n, 1);
@@ -974,14 +988,17 @@ mod tests {
     fn publish_version_carries_files_forward_and_honours_removals() {
         let (_d, store) = store();
         let (a, _) = store
-            .create_artifact(publish(
-                &[
-                    ("index.html", Some("v1")),
-                    ("a.js", Some("a")),
-                    ("b.css", Some("b")),
-                ],
+            .create_artifact(
+                publish(
+                    &[
+                        ("index.html", Some("v1")),
+                        ("a.js", Some("a")),
+                        ("b.css", Some("b")),
+                    ],
+                    None,
+                ),
                 None,
-            ))
+            )
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let (a2, v2) = store
@@ -995,6 +1012,7 @@ mod tests {
                     ],
                     Some(1),
                 ),
+                None,
             )
             .unwrap();
         assert_eq!(a2.current_version, 2);
@@ -1024,15 +1042,15 @@ mod tests {
     fn stale_if_version_conflicts_and_writes_nothing() {
         let (_d, store) = store();
         let (a, _) = store
-            .create_artifact(publish(&[("index.html", Some("v1"))], None))
+            .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let e = store
-            .publish_version(&id, publish(&[("index.html", Some("v2"))], Some(7)))
+            .publish_version(&id, publish(&[("index.html", Some("v2"))], Some(7)), None)
             .unwrap_err();
         assert!(matches!(e, crate::CoreError::Conflict { current: 1 }));
         let e = store
-            .publish_version(&id, publish(&[("index.html", Some("v2"))], None))
+            .publish_version(&id, publish(&[("index.html", Some("v2"))], None), None)
             .unwrap_err();
         assert!(matches!(
             e,
@@ -1068,10 +1086,13 @@ mod tests {
         let (_d, store) = store();
         for (a, b) in [("a", "a/b.js"), ("App.js", "app.js")] {
             let e = store
-                .create_artifact(publish(
-                    &[("index.html", Some("x")), (a, Some("1")), (b, Some("2"))],
+                .create_artifact(
+                    publish(
+                        &[("index.html", Some("x")), (a, Some("1")), (b, Some("2"))],
+                        None,
+                    ),
                     None,
-                ))
+                )
                 .unwrap_err();
             assert!(matches!(
                 e,
@@ -1088,10 +1109,10 @@ mod tests {
         assert_eq!(rows, 0, "a rejected create leaves no artifact row");
 
         let (a, _) = store
-            .create_artifact(publish(
-                &[("index.html", Some("v1")), ("a", Some("1"))],
+            .create_artifact(
+                publish(&[("index.html", Some("v1")), ("a", Some("1"))], None),
                 None,
-            ))
+            )
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let e = store
@@ -1101,6 +1122,7 @@ mod tests {
                     &[("index.html", Some("v2")), ("a/b.js", Some("2"))],
                     Some(1),
                 ),
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -1114,6 +1136,7 @@ mod tests {
             .publish_version(
                 &id,
                 publish(&[("index.html", Some("v2")), ("A", Some("2"))], Some(1)),
+                None,
             )
             .unwrap_err();
         assert!(matches!(
@@ -1132,7 +1155,7 @@ mod tests {
         let home = Home::at(dir.path().join("ax"));
         let store = std::sync::Arc::new(Store::open(&home).unwrap());
         let (a, _) = store
-            .create_artifact(publish(&[("index.html", Some("v1"))], None))
+            .create_artifact(publish(&[("index.html", Some("v1"))], None), None)
             .unwrap();
         let id = crate::ArtifactId::parse(&a.id).unwrap();
         let handles: Vec<_> = ["left", "right"]
@@ -1141,8 +1164,11 @@ mod tests {
                 let store = store.clone();
                 let id = id.clone();
                 std::thread::spawn(move || {
-                    let r =
-                        store.publish_version(&id, publish(&[("index.html", Some(body))], Some(1)));
+                    let r = store.publish_version(
+                        &id,
+                        publish(&[("index.html", Some(body))], Some(1)),
+                        None,
+                    );
                     (body, r)
                 })
             })
@@ -1178,7 +1204,7 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        crate::ArtifactId::parse(&store.create_artifact(p).unwrap().0.id).unwrap()
+        crate::ArtifactId::parse(&store.create_artifact(p, None).unwrap().0.id).unwrap()
     }
 
     #[test]

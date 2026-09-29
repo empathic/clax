@@ -26,6 +26,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             home: home.clone(),
             bind: a.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             stale_check_interval: std::time::Duration::from_secs(30),
+            reap_interval: std::time::Duration::from_secs(60),
             port: cli.port,
             version: env!("CARGO_PKG_VERSION"),
         };

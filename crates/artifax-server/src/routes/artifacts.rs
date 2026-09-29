@@ -4,12 +4,12 @@ use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::state::AppState;
 use artifax_core::publish::{PublishRequest, validate};
-use artifax_core::{ArtifactId, CoreError, Event, MetaPatch};
+use artifax_core::{ArtifactId, CoreError, Event, MetaPatch, Store};
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -22,7 +22,7 @@ pub fn parse_id(raw: &str) -> Result<ArtifactId, ApiError> {
     ArtifactId::parse(raw).map_err(ApiError::from)
 }
 
-fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
+pub(crate) fn body<T>(r: Result<Json<T>, JsonRejection>) -> Result<T, ApiError> {
     r.map(|Json(v)| v).map_err(|e| {
         if e.status() == StatusCode::PAYLOAD_TOO_LARGE {
             ApiError::new(
@@ -41,22 +41,78 @@ pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> 
         .map_err(|e| ApiError::bad_request("invalid_path_param", e.body_text()))
 }
 
+/// Header naming the session a publish is attributed to.
+pub const SESSION_HEADER: &str = "x-artifax-session";
+
+/// The session named by `X-Artifax-Session`, checked to exist and be live.
+///
+/// # Errors
+/// `unknown_session` when the header is not valid text, or names a session that
+/// does not exist or has ended.
+fn publishing_session(st: &Store, header: &Option<String>) -> Result<Option<String>, CoreError> {
+    let Some(id) = header else {
+        return Ok(None);
+    };
+    match st.get_session(id)? {
+        Some(sess) if sess.ended_at.is_none() => Ok(Some(sess.id)),
+        _ => Err(CoreError::invalid(
+            "unknown_session",
+            "X-Artifax-Session names no live session",
+        )),
+    }
+}
+
+/// The raw `X-Artifax-Session` value; a value that is not UTF-8 becomes an ID
+/// no session can have, so it fails as `unknown_session`.
+fn session_header(headers: &HeaderMap) -> Option<String> {
+    headers.get(SESSION_HEADER).map(|v| {
+        v.to_str()
+            .map(str::to_string)
+            .unwrap_or_else(|_| String::from("\u{fffd}"))
+    })
+}
+
+/// Each live artifact with `owner_live` (its owner session exists and has not
+/// ended) and `owner_harness` (the owner's harness, when it exists).
 pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
-    Ok(Json(
-        json!({"artifacts": s.store_call(|st| st.list_artifacts()).await?}),
-    ))
+    let artifacts = s
+        .store_call(|st| {
+            let mut owners = std::collections::HashMap::new();
+            let mut out = Vec::new();
+            for a in st.list_artifacts()? {
+                let owner = match &a.owner_session_id {
+                    Some(sid) => {
+                        if !owners.contains_key(sid) {
+                            owners.insert(sid.clone(), st.get_session(sid)?);
+                        }
+                        owners[sid].clone()
+                    }
+                    None => None,
+                };
+                let mut v = serde_json::to_value(&a).expect("serialisable artifact");
+                v["owner_live"] = json!(owner.as_ref().is_some_and(|o| o.ended_at.is_none()));
+                v["owner_harness"] = json!(owner.map(|o| o.harness));
+                out.push(v);
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(Json(json!({"artifacts": artifacts})))
 }
 
 pub async fn create(
     State(s): State<AppState>,
     _t: RequireToken,
+    headers: HeaderMap,
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body(req)?)?;
+    let session = session_header(&headers);
     let events = s.events.clone();
     let (artifact, version) = s
         .store_call(move |st| {
-            let (artifact, version) = st.create_artifact(p)?;
+            let session = publishing_session(st, &session)?;
+            let (artifact, version) = st.create_artifact(p, session.as_deref())?;
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
@@ -76,14 +132,20 @@ pub async fn get(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let (artifact, versions) = s
+    let (artifact, versions, owner) = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let v = st.list_versions(&id)?;
-            Ok((a, v))
+            let owner = match &a.owner_session_id {
+                Some(sid) => st.get_session(sid)?,
+                None => None,
+            };
+            Ok((a, v, owner))
         })
         .await?;
-    Ok(Json(json!({"artifact": artifact, "versions": versions})))
+    Ok(Json(
+        json!({"artifact": artifact, "versions": versions, "owner_session": owner}),
+    ))
 }
 
 /// Capabilities are set through publish until the runtime bridge honours them.
@@ -157,15 +219,18 @@ pub async fn list_versions(
 pub async fn publish(
     State(s): State<AppState>,
     _t: RequireToken,
+    headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     let p = validate(body(req)?)?;
+    let session = session_header(&headers);
     let events = s.events.clone();
     let (artifact, version) = s
         .store_call(move |st| {
-            let (artifact, version) = st.publish_version(&id, p)?;
+            let session = publishing_session(st, &session)?;
+            let (artifact, version) = st.publish_version(&id, p, session.as_deref())?;
             events.publish(Event::Version {
                 artifact_id: artifact.id.clone(),
                 n: version.n,
