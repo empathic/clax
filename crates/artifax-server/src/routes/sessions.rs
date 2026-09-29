@@ -34,6 +34,8 @@ pub struct JoinBody {
     harness: String,
     parent_pid: u32,
     harness_session_id: String,
+    #[serde(default)]
+    cwd: Option<String>,
 }
 
 pub async fn join(
@@ -49,7 +51,14 @@ pub async fn join(
         ));
     }
     let session = s
-        .store_call(move |st| st.join_session(&b.harness, b.parent_pid, &b.harness_session_id))
+        .store_call(move |st| {
+            st.join_session(
+                &b.harness,
+                b.parent_pid,
+                &b.harness_session_id,
+                b.cwd.as_deref(),
+            )
+        })
         .await?;
     Ok(Json(json!({"session": session})))
 }

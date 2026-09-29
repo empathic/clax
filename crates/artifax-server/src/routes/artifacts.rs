@@ -62,14 +62,17 @@ fn publishing_session(st: &Store, header: &Option<String>) -> Result<Option<Stri
     }
 }
 
-/// The raw `X-Artifax-Session` value; a value that is not UTF-8 becomes an ID
-/// no session can have, so it fails as `unknown_session`.
-fn session_header(headers: &HeaderMap) -> Option<String> {
-    headers.get(SESSION_HEADER).map(|v| {
-        v.to_str()
-            .map(str::to_string)
-            .unwrap_or_else(|_| String::from("\u{fffd}"))
-    })
+/// The raw `X-Artifax-Session` value; a value that is not UTF-8 is
+/// `unknown_session`.
+fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiError> {
+    headers
+        .get(SESSION_HEADER)
+        .map(|v| {
+            v.to_str().map(str::to_string).map_err(|_| {
+                ApiError::bad_request("unknown_session", "X-Artifax-Session is not valid text")
+            })
+        })
+        .transpose()
 }
 
 /// Each live artifact with `owner_live` (its owner session exists and has not
@@ -107,7 +110,7 @@ pub async fn create(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body(req)?)?;
-    let session = session_header(&headers);
+    let session = session_header(&headers)?;
     let events = s.events.clone();
     let (artifact, version) = s
         .store_call(move |st| {
@@ -225,7 +228,7 @@ pub async fn publish(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
     let p = validate(body(req)?)?;
-    let session = session_header(&headers);
+    let session = session_header(&headers)?;
     let events = s.events.clone();
     let (artifact, version) = s
         .store_call(move |st| {

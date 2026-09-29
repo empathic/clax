@@ -15,7 +15,7 @@ use tokio::sync::{oneshot, watch};
 pub const DEFAULT_PORT: u16 = 7480;
 pub const PORT_ATTEMPTS: u16 = 21;
 /// A session unseen for this long, with no live process, is ended by the reaper.
-const SESSION_IDLE: Duration = Duration::from_secs(300);
+const SESSION_IDLE: Duration = Duration::from_secs(Store::SESSION_IDLE_SECS);
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Discovery record written to `daemon.json` (mode 0600) once at daemon startup;

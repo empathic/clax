@@ -64,18 +64,26 @@ fn find_live(
 }
 
 impl Store {
+    /// A session unseen for this long, with no live process, is ended by the reaper;
+    /// registration without a harness session ID only adopts rows seen within it.
+    pub const SESSION_IDLE_SECS: u64 = 300;
+
     /// Registers a session, reusing a live row where one already stands for it.
     ///
     /// With a `harness_session_id`: a live row with the same `(harness,
     /// harness_session_id)` is refreshed and returned; failing that, a live row
     /// with the same `(harness, parent_pid)` and no harness session ID is
     /// adopted and given the ID. Without one: a live row with the same
-    /// `(harness, parent_pid)` that already has an ID is refreshed and returned.
-    /// Otherwise a new row is inserted. A refresh overwrites `pid` and
-    /// `parent_pid` only when the caller supplies them.
+    /// `(harness, parent_pid)` seen within [`Store::SESSION_IDLE_SECS`] is
+    /// refreshed and returned, whether or not it has an ID yet (two shims, or a
+    /// restarted shim, under one harness process share a row). Otherwise a new
+    /// row is inserted. A refresh overwrites `pid` and `parent_pid` only when
+    /// the caller supplies them, and fills an empty `cwd` (a hook-only row).
     pub fn register_session(&self, r: RegisterSession) -> Result<Session> {
         self.with_tx(|tx| {
             let now = Store::now();
+            let recent = (chrono::Utc::now() - Duration::from_secs(Self::SESSION_IDLE_SECS))
+                .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             let existing = match (&r.harness_session_id, r.parent_pid) {
                 (Some(hid), parent) => {
                     match find_live(
@@ -96,17 +104,18 @@ impl Store {
                 }
                 (None, Some(p)) => find_live(
                     tx,
-                    "harness = ?1 AND parent_pid = ?2 AND harness_session_id IS NOT NULL",
-                    params![r.harness, p],
+                    "harness = ?1 AND parent_pid = ?2 AND last_seen_at >= ?3",
+                    params![r.harness, p, recent],
                 )?,
                 (None, None) => None,
             };
             if let Some(id) = existing {
                 tx.execute(
                     "UPDATE sessions SET pid = COALESCE(?2, pid), parent_pid = COALESCE(?3, parent_pid),
-                        harness_session_id = COALESCE(harness_session_id, ?4), last_seen_at = ?5
+                        harness_session_id = COALESCE(harness_session_id, ?4), last_seen_at = ?5,
+                        cwd = CASE WHEN cwd = '' THEN ?6 ELSE cwd END
                      WHERE id = ?1",
-                    params![id, r.pid, r.parent_pid, r.harness_session_id, now],
+                    params![id, r.pid, r.parent_pid, r.harness_session_id, now, r.cwd],
                 )?;
                 return fetch(tx, &id);
             }
@@ -133,13 +142,17 @@ impl Store {
     /// harness process (`parent_pid`). Returns the live row for that
     /// `(harness, harness_session_id)`; else gives the ID to a live row for
     /// `(harness, parent_pid)` that has none; else inserts a hook-only row (no
-    /// `pid`, empty `cwd`) for the shim to adopt when it registers.
+    /// `pid`, `cwd` as given or empty) for the shim to adopt when it registers.
+    /// A given `cwd` also fills an empty one on an existing row. Hook-only rows
+    /// do not heartbeat: unless a shim adopts one, it is reaped after the idle
+    /// window ([`Store::SESSION_IDLE_SECS`]).
     pub fn join_session(
         &self,
         harness: &str,
         parent_pid: u32,
         harness_session_id: &str,
-    ) -> Result<Option<Session>> {
+        cwd: Option<&str>,
+    ) -> Result<Session> {
         self.with_tx(|tx| {
             let now = Store::now();
             let existing = match find_live(
@@ -158,9 +171,10 @@ impl Store {
                 Some(id) => {
                     tx.execute(
                         "UPDATE sessions SET harness_session_id = COALESCE(harness_session_id, ?2),
-                            parent_pid = COALESCE(parent_pid, ?3), last_seen_at = ?4
+                            parent_pid = COALESCE(parent_pid, ?3), last_seen_at = ?4,
+                            cwd = CASE WHEN cwd = '' THEN COALESCE(?5, cwd) ELSE cwd END
                          WHERE id = ?1",
-                        params![id, harness_session_id, parent_pid, now],
+                        params![id, harness_session_id, parent_pid, now, cwd],
                     )?;
                     id
                 }
@@ -169,13 +183,13 @@ impl Store {
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
                             started_at, last_seen_at)
-                         VALUES (?1, ?2, ?3, '', NULL, ?4, ?5, ?5)",
-                        params![id, harness, harness_session_id, parent_pid, now],
+                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5)",
+                        params![id, harness, harness_session_id, parent_pid, now, cwd.unwrap_or("")],
                     )?;
                     id
                 }
             };
-            Ok(Some(fetch(tx, &id)?))
+            fetch(tx, &id)
         })
     }
 
@@ -349,7 +363,7 @@ mod tests {
             .register_session(reg(None, Some(10), Some(5)))
             .unwrap();
         assert_eq!(shim.harness_session_id, None);
-        let joined = store.join_session("claude-code", 5, "h1").unwrap().unwrap();
+        let joined = store.join_session("claude-code", 5, "h1", None).unwrap();
         assert_eq!(joined.id, shim.id);
         assert_eq!(joined.harness_session_id.as_deref(), Some("h1"));
         assert_eq!(joined.pid, Some(10));
@@ -359,7 +373,7 @@ mod tests {
     #[test]
     fn hook_first_then_shim_adopts() {
         let (_d, store) = store();
-        let hook = store.join_session("claude-code", 5, "h1").unwrap().unwrap();
+        let hook = store.join_session("claude-code", 5, "h1", None).unwrap();
         assert_eq!(hook.pid, None);
         let shim = store
             .register_session(reg(None, Some(10), Some(5)))
@@ -367,16 +381,76 @@ mod tests {
         assert_eq!(shim.id, hook.id);
         assert_eq!(shim.pid, Some(10));
         assert_eq!(shim.harness_session_id.as_deref(), Some("h1"));
+        assert_eq!(shim.cwd, "/work");
         assert_eq!(store.list_sessions(false).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn hook_cwd_is_used_for_new_rows_and_fills_empty_ones() {
+        let (_d, store) = store();
+        let hook = store
+            .join_session("claude-code", 5, "h1", Some("/hook"))
+            .unwrap();
+        assert_eq!(hook.cwd, "/hook");
+        let shim = store
+            .register_session(reg(None, Some(10), Some(5)))
+            .unwrap();
+        assert_eq!(shim.cwd, "/hook", "an existing cwd is kept");
+        let empty = store.join_session("codex", 8, "c1", None).unwrap();
+        assert_eq!(empty.cwd, "");
+        let filled = store.join_session("codex", 8, "c1", Some("/late")).unwrap();
+        assert_eq!(filled.id, empty.id);
+        assert_eq!(filled.cwd, "/late");
+    }
+
+    #[test]
+    fn registrations_without_id_under_one_parent_share_a_row() {
+        let (_d, store) = store();
+        let a = store
+            .register_session(reg(None, Some(10), Some(5)))
+            .unwrap();
+        let b = store
+            .register_session(reg(None, Some(11), Some(5)))
+            .unwrap();
+        assert_eq!(a.id, b.id);
+        assert_eq!(b.pid, Some(11));
+        assert_eq!(store.list_sessions(true).unwrap().len(), 1);
+        let joined = store.join_session("claude-code", 5, "h1", None).unwrap();
+        assert_eq!(joined.id, a.id);
+    }
+
+    #[test]
+    fn stale_row_is_not_adopted_by_parent() {
+        let (_d, store) = store();
+        let old = store
+            .register_session(reg(None, Some(10), Some(5)))
+            .unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1",
+                    params![
+                        old.id,
+                        (chrono::Utc::now() - Duration::from_secs(600))
+                            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let new = store
+            .register_session(reg(None, Some(12), Some(5)))
+            .unwrap();
+        assert_ne!(new.id, old.id);
     }
 
     #[test]
     fn hook_join_is_idempotent_and_other_harnesses_stay_apart() {
         let (_d, store) = store();
-        let a = store.join_session("claude-code", 5, "h1").unwrap().unwrap();
-        let b = store.join_session("claude-code", 5, "h1").unwrap().unwrap();
+        let a = store.join_session("claude-code", 5, "h1", None).unwrap();
+        let b = store.join_session("claude-code", 5, "h1", None).unwrap();
         assert_eq!(a.id, b.id);
-        let other = store.join_session("codex", 5, "h1").unwrap().unwrap();
+        let other = store.join_session("codex", 5, "h1", None).unwrap();
         assert_ne!(a.id, other.id);
     }
 
@@ -422,10 +496,7 @@ mod tests {
         let alive = store
             .register_session(reg(Some("alive"), Some(1002), None))
             .unwrap();
-        let hook_only = store
-            .join_session("claude-code", 7, "hook")
-            .unwrap()
-            .unwrap();
+        let hook_only = store.join_session("claude-code", 7, "hook", None).unwrap();
         // Everything is fresh: nothing is idle yet.
         let pid_alive = |pid: u32| pid == 1002;
         assert_eq!(

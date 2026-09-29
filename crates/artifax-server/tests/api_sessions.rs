@@ -153,6 +153,22 @@ async fn join_by_parent_pid_meets_the_shim_in_either_order() {
     .await;
     assert_eq!(adopted["id"], hook["id"]);
     assert_eq!(adopted["pid"], 20);
+    assert_eq!(
+        adopted["cwd"], "/w",
+        "the shim's cwd fills the hook-only row"
+    );
+
+    let res = ts
+        .post_json(
+            "/api/sessions/join",
+            json!({"harness": "pi", "parent_pid": 9, "harness_session_id": "p1", "cwd": "/hook"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["session"]["cwd"],
+        "/hook"
+    );
 }
 
 #[tokio::test]
@@ -275,4 +291,24 @@ async fn unknown_or_ended_session_header_is_400_on_both_publish_routes() {
         .await
         .unwrap();
     assert_eq!(got["versions"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn non_utf8_session_header_is_400_unknown_session() {
+    let ts = TestServer::spawn().await;
+    let req = ts
+        .authed(ts.client.post(format!("{}/api/artifacts", ts.base)))
+        .header(
+            "X-Artifax-Session",
+            reqwest::header::HeaderValue::from_bytes(&[0xff, 0xfe]).unwrap(),
+        )
+        .json(
+            &json!({"title": "T", "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}),
+        );
+    let res = req.send().await.unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "unknown_session"
+    );
 }
