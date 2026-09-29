@@ -23,7 +23,7 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
 const ID = "7q3k9mzx2b4t";
 const artifact = (n: number) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files: {} }] });
 
-const viewer = { viewer: { id: "v", display_name: null, created_at: "x" } };
+const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 async function mount(fetchImpl: () => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>) {
@@ -70,6 +70,22 @@ describe("ArtifactView", () => {
     current = 4;
     FakeES.last.emit("resync", { dropped: 3 });
     await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v4 published"), "banner");
+  });
+
+  it("reloads the threads when the event stream (re)connects", async () => {
+    let listed = 0;
+    const t = { id: "01JA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: "c1", thread_id: "01JA", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "made while the daemon restarted", created_at: "x" }] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async url => url.includes("/threads")
+        ? new Response(JSON.stringify({ threads: listed++ === 0 ? [] : [t], next_cursor: null }))
+        : new Response(JSON.stringify(viewer)));
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    await waitFor(() => listed === 1, "initial thread load");
+    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (0)");
+    FakeES.last.emit("ready", {});
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the reload");
   });
 
   it("shows a failed thread load in the notice banner", async () => {

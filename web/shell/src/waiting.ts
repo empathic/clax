@@ -1,5 +1,11 @@
 import type { FeedbackState, Tier } from "./threads";
 
+// Both maps cover every tier so the types stay total, but the daemon emits
+// only some pairs: `sent` names the tier the target session waits on, which is
+// never `wait` or `prompt_hook`, and a `piggyback` or `wait` delivery is
+// acknowledged at once, so it is never `delivered` via those. The
+// `wait`/`prompt_hook` entries of WAITING_ON and the `piggyback`/`wait`
+// entries of DELIVERED_VIA exist for type completeness only.
 const WAITING_ON: Record<Tier, string> = {
   piggyback: "its next artifax tool call",
   stop_hook: "the end of its turn",

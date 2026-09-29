@@ -57,5 +57,6 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   const done = page.locator(".section-resolved .thread-card");
   await expect(done).toHaveCount(1);
   await expect(done).toContainText("Done: two columns.");
+  await expect(done.locator(".resolved-by")).toHaveText("Resolved by Agent · via claude");
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });

@@ -45,6 +45,7 @@ test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ 
   await expect(card.locator(".waiting")).toHaveText("seen by the agent");
   await card.getByRole("button", { name: "Resolve" }).click();
   await expect(page.locator(".section-resolved .thread-card")).toHaveCount(1);
+  await expect(page.locator(".section-resolved .resolved-by")).toHaveText("Resolved by Viewer");
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });
 
@@ -109,7 +110,10 @@ test("the viewer name attributes comments", async ({ page }) => {
   await pickHeading(page, artifact.id, 1);
   await page.locator(".composer textarea").fill("named note");
   await page.locator(".composer").getByRole("button", { name: "Post comment" }).click();
-  await expect(page.locator(".thread-card").filter({ hasText: "named note" })).toContainText("Alex");
+  const card = page.locator(".thread-card").filter({ hasText: "named note" });
+  await expect(card).toContainText("Alex");
+  await card.getByRole("button", { name: "Resolve" }).click();
+  await expect(page.locator(".section-resolved .resolved-by")).toHaveText("Resolved by Alex");
 });
 
 test("sandboxed frames support comment mode too", async ({ page }) => {

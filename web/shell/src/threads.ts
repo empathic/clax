@@ -3,13 +3,14 @@ import { ApiError } from "./api";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 export type FeedbackState = { thread_id: string; state: "sent" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean };
-export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; via_session_id: string | null; body: string; created_at: string };
+export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; via_harness: string | null; body: string; created_at: string };
 export type Thread = {
   id: string; artifact_id: string; version_n: number; anchor: Anchor; status: "open" | "resolved"; sent_to_agent: boolean;
   has_clip: boolean; clip_url: string | null; created_at: string; resolved_at: string | null; resolved_by: string | null;
   comments: Comment[]; feedback_state: FeedbackState | null;
 };
-export type Viewer = { id: string; display_name: string | null; created_at: string };
+/** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
+export type Viewer = { public_id: string; display_name: string | null; created_at: string };
 
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -67,6 +68,16 @@ export function upsert(threads: Thread[], t: Thread): Thread[] {
   const copy = threads.slice();
   copy[i] = t;
   return copy;
+}
+
+/** Who resolved a thread, from its `resolved_by` (`viewer:<public_id>`,
+ * `viewer:anonymous`, or `agent:<harness>`): this viewer's own name when `me`
+ * is the resolver and has one, "Viewer" for any other viewer, and
+ * "Agent · via <harness>" for an agent. */
+export function resolvedByLabel(by: string, me?: Viewer | null): string {
+  if (by.startsWith("agent:")) return `Agent · via ${by.slice("agent:".length)}`;
+  if (me?.display_name && by === `viewer:${me.public_id}`) return me.display_name;
+  return "Viewer";
 }
 
 /** A short label for an anchor: the quote in «», else the selector. */

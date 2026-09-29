@@ -1,7 +1,7 @@
 import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import type { AnchorResult } from "../../bridge/src/protocol";
-import { anchorLabel, type Thread } from "./threads";
+import { anchorLabel, resolvedByLabel, type Thread, type Viewer } from "./threads";
 import { hasElapsedLabel, waitingLabel } from "./waiting";
 
 type Props = {
@@ -14,6 +14,8 @@ type Props = {
   onSend(t: Thread): void;
   onResolve(t: Thread): void;
   onReply(t: Thread, body: string): void;
+  /** This viewer, to show its own name on threads it resolved. */
+  me?: Viewer | null;
   /** Rendered above the sections (the "Your name" field on narrow screens). */
   header?: ComponentChildren;
 };
@@ -50,7 +52,7 @@ export function Sidebar(p: Props) {
   );
 }
 
-function Card({ t, n, now, selected, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
+function Card({ t, n, now, me, selected, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
   const [reply, setReply] = useState("");
   const label = t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null;
   return (
@@ -65,11 +67,12 @@ function Card({ t, n, now, selected, onSelect, onSend, onResolve, onReply }: Pro
       {t.clip_url && <img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />}
       {t.comments.map(c => (
         <div class={`comment ${c.author_kind === "agent" ? "agent" : "from-viewer"}`} key={c.id}>
-          <div class="author">{c.author_kind === "agent" ? `Agent · via ${c.author_name}` : c.author_name}</div>
+          <div class="author">{c.author_kind === "agent" ? `Agent · via ${c.via_harness ?? c.author_name}` : c.author_name}</div>
           <div class="body">{c.body}</div>
         </div>
       ))}
       {label && <p class="waiting">{label}</p>}
+      {t.status === "resolved" && t.resolved_by && <p class="resolved-by muted small">Resolved by {resolvedByLabel(t.resolved_by, me)}</p>}
       {t.status === "open" && (
         <div class="actions" onClick={e => e.stopPropagation()}>
           {!t.sent_to_agent && <button class="primary" onClick={() => onSend(t)}>Send to agent</button>}

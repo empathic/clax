@@ -34,6 +34,15 @@ describe("subscribe", () => {
     expect(seen).toEqual([{ type: "resync", dropped: 7 }]);
   });
 
+  it("forwards every ready event, so a reconnect can reload what it missed", () => {
+    vi.stubGlobal("EventSource", FakeES);
+    const seen: unknown[] = [];
+    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    FakeES.last.emit("ready", {});
+    FakeES.last.emit("ready", {});
+    expect(seen).toEqual([{ type: "ready" }, { type: "ready" }]);
+  });
+
   it("forwards the comment events", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
@@ -41,7 +50,7 @@ describe("subscribe", () => {
     const fs = { type: "feedback_state", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", state: "sent", tier: "stop_hook", since: "2026-09-29T10:00:00.000Z", resends: 0, exhausted: false };
     const thread = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "01J9" } };
     const comment = { type: "comment", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", comment: { id: "c" } };
-    const resolved = { type: "thread_resolved", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", resolved_by: "viewer:x", resolved_at: "t" };
+    const resolved = { type: "thread_resolved", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", resolved_by: "viewer:u_0123456789abcdef012345", resolved_at: "t" };
     FakeES.last.emit("feedback_state", fs);
     FakeES.last.emit("thread", thread);
     FakeES.last.emit("comment", comment);

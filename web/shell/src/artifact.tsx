@@ -9,7 +9,7 @@ import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNo
 import { Frame } from "./frame";
 import { artifactOrigin, contentSrc, probeOrigin } from "./origin";
 import { Sidebar } from "./sidebar";
-import { type Thread, addComment, createThread, listThreads, resolveThread, sendToAgent, upsert } from "./threads";
+import { type Thread, type Viewer, addComment, createThread, listThreads, resolveThread, sendToAgent, upsert } from "./threads";
 import { ViewerName } from "./viewer-name";
 
 type Props = { id: string; pinnedVersion: number | null };
@@ -31,6 +31,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [me, setMe] = useState<Viewer | null>(null);
   // A success clears only a notice its own kind of call raised, so the viewer
   // lookup finishing after a failed thread load cannot hide that failure.
   const noticeFor = (prefix: string) => scopedNotice(setNotice, prefix);
@@ -97,7 +98,10 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     if (e.type === "artifact_deleted") setDeleted(true);
     if (e.type === "thread") setThreads(ts => upsert(ts, e.thread));
     if (e.type === "feedback_state") setThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
-    if (e.type === "resync") {
+    // A (re)connect may follow a daemon restart that dropped events without a
+    // resync; reload like a resync. The first one also covers anything
+    // published between the initial load and the stream opening.
+    if (e.type === "resync" || e.type === "ready") {
       loadThreads();
       getArtifact(id).then(d => {
         const n = d.artifact.current_version;
@@ -117,7 +121,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       <>
         <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => setCommenting(c => !c)}>Comment</button>
         <button aria-pressed={panel} onClick={() => setPanel(v => !v)}>Threads ({threads.filter(t => t.status === "open").length})</button>
-        {!narrow && <ViewerName setNotice={setNotice} />}
+        {!narrow && <ViewerName setNotice={setNotice} onViewer={setMe} />}
         <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(n === latest ? `/a/${id}` : `/a/${id}/v/${n}`); }}>
           {versions.map(v => <option value={v.n} key={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>)}
         </select>
@@ -155,7 +159,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
           )}
         </div>
         {panel && <Sidebar threads={threads} resolved={resolved} selected={selected}
-          header={narrow ? <ViewerName setNotice={setNotice} /> : undefined}
+          me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}
           onSelect={scrollTo}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}
           onResolve={t => saveThread(resolveThread(id, t.id), RESOLVE_FAILED)}

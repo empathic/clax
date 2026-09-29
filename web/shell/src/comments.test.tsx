@@ -8,7 +8,7 @@ const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals"
 const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
   id, artifact_id: "7q3k9mzx2b4t", version_n: 1, anchor, status, sent_to_agent: false, has_clip: false, clip_url: null,
   created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null,
-  comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_session_id: null, body: `note ${id}`, created_at: "2026-09-29T10:00:00.000Z" }],
+  comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "2026-09-29T10:00:00.000Z" }],
 });
 const at = (id: string, y: number) => ({ id, found: true, method: "exact" as const, rect: { x: 10, y, w: 100, h: 20 } });
 
