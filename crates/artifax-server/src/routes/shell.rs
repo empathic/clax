@@ -8,7 +8,6 @@ use axum::extract::{Path, RawQuery};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
-use std::sync::OnceLock;
 
 #[derive(RustEmbed)]
 #[folder = "../../web/dist/"]
@@ -22,26 +21,65 @@ fn short_hash(sha256: &[u8; 32]) -> String {
     sha256[..6].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// The bridge version: a short hash of the embedded bridge bundle, computed
-/// once (the router computes it at startup), which bridge tags carry as
-/// `/_artifax/bridge.js?v=<version>`. Empty when the UI is not built.
-pub fn bridge_version() -> &'static str {
-    static VERSION: OnceLock<String> = OnceLock::new();
-    VERSION.get_or_init(|| {
-        Assets::get(BRIDGE)
-            .map(|f| short_hash(&f.metadata.sha256_hash()))
-            .unwrap_or_default()
-    })
+/// The short hash of the bridge bundle as [`Assets`] reads it now; empty when
+/// the UI is not built.
+fn hash_bridge() -> String {
+    Assets::get(BRIDGE)
+        .map(|f| short_hash(&f.metadata.sha256_hash()))
+        .unwrap_or_default()
 }
 
-/// The bridge's `Cache-Control`: immutable at the URL naming the version of
-/// the bytes served (`?v=<hash of them>`), revalidated at any other.
+/// The bridge version: a short hash of the bridge bundle, which bridge tags
+/// carry as `/_artifax/bridge.js?v=<version>`. Empty when the UI is not built.
+///
+/// A release build embeds the bundle, so the version is computed once (the
+/// router computes it at startup).
+#[cfg(not(debug_assertions))]
+pub fn bridge_version() -> String {
+    static VERSION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    VERSION.get_or_init(hash_bridge).clone()
+}
+
+/// The bridge version: a short hash of the bridge bundle, which bridge tags
+/// carry as `/_artifax/bridge.js?v=<version>`. Empty when the UI is not built.
+///
+/// A debug build reads `web/dist` from disk on every request, and `just dev`
+/// rebuilds the bridge under a running daemon, so the version follows the
+/// file: it is rehashed whenever the file's modification time or size changes.
+#[cfg(debug_assertions)]
+pub fn bridge_version() -> String {
+    type Stamp = (Option<std::time::SystemTime>, u64);
+    static SEEN: std::sync::Mutex<Option<(Stamp, String)>> = std::sync::Mutex::new(None);
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../web/dist/",
+        "_artifax/bridge.js"
+    );
+    let Ok(m) = std::fs::metadata(path) else {
+        return String::new();
+    };
+    let stamp = (m.modified().ok(), m.len());
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((s, v)) = seen.as_ref()
+        && *s == stamp
+    {
+        return v.clone();
+    }
+    let v = hash_bridge();
+    *seen = Some((stamp, v.clone()));
+    v
+}
+
+/// The bridge's `Cache-Control`: in a release build, immutable at the URL
+/// naming the version of the bytes served (`?v=<hash of them>`) and
+/// revalidated at any other; in a debug build, where the file can change
+/// under the same daemon, always revalidated.
 fn bridge_cache_control(query: Option<&str>, served: &str) -> &'static str {
     let v = query
         .unwrap_or("")
         .split('&')
         .find_map(|kv| kv.strip_prefix("v="));
-    if v == Some(served) {
+    if !cfg!(debug_assertions) && v == Some(served) {
         IMMUTABLE
     } else {
         REVALIDATE
@@ -100,13 +138,18 @@ mod tests {
     #[test]
     fn only_the_url_naming_the_served_bytes_is_immutable() {
         let served = "0123456789ab";
+        let current = if cfg!(debug_assertions) {
+            REVALIDATE
+        } else {
+            IMMUTABLE
+        };
         assert_eq!(
             bridge_cache_control(Some("v=0123456789ab"), served),
-            IMMUTABLE
+            current
         );
         assert_eq!(
             bridge_cache_control(Some("x=1&v=0123456789ab"), served),
-            IMMUTABLE
+            current
         );
         assert_eq!(bridge_cache_control(None, served), REVALIDATE);
         assert_eq!(bridge_cache_control(Some(""), served), REVALIDATE);

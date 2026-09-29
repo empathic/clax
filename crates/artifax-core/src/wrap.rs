@@ -46,19 +46,29 @@ pub fn bridge_tag_for(
     )
 }
 
-/// Every bridge tag begins with this, then `"` (the bare URL, which tags
-/// carried before the URL named a version) or `?` (a versioned URL).
+/// Every bridge tag begins with this.
 const BRIDGE_START: &str = "<script src=\"/_artifax/bridge.js";
+/// What follows the URL in every bridge tag the daemon has written.
+const BRIDGE_ATTRS: &str = "\" data-artifact=\"";
 
-/// Whether `at` begins with a bridge tag, in either form.
+/// Whether `at` begins with a bridge tag exactly as the daemon writes it: the
+/// bare URL (as tags carried before the URL named a version) or the URL with
+/// `?v=<lowercase hex>`, then ` data-artifact="`. Anything else that merely
+/// contains the URL (a page's own string or comment) is not a bridge tag.
 fn is_bridge_tag(at: &str) -> bool {
-    at.starts_with(BRIDGE_START)
-        && matches!(at.as_bytes().get(BRIDGE_START.len()), Some(b'"' | b'?'))
+    let Some(rest) = at.strip_prefix(BRIDGE_START) else {
+        return false;
+    };
+    let rest = match rest.strip_prefix("?v=") {
+        Some(v) => v.trim_start_matches(|c: char| matches!(c, '0'..='9' | 'a'..='f')),
+        None => rest,
+    };
+    rest.starts_with(BRIDGE_ATTRS)
 }
 
-/// `page` without any bridge tag an earlier serve inserted (from
-/// `<script src="/_artifax/bridge.js"` or `<script src="/_artifax/bridge.js?`
-/// to the next `</script>`, or to the end when unterminated), so a page
+/// `page` without any bridge tag an earlier serve inserted (from a tag
+/// [`is_bridge_tag`] recognises to the next `</script>`, or to the end when
+/// unterminated), so a page
 /// republished from its served DOM runs exactly one bridge: the one for the
 /// version and file being served, at the current bridge URL.
 fn strip_bridge_tags(page: &str) -> std::borrow::Cow<'_, str> {
@@ -448,7 +458,7 @@ mod tests {
     #[test]
     fn an_unterminated_bridge_tag_is_dropped_with_the_rest_of_the_page() {
         let out = wrap_document(
-            "<!doctype html><body><p>keep</p><script src=\"/_artifax/bridge.js\" data-version=\"1\">",
+            "<!doctype html><body><p>keep</p><script src=\"/_artifax/bridge.js\" data-artifact=\"7q3k9mzx2b4t\" data-version=\"1\">",
             "7q3k9mzx2b4t",
             2,
             "0.2.61",
@@ -501,6 +511,14 @@ mod tests {
             assert!(out.contains("<p>x</p></body>"), "{out}");
         }
         let other = "<script src=\"/_artifax/bridge.jsx\"></script>";
+        let own = "<script>const s = '<script src=\"/_artifax/bridge.js';</script><!-- <script src=\"/_artifax/bridge.js?v=1\"> --><script>const t = '<script src=\"/_artifax/bridge.js?v=x\" data-artifact=';</script>";
+        let out = wrap_document(&format!("<p>{own}</p>"), "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert!(out.contains(own), "the page's own text is kept: {out}");
+        assert_eq!(
+            out.matches(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V))
+                .count(),
+            1
+        );
         let out = wrap_document(&format!("<p>{other}</p>"), "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.contains(other), "another script is kept: {out}");
     }

@@ -259,9 +259,16 @@ Browser caching (every route above):
   bridge tag inside it, is never older than the daemon serving it.
 - Bridge tags name the bridge by version:
   `/_artifax/bridge.js?v=<first 12 hex digits of the bundle's SHA-256>`,
-  computed once when the daemon starts. That URL is served
-  `public, max-age=31536000, immutable`; the bare `/_artifax/bridge.js`, and
-  a `?v=` naming another bundle, are served `no-cache` (with an `ETag`).
+  computed once when a release daemon starts (a debug build reads the
+  bundle from `web/dist` on every request, so it rehashes whenever the
+  file's modification time or size changes and the wrap cache drops pages
+  naming an older version). In a release build that URL is served
+  `public, max-age=31536000, immutable`; the bare `/_artifax/bridge.js`, a
+  `?v=` naming another bundle, and every bridge URL of a debug build are
+  served `no-cache` (with an `ETag`). A bridge tag is recognised only in the
+  exact form the daemon writes (`<script src="/_artifax/bridge.js"` or
+  `...bridge.js?v=<hex>"`, then ` data-artifact="`), so a page's own string
+  or comment containing the URL is kept.
 - Non-HTML supporting files (`/c/<aid>/v/<n>/<path>`) and `/_blob/<asset_id>`
   are `public, max-age=31536000, immutable`: their URLs name one version's
   or one asset's bytes, which never change. The shell's own bundles under

@@ -88,6 +88,10 @@ async fn lookup(
     always_wrap: bool,
 ) -> Result<Served, ApiError> {
     let cache = s.wrap_cache.clone();
+    let bridge = bridge_version();
+    // A page wrapped concurrently with a debug rebuild may keep the old
+    // `?v=`; a debug build serves every bridge URL revalidated, current bytes.
+    cache.follow_bridge(&bridge);
     s.store_call(move |st| {
         let (disk, meta) = st.file_path(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         if !always_wrap && !is_html(&meta.content_type) {
@@ -95,16 +99,9 @@ async fn lookup(
         }
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
-            Ok(String::from_utf8(std::fs::read(&disk)?).ok().map(|page| {
-                wrap_page(
-                    &page,
-                    id.as_str(),
-                    n,
-                    CONTRACT_VERSION,
-                    &file,
-                    bridge_version(),
-                )
-            }))
+            Ok(String::from_utf8(std::fs::read(&disk)?)
+                .ok()
+                .map(|page| wrap_page(&page, id.as_str(), n, CONTRACT_VERSION, &file, &bridge)))
         });
         match wrapped {
             Ok(Some(html)) => Ok(Served::Page(html)),
@@ -132,6 +129,7 @@ pub async fn file(
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }
+    let tag_source = format!("{aid}/{n}/{rel}");
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => return Ok(sandboxed(http_cache::html(&req, &html), &origin)),
         Served::Raw(disk, meta) => (disk, meta),
@@ -140,12 +138,26 @@ pub async fn file(
         .await
         .map_err(|_| ApiError::not_found())?;
     let body = Body::from_stream(tokio_util::io::ReaderStream::new(f));
-    // An HTML file that is not UTF-8 is still a page: revalidated, never immutable.
-    let cache_control = if is_html(&meta.content_type) {
-        http_cache::REVALIDATE
-    } else {
-        http_cache::IMMUTABLE
-    };
+    if is_html(&meta.content_type) {
+        // An HTML file that is not UTF-8 is still a page: revalidated, never
+        // immutable. A version's files never change, so its artifact, version,
+        // path and size identify its bytes.
+        let etag = http_cache::etag_of(format!("{tag_source}\0{}", meta.size).as_bytes());
+        let ct = meta.content_type.clone();
+        let res = http_cache::tagged_as(&req, etag, http_cache::REVALIDATE, move || {
+            (
+                [
+                    (header::CONTENT_TYPE, ct),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff".to_string()),
+                    (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
+                ],
+                body,
+            )
+                .into_response()
+        });
+        return Ok(sandboxed(res, &origin));
+    }
+    let cache_control = http_cache::IMMUTABLE;
     let res = (
         StatusCode::OK,
         [

@@ -274,7 +274,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_artifax/bridge.js").count(), 1, "{html}");
     assert!(html.starts_with("<!doctype html><html><head><title>About</title>"));
-    let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", bridge_version());
+    let tag = bridge_tag_for(id, 1, "0.2.61", "about.html", &bridge_version());
     assert!(
         html.contains(&format!("<body>{tag}<h2>About</h2>")),
         "{html}"
@@ -409,11 +409,12 @@ async fn every_html_page_is_revalidated_and_answers_not_modified() {
 }
 
 #[tokio::test]
-async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable() {
+async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable_in_release() {
     let ts = TestServer::spawn().await;
     let created = ts.publish("R", &[("index.html", "<p>i</p>")]).await;
     let id = created["artifact"]["id"].as_str().unwrap();
     let v = bridge_version();
+    let v = v.as_str();
     let html = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
     assert!(
         html.contains(&bridge_tag_for(id, 1, "0.2.61", "index.html", v)),
@@ -432,10 +433,15 @@ async fn the_bridge_is_named_by_version_and_only_the_versioned_url_is_immutable(
     for on in [None, Some(host.as_str())] {
         let res = get_on(&ts, on, &format!("/_artifax/bridge.js?v={v}"), None).await;
         assert_eq!(res.status(), 200);
-        assert_eq!(
-            res.headers()["cache-control"],
+        // A debug build reads the bridge from disk, where it can change under
+        // the same daemon: it is never immutable there.
+        let expected = if cfg!(debug_assertions) {
+            "no-cache"
+        } else {
             "public, max-age=31536000, immutable"
-        );
+        };
+        assert_eq!(res.headers()["cache-control"], expected);
+        assert!(res.headers().contains_key("etag"));
         assert_eq!(res.headers()["content-type"], "text/javascript");
         let stale = get_on(&ts, on, "/_artifax/bridge.js?v=000000000000", None).await;
         assert_eq!(
@@ -532,6 +538,16 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
             "no-cache",
             "HTML is revalidated, wrapped or not"
         );
+        let etag = res.headers()["etag"].to_str().unwrap().to_string();
+        let again = ts
+            .client
+            .get(format!("{}/c/{id}/v/1/latin1.html", ts.base))
+            .header("if-none-match", &etag)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(again.status(), 304);
+        assert_eq!(again.headers()["cache-control"], "no-cache");
         assert_eq!(res.bytes().await.unwrap().as_ref(), b"<p>caf\xe9</p>");
         assert!(
             cache.contains(&id, 1, "latin1.html"),

@@ -6,7 +6,7 @@ test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); 
 test.afterAll(async () => { await d?.stop(); });
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: pages are revalidated and the frame loads the bridge at its versioned, immutable URL`, async ({ page }) => {
+  test(`${mode}: pages are revalidated and the frame loads the bridge at its versioned URL`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `Caching ${mode}`, { "index.html": "<p id=\"hi\">hi</p>" });
     const seen: Response[] = [];
     page.on("response", r => { seen.push(r); });
@@ -26,7 +26,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(src).toMatch(/^\/_artifax\/bridge\.js\?v=[0-9a-f]{12}$/);
     const bridge = seen.find(r => r.url().endsWith(src!))!;
     expect(bridge.status()).toBe(200);
-    expect(bridge.headers()["cache-control"]).toBe("public, max-age=31536000, immutable");
+    // The e2e daemon is a debug build (`cargo run`), which reads the bridge from
+    // disk and so never serves it immutable; release builds do (api_content.rs).
+    expect(bridge.headers()["cache-control"]).toBe("no-cache");
+    expect(bridge.headers()["etag"]).toBeTruthy();
 
     const bare = await fetch(`${d.base}/_artifax/bridge.js`);
     expect(bare.headers.get("cache-control")).toBe("no-cache");

@@ -42,7 +42,17 @@ pub fn tagged(
     cache_control: &'static str,
     respond: impl FnOnce() -> Response,
 ) -> Response {
-    let etag = etag_of(body);
+    tagged_as(req, etag_of(body), cache_control, respond)
+}
+
+/// [`tagged`] with the entity tag given (from [`etag_of`]) rather than
+/// computed from the body.
+pub fn tagged_as(
+    req: &HeaderMap,
+    etag: String,
+    cache_control: &'static str,
+    respond: impl FnOnce() -> Response,
+) -> Response {
     let mut res = if matches(req, &etag) {
         StatusCode::NOT_MODIFIED.into_response()
     } else {

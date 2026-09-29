@@ -1046,11 +1046,14 @@ Minimal skeleton:
   response is ever `immutable` or long-lived, so a page never runs with a
   bridge older than the daemon's.
 - The bridge tag names the bridge by version:
-  `/_artifax/bridge.js?v=<hash>`, a short hash of the bridge bundle. That
-  URL is immutable (`public, max-age=31536000, immutable`); the bare
-  `/_artifax/bridge.js`, or a `?v=` naming another bundle, is `no-cache`.
+  `/_artifax/bridge.js?v=<hash>`, a short hash of the bridge bundle. In a
+  release build that URL is immutable (`public, max-age=31536000,
+  immutable`); the bare `/_artifax/bridge.js`, a `?v=` naming another
+  bundle, and every bridge URL of a debug build (which reads the bundle from
+  disk, where `just dev` rebuilds it) are `no-cache`.
   A page republished from its served DOM keeps exactly one bridge tag, at
-  the current URL, whichever form it carried.
+  the current URL, whichever form it carried; text in the page that merely
+  contains the bridge URL is left alone.
 - Supporting files that are not HTML, and uploaded assets (`/_blob/...`),
   are immutable: their URLs name bytes that never change.
 
