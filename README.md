@@ -59,6 +59,10 @@ Build the binary first (`cargo build -p artifax-cli`, above). The Claude Code an
 
 [docs/contract.md](docs/contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
 
+## Upgrading
+
+Pages viewed before this version may still be cached by the browser (older daemons marked supporting HTML pages immutable, and Chrome can keep serving such a copy inside the artifact frame even after "Clear site data"). After upgrading from such a daemon, clear "Cached images and files" for "All time" once, at chrome://settings/clearBrowserData. From this version on, every HTML page is revalidated on each load and the bridge URL names its version, so upgrades never need this.
+
 ## Development
 
 - `just help` (or bare `just`) lists every recipe with a description.

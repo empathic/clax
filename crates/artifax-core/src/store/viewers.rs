@@ -10,6 +10,12 @@ use rusqlite::{OptionalExtension, params};
 /// Longest accepted display name, in characters.
 pub const MAX_NAME_CHARS: usize = 60;
 
+/// Most named viewers one [`Store::search_viewers`] call reads. The match runs
+/// in Rust (SQLite folds ASCII case only), so a search costs time linear in the
+/// names it reads; past this many it stops, and names later in name order are
+/// not found by that search.
+pub const MAX_SEARCH_SCAN: usize = 10_000;
+
 const VIEWER_SELECT: &str = "SELECT id, public_id, display_name, created_at FROM viewers";
 
 fn row_to_viewer(r: &rusqlite::Row<'_>) -> rusqlite::Result<Viewer> {
@@ -103,18 +109,20 @@ impl Store {
 
     /// Up to `limit` named viewers whose name contains `q` as literal text,
     /// ignoring case in every script (Unicode lowercase on both sides),
-    /// ordered by name (then public ID).
+    /// ordered by name (then public ID). Reads at most [`MAX_SEARCH_SCAN`]
+    /// named viewers, in that order: its cost is linear in the names read.
     pub fn search_viewers(&self, q: &str, limit: usize) -> Result<Vec<Viewer>> {
         let needle = q.to_lowercase();
         self.with_conn(|c| {
             // SQLite's lower() folds ASCII only, so names are matched here,
-            // streaming in name order and stopping at `limit`.
+            // streaming in name order and stopping at `limit` hits or
+            // MAX_SEARCH_SCAN names read.
             let mut stmt = c.prepare(&format!(
                 "{VIEWER_SELECT} WHERE display_name IS NOT NULL
                  ORDER BY display_name COLLATE NOCASE, public_id"
             ))?;
             let mut out = Vec::new();
-            for v in stmt.query_map([], row_to_viewer)? {
+            for v in stmt.query_map([], row_to_viewer)?.take(MAX_SEARCH_SCAN) {
                 if out.len() >= limit {
                     break;
                 }
@@ -133,7 +141,7 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::MAX_NAME_CHARS;
+    use super::{MAX_NAME_CHARS, MAX_SEARCH_SCAN};
     use crate::store::test_util::store;
     use crate::{CoreError, new_ulid};
 
@@ -286,5 +294,40 @@ mod tests {
         assert_eq!(ids("0%"), std::slice::from_ref(&pct.public_id));
         assert_eq!(ids("a_b"), std::slice::from_ref(&under.public_id));
         assert!(ids("%").len() == 1 && ids("_").len() == 1);
+    }
+    #[test]
+    fn search_scans_at_most_max_search_scan_names() {
+        assert_eq!(MAX_SEARCH_SCAN, 10_000);
+        let (_d, st) = store();
+        // MAX_SEARCH_SCAN names sorting before one more, "zed", which lies past the scan.
+        st.with_conn(|c| {
+            let tx = c.unchecked_transaction()?;
+            {
+                let mut ins = tx.prepare(
+                    "INSERT INTO viewers (id, public_id, display_name, created_at)
+                     VALUES (?1, 'u_' || lower(hex(randomblob(11))), ?2, '2026-01-01T00:00:00Z')",
+                )?;
+                for i in 0..=MAX_SEARCH_SCAN {
+                    let name = if i == MAX_SEARCH_SCAN {
+                        "zed".to_string()
+                    } else {
+                        format!("a{i:05}")
+                    };
+                    ins.execute(rusqlite::params![format!("v{i}"), name])?;
+                }
+            }
+            tx.commit()?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            st.search_viewers("a09999", 8).unwrap().len(),
+            1,
+            "the last scanned name is found"
+        );
+        assert!(
+            st.search_viewers("zed", 8).unwrap().is_empty(),
+            "a name past the scan is not reached"
+        );
     }
 }

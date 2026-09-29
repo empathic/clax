@@ -4,37 +4,89 @@
 
 pub const RESET_CSS: &str = "*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0;min-height:100%}img,video,svg{max-width:100%;display:block}";
 
-/// The bridge tag for the version's index page.
-pub fn bridge_tag(artifact_id: &str, version: u32, contract: &str) -> String {
-    bridge_tag_for(artifact_id, version, contract, crate::publish::INDEX)
-}
+/// Where the daemon serves the bridge script. A tag names it with `?v=<bridge
+/// version>` (a short hash of the bundle), so a changed bridge has a new URL.
+pub const BRIDGE_PATH: &str = "/_artifax/bridge.js";
 
-/// The bridge tag for the page published at `file`; `data-file` carries the
-/// path, attribute-escaped.
-pub fn bridge_tag_for(artifact_id: &str, version: u32, contract: &str, file: &str) -> String {
-    let file = file
-        .replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;");
-    format!(
-        "<script src=\"/_artifax/bridge.js\" data-artifact=\"{artifact_id}\" data-version=\"{version}\" data-contract=\"{contract}\" data-file=\"{file}\"></script>"
+/// The bridge tag for the version's index page.
+pub fn bridge_tag(artifact_id: &str, version: u32, contract: &str, bridge: &str) -> String {
+    bridge_tag_for(
+        artifact_id,
+        version,
+        contract,
+        crate::publish::INDEX,
+        bridge,
     )
 }
 
-const BRIDGE_START: &str = "<script src=\"/_artifax/bridge.js\"";
+/// The bridge tag for the page published at `file`; `data-file` carries the
+/// path, attribute-escaped. `bridge` is the bridge version its URL carries
+/// (`/_artifax/bridge.js?v=<bridge>`); empty names the bare URL.
+pub fn bridge_tag_for(
+    artifact_id: &str,
+    version: u32,
+    contract: &str,
+    file: &str,
+    bridge: &str,
+) -> String {
+    let attr = |s: &str| {
+        s.replace('&', "&amp;")
+            .replace('"', "&quot;")
+            .replace('<', "&lt;")
+            .replace('>', "&gt;")
+    };
+    let file = attr(file);
+    let src = if bridge.is_empty() {
+        BRIDGE_PATH.to_string()
+    } else {
+        format!("{BRIDGE_PATH}?v={}", attr(bridge))
+    };
+    format!(
+        "<script src=\"{src}\" data-artifact=\"{artifact_id}\" data-version=\"{version}\" data-contract=\"{contract}\" data-file=\"{file}\"></script>"
+    )
+}
 
-/// `page` without any bridge tag an earlier serve inserted (from
-/// `<script src="/_artifax/bridge.js"` to the next `</script>`, or to the end
-/// when unterminated), so a page republished from its served DOM runs exactly
-/// one bridge: the one for the version and file being served.
+/// Every bridge tag begins with this.
+const BRIDGE_START: &str = "<script src=\"/_artifax/bridge.js";
+/// What follows the URL in every bridge tag the daemon has written.
+const BRIDGE_ATTRS: &str = "\" data-artifact=\"";
+
+/// Whether `at` begins with a bridge tag exactly as the daemon writes it: the
+/// bare URL (as tags carried before the URL named a version) or the URL with
+/// `?v=<lowercase hex>`, then ` data-artifact="`. Anything else that merely
+/// contains the URL (a page's own string or comment) is not a bridge tag.
+fn is_bridge_tag(at: &str) -> bool {
+    let Some(rest) = at.strip_prefix(BRIDGE_START) else {
+        return false;
+    };
+    let rest = match rest.strip_prefix("?v=") {
+        Some(v) => v.trim_start_matches(|c: char| matches!(c, '0'..='9' | 'a'..='f')),
+        None => rest,
+    };
+    rest.starts_with(BRIDGE_ATTRS)
+}
+
+/// `page` without any bridge tag an earlier serve inserted (from a tag
+/// [`is_bridge_tag`] recognises to the next `</script>`, or to the end when
+/// unterminated), so a page
+/// republished from its served DOM runs exactly one bridge: the one for the
+/// version and file being served, at the current bridge URL.
 fn strip_bridge_tags(page: &str) -> std::borrow::Cow<'_, str> {
-    if !page.contains(BRIDGE_START) {
+    if !page
+        .match_indices(BRIDGE_START)
+        .any(|(i, _)| is_bridge_tag(&page[i..]))
+    {
         return std::borrow::Cow::Borrowed(page);
     }
     let mut out = String::with_capacity(page.len());
     let mut rest = page;
     while let Some(i) = rest.find(BRIDGE_START) {
+        if !is_bridge_tag(&rest[i..]) {
+            let past = i + BRIDGE_START.len();
+            out.push_str(&rest[..past]);
+            rest = &rest[past..];
+            continue;
+        }
         out.push_str(&rest[..i]);
         rest = match rest[i..].find("</script>") {
             Some(j) => &rest[i + j + "</script>".len()..],
@@ -153,8 +205,21 @@ fn find_from(bytes: &[u8], from: usize, needle: &[u8], ignore_case: bool) -> Opt
 }
 
 /// [`wrap_page`] for the version's index page.
-pub fn wrap_document(page: &str, artifact_id: &str, version: u32, contract: &str) -> String {
-    wrap_page(page, artifact_id, version, contract, crate::publish::INDEX)
+pub fn wrap_document(
+    page: &str,
+    artifact_id: &str,
+    version: u32,
+    contract: &str,
+    bridge: &str,
+) -> String {
+    wrap_page(
+        page,
+        artifact_id,
+        version,
+        contract,
+        crate::publish::INDEX,
+        bridge,
+    )
 }
 
 /// Returns the page published at `file` as served, with exactly one bridge
@@ -170,10 +235,11 @@ pub fn wrap_page(
     version: u32,
     contract: &str,
     file: &str,
+    bridge: &str,
 ) -> String {
     let page = strip_bridge_tags(page);
     let page = page.as_ref();
-    let tag = bridge_tag_for(artifact_id, version, contract, file);
+    let tag = bridge_tag_for(artifact_id, version, contract, file, bridge);
 
     if is_full_document(page) {
         if let Some(pos) = body_tag_end(page) {
@@ -195,6 +261,9 @@ pub fn wrap_page(
 mod tests {
     use super::*;
 
+    /// The bridge version the tests serve.
+    const V: &str = "0123456789ab";
+
     #[test]
     fn fragment_is_wrapped_with_skeleton_and_bridge_first_in_body() {
         let out = wrap_document(
@@ -202,12 +271,13 @@ mod tests {
             "7q3k9mzx2b4t",
             2,
             "0.2.61",
+            V,
         );
         assert!(
             out.starts_with("<!doctype html><html><head><meta charset=utf8><meta name=viewport")
         );
         let body = out.find("<body>").unwrap();
-        let tag = out.find("<script src=\"/_artifax/bridge.js\"").unwrap();
+        let tag = out.find("<script src=\"/_artifax/bridge.js").unwrap();
         assert!(tag > body && tag < out.find("<title>").unwrap());
         assert!(out.contains(
             "data-artifact=\"7q3k9mzx2b4t\" data-version=\"2\" data-contract=\"0.2.61\""
@@ -219,11 +289,11 @@ mod tests {
     fn full_document_is_recognised_case_insensitively_and_bridge_goes_after_body_tag() {
         let page = "\n  <!DOCTYPE HTML><html><head><title>x</title></head><body class=\"x\" data-a=\"1\"><p>hi</p></body></html>";
         assert!(is_full_document(page));
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.starts_with("\n  <!DOCTYPE HTML>"), "served as-is");
         let body_end = out.find("<body class=\"x\" data-a=\"1\">").unwrap()
             + "<body class=\"x\" data-a=\"1\">".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")));
+        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
         assert_eq!(
             out.matches("<!DOCTYPE").count() + out.matches("<!doctype").count(),
             1,
@@ -238,10 +308,11 @@ mod tests {
             "7q3k9mzx2b4t",
             1,
             "0.2.61",
+            V,
         );
         assert!(out.starts_with(&format!(
             "<!doctype html>{}",
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         )));
     }
 
@@ -249,19 +320,19 @@ mod tests {
     fn xhtml_doctype_with_body_gets_bridge_after_body_and_is_not_double_wrapped() {
         let page = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html><head><title>x</title></head><body><p>hi</p></body></html>";
         assert!(is_full_document(page));
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         let body_end = out.find("<body>").unwrap() + "<body>".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")));
+        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
         assert!(out.starts_with("<!DOCTYPE html PUBLIC"));
         assert_eq!(out.to_lowercase().matches("<!doctype").count(), 1);
     }
 
     #[test]
     fn doctype_with_space_and_no_body_gets_bridge_after_its_closing_bracket() {
-        let out = wrap_document("<!doctype html ><p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document("<!doctype html ><p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.starts_with(&format!(
             "<!doctype html >{}<p>x</p>",
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         )));
     }
 
@@ -269,17 +340,17 @@ mod tests {
     fn bom_prefixed_doctype_is_recognised_and_bom_preserved() {
         let page = "\u{FEFF}<!doctype html><p>x</p>";
         assert!(is_full_document(page));
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.starts_with(&format!(
             "\u{FEFF}<!doctype html>{}",
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         )));
     }
 
     #[test]
     fn body_inside_a_comment_is_not_the_body_tag() {
         let page = "<!doctype html><html><head><!-- <body> --></head><body><p></p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         let real = out
             .find("<body><script")
             .expect("bridge after real body tag");
@@ -290,32 +361,30 @@ mod tests {
     fn non_ascii_before_body_tag_does_not_panic() {
         let page =
             "<!doctype html><html><head><title>é — ü</title></head><body><p>x</p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         let body_end = out.find("<body>").unwrap() + "<body>".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")));
+        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
     }
 
     #[test]
     fn non_ascii_before_missing_body_tag_does_not_panic() {
         let page = "<!doctype html><title>é — ü</title><p>x</p>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.starts_with(&format!(
             "<!doctype html>{}",
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         )));
     }
 
     #[test]
     fn body_inside_script_is_not_the_body_tag() {
         let page = "<!doctype html><html><head><script>var a=\"<body>\";</script></head><body><p>x</p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         // The real <body> tag should have the bridge after it
-        let body_end = out
-            .find("<body><script src=\"/_artifax/bridge.js\"")
-            .unwrap()
-            + "<body>".len();
+        let body_end =
+            out.find("<body><script src=\"/_artifax/bridge.js").unwrap() + "<body>".len();
         assert!(
-            out[body_end..].starts_with("<script src=\"/_artifax/bridge.js\""),
+            out[body_end..].starts_with("<script src=\"/_artifax/bridge.js"),
             "bridge should be directly after real body tag"
         );
         assert!(out.contains("<script>var a=\"<body>\";"));
@@ -323,14 +392,14 @@ mod tests {
 
     #[test]
     fn unterminated_comment_or_raw_text_hides_the_rest_of_the_page() {
-        let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61");
+        let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V);
         for page in [
             "<!doctype html><!-- x<body>",
             "<!doctype html><script>x<body>",
             "<!doctype html><style>x<body>",
             "<!doctype html><script>let s = 1;</scrip<body>",
         ] {
-            let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+            let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
             assert_eq!(
                 out,
                 format!("<!doctype html>{tag}{}", &page["<!doctype html>".len()..]),
@@ -342,17 +411,17 @@ mod tests {
     #[test]
     fn the_bridge_tag_names_its_file_escaped() {
         assert!(
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
                 .ends_with("data-contract=\"0.2.61\" data-file=\"index.html\"></script>")
         );
-        let out = wrap_page("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", "a\"&<b>.html");
+        let out = wrap_page("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", "a\"&<b>.html", V);
         assert!(
             out.contains("data-file=\"a&quot;&amp;&lt;b&gt;.html\"></script>"),
             "{out}"
         );
         assert_eq!(
-            wrap_document("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61"),
-            wrap_page("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", "index.html")
+            wrap_document("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", V),
+            wrap_page("<p>x</p>", "7q3k9mzx2b4t", 1, "0.2.61", "index.html", V)
         );
     }
 
@@ -364,9 +433,10 @@ mod tests {
             1,
             "0.2.61",
             "about.html",
+            V,
         );
         // A page that republishes its served DOM sends the version 1 bridge tag back.
-        let served_v2 = wrap_page(&served_v1, "7q3k9mzx2b4t", 2, "0.2.61", "about.html");
+        let served_v2 = wrap_page(&served_v1, "7q3k9mzx2b4t", 2, "0.2.61", "about.html", V);
         assert_eq!(
             served_v2.matches("/_artifax/bridge.js").count(),
             1,
@@ -378,9 +448,9 @@ mod tests {
         assert_eq!(served_v2.matches("<!doctype").count(), 1);
         let fragment = format!(
             "<p>a</p>{}<p>b</p>",
-            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61")
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         );
-        let out = wrap_document(&fragment, "7q3k9mzx2b4t", 2, "0.2.61");
+        let out = wrap_document(&fragment, "7q3k9mzx2b4t", 2, "0.2.61", V);
         assert_eq!(out.matches("/_artifax/bridge.js").count(), 1);
         assert!(out.contains("<p>a</p><p>b</p>"));
     }
@@ -388,10 +458,11 @@ mod tests {
     #[test]
     fn an_unterminated_bridge_tag_is_dropped_with_the_rest_of_the_page() {
         let out = wrap_document(
-            "<!doctype html><body><p>keep</p><script src=\"/_artifax/bridge.js\" data-version=\"1\">",
+            "<!doctype html><body><p>keep</p><script src=\"/_artifax/bridge.js\" data-artifact=\"7q3k9mzx2b4t\" data-version=\"1\">",
             "7q3k9mzx2b4t",
             2,
             "0.2.61",
+            V,
         );
         assert_eq!(out.matches("/_artifax/bridge.js").count(), 1);
         assert!(out.contains("<p>keep</p>"));
@@ -400,12 +471,55 @@ mod tests {
     #[test]
     fn bodyx_is_not_body_and_body_with_newline_is() {
         let page1 = "<!doctype html><bodyx><p>x</p>";
-        let out1 = wrap_document(page1, "id1", 1, "0.2.61");
+        let out1 = wrap_document(page1, "id1", 1, "0.2.61", V);
         assert!(out1.contains("<bodyx><p>x</p>"));
 
         let page2 = "<!doctype html><body\n class=\"a\"><p>x</p></body></html>";
-        let out2 = wrap_document(page2, "id2", 1, "0.2.61");
+        let out2 = wrap_document(page2, "id2", 1, "0.2.61", V);
         let body_end = out2.find("<body\n class=\"a\">").unwrap() + "<body\n class=\"a\">".len();
-        assert!(out2[body_end..].starts_with(&bridge_tag("id2", 1, "0.2.61")));
+        assert!(out2[body_end..].starts_with(&bridge_tag("id2", 1, "0.2.61", V)));
+    }
+    #[test]
+    fn the_bridge_url_carries_the_bridge_version() {
+        assert!(
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", "0123456789ab").starts_with(
+                "<script src=\"/_artifax/bridge.js?v=0123456789ab\" data-artifact=\"7q3k9mzx2b4t\""
+            )
+        );
+        assert!(
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", "")
+                .starts_with("<script src=\"/_artifax/bridge.js\" data-artifact="),
+            "no version known: the bare URL"
+        );
+    }
+
+    #[test]
+    fn republished_bare_and_versioned_bridge_tags_leave_one_current_tag() {
+        let bare = "<script src=\"/_artifax/bridge.js\" data-artifact=\"7q3k9mzx2b4t\" data-version=\"1\" data-contract=\"0.2.61\" data-file=\"index.html\"></script>";
+        let old = bridge_tag("7q3k9mzx2b4t", 2, "0.2.61", "ffffffffffff");
+        for page in [
+            format!("<!doctype html><html><body>{bare}<p>x</p></body></html>"),
+            format!("<!doctype html><html><body>{old}<p>x</p></body></html>"),
+            format!("<!doctype html><html><body>{old}<p>x</p>{bare}</body></html>"),
+        ] {
+            let out = wrap_document(&page, "7q3k9mzx2b4t", 3, "0.2.61", V);
+            assert_eq!(out.matches("/_artifax/bridge.js").count(), 1, "{out}");
+            assert!(
+                out.contains(&bridge_tag("7q3k9mzx2b4t", 3, "0.2.61", V)),
+                "{out}"
+            );
+            assert!(out.contains("<p>x</p></body>"), "{out}");
+        }
+        let other = "<script src=\"/_artifax/bridge.jsx\"></script>";
+        let own = "<script>const s = '<script src=\"/_artifax/bridge.js';</script><!-- <script src=\"/_artifax/bridge.js?v=1\"> --><script>const t = '<script src=\"/_artifax/bridge.js?v=x\" data-artifact=';</script>";
+        let out = wrap_document(&format!("<p>{own}</p>"), "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert!(out.contains(own), "the page's own text is kept: {out}");
+        assert_eq!(
+            out.matches(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V))
+                .count(),
+            1
+        );
+        let out = wrap_document(&format!("<p>{other}</p>"), "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert!(out.contains(other), "another script is kept: {out}");
     }
 }
