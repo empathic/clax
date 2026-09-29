@@ -12,6 +12,8 @@ export type ArtifactEvent =
   | { type: "doc"; artifact_id: string; path: string; version: number | null }
   /** The stream (re)connected; anything published while it was down was missed, so refetch state. */
   | { type: "ready" }
+  /** The stream failed and is reconnecting (or gave up): nothing is announced until the next `ready`. */
+  | { type: "stream_down" }
   /** The stream dropped events; refetch state. */
   | { type: "resync"; dropped: number };
 
@@ -27,6 +29,7 @@ export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => voi
   es.addEventListener("artifact_deleted", handler);
   for (const name of ["thread", "comment", "thread_resolved", "feedback_state", "doc"]) es.addEventListener(name, handler);
   es.addEventListener("ready", () => onEvent({ type: "ready" }));
+  es.addEventListener("error", () => onEvent({ type: "stream_down" }));
   es.addEventListener("resync", (e: MessageEvent) => {
     try { onEvent({ type: "resync", dropped: Number(JSON.parse(e.data).dropped) || 0 }); } catch { onEvent({ type: "resync", dropped: 0 }); }
   });

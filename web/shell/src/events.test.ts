@@ -57,4 +57,14 @@ describe("subscribe", () => {
     FakeES.last.emit("thread_resolved", resolved);
     expect(seen).toEqual([fs, thread, comment, resolved]);
   });
+
+  it("forwards doc events, and reports a failed stream as stream_down", () => {
+    vi.stubGlobal("EventSource", FakeES);
+    const seen: unknown[] = [];
+    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    const d = { type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/a", version: null };
+    FakeES.last.emit("doc", d);
+    FakeES.last.listeners.get("error")?.(new MessageEvent("error"));
+    expect(seen).toEqual([d, { type: "stream_down" }]);
+  });
 });

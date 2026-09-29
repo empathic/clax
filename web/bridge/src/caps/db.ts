@@ -11,6 +11,8 @@ export type DbSpec =
   | { kind: "query"; collection: string; where: Where[]; orderBy: string | null; desc: boolean; limit: number | null };
 
 export const MAX_SUBSCRIPTIONS = 64;
+/** A document body's limit as serialized JSON (db.d.ts; the daemon's `MAX_DOC_BYTES`). */
+export const MAX_DOC_BYTES = 256 * 1024;
 const MAX_FILTERS = 10;
 const MAX_IN = 30;
 const OPS = new Set(["==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains"]);
@@ -43,6 +45,18 @@ const invalid = (message: string) => new CapabilityError("invalid_argument", mes
 
 function plainObject(v: unknown): asserts v is Record<string, unknown> {
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw invalid("a document body is a plain JSON object");
+  let json: string;
+  try {
+    json = JSON.stringify(v);
+  } catch (e) {
+    throw invalid(`a document body is plain JSON: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  if (new TextEncoder().encode(json).length > MAX_DOC_BYTES) throw invalid(`a document is at most ${MAX_DOC_BYTES} bytes as JSON`);
+}
+
+function segment(v: unknown, what: string): string {
+  if (typeof v !== "string") throw new TypeError(`${what} is a string`);
+  return v;
 }
 
 function deepFreeze<T>(v: T): T {
@@ -157,7 +171,10 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
   function query(s: QState) {
     return {
       where: (field: string, op: string, value: unknown) => query({ ...s, where: [...s.where, [field, op, value]] }),
-      orderBy: (field: string, dir: "asc" | "desc" = "asc") => query({ ...s, orderBy: field, desc: dir === "desc", orders: s.orders + 1 }),
+      orderBy: (field: string, dir: "asc" | "desc" = "asc") => {
+        if (dir !== "asc" && dir !== "desc") throw new TypeError(`orderBy's direction is "asc" or "desc", not '${String(dir)}'`);
+        return query({ ...s, orderBy: field, desc: dir === "desc", orders: s.orders + 1 });
+      },
       limit: (n: number) => query({ ...s, limit: n }),
       async get(): Promise<QuerySnapshot> {
         checkQuery(s);
@@ -219,7 +236,7 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
           next(last.snap);
         }, error);
       },
-      collection: (sub: string) => collectionRef(`${path}/${sub}`),
+      collection: (sub: string) => collectionRef(`${path}/${segment(sub, "a collection ID")}`),
     };
   }
 
@@ -228,7 +245,7 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
     const ref = {
       ...query({ collection: path, where: [], orderBy: null, desc: false, limit: null, orders: 0 }),
       path,
-      doc: (id?: string) => docRef(`${path}/${id === undefined ? newId() : id}`),
+      doc: (id?: string) => docRef(`${path}/${id === undefined ? newId() : segment(id, "a document ID")}`),
       async add(data: Record<string, unknown>) {
         const d = ref.doc();
         await d.set(data);

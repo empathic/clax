@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { MAX_SUBSCRIPTIONS, checkCollectionPath, checkDocPath, makeDb, querySnapshot, type WireDoc } from "../src/caps/db";
+import { MAX_DOC_BYTES, MAX_SUBSCRIPTIONS, checkCollectionPath, checkDocPath, makeDb, querySnapshot, type WireDoc } from "../src/caps/db";
 import { CapabilityError } from "../src/rpc";
 
 type Listener = (d: unknown) => void;
@@ -129,5 +129,32 @@ describe("db refs", () => {
     const db = makeDb(f.rpc as never);
     await expect(db.doc("locks/l").acquire({} as never)).rejects.toMatchObject({ code: "invalid_argument" });
     await expect(db.doc("locks/l").acquire({ holder: "h" })).resolves.toMatchObject({ acquired: true });
+  });
+});
+
+describe("db fix round 1", () => {
+  it("non-string segments and unknown orderBy directions throw TypeError", () => {
+    const { rpc } = fakeRpc();
+    const db = makeDb(rpc as never);
+    expect(() => db.doc("tasks/t1").collection(undefined as never)).toThrow(TypeError);
+    expect(() => db.doc("tasks/t1").collection(7 as never)).toThrow(TypeError);
+    expect(() => db.collection("tasks").doc(null as never)).toThrow(TypeError);
+    expect(() => db.collection("tasks").orderBy("n", "up" as never)).toThrow(TypeError);
+    expect(() => db.collection("tasks").orderBy("n", "desc")).not.toThrow();
+    expect(() => db.collection("tasks").orderBy("n")).not.toThrow();
+  });
+
+  it(`bodies over ${MAX_DOC_BYTES} bytes reject invalid_argument before any call`, async () => {
+    const f = fakeRpc();
+    const db = makeDb(f.rpc as never);
+    const big = { s: "x".repeat(MAX_DOC_BYTES) };
+    await expect(db.doc("tasks/t1").set(big)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(db.doc("tasks/t1").update(big)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(db.collection("tasks").add(big)).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(db.doc("locks/l").acquire({ holder: "h", data: big })).rejects.toMatchObject({ code: "invalid_argument" });
+    await expect(db.doc("tasks/t1").set({ n: 1n } as never)).rejects.toMatchObject({ code: "invalid_argument" });
+    expect(f.calls).toEqual([]);
+    await db.doc("tasks/t1").set({ s: "x".repeat(MAX_DOC_BYTES - 10) });
+    expect(f.calls).toHaveLength(1);
   });
 });

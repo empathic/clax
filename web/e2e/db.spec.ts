@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openArtifact, publishWith, startDaemon } from "./fixtures";
+import { api, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -62,5 +62,86 @@ test("LAN: an unnamed viewer reads but cannot write; naming them makes them a wr
     name.press("Enter"),
   ]);
   await f.locator("#add").click();
+  await expect(f.locator("#out")).toContainText('"n":1');
+});
+
+const PROBE = `<!doctype html><html><head><title>Probe</title></head><body><p id="p">probe</p></body></html>`;
+
+/** Runs `fn(db, arg)` in the frame's page with its `db` namespace. */
+type Db = unknown;
+async function withDb<T>(f: import("@playwright/test").Frame, fn: string, arg: unknown = null): Promise<T> {
+  return f.evaluate(async ([body, a]) => {
+    const db = await (window as unknown as { claude: { use(n: string): Promise<Db> } }).claude.use("db");
+    return new Function("db", "arg", `return (async () => { ${body} })()`)(db, a);
+  }, [fn, arg] as const);
+}
+
+async function publicId(page: import("@playwright/test").Page): Promise<string> {
+  return page.evaluate(async () => (await (await fetch("/api/viewers/me")).json()).viewer.public_id as string);
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: get, update and delete round trip, and a where + limit query`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Probe ${mode}`, PROBE, { db: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    const r = await withDb<unknown>(f, `
+      const t = db.doc("tasks/t1");
+      const out = [];
+      out.push((await t.get()).exists);
+      await t.set({ title: "Ship", n: 1 });
+      out.push((await t.get()).data());
+      await t.update({ n: 2, done: true });
+      out.push((await t.get()).data());
+      await t.delete();
+      const gone = await t.get();
+      out.push([gone.exists, gone.data() === undefined]);
+      for (let i = 1; i <= 6; i++) await db.doc("tasks/q" + i).set({ n: i, kind: i % 2 ? "odd" : "even" });
+      const q = await db.collection("tasks").where("kind", "==", "odd").where("n", ">", 1).orderBy("n", "desc").limit(1).get();
+      out.push(q.docs.map(d => [d.id, d.data().n]));
+      const all = await db.collection("tasks").where("n", "in", [2, 4]).get();
+      out.push(all.docs.map(d => d.id).sort());
+      try { await db.collection("tasks").where("n", "~", 1).get(); } catch (e) { out.push(e.code); }
+      return out;`);
+    expect(r).toEqual([false, { title: "Ship", n: 1 }, { title: "Ship", n: 2, done: true }, [false, true], [["q5", 5]], ["q2", "q4"], "invalid_argument"]);
+  });
+
+  test(`${mode}: a viewer's data/users/<id>/ documents are invisible to another viewer`, async ({ browser }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Private ${mode}`, PROBE, { db: {} });
+    const [ca, cb] = [await browser.newContext(), await browser.newContext()];
+    const [pa, pb] = [await ca.newPage(), await cb.newPage()];
+    const fa = await openArtifact(pa, d.base, artifact.id, 1, mode);
+    const fb = await openArtifact(pb, d.base, artifact.id, 1, mode);
+    const [ida, idb] = [await publicId(pa), await publicId(pb)];
+    expect(ida).not.toBe(idb);
+    await withDb(fa, `await db.doc("data/users/" + arg + "/profile").set({ pick: 3 });`, ida);
+    expect(await withDb(fa, `return (await db.doc("data/users/" + arg + "/profile").get()).data();`, ida)).toEqual({ pick: 3 });
+    const seenByB = await withDb<unknown>(fb, `
+      const out = [];
+      out.push((await db.doc("data/users/" + arg.a + "/profile").get()).exists);
+      out.push((await db.collection("data/users/" + arg.a).get()).size);
+      try { await db.doc("data/users/" + arg.a + "/profile").set({ pick: 9 }); out.push("wrote"); } catch (e) { out.push(e.code); }
+      await db.doc("data/users/" + arg.b + "/profile").set({ pick: 5 });
+      out.push((await db.doc("data/users/" + arg.b + "/profile").get()).data());
+      return out;`, { a: ida, b: idb });
+    expect(seenByB).toEqual([false, 0, "invalid_argument", { pick: 5 }]);
+    expect(await withDb(fa, `return (await db.doc("data/users/" + arg + "/profile").get()).data();`, ida)).toEqual({ pick: 3 });
+    await ca.close();
+    await cb.close();
+  });
+
+  test(`${mode}: use("db") resolves null for a page that does not declare it`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Undeclared ${mode}`, PROBE, {});
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    expect(await f.evaluate(async () => (await (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("db")) === null)).toBe(true);
+  });
+}
+
+test("LAN: naming the viewer refetches subscriptions under its new level", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Board LAN read", BOARD, { db: { rules: [{ path: "", read: "interact" }] } });
+  await api(d.base, d.token, `/api/artifacts/${artifact.id}/docs/cards/c1`, { method: "PUT", body: JSON.stringify({ data: { at: 0 }, lww: true }) });
+  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
+  await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
+  await page.getByRole("textbox", { name: "Your name" }).fill("Ada");
+  await page.getByRole("textbox", { name: "Your name" }).press("Enter");
   await expect(f.locator("#out")).toContainText('"n":1');
 });

@@ -1,9 +1,12 @@
 // db.d.ts in the shell: calls go to the Docs routes as this viewer (the cookie
 // always; the token in the owner shell) and every write is last-writer-wins
 // (`lww: true`). Subscriptions refetch, debounced, on each SSE `doc` event that
-// touches them and on `resync` or `ready`, and push the result to the frame.
-// The page is untrusted: paths and query specs are checked here before they
-// become URLs, whatever the bridge already checked.
+// touches them, on `resync`, `ready` and `version`, and right after this
+// shell's own writes, and push the result to the frame. While the event stream
+// is down every subscription is refreshed every [`POLL_MS`]; a refetch the
+// daemon could not answer is retried after [`RETRY_MS`]. The page is
+// untrusted: every argument is checked here before any request, whatever the
+// bridge already checked.
 import type { ArtifactEvent } from "../events";
 import { CapError } from "./errors";
 import type { HandlerFactory } from "./host";
@@ -15,12 +18,26 @@ type ApiDoc = WireDoc & { collection: string; updated_at: string };
 
 export const SNAPSHOT_DEBOUNCE_MS = 25;
 export const MAX_SUBSCRIPTIONS = 64;
+/** Refresh period for every subscription while the event stream is down. */
+export const POLL_MS = 30_000;
+/** Delays before retrying a refetch that failed `unavailable`: the first, then every later one. */
+export const RETRY_MS = [5_000, 30_000] as const;
+export const MAX_DOC_BYTES = 256 * 1024;
+const MAX_FILTERS = 10;
+const MAX_IN = 30;
+const MAX_FIELD = 200;
+const MAX_HOLDER = 200;
+const MAX_SUB_ID = 64;
+const MIN_LEASE_MS = 1_000;
+const MAX_LEASE_MS = 600_000;
+const OPS = new Set(["==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains"]);
 
 /** A daemon error as the page sees it (db.d.ts `DbErrorCode`). A refused
  * write reads as not found in the daemon; the page gets `invalid_argument`. */
 export function dbError(status: number, err: { code?: string; message?: string }, write: boolean): CapError {
   const message = err.message ?? `HTTP ${status}`;
   if (err.code === "quota_exceeded" || err.code === "resource_exhausted") return new CapError(err.code, message);
+  if (status === 413 || status === 414 || status === 431) return new CapError("invalid_argument", `the request is too large: ${message}`);
   if (status === 404 && write) return new CapError("invalid_argument", "this document does not exist, or this viewer cannot write it");
   if ([400, 403, 404, 409].includes(status)) return new CapError("invalid_argument", message);
   if (status === 408 || status === 429) return new CapError("resource_exhausted", message);
@@ -40,14 +57,70 @@ export function checkPath(path: unknown, parity: 0 | 1): string {
   return path as string;
 }
 
-function checkSpec(v: unknown): Spec {
-  const s = (v ?? {}) as Record<string, unknown>;
-  if (s.kind === "doc") return { kind: "doc", path: checkPath(s.path, 0) };
-  if (s.kind === "query" && Array.isArray(s.where) && (s.orderBy === null || typeof s.orderBy === "string")
-    && (s.limit === null || Number.isInteger(s.limit))) {
-    return { kind: "query", collection: checkPath(s.collection, 1), where: s.where, orderBy: s.orderBy as string | null, desc: s.desc === true, limit: s.limit as number | null };
+const invalid = (message: string) => new CapError("invalid_argument", message);
+
+/** `v` serialized, when it is plain JSON (not undefined, no BigInt, no cycles). */
+function jsonOf(v: unknown): string | null {
+  try {
+    const s = JSON.stringify(v);
+    return typeof s === "string" ? s : null;
+  } catch {
+    return null;
   }
-  throw new CapError("invalid_argument", "a subscription is a document path or a query");
+}
+
+/** `v` when it is a plain JSON object within [`MAX_DOC_BYTES`]. */
+function checkBody(v: unknown): Record<string, unknown> {
+  if (v === null || typeof v !== "object" || Array.isArray(v)) throw invalid("a document body is a plain JSON object");
+  const s = jsonOf(v);
+  if (s === null) throw invalid("a document body is plain JSON");
+  if (new TextEncoder().encode(s).length > MAX_DOC_BYTES) throw invalid(`a document is at most ${MAX_DOC_BYTES} bytes as JSON`);
+  return v as Record<string, unknown>;
+}
+
+function checkWhere(v: unknown): [string, string, unknown][] {
+  if (!Array.isArray(v) || v.length > MAX_FILTERS) throw invalid(`where is a list of at most ${MAX_FILTERS} filters`);
+  return v.map(w => {
+    if (!Array.isArray(w) || w.length !== 3) throw invalid("a filter is [field, operator, value]");
+    const [field, op, value] = w as unknown[];
+    if (typeof field !== "string" || !field || field.length > MAX_FIELD) throw invalid(`a filter's field is 1 to ${MAX_FIELD} characters`);
+    if (typeof op !== "string" || !OPS.has(op)) throw invalid(`'${String(op)}' is not a query operator`);
+    if (jsonOf(value) === null) throw invalid("a filter's value is plain JSON");
+    if ((op === "in" || op === "not-in") && !(Array.isArray(value) && value.length <= MAX_IN)) throw invalid(`in and not-in take an array of at most ${MAX_IN} values`);
+    return [field, op, value];
+  });
+}
+
+function checkSpec(v: unknown): Spec {
+  const s = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  if (s.kind === "doc") return { kind: "doc", path: checkPath(s.path, 0) };
+  if (s.kind !== "query") throw invalid("a subscription is a document path or a query");
+  const collection = checkPath(s.collection, 1);
+  const where = checkWhere(s.where);
+  if (!(s.orderBy === null || (typeof s.orderBy === "string" && s.orderBy && s.orderBy.length <= MAX_FIELD))) throw invalid("orderBy is a field name or null");
+  if (typeof s.desc !== "boolean") throw invalid("desc is a boolean");
+  if (!(s.limit === null || (Number.isInteger(s.limit) && (s.limit as number) >= 1 && (s.limit as number) <= 1000))) throw invalid("limit is an integer from 1 to 1000, or null");
+  return { kind: "query", collection, where, orderBy: s.orderBy as string | null, desc: s.desc, limit: s.limit as number | null };
+}
+
+function checkSubId(v: unknown): string {
+  if (typeof v !== "string" || !v || v.length > MAX_SUB_ID) throw invalid(`a subscription ID is 1 to ${MAX_SUB_ID} characters`);
+  return v;
+}
+
+/** The acquire body: `holder` 1 to 200 characters; `ttlMs` floored and clamped
+ * to the daemon's bounds (absent or 0 is its default); `data` a body. */
+function checkAcquire(v: unknown): { holder: string; ttl_ms?: number; data?: Record<string, unknown> } {
+  const o = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
+  if (typeof o.holder !== "string" || !o.holder || o.holder.length > MAX_HOLDER) throw invalid(`holder is 1 to ${MAX_HOLDER} characters`);
+  const out: { holder: string; ttl_ms?: number; data?: Record<string, unknown> } = { holder: o.holder };
+  if (o.ttlMs !== undefined) {
+    if (typeof o.ttlMs !== "number" || !Number.isFinite(o.ttlMs) || o.ttlMs < 0) throw invalid("ttlMs is a finite number of milliseconds, 0 or more");
+    const ms = Math.floor(o.ttlMs);
+    if (ms > 0) out.ttl_ms = Math.min(MAX_LEASE_MS, Math.max(MIN_LEASE_MS, ms));
+  }
+  if (o.data !== undefined) out.data = checkBody(o.data);
+  return out;
 }
 
 const wire = (d: ApiDoc): WireDoc => ({ path: d.path, id: d.id, data: d.data, version: d.version });
@@ -61,6 +134,12 @@ export const dbHandler: HandlerFactory = env => {
   // earlier fetch never overwrites a newer snapshot.
   const fetches = new Map<string, number>();
   let fetchSeq = 0;
+  // Retry timers and consecutive `unavailable` failures per subscription.
+  const retries = new Map<string, ReturnType<typeof setTimeout>>();
+  const failures = new Map<string, number>();
+  // Whether the event stream is down, and the poll that stands in for it.
+  let streamDown = false;
+  let poll: ReturnType<typeof setInterval> | null = null;
   const docUrl = (path: string) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
   async function request<T>(method: string, url: string, body?: unknown, missingIsNull = false): Promise<T | null> {
@@ -115,12 +194,20 @@ export const dbHandler: HandlerFactory = env => {
     const live = () => subs.get(sub) === spec && fetches.get(sub) === n;
     try {
       const docs = await current(spec);
-      if (live()) env.post({ type: "artifax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
+      if (!live()) return;
+      failures.delete(sub);
+      env.post({ type: "artifax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
     } catch (e) {
-      // A daemon that cannot be reached is retried by the next change, `resync` or `ready`.
-      if (!live() || (e instanceof CapError && e.code === "unavailable")) return;
-      subs.delete(sub);
-      fetches.delete(sub);
+      if (!live()) return;
+      if (e instanceof CapError && e.code === "unavailable") {
+        // Retried after a backoff (and by any change, `resync` or `ready` before then).
+        const k = (failures.get(sub) ?? 0) + 1;
+        failures.set(sub, k);
+        clearTimeout(retries.get(sub));
+        retries.set(sub, setTimeout(() => { retries.delete(sub); void push(sub); }, RETRY_MS[Math.min(k, RETRY_MS.length) - 1]));
+        return;
+      }
+      drop(sub);
       env.post({ type: "artifax:event", ns: "db", topic: "snapshot-error", data: { sub, code: e instanceof CapError ? e.code : "unavailable", message: e instanceof Error ? e.message : String(e) } });
     }
   }
@@ -130,7 +217,40 @@ export const dbHandler: HandlerFactory = env => {
     timers.set(sub, setTimeout(() => { timers.delete(sub); void push(sub); }, SNAPSHOT_DEBOUNCE_MS));
   }
 
+  /** Forgets `sub` and its timers. */
+  function drop(sub: string): void {
+    subs.delete(sub);
+    fetches.delete(sub);
+    failures.delete(sub);
+    clearTimeout(timers.get(sub));
+    timers.delete(sub);
+    clearTimeout(retries.get(sub));
+    retries.delete(sub);
+    if (subs.size === 0) stopPoll();
+  }
+
+  function stopPoll(): void {
+    if (poll !== null) clearInterval(poll);
+    poll = null;
+  }
+
+  function startPoll(): void {
+    if (poll !== null || !streamDown || subs.size === 0) return;
+    poll = setInterval(() => { for (const sub of subs.keys()) schedule(sub); }, POLL_MS);
+  }
+
   const touches = (spec: Spec, path: string) => (spec.kind === "doc" ? spec.path === path : parentOf(path) === spec.collection);
+
+  /** This shell wrote `path`: the page's matching subscriptions refetch now,
+   * without waiting for the stream's `doc` event. */
+  function echo(path: string): void {
+    for (const [sub, spec] of subs) {
+      if (!touches(spec, path)) continue;
+      clearTimeout(timers.get(sub));
+      timers.delete(sub);
+      void push(sub);
+    }
+  }
 
   return {
     async call(method, args) {
@@ -142,24 +262,30 @@ export const dbHandler: HandlerFactory = env => {
           return r ? wire(r.doc) : null;
         }
         case "set":
-          await request("PUT", docUrl(path()), { data: args[1], lww: true });
+        case "update": {
+          const p = path();
+          await request(method === "set" ? "PUT" : "PATCH", docUrl(p), { data: checkBody(args[1]), lww: true });
+          echo(p);
           return null;
-        case "update":
-          await request("PATCH", docUrl(path()), { data: args[1], lww: true });
+        }
+        case "delete": {
+          const p = path();
+          await request("DELETE", `${docUrl(p)}?lww=true`);
+          echo(p);
           return null;
-        case "delete":
-          await request("DELETE", `${docUrl(path())}?lww=true`);
-          return null;
+        }
         case "query": {
           const spec = checkSpec(arg);
           if (spec.kind !== "query") throw new CapError("invalid_argument", "query takes a query");
           return query(spec);
         }
         case "acquire": {
-          const o = (args[1] ?? {}) as { holder?: string; ttlMs?: number; data?: unknown };
+          const p = path();
+          const body = checkAcquire(args[1]);
           const r = (await request<{ acquired: boolean; version: number | null; expires_at: string | null; holder: string | null }>(
-            "POST", `${base}:acquire`, { path: path(), holder: o.holder, ttl_ms: o.ttlMs, data: o.data },
+            "POST", `${base}:acquire`, { path: p, ...body },
           ))!;
+          if (r.acquired) echo(p);
           const out: Record<string, unknown> = { acquired: r.acquired };
           if (r.version !== null && r.version !== undefined) out.version = r.version;
           if (r.expires_at) out.expiresAt = r.expires_at;
@@ -167,16 +293,17 @@ export const dbHandler: HandlerFactory = env => {
           return out;
         }
         case "subscribe": {
-          const sub = String(arg);
+          const sub = checkSubId(arg);
           const spec = checkSpec(args[1]);
           if (!subs.has(sub) && subs.size >= MAX_SUBSCRIPTIONS) throw new CapError("resource_exhausted", `at most ${MAX_SUBSCRIPTIONS} subscriptions per view`);
+          drop(sub);
           subs.set(sub, spec);
+          startPoll();
           await push(sub);
           return null;
         }
         case "unsubscribe":
-          subs.delete(String(arg));
-          fetches.delete(String(arg));
+          drop(checkSubId(arg));
           return null;
         default:
           throw new CapError("capability_removed", `db.${method} is not part of this runtime`);
@@ -185,15 +312,21 @@ export const dbHandler: HandlerFactory = env => {
     onEvent(e: ArtifactEvent) {
       if (e.type === "doc") {
         for (const [sub, spec] of subs) if (touches(spec, e.path)) schedule(sub);
-      } else if (e.type === "resync" || e.type === "ready") {
+      } else if (e.type === "resync" || e.type === "ready" || e.type === "version") {
+        // A republish may change the rules; `ready` ends a stream outage.
+        if (e.type === "ready") {
+          streamDown = false;
+          stopPoll();
+        }
         for (const sub of subs.keys()) schedule(sub);
+      } else if (e.type === "stream_down") {
+        streamDown = true;
+        startPoll();
       }
     },
     reset() {
-      subs.clear();
-      fetches.clear();
-      for (const t of timers.values()) clearTimeout(t);
-      timers.clear();
+      for (const sub of [...subs.keys()]) drop(sub);
+      stopPoll();
     },
   };
 };
