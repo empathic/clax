@@ -101,18 +101,32 @@ impl Store {
         })
     }
 
-    /// Up to `limit` named viewers whose name contains `q`, ignoring case,
+    /// Up to `limit` named viewers whose name contains `q` as literal text,
+    /// ignoring case in every script (Unicode lowercase on both sides),
     /// ordered by name (then public ID).
     pub fn search_viewers(&self, q: &str, limit: usize) -> Result<Vec<Viewer>> {
+        let needle = q.to_lowercase();
         self.with_conn(|c| {
+            // SQLite's lower() folds ASCII only, so names are matched here,
+            // streaming in name order and stopping at `limit`.
             let mut stmt = c.prepare(&format!(
-                "{VIEWER_SELECT} WHERE display_name IS NOT NULL AND instr(lower(display_name), lower(?1)) > 0
-                 ORDER BY display_name COLLATE NOCASE, public_id LIMIT ?2"
+                "{VIEWER_SELECT} WHERE display_name IS NOT NULL
+                 ORDER BY display_name COLLATE NOCASE, public_id"
             ))?;
-            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-            Ok(stmt
-                .query_map(params![q, limit], row_to_viewer)?
-                .collect::<rusqlite::Result<Vec<_>>>()?)
+            let mut out = Vec::new();
+            for v in stmt.query_map([], row_to_viewer)? {
+                if out.len() >= limit {
+                    break;
+                }
+                let v = v?;
+                if v.display_name
+                    .as_deref()
+                    .is_some_and(|n| n.to_lowercase().contains(&needle))
+                {
+                    out.push(v);
+                }
+            }
+            Ok(out)
         })
     }
 }
@@ -215,14 +229,22 @@ mod tests {
         let alex = st.upsert_viewer(&new_ulid(), Some("Alex Chen")).unwrap();
         let sam = st.upsert_viewer(&new_ulid(), Some("Sam")).unwrap();
         let anon = st.upsert_viewer(&new_ulid(), None).unwrap();
-        let found = st
+        let found: Vec<_> = st
             .viewers_by_public_ids(&[
-                alex.public_id.clone(),
                 anon.public_id.clone(),
                 "u_ffffffffffffffffffffff".into(),
+                alex.public_id.clone(),
+                "not a public ID".into(),
             ])
-            .unwrap();
-        assert_eq!(found.len(), 2);
+            .unwrap()
+            .into_iter()
+            .map(|v| v.public_id)
+            .collect();
+        assert_eq!(
+            found,
+            [anon.public_id.clone(), alex.public_id.clone()],
+            "in the order asked, unknown and malformed IDs skipped"
+        );
         let names: Vec<_> = st
             .search_viewers("A", 8)
             .unwrap()
@@ -241,5 +263,28 @@ mod tests {
         assert!(st.search_viewers("zz", 8).unwrap().is_empty());
         assert_eq!(st.search_viewers("a", 1).unwrap().len(), 1);
         let _ = sam;
+    }
+
+    #[test]
+    fn search_folds_case_beyond_ascii_and_matches_wildcards_literally() {
+        let (_d, st) = store();
+        let umlaut = st.upsert_viewer(&new_ulid(), Some("Ärger")).unwrap();
+        st.upsert_viewer(&new_ulid(), Some("Arno")).unwrap();
+        let pct = st.upsert_viewer(&new_ulid(), Some("100% sure")).unwrap();
+        st.upsert_viewer(&new_ulid(), Some("100 x sure")).unwrap();
+        let under = st.upsert_viewer(&new_ulid(), Some("a_b")).unwrap();
+        st.upsert_viewer(&new_ulid(), Some("axb")).unwrap();
+        let ids = |q: &str| -> Vec<String> {
+            st.search_viewers(q, 8)
+                .unwrap()
+                .into_iter()
+                .map(|v| v.public_id)
+                .collect()
+        };
+        assert_eq!(ids("ärger"), std::slice::from_ref(&umlaut.public_id));
+        assert_eq!(ids("ÄRGER"), std::slice::from_ref(&umlaut.public_id));
+        assert_eq!(ids("0%"), std::slice::from_ref(&pct.public_id));
+        assert_eq!(ids("a_b"), std::slice::from_ref(&under.public_id));
+        assert!(ids("%").len() == 1 && ids("_").len() == 1);
     }
 }

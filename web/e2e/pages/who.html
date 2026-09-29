@@ -12,7 +12,7 @@
   img { width: 32px; height: 32px; border-radius: 50%; vertical-align: middle; }
 </style>
 </head>
-<body>
+<body data-other="u_ffffffffffffffffffffff">
 <h1>Who is here</h1>
 <p><img id="avatar" alt=""> <span id="greeting">Hello</span></p>
 <button id="refresh">Refresh</button>
@@ -23,7 +23,9 @@
   const show = async () => {
     const me = user ? await user.me() : null;
     if (me) { document.getElementById("avatar").src = me.avatarUrl; document.getElementById("greeting").textContent = "Hello, " + (me.name || "you"); }
-    const ids = me && me.id ? [me.id, "u_ffffffffffffffffffffff"] : [];
+    // The spec publishes this page with another viewer's public ID here.
+    const other = document.body.dataset.other;
+    const ids = me && me.id ? [me.id, "u_ffffffffffffffffffffff", other] : [];
     const people = user ? await user.profiles(ids) : {};
     document.getElementById("facts").textContent = JSON.stringify({
       isOwner: user ? await user.isOwner() : false,
@@ -35,6 +37,7 @@
       meResolved: me && me.id ? people[me.id].name : null,
       isMe: me && me.id ? people[me.id].isMe : null,
       stranger: people["u_ffffffffffffffffffffff"] ? people["u_ffffffffffffffffffffff"].name : null,
+      other: other !== "u_ffffffffffffffffffffff" && people[other] ? people[other].name : null,
       search: user ? (await user.search("")).length : 0,
     });
   };

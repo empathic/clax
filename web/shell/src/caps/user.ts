@@ -22,6 +22,8 @@ export const MAX_LOOKUP = 1024;
 export const MAX_QUERY_CHARS = 60;
 /** Most profiles `search()` resolves (user.d.ts). */
 export const MAX_HITS = 8;
+/** How long `search()` waits for a newer call before asking the daemon. */
+export const SEARCH_DEBOUNCE_MS = 150;
 
 /** A stable color per ID, readable under white initials in both themes; neutral without an ID. */
 export function colorFor(id: string | null): string {
@@ -70,6 +72,13 @@ export const userHandler: HandlerFactory = env => {
   const inflight = new Set<AbortController>();
   let disposed = false;
   let warned = false;
+  /** The level this frame document was given at its first use of it (user.d.ts:
+   * fixed for the life of a view); a new document (`reset`) takes a new one. */
+  let level: Promise<string> | null = null;
+  /** The newest `search()`: its number and its result; older calls resolve with it. */
+  let searchGen = 0;
+  let newest: Promise<Profile[]> = Promise.resolve([]);
+  const timers = new Set<{ id: ReturnType<typeof setTimeout>; done(): void }>();
 
   /** The viewer, or none when the lookup fails. */
   const viewer = (): Promise<ViewerInfo | null> => env.viewer().catch(() => null);
@@ -147,7 +156,28 @@ export const userHandler: HandlerFactory = env => {
     return Object.fromEntries(ids.map(id => [id, profile(id, nameOf(id), meId)]));
   }
 
-  async function search(q: unknown): Promise<Profile[]> {
+  const levelNow = (): Promise<string> => (level ??= viewer().then(v => levelOf(env, v?.name ?? null)));
+
+  /** Waits [`SEARCH_DEBOUNCE_MS`]; false when disposed meanwhile. */
+  const pause = () => new Promise<boolean>(resolve => {
+    const t = { id: setTimeout(() => { timers.delete(t); resolve(!disposed); }, SEARCH_DEBOUNCE_MS), done: () => resolve(false) };
+    timers.add(t);
+  });
+
+  /** `search()` per user.d.ts: a call superseded by a newer one resolves with
+   * the newer call's result, when that one resolves. */
+  function search(q: unknown): Promise<Profile[]> {
+    const gen = ++searchGen;
+    const own = runSearch(q, () => gen === searchGen);
+    newest = own;
+    const settle = async (p: Promise<Profile[]>, g: number): Promise<Profile[]> => {
+      const r = await p;
+      return g === searchGen ? r : settle(newest, searchGen);
+    };
+    return settle(own, gen);
+  }
+
+  async function runSearch(q: unknown, current: () => boolean): Promise<Profile[]> {
     if (typeof q !== "string" || !owner || !profileScope || disposed) return [];
     const v = await viewer();
     if (!v) return [];
@@ -157,6 +187,8 @@ export const userHandler: HandlerFactory = env => {
       return [profile(v.publicId, v.name ?? "", v.publicId), ...others].filter(p => p.name).slice(0, MAX_HITS);
     }
     if ([...text].length > MAX_QUERY_CHARS) return [];
+    // A newer call within the pause takes over; this one asks nothing.
+    if (!(await pause()) || !current()) return [];
     const vs = await get(`/api/viewers?q=${encodeURIComponent(text)}`, { authorization: `Bearer ${env.token}` });
     if (!vs) return [];
     remember(vs);
@@ -171,10 +203,7 @@ export const userHandler: HandlerFactory = env => {
           return owner;
         case "can": {
           const what = args[0];
-          if (what === "data.write") {
-            const v = await viewer();
-            return RANK[levelOf(env, v?.name ?? null)] >= RANK[rootWrite(env.declared)];
-          }
+          if (what === "data.write") return RANK[await levelNow()] >= RANK[rootWrite(env.declared)];
           if (what === "files.write" || what === "assets.write") return owner;
           return false;
         }
@@ -199,12 +228,15 @@ export const userHandler: HandlerFactory = env => {
       }
     },
     reset() {
-      // Resolved names live for the page's lifetime (user.d.ts).
+      // Resolved names and the level live for the page's lifetime (user.d.ts).
       cache = new Map();
       pending = new Map();
+      level = null;
     },
     dispose() {
       disposed = true;
+      for (const t of timers) { clearTimeout(t.id); t.done(); }
+      timers.clear();
       for (const ac of inflight) ac.abort();
       inflight.clear();
       cache = new Map();

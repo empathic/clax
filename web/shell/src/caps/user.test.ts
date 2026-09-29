@@ -143,6 +143,64 @@ describe("user in the shell", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("a superseded search resolves with the newest call's result, at the same moment", async () => {
+    const replies: ((r: Response) => void)[] = [];
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn((url: string) => { urls.push(url); return new Promise<Response>(r => { replies.push(r); }); }));
+    const h = userHandler(env("tok", "Alex"), null as never);
+    const reply = (name: string) => new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: name }] }));
+    const done: string[] = [];
+    const first = h.call("search", ["sa"]).then(r => { done.push("first"); return r; });
+    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    const second = h.call("search", ["sam"]).then(r => { done.push("second"); return r; });
+    await vi.waitFor(() => expect(replies).toHaveLength(2), { timeout: 5_000 });
+    replies[1](reply("Sam B"));
+    const newest = await second;
+    replies[0](reply("Sam A"));
+    const older = await first;
+    expect([older, newest].map(r => (r as { name: string }[])[0].name)).toEqual(["Sam B", "Sam B"]);
+    expect(urls).toEqual(["/api/viewers?q=sa", "/api/viewers?q=sam"]);
+  });
+
+  it("a superseded search waiting for the newest resolves no earlier than it", async () => {
+    let release: (r: Response) => void = () => {};
+    const replies: ((r: Response) => void)[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>(r => { replies.push(r); })));
+    const h = userHandler(env("tok", "Alex"), null as never);
+    const order: string[] = [];
+    const first = h.call("search", ["sa"]).then(r => { order.push("first"); return r; });
+    await vi.waitFor(() => expect(replies).toHaveLength(1), { timeout: 5_000 });
+    const second = h.call("search", ["sam"]).then(r => { order.push("second"); return r; });
+    replies[0](new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: "Old" }] })));
+    await vi.waitFor(() => expect(replies).toHaveLength(2), { timeout: 5_000 });
+    expect(order).toEqual([]);
+    release = replies[1];
+    release(new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: "New" }] })));
+    const [a, b] = await Promise.all([first, second]);
+    expect([(a as { name: string }[])[0].name, (b as { name: string }[])[0].name]).toEqual(["New", "New"]);
+  });
+
+  it("debounces a burst of searches into one request", async () => {
+    const fetchSpy = vi.fn(async (url: string) => new Response(JSON.stringify({ viewers: [{ id: OTHER, display_name: decodeURIComponent(url.split("q=")[1]) }] })));
+    vi.stubGlobal("fetch", fetchSpy);
+    const h = userHandler(env("tok", "Alex"), null as never);
+    const all = await Promise.all(["s", "sa", "sam"].map(q => h.call("search", [q]))) as { name: string }[][];
+    expect(all.map(r => r[0].name)).toEqual(["sam", "sam", "sam"]);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("can() and the level fields of me() are fixed per frame document, until reset", async () => {
+    let name: string | null = null;
+    const e = { ...env(null, null, { user: { scopes: ["profile"] } }), viewer: async () => ({ publicId: ME, name }) } as unknown as CapEnv;
+    const h = userHandler(e, null as never);
+    expect(await h.call("can", ["data.write"])).toBe(false);
+    name = "Sam";
+    expect(await h.call("can", ["data.write"])).toBe(false);
+    expect(await h.call("name", [])).toBe("Sam");
+    h.reset?.();
+    expect(await h.call("can", ["data.write"])).toBe(true);
+  });
+
   it("avatars escape and color every ID the same way", () => {
     const svg = decodeURIComponent(avatarFor("<b> &x", "#123456").replace(/^data:image\/svg\+xml;utf8,/, ""));
     expect(svg).not.toContain("<b>");

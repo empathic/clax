@@ -48,6 +48,48 @@ async fn lookups_name_viewers_by_public_id_and_never_return_cookies() {
         "cookie values are not public IDs"
     );
     assert_eq!(ts.get("/api/viewers").await.status(), 400);
+    assert_eq!(
+        ts.get_authed(&format!("/api/viewers?ids={}&q=al", a.public_id))
+            .await
+            .status(),
+        400,
+        "ids and q together"
+    );
+}
+
+async fn names(ts: &TestServer, q: &str) -> Vec<String> {
+    let v: Value = ts
+        .get_authed(&format!("/api/viewers?q={q}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    v["viewers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x["display_name"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn search_returns_at_most_eight_and_matches_literally() {
+    let ts = TestServer::spawn().await;
+    for i in 0..10 {
+        ts.viewer(Some(&format!("Member {i}"))).await;
+    }
+    ts.viewer(Some("50% off")).await;
+    ts.viewer(Some("a_b")).await;
+    ts.viewer(Some("axb")).await;
+    ts.viewer(Some("Ärger")).await;
+    let members = names(&ts, "member").await;
+    assert_eq!(members.len(), 8);
+    assert_eq!(members[0], "Member 0");
+    assert_eq!(names(&ts, "%25").await, ["50% off"]);
+    assert_eq!(names(&ts, "a_b").await, ["a_b"]);
+    assert_eq!(names(&ts, "%C3%A4rger").await, ["Ärger"]);
+    assert!(names(&ts, &"m".repeat(61)).await.is_empty());
+    assert!(names(&ts, "%20%20").await.is_empty());
 }
 
 #[tokio::test]
