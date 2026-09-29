@@ -92,20 +92,29 @@ pub fn check_path(path: &str) -> Result<()> {
     Ok(())
 }
 
-/// Content type inferred from the file extension; JavaScript is always
-/// `text/javascript`, unknown extensions are `application/octet-stream`.
+/// Content type inferred from the path's extension (as [`std::path::Path::extension`]
+/// defines it, compared case-insensitively); JavaScript is always
+/// `text/javascript`, and paths with no or an unknown extension are
+/// `application/octet-stream`.
 pub fn content_type_for(path: &str) -> String {
-    match path.rsplit('.').next() {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase);
+    match ext.as_deref() {
         Some("js") | Some("mjs") => "text/javascript".to_string(),
-        _ => mime_guess::from_path(path)
+        Some(ext) => mime_guess::from_ext(ext)
             .first_raw()
             .unwrap_or("application/octet-stream")
             .to_string(),
+        None => "application/octet-stream".to_string(),
     }
 }
 
 /// Checks a publish request: `index.html` present and not removed, every path
-/// safe, encodings decodable, size caps and label length respected.
+/// safe, encodings decodable, size caps and label length respected. Base64
+/// content may contain ASCII whitespace (line breaks from encoders), which is
+/// ignored.
 pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
     if let Some(label) = &req.label
         && label.chars().count() > MAX_LABEL_CHARS
@@ -136,7 +145,12 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
                 let bytes = match f.encoding {
                     Encoding::Utf8 => f.content.into_bytes(),
                     Encoding::Base64 => base64::engine::general_purpose::STANDARD
-                        .decode(f.content.as_bytes())
+                        .decode(
+                            f.content
+                                .bytes()
+                                .filter(|b| !b.is_ascii_whitespace())
+                                .collect::<Vec<u8>>(),
+                        )
                         .map_err(|_| {
                             CoreError::invalid(
                                 "invalid_encoding",
@@ -342,6 +356,54 @@ mod tests {
             validate(r).unwrap_err(),
             CoreError::Invalid {
                 code: "label_too_long",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn content_type_uses_the_lowercased_path_extension() {
+        assert_eq!(content_type_for("APP.JS"), "text/javascript");
+        assert_eq!(content_type_for("lib/Mod.MJS"), "text/javascript");
+        assert_eq!(content_type_for("Index.HTML"), "text/html");
+        assert_eq!(content_type_for("PHOTO.PNG"), "image/png");
+        // A bare name that equals an extension has no extension.
+        assert_eq!(content_type_for("js"), "application/octet-stream");
+        assert_eq!(content_type_for("dir.js/file"), "application/octet-stream");
+    }
+
+    #[test]
+    fn base64_ignores_ascii_whitespace() {
+        let v = validate(req(&[
+            ("index.html", utf8("<p>")),
+            (
+                "a.bin",
+                Some(FileInput {
+                    content: "AQID\nBAUG\r\n BwgJ\t".into(),
+                    encoding: Encoding::Base64,
+                    content_type: None,
+                }),
+            ),
+        ]))
+        .unwrap();
+        match &v.files["a.bin"] {
+            FileChange::Put(f) => assert_eq!(f.bytes, (1..=9).collect::<Vec<u8>>()),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn total_size_cap_is_enforced() {
+        let chunk = "x".repeat(MAX_FILE_BYTES as usize);
+        let n = (MAX_BODY_BYTES / MAX_FILE_BYTES) as usize;
+        let names: Vec<String> = (0..n).map(|i| format!("f{i}.txt")).collect();
+        let mut files: Vec<(&str, Option<FileInput>)> = vec![("index.html", utf8("<p>"))];
+        files.extend(names.iter().map(|k| (k.as_str(), utf8(&chunk))));
+        let e = validate(req(&files)).unwrap_err();
+        assert!(matches!(
+            e,
+            CoreError::Invalid {
+                code: "body_too_large",
                 ..
             }
         ));

@@ -30,9 +30,14 @@ pub fn is_full_document(page: &str) -> bool {
 /// Byte offset just past the first real `<body ...>` tag, skipping HTML comments
 /// and raw-text elements (`<script>` and `<style>`).
 ///
+/// A comment runs from `<!--` to the next `-->`; a `<script>` or `<style>`
+/// element runs to its literal `</script>` or `</style>` end tag, and comment
+/// markers inside it have no effect. An unterminated comment or raw-text element
+/// extends to the end of the page, so no `<body>` after its start is found.
+///
 /// Limitations: a `>` inside a quoted attribute value truncates tag detection,
-/// `<title>`/`<textarea>` contents are not skipped, and `-->` inside script
-/// text is recognized as a comment end but not inside other raw text.
+/// `<title>`/`<textarea>` contents are not skipped, and end tags with
+/// whitespace before the `>` (`</script >`) are not recognized.
 fn body_tag_end(doc: &str) -> Option<usize> {
     let bytes = doc.as_bytes();
     let mut i = 0;
@@ -41,14 +46,7 @@ fn body_tag_end(doc: &str) -> Option<usize> {
         // Skip HTML comments: <!--
         if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
             i += 4;
-            // Find -->
-            while i + 3 <= bytes.len() {
-                if &bytes[i..i + 3] == b"-->" {
-                    i += 3;
-                    break;
-                }
-                i += 1;
-            }
+            i = find_from(bytes, i, b"-->", false).map_or(bytes.len(), |p| p + 3);
             continue;
         }
 
@@ -59,15 +57,7 @@ fn body_tag_end(doc: &str) -> Option<usize> {
         {
             match bytes[i + 7] {
                 b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
-                    i += 7;
-                    // Find </script>
-                    while i + 9 <= bytes.len() {
-                        if bytes[i..i + 9].eq_ignore_ascii_case(b"</script>") {
-                            i += 9;
-                            break;
-                        }
-                        i += 1;
-                    }
+                    i = find_from(bytes, i + 7, b"</script>", true).map_or(bytes.len(), |p| p + 9);
                     continue;
                 }
                 _ => {}
@@ -81,15 +71,7 @@ fn body_tag_end(doc: &str) -> Option<usize> {
         {
             match bytes[i + 6] {
                 b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
-                    i += 6;
-                    // Find </style>
-                    while i + 8 <= bytes.len() {
-                        if bytes[i..i + 8].eq_ignore_ascii_case(b"</style>") {
-                            i += 8;
-                            break;
-                        }
-                        i += 1;
-                    }
+                    i = find_from(bytes, i + 6, b"</style>", true).map_or(bytes.len(), |p| p + 8);
                     continue;
                 }
                 _ => {}
@@ -118,6 +100,27 @@ fn body_tag_end(doc: &str) -> Option<usize> {
     None
 }
 
+/// Offset of the first occurrence of `needle` in `bytes` at or after `from`,
+/// optionally ignoring ASCII case.
+fn find_from(bytes: &[u8], from: usize, needle: &[u8], ignore_case: bool) -> Option<usize> {
+    bytes
+        .get(from..)?
+        .windows(needle.len())
+        .position(|w| {
+            if ignore_case {
+                w.eq_ignore_ascii_case(needle)
+            } else {
+                w == needle
+            }
+        })
+        .map(|p| from + p)
+}
+
+/// Returns the page as served. A fragment (not [`is_full_document`]) is placed in
+/// the document skeleton with the bridge script first in `<body>`. A full
+/// document is served unchanged except for the bridge script, inserted just after
+/// the first real `<body ...>` tag (see `body_tag_end`); as a fallback, when
+/// there is no such tag, it is inserted just after the doctype declaration.
 pub fn wrap_document(page: &str, artifact_id: &str, version: u32, contract: &str) -> String {
     let tag = bridge_tag(artifact_id, version, contract);
     if is_full_document(page) {
@@ -264,6 +267,23 @@ mod tests {
             "bridge should be directly after real body tag"
         );
         assert!(out.contains("<script>var a=\"<body>\";"));
+    }
+
+    #[test]
+    fn unterminated_raw_text_hides_the_rest_of_the_page() {
+        let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61");
+        for page in [
+            "<!doctype html><script>x<body>",
+            "<!doctype html><style>x<body>",
+            "<!doctype html><script>let s = 1;</scrip<body>",
+        ] {
+            let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61");
+            assert_eq!(
+                out,
+                format!("<!doctype html>{tag}{}", &page["<!doctype html>".len()..]),
+                "{page}"
+            );
+        }
     }
 
     #[test]

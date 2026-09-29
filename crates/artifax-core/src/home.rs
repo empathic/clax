@@ -1,6 +1,7 @@
 //! Layout of the `~/.artifax` directory.
 
 use crate::ids::ArtifactId;
+use crate::{CoreError, Result};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug)]
@@ -13,17 +14,26 @@ impl Home {
         Home { root }
     }
 
-    /// `$ARTIFAX_HOME`, else `$HOME/.artifax`.
-    pub fn from_env() -> Self {
+    /// `$ARTIFAX_HOME`, else `$HOME/.artifax`; an empty variable counts as unset.
+    ///
+    /// # Errors
+    /// `Invalid { code: "no_home" }` when neither variable is set.
+    pub fn from_env() -> Result<Self> {
         let ax = std::env::var("ARTIFAX_HOME").ok();
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        Self::from_env_with(ax.as_deref(), &home)
+        let home = std::env::var("HOME").ok();
+        Self::from_env_with(ax.as_deref(), home.as_deref())
     }
 
-    pub fn from_env_with(artifax_home: Option<&str>, home: &str) -> Self {
-        match artifax_home.filter(|s| !s.is_empty()) {
-            Some(p) => Home::at(PathBuf::from(p)),
-            None => Home::at(Path::new(home).join(".artifax")),
+    /// [`Home::from_env`] with the variable values passed in.
+    pub fn from_env_with(artifax_home: Option<&str>, home: Option<&str>) -> Result<Self> {
+        let set = |v: Option<&str>| v.filter(|s| !s.is_empty()).map(PathBuf::from);
+        match (set(artifax_home), set(home)) {
+            (Some(p), _) => Ok(Home::at(p)),
+            (None, Some(h)) => Ok(Home::at(h.join(".artifax"))),
+            (None, None) => Err(CoreError::invalid(
+                "no_home",
+                "neither ARTIFAX_HOME nor HOME is set",
+            )),
         }
     }
 
@@ -96,10 +106,20 @@ mod tests {
     #[test]
     fn from_env_prefers_artifax_home() {
         let dir = tempfile::tempdir().unwrap();
-        let home = Home::from_env_with(Some(dir.path().to_str().unwrap()), "/never");
+        let home = Home::from_env_with(Some(dir.path().to_str().unwrap()), Some("/never")).unwrap();
         assert_eq!(home.root(), dir.path());
-        let home = Home::from_env_with(None, "/home/x");
+        let home = Home::from_env_with(None, Some("/home/x")).unwrap();
         assert_eq!(home.root(), Path::new("/home/x/.artifax"));
+        let home = Home::from_env_with(Some(""), Some("/home/x")).unwrap();
+        assert_eq!(home.root(), Path::new("/home/x/.artifax"));
+    }
+
+    #[test]
+    fn from_env_fails_without_artifax_home_or_home() {
+        for (ax, home) in [(None, None), (Some(""), Some("")), (None, Some(""))] {
+            let e = Home::from_env_with(ax, home).unwrap_err();
+            assert_eq!(e.to_string(), "neither ARTIFAX_HOME nor HOME is set");
+        }
     }
 
     #[test]

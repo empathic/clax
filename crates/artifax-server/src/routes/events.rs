@@ -6,15 +6,27 @@ use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
-use std::time::Duration;
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
+/// Query string of `GET /api/events`.
 #[derive(Deserialize)]
 pub struct EventsQuery {
+    /// When set, only events whose `artifact_id` equals this value are sent.
+    /// `resync` is sent regardless, since dropped events cannot be filtered.
     artifact: Option<String>,
 }
 
+/// `GET /api/events`: a Server-Sent Events stream of the event bus.
+///
+/// The stream opens with `event: ready` (`data: {}`), then carries `version` and
+/// `artifact_deleted` events whose data is the JSON-serialised [`artifax_core::Event`].
+/// A subscriber that falls more than the bus capacity behind receives
+/// `event: resync` with `data: {"dropped": <n>}` and then continues from the oldest
+/// retained event; clients should refetch state on `resync`. A `: keep-alive`
+/// comment is sent every `AppState::sse_keep_alive` while idle. The stream ends
+/// when the daemon begins shutting down.
 pub async fn events(
     State(s): State<AppState>,
     Query(q): Query<EventsQuery>,
@@ -23,7 +35,14 @@ pub async fn events(
     let filter = q.artifact;
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
     let live = BroadcastStream::new(rx).filter_map(move |item| {
-        let ev = item.ok()?;
+        let ev = match item {
+            Ok(ev) => ev,
+            Err(BroadcastStreamRecvError::Lagged(dropped)) => {
+                return Some(Ok(SseEvent::default()
+                    .event("resync")
+                    .data(serde_json::json!({ "dropped": dropped }).to_string())));
+            }
+        };
         if let Some(f) = &filter
             && ev.artifact_id() != f
         {
@@ -46,7 +65,7 @@ pub async fn events(
     };
     Sse::new(futures::StreamExt::take_until(ready.chain(live), stop)).keep_alive(
         KeepAlive::new()
-            .interval(Duration::from_secs(15))
+            .interval(s.sse_keep_alive)
             .text("keep-alive"),
     )
 }

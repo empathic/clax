@@ -16,8 +16,17 @@ pub struct MetaPatch {
     pub pinned: Option<bool>,
 }
 
+/// Parses the JSON text column `name`; malformed JSON is a
+/// `FromSqlConversionFailure` for that column, not a default value.
+fn json_column<T: serde::de::DeserializeOwned>(r: &Row<'_>, name: &str) -> rusqlite::Result<T> {
+    let text: String = r.get(name)?;
+    serde_json::from_str(&text).map_err(|e| {
+        let idx = r.as_ref().column_index(name).unwrap_or(0);
+        rusqlite::Error::FromSqlConversionFailure(idx, rusqlite::types::Type::Text, Box::new(e))
+    })
+}
+
 pub(crate) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Artifact> {
-    let caps: String = r.get("capabilities_json")?;
     Ok(Artifact {
         id: r.get("id")?,
         title: r.get("title")?,
@@ -27,7 +36,7 @@ pub(crate) fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Artifact> {
         updated_at: r.get("updated_at")?,
         current_version: r.get("current_version")?,
         pinned: r.get::<_, i64>("pinned")? != 0,
-        capabilities: serde_json::from_str(&caps).unwrap_or(serde_json::json!({})),
+        capabilities: json_column(r, "capabilities_json")?,
         contract_version: r.get("contract_version")?,
         owner_session_id: r.get("owner_session_id")?,
     })
@@ -48,10 +57,12 @@ impl Store {
         })
     }
 
+    /// Live artifacts (not deleted, at least one version): pinned first, then
+    /// most recently updated, ties broken by ID.
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(&format!(
-                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC"
+                "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
             let rows = stmt.query_map([], row_to_artifact)?;
             Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
@@ -68,6 +79,12 @@ impl Store {
         )
     }
 
+    /// Overwrites each field that is `Some` in `patch` and leaves the others
+    /// untouched; a field therefore cannot be cleared through this call. Does not
+    /// bump `updated_at` (metadata edits are not new content).
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist or is deleted.
     pub fn update_meta(&self, id: &ArtifactId, patch: MetaPatch) -> Result<Artifact> {
         self.with_tx(|tx| {
             let n = tx.execute(
@@ -96,6 +113,12 @@ impl Store {
         })
     }
 
+    /// Marks the artifact deleted, then removes its directory. Once the row is
+    /// marked the delete has happened: a missing directory is fine, and any other
+    /// removal failure is logged and leaves orphaned files rather than an error.
+    ///
+    /// # Errors
+    /// `NotFound` when the artifact does not exist or is already deleted.
     pub fn delete_artifact(&self, id: &ArtifactId) -> Result<()> {
         self.with_tx(|tx| {
             let n = tx.execute(
@@ -108,8 +131,15 @@ impl Store {
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
-        if dir.exists() {
-            std::fs::remove_dir_all(&dir)?;
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => tracing::warn!(
+                artifact = id.as_str(),
+                dir = %dir.display(),
+                error = %e,
+                "could not remove deleted artifact's files"
+            ),
         }
         Ok(())
     }
@@ -163,15 +193,22 @@ fn check_collisions<'a>(paths: impl Iterator<Item = &'a String>) -> Result<()> {
     Ok(())
 }
 
+/// Paths that `p` writes (its `Put` entries).
+fn put_paths(p: &ValidatedPublish) -> impl Iterator<Item = &String> {
+    p.files
+        .iter()
+        .filter(|(_, c)| matches!(c, FileChange::Put(_)))
+        .map(|(k, _)| k)
+}
+
 fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Version> {
-    let files: String = r.get("files_json")?;
     Ok(Version {
         artifact_id: r.get("artifact_id")?,
         n: r.get("n")?,
         label: r.get("label")?,
         created_at: r.get("created_at")?,
         session_id: r.get("session_id")?,
-        files: serde_json::from_str(&files).unwrap_or_default(),
+        files: json_column(r, "files_json")?,
     })
 }
 
@@ -191,6 +228,8 @@ impl Store {
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| "Untitled".to_string());
         let caps = p.capabilities.clone().unwrap_or(serde_json::json!({}));
+        // Reject before inserting, so a failed publish leaves no zero-version row.
+        check_collisions(put_paths(&p))?;
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
@@ -249,13 +288,7 @@ impl Store {
             .keys()
             .filter(|path| *path != INDEX && !p.files.contains_key(*path))
             .collect();
-        let put: Vec<&String> = p
-            .files
-            .iter()
-            .filter(|(_, c)| matches!(c, FileChange::Put(_)))
-            .map(|(k, _)| k)
-            .collect();
-        check_collisions(carried.iter().copied().chain(put.iter().copied()))?;
+        check_collisions(carried.iter().copied().chain(put_paths(p)))?;
 
         let versions_dir = self.home.artifact_dir(id).join("versions");
         std::fs::create_dir_all(&versions_dir)?;
@@ -277,7 +310,11 @@ impl Store {
         let mut files: BTreeMap<String, FileMeta> = BTreeMap::new();
         for path in carried {
             let src = self.home.version_dir(id, expected).join("files").join(path);
-            write(path, &std::fs::read(&src)?)?;
+            let dest = files_dir.join(path);
+            if let Some(parent) = dest.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::copy(&src, &dest)?;
             files.insert(path.clone(), prev[path].clone());
         }
         for (path, change) in &p.files {
@@ -358,6 +395,7 @@ impl Store {
         })
     }
 
+    /// Every version of the artifact, oldest first (ascending `n`).
     pub fn list_versions(&self, id: &ArtifactId) -> Result<Vec<Version>> {
         self.with_conn(|c| {
             let mut stmt = c.prepare(&format!(
@@ -429,6 +467,79 @@ mod tests {
             .collect();
         assert_eq!(titles, vec!["A", "C", "B"]);
         let _ = (b, c);
+    }
+
+    #[test]
+    fn list_breaks_updated_at_ties_by_id() {
+        let (_d, store) = store();
+        let mut ids: Vec<String> = (0..6)
+            .map(|i| {
+                store
+                    .insert_artifact_for_test(&format!("T{i}"), "2026-01-01T00:00:00.000Z")
+                    .as_str()
+                    .to_string()
+            })
+            .collect();
+        ids.sort();
+        let listed: Vec<String> = store
+            .list_artifacts()
+            .unwrap()
+            .into_iter()
+            .map(|x| x.id)
+            .collect();
+        assert_eq!(listed, ids);
+    }
+
+    #[test]
+    fn corrupt_json_columns_are_errors_not_defaults() {
+        let (_d, store) = store();
+        let (a, _) = store
+            .create_artifact(publish(&[("index.html", Some("v1"))], None))
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        store
+            .with_conn(|c| {
+                c.execute(
+                    "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
+                    rusqlite::params![id.as_str()],
+                )?;
+                c.execute(
+                    "UPDATE versions SET files_json = '{' WHERE artifact_id = ?1",
+                    rusqlite::params![id.as_str()],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let conv = |e: crate::CoreError| {
+            matches!(
+                e,
+                crate::CoreError::Db(rusqlite::Error::FromSqlConversionFailure(..))
+            )
+        };
+        assert!(conv(store.get_artifact(&id).unwrap_err()));
+        assert!(conv(store.list_artifacts().unwrap_err()));
+        assert!(conv(store.get_version(&id, 1).unwrap_err()));
+        assert!(conv(store.list_versions(&id).unwrap_err()));
+    }
+
+    #[test]
+    fn delete_succeeds_when_the_directory_is_missing_or_cannot_be_removed() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_d, store) = store();
+        let gone = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
+        store.delete_artifact(&gone).unwrap();
+        assert!(store.get_artifact(&gone).unwrap().is_none());
+
+        let stuck = store.insert_artifact_for_test("B", "2026-01-01T00:00:00.000Z");
+        let locked = store.home().artifact_dir(&stuck).join("locked");
+        std::fs::create_dir_all(&locked).unwrap();
+        std::fs::write(locked.join("f"), "x").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let result = store.delete_artifact(&stuck);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700)).unwrap();
+        result.unwrap();
+        assert!(store.get_artifact(&stuck).unwrap().is_none());
+        assert!(locked.join("f").exists(), "removal really failed");
     }
 
     #[test]
@@ -583,7 +694,15 @@ mod tests {
             "a"
         );
         assert!(!vdir.join("files/b.css").exists());
-        assert_eq!(store.list_versions(&id).unwrap().len(), 2);
+        assert_eq!(
+            store
+                .list_versions(&id)
+                .unwrap()
+                .iter()
+                .map(|v| v.n)
+                .collect::<Vec<_>>(),
+            [1, 2]
+        );
         assert_eq!(store.get_version(&id, 1).unwrap().unwrap().files.len(), 3);
     }
 
@@ -649,6 +768,10 @@ mod tests {
             ));
         }
         assert!(store.list_artifacts().unwrap().is_empty());
+        let rows: i64 = store
+            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(rows, 0, "a rejected create leaves no artifact row");
 
         let (a, _) = store
             .create_artifact(publish(

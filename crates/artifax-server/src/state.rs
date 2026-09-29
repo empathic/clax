@@ -18,4 +18,6 @@ pub struct AppState {
     pub request_timeout: Duration,
     /// Deadline for the publish routes and asset upload.
     pub publish_timeout: Duration,
+    /// Interval between SSE keep-alive comments on `/api/events` (15 s in the daemon).
+    pub sse_keep_alive: Duration,
 }

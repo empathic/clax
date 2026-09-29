@@ -63,9 +63,10 @@ const SELECT: &str = "SELECT id, artifact_id, content_type, size, ext, created_a
 impl Store {
     /// Stores `bytes` as a new asset of artifact `id`.
     ///
-    /// The bytes are written to `<id>.<ext>.tmp` and renamed into place only after the row
-    /// insert succeeds; on insert failure the temp file is removed. The size cap
-    /// ([`MAX_ASSET_BYTES`]) is inclusive.
+    /// The bytes are written to `<id>.<ext>.tmp` and renamed into place before the row is
+    /// inserted, so a visible row always has its file; if the insert fails the file is
+    /// removed (should that removal fail, the orphaned file is unreferenced and harmless).
+    /// The size cap ([`MAX_ASSET_BYTES`]) is inclusive.
     ///
     /// # Errors
     /// `Invalid { code: "unsupported_type" }` for a type failing [`is_supported`],
@@ -98,22 +99,18 @@ impl Store {
         let final_path = dir.join(format!("{}.{}", asset.id, asset.ext));
         let tmp_path = dir.join(format!("{}.{}.tmp", asset.id, asset.ext));
         std::fs::write(&tmp_path, bytes)?;
+        if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
         let inserted = self.with_conn(|c| {
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at])?;
             Ok(())
         });
         if let Err(e) = inserted {
-            let _ = std::fs::remove_file(&tmp_path);
+            let _ = std::fs::remove_file(&final_path);
             return Err(e);
-        }
-        if let Err(e) = std::fs::rename(&tmp_path, &final_path) {
-            let _ = std::fs::remove_file(&tmp_path);
-            let _ = self.with_conn(|c| {
-                c.execute("DELETE FROM assets WHERE id = ?1", params![asset.id])?;
-                Ok(())
-            });
-            return Err(e.into());
         }
         Ok(asset)
     }
@@ -277,6 +274,25 @@ mod tests {
                 .to_string_lossy()
                 .ends_with(".tmp"))
         );
+    }
+
+    #[test]
+    fn failed_insert_leaves_no_file_behind() {
+        let (_d, store) = store();
+        let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
+        store
+            .with_conn(|c| Ok(c.execute_batch("DROP TABLE assets")?))
+            .unwrap();
+        assert!(matches!(
+            store.add_asset(&id, "image/png", &[1]).unwrap_err(),
+            CoreError::Db(_)
+        ));
+        let dir = store.home().assets_dir(&id);
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
     }
 
     #[test]

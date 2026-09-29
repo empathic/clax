@@ -350,3 +350,17 @@ fn publish_dir_skips_dotfiles_and_mirrors_on_update() {
     assert!(files(&e)["files"]["a.js"].is_null());
     e.stop();
 }
+
+#[test]
+fn missing_artifax_home_and_home_is_an_error() {
+    Command::cargo_bin("artifax")
+        .unwrap()
+        .env_remove("ARTIFAX_HOME")
+        .env_remove("HOME")
+        .args(["status", "--json"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "neither ARTIFAX_HOME nor HOME is set",
+        ));
+}

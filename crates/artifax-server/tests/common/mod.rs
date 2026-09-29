@@ -2,7 +2,7 @@
 use artifax_core::{EventBus, Home, Store};
 use artifax_server::wrap_cache::WrapCache;
 use artifax_server::{AppState, build_router};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +11,10 @@ pub struct TestServer {
     pub token: String,
     pub home: Home,
     pub client: reqwest::Client,
+    /// The server's event bus, for publishing events directly.
+    pub events: EventBus,
+    /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
+    pub addr: SocketAddr,
     _dir: tempfile::TempDir,
 }
 
@@ -20,6 +24,11 @@ impl TestServer {
     }
 
     pub async fn spawn_with(f: impl FnOnce(&mut AppState)) -> TestServer {
+        Self::spawn_on(IpAddr::V4(Ipv4Addr::LOCALHOST), f).await
+    }
+
+    /// Like `spawn_with`, listening on `bind`. `base` always targets loopback.
+    pub async fn spawn_on(bind: IpAddr, f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         let store = Arc::new(Store::open(&home).unwrap());
@@ -35,10 +44,15 @@ impl TestServer {
             wrap_cache: Arc::new(WrapCache::new(64)),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
+            sse_keep_alive: Duration::from_secs(15),
         };
         f(&mut state);
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let events = state.events.clone();
+        let listener = tokio::net::TcpListener::bind(SocketAddr::new(bind, 0))
+            .await
+            .unwrap();
         let addr = listener.local_addr().unwrap();
+        let port = addr.port();
         let app = build_router(state);
         tokio::spawn(async move {
             axum::serve(
@@ -49,10 +63,12 @@ impl TestServer {
             .unwrap();
         });
         TestServer {
-            base: format!("http://{addr}"),
+            base: format!("http://127.0.0.1:{port}"),
             token,
             home,
             client: reqwest::Client::new(),
+            events,
+            addr,
             _dir: dir,
         }
     }

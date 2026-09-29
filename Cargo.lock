@@ -122,6 +122,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
  "ulid",
 ]
 

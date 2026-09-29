@@ -48,7 +48,13 @@ pub enum Cmd {
 
 fn main() {
     let cli = Cli::parse();
-    let home = artifax_core::Home::from_env();
+    let home = match artifax_core::Home::from_env() {
+        Ok(home) => home,
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+    };
     let result = match &cli.cmd {
         Cmd::Serve(a) => commands::serve::run(&cli, &home, a),
         Cmd::Stop => commands::stop::run(&cli, &home),

@@ -6,6 +6,9 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use std::net::SocketAddr;
 
+/// Extractor that admits a request only when its `Authorization` header is
+/// `Bearer <token>` with the daemon's token. The scheme name is matched
+/// case-insensitively (RFC 9110 section 11.1); the token is compared in constant time.
 pub struct RequireToken;
 
 impl FromRequestParts<AppState> for RequireToken {
@@ -17,7 +20,12 @@ impl FromRequestParts<AppState> for RequireToken {
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .unwrap_or("");
-        let presented = header.strip_prefix("Bearer ").unwrap_or("");
+        let presented = match header.split_once(' ') {
+            Some((scheme, token)) if scheme.eq_ignore_ascii_case("bearer") => {
+                token.trim_start_matches(' ')
+            }
+            _ => "",
+        };
         if constant_time_eq(presented.as_bytes(), state.token.as_bytes()) {
             Ok(RequireToken)
         } else {
