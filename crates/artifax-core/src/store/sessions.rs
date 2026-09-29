@@ -613,12 +613,13 @@ mod tests {
                 .len(),
             0
         );
-        std::thread::sleep(Duration::from_millis(20));
+        std::thread::sleep(Duration::from_millis(300));
         let fresh = store
             .register_session(reg(Some("fresh"), Some(1003), None))
             .unwrap();
+        // Wide enough that `fresh` stays unreaped on a loaded test run.
         let reaped = store
-            .reap_sessions(Duration::from_millis(10), &pid_alive)
+            .reap_sessions(Duration::from_millis(200), &pid_alive)
             .unwrap();
         assert_eq!(reaped.ended.len(), 2);
         let ended = |id: &str| store.get_session(id).unwrap().unwrap().ended_at.is_some();

@@ -212,13 +212,22 @@ impl Store {
                 )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             drop(stmt);
-            // A row whose anchor no longer parses is left untouched (and
-            // skipped) rather than marked delivered without being handed over.
+            // A row whose anchor or artifact ID no longer parses is left
+            // untouched (and skipped) rather than marked delivered without
+            // being handed over.
             let mut good = Vec::with_capacity(rows.len());
             for p in rows {
-                match serde_json::from_str::<Anchor>(&p.anchor_json) {
-                    Ok(anchor) => good.push((p, anchor)),
-                    Err(_) => tracing::warn!(
+                let parsed = serde_json::from_str::<Anchor>(&p.anchor_json)
+                    .ok()
+                    .zip(ArtifactId::parse(&p.artifact_id).ok());
+                match parsed {
+                    Some((anchor, aid)) => {
+                        let clip_path = p.has_clip.then(|| {
+                            self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned()
+                        });
+                        good.push((p, anchor, clip_path));
+                    }
+                    None => tracing::warn!(
                         feedback_id = p.id.as_str(),
                         thread_id = p.thread_id.as_str(),
                         artifact_id = p.artifact_id.as_str(),
@@ -226,7 +235,7 @@ impl Store {
                     ),
                 }
             }
-            for (p, _) in &good {
+            for (p, _, _) in &good {
                 if p.delivered {
                     tx.execute(
                         "UPDATE feedback SET resend_count = resend_count + 1, last_sent_at = ?2,
@@ -245,18 +254,7 @@ impl Store {
         })?;
         let mut touched = Touched::default();
         let mut items = Vec::with_capacity(pending.len());
-        for (p, anchor) in pending {
-            let clip_path = if p.has_clip {
-                let id = ArtifactId::parse(&p.artifact_id)?;
-                Some(
-                    self.home
-                        .clip_path(&id, &p.thread_id)
-                        .to_string_lossy()
-                        .into_owned(),
-                )
-            } else {
-                None
-            };
+        for (p, anchor, clip_path) in pending {
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
@@ -917,6 +915,55 @@ mod tests {
         st.send_to_agent(&good).unwrap();
         st.with_conn(|c| {
             c.execute("UPDATE threads SET anchor_json = '{' WHERE id = ?1", [&bad])?;
+            Ok(())
+        })
+        .unwrap();
+        let items = take(&st, &owner, Tier::Piggyback);
+        assert_eq!(
+            items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
+            ["good"]
+        );
+        let row = &st.feedback_rows(&bad).unwrap()[0];
+        assert_eq!(
+            (row.delivered_at.clone(), row.acknowledged_at.clone()),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn rows_with_a_corrupt_artifact_id_are_skipped_and_left_undelivered() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let a1 = artifact(&st, Some(&owner));
+        let a2 = artifact(&st, Some(&owner));
+        let clip = Some(b"\x89PNG\r\n\x1a\nx".to_vec());
+        let bad = st
+            .create_thread(
+                &a1,
+                NewThread {
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "A".into(),
+                    body: "bad".into(),
+                    clip,
+                },
+            )
+            .unwrap()
+            .id;
+        let good = thread(&st, &a2, "good");
+        st.send_to_agent(&bad).unwrap();
+        st.send_to_agent(&good).unwrap();
+        st.with_conn(|c| {
+            c.execute_batch("PRAGMA foreign_keys=OFF")?;
+            c.execute(
+                "UPDATE artifacts SET id = 'NOT-AN-ID' WHERE id = ?1",
+                [a1.as_str()],
+            )?;
+            c.execute(
+                "UPDATE threads SET artifact_id = 'NOT-AN-ID' WHERE id = ?1",
+                [&bad],
+            )?;
+            c.execute_batch("PRAGMA foreign_keys=ON")?;
             Ok(())
         })
         .unwrap();

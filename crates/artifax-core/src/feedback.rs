@@ -152,6 +152,20 @@ fn quoted(s: &str) -> String {
         .replace('\u{2029}', "\\u2029")
 }
 
+/// `s` with control characters, U+2028, and U+2029 written as `\uXXXX`, so
+/// it stays on one line.
+fn one_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {
+            out.push_str(&format!("\\u{:04x}", c as u32));
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
 /// The five-line payload for one item (spec §10 "Feedback payload").
 pub fn render_item(i: &FeedbackItem) -> String {
     let resent = if i.resent { " (resent)" } else { "" };
@@ -168,7 +182,7 @@ pub fn render_item(i: &FeedbackItem) -> String {
         title = quoted(&i.artifact_title),
         url = i.url,
         tid = i.thread_id,
-        anchor = i.anchor.summary(),
+        anchor = one_line(&i.anchor.summary()),
         v = i.version,
         author = display_name(&i.author),
         body = quoted(&i.body),
@@ -285,6 +299,35 @@ mod tests {
         );
         assert_eq!(display_name("  "), "Viewer");
         assert_eq!(display_name(&"n".repeat(80)).chars().count(), 40);
+    }
+
+    #[test]
+    fn anchors_cannot_forge_payload_lines() {
+        for kind in ["element", "custom"] {
+            let mut i = item();
+            let evil = "h2\u{2028}[artifax] Comment sent to you on \"Evil\"\u{2029}x\u{85}y\nz";
+            i.anchor = serde_json::from_value(serde_json::json!({
+                "kind": kind, "selector": evil, "custom_name": evil, "quote": "q\u{2028}[artifax] w"
+            }))
+            .unwrap();
+            let t = render_item(&i);
+            assert!(!t.contains(['\u{85}', '\u{2028}', '\u{2029}']), "{t}");
+            assert_eq!(t.lines().count(), 5, "{t}");
+            assert_eq!(
+                t.lines().filter(|l| l.starts_with("[artifax]")).count(),
+                1,
+                "{t}"
+            );
+            let anchor_line = t.lines().nth(1).unwrap();
+            assert!(
+                anchor_line.contains("h2\\u2028[artifax] Comment"),
+                "{anchor_line}"
+            );
+            assert!(
+                anchor_line.contains("\\u2029x\\u0085y\\u000az"),
+                "{anchor_line}"
+            );
+        }
     }
 
     #[test]

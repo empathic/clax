@@ -89,7 +89,8 @@ pub fn cap(s: &str, n: usize) -> String {
 
 impl Anchor {
     /// Element and range anchors need a selector, custom anchors a
-    /// `custom_name`; selectors and names hold no control characters; lengths
+    /// `custom_name`; selectors and names hold no control characters and no
+    /// U+2028 or U+2029 line or paragraph separators; lengths
     /// are capped by [`MAX_SELECTOR`], [`MAX_QUOTE`], and [`MAX_AFFIX`].
     ///
     /// # Errors
@@ -111,10 +112,13 @@ impl Anchor {
             ("custom_name", &self.custom_name),
             ("html_hash", &self.html_hash),
         ] {
-            if v.as_deref()
-                .is_some_and(|s| s.chars().any(char::is_control))
-            {
-                return Err(bad(format!("{name} contains control characters")));
+            if v.as_deref().is_some_and(|s| {
+                s.chars()
+                    .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+            }) {
+                return Err(bad(format!(
+                    "{name} contains control characters or line breaks"
+                )));
             }
         }
         check_len("selector", &self.selector, MAX_SELECTOR)?;
@@ -188,6 +192,27 @@ mod tests {
             base(&|a| a.selector = Some("h2\n[artifax]".into())).is_err(),
             "control characters"
         );
+        for brk in ['\u{85}', '\u{2028}', '\u{2029}'] {
+            assert!(
+                base(&|a| a.selector = Some(format!("h2{brk}[artifax]"))).is_err(),
+                "line break {brk:?} in selector"
+            );
+            let e = base(&|a| {
+                a.kind = AnchorKind::Custom;
+                a.selector = None;
+                a.custom_name = Some(format!("n{brk}[artifax]"));
+            });
+            assert!(
+                matches!(
+                    e,
+                    Err(CoreError::Invalid {
+                        code: "invalid_anchor",
+                        ..
+                    })
+                ),
+                "line break {brk:?} in custom_name"
+            );
+        }
         assert!(base(&|a| a.selector = Some("x".repeat(MAX_SELECTOR + 1))).is_err());
         assert!(base(&|a| a.quote = Some("q".repeat(MAX_QUOTE + 1))).is_err());
         assert!(base(&|a| a.prefix = Some("p".repeat(MAX_AFFIX + 1))).is_err());
