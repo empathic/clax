@@ -159,8 +159,10 @@ async fn publish_routes_run_under_the_publish_timeout() {
 
 #[tokio::test]
 async fn mcp_is_outside_the_request_timeout() {
+    // Shorter than the delay under both groups' timeouts, so /mcp under either fails.
     let ts = TestServer::spawn_with(|state| {
         state.request_timeout = std::time::Duration::from_millis(100);
+        state.publish_timeout = std::time::Duration::from_millis(200);
     })
     .await;
     let res = ts
