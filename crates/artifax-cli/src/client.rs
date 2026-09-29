@@ -254,6 +254,20 @@ impl Client {
                 .send()?,
         )
     }
+    /// [`Client::get`] with this request alone bounded by `timeout`.
+    pub fn get_with_timeout(
+        &self,
+        path: &str,
+        timeout: Duration,
+    ) -> anyhow::Result<serde_json::Value> {
+        Self::check(
+            self.http
+                .get(format!("{}{path}", self.base))
+                .bearer_auth(&self.token)
+                .timeout(timeout)
+                .send()?,
+        )
+    }
     pub fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Self::check(
             self.http

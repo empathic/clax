@@ -106,6 +106,9 @@ impl Daemon for Client {
     fn get(&self, path: &str) -> anyhow::Result<serde_json::Value> {
         Client::get(self, path)
     }
+    fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<serde_json::Value> {
+        Client::get_with_timeout(self, path, timeout)
+    }
     fn post(&self, path: &str, body: &serde_json::Value) -> anyhow::Result<serde_json::Value> {
         Client::post(self, path, body)
     }

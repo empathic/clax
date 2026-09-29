@@ -5,11 +5,19 @@ use crate::input::HookInput;
 use crate::output::HookOutput;
 use anyhow::{Context, bail};
 use serde_json::{Value, json};
+use std::time::Duration;
+
+/// The pending-feedback request `session_start` makes after joining is
+/// abandoned after this long, so the join context is printed within the
+/// hook's deadline.
+pub const START_FEEDBACK_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// The daemon operations hooks need.
 pub trait Daemon {
     fn browser_url(&self, path: &str) -> String;
     fn get(&self, path: &str) -> anyhow::Result<Value>;
+    /// [`Daemon::get`], abandoned with an error after `timeout`.
+    fn get_with_timeout(&self, path: &str, timeout: Duration) -> anyhow::Result<Value>;
     fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value>;
     fn patch(&self, path: &str, body: &Value) -> anyhow::Result<Value>;
 }
@@ -18,7 +26,9 @@ pub trait Daemon {
 /// harness process (`parent_pid` is the hook's parent; `ancestor_pids`, nearest
 /// first, cover a wrapper shell between the hook and the harness). The
 /// context names the daemon and, when the joined session has pending
-/// `prompt_hook` feedback, appends its rendered text.
+/// `prompt_hook` feedback, appends its rendered text. That feedback request is
+/// bounded by [`START_FEEDBACK_TIMEOUT`]; when it fails or times out the
+/// context is returned without it.
 pub fn session_start(
     harness: &str,
     parent_pid: u32,
@@ -46,7 +56,11 @@ pub fn session_start(
         daemon.browser_url("/")
     );
     if let Some(sid) = joined["session"]["id"].as_str()
-        && let Ok(Some(text)) = feedback_text(daemon, sid, "tier=prompt_hook")
+        && let Ok(res) = daemon.get_with_timeout(
+            &format!("/api/sessions/{sid}/feedback?tier=prompt_hook"),
+            START_FEEDBACK_TIMEOUT,
+        )
+        && let Some(text) = rendered_text(&res)
     {
         context.push_str("\n\n");
         context.push_str(&text);
@@ -102,16 +116,24 @@ fn live_session(
 /// is the daemon's, passed through unchanged.
 fn feedback_text(daemon: &dyn Daemon, sid: &str, query: &str) -> anyhow::Result<Option<String>> {
     let res = daemon.get(&format!("/api/sessions/{sid}/feedback?{query}"))?;
-    Ok(res["text"]
+    Ok(rendered_text(&res))
+}
+
+/// The non-empty `text` of a feedback response.
+fn rendered_text(res: &Value) -> Option<String> {
+    res["text"]
         .as_str()
         .filter(|t| !t.is_empty())
-        .map(str::to_string))
+        .map(str::to_string)
 }
 
 /// Tier 2. Blocks the stop with the pending feedback as the reason; allows it
 /// (prints nothing) when nothing is pending. Only watches with replies armed
 /// count. While `stop_hook_active` is set, only never-delivered rows can block,
 /// so a stop is blocked at most once per new comment.
+///
+/// # Errors
+/// When the input has no `session_id` or a daemon request fails.
 pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
     let Some(sid) = live_session(harness, input, daemon)? else {
         return Ok(HookOutput::none());
@@ -126,6 +148,9 @@ pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Re
 }
 
 /// Tier 3. Adds pending feedback to the prompt as additional context.
+///
+/// # Errors
+/// When the input has no `session_id` or a daemon request fails.
 pub fn prompt(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
     let Some(sid) = live_session(harness, input, daemon)? else {
         return Ok(HookOutput::none());
@@ -158,6 +183,9 @@ mod tests {
                 {"id": "b", "harness": "codex", "harness_session_id": "s1"},
                 {"id": "c", "harness": "claude", "harness_session_id": "s2"},
             ]}))
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
         }
         fn post(&self, path: &str, body: &Value) -> anyhow::Result<Value> {
             self.calls
@@ -230,6 +258,9 @@ mod tests {
             Ok(
                 json!({"feedback": if self.text.is_some() { json!([{}]) } else { json!([]) }, "text": self.text, "waited_s": 0}),
             )
+        }
+        fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
+            self.get(path)
         }
         fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
             Ok(json!({"session": {"id": "S"}}))
@@ -321,5 +352,48 @@ mod tests {
             .unwrap()
             .to_string();
         assert!(text.ends_with("\n\nPENDING"), "{text}");
+    }
+
+    /// A daemon whose feedback route answers only after `FEEDBACK_DELAY`; like
+    /// the real client, a bounded request gives up after its timeout.
+    struct SlowFeedback;
+    const FEEDBACK_DELAY: Duration = Duration::from_secs(5);
+    impl Daemon for SlowFeedback {
+        fn browser_url(&self, path: &str) -> String {
+            format!("http://h:1{path}")
+        }
+        fn get(&self, path: &str) -> anyhow::Result<Value> {
+            self.get_with_timeout(path, Duration::MAX)
+        }
+        fn get_with_timeout(&self, _: &str, timeout: Duration) -> anyhow::Result<Value> {
+            std::thread::sleep(timeout.min(FEEDBACK_DELAY));
+            if timeout < FEEDBACK_DELAY {
+                bail!("timed out");
+            }
+            Ok(json!({"feedback": [{}], "text": "LATE", "waited_s": 0}))
+        }
+        fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({"session": {"id": "S"}}))
+        }
+        fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+            Ok(json!({}))
+        }
+    }
+
+    #[test]
+    fn session_start_returns_the_join_context_when_feedback_is_slow() {
+        let started = std::time::Instant::now();
+        let out = session_start("claude", 1, &[], &input("s1"), &SlowFeedback).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(1500),
+            "{:?}",
+            started.elapsed()
+        );
+        let text = out.value().unwrap()["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(text.contains("http://h:1/"), "{text}");
+        assert!(!text.contains("LATE"), "{text}");
     }
 }
