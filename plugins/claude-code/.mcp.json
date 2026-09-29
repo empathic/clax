@@ -1,0 +1,6 @@
+{
+  "artifax": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh",
+    "args": ["exec", "mcp", "--agent", "claude"]
+  }
+}

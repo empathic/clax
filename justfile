@@ -37,6 +37,10 @@ pi-test:
 installer-test:
     ./scripts/test-ensure-artifax.sh
 
+# Check the plugin manifests, commands, and skill
+plugin-test:
+    ./scripts/test-plugins.sh
+
 # Run the Rust workspace tests
 test:
     cargo test --workspace

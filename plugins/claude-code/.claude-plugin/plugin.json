@@ -1,0 +1,14 @@
+{
+  "name": "artifax",
+  "version": "0.2.0",
+  "description": "Local artifacts with comment-driven development: publish HTML pages, view them, and get feedback back",
+  "author": {
+    "name": "Empathic"
+  },
+  "keywords": [
+    "artifacts",
+    "html",
+    "preview",
+    "comments"
+  ]
+}

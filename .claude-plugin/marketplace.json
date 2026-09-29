@@ -1,0 +1,21 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "artifax",
+  "version": "0.2.0",
+  "description": "Artifax: local artifacts with comment-driven development. Publish HTML pages from your agent, view them in a browser, and get feedback back",
+  "owner": {
+    "name": "Empathic"
+  },
+  "plugins": [
+    {
+      "name": "artifax",
+      "description": "Local artifacts with comment-driven development: publish HTML pages, view them, and get feedback back",
+      "version": "0.2.0",
+      "author": {
+        "name": "Empathic"
+      },
+      "source": "./plugins/claude-code",
+      "category": "productivity"
+    }
+  ]
+}
