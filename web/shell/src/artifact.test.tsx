@@ -23,9 +23,19 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
 const ID = "7q3k9mzx2b4t";
 const artifact = (n: number) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files: {} }] });
 
-async function mount(fetchImpl: () => Promise<Response>) {
+const viewer = { viewer: { id: "v", display_name: null, created_at: "x" } };
+
+/** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
+async function mount(fetchImpl: () => Promise<Response>, comments?: (url: string) => Promise<Response>) {
   vi.stubGlobal("EventSource", FakeES);
-  vi.stubGlobal("fetch", vi.fn(fetchImpl));
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/threads") || url.startsWith("/api/viewers/")) {
+      if (comments) return comments(url);
+      return new Response(JSON.stringify(url.includes("/threads") ? { threads: [], next_cursor: null } : viewer));
+    }
+    return fetchImpl();
+  }));
   sessionStorage.setItem("artifax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
   const root = document.createElement("div");
@@ -60,5 +70,15 @@ describe("ArtifactView", () => {
     current = 4;
     FakeES.last.emit("resync", { dropped: 3 });
     await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v4 published"), "banner");
+  });
+
+  it("shows a failed thread load in the notice banner", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async url => url.includes("/threads")
+        ? new Response(JSON.stringify({ error: { code: "internal", message: "db locked" } }), { status: 500 })
+        : new Response(JSON.stringify(viewer)));
+    const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
+    expect(banner.getAttribute("role")).toBe("alert");
+    expect(banner.textContent).toContain("Could not load comments: 500 db locked");
   });
 });

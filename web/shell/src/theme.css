@@ -39,3 +39,33 @@ select { font: inherit; background: var(--card); color: var(--fg); border: 1px s
 .card-tools { position: absolute; right: 12px; bottom: 10px; display: flex; gap: 6px; }
 .card-tools button { padding: 2px 8px; font-size: 13px; }
 @media (max-width: 480px) { .topbar h1 { font-size: 14px; } .topbar .hide-sm { display: none; } }
+.viewer { display: flex; }
+.stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
+.sidebar { width: 340px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px; display: flex; flex-direction: column; gap: 16px; }
+.sidebar h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; margin: 0 0 8px; color: var(--muted); }
+.thread-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; cursor: pointer; }
+.thread-card.selected { border-color: var(--accent); }
+.thread-card header { display: flex; gap: 8px; align-items: baseline; margin-bottom: 6px; min-width: 0; }
+.thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 12px; font-weight: 600; flex: none; }
+.thread-card .thumb { display: block; max-width: 100%; max-height: 120px; min-height: 24px; object-fit: cover; object-position: left top; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 6px; }
+.comment { margin: 6px 0; }
+.comment .author { font-size: 12px; font-weight: 600; }
+.comment.agent .author { color: var(--accent); }
+.comment .body { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; }
+.waiting { font-size: 12px; color: var(--muted); margin: 6px 0; }
+.thread-card .actions, .composer .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 6px; }
+.reply { display: flex; gap: 6px; margin-top: 6px; }
+.reply input { flex: 1; min-width: 0; font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; }
+.pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
+.thread-pin { position: absolute; pointer-events: auto; border: 2px solid var(--card); padding: 0; box-shadow: 0 2px 8px rgba(0,0,0,.25); }
+.composer { position: absolute; right: 16px; bottom: 16px; width: min(360px, calc(100% - 32px)); background: var(--card); border: 1px solid var(--accent); border-radius: var(--radius); padding: 12px; box-shadow: 0 10px 30px rgba(0,0,0,.2); z-index: 5; }
+.composer-quote { margin: 0 0 8px; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.composer .clip { display: block; max-width: 100%; max-height: 160px; min-height: 24px; object-fit: cover; object-position: left top; border-radius: 6px; border: 1px solid var(--border); margin-bottom: 8px; }
+.composer textarea { width: 100%; font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; resize: vertical; }
+.viewer-name { font: inherit; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; width: 140px; min-width: 0; }
+.small { font-size: 12px; }
+.banner.notice { top: 56px; border-color: #dc2626; max-width: calc(100% - 32px); }
+.error { color: #dc2626; }
+@media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
+@media (max-width: 480px) { .topbar { flex-wrap: wrap; gap: 8px; } .topbar h1 { flex-basis: calc(100% - 40px); } .topbar button, .topbar select { padding: 4px 8px; font-size: 14px; } }

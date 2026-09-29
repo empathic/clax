@@ -44,3 +44,29 @@ export async function publish(base: string, token: string, title: string, files:
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<{ artifact: { id: string; current_version: number } }>;
 }
+
+/** Registers a live harness session; returns it. */
+export async function registerSession(base: string, token: string, harness = "claude", hsid = `e2e-${Math.random().toString(36).slice(2)}`) {
+  const res = await fetch(`${base}/api/sessions`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ harness, harness_session_id: hsid, cwd: "/tmp" }) });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return (await res.json()).session as { id: string; harness: string };
+}
+
+/** Publishes as `sessionId` (which then owns and watches the artifact). */
+export async function publishAs(base: string, token: string, sessionId: string, title: string, files: Record<string, string>, ifVersion?: number, id?: string) {
+  const body = { title, if_version: ifVersion, files: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, { content: v, encoding: "utf8" }])) };
+  const url = id ? `${base}/api/artifacts/${id}/versions` : `${base}/api/artifacts`;
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "x-artifax-session": sessionId }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<{ artifact: { id: string; current_version: number } }>;
+}
+
+/** A JSON API call with the token (and, when given, the session header). */
+export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string } = {}) {
+  const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${token}` };
+  if (init.session) headers["x-artifax-session"] = init.session;
+  const res = await fetch(`${base}${path}`, { ...init, headers });
+  if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
+  return res.status === 204 ? {} : res.json();
+}
