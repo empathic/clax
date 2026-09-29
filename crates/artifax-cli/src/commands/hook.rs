@@ -7,10 +7,15 @@ use std::io::{Read, Write};
 use std::sync::mpsc;
 use std::time::Duration;
 
-/// The whole hook invocation is abandoned after this long.
-const DEADLINE: Duration = Duration::from_secs(4);
-/// Each daemon request is abandoned after this long.
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// The whole `session-start` invocation is abandoned after this long.
+const START_DEADLINE: Duration = Duration::from_secs(4);
+/// Each `session-start` daemon request is abandoned after this long.
+const START_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// The whole `session-end` invocation is abandoned after this long: Codex
+/// kills its `SessionEnd` hook after 3 s.
+const END_DEADLINE: Duration = Duration::from_millis(2500);
+/// Each `session-end` daemon request is abandoned after this long.
+const END_REQUEST_TIMEOUT: Duration = Duration::from_millis(2000);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
 
@@ -44,6 +49,16 @@ fn ancestors(pid: u32) -> Vec<u32> {
 pub enum Agent {
     Claude,
     Codex,
+}
+
+impl Event {
+    /// The deadline for the whole invocation and for each daemon request.
+    fn budget(self) -> (Duration, Duration) {
+        match self {
+            Event::SessionStart => (START_DEADLINE, START_REQUEST_TIMEOUT),
+            Event::SessionEnd => (END_DEADLINE, END_REQUEST_TIMEOUT),
+        }
+    }
 }
 
 impl Agent {
@@ -97,14 +112,15 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _ = tx.send(handle(agent, event, parent_pid, &home));
     });
-    match rx.recv_timeout(DEADLINE) {
+    let (deadline, _) = event.budget();
+    match rx.recv_timeout(deadline) {
         Ok(Ok(out)) => {
             if let Some(line) = out.to_line() {
                 let _ = writeln!(std::io::stdout(), "{line}");
             }
         }
         Ok(Err(e)) => eprintln!("artifax hook: {e:#}"),
-        Err(_) => eprintln!("artifax hook: timed out after {}s", DEADLINE.as_secs()),
+        Err(_) => eprintln!("artifax hook: timed out after {deadline:?}"),
     }
     // Exit now: a timed-out worker may still be blocked on stdin or the network.
     std::process::exit(0);
@@ -116,7 +132,7 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
     let input = HookInput::parse(&stdin);
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no artifax daemon is running"))?
-        .with_timeout(REQUEST_TIMEOUT);
+        .with_timeout(event.budget().1);
     match event {
         Event::SessionStart => events::session_start(
             agent.harness(),

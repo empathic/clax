@@ -267,3 +267,86 @@ fn hook_behind_a_wrapper_shell_joins_the_shim_row() {
     assert_eq!(all[0]["harness_session_id"], "cx-hook-1");
     assert_eq!(all[0]["pid"], 424242);
 }
+
+/// A home whose daemon.json names a server that answers `/healthz` and never
+/// answers anything else.
+fn stalled_daemon() -> tempfile::TempDir {
+    use std::io::Read;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    std::thread::spawn(move || {
+        for sock in listener.incoming() {
+            let Ok(mut sock) = sock else { continue };
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 4096];
+                let n = sock.read(&mut buf).unwrap_or(0);
+                if buf[..n].starts_with(b"GET /healthz") {
+                    let body = r#"{"version":"0.0.0","pid":1,"started_at":"x"}"#;
+                    let res = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                        body.len()
+                    );
+                    let _ = sock.write_all(res.as_bytes());
+                } else {
+                    std::thread::sleep(Duration::from_secs(10));
+                }
+            });
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("daemon.json"),
+        serde_json::json!({
+            "port": port,
+            "pid": std::process::id(),
+            "token": "t",
+            "started_at": "2026-09-28T00:00:00Z",
+            "bind": "127.0.0.1",
+            "version": "0.0.0",
+        })
+        .to_string(),
+    )
+    .unwrap();
+    dir
+}
+
+#[test]
+fn session_end_gives_up_within_codexs_three_second_cap() {
+    let dir = stalled_daemon();
+    let home = dir.path().join("ax");
+    // The first run of a freshly built binary can be slow to start (macOS
+    // checks it); keep that out of the timing.
+    assert!(
+        artifax(&home)
+            .arg("--version")
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    let r = hook(
+        &home,
+        "codex",
+        "session-end",
+        &fixture("codex-session-end.json"),
+    );
+    assert_eq!(r.code, Some(0));
+    assert_eq!(r.stdout, "");
+    assert!(r.elapsed < Duration::from_millis(2900), "{:?}", r.elapsed);
+
+    // Session start keeps its longer budget.
+    let r = hook(
+        &home,
+        "codex",
+        "session-start",
+        &fixture("codex-session-start.json"),
+    );
+    assert_eq!(r.code, Some(0));
+    assert!(
+        r.elapsed >= Duration::from_millis(2900) && r.elapsed < Duration::from_millis(4500),
+        "{:?}",
+        r.elapsed
+    );
+}
