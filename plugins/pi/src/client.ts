@@ -409,6 +409,49 @@ export class DaemonClient {
     });
   }
 
+  private docsPath(id: string, path: string, query: Record<string, string | undefined> = {}): string {
+    const q = new URLSearchParams(Object.entries(query).filter((e): e is [string, string] => e[1] !== undefined));
+    const qs = q.toString();
+    return `/api/artifacts/${id}/docs/${encodePath(path)}${qs ? `?${qs}` : ""}`;
+  }
+
+  /** `GET /api/artifacts/<id>/docs/<path>`: `{doc}` (404 when absent or unreadable). */
+  docGet(id: string, path: string, asLevel?: string): Promise<any> {
+    return this.json(this.docsPath(id, path, { as_level: asLevel }), { method: "GET" });
+  }
+
+  /** `PUT /api/artifacts/<id>/docs/<path>` with `{data, if_version?}`: `{doc, created}`. */
+  docPut(id: string, path: string, body: unknown, asLevel?: string): Promise<any> {
+    return this.json(this.docsPath(id, path, { as_level: asLevel }), this.jsonBody("PUT", body));
+  }
+
+  /** `PATCH /api/artifacts/<id>/docs/<path>` with `{data, if_version?}`: `{doc}`. */
+  docPatch(id: string, path: string, body: unknown, asLevel?: string): Promise<any> {
+    return this.json(this.docsPath(id, path, { as_level: asLevel }), this.jsonBody("PATCH", body));
+  }
+
+  /** `DELETE /api/artifacts/<id>/docs/<path>?if_version=`: `{deleted}`. */
+  docDelete(id: string, path: string, ifVersion?: number, asLevel?: string): Promise<any> {
+    return this.json(this.docsPath(id, path, { if_version: ifVersion === undefined ? undefined : String(ifVersion), as_level: asLevel }), { method: "DELETE" });
+  }
+
+  /** `GET /api/artifacts/<id>/docs?<query>`: `{docs, next_cursor}`. */
+  docList(id: string, query: [string, string][]): Promise<any> {
+    return this.json(`/api/artifacts/${id}/docs?${new URLSearchParams(query)}`, { method: "GET" });
+  }
+
+  /** `POST /api/artifacts/<id>/docs:batch`: `{results}`. */
+  docBatch(id: string, body: unknown, asLevel?: string): Promise<any> {
+    const q = asLevel === undefined ? "" : `?as_level=${asLevel}`;
+    return this.json(`/api/artifacts/${id}/docs:batch${q}`, this.jsonBody("POST", body));
+  }
+
+  /** `POST /api/artifacts/<id>/docs:str_replace`: `{doc}`. */
+  docStrReplace(id: string, body: unknown, asLevel?: string): Promise<any> {
+    const q = asLevel === undefined ? "" : `?as_level=${asLevel}`;
+    return this.json(`/api/artifacts/${id}/docs:str_replace${q}`, this.jsonBody("POST", body));
+  }
+
   /** `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`. */
   threads(id: string, includeResolved: boolean, cursor?: string): Promise<any> {
     const q = new URLSearchParams({ include_resolved: String(includeResolved) });

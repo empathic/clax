@@ -67,7 +67,7 @@ async fn mcp_refuses_a_non_local_host() {
 }
 
 #[tokio::test]
-async fn mcp_lists_the_fourteen_tools() {
+async fn mcp_lists_the_twenty_two_tools() {
     let ts = TestServer::spawn().await;
     let res = mcp_post(&ts, &initialize())
         .bearer_auth(&ts.token)
@@ -124,6 +124,14 @@ async fn mcp_lists_the_fourteen_tools() {
             "comments_read",
             "comments_reply",
             "comments_resolve",
+            "db_batch",
+            "db_delete",
+            "db_get",
+            "db_list",
+            "db_query",
+            "db_set",
+            "db_str_replace",
+            "db_update",
             "delete",
             "list",
             "open",

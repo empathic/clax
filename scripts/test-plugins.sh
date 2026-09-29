@@ -125,7 +125,7 @@ PY
 )"; then pass "the workspace, plugin manifests, Pi package and MIN_VERSION share one version"
 else fail "versions differ: $out"; fi
 
-# The Rust tools and the Pi extension carry the same fourteen tool descriptions,
+# The Rust tools and the Pi extension carry the same twenty-two tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
 if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/artifax-mcp/src/tools.rs plugins/pi/src/artifax.ts 2>&1 <<'PY'
 import json, sys
@@ -138,11 +138,11 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 14 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 14")
+if len(tools) != 22 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 22")
     sys.exit(1)
 PY
-)"; then pass "the fourteen tool descriptions match in tools.rs and artifax.ts"
+)"; then pass "the twenty-two tool descriptions match in tools.rs and artifax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.

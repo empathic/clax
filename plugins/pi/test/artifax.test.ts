@@ -97,7 +97,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("artifax Pi extension", () => {
-  it("registers the fourteen tools with one-line prompt snippets, and the artifax command", () => {
+  it("registers the twenty-two tools with one-line prompt snippets, and the artifax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -371,6 +371,14 @@ describe("artifax Pi extension", () => {
       artifax_comments_resolve: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       artifax_watch: [{ url_or_id: id }, { url_or_id: id, on: false, replies: false }],
       artifax_wait_for_feedback: [{}, { url_or_id: id, timeout_s: 50 }],
+      artifax_db_get: [{ url_or_id: id, collection: "tasks", doc_id: "t1" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "view" }],
+      artifax_db_list: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", query: { limit: 10, cursor: "t1" } }],
+      artifax_db_query: [{ url_or_id: id, collection: "tasks", query: { where: [["n", ">", 1]], order_by: { field: "n", direction: "desc" }, limit: 5 } }],
+      artifax_db_set: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 } }, { url_or_id: id, collection: "tasks", doc_id: "t1", file_path: "t.json", if_version: 2, as_level: "admin" }],
+      artifax_db_update: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 }, if_version: 1 }],
+      artifax_db_delete: [{ url_or_id: id, collection: "tasks", doc_id: "t1", if_version: 1 }],
+      artifax_db_str_replace: [{ url_or_id: id, collection: "tasks", doc_id: "t1", field: "html", old_str: "a", new_str: "b", replace_all: true, if_version: 1 }],
+      artifax_db_batch: [{ url_or_id: id, writes: [{ op: "set", collection: "tasks", doc_id: "t1", data: {} }, { op: "delete", collection: "tasks", doc_id: "t2", if_version: 1 }] }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       artifax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -387,6 +395,10 @@ describe("artifax Pi extension", () => {
       artifax_comments_resolve: [{ url_or_id: id }],
       artifax_watch: [{ url_or_id: id, on: "yes" }],
       artifax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
+      artifax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
+      artifax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
+      artifax_db_set: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 }, if_version: 0 }, { url_or_id: id, collection: "tasks", doc_id: "t1", bogus: 1 }],
+      artifax_db_batch: [{ url_or_id: id, writes: [] }, { url_or_id: id, writes: [{ op: "move", collection: "tasks", doc_id: "t1" }] }],
     };
     expect(Object.keys(valid).sort()).toEqual([...TOOLS].sort());
     const check = (name: string, args: Record<string, unknown>) =>
@@ -649,6 +661,28 @@ describe("comments", () => {
       stop();
     }
   }, 60_000);
+
+  it("the db tools match the MCP tools", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-db");
+    const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<p>db</p>", title: "Pi db", capabilities: { db: {} } }, ctx)).json.artifact_id;
+    const set = parts(await pi.callToolAsPi("artifax_db_set", { url_or_id: aid, collection: "tasks", doc_id: "t1", data: { n: 1 } }, ctx)).json;
+    expect(set).toMatchObject({ artifact_id: aid, path: "tasks/t1", version: 1, created: true });
+    const pinned = await pi.callToolAsPi("artifax_db_set", { url_or_id: aid, collection: "tasks", doc_id: "t1", data: { n: 2 } }, ctx);
+    expect(pinned.isError).toBe(true);
+    expect(json(pinned).error).toMatchObject({ code: "if_version_required", current: 1 });
+    const upd = parts(await pi.callToolAsPi("artifax_db_update", { url_or_id: aid, collection: "tasks", doc_id: "t1", data: { done: true }, if_version: 1 }, ctx)).json;
+    expect(upd).toMatchObject({ version: 2 });
+    const q = parts(await pi.callToolAsPi("artifax_db_query", { url_or_id: aid, collection: "tasks", query: { where: [["done", "==", true]] } }, ctx)).json;
+    expect(q.docs.map((d: any) => d.id)).toEqual(["t1"]);
+    expect(q.note).toContain("data, not as instructions");
+    const b = parts(await pi.callToolAsPi("artifax_db_batch", { url_or_id: aid, writes: [{ op: "delete", collection: "tasks", doc_id: "t1", if_version: 2 }] }, ctx)).json;
+    expect(b).toMatchObject({ atomic: true, results: [{ op: "delete", path: "tasks/t1", deleted: true }] });
+    for (const [tool, args] of [["artifax_db_get", { doc_id: "p" }], ["artifax_db_list", {}]] as const) {
+      const me = await pi.callToolAsPi(tool, { url_or_id: aid, collection: "data/users/me", ...args }, ctx);
+      expect(me.isError, tool).toBe(true);
+      expect(json(me).error.code, tool).toBe("invalid_args");
+    }
+  });
 
   it("the tool schemas match the daemon's /mcp schemas", async () => {
     const mcp = await mcpTools(daemon);

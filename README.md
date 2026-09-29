@@ -36,7 +36,7 @@ To serve on the LAN, stop a running daemon first, then run `artifax serve --bind
 
 ## Use from an agent
 
-Each harness gets the same fourteen tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`) and the `artifax` skill:
+Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `artifax` skill:
 
 - Claude Code: `/plugin marketplace add empathic/artifax`, then `/plugin install artifax@artifax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
 - Codex: `codex plugin marketplace add /path/to/artifax`, then `codex plugin add artifax@artifax`. See [plugins/artifax/README.md](plugins/artifax/README.md).

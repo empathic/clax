@@ -477,6 +477,97 @@ impl DaemonClient {
         .await
     }
 
+    fn docs_url(id: &str, path: &str) -> String {
+        format!("/api/artifacts/{id}/docs/{}", encode_path(path))
+    }
+
+    fn with_level(req: reqwest::RequestBuilder, as_level: Option<&str>) -> reqwest::RequestBuilder {
+        match as_level {
+            Some(l) => req.query(&[("as_level", l)]),
+            None => req,
+        }
+    }
+
+    /// `GET /api/artifacts/<id>/docs/<path>`: `{doc}` (404 when absent or unreadable).
+    pub async fn doc_get(&self, id: &str, path: &str, as_level: Option<&str>) -> Result<Value> {
+        let url = Self::docs_url(id, path);
+        self.json(|c| Self::with_level(c.request(reqwest::Method::GET, &url), as_level))
+            .await
+    }
+
+    /// `PUT /api/artifacts/<id>/docs/<path>` with `{data, if_version?}`: `{doc, created}`.
+    pub async fn doc_put(
+        &self,
+        id: &str,
+        path: &str,
+        body: &Value,
+        as_level: Option<&str>,
+    ) -> Result<Value> {
+        let url = Self::docs_url(id, path);
+        self.json(|c| Self::with_level(c.request(reqwest::Method::PUT, &url).json(body), as_level))
+            .await
+    }
+
+    /// `PATCH /api/artifacts/<id>/docs/<path>` with `{data, if_version?}`: `{doc}`.
+    pub async fn doc_patch(
+        &self,
+        id: &str,
+        path: &str,
+        body: &Value,
+        as_level: Option<&str>,
+    ) -> Result<Value> {
+        let url = Self::docs_url(id, path);
+        self.json(|c| {
+            Self::with_level(c.request(reqwest::Method::PATCH, &url).json(body), as_level)
+        })
+        .await
+    }
+
+    /// `DELETE /api/artifacts/<id>/docs/<path>?if_version=`: `{deleted}`.
+    pub async fn doc_delete(
+        &self,
+        id: &str,
+        path: &str,
+        if_version: Option<u64>,
+        as_level: Option<&str>,
+    ) -> Result<Value> {
+        let url = Self::docs_url(id, path);
+        self.json(|c| {
+            let mut r = c.request(reqwest::Method::DELETE, &url);
+            if let Some(v) = if_version {
+                r = r.query(&[("if_version", v)]);
+            }
+            Self::with_level(r, as_level)
+        })
+        .await
+    }
+
+    /// `GET /api/artifacts/<id>/docs?collection=...` with `query` pairs: `{docs, next_cursor}`.
+    pub async fn doc_list(&self, id: &str, query: &[(String, String)]) -> Result<Value> {
+        let url = format!("/api/artifacts/{id}/docs");
+        self.json(|c| c.request(reqwest::Method::GET, &url).query(query))
+            .await
+    }
+
+    /// `POST /api/artifacts/<id>/docs:batch`: `{results}`.
+    pub async fn doc_batch(&self, id: &str, body: &Value, as_level: Option<&str>) -> Result<Value> {
+        let url = format!("/api/artifacts/{id}/docs:batch");
+        self.json(|c| Self::with_level(c.request(reqwest::Method::POST, &url).json(body), as_level))
+            .await
+    }
+
+    /// `POST /api/artifacts/<id>/docs:str_replace`: `{doc}`.
+    pub async fn doc_str_replace(
+        &self,
+        id: &str,
+        body: &Value,
+        as_level: Option<&str>,
+    ) -> Result<Value> {
+        let url = format!("/api/artifacts/{id}/docs:str_replace");
+        self.json(|c| Self::with_level(c.request(reqwest::Method::POST, &url).json(body), as_level))
+            .await
+    }
+
     /// `GET /api/artifacts/<id>/threads`: `{threads, next_cursor}`.
     pub async fn threads(
         &self,
