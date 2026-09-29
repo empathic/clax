@@ -149,6 +149,13 @@ pub const MIGRATIONS: &[&str] = &[
         expires_at TEXT NOT NULL,
         PRIMARY KEY (artifact_id, path)
     );",
+    // 8: each artifact's document version sequence. A column rather than a
+    // table: it lives and dies with the artifact row (soft deletes keep it,
+    // hard deletes take it), so no cleanup path has another row to erase.
+    // Existing documents seed it with their artifact's highest version.
+    "ALTER TABLE artifacts ADD COLUMN doc_seq INTEGER NOT NULL DEFAULT 0;
+    UPDATE artifacts SET doc_seq =
+        COALESCE((SELECT MAX(version) FROM docs WHERE docs.artifact_id = artifacts.id), 0);",
 ];
 
 #[cfg(test)]
@@ -231,5 +238,44 @@ mod tests {
         for secret in [COOKIE, LOST, SID] {
             assert!(!all.contains(secret), "{all}");
         }
+    }
+
+    #[test]
+    fn migration_8_starts_each_sequence_above_its_highest_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..7] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 7).unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');
+                 INSERT INTO docs (artifact_id, path, collection, json, version, updated_at)
+                    VALUES ('7q3k9mzx2b4t', 't/a', 't', '{}', 5, 'x'), ('7q3k9mzx2b4t', 't/b', 't', '{}', 2, 'x');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let version: u32 = st
+            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as u32);
+        let id = crate::ArtifactId::parse("7q3k9mzx2b4t").unwrap();
+        let admin = crate::db::Caller {
+            level: crate::db::Level::Admin,
+            viewer: None,
+        };
+        let pin = crate::store::docs::Pin {
+            if_version: None,
+            lww: true,
+        };
+        let w = st
+            .doc_set(&id, "t/c", serde_json::json!({}), pin, &admin)
+            .unwrap();
+        assert_eq!(w.doc.unwrap().version, 6);
     }
 }

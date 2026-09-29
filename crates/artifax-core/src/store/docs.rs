@@ -1,5 +1,10 @@
 //! Documents of the `db` capability (spec §5 `docs`, §9 "db"): JSON objects at
-//! document paths per artifact, each with a version every write bumps. Every
+//! document paths per artifact, each with a version. Versions come from one
+//! sequence per artifact (`artifacts.doc_seq`) that every change (a write, a
+//! delete, a grant that merges data) advances in its own transaction, so a
+//! version is never issued twice in an artifact's lifetime: a document that
+//! is deleted and created again gets a version above every earlier one, and a
+//! pin taken before the delete can only conflict. Every
 //! call loads the artifact's declared rules and checks the caller against
 //! them: a document the caller may not read behaves as absent, and a write it
 //! may not make fails as `NotFound`. Leases (`acquire`) live beside the
@@ -35,6 +40,8 @@ pub const DEFAULT_LEASE_MS: u64 = 30_000;
 /// Shortest and longest lease; requests are clamped, never refused.
 pub const MIN_LEASE_MS: u64 = 1_000;
 pub const MAX_LEASE_MS: u64 = 600_000;
+/// Most leases in force at once in one artifact.
+pub const MAX_LEASES: i64 = 100;
 /// `{"__delete__": true}` in an update removes its field.
 pub const DELETE_MARKER: &str = "__delete__";
 
@@ -45,6 +52,8 @@ pub struct Doc {
     pub collection: String,
     pub id: String,
     pub data: Value,
+    /// Unique within the artifact for its whole lifetime and greater than
+    /// every version the artifact issued before (see the module doc).
     pub version: u64,
     pub updated_at: String,
 }
@@ -70,7 +79,9 @@ pub struct DocChange {
     pub read_level: crate::db::Level,
 }
 
-/// A write's outcome; `change` is `None` when nothing changed.
+/// A write's outcome; `change` is `None` when nothing changed. The written
+/// document's version (`doc.version`, `change.version`) is the artifact's
+/// next sequence number, never a per-document count.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Written {
     pub path: String,
@@ -196,18 +207,13 @@ pub fn parse_where(v: &Value) -> Result<Vec<Filter>> {
                 .filter(|f| !f.is_empty())
                 .ok_or_else(|| invalid_argument("a where field is a non-empty string"))?;
             let op = FilterOp::parse(t[1].as_str().unwrap_or(""))?;
-            if matches!(op, FilterOp::In | FilterOp::NotIn)
-                && t[2].as_array().is_none_or(|a| a.len() > MAX_IN_VALUES)
-            {
-                return Err(invalid_argument(format!(
-                    "in and not-in take an array of at most {MAX_IN_VALUES} values"
-                )));
-            }
-            Ok(Filter {
+            let f = Filter {
                 field: field.to_string(),
                 op,
                 value: t[2].clone(),
-            })
+            };
+            f.check()?;
+            Ok(f)
         })
         .collect()
 }
@@ -250,6 +256,25 @@ fn equal(a: &Value, b: &Value) -> bool {
 }
 
 impl Filter {
+    /// `invalid_argument` when the field is empty or an `in` / `not-in`
+    /// value is not an array of at most [`MAX_IN_VALUES`].
+    pub fn check(&self) -> Result<()> {
+        if self.field.is_empty() {
+            return Err(invalid_argument("a where field is a non-empty string"));
+        }
+        if matches!(self.op, FilterOp::In | FilterOp::NotIn)
+            && self
+                .value
+                .as_array()
+                .is_none_or(|a| a.len() > MAX_IN_VALUES)
+        {
+            return Err(invalid_argument(format!(
+                "in and not-in take an array of at most {MAX_IN_VALUES} values"
+            )));
+        }
+        Ok(())
+    }
+
     /// A missing field matches no filter; ranges compare only within one type.
     fn matches(&self, data: &Value) -> bool {
         let Some(v) = data.get(&self.field) else {
@@ -315,6 +340,11 @@ pub fn check_body(data: &Value, allow_markers: bool) -> Result<()> {
     }
     if !data.is_object() {
         return Err(invalid_argument("a document body is a JSON object"));
+    }
+    if is_delete_marker(data) {
+        return Err(invalid_argument(
+            "{\"__delete__\": true} as the whole body would remove every field; use delete to remove the document",
+        ));
     }
     walk(data, 1, allow_markers, false)?;
     if serde_json::to_vec(data)
@@ -448,6 +478,18 @@ fn check_pin(path: &str, current: Option<u64>, pin: Pin) -> Result<()> {
     }
 }
 
+/// Advances the artifact's version sequence and returns the new value, which
+/// is also above `floor` (the current document's version, guarding rows
+/// written outside the sequence).
+fn next_version(c: &Connection, id: &ArtifactId, floor: u64) -> Result<u64> {
+    let v: i64 = c.query_row(
+        "UPDATE artifacts SET doc_seq = MAX(doc_seq, ?2) + 1 WHERE id = ?1 RETURNING doc_seq",
+        params![id.as_str(), floor as i64],
+        |r| r.get(0),
+    )?;
+    Ok(v as u64)
+}
+
 /// One write: refused as `NotFound` unless `rules` let `caller` write `path`;
 /// pinned by `pin`; `next` maps the current document to the new body (`None`
 /// deletes).
@@ -486,7 +528,7 @@ fn write_in(
                     ));
                 }
             }
-            let version = current.as_ref().map_or(1, |d| d.version + 1);
+            let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
             c.execute(
                 "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(artifact_id, path) DO UPDATE SET json = excluded.json, version = excluded.version, updated_at = excluded.updated_at",
@@ -510,6 +552,9 @@ fn write_in(
                 "DELETE FROM docs WHERE artifact_id = ?1 AND path = ?2",
                 params![id.as_str(), dp.path],
             )?;
+            if n > 0 {
+                next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
+            }
             Ok(Written {
                 path: dp.path.clone(),
                 doc: None,
@@ -575,6 +620,7 @@ impl Store {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
+        doc_path(path)?;
         check_body(&patch, true)?;
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
@@ -613,6 +659,7 @@ impl Store {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
+        doc_path(path)?;
         if r.old_str.is_empty() {
             return Err(invalid_argument("old_str must not be empty"));
         }
@@ -658,6 +705,7 @@ impl Store {
                 "a query has at most {MAX_FILTERS} filters"
             )));
         }
+        q.filters.iter().try_for_each(Filter::check)?;
         if q.order_by.is_some() && q.cursor.is_some() {
             return Err(invalid_argument(
                 "a query with order_by is a single page; drop cursor",
@@ -702,6 +750,12 @@ impl Store {
 
     /// Applies `writes` in order in one transaction: all land or none do. Each
     /// document may appear once; `lww` applies to every entry.
+    ///
+    /// # Errors
+    /// `invalid_argument` for an empty batch or one over [`MAX_BATCH`];
+    /// otherwise a failing write's error wrapped in [`CoreError::InBatch`]
+    /// with its index and path. Paths are checked (all of them, in order)
+    /// before duplicates and bodies.
     pub fn doc_batch(
         &self,
         id: &ArtifactId,
@@ -714,40 +768,55 @@ impl Store {
                 "a batch holds 1 to {MAX_BATCH} writes"
             )));
         }
-        let mut seen = HashSet::new();
-        if let Some(w) = writes.iter().find(|w| !seen.insert(w.path.clone())) {
-            return Err(invalid_argument(format!(
-                "a batch addresses each document at most once; '{}' appears twice",
-                w.path
-            )));
+        let in_batch = |op: usize, path: &str, error: CoreError| CoreError::InBatch {
+            op,
+            path: path.to_string(),
+            error: Box::new(error),
+        };
+        for (i, w) in writes.iter().enumerate() {
+            doc_path(&w.path).map_err(|e| in_batch(i, &w.path, e))?;
         }
-        for w in &writes {
+        let mut seen = HashSet::new();
+        for (i, w) in writes.iter().enumerate() {
+            if !seen.insert(w.path.as_str()) {
+                return Err(in_batch(
+                    i,
+                    &w.path,
+                    invalid_argument(format!(
+                        "a batch addresses each document at most once; '{}' appears twice",
+                        w.path
+                    )),
+                ));
+            }
             if let BatchOp::Update(p) = &w.op {
-                check_body(p, true)?;
+                check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?;
             }
         }
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             writes
                 .into_iter()
-                .map(|w| {
+                .enumerate()
+                .map(|(i, w)| {
                     let pin = Pin {
                         if_version: w.if_version,
                         lww,
                     };
+                    let path = w.path.as_str();
                     match w.op {
                         BatchOp::Set(data) => {
-                            write_in(tx, id, &rules, caller, &w.path, pin, |_| Ok(Some(data)))
+                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(Some(data)))
                         }
                         BatchOp::Update(patch) => {
-                            write_in(tx, id, &rules, caller, &w.path, pin, |cur| {
-                                update_body(&w.path, cur, patch)
+                            write_in(tx, id, &rules, caller, path, pin, |cur| {
+                                update_body(path, cur, patch)
                             })
                         }
                         BatchOp::Delete => {
-                            write_in(tx, id, &rules, caller, &w.path, pin, |_| Ok(None))
+                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(None))
                         }
                     }
+                    .map_err(|e| in_batch(i, path, e))
                 })
                 .collect()
         })
@@ -755,7 +824,9 @@ impl Store {
 
     /// Grants `a.holder` the lease on `path` unless another holder's lease is
     /// still in force; a grant merges `a.data` into the document (creating it).
-    /// Needs write access to `path`.
+    /// Needs write access to `path`. Lapsed leases of the artifact are pruned
+    /// first; a new lease beyond [`MAX_LEASES`] in force is
+    /// `resource_exhausted`.
     pub fn doc_acquire(
         &self,
         id: &ArtifactId,
@@ -780,6 +851,10 @@ impl Store {
                 return Err(CoreError::NotFound);
             }
             let now = Store::now();
+            tx.execute(
+                "DELETE FROM leases WHERE artifact_id = ?1 AND expires_at <= ?2",
+                params![id.as_str(), now],
+            )?;
             let held: Option<(String, String)> = tx
                 .query_row(
                     "SELECT holder, expires_at FROM leases WHERE artifact_id = ?1 AND path = ?2",
@@ -787,11 +862,26 @@ impl Store {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .optional()?;
-            if let Some((holder, expires)) = held
-                && holder != a.holder
-                && expires > now
+            if let Some((holder, expires)) = &held
+                && *holder != a.holder
+                && *expires > now
             {
-                return Ok((Acquired { acquired: false, version: None, expires_at: Some(expires), holder: None }, None));
+                return Ok((Acquired { acquired: false, version: None, expires_at: Some(expires.clone()), holder: None }, None));
+            }
+            if held.is_none() {
+                let active: i64 = tx.query_row(
+                    "SELECT COUNT(*) FROM leases WHERE artifact_id = ?1",
+                    params![id.as_str()],
+                    |r| r.get(0),
+                )?;
+                if active >= MAX_LEASES {
+                    return Err(CoreError::invalid(
+                        "resource_exhausted",
+                        format!(
+                            "an artifact has at most {MAX_LEASES} leases in force; let some lapse before acquiring more"
+                        ),
+                    ));
+                }
             }
             let expires = now_plus(ttl);
             tx.execute(
@@ -957,16 +1047,26 @@ mod tests {
             op: BatchOp::Update(json!({"a": 1})),
             if_version: None,
         }];
-        assert!(
-            matches!(
-                st.doc_batch(&id, batch, true, &admin()),
-                Err(CoreError::Invalid {
-                    code: "invalid_argument",
-                    ..
-                })
+        match st.doc_batch(&id, batch, true, &admin()) {
+            Err(CoreError::InBatch { op: 0, error, .. }) => assert!(
+                matches!(
+                    *error,
+                    CoreError::Invalid {
+                        code: "invalid_argument",
+                        ..
+                    }
+                ),
+                "a batched update needs an existing document too: {error:?}"
             ),
-            "a batched update needs an existing document too"
-        );
+            other => panic!("{other:?}"),
+        }
+        match st.doc_update(&id, "c/d", json!({"__delete__": true}), page(), &admin()) {
+            Err(CoreError::Invalid {
+                code: "invalid_argument",
+                message,
+            }) => assert!(message.contains("use delete"), "{message}"),
+            other => panic!("a whole-body marker is refused: {other:?}"),
+        }
         assert_eq!(st.doc_get(&id, "c/missing", &admin()).unwrap(), None);
         assert!(
             matches!(
@@ -1260,8 +1360,18 @@ mod tests {
             },
         ];
         match st.doc_batch(&id, writes, false, &admin()) {
-            Err(CoreError::DocConflict { path, current }) => {
-                assert_eq!((path.as_str(), current), ("t/1", Some(1)))
+            Err(CoreError::InBatch { op, path, error }) => {
+                assert_eq!((op, path.as_str()), (1, "t/1"));
+                assert!(
+                    matches!(
+                        *error,
+                        CoreError::DocConflict {
+                            current: Some(1),
+                            ..
+                        }
+                    ),
+                    "{error:?}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -1302,13 +1412,19 @@ mod tests {
                 if_version: None,
             },
         ];
-        assert!(matches!(
-            st.doc_batch(&id, dup, false, &admin()),
-            Err(CoreError::Invalid {
-                code: "invalid_argument",
-                ..
-            })
-        ));
+        match st.doc_batch(&id, dup, false, &admin()) {
+            Err(CoreError::InBatch { op: 1, path, error }) => {
+                assert_eq!(path, "t/3");
+                assert!(matches!(
+                    *error,
+                    CoreError::Invalid {
+                        code: "invalid_argument",
+                        ..
+                    }
+                ));
+            }
+            other => panic!("{other:?}"),
+        }
         let many = (0..=MAX_BATCH)
             .map(|i| BatchWrite {
                 path: format!("t/x{i}"),
@@ -1509,5 +1625,233 @@ mod tests {
             st.doc_get(&id, "t/1", &admin()),
             Err(CoreError::NotFound)
         ));
+    }
+
+    fn doc_count(st: &Store, table: &str) -> i64 {
+        st.with_conn(|c| {
+            Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn versions_rise_across_the_artifact_and_survive_deletes() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        let v = |w: Written| w.doc.unwrap().version;
+        let a1 = v(st
+            .doc_set(&id, "t/a", json!({"n": 1}), page(), &admin())
+            .unwrap());
+        let b1 = v(st
+            .doc_set(&id, "t/b", json!({"n": 1}), page(), &admin())
+            .unwrap());
+        assert!(b1 > a1, "two documents get distinct increasing versions");
+        st.doc_delete(&id, "t/a", pinned(a1), &admin()).unwrap();
+        let a2 = v(st
+            .doc_set(&id, "t/a", json!({"n": 2}), page(), &admin())
+            .unwrap());
+        assert!(
+            a2 > b1 && a2 > a1,
+            "a recreated document never reuses a version: {a1} {b1} {a2}"
+        );
+        match st.doc_set(&id, "t/a", json!({"n": 3}), pinned(a1), &admin()) {
+            Err(CoreError::DocConflict { current, .. }) => assert_eq!(current, Some(a2)),
+            other => panic!("a pin from before the delete must conflict: {other:?}"),
+        }
+        let batch = st
+            .doc_batch(
+                &id,
+                vec![BatchWrite {
+                    path: "t/c".into(),
+                    op: BatchOp::Set(json!({})),
+                    if_version: None,
+                }],
+                true,
+                &admin(),
+            )
+            .unwrap();
+        let c1 = batch[0].doc.as_ref().unwrap().version;
+        assert!(c1 > a2);
+        let (acq, _) = st
+            .doc_acquire(
+                &id,
+                "t/d",
+                Acquire {
+                    holder: "h".into(),
+                    ttl_ms: None,
+                    data: Some(json!({"x": 1})),
+                },
+                &admin(),
+            )
+            .unwrap();
+        assert!(acq.version.unwrap() > c1);
+        let other = artifact_with_caps(&st, json!({}));
+        assert_eq!(
+            v(st.doc_set(&other, "t/a", json!({}), page(), &admin())
+                .unwrap()),
+            1,
+            "each artifact has its own sequence"
+        );
+    }
+
+    #[test]
+    fn paths_are_checked_before_bodies() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        let path_err = |r: Result<Written>| match r {
+            Err(CoreError::Invalid { message, .. }) => {
+                assert!(message.contains("document path"), "{message}")
+            }
+            other => panic!("{other:?}"),
+        };
+        path_err(st.doc_update(&id, "odd", json!([1]), page(), &admin()));
+        let r = StrReplace {
+            field: "f".into(),
+            old_str: String::new(),
+            new_str: "x".into(),
+            replace_all: false,
+        };
+        path_err(st.doc_str_replace(&id, "odd", r, page(), &admin()));
+        let writes = vec![
+            BatchWrite {
+                path: "t/1".into(),
+                op: BatchOp::Delete,
+                if_version: None,
+            },
+            BatchWrite {
+                path: "odd".into(),
+                op: BatchOp::Update(json!([1])),
+                if_version: None,
+            },
+        ];
+        match st.doc_batch(&id, writes, true, &admin()) {
+            Err(CoreError::InBatch { op: 1, path, error }) => {
+                assert_eq!(path, "odd");
+                assert!(error.to_string().contains("document path"), "{error}");
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn batch_failures_name_the_op_for_refusals_and_bodies() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(
+            &st,
+            json!({"db": {"rules": [{"path": "locked", "write": "admin"}]}}),
+        );
+        let writes = vec![
+            BatchWrite {
+                path: "t/1".into(),
+                op: BatchOp::Set(json!({})),
+                if_version: None,
+            },
+            BatchWrite {
+                path: "locked/x".into(),
+                op: BatchOp::Set(json!({})),
+                if_version: None,
+            },
+        ];
+        match st.doc_batch(&id, writes, true, &who(Level::Interact, Some(A))) {
+            Err(CoreError::InBatch { op: 1, path, error }) => {
+                assert_eq!(path, "locked/x");
+                assert!(matches!(*error, CoreError::NotFound));
+            }
+            other => panic!("{other:?}"),
+        }
+        let writes = vec![
+            BatchWrite {
+                path: "t/1".into(),
+                op: BatchOp::Set(json!({})),
+                if_version: None,
+            },
+            BatchWrite {
+                path: "t/2".into(),
+                op: BatchOp::Update(json!([1])),
+                if_version: None,
+            },
+        ];
+        assert!(matches!(
+            st.doc_batch(&id, writes, true, &admin()),
+            Err(CoreError::InBatch { op: 1, .. })
+        ));
+        let writes = vec![BatchWrite {
+            path: "t/9".into(),
+            op: BatchOp::Set(json!("s")),
+            if_version: None,
+        }];
+        assert!(matches!(
+            st.doc_batch(&id, writes, true, &admin()),
+            Err(CoreError::InBatch { op: 0, .. })
+        ));
+        assert_eq!(doc_count(&st, "docs"), 0);
+    }
+
+    #[test]
+    fn built_queries_are_held_to_the_in_limit() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        let q = |value: Value| DocQuery {
+            collection: "t".into(),
+            filters: vec![Filter {
+                field: "n".into(),
+                op: FilterOp::In,
+                value,
+            }],
+            ..Default::default()
+        };
+        assert!(
+            st.doc_query(&id, &q(json!(vec![1; MAX_IN_VALUES + 1])), &admin())
+                .is_err()
+        );
+        assert!(st.doc_query(&id, &q(json!(1)), &admin()).is_err());
+        assert!(
+            st.doc_query(&id, &q(json!(vec![1; MAX_IN_VALUES])), &admin())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn leases_are_pruned_and_capped_per_artifact() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        let acq = |path: &str| {
+            st.doc_acquire(
+                &id,
+                path,
+                Acquire {
+                    holder: "h".into(),
+                    ttl_ms: None,
+                    data: None,
+                },
+                &admin(),
+            )
+        };
+        for i in 0..MAX_LEASES {
+            assert!(acq(&format!("l/{i}")).unwrap().0.acquired);
+        }
+        match acq("l/extra") {
+            Err(CoreError::Invalid {
+                code: "resource_exhausted",
+                ..
+            }) => {}
+            other => panic!("{other:?}"),
+        }
+        assert!(
+            acq("l/0").unwrap().0.acquired,
+            "renewing a held lease is not a new one"
+        );
+        st.with_conn(|c| {
+            Ok(c.execute(
+                "UPDATE leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE path <> 'l/0'",
+                [],
+            )?)
+        })
+        .unwrap();
+        assert!(
+            acq("l/extra").unwrap().0.acquired,
+            "lapsed leases do not count"
+        );
+        assert_eq!(doc_count(&st, "leases"), 2, "lapsed leases are pruned");
     }
 }

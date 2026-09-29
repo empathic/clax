@@ -437,7 +437,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
-        let before = super::super::migrations::MIGRATIONS.len() - 1;
+        // Version 6 is the last phase 3 schema.
+        let before = 6;
         {
             let c = rusqlite::Connection::open(home.db_path()).unwrap();
             for sql in &super::super::migrations::MIGRATIONS[..before] {

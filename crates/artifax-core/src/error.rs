@@ -15,6 +15,14 @@ pub enum CoreError {
     /// A write to an existing document without `if_version` and without `lww`.
     #[error("document {path} exists at version {current}; read it and pass if_version")]
     DocPinRequired { path: String, current: u64 },
+    /// Write `op` (0-based) of a batch, addressing `path`, failed with
+    /// `error`; nothing in the batch landed.
+    #[error("batch write {op} ({path}): {error}")]
+    InBatch {
+        op: usize,
+        path: String,
+        error: Box<CoreError>,
+    },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
     /// A stored JSON column of `artifact_id` (and, for version columns, of

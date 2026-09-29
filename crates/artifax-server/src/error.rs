@@ -79,6 +79,13 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("current".into(), json!(current));
                 err
             }
+            CoreError::InBatch { op, path, error } => {
+                let mut err = ApiError::from(*error);
+                err.message = format!("batch write {op} ({path}): {}", err.message);
+                err.extra.insert("op".into(), json!(op));
+                err.extra.insert("path".into(), json!(path));
+                err
+            }
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::Corrupt { .. } => {
                 tracing::error!(error = %e, "corrupt row");
@@ -155,5 +162,46 @@ mod tests {
             (e.status, e.code, e.extra["current"].as_u64()),
             (StatusCode::BAD_REQUEST, "if_version_required", Some(2))
         );
+    }
+
+    #[test]
+    fn batch_failures_carry_the_op_index_and_path() {
+        let e = ApiError::from(CoreError::InBatch {
+            op: 2,
+            path: "t/x".into(),
+            error: Box::new(CoreError::NotFound),
+        });
+        assert_eq!((e.status, e.code), (StatusCode::NOT_FOUND, "not_found"));
+        assert_eq!(
+            (e.extra["op"].as_u64(), e.extra["path"].as_str()),
+            (Some(2), Some("t/x"))
+        );
+        let e = ApiError::from(CoreError::InBatch {
+            op: 0,
+            path: "t/1".into(),
+            error: Box::new(CoreError::DocConflict {
+                path: "t/1".into(),
+                current: Some(4),
+            }),
+        });
+        assert_eq!(
+            (
+                e.status,
+                e.code,
+                e.extra["current"].as_u64(),
+                e.extra["op"].as_u64()
+            ),
+            (StatusCode::CONFLICT, "conflict", Some(4), Some(0))
+        );
+        let e = ApiError::from(CoreError::InBatch {
+            op: 1,
+            path: "odd".into(),
+            error: Box::new(CoreError::invalid("invalid_argument", "bad path")),
+        });
+        assert_eq!(
+            (e.status, e.code, e.extra["op"].as_u64()),
+            (StatusCode::BAD_REQUEST, "invalid_argument", Some(1))
+        );
+        assert!(e.message.contains("bad path"), "{}", e.message);
     }
 }
