@@ -7,7 +7,7 @@ allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh:*)
 ## Context
 
 - Artifax CLI: !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh"`
-- Doctor: !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec doctor --json`
+- Doctor: !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec doctor --agent claude --json`
 
 ## Your task
 

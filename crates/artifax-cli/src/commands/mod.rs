@@ -1,6 +1,7 @@
 pub mod asset;
 pub mod delete;
 pub mod doctor;
+pub mod doctor_agent;
 pub mod hook;
 pub mod list;
 pub mod mcp;

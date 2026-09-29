@@ -15,6 +15,16 @@ impl Env {
         c.env("ARTIFAX_HOME", self.dir.path().join("ax"))
             .env("ARTIFAX_CODEX_BIN", "")
             .env("HOME", self.dir.path());
+        // Harness directories default under the temp HOME, never the real ones.
+        for var in [
+            "CODEX_HOME",
+            "CLAUDE_CONFIG_DIR",
+            "PI_CODING_AGENT_DIR",
+            "CLAUDE_PLUGIN_ROOT",
+            "PLUGIN_ROOT",
+        ] {
+            c.env_remove(var);
+        }
         c
     }
     fn stop(&self) {
@@ -968,6 +978,17 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
         .unwrap();
     let sessions = doctor_check(&e, &["--agent", "codex"], "codex_sessions");
     assert_eq!(sessions["ok"], false);
+    let mcp = doctor_check(&e, &["--agent", "codex"], "mcp");
+    assert_eq!(mcp["ok"], true, "{mcp}");
+    let feedback = doctor_check(&e, &["--agent", "codex"], "feedback");
+    assert_eq!(feedback["ok"], true, "{feedback}");
+    assert!(
+        feedback["detail"]
+            .as_str()
+            .unwrap()
+            .contains("0 watch(es), 0 with replies armed; push off: "),
+        "{feedback}"
+    );
     assert!(
         sessions["detail"]
             .as_str()
@@ -1113,4 +1134,104 @@ fn every_hook_run_appends_a_line_to_hooks_log() {
         "{}",
         lines[1]
     );
+}
+
+#[test]
+fn doctor_agent_checks_each_layer_of_the_integration() {
+    let e = Env::new();
+    // Last night's Codex cache copy: the right version, a skill that predates
+    // the generated tools block.
+    let root = ".codex/plugins/cache/artifax/artifax/0.2.0";
+    write(
+        e.dir.path(),
+        &format!("{root}/.codex-plugin/plugin.json"),
+        r#"{"name": "artifax", "version": "0.2.0"}"#,
+    );
+    write(
+        e.dir.path(),
+        &format!("{root}/skills/artifax/SKILL.md"),
+        "# Artifax\n\nThe tools are exposed as the `artifax` MCP server (`publish`).\n",
+    );
+    e.cmd()
+        .args(["hook", "--agent", "codex", "stop"])
+        .write_stdin("{}")
+        .assert()
+        .success();
+    let out = e
+        .cmd()
+        .args(["doctor", "--agent", "codex", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let checks = v["checks"].as_array().unwrap();
+    let by_name = |n: &str| {
+        checks
+            .iter()
+            .find(|c| c["name"] == n)
+            .unwrap_or_else(|| panic!("no {n} check in {v}"))
+            .clone()
+    };
+    for n in ["home", "daemon", "db_integrity", "codex_push"] {
+        by_name(n);
+    }
+    let binary = by_name("binary");
+    assert_eq!(binary["ok"], true);
+    assert!(
+        binary["detail"]
+            .as_str()
+            .unwrap()
+            .contains(env!("CARGO_PKG_VERSION"))
+    );
+    let plugin = by_name("plugin");
+    assert_eq!(plugin["ok"], true, "{plugin}");
+    assert!(
+        plugin["detail"].as_str().unwrap().contains(root),
+        "{plugin}"
+    );
+    let skill = by_name("skill");
+    assert_eq!(skill["ok"], false);
+    assert!(
+        skill["detail"]
+            .as_str()
+            .unwrap()
+            .starts_with("stale skill:")
+            && skill["detail"]
+                .as_str()
+                .unwrap()
+                .contains("codex plugin add artifax@artifax"),
+        "{skill}"
+    );
+    let mcp = by_name("mcp");
+    assert_eq!(mcp["ok"], false);
+    assert!(
+        mcp["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no daemon is running"),
+        "{mcp}"
+    );
+    let hooks = by_name("hooks");
+    assert_eq!(hooks["ok"], true);
+    assert!(
+        hooks["detail"]
+            .as_str()
+            .unwrap()
+            .contains("agent=codex event=stop"),
+        "{hooks}"
+    );
+    assert_eq!(by_name("feedback")["ok"], false);
+    for n in ["name", "ok", "detail"] {
+        assert!(checks.iter().all(|c| c.get(n).is_some()), "{n}");
+    }
+
+    // Every harness is accepted; the text form names each layer.
+    for agent in ["claude", "pi"] {
+        let out = e.cmd().args(["doctor", "--agent", agent]).output().unwrap();
+        let text = String::from_utf8(out.stdout).unwrap();
+        for n in ["binary", "plugin", "skill", "mcp", "hooks", "feedback"] {
+            assert!(text.contains(&format!(" {n} ")), "{agent}: {n} in {text}");
+        }
+        assert!(!text.contains("codex_push"), "{text}");
+    }
 }

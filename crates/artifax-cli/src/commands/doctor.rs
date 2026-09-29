@@ -1,3 +1,4 @@
+use super::doctor_agent::{self, DoctorAgent};
 use crate::client::Client;
 use anyhow::Context;
 use artifax_core::{ArtifactId, Home, Store};
@@ -13,15 +14,11 @@ pub struct Args {
     /// artifacts. Live artifacts' rows are never deleted.
     #[arg(long)]
     pub fix: bool,
-    /// Also check native push for this harness's sessions.
+    /// Also check each layer of this harness's integration: the binary, the
+    /// installed plugin and skill, its MCP sessions, its hooks, and feedback
+    /// delivery (and, for Codex, native push).
     #[arg(long, value_enum)]
     pub agent: Option<DoctorAgent>,
-}
-
-/// A harness whose native push `doctor --agent` checks.
-#[derive(Clone, Copy, clap::ValueEnum)]
-pub enum DoctorAgent {
-    Codex,
 }
 
 fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
@@ -401,6 +398,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             "UI not built or daemon down; run `just web`"
         },
     ));
+    if let Some(agent) = args.agent {
+        checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
+    }
     if let Some(DoctorAgent::Codex) = args.agent {
         checks.extend(codex_checks(client.as_ref()));
     }
