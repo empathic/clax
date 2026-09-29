@@ -2,13 +2,31 @@
 // from the declaration and the view (availability.ts), runs `artifax:call`s
 // through one handler per capability, and relays SSE events to handlers that
 // follow the stream. Every call is answered, with a value or `{code, message}`.
-import type { BridgeToShell, ShellToBridge } from "../../../bridge/src/protocol";
+import type { Anchor, Box, BridgeToShell, ShellToBridge } from "../../../bridge/src/protocol";
 import type { FileMeta } from "../api";
 import type { ArtifactEvent } from "../events";
+import type { Thread } from "../threads";
 import { type Declared, declaredConfig, isAvailable } from "./availability";
 import { CapError } from "./errors";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
+
+/** The shell's comment UI as the `comments` capability drives it. */
+export interface CommentsUi {
+  /** Opens the composer for a pick; false when a composer holds typed text. */
+  openComposer(d: { anchor: Anchor; version: number; clip: Blob | null; clipError?: string }): boolean;
+  upsert(t: Thread): void;
+  /** Drops a thread the page deleted. */
+  remove(threadId: string): void;
+  /** Custom anchoring turned on or off: pins then come from `place` only. */
+  setCustom(live: boolean): void;
+  /** Pin positions from the page, by thread ID, in frame viewport pixels. */
+  place(rects: Record<string, Box>): void;
+  select(threadId: string): void;
+  /** Leaves comment mode unless a composer holds typed text. */
+  exitMode(): void;
+  state(): { mode: boolean; composing: boolean; threads: Thread[]; selected: string | null };
+}
 
 export type ViewerInfo = { publicId: string; name: string | null };
 
@@ -36,6 +54,8 @@ export interface CapEnv {
   /** The published file of the page in the frame, from its latest matching
    * hello (null while the frame shows no greeted page); `index.html` when absent. */
   page?(): string | null;
+  /** The shell's comment UI, when this view has one. */
+  comments?: CommentsUi;
 }
 
 export interface Handler {
@@ -45,6 +65,10 @@ export interface Handler {
   reset?(): void;
   /** The host is gone: drop all state and never post, fetch, or schedule again. */
   dispose?(): void;
+  /** Comment mode, the composer, the selection, the threads, or the page changed. */
+  uiChanged?(): void;
+  /** Lets a custom-anchors page bring thread `threadId` into view; false when it anchors nothing. */
+  reveal?(threadId: string): boolean;
 }
 
 export type HandlerFactory = (env: CapEnv, grants: Grants) => Handler;
@@ -114,6 +138,19 @@ export class CapabilityHost {
 
   reset(): void {
     for (const h of this.handlers.values()) h.reset?.();
+  }
+
+  /** Comment mode, the composer, the selection, the threads, or the page changed. */
+  uiChanged(): void {
+    if (this.dead) return;
+    for (const h of this.handlers.values()) h.uiChanged?.();
+  }
+
+  /** Lets a custom-anchors page bring thread `threadId` into view; false when none is registered. */
+  reveal(threadId: string): boolean {
+    if (this.dead) return false;
+    for (const h of this.handlers.values()) if (h.reveal?.(threadId)) return true;
+    return false;
   }
 
   /** Ends this host (its artifact, version, or view was replaced, or the

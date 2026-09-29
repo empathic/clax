@@ -645,6 +645,52 @@ a new version) makes the publishing session watch the artifact with replies
 on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
 a live session and work only on sent threads.
 
+### Reopening and deleting threads
+
+`POST /api/artifacts/<aid>/threads/<tid>/reopen` sets a thread back to open
+(clearing `resolved_at` and `resolved_by`; reopening an open thread changes
+nothing), answers `{thread}`, and publishes the `thread` event. `DELETE
+/api/artifacts/<aid>/threads/<tid>` deletes the thread with its comments,
+feedback rows, and clip, answers `{"deleted": true, "thread_id": "<tid>"}`,
+and publishes `thread_deleted` (`{"type": "thread_deleted", "artifact_id",
+"thread_id"}`), on which every open view drops the thread. Both need caller
+level `interact` or above: a viewer with a display name (its cookie), or the
+owner shell (the token); an unnamed viewer, or a request with neither, gets
+403 `forbidden` asking for a name. They refuse a foreign `Origin` like the
+other viewer routes. An agent reopens with the body `{"as": "agent"}` and
+deletes with `?as=agent`, holding the token and `X-Artifax-Session` naming a
+live session (400 `unknown_session` otherwise); on a thread that was not sent
+to the agent it gets 200 `{guidance}` and nothing changes. A thread of
+another or a deleted artifact is 404.
+
+### The `comments` capability
+
+A page that declares `capabilities: {comments: {}}` (or `{"composer_only":
+true}`, optionally with `"customAnchors": true`) gets `claude.use("comments")`
+per the 0.2.61 `comments.d.ts`, in every view: Artifax has no public links.
+`openComposer` and `customAnchors().compose` open the shell's composer on the
+page's element, range, or anchor name; the viewer types and posts. The write
+verbs (`create`, `reply`, `sendToClaude`, `resolve`, `delete`) need the full
+form and the viewer's consent, asked once per artifact at the first write
+(allowing is remembered in the browser; "Don't allow" and a dismissed prompt
+last for the page load), and post through the thread routes as this viewer,
+so `resolve(id, false)` and `delete(id)` follow the level rule above.
+Anchors from the page always name the page the frame shows and the version
+the view shows. Text follows the contract's rule (non-blank, at most 4096
+bytes of UTF-8, no control characters but newline and tab); text that
+mentions `@agent` is refused with `invalid` in `create` and `reply`, since
+only `sendToClaude` may send a comment to the agent. `canSendToClaude` is
+`"available"` while the artifact's owner session is live, `"no_session"`
+otherwise, and `"off"` under the composer-only form. Per artifact in a
+browser tab a page may open the composer (or a thread card) 5 times in 10
+seconds and write 10 times a minute; beyond that calls reject
+`rate_limited`. A custom-anchors page is sent, while comment mode is on,
+the threads anchored on its own page only (at most 256), as handles with
+the anchor string, `resolved`, and `active`; never their text, authors, or
+IDs. While it is registered the page places the pins, the bridge's own
+comment mode and anchor resolution stand down, and opening a thread from the
+sidebar asks the page to reveal it instead of scrolling the frame.
+
 ### Shell URLs
 
 `/a/<id>` shows the latest version and `/a/<id>/v/<n>` version `n`; either may
@@ -954,11 +1000,13 @@ Minimal skeleton:
   carries no CSP; the origin is the boundary. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`.
 - The viewer routes (creating a thread, commenting, sending to the agent,
-  resolving, and `GET`/`PUT /api/viewers/me`) need no token, so LAN viewers
-  can comment. They refuse a request whose `Origin` is not the daemon's own
-  (`http://` plus the request's `Host`, never an artifact origin) with 403
-  `forbidden_origin`, so a published page cannot comment, send, or resolve on
-  the person's behalf; requests without an `Origin` header (scripts) are
+  resolving, reopening, deleting, and `GET`/`PUT /api/viewers/me`) need no
+  token, so LAN viewers can comment; reopening and deleting also need a
+  display name (or the token). They refuse a request whose `Origin` is not
+  the daemon's own (`http://` plus the request's `Host`, never an artifact
+  origin) with 403 `forbidden_origin`, so a published page cannot call them
+  itself: it writes only through the shell's `comments` capability, after
+  the viewer's consent; requests without an `Origin` header (scripts) are
   allowed. The daemon serves plain HTTP only. A viewer is identified by the
   `artifax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
   the daemon accepts only when it is a ULID. The cookie never leaves the

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Design Board</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; --line: #d4d4d4; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; --line: #3a3a3a; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; --line: #3a3a3a; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  .card { border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  canvas { border: 1px solid var(--line); max-width: 100%; }
+</style>
+</head>
+<body>
+<section class="card" id="goals"><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat.</p><button class="comment">Comment</button> <button class="note">Add a note</button></section>
+<canvas id="canvas" width="300" height="120"></canvas>
+<p id="status" role="status">waiting</p>
+<div id="spacer" style="height: 1600px"></div>
+<script>
+(async () => {
+  const comments = await claude.use("comments");
+  const status = document.getElementById("status");
+  if (!comments) { status.textContent = "no comments"; return; }
+  const card = document.getElementById("goals");
+  card.querySelector(".comment").onclick = async () => { status.textContent = JSON.stringify(await comments.openComposer({ element: card })); };
+  card.querySelector(".note").onclick = async () => {
+    try {
+      const r = await comments.create({ anchor: await comments.anchorFor(card.querySelector("h2")), text: "Looks right to me." });
+      status.textContent = "created " + typeof r.threadId;
+    } catch (e) { status.textContent = e.code; }
+  };
+  const canvas = document.getElementById("canvas");
+  const g = canvas.getContext("2d");
+  g.fillStyle = "#c2410c"; g.fillRect(20, 20, 60, 60);
+  const shape = { name: "shape-red", x: 50, y: 50 };
+  let handles = [];
+  let ctl = null;
+  const place = () => {
+    const r = canvas.getBoundingClientRect();
+    const map = {};
+    for (const t of handles) if (t.anchor === shape.name) map[t.id] = { x: r.left + scrollX + shape.x, y: r.top + scrollY + shape.y };
+    ctl.placed(map);
+  };
+  try {
+    ctl = await comments.customAnchors({
+      mode(on) { status.textContent = "mode " + on; },
+      threads(list) { handles = list; place(); },
+      reveal() {},
+    });
+  } catch (e) { status.textContent = "custom " + e.code; return; }
+  canvas.onclick = async ev => {
+    if (!ctl.areas) return;
+    await ctl.compose(shape.name, { x: ev.clientX + scrollX, y: ev.clientY + scrollY }, { label: "Red square" });
+  };
+})();
+</script>
+</body>
+</html>

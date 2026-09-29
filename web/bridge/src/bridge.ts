@@ -17,9 +17,13 @@
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
  * on every `hashchange` it reports the page's fragment (`artifax:hash`).
+ * While the page holds a `comments.customAnchors` registration, the bridge's
+ * own comment mode, anchor resolution, and scroll-to stand down: the page
+ * places the pins, and its placements are re-sent on scroll and resize.
  */
 import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
 import { acceptFromShell, shellOrigins } from "./channel";
+import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
 import { hashFor, helloFor, readMeta } from "./meta";
@@ -31,6 +35,8 @@ import { makeUse } from "./use";
 (() => {
   const meta = readMeta(document.currentScript as HTMLScriptElement | null);
   (window as any).__artifax = meta;
+  commentsContext.version = meta.version;
+  commentsContext.file = meta.file;
 
   const framed = window.parent !== window;
   let shellOrigin: string | null = null;
@@ -70,7 +76,10 @@ import { makeUse } from "./use";
   };
   let raf = 0;
   const reflow = () => {
-    if (!anchors.length || raf) return;
+    // While the page anchors threads itself (comments.customAnchors), it
+    // re-reports its placements, and the shell's anchors are not resolved.
+    commentsContext.reflow?.();
+    if (commentsContext.live || !anchors.length || raf) return;
     raf = requestAnimationFrame(() => { raf = 0; resolveAll(null); });
   };
   addEventListener("scroll", reflow, { passive: true, capture: true });
@@ -89,6 +98,11 @@ import { makeUse } from "./use";
     pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), r); },
     cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
   });
+
+  // The shell's comment mode; the bridge's own hit testing follows it unless
+  // a custom-anchors registration is live.
+  let shellMode = false;
+  commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
 
   let welcomed = false;
   // Bubble phase on the window: the page's own handlers run first, and comment
@@ -109,11 +123,12 @@ import { makeUse } from "./use";
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
-      case "artifax:welcome": welcomed = true; mode.set(m.mode === "comment"); rpc.connect(); post(hashFor(location.hash)); break;
+      case "artifax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
       case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
-      case "artifax:comment-mode": mode.set(m.on); break;
-      case "artifax:resolve-anchors": anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
+      case "artifax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
+      case "artifax:resolve-anchors": if (commentsContext.live) break; anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
       case "artifax:scroll-to": {
+        if (commentsContext.live) break;
         const r = resolveAnchor(document, m.anchor, undefined, meta.file);
         if (r) { r.element.scrollIntoView({ block: "center", behavior: "smooth" }); setTimeout(() => mode.flash(r.range ?? r.element), 350); }
         break;

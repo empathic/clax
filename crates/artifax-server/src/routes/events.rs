@@ -24,7 +24,7 @@ pub struct EventsQuery {
 ///
 /// The stream opens with `event: ready` (`data: {}`), then carries `version`,
 /// `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
-/// `feedback_state`, and `doc` events whose data is the JSON-serialised
+/// `thread_deleted`, `feedback_state`, and `doc` events whose data is the JSON-serialised
 /// [`artifax_core::Event`]. A `doc` event carries the path and version only;
 /// one for a private `data/users/<id>/` path reaches only that viewer, and
 /// any other reaches only subscribers whose level may read the path. The

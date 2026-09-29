@@ -47,8 +47,12 @@ export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: 
   );
 }
 
-export function Composer({ draft, onCancel, onSubmit }: { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void> }) {
+/** The composer for `draft`; `onText` hears the typed text on every input, and "" when it closes. */
+export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void }) {
   const [body, setBody] = useState("");
+  const onTextRef = useRef(onText);
+  onTextRef.current = onText;
+  useEffect(() => () => onTextRef.current?.(""), []);
   const [busy, setBusy] = useState(false);
   const [clipUrl, setClipUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -70,7 +74,7 @@ export function Composer({ draft, onCancel, onSubmit }: { draft: Draft; onCancel
       <p class="composer-quote">{quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.selector}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
-      <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => setBody((e.target as HTMLTextAreaElement).value)}
+      <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
       <div class="actions">
         <button type="button" onClick={onCancel}>Cancel</button>

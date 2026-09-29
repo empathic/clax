@@ -29,6 +29,10 @@ use serde_json::{Value, json};
 pub const THREAD_BODY_LIMIT: usize = 16 * 1024 * 1024;
 pub const GUIDANCE_REPLY: &str = "This thread was not sent to you. Only threads the person sends to the agent accept agent replies; leave plain threads to people. Nothing was written.";
 pub const GUIDANCE_RESOLVE: &str = "This thread was not sent to you. Only threads the person sends to the agent can be resolved by the agent; leave plain threads to people. Nothing was changed.";
+pub const GUIDANCE_REOPEN: &str = "This thread was not sent to you. Only threads the person sends to the agent can be reopened by the agent; leave plain threads to people. Nothing was changed.";
+pub const GUIDANCE_DELETE: &str = "This thread was not sent to you. Only threads the person sends to the agent can be deleted by the agent; leave plain threads to people. Nothing was deleted.";
+pub const NAME_REQUIRED: &str =
+    "set a name in the viewer (the \"Your name\" field) before reopening or deleting threads";
 
 /// True when `body` mentions `@agent` as a word: not inside an address
 /// (`me@agent.dev`) or a longer word (`@agents`).
@@ -73,7 +77,7 @@ fn agent_session(st: &Store, header: &Option<String>) -> artifax_core::Result<Se
     let sid = publishing_session(st, header)?.ok_or_else(|| {
         CoreError::invalid(
             "unknown_session",
-            "agent replies and resolves need X-Artifax-Session naming a live session",
+            "agent replies, resolves, reopens, and deletes need X-Artifax-Session naming a live session",
         )
     })?;
     st.get_session(&sid)?.ok_or(CoreError::NotFound)
@@ -423,22 +427,7 @@ pub async fn resolve(
 ) -> Result<Response, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
-    let b: ResolveBody = if raw.is_empty() {
-        ResolveBody::default()
-    } else {
-        serde_json::from_slice(&raw)
-            .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
-    };
-    let agent = match b.as_.as_deref() {
-        None | Some("viewer") => false,
-        Some("agent") => true,
-        Some(k) => {
-            return Err(ApiError::bad_request(
-                "invalid_resolver",
-                format!("'as' is viewer or agent, not '{k}'"),
-            ));
-        }
-    };
+    let agent = acting_as(&raw)?;
     let authed = has_token(&headers, &s.token);
     if agent && !authed {
         return Err(ApiError::unauthorized());
@@ -474,6 +463,150 @@ pub async fn resolve(
             publish_thread(&ctx, st, &t)?;
             let view = thread_view(st, &t, ctx.codex_push(), authed)?;
             Ok(Outcome::Done(json!({"thread": view})))
+        })
+        .await?;
+    Ok(respond(o, StatusCode::OK))
+}
+
+/// `as` of a resolve or reopen body (or a delete query): `viewer` (the
+/// default, also for an empty body) or `agent`, as `true`.
+fn agent_as(as_: Option<&str>) -> Result<bool, ApiError> {
+    match as_ {
+        None | Some("viewer") => Ok(false),
+        Some("agent") => Ok(true),
+        Some(k) => Err(ApiError::bad_request(
+            "invalid_resolver",
+            format!("'as' is viewer or agent, not '{k}'"),
+        )),
+    }
+}
+
+/// `as` from a resolve or reopen body; see [`agent_as`].
+fn acting_as(raw: &[u8]) -> Result<bool, ApiError> {
+    let b: ResolveBody = if raw.is_empty() {
+        ResolveBody::default()
+    } else {
+        serde_json::from_slice(raw)
+            .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
+    };
+    agent_as(b.as_.as_deref())
+}
+
+/// Reopening and deleting need caller level `interact` or above: the token
+/// (the owner shell, or an agent, whose session is checked separately), or a
+/// viewer cookie naming a viewer with a display name. Anyone else gets 403
+/// `forbidden` asking them to set a name.
+async fn require_interact(
+    s: &AppState,
+    authed: bool,
+    cookie: Option<String>,
+) -> Result<(), ApiError> {
+    if authed {
+        return Ok(());
+    }
+    let named = s
+        .store_call(move |st| {
+            Ok(match cookie {
+                Some(c) => st.get_viewer(&c)?.is_some_and(|v| v.display_name.is_some()),
+                None => false,
+            })
+        })
+        .await?;
+    if named {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden("forbidden", NAME_REQUIRED))
+    }
+}
+
+/// Reopens a thread (status `open`, resolution cleared) as the viewer (a named
+/// viewer, or the owner shell with the token) or, with `{"as": "agent"}`, as
+/// the agent (token and `X-Artifax-Session` naming a live session, else 400
+/// `unknown_session`; only on sent threads, otherwise guidance). An unnamed
+/// viewer gets 403 `forbidden`. Answers `{thread}` and publishes the `thread`
+/// event. A request with a foreign `Origin` is refused ([`SameOrigin`]).
+pub async fn reopen(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    p: Result<Path<(String, String)>, PathRejection>,
+    raw: Bytes,
+) -> Result<Response, ApiError> {
+    let (aid, tid) = path(p)?;
+    let id = parse_id(&aid)?;
+    let agent = acting_as(&raw)?;
+    let authed = has_token(&headers, &s.token);
+    if agent && !authed {
+        return Err(ApiError::unauthorized());
+    }
+    require_interact(&s, authed, viewer.0).await?;
+    let session = session_header(&headers)?;
+    let ctx = s.feedback_ctx();
+    let o = s
+        .store_call(move |st| {
+            let t = thread_of(st, &id, &tid)?;
+            if agent {
+                agent_session(st, &session)?;
+                if !t.sent_to_agent {
+                    return Ok(Outcome::Guidance(GUIDANCE_REOPEN));
+                }
+            }
+            let t = st.reopen_thread(&tid)?;
+            publish_thread(&ctx, st, &t)?;
+            Ok(Outcome::Done(
+                json!({"thread": thread_view(st, &t, ctx.codex_push(), authed)?}),
+            ))
+        })
+        .await?;
+    Ok(respond(o, StatusCode::OK))
+}
+
+#[derive(Deserialize, Default)]
+pub struct DeleteQuery {
+    #[serde(rename = "as")]
+    as_: Option<String>,
+}
+
+/// Deletes a thread with its comments, feedback rows, and clip, as the viewer
+/// or, with `?as=agent`, as the agent (the same rules as [`reopen`], the level
+/// check included). Answers `{deleted: true, thread_id}` and publishes
+/// `thread_deleted`. A request with a foreign `Origin` is refused
+/// ([`SameOrigin`]).
+pub async fn delete(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    p: Result<Path<(String, String)>, PathRejection>,
+    q: Result<Query<DeleteQuery>, QueryRejection>,
+) -> Result<Response, ApiError> {
+    let (aid, tid) = path(p)?;
+    let id = parse_id(&aid)?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let agent = agent_as(q.as_.as_deref())?;
+    let authed = has_token(&headers, &s.token);
+    if agent && !authed {
+        return Err(ApiError::unauthorized());
+    }
+    require_interact(&s, authed, viewer.0).await?;
+    let session = session_header(&headers)?;
+    let events = s.events.clone();
+    let o = s
+        .store_call(move |st| {
+            let t = thread_of(st, &id, &tid)?;
+            if agent {
+                agent_session(st, &session)?;
+                if !t.sent_to_agent {
+                    return Ok(Outcome::Guidance(GUIDANCE_DELETE));
+                }
+            }
+            st.delete_thread(&tid)?;
+            events.publish(Event::ThreadDeleted {
+                artifact_id: aid.clone(),
+                thread_id: tid.clone(),
+            });
+            Ok(Outcome::Done(json!({"deleted": true, "thread_id": tid})))
         })
         .await?;
     Ok(respond(o, StatusCode::OK))

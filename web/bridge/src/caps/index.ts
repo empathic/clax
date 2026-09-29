@@ -3,16 +3,18 @@ import type { CapabilityName, Local } from "../capabilities";
 import type { Rpc } from "../rpc";
 import { artifactLocals } from "./artifact";
 import { assetsLocals } from "./assets";
+import { commentsLocals } from "./comments";
 import { makeDb } from "./db";
 import { downloadsLocals } from "./downloads";
 
 export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown): Local {
-  void config;
   switch (name) {
     case "artifact":
       return artifactLocals(rpc);
     case "assets":
       return assetsLocals(rpc);
+    case "comments":
+      return commentsLocals(rpc, config);
     case "db":
       return makeDb(rpc) as unknown as Local;
     case "downloads":

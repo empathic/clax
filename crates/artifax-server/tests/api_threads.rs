@@ -901,3 +901,238 @@ async fn threads_are_anchored_on_any_file_of_their_version() {
         );
     }
 }
+
+#[tokio::test]
+async fn viewers_reopen_and_delete_threads_with_events() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let t: Value = ts
+        .create_thread(&aid, 1, "tidy this", Some(FAKE_PNG))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let url = |tail: &str| format!("{}/api/artifacts/{aid}/threads/{tid}{tail}", ts.base);
+    let named = ts.viewer(Some("Sam")).await;
+    let as_named =
+        |r: reqwest::RequestBuilder| r.header("cookie", format!("artifax_viewer={}", named.cookie));
+    assert_eq!(
+        ts.client
+            .post(url("/resolve"))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+    let mut events = ts.events(&format!("?artifact={aid}")).await;
+    let res = as_named(ts.client.post(url("/reopen")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        (
+            v["thread"]["status"].as_str(),
+            v["thread"]["resolved_by"].clone()
+        ),
+        (Some("open"), Value::Null)
+    );
+    assert_eq!(
+        events.next_named("thread").await["thread"]["status"],
+        "open"
+    );
+    let clip = ts
+        .home
+        .clip_path(&artifax_core::ArtifactId::parse(&aid).unwrap(), &tid);
+    assert!(clip.exists());
+    let res = as_named(ts.client.delete(url(""))).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        res.json::<Value>().await.unwrap(),
+        json!({"deleted": true, "thread_id": tid})
+    );
+    assert_eq!(
+        events.next_named("thread_deleted").await,
+        json!({"type": "thread_deleted", "artifact_id": aid, "thread_id": tid})
+    );
+    assert!(!clip.exists());
+    assert_eq!(
+        ts.get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+            .await
+            .status(),
+        404
+    );
+    assert_eq!(
+        as_named(ts.client.delete(url("")))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        404
+    );
+}
+
+#[tokio::test]
+async fn reopening_and_deleting_need_a_name_or_the_token() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let tid = ts.thread(&aid, 1, "x").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let url = |tail: &str| format!("{}/api/artifacts/{aid}/threads/{tid}{tail}", ts.base);
+    let unnamed = ts.viewer(None).await;
+    let cookie = format!("artifax_viewer={}", unnamed.cookie);
+    for res in [
+        ts.client.post(url("/reopen")).send().await.unwrap(),
+        ts.client
+            .post(url("/reopen"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap(),
+        ts.client
+            .delete(url(""))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap(),
+    ] {
+        assert_eq!(res.status(), 403);
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "forbidden");
+        assert!(
+            v["error"]["message"].as_str().unwrap().contains("name"),
+            "{v}"
+        );
+    }
+    assert_eq!(
+        ts.authed(ts.client.post(url("/reopen")))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200,
+        "the owner shell (token) may"
+    );
+    assert_eq!(
+        ts.authed(ts.client.delete(url("")))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn agents_reopen_and_delete_only_sent_threads_from_a_live_session() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = setup(&ts).await;
+    let plain = ts.thread(&aid, 1, "plain").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let sent = ts.thread(&aid, 1, "@agent fix").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let agent = |req: reqwest::RequestBuilder, session: bool| {
+        let r = ts.authed(req);
+        if session {
+            r.header("x-artifax-session", &sid)
+        } else {
+            r
+        }
+    };
+    let reopen = |tid: &str| {
+        ts.client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/reopen",
+                ts.base
+            ))
+            .json(&json!({"as": "agent"}))
+    };
+    let res = agent(reopen(&sent), false).send().await.unwrap();
+    assert_eq!(res.status(), 400, "an agent needs a live session");
+    let v: Value = agent(reopen(&plain), true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(v["guidance"].is_string(), "{v}");
+    assert_eq!(
+        agent(reopen(&sent), true).send().await.unwrap().status(),
+        200
+    );
+    let del = |tid: &str| {
+        ts.client.delete(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}?as=agent",
+            ts.base
+        ))
+    };
+    assert_eq!(
+        ts.client
+            .delete(format!(
+                "{}/api/artifacts/{aid}/threads/{sent}?as=agent",
+                ts.base
+            ))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    let v: Value = agent(del(&plain), true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(v["guidance"].is_string(), "{v}");
+    let v: Value = agent(del(&sent), true)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["deleted"], true);
+}
+
+#[tokio::test]
+async fn reopen_and_delete_refuse_foreign_origins() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let tid = ts.thread(&aid, 1, "x").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let port = ts.addr.port();
+    let origin = format!("http://{aid}.localhost:{port}");
+    let r = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/reopen",
+            ts.base
+        ))
+        .header("origin", &origin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+    let r = ts
+        .client
+        .delete(format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base))
+        .header("origin", &origin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 403);
+}

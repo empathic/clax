@@ -92,7 +92,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             delete(assets::delete),
         )
         .route("/api/artifacts/{aid}/threads", get(threads::list))
-        .route("/api/artifacts/{aid}/threads/{tid}", get(threads::get))
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}",
+            get(threads::get).delete(threads::delete),
+        )
         .route(
             "/api/artifacts/{aid}/threads/{tid}/clip",
             get(threads::clip),
@@ -108,6 +111,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/threads/{tid}/resolve",
             post(threads::resolve),
+        )
+        .route(
+            "/api/artifacts/{aid}/threads/{tid}/reopen",
+            post(threads::reopen),
         )
         .route("/api/viewers", get(viewers::lookup))
         .route("/api/viewers/me", get(viewers::me).put(viewers::set_me))

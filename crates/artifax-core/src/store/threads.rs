@@ -436,6 +436,60 @@ impl Store {
             touched,
         ))
     }
+
+    /// Reopens a thread: status `open`, `resolved_at` and `resolved_by`
+    /// cleared. Reopening an open thread changes nothing.
+    ///
+    /// # Errors
+    /// `NotFound` when the thread or its artifact is gone.
+    pub fn reopen_thread(&self, thread_id: &str) -> Result<Thread> {
+        self.with_tx(|tx| {
+            thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            tx.execute(
+                "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
+                params![thread_id],
+            )?;
+            Ok(())
+        })?;
+        self.get_thread(thread_id)?.ok_or(CoreError::NotFound)
+    }
+
+    /// Deletes a thread with its comments and feedback rows in one
+    /// transaction, then its clip file (a missing file is fine; any other
+    /// removal failure is logged and leaves an unreferenced file). Returns the
+    /// thread as it was.
+    ///
+    /// # Errors
+    /// `NotFound` when the thread or its artifact is gone.
+    pub fn delete_thread(&self, thread_id: &str) -> Result<Thread> {
+        let t = self.with_tx(|tx| {
+            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            tx.execute(
+                "DELETE FROM feedback WHERE thread_id = ?1",
+                params![thread_id],
+            )?;
+            tx.execute(
+                "DELETE FROM comments WHERE thread_id = ?1",
+                params![thread_id],
+            )?;
+            tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
+            Ok(t)
+        })?;
+        if t.has_clip {
+            let id = ArtifactId::parse(&t.artifact_id)?;
+            let path = self.home.clip_path(&id, &t.id);
+            match std::fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "could not remove a deleted thread's clip"
+                ),
+            }
+        }
+        Ok(t)
+    }
 }
 
 #[cfg(test)]
@@ -857,5 +911,58 @@ mod tests {
             "{e:?}"
         );
         assert_eq!(st.get_thread(&t.id).unwrap().unwrap().comments.len(), 1);
+    }
+
+    #[test]
+    fn reopen_clears_the_resolution_and_delete_removes_everything() {
+        let (_d, st) = store();
+        let id = artifact(&st, None);
+        let t = st
+            .create_thread(
+                &id,
+                NewThread {
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "Alex".into(),
+                    body: "b".into(),
+                    clip: Some(b"\x89PNG\r\n\x1a\nclip".to_vec()),
+                },
+            )
+            .unwrap();
+        st.resolve_thread(&t.id, "viewer:u_00000000000000000000aa")
+            .unwrap();
+        let r = st.reopen_thread(&t.id).unwrap();
+        assert_eq!(
+            (
+                r.status.as_str(),
+                r.resolved_at.clone(),
+                r.resolved_by.clone()
+            ),
+            ("open", None, None)
+        );
+        assert_eq!(
+            st.reopen_thread(&t.id).unwrap().status,
+            "open",
+            "reopening an open thread changes nothing"
+        );
+        st.send_to_agent(&t.id).unwrap();
+        let clip = st.home().clip_path(&id, &t.id);
+        assert!(clip.exists());
+        let gone = st.delete_thread(&t.id).unwrap();
+        assert_eq!(gone.id, t.id);
+        assert_eq!(st.get_thread(&t.id).unwrap(), None);
+        assert!(!clip.exists());
+        let left: i64 = st
+            .with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT COUNT(*) FROM comments) + (SELECT COUNT(*) FROM feedback)",
+                    [],
+                    |r| r.get(0),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+        assert!(matches!(st.delete_thread(&t.id), Err(CoreError::NotFound)));
+        assert!(matches!(st.reopen_thread(&t.id), Err(CoreError::NotFound)));
     }
 }

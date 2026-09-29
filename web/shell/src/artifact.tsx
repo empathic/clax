@@ -5,7 +5,7 @@ import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { Composer, type Draft, Pins } from "./comments";
 import type { Declared } from "./caps/availability";
-import { CapabilityHost } from "./caps/host";
+import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
@@ -90,6 +90,48 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
   const hostRef = useRef<CapabilityHost | null>(null);
+  // The comment UI as the `comments` capability drives it. Rebuilt every
+  // render over refs; the host holds `commentsUi`, which always calls the latest.
+  const draftRef = useRef<Draft | null>(null);
+  draftRef.current = draft;
+  const commentingRef = useRef(false);
+  commentingRef.current = commenting;
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected;
+  // What the open composer holds, so a page's open never replaces typed text.
+  const composerText = useRef("");
+  // A page anchors threads itself (comments.customAnchors): pins come from
+  // its placements only, and the frame is not asked to resolve anchors.
+  const customLive = useRef(false);
+  const uiRef = useRef<CommentsUi | null>(null);
+  uiRef.current = {
+    openComposer: d => {
+      if (draftRef.current && composerText.current.trim()) return false;
+      setDraft({ pickId: `page-${Date.now()}-${Math.random().toString(36).slice(2)}`, ...d });
+      return true;
+    },
+    upsert: t => changeThreads(ts => upsert(ts, t)),
+    remove: tid => { changeThreads(ts => ts.filter(t => t.id !== tid)); setSelected(s => (s === tid ? null : s)); },
+    setCustom: live => {
+      customLive.current = live;
+      if (live) setResolved({});
+      else resolveAll();
+    },
+    place: rects => setResolved(Object.fromEntries(Object.entries(rects).map(([tid, rect]) => [tid, { id: tid, found: true, method: "custom" as const, rect }]))),
+    select: tid => { setPanel(true); setSelected(tid); },
+    exitMode: () => { if (!composerText.current.trim()) setCommenting(false); },
+    state: () => ({ mode: commentingRef.current, composing: draftRef.current !== null, threads: threadsRef.current, selected: selectedRef.current }),
+  };
+  const commentsUi = useMemo<CommentsUi>(() => ({
+    openComposer: d => uiRef.current!.openComposer(d),
+    upsert: t => uiRef.current!.upsert(t),
+    remove: tid => uiRef.current!.remove(tid),
+    setCustom: live => uiRef.current!.setCustom(live),
+    place: rects => uiRef.current!.place(rects),
+    select: tid => uiRef.current!.select(tid),
+    exitMode: () => uiRef.current!.exitMode(),
+    state: () => uiRef.current!.state(),
+  }), []);
   // How many of this view's own page publishes are in flight (the `artifact`
   // handler counts them; one that ends in a reload keeps its count). A page
   // publish by another view that arrives meanwhile is remembered in
@@ -177,6 +219,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       reload: () => nav.assign(here(null)),
       ownPublish: ownPublish.current,
       page: () => fileRef.current,
+      comments: commentsUi,
       files: data.versions.find(v => v.n === shown)?.files,
     })));
   }, [id, shown, origin, data]);
@@ -184,7 +227,10 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // A replaced host (another artifact, version, or view) and the host at
   // unmount are disposed, so their timers and late results never reach a frame.
   useEffect(() => () => host?.dispose(), [host]);
-  const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
+  const resolveAll = () => {
+    if (customLive.current) return;
+    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
+  };
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
     threadLoad.current = load;
@@ -240,7 +286,12 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const scrollTo = (t: Thread) => {
     setSelected(t.id);
     clearPending();
-    if (t.anchor.file === fileRef.current) { send({ type: "artifax:scroll-to", anchor: t.anchor }); return; }
+    if (t.anchor.file === fileRef.current) {
+      // A custom-anchors page brings its own threads into view; the shell
+      // never scrolls it.
+      if (!hostRef.current?.reveal(t.id)) send({ type: "artifax:scroll-to", anchor: t.anchor });
+      return;
+    }
     // A thread on a page this version does not hold is detached: nothing to open.
     if (!holds(t.anchor.file)) return;
     const timer = setTimeout(() => {
@@ -268,6 +319,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => { send({ type: "artifax:comment-mode", on: commenting }); }, [commenting]);
+  useEffect(() => { hostRef.current?.uiChanged(); }, [commenting, draft, selected, threads, file, host]);
   useEffect(() => {
     if (typeof matchMedia !== "function") return;
     const mq = matchMedia("(max-width: 480px)");
@@ -310,7 +362,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         break;
       }
       case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
-      case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
+      case "artifax:anchors": if (customLive.current) break; setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
       case "artifax:cancel": setCommenting(false); break;
       case "artifax:hash":
         // The page's fragment moved (a link, a script): the address bar
@@ -368,6 +420,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
     if (e.type === "thread") changeThreads(ts => upsert(ts, e.thread));
+    if (e.type === "thread_deleted") { changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); setSelected(s => (s === e.thread_id ? null : s)); }
     if (e.type === "feedback_state") changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
     // A (re)connect may follow a daemon restart that dropped events without a
     // resync; reload like a resync. The first one also covers anything
@@ -438,7 +491,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
               ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
               : <Frame id={id} n={shown} origin={origin} file={startFile} hash={startHash} frameRef={frameRef} onLoad={onFrameLoad} />}
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
-          {draft && <Composer key={draft.pickId} draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
+          {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
               noticeFor(POST_FAILED)(null);

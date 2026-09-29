@@ -54,6 +54,16 @@ export async function sendToAgent(aid: string, tid: string): Promise<Thread> {
 export async function resolveThread(aid: string, tid: string): Promise<Thread> {
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/resolve`))).thread;
 }
+const withToken = (token: string | null): Record<string, string> => (token ? { authorization: `Bearer ${token}` } : {});
+/** Reopens a thread. The daemon lets a named viewer or the owner shell (its
+ * `token`) do it; anyone else gets 403 `forbidden`. */
+export async function reopenThread(aid: string, tid: string, token: string | null = null): Promise<Thread> {
+  return (await ok<{ thread: Thread }>(await fetch(`/api/artifacts/${aid}/threads/${tid}/reopen`, { method: "POST", headers: withToken(token) }))).thread;
+}
+/** Deletes a thread with its comments and clip; the same caller rule as `reopenThread`. */
+export async function deleteThread(aid: string, tid: string, token: string | null = null): Promise<void> {
+  await ok<unknown>(await fetch(`/api/artifacts/${aid}/threads/${tid}`, { method: "DELETE", headers: withToken(token) }));
+}
 let viewerMemo: Promise<Viewer> | null = null;
 const viewerListeners = new Set<(v: Viewer) => void>();
 

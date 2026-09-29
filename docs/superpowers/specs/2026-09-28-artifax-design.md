@@ -248,7 +248,7 @@ Browser-facing:
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_artifax/bridge.js`, `/_artifax/shell/*` static.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
-  `comment`, `doc` events (rooms use their own WebSocket, not SSE).
+  `comment`, `thread_resolved`, `thread_deleted`, `feedback_state`, `doc` events (rooms use their own WebSocket, not SSE).
   `artifact_deleted` is sent when an
   artifact is deleted, with the artifact's ID in its data. `resync`, with
   `data: {"dropped": n}`, is sent when a subscriber fell behind and `n` events
@@ -285,13 +285,18 @@ Agent- and shell-facing JSON API under `/api`:
   `author_kind=agent`, and `X-Artifax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
   rows), `POST .../threads/<tid>/resolve` (viewer, or agent with W and
-  `X-Artifax-Session`). Thread views carry `clip_path` only for requests with
-  the token.
+  `X-Artifax-Session`), `POST .../threads/<tid>/reopen` and `DELETE
+  .../threads/<tid>` (viewer at `interact` or above, that is a named viewer
+  or the owner shell with the token, else 403 `forbidden`; or the agent with
+  `{"as": "agent"}` / `?as=agent`, W, and `X-Artifax-Session`, on sent
+  threads only, else 200 `{guidance}`; reopen answers `{thread}`, delete
+  `{deleted: true, thread_id}` and removes the comments, feedback rows, and
+  clip). Thread views carry `clip_path` only for requests with the token.
 - Viewers: `GET /api/viewers/me` (creates the viewer and sets the
   `artifax_viewer` cookie on first contact), `PUT /api/viewers/me`
   (`{display_name}`; empty clears it); both answer `{viewer: {public_id,
   display_name, created_at}}` and never echo the cookie. No token. The viewer routes (thread
-  creation, comments, send, resolve, and these two) refuse a foreign `Origin`
+  creation, comments, send, resolve, reopen, delete, and these two) refuse a foreign `Origin`
   (§14).
 - Feedback: `GET /api/sessions/<sid>/feedback?wait=<secs>&tier=<tier>&resends=<true|false>`
   (W; long-poll, returns undelivered feedback for that session and marks it
@@ -313,9 +318,8 @@ Agent- and shell-facing JSON API under `/api`:
   only, and reach a subscriber only when its level may read that path
   (private `data/users/<id>/` subtrees reach their owner alone). Access
   rules from the artifact's declared `db.rules` are evaluated per caller
-  level (§9). Threads also gain `POST .../threads/<tid>/reopen` and `DELETE
-  .../threads/<tid>` (same-origin viewer at `interact` or above, or the
-  agent; `thread_deleted` SSE event) for the `comments` capability, and
+  level (§9). Threads also gain the reopen and delete routes above
+  (`thread_deleted` SSE event) for the `comments` capability, and
   `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
   created by a page's `artifact.publish` carries `by_page: true`.
 - Sample (phase 5): `GET /api/artifacts/<aid>/sample` (availability and
@@ -556,8 +560,14 @@ files kept in `web/contract/`:
   anchored there; `customAnchors()` lets a page register named anchors for
   canvas content. Write verbs in the full form create threads and comments
   as the viewer; `resolve(id, false)` reopens and `delete(id)` deletes a
-  thread through the routes in §6, which need `interact` or above. The
-  shell renders all threads; the page never lists them.
+  thread through the routes in §6, which need `interact` or above. Write
+  verbs ask the viewer's consent once per artifact; a page may open the
+  composer 5 times in 10 s and write 10 times a minute per artifact in a
+  tab. Page anchors always name the frame's page and the view's version;
+  `create` and `reply` refuse text mentioning `@agent`, which only
+  `sendToClaude` may send. A custom-anchors page is told only the threads on
+  its own page, as handles. The shell renders all threads; the page never
+  lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
@@ -1017,11 +1027,12 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   reopen or delete threads; unnamed viewers hold `view`. No LAN viewer can
   publish, delete artifacts, upload assets, or write `admin`-level docs.
 - The viewer routes (creating a thread, commenting, sending to the agent,
-  resolving, `GET`/`PUT /api/viewers/me`) refuse a request whose `Origin` is
+  resolving, reopening, deleting, `GET`/`PUT /api/viewers/me`) refuse a request whose `Origin` is
   not the daemon's own (`http://` plus the request's `Host`; artifact
   origins, `null`, and other origins are refused) with 403
-  `forbidden_origin`, so a published page cannot comment, send, or resolve
-  on the person's behalf. Requests without an `Origin` header are allowed.
+  `forbidden_origin`, so a published page cannot call them itself; it
+  writes only through the shell's `comments` capability, after the viewer's
+  consent. Requests without an `Origin` header are allowed.
   The daemon is HTTP only. `GET /api/push` needs no token but names the
   daemon's `codex` path (which usually contains the user name) only to
   requests with the token.

@@ -36,6 +36,11 @@ pub enum Event {
         resolved_by: String,
         resolved_at: String,
     },
+    /// A thread and its comments were deleted.
+    ThreadDeleted {
+        artifact_id: String,
+        thread_id: String,
+    },
     FeedbackState {
         artifact_id: String,
         thread_id: String,
@@ -68,6 +73,7 @@ impl Event {
             | Event::Thread { artifact_id, .. }
             | Event::Comment { artifact_id, .. }
             | Event::ThreadResolved { artifact_id, .. }
+            | Event::ThreadDeleted { artifact_id, .. }
             | Event::FeedbackState { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
         }
@@ -81,6 +87,7 @@ impl Event {
             Event::Thread { .. } => "thread",
             Event::Comment { .. } => "comment",
             Event::ThreadResolved { .. } => "thread_resolved",
+            Event::ThreadDeleted { .. } => "thread_deleted",
             Event::FeedbackState { .. } => "feedback_state",
             Event::Doc { .. } => "doc",
         }
@@ -169,6 +176,10 @@ mod tests {
                 thread_id: "t".into(),
                 resolved_by: "viewer:x".into(),
                 resolved_at: "r".into(),
+            },
+            Event::ThreadDeleted {
+                artifact_id: "a".into(),
+                thread_id: "t".into(),
             },
             Event::feedback_state("a".into(), s),
             Event::Doc {
