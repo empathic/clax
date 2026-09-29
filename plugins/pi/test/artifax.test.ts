@@ -1,17 +1,19 @@
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { artifactRef, artifaxExtension, textPrefix } from "../src/artifax.ts";
+import { artifactRef, artifaxExtension, htmlTitle, isText, textPrefix } from "../src/artifax.ts";
 import { ensure } from "../src/daemon.ts";
 import { api, artifaxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 
-const TOOLS = ["publish", "read", "list", "delete", "open", "pin", "unpin", "asset_upload", "status"].map(t => `artifax_${t}`);
+/** Inputs and expected outputs shared with the Rust tools. */
+const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/contract.json", import.meta.url), "utf8"));
+const TOOLS: string[] = FIXTURE.tools.map((t: { name: string }) => `artifax_${t.name}`);
 
 let daemon: TestDaemon;
 let scratch: string;
@@ -92,6 +94,7 @@ describe("artifax Pi extension", () => {
       expect(t.description.length, t.name).toBeGreaterThan(0);
     }
     expect([...pi.commands.keys()]).toEqual(["artifax"]);
+    for (const t of FIXTURE.tools) expect(pi.tools.get(`artifax_${t.name}`)?.description, t.name).toBe(t.description);
   });
 
   it("registers a pi session on session_start and ends it on session_shutdown", async () => {
@@ -220,6 +223,81 @@ describe("artifax Pi extension", () => {
     expect(res.assets[0].content_type).toBe("image/tiff");
   });
 
+  it("takes a new artifact's title from the page's <title> when none is given", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-title");
+    const p = json(await pi.callTool("artifax_publish", { html: "<title>  From &amp; the\n page </title><p>x</p>" }, ctx));
+    expect(p).toMatchObject({ version: 1, title: "From & the page" });
+    const v2 = json(await pi.callTool("artifax_publish", { id: p.artifact_id, html: "<p>no title</p>" }, ctx));
+    expect(v2).toMatchObject({ version: 2, title: "From & the page" });
+  });
+
+  it("refuses a new artifact with neither a title nor a page <title>", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-untitled");
+    const res = await pi.callTool("artifax_publish", { html: "<p>no title</p>" }, ctx);
+    expect(res.isError).toBe(true);
+    expect(json(res).error).toEqual({
+      code: "invalid_args",
+      message: "a new artifact needs a title: pass `title`, or give the page a non-empty <title>",
+    });
+  });
+
+  it("registers a new session when its session was ended under it, and publishes", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ended");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const first = json(await pi.callTool("artifax_status", {}, ctx)).session;
+    await api(daemon, `/api/sessions/${first.id}`, { method: "PATCH", body: JSON.stringify({ ended: true }) });
+
+    const pub = await pi.callTool("artifax_publish", { html: "<title>after end</title>" }, ctx);
+    expect(pub.isError, JSON.stringify(json(pub))).toBe(false);
+    const live = (await sessions()).filter(s => s.harness_session_id === "pi-ended" && s.ended_at === null);
+    expect(live).toHaveLength(1);
+    expect(live[0].id).not.toBe(first.id);
+    const got = await api(daemon, `/api/artifacts/${json(pub).artifact_id}`);
+    expect(got.artifact.owner_session_id).toBe(live[0].id);
+    expect(json(await pi.callTool("artifax_status", {}, ctx)).session.id).toBe(live[0].id);
+  });
+
+  it("reports opened from the opener's exit status", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-open");
+    const p = json(await pi.callTool("artifax_publish", { html: "<title>open me</title>" }, ctx));
+    const openWith = async (script: string) => {
+      const bin = mkdtempSync(join(scratch, "opener-"));
+      for (const name of ["open", "xdg-open"]) {
+        writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
+        chmodSync(join(bin, name), 0o755);
+      }
+      const env: NodeJS.ProcessEnv = { ...process.env, ARTIFAX_BIN: artifaxBin, PATH: `${bin}:${process.env.PATH}` };
+      delete env.ARTIFAX_NO_OPEN;
+      const fresh = new FakePi();
+      artifaxExtension({ home: daemon.home, env })(fresh.api);
+      const t0 = Date.now();
+      const r = json(await fresh.callTool("artifax_open", { url_or_id: p.artifact_id }, ctx));
+      return { ...r, ms: Date.now() - t0 };
+    };
+    expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
+    expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
+    const lingering = await openWith("sleep 5");
+    expect(lingering).toMatchObject({ opened: true });
+    expect(lingering.ms).toBeGreaterThanOrEqual(1_400);
+    expect(lingering.ms).toBeLessThan(3_000);
+  });
+
+  it("status reports daemon_version only when the daemon's version differs", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-version");
+    const s = json(await pi.callTool("artifax_status", {}, ctx));
+    expect(s.version).toBe(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
+    expect(s).not.toHaveProperty("daemon_version");
+  });
+
+  it("refuses a relative path when the session has no working directory", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-no-cwd", "");
+    const res = await pi.callTool("artifax_publish", { file_path: "page.html", title: "t" }, ctx);
+    expect(json(res).error).toEqual({
+      code: "invalid_args",
+      message: "file paths must be absolute: there is no session working directory to resolve 'page.html' against",
+    });
+  });
+
   it("reports an unexpected exception as an internal error result", async () => {
     const { pi, ctx } = load(daemon.home, "pi-internal");
     const res = await pi.callTool("artifax_list", null, ctx);
@@ -306,31 +384,28 @@ describe("artifax Pi extension", () => {
     expect(notes.at(-1)?.message).toContain("Command page");
     await pi.runCommand("artifax", "bogus", ctx);
     expect(notes.at(-1)).toMatchObject({ type: "error" });
-    expect(notes.at(-1)?.message).toContain("usage: /artifax open [id] | list | status");
+    expect(notes.at(-1)?.message).toContain("usage: /artifax open [ID] | list | status");
   });
 });
 
-describe("helpers", () => {
-  it("artifactRef reads IDs and versions from every URL form", () => {
-    const id = "7q3k9mzx2b4t";
-    const cases: [string, number | undefined][] = [
-      [id, undefined], [` ${id} `, undefined],
-      [`http://localhost:7480/a/${id}`, undefined], [`/a/${id}`, undefined],
-      [`http://localhost:7480/a/${id}/v/3`, 3], [`http://127.0.0.1:7480/c/${id}/v/2/img/a.png`, 2],
-      [`http://${id}.localhost:7480/v/4/`, 4], [`http://${id}.localhost/v/5/app.js?x#y`, 5],
-      [`http://localhost:7480/a/${id}/v/2?x=1`, 2],
-    ];
-    for (const [s, v] of cases) expect(artifactRef(s), s).toEqual(v === undefined ? { id } : { id, version: v });
-    for (const bad of ["http://localhost:7480/c/nope/v/1/", "http://evil.localhost:7480/v/1/", `http://localhost:7480/x/${id}`, "nope"]) {
-      expect(() => artifactRef(bad), bad).toThrow(/invalid_id/);
+describe("helpers match the shared contract fixture", () => {
+  it("artifactRef", () => {
+    for (const c of FIXTURE.artifact_ref) {
+      if (c.error) expect(() => artifactRef(c.input), c.input).toThrow(new RegExp(c.error));
+      else expect(artifactRef(c.input), c.input).toEqual(c.version === null ? { id: c.id } : { id: c.id, version: c.version });
     }
   });
 
-  it("textPrefix never splits a character", () => {
-    const s = Buffer.from("aé");
-    expect(textPrefix(s, 2)).toBe("a");
-    expect(textPrefix(s, 3)).toBe("aé");
-    expect(textPrefix(Buffer.from([0x61, 0xff, 0x62]), 10)).toBe("a\uFFFDb");
+  it("textPrefix", () => {
+    for (const c of FIXTURE.text_prefix) expect(textPrefix(Buffer.from(c.hex, "hex"), c.max), `${c.hex} ${c.max}`).toBe(c.text);
+  });
+
+  it("isText", () => {
+    for (const c of FIXTURE.is_text) expect(isText(c.content_type), c.content_type).toBe(c.text);
+  });
+
+  it("htmlTitle", () => {
+    for (const c of FIXTURE.html_title) expect(htmlTitle(c.html) ?? null, c.html).toBe(c.title);
   });
 });
 

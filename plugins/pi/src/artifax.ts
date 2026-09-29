@@ -16,7 +16,9 @@ export const DEFAULT_READ_MAX_BYTES = 200_000;
 /** The published path of an artifact's page. */
 const INDEX = "index.html";
 
-/** This package's version, reported as `daemon_version` skew by `status`. */
+/** This package's version, which is the Artifax version it is released with
+ * (`scripts/test-plugins.sh` keeps them equal); `status` reports
+ * `daemon_version` when the daemon's version differs. */
 const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
 
 /** File extensions published as UTF-8 text when they decode as UTF-8; any other
@@ -202,16 +204,75 @@ export function textPrefix(bytes: Buffer, max: number): string {
   return max < bytes.length ? decoder.decode(bytes.subarray(0, max), { stream: true }) : decoder.decode(bytes);
 }
 
-/** Starts the platform opener on `url` detached. True when it started. */
-function openInBrowser(url: string): Promise<boolean> {
+/** Longest title [`htmlTitle`] returns, in characters. */
+export const MAX_DERIVED_TITLE_CHARS = 200;
+
+/** Whitespace as Rust's `char::is_whitespace` (Unicode White_Space); unlike
+ * `\s` it includes U+0085 and excludes U+FEFF. */
+const WHITESPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000]+/;
+const TRAILING_WHITESPACE = new RegExp(`${WHITESPACE.source}$`);
+const BASIC_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
+
+/** The text of the first `<title>` element of `html`, for use as an artifact
+ * title: the tag name matches in any case and may carry attributes; the five
+ * entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any other
+ * entity is kept as written); runs of whitespace become one space; the result
+ * is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
+ * when there is no closed `<title>` element or its text is empty. The same
+ * rule as `artifax_core::html_title`. */
+export function htmlTitle(html: string): string | undefined {
+  // ASCII-only lowercasing keeps every index valid in `html`.
+  const lower = html.replace(/[A-Z]/g, c => c.toLowerCase());
+  let from = 0;
+  let bodyStart: number;
+  for (;;) {
+    const at = lower.indexOf("<title", from);
+    if (at < 0) return undefined;
+    const after = at + "<title".length;
+    const next = lower[after];
+    if (next === ">") {
+      bodyStart = after + 1;
+      break;
+    }
+    if (next !== undefined && /[\t\n\f\r /]/.test(next)) {
+      const gt = lower.indexOf(">", after);
+      if (gt < 0) return undefined;
+      bodyStart = gt + 1;
+      break;
+    }
+    from = after;
+  }
+  const bodyEnd = lower.indexOf("</title", bodyStart);
+  if (bodyEnd < 0) return undefined;
+  const text = html.slice(bodyStart, bodyEnd).replace(/&(?:amp|lt|gt|quot|apos);/g, e => BASIC_ENTITIES[e] ?? e);
+  const joined = text.split(WHITESPACE).filter(w => w !== "").join(" ");
+  const title = Array.from(joined).slice(0, MAX_DERIVED_TITLE_CHARS).join("").replace(TRAILING_WHITESPACE, "");
+  return title === "" ? undefined : title;
+}
+
+/** How long [`openInBrowser`] waits for the opener to exit. */
+export const OPEN_WAIT_MS = 1_500;
+
+/** Runs the platform opener (`open` on macOS, `xdg-open` elsewhere, looked up
+ * on `env`'s `PATH`) on `url` with stdio detached and waits up to
+ * [`OPEN_WAIT_MS`] for it. True when it exits successfully in time, or is
+ * still running then (best effort: some openers hand off and linger); false
+ * when it cannot start or exits unsuccessfully. */
+function openInBrowser(url: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   return new Promise(resolve => {
+    let timer: NodeJS.Timeout | undefined;
+    const done = (opened: boolean) => {
+      clearTimeout(timer);
+      resolve(opened);
+    };
     try {
-      const child = spawn(opener, [url], { stdio: "ignore", detached: true });
-      child.once("spawn", () => { child.unref(); resolve(true); });
-      child.once("error", () => resolve(false));
+      const child = spawn(opener, [url], { stdio: "ignore", detached: true, env });
+      child.once("error", () => done(false));
+      child.once("exit", code => done(code === 0));
+      timer = setTimeout(() => { child.unref(); done(true); }, OPEN_WAIT_MS);
     } catch {
-      resolve(false);
+      done(false);
     }
   });
 }
@@ -286,10 +347,13 @@ class Tools {
   }
 
   /** `p` as given when absolute (a leading `@` dropped), else joined to the
-   * session's working directory. */
+   * session's working directory. A relative path when Pi reports no working
+   * directory is an `invalid_args` error. */
   private localPath(ctx: ExtensionContext, p: string): string {
     const path = p.startsWith("@") ? p.slice(1) : p;
-    return isAbsolute(path) ? path : join(ctx.cwd, path);
+    if (isAbsolute(path)) return path;
+    if (!ctx.cwd) throw invalid(`file paths must be absolute: there is no session working directory to resolve '${p}' against`);
+    return join(ctx.cwd, path);
   }
 
   private fileArg(ctx: ExtensionContext, name: string, f: Static<typeof FileArg>): Json {
@@ -319,9 +383,16 @@ class Tools {
       if (name === INDEX) throw invalid("index.html comes from file_path or html, not files");
       files[name] = f === null ? null : this.fileArg(ctx, name, f);
     }
+    // A new artifact needs a title: the given one, else the page's <title>.
+    let title = a.title;
+    if (target === undefined && title === undefined) {
+      title = page.encoding === "utf8" ? htmlTitle(page.content) : undefined;
+      if (title === undefined) throw invalid("a new artifact needs a title: pass `title`, or give the page a non-empty <title>");
+    }
     files[INDEX] = page;
     const body: Json = { files };
-    for (const k of ["title", "description", "icon", "label"] as const) if (a[k] !== undefined) body[k] = a[k];
+    if (title !== undefined) body.title = title;
+    for (const k of ["description", "icon", "label"] as const) if (a[k] !== undefined) body[k] = a[k];
     if (a.capabilities !== undefined) body.capabilities = a.capabilities;
     const c = this.clientFor(ctx);
     const res = await this.call(async () => {
@@ -422,7 +493,7 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
-    const opened = this.env.ARTIFAX_NO_OPEN === undefined && (await openInBrowser(url));
+    const opened = this.env.ARTIFAX_NO_OPEN === undefined && (await openInBrowser(url, this.env));
     return { url, opened };
   }
 
@@ -431,7 +502,7 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => c.healthz());
     const url = `${this.browserBase(c)}/`;
-    const opened = this.env.ARTIFAX_NO_OPEN === undefined && (await openInBrowser(url));
+    const opened = this.env.ARTIFAX_NO_OPEN === undefined && (await openInBrowser(url, this.env));
     return { url, opened };
   }
 
@@ -479,7 +550,7 @@ class Tools {
 const START_BUDGET_MS = 3_000;
 
 /** The `/artifax` command's usage line. */
-const USAGE = "usage: /artifax open [id] | list | status";
+const USAGE = "usage: /artifax open [ID] | list | status";
 
 /** The Artifax extension, with `opts` overriding where it finds the daemon. */
 export function artifaxExtension(opts: ArtifaxOptions = {}): (pi: ExtensionAPI) => void {
@@ -567,7 +638,7 @@ export function artifaxExtension(opts: ArtifaxOptions = {}): (pi: ExtensionAPI) 
       StatusArgs, ctx => tools.status(ctx));
 
     pi.registerCommand("artifax", {
-      description: "Artifax: open [id] (the gallery, or an artifact), list, status",
+      description: "Artifax: open [ID] (the gallery, or an artifact), list, status",
       handler: async (args, ctx) => {
         const [sub = "", target] = args.trim().split(/\s+/);
         try {

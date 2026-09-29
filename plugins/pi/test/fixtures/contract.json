@@ -1,0 +1,293 @@
+{
+  "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/artifax-mcp/src/tools.rs, artifax-core html_title) and the Pi extension (plugins/pi/src/artifax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources.",
+  "artifact_ref": [
+    {
+      "input": "7q3k9mzx2b4t",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": " 7q3k9mzx2b4t ",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://localhost:7480/a/7q3k9mzx2b4t",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "/a/7q3k9mzx2b4t",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://localhost:7480/a/7q3k9mzx2b4t/v/3",
+      "id": "7q3k9mzx2b4t",
+      "version": 3
+    },
+    {
+      "input": "http://localhost:7480/a/7q3k9mzx2b4t/v/2?x=1",
+      "id": "7q3k9mzx2b4t",
+      "version": 2
+    },
+    {
+      "input": "http://127.0.0.1:7480/c/7q3k9mzx2b4t/v/2/",
+      "id": "7q3k9mzx2b4t",
+      "version": 2
+    },
+    {
+      "input": "http://127.0.0.1:7480/c/7q3k9mzx2b4t/v/2/img/a.png",
+      "id": "7q3k9mzx2b4t",
+      "version": 2
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/v/4/",
+      "id": "7q3k9mzx2b4t",
+      "version": 4
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost/v/5/app.js?x#y",
+      "id": "7q3k9mzx2b4t",
+      "version": 5
+    },
+    {
+      "input": "http://7q3k9mzx2b4t.localhost:7480/",
+      "id": "7q3k9mzx2b4t",
+      "version": null
+    },
+    {
+      "input": "http://localhost:7480/c/nope/v/1/",
+      "error": "invalid_id"
+    },
+    {
+      "input": "http://evil.localhost:7480/v/1/",
+      "error": "invalid_id"
+    },
+    {
+      "input": "http://localhost:7480/x/7q3k9mzx2b4t",
+      "error": "invalid_id"
+    },
+    {
+      "input": "nope",
+      "error": "invalid_id"
+    },
+    {
+      "input": "http://localhost/a/",
+      "error": "invalid_id"
+    }
+  ],
+  "text_prefix": [
+    {
+      "hex": "61c3a9",
+      "max": 2,
+      "text": "a"
+    },
+    {
+      "hex": "61c3a9",
+      "max": 3,
+      "text": "aé"
+    },
+    {
+      "hex": "61c3a9",
+      "max": 10,
+      "text": "aé"
+    },
+    {
+      "hex": "c3a961",
+      "max": 1,
+      "text": ""
+    },
+    {
+      "hex": "e282ac",
+      "max": 2,
+      "text": ""
+    },
+    {
+      "hex": "61ff62",
+      "max": 10,
+      "text": "a�b"
+    },
+    {
+      "hex": "61ffc3",
+      "max": 3,
+      "text": "a��"
+    },
+    {
+      "hex": "61ffc3a9c3",
+      "max": 4,
+      "text": "a�é"
+    },
+    {
+      "hex": "",
+      "max": 0,
+      "text": ""
+    }
+  ],
+  "is_text": [
+    {
+      "content_type": "text/html; charset=utf-8",
+      "text": true
+    },
+    {
+      "content_type": "application/json",
+      "text": true
+    },
+    {
+      "content_type": "application/javascript",
+      "text": true
+    },
+    {
+      "content_type": "image/svg+xml",
+      "text": true
+    },
+    {
+      "content_type": "TEXT/CSS",
+      "text": true
+    },
+    {
+      "content_type": " application/json ; x=1",
+      "text": true
+    },
+    {
+      "content_type": "text/plain",
+      "text": true
+    },
+    {
+      "content_type": "image/png",
+      "text": false
+    },
+    {
+      "content_type": "application/octet-stream",
+      "text": false
+    },
+    {
+      "content_type": "font/woff2",
+      "text": false
+    },
+    {
+      "content_type": "",
+      "text": false
+    },
+    {
+      "content_type": "application/jsonx",
+      "text": false
+    }
+  ],
+  "html_title": [
+    {
+      "html": "<p>no title here</p>",
+      "title": null
+    },
+    {
+      "html": "<title></title>",
+      "title": null
+    },
+    {
+      "html": "<title> \n\t </title>",
+      "title": null
+    },
+    {
+      "html": "<title>never closed",
+      "title": null
+    },
+    {
+      "html": "<titles>x</titles>",
+      "title": null
+    },
+    {
+      "html": "<title",
+      "title": null
+    },
+    {
+      "html": "<head><title>\n  Q3   Review\n</title></head>",
+      "title": "Q3 Review"
+    },
+    {
+      "html": "<title>A &amp; B &lt;C&gt; &quot;d&quot; &apos;e&apos;</title>",
+      "title": "A & B <C> \"d\" 'e'"
+    },
+    {
+      "html": "<title>&amp;lt; &copy; &#39;</title>",
+      "title": "&lt; &copy; &#39;"
+    },
+    {
+      "html": "<TITLE lang=\"en\">Upper</TITLE>",
+      "title": "Upper"
+    },
+    {
+      "html": "<Title\tid=t>Mixed</tItLe>",
+      "title": "Mixed"
+    },
+    {
+      "html": "<title/>Slash</title>",
+      "title": "Slash"
+    },
+    {
+      "html": "<title>first</title><title>second</title>",
+      "title": "first"
+    },
+    {
+      "html": "<titlex>no</titlex><title>yes</title>",
+      "title": "yes"
+    },
+    {
+      "html": "<title>İstanbul Ünterlagen</title>",
+      "title": "İstanbul Ünterlagen"
+    },
+    {
+      "html": "<title>a bc　d</title>",
+      "title": "a b c d"
+    },
+    {
+      "html": "<title>﻿a</title>",
+      "title": "﻿a"
+    },
+    {
+      "html": "<title>éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé</title>",
+      "title": "éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"
+    },
+    {
+      "html": "<title>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b</title>",
+      "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "tools": [
+    {
+      "name": "publish",
+      "description": "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number."
+    },
+    {
+      "name": "read",
+      "description": "Read a published file (index.html by default) of an artifact's current or given version, as stored, before serve-time wrapping. Text is cut at `max_bytes` (default 200000) with `truncated: true`; binary files come back as `content_base64` when under the cap."
+    },
+    {
+      "name": "list",
+      "description": "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created."
+    },
+    {
+      "name": "delete",
+      "description": "Delete an artifact and all its versions."
+    },
+    {
+      "name": "open",
+      "description": "Open an artifact in the person's browser on this machine."
+    },
+    {
+      "name": "pin",
+      "description": "Pin an artifact to the top of the gallery."
+    },
+    {
+      "name": "unpin",
+      "description": "Unpin an artifact."
+    },
+    {
+      "name": "asset_upload",
+      "description": "Upload local files (images, video, fonts, data) as assets of an artifact. Returns each asset's URL for the page to reference."
+    },
+    {
+      "name": "status",
+      "description": "Report the Artifax daemon's URL and version and the session publishes are attributed to."
+    }
+  ]
+}

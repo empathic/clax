@@ -73,7 +73,8 @@ export interface RawResponse {
 }
 
 /** A failed attempt, and whether a refresh may cure it: the connection was not
- * established (so the request was never sent) or the token was refused. */
+ * established (so the request was never sent), the token was refused, or the
+ * session was ended under the client (`unknown_session`). */
 class Failure {
   constructor(readonly error: ClientError, readonly refreshable: boolean) {}
 }
@@ -131,7 +132,9 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
 }
 
 /** Sends a request; a non-success status becomes an `api` failure carrying the
- * body's `error` object, refreshable when the token was refused (401). */
+ * body's `error` object, refreshable when the token was refused (401) or the
+ * session named by `X-Artifax-Session` is no longer live (400
+ * `unknown_session`). */
 async function attempt(url: string, opts: RequestOptions): Promise<RawResponse> {
   const res = await send(url, opts);
   if (res.status >= 200 && res.status < 300) return res;
@@ -141,7 +144,8 @@ async function attempt(url: string, opts: RequestOptions): Promise<RawResponse> 
     if (body && typeof body.error === "object" && body.error !== null && !Array.isArray(body.error)) error = body.error;
   } catch { /* not JSON */ }
   error ??= { code: "http_error", message: `daemon answered HTTP ${res.status}` };
-  throw new Failure(new ClientError("api", `HTTP ${res.status}: ${JSON.stringify(error)}`, res.status, error), res.status === 401);
+  const unknownSession = res.status === 400 && error.code === "unknown_session";
+  throw new Failure(new ClientError("api", `HTTP ${res.status}: ${JSON.stringify(error)}`, res.status, error), res.status === 401 || unknownSession);
 }
 
 function bodyJson(res: RawResponse): any {
@@ -192,14 +196,22 @@ export function encodePath(path: string): string {
   return out;
 }
 
+/** What a failed request saw: the endpoint and session it was sent with. A
+ * refresh is skipped when the client has since moved on from either. */
+interface Stale {
+  endpoint: Endpoint | undefined;
+  sessionId: string | undefined;
+}
+
 /**
  * A client of one daemon's REST API that finds its daemon with `refresh`
  * (which may start one) or `discover` (which must not), and registers a harness
  * session there: lazily on first use, and again whenever a request cannot
  * connect or is refused with 401 (the daemon restarted, on a new port or with a
- * new token), after which the request is retried once. Tool requests may start
- * a daemon; heartbeats and ending the session only find one. Every request
- * carries `X-Artifax-Session` once a session is registered.
+ * new token) or with `unknown_session` (the session was ended under it), after
+ * which the request is retried once. Tool requests may start a daemon; ending
+ * the session only finds one. Every request carries `X-Artifax-Session` once a
+ * session is registered.
  */
 export class DaemonClient {
   private endpoint: Endpoint | undefined;
@@ -235,14 +247,20 @@ export class DaemonClient {
 
   private async ensure(find: Find, deadline?: number): Promise<void> {
     if (this.endpoint && this.registered) return;
-    await this.refresh(this.endpoint, find, deadline);
+    await this.refresh(this.stale(), find, deadline);
+  }
+
+  private stale(): Stale {
+    return { endpoint: this.endpoint, sessionId: this.sessionId };
   }
 
   /** Re-discovers the daemon and registers the session there, unless another
-   * caller already moved on from `stale` (the endpoint the failure was seen on). */
-  private async refresh(stale: Endpoint | undefined, find: Find, deadline?: number): Promise<void> {
+   * caller already moved on from `stale` (the endpoint and session the failure
+   * was seen with). Registering again after the session was ended inserts a
+   * new live row with the same harness session ID. */
+  private async refresh(stale: Stale, find: Find, deadline?: number): Promise<void> {
     while (this.refreshing) await this.refreshing.catch(() => {});
-    if (this.endpoint && this.endpoint !== stale && this.registered) return;
+    if (this.endpoint && this.registered && (this.endpoint !== stale.endpoint || this.sessionId !== stale.sessionId)) return;
     const run = (async () => {
       let endpoint: Endpoint;
       try {
@@ -289,6 +307,7 @@ export class DaemonClient {
     await this.ensure(find, deadline);
     const endpoint = this.endpoint;
     if (!endpoint) throw new ClientError("unreachable", "no daemon found");
+    const stale = this.stale();
     const go = (ep: Endpoint) =>
       attempt(`${ep.base}${typeof path === "function" ? path() : path}`, {
         ...opts,
@@ -301,7 +320,7 @@ export class DaemonClient {
       if (!(e instanceof Failure)) throw e;
       if (!e.refreshable) throw e.error;
       try {
-        await this.refresh(endpoint, find, deadline);
+        await this.refresh(stale, find, deadline);
       } catch {
         throw e.error;
       }
@@ -331,7 +350,8 @@ export class DaemonClient {
     return this.json("/api/artifacts", { method: "GET" });
   }
 
-  /** `GET /api/artifacts/<id>`: `{artifact, versions, owner_session}`. */
+  /** `GET /api/artifacts/<id>`: `{artifact, versions}`; `artifact` carries
+   * `owner_session_id`, `owner_live` and `owner_harness`. */
   get(id: string): Promise<any> {
     return this.json(`/api/artifacts/${id}`, { method: "GET" });
   }
@@ -354,11 +374,6 @@ export class DaemonClient {
   /** `DELETE /api/artifacts/<id>`. */
   async delete(id: string): Promise<void> {
     await this.request(`/api/artifacts/${id}`, { method: "DELETE" });
-  }
-
-  /** `GET /api/artifacts/<id>/files`: the current version's `{files, version}`. */
-  files(id: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/files`, { method: "GET" });
   }
 
   /** The stored bytes of `path` in version `n`, unwrapped
@@ -387,12 +402,6 @@ export class DaemonClient {
       body,
       timeoutMs: PUBLISH_TIMEOUT_MS,
     });
-  }
-
-  /** `PATCH /api/sessions/<id>` `{"heartbeat": true}`, registering the session
-   * first when needed. Never starts a daemon. */
-  async heartbeat(): Promise<Session> {
-    return sessionOf(await this.json(this.sessionPath, this.sessionPatch({ heartbeat: true }), this.discoverFn));
   }
 
   /** `PATCH /api/sessions/<id>` `{"ended": true}` for the registered session,
