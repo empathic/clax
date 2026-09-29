@@ -96,7 +96,9 @@ class Shim:
 
     def close(self):
         self.p.stdin.close()
-        self.p.wait(timeout=10)
+        code = self.p.wait(timeout=10)
+        if code != 0:
+            fail(f"the shim exited with code {code}")
 
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
@@ -204,15 +206,18 @@ sent_at = {}
 def later():
     time.sleep(0.5)
     sent_at["t"] = time.monotonic()  # before the POST: the lag is an upper bound
-    browser_thread(aid, "@agent one more thing")
+    sent_at["thread"] = browser_thread(aid, "@agent one more thing")["id"]
 sender = threading.Thread(target=later)
 sender.start()
 waited, _ = shim.call("wait_for_feedback", {"url_or_id": aid, "timeout_s": 20})
 returned = time.monotonic()
 sender.join()
-lag = max(0.0, returned - sent_at["t"])
-if len(waited["feedback"]) != 1 or waited["call_again"] or lag > 1.0:
-    fail(f"wait_for_feedback: {waited} after {lag:.2f}s")
+if "thread" not in sent_at:
+    fail(f"wait_for_feedback returned before the @agent comment was posted: {waited}")
+lag = returned - sent_at["t"]
+if len(waited["feedback"]) != 1 or waited["call_again"] or not 0 <= lag <= 1.0 \
+        or waited["feedback"][0]["thread_id"] != sent_at["thread"] or waited["feedback"][0]["body"] != "@agent one more thing":
+    fail(f"wait_for_feedback: {waited} after {lag:.2f}s (expected thread {sent_at.get('thread')})")
 ok(f"tier 4: wait_for_feedback returned {lag * 1000:.0f} ms after the @agent comment was posted")
 idle, _ = shim.call("wait_for_feedback", {"timeout_s": 1})
 if idle != {"feedback": [], "waited_s": 1, "call_again": True}:

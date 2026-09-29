@@ -65,8 +65,10 @@ session in three ways:
   with replies on, and hands each batch to Pi with
   `sendUserMessage(text, {deliverAs: "followUp"})`. When Pi is idle this
   starts a turn at once; while it is working the message waits until the
-  current work is done. The poll only finds a running daemon; it never starts
-  one. It stops on session shutdown.
+  current work is done. While the agent is inside
+  `artifax_wait_for_feedback`, the daemon hands comments to the wait and
+  answers these polls empty at once, so the loop pauses. The poll only finds a
+  running daemon; it never starts one. It stops on session shutdown.
 
 A comment handed over as a follow-up message counts as seen only once the
 agent reads, replies to, or resolves its thread; until then it is resent on a

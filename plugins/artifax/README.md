@@ -123,7 +123,10 @@ the agent is inside `wait_for_feedback` (which delivers them itself).
 `artifax doctor --agent codex` checks the first two: which `codex` the
 daemon found and where from, and whether every live Codex session has its
 Codex session ID. The `status` tool's `push` field says whether push is on for
-the current session and why not.
+the current session and why not. If `codex queue` fails (exits non-zero, is
+killed, times out after 10 s, or cannot start), the session stays live, its
+comments fall back to the other tiers, and `push.last_error` and
+`push.last_error_at` say what happened.
 
 ## How the plugin finds its files
 

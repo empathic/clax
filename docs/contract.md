@@ -445,8 +445,10 @@ signals version skew.
 `watches` lists this session's watches (`[{session_id, artifact_id,
 replies_armed, created_at}]`; `[]` without a session). `push` says whether
 comments can be pushed into this session (tier 5) and why not:
-`{tier, available, reason}`, plus `codex_home` (the recorded `CODEX_HOME`, or
-`null`) for Codex. Under Codex `tier` is `"queue"` when available, else
+`{tier, available, reason}`, plus, for Codex, `codex_home` (the recorded
+`CODEX_HOME`, or `null`), `last_error` (why the last `codex queue` run failed,
+or `null`) and `last_error_at` (when, as an RFC 3339 timestamp, or `null`); a
+successful run clears both, and a failure leaves `available` true. Under Codex `tier` is `"queue"` when available, else
 `null` with `reason` "Codex session ID unknown, native push disabled" or the
 daemon's reason for having no `codex` (see "Delivery tiers per harness");
 under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
@@ -624,7 +626,9 @@ for that session (a comment added after the read stays pending).
 `comments_reply` posts the reply as the agent; the person sees
 `Agent · via <harness>`. Replying to or resolving a thread acknowledges its
 comments for the session. Resolving a thread withdraws its comments that no
-session has been handed yet.
+session has been handed yet. When a later viewer comment reopens a sent
+thread, the comments a viewer resolve withdrew are sent again with it (no
+session saw them); comments already handed over are not resent.
 
 `watch` with `on: false` removes the session's watch (the result has
 `watching: false, replies_armed: false`); the session that created the
@@ -701,21 +705,29 @@ by the hook when set; otherwise `codex` uses its default). A set
 `ARTIFAX_CODEX_BIN` is never followed by a `PATH` search: the empty string
 turns Codex push off on purpose, and a value that is not an executable file
 turns it off with a reason naming that value. `artifax doctor --agent codex`
-checks the first two, naming where `codex` came from. `GET /api/push` (which
-needs no token) reports only the daemon's `codex`: its path, where it came
-from, and why push is off when it is. `status` reports `push` for the session
-with the reason when it is off. Tier 5 is skipped while the
-session is inside `wait_for_feedback`, which delivers instead. The comments
-read "delivered via codex queue" from the moment `codex queue` starts until
-it finishes (at most 10 s). A `codex queue` that exits non-zero ends the
-session and hands its comments to the next session that publishes or watches
-the artifact; a timeout (10 s) or a failure to start it leaves them to tiers 1
-to 4, and `codex queue` is not tried again for them.
+checks the first two, naming where `codex` came from. `GET /api/push` reports
+only the daemon's `codex`: without the token `{"codex": {available, source,
+reason}}` (where `codex` came from, and why push is off when it is); with the
+token it adds `bin`, the path (or `null`). `status` reports `push` for the
+session with the reason when it is off. Tier 5 (Codex and Pi) is skipped while
+the session is inside `wait_for_feedback`, which delivers instead. The
+comments read "delivered via codex queue" from the moment they are claimed for
+`codex queue` (the state is published then, before it runs) until it finishes
+(at most 10 s); a run that exits 0 changes nothing further. Any failure (a
+non-zero exit, a kill by a signal, a timeout of 10 s, or a failure to start
+it) releases the comments to tiers 1 to 4 (they read "sent" again), and
+`codex queue` is not tried again for them. A failure never ends the session:
+it stays live with its watches, and `status` shows the reason in
+`push.last_error` (`codex queue exited with code <n>`, `codex queue was
+killed by a signal`, `codex queue timed out`, or `codex queue could not run:
+<error>`).
 
 Pi's tier 5 long-poll runs from the session's registration to
 `session_shutdown`, 50 s per poll, pausing 5 s after a failed poll or one that
-came back empty in under a second. It finds a running daemon but never starts
-one.
+came back empty in under a second. While the session is inside
+`wait_for_feedback`, the daemon answers each of these polls at once with
+`{"feedback": [], "text": null, "waited_s": 0}` and hands the comments to the
+wait, so the loop pauses. It finds a running daemon but never starts one.
 
 ### Acknowledgement and resends
 
@@ -744,6 +756,13 @@ The thread's waiting indicator follows the `feedback_state` event:
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
+
+A resolved thread's `resolved_by` is `viewer:<public ID>`, `viewer:anonymous`
+(a resolve without a viewer cookie), or `agent:<harness>`; it never carries a
+viewer cookie or a session ID. The card reads "Resolved by" and the viewer's
+own name when it resolved the thread and has one, "Viewer" for any other
+viewer, or "Agent · via <harness>". An agent comment carries `via_harness`
+(the replying session's harness, e.g. `claude`; `null` on viewer comments).
 
 ## Page contract
 
@@ -802,6 +821,14 @@ Minimal skeleton:
 
 - The daemon binds `127.0.0.1` by default. `artifax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
+- Every `/api/**` route answers only when the `Host` header is literally
+  `localhost`, `127.0.0.1` or `[::1]` (port optional), or exactly the IP and
+  port the connection arrived on (the port may be left out only when it is
+  80); anything else, including every other DNS name, gets 403
+  `forbidden_host`, which defeats DNS rebinding. Under a LAN bind (including
+  `0.0.0.0` or `::`) a viewer reaches the API on `http://<the interface's
+  IP>:<port>`; another IP or port, or a name for it, is refused. The shell,
+  content, blob, and `/healthz` paths are not subject to this check.
 - Every route that changes state, except the viewer routes below, requires
   `Authorization: Bearer <token>` with the token from
   `<ARTIFAX_HOME>/daemon.json` (mode 0600): creating and publishing artifacts,
@@ -814,16 +841,16 @@ Minimal skeleton:
   (`GET /api/artifacts...` including threads and clips, `GET /api/push`, the
   gallery, content, blobs) need no token, so LAN viewers can read artifacts
   and comment on them but not publish or change them. `GET /api/push` names
-  the daemon's `codex` binary. `GET /api/artifacts/<id>` returns
+  the daemon's `codex` path (`bin`) only to a request with the token. `GET /api/artifacts/<id>` returns
   `{artifact, versions}`; like each entry of the artifact list, `artifact`
   carries `owner_session_id`, `owner_live` and `owner_harness`, never the
   owner's session row. Content and asset URLs are readable by anyone who can
   reach the daemon and knows the unguessable artifact or asset ID.
-- `GET /api/token` hands the token to the gallery in a local browser. It
-  answers only when the connection comes from a loopback address and the
-  `Host` header is literally `localhost`, `127.0.0.1` or `[::1]` (with an
-  optional port), which defeats DNS rebinding; otherwise it returns 403
-  `not_loopback`.
+- `GET /api/token` hands the token to the gallery in a local browser. On top
+  of the `Host` rule above, it answers only when the connection comes from a
+  loopback address and the `Host` header is literally `localhost`,
+  `127.0.0.1` or `[::1]` (with an optional port); otherwise (for example a LAN
+  peer, or the LAN IP as `Host`) it returns 403 `not_loopback`.
 - `/mcp` requires the bearer token on every request and accepts only a `Host`
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
@@ -856,7 +883,15 @@ Minimal skeleton:
   the person's behalf; requests without an `Origin` header (scripts) are
   allowed. The daemon serves plain HTTP only. A viewer is identified by the
   `artifax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
-  the daemon accepts only when it is a ULID. Agent replies and resolves need
+  the daemon accepts only when it is a ULID. The cookie never leaves the
+  daemon: no response body, event, thread view, comment, or log carries it.
+  Outside the cookie a viewer is named by its public ID (`u_` and 22
+  lowercase hex digits, assigned once and never changed): `GET`/`PUT
+  /api/viewers/me` answer `{"viewer": {"public_id", "display_name",
+  "created_at"}}`, and a viewer's resolve records `resolved_by`
+  `viewer:<public ID>`. No unauthenticated surface carries a session ID: an
+  agent's resolve records `agent:<harness>` and its comments `via_harness`.
+  Agent replies and resolves need
   the token and `X-Artifax-Session` naming a live session (400
   `unknown_session` otherwise). Thread views carry `clip_path` only for
   requests with the token and never in `/api/events`; the clip itself
@@ -869,6 +904,12 @@ Minimal skeleton:
 - No telemetry. The daemon makes no calls off the machine; the Claude Code
   and Codex plugins' installer script downloads a release only when no
   `artifax` binary is found.
+
+## Known limitations
+
+- Content inside a nested `<iframe>` within a page is a dead zone in comment
+  mode (pointer events never reach the page's own document, so it cannot be
+  picked), and its area renders blank in comment clips.
 
 ## What is not yet available
 
