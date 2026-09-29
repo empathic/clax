@@ -2,6 +2,7 @@
 
 mod client;
 mod commands;
+mod hooklog;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -73,11 +74,25 @@ fn is_hook_invocation() -> bool {
     false
 }
 
+/// The value after `--agent` on the command line, or `-`.
+fn agent_arg() -> String {
+    let args: Vec<String> = std::env::args().collect();
+    args.windows(2)
+        .find(|w| w[0] == "--agent")
+        .map(|w| w[1].clone())
+        .unwrap_or_else(|| "-".into())
+}
+
 fn main() {
+    let started = std::time::Instant::now();
     let hook = is_hook_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
+            if hook && let Ok(home) = artifax_core::Home::from_env() {
+                let text = e.to_string();
+                commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()));
+            }
             let code = match e.kind() {
                 _ if hook => 0,
                 ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => 0,

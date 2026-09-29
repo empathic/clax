@@ -5,7 +5,7 @@ use artifax_hooks::input::HookInput;
 use artifax_hooks::output::HookOutput;
 use std::io::{Read, Write};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The whole `session-start` invocation is abandoned after this long.
 const START_DEADLINE: Duration = Duration::from_secs(4);
@@ -69,6 +69,18 @@ impl Event {
     }
 }
 
+impl Event {
+    /// The event's name on the command line.
+    fn name(self) -> &'static str {
+        match self {
+            Event::SessionStart => "session-start",
+            Event::SessionEnd => "session-end",
+            Event::Stop => "stop",
+            Event::Prompt => "prompt",
+        }
+    }
+}
+
 impl Agent {
     fn harness(self) -> &'static str {
         match self {
@@ -117,26 +129,57 @@ impl Daemon for Client {
     }
 }
 
+/// Appends this run's line to hooks.log (see [`crate::hooklog`]).
+pub fn log_run(home: &Home, agent: &str, event: &str, started: Instant, stderr: Option<&str>) {
+    let bin = std::env::current_exe().unwrap_or_default();
+    crate::hooklog::append(
+        home,
+        &crate::hooklog::hook_line(
+            chrono::Utc::now(),
+            agent,
+            event,
+            &bin,
+            started.elapsed(),
+            0,
+            stderr,
+        ),
+    );
+}
+
 /// Runs the hook. Never fails the harness: any error or timeout prints one
-/// line to stderr and leaves stdout empty. Never starts a daemon.
+/// line to stderr and leaves stdout empty. Never starts a daemon. Each run is
+/// logged to hooks.log.
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
+    let started = Instant::now();
     // SAFETY: getppid has no preconditions.
     let parent_pid = unsafe { libc::getppid() } as u32;
-    let (agent, event, home) = (a.agent, a.event, home.clone());
+    let (agent, event) = (a.agent, a.event);
+    let worker_home = home.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
-        let _ = tx.send(handle(agent, event, parent_pid, &home));
+        let _ = tx.send(handle(agent, event, parent_pid, &worker_home));
     });
     let (deadline, _) = event.budget();
-    match rx.recv_timeout(deadline) {
+    let error = match rx.recv_timeout(deadline) {
         Ok(Ok(out)) => {
             if let Some(line) = out.to_line() {
                 let _ = writeln!(std::io::stdout(), "{line}");
             }
+            None
         }
-        Ok(Err(e)) => eprintln!("artifax hook: {e:#}"),
-        Err(_) => eprintln!("artifax hook: timed out after {deadline:?}"),
+        Ok(Err(e)) => Some(format!("{e:#}")),
+        Err(_) => Some(format!("timed out after {deadline:?}")),
+    };
+    if let Some(e) = &error {
+        eprintln!("artifax hook: {e}");
     }
+    log_run(
+        home,
+        agent.harness(),
+        event.name(),
+        started,
+        error.as_deref(),
+    );
     // Exit now: a timed-out worker may still be blocked on stdin or the network.
     std::process::exit(0);
 }

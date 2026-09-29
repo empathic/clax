@@ -14,6 +14,7 @@ artifax-server = { path = "../artifax-server" }
 artifax-mcp = { path = "../artifax-mcp" }
 artifax-hooks = { path = "../artifax-hooks" }
 anyhow.workspace = true
+chrono.workspace = true
 clap.workspace = true
 reqwest.workspace = true
 rmcp.workspace = true

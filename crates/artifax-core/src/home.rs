@@ -52,6 +52,10 @@ impl Home {
     pub fn log_path(&self) -> PathBuf {
         self.root.join("logs").join("daemon.log")
     }
+    /// `logs/hooks.log`: one line per hook run and per failed launcher resolution.
+    pub fn hooks_log_path(&self) -> PathBuf {
+        self.root.join("logs").join("hooks.log")
+    }
     pub fn artifact_dir(&self, id: &ArtifactId) -> PathBuf {
         self.root.join("artifacts").join(id.as_str())
     }
@@ -97,6 +101,10 @@ mod tests {
         assert_eq!(home.daemon_json(), PathBuf::from("/tmp/ax/daemon.json"));
         assert_eq!(home.daemon_lock(), PathBuf::from("/tmp/ax/daemon.lock"));
         assert_eq!(home.log_path(), PathBuf::from("/tmp/ax/logs/daemon.log"));
+        assert_eq!(
+            home.hooks_log_path(),
+            PathBuf::from("/tmp/ax/logs/hooks.log")
+        );
         assert_eq!(
             home.artifact_dir(&id),
             PathBuf::from("/tmp/ax/artifacts/7q3k9mzx2b4t")

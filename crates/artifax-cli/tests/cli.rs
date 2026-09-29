@@ -1080,3 +1080,37 @@ fn a_foreground_daemon_closes_inherited_descriptors() {
     assert!(alive, "the daemon kept running after closing descriptors");
     assert!(eof, "the daemon kept an inherited pipe write end open");
 }
+
+#[test]
+fn every_hook_run_appends_a_line_to_hooks_log() {
+    let e = Env::new();
+    e.cmd()
+        .args(["hook", "--agent", "codex", "stop"])
+        .write_stdin("{}")
+        .assert()
+        .success()
+        .stdout("")
+        .stderr(predicate::str::contains("no artifax daemon is running"));
+    e.cmd()
+        .args(["hook", "--agent", "pi", "session-start"])
+        .write_stdin("")
+        .assert()
+        .success();
+    let log = std::fs::read_to_string(e.dir.path().join("ax/logs/hooks.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 2, "{log}");
+    let bin = assert_cmd::cargo::cargo_bin("artifax");
+    assert!(
+        lines[0].contains(&format!(
+            " hook agent=codex event=stop bin={} duration_ms=",
+            bin.display()
+        )) && lines[0].ends_with(" exit=0 stderr=\"no artifax daemon is running\""),
+        "{}",
+        lines[0]
+    );
+    assert!(
+        lines[1].contains(" hook agent=pi event=- ") && lines[1].contains("invalid value 'pi'"),
+        "{}",
+        lines[1]
+    );
+}
