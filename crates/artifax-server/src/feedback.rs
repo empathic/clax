@@ -10,13 +10,17 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
-/// One `Notify` per session that has long-polled for feedback.
+/// One `Notify` per session that has long-polled for feedback, and how many
+/// long-polls each session has in progress.
 #[derive(Default)]
-pub struct FeedbackWaiters(Mutex<HashMap<String, Arc<Notify>>>);
+pub struct FeedbackWaiters {
+    notifies: Mutex<HashMap<String, Arc<Notify>>>,
+    active: Mutex<HashMap<String, usize>>,
+}
 
 impl FeedbackWaiters {
     pub fn get(&self, session_id: &str) -> Arc<Notify> {
-        self.0
+        self.notifies
             .lock()
             .unwrap()
             .entry(session_id.to_string())
@@ -28,17 +32,55 @@ impl FeedbackWaiters {
     /// empty at its deadline or on its next take) and drops its entry, so the
     /// map holds only sessions that may still poll.
     pub fn forget(&self, session_id: &str) {
-        if let Some(n) = self.0.lock().unwrap().remove(session_id) {
+        if let Some(n) = self.notifies.lock().unwrap().remove(session_id) {
             n.notify_waiters();
         }
     }
 
     /// Wakes every long-poll currently waiting for one of `sessions`.
     pub fn wake<'a>(&self, sessions: impl IntoIterator<Item = &'a String>) {
-        let map = self.0.lock().unwrap();
+        let map = self.notifies.lock().unwrap();
         for s in sessions {
             if let Some(n) = map.get(s) {
                 n.notify_waiters();
+            }
+        }
+    }
+
+    /// Counts a long-poll of `session_id` as in progress until the returned
+    /// guard is dropped (on every exit, including the client going away).
+    pub fn enter(self: &Arc<Self>, session_id: &str) -> WaitGuard {
+        *self
+            .active
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default() += 1;
+        WaitGuard {
+            waiters: self.clone(),
+            session_id: session_id.to_string(),
+        }
+    }
+
+    /// Whether a long-poll of `session_id` is in progress.
+    pub fn is_waiting(&self, session_id: &str) -> bool {
+        self.active.lock().unwrap().contains_key(session_id)
+    }
+}
+
+/// An in-progress long-poll ([`FeedbackWaiters::enter`]).
+pub struct WaitGuard {
+    waiters: Arc<FeedbackWaiters>,
+    session_id: String,
+}
+
+impl Drop for WaitGuard {
+    fn drop(&mut self) {
+        let mut active = self.waiters.active.lock().unwrap();
+        if let Some(n) = active.get_mut(&self.session_id) {
+            *n -= 1;
+            if *n == 0 {
+                active.remove(&self.session_id);
             }
         }
     }
@@ -122,4 +164,28 @@ pub fn thread_view(
     };
     v["feedback_state"] = json!(st.feedback_state(&t.id, codex_push)?);
     Ok(v)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FeedbackWaiters;
+    use std::sync::Arc;
+
+    #[test]
+    fn a_session_waits_while_any_of_its_polls_holds_a_guard() {
+        let w = Arc::new(FeedbackWaiters::default());
+        assert!(!w.is_waiting("s"));
+        let a = w.enter("s");
+        let b = w.enter("s");
+        assert!(w.is_waiting("s") && !w.is_waiting("t"));
+        drop(a);
+        assert!(w.is_waiting("s"));
+        w.forget("s");
+        assert!(
+            w.is_waiting("s"),
+            "ending wakes polls; they stop waiting when they return"
+        );
+        drop(b);
+        assert!(!w.is_waiting("s"));
+    }
 }

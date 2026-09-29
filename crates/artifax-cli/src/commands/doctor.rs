@@ -28,10 +28,51 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
 }
 
-/// `codex_push`: whether the running daemon has a `codex` to run `codex queue`
-/// with, naming the binary and where it came from; `codex_sessions`: whether
+/// `codex_push` ([`codex_push_check`]); `codex_sessions`: whether
 /// every live Codex session has its Codex session ID (joined by the
 /// SessionStart hook), without which push is off for it.
+/// `codex_push` from the daemon's `GET /api/push` (`None` when it did not
+/// answer): ok when the daemon has a `codex` (the detail names it and where it
+/// came from) or push was turned off on purpose (`ARTIFAX_CODEX_BIN` set
+/// empty); failed when `codex` was not found, and when the daemon predates
+/// `/api/push` (version skew).
+fn codex_push_check(push: Option<&serde_json::Value>, daemon_version: &str) -> serde_json::Value {
+    let Some(p) = push else {
+        return check(
+            "codex_push",
+            false,
+            format!(
+                "the daemon (version {daemon_version}) does not report push; it is older than this artifax ({}): run `artifax stop`, then start it again",
+                env!("CARGO_PKG_VERSION")
+            ),
+        );
+    };
+    let bin = p["codex"]["bin"].as_str();
+    let source = p["codex"]["source"].as_str().unwrap_or_default();
+    let reason = p["codex"]["reason"].as_str();
+    match (bin, source) {
+        (Some(b), "env") => check(
+            "codex_push",
+            true,
+            format!("codex at {b} (from ARTIFAX_CODEX_BIN)"),
+        ),
+        (Some(b), _) => check("codex_push", true, format!("codex at {b} (found on PATH)")),
+        (None, "disabled") => check(
+            "codex_push",
+            true,
+            "Codex push is off on purpose: the daemon was started with ARTIFAX_CODEX_BIN set empty",
+        ),
+        (None, _) => check(
+            "codex_push",
+            false,
+            format!(
+                "{}; run `artifax stop`, then start it again from a shell where `codex` is on PATH, or set ARTIFAX_CODEX_BIN to its path",
+                reason.unwrap_or("codex is not on the daemon's PATH; native push disabled")
+            ),
+        ),
+    }
+}
+
 fn codex_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
     let Some(c) = client else {
         return vec![check(
@@ -40,21 +81,10 @@ fn codex_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
             "no daemon is running; it finds codex on the PATH it starts with",
         )];
     };
-    let push = c.get("/api/push").ok();
-    let bin = push
-        .as_ref()
-        .and_then(|p| p["codex"]["bin"].as_str().map(str::to_string));
-    let source = push
-        .as_ref()
-        .and_then(|p| p["codex"]["source"].as_str().map(str::to_string))
-        .unwrap_or_default();
-    let detail = match (bin.as_deref(), source.as_str()) {
-        (Some(b), "env") => format!("codex at {b} (from ARTIFAX_CODEX_BIN)"),
-        (Some(b), _) => format!("codex at {b} (found on PATH)"),
-        (None, "disabled") => "Codex push is off: the daemon was started with ARTIFAX_CODEX_BIN set empty".to_string(),
-        (None, _) => "codex is not on the daemon's PATH; run `artifax stop`, then start it again from a shell where `codex` is on PATH, or set ARTIFAX_CODEX_BIN".to_string(),
-    };
-    let mut out = vec![check("codex_push", bin.is_some(), detail)];
+    let mut out = vec![codex_push_check(
+        c.get("/api/push").ok().as_ref(),
+        &c.info.version,
+    )];
     let sessions = c.get("/api/sessions?live=true").ok();
     let codex: Vec<&serde_json::Value> = sessions
         .as_ref()
@@ -405,4 +435,47 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::codex_push_check;
+    use serde_json::json;
+
+    #[test]
+    fn codex_push_is_ok_when_off_on_purpose_and_names_version_skew() {
+        let off = codex_push_check(
+            Some(
+                &json!({"codex": {"available": false, "bin": null, "source": "disabled", "reason": "x"}}),
+            ),
+            "0.2.0",
+        );
+        assert_eq!(off["ok"], true);
+        assert!(
+            off["detail"].as_str().unwrap().contains("off on purpose"),
+            "{off}"
+        );
+        let old = codex_push_check(None, "0.1.0");
+        assert_eq!(old["ok"], false);
+        let detail = old["detail"].as_str().unwrap();
+        assert!(
+            detail.contains("0.1.0") && detail.contains("older") && !detail.contains("PATH"),
+            "{detail}"
+        );
+        let bad = codex_push_check(
+            Some(
+                &json!({"codex": {"available": false, "bin": null, "source": "not_found",
+                "reason": "ARTIFAX_CODEX_BIN names /x, which is not an executable file; native push disabled"}}),
+            ),
+            "0.2.0",
+        );
+        assert_eq!(bad["ok"], false);
+        assert!(
+            bad["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("ARTIFAX_CODEX_BIN names /x"),
+            "{bad}"
+        );
+    }
 }

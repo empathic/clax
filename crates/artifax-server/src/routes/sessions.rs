@@ -3,7 +3,7 @@
 use super::artifacts::{body, path};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::push::{CodexPush, CodexSource};
+use crate::push::CodexPush;
 use crate::state::AppState;
 use artifax_core::model::Session;
 use artifax_core::{CoreError, RegisterSession};
@@ -52,11 +52,15 @@ pub struct JoinBody {
     /// The caller's ancestors, nearest first, tried after `parent_pid`.
     #[serde(default)]
     ancestor_pids: Vec<u32>,
-    /// The `CODEX_HOME` the session's Codex runs with, recorded for `codex queue`.
+    /// The `CODEX_HOME` the session's Codex runs with, recorded for `codex
+    /// queue`. Ignored for other harnesses; a join without it keeps the value
+    /// recorded earlier.
     #[serde(default)]
     codex_home: Option<String>,
 }
 
+/// Joins a harness session ID to its session (see `Store::join_session`) and,
+/// for Codex, records `codex_home`; a join without it keeps the recorded value.
 pub async fn join(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -79,7 +83,7 @@ pub async fn join(
                 b.cwd.as_deref(),
                 &b.ancestor_pids,
             )?;
-            if let Some(h) = &b.codex_home {
+            if let Some(h) = b.codex_home.as_deref().filter(|_| b.harness == "codex") {
                 st.set_codex_home(&session.id, h)?;
             }
             Ok(session)
@@ -167,17 +171,14 @@ pub async fn get(
 /// How feedback can be pushed to this session (tier 5), and why not when it cannot.
 fn push_info(s: &Session, codex: &CodexPush, codex_home: Option<String>) -> Value {
     match s.harness.as_str() {
-        "codex" if codex.source == CodexSource::Disabled => {
-            json!({"tier": null, "available": false, "reason": "Codex push is off: ARTIFAX_CODEX_BIN is set empty", "codex_home": codex_home})
-        }
-        "codex" if !codex.available() => {
-            json!({"tier": null, "available": false, "reason": "codex is not on the daemon's PATH; native push disabled", "codex_home": codex_home})
-        }
-        "codex" if s.harness_session_id.is_none() => {
-            json!({"tier": null, "available": false, "reason": "Codex session ID unknown, native push disabled", "codex_home": codex_home})
-        }
         "codex" => {
-            json!({"tier": "queue", "available": true, "reason": null, "codex_home": codex_home})
+            let reason = codex.reason().or_else(|| {
+                s.harness_session_id
+                    .is_none()
+                    .then(|| "Codex session ID unknown, native push disabled".to_string())
+            });
+            let tier = reason.is_none().then_some("queue");
+            json!({"tier": tier, "available": reason.is_none(), "reason": reason, "codex_home": codex_home})
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
         _ => {
@@ -186,11 +187,13 @@ fn push_info(s: &Session, codex: &CodexPush, codex_home: Option<String>) -> Valu
     }
 }
 
-/// `GET /api/push`: the daemon's `codex` and where it came from.
+/// `GET /api/push`: the daemon's `codex`, where it came from, and why push is
+/// unavailable when it is.
 pub async fn push_status(State(s): State<AppState>) -> Json<Value> {
     Json(json!({"codex": {
         "available": s.codex.available(),
         "bin": s.codex.bin.as_ref().map(|p| p.to_string_lossy().into_owned()),
         "source": s.codex.source,
+        "reason": s.codex.reason(),
     }}))
 }

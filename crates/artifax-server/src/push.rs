@@ -23,13 +23,14 @@ pub const QUEUE_TIMEOUT: Duration = Duration::from_secs(10);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexSource {
-    /// `ARTIFAX_CODEX_BIN` named the binary.
+    /// `ARTIFAX_CODEX_BIN` named an executable file.
     Env,
     /// `ARTIFAX_CODEX_BIN` was set and empty: Codex push is off.
     Disabled,
     /// Found on the daemon's `PATH`.
     Path,
-    /// Not on the daemon's `PATH`.
+    /// Not on the daemon's `PATH`, or `ARTIFAX_CODEX_BIN` named something
+    /// that is not an executable file (then `rejected` holds it).
     NotFound,
 }
 
@@ -39,6 +40,8 @@ pub struct CodexPush {
     pub bin: Option<PathBuf>,
     pub timeout: Duration,
     pub source: CodexSource,
+    /// What `ARTIFAX_CODEX_BIN` named when it is not an executable file.
+    pub rejected: Option<PathBuf>,
 }
 
 impl Default for CodexPush {
@@ -47,20 +50,29 @@ impl Default for CodexPush {
             bin: None,
             timeout: QUEUE_TIMEOUT,
             source: CodexSource::Disabled,
+            rejected: None,
         }
     }
 }
 
 impl CodexPush {
     /// From `ARTIFAX_CODEX_BIN` when set (empty disables push; any other value
-    /// is the binary, used as is), else `codex` looked up on `path`.
+    /// is the binary, used as is when it is an executable file and otherwise
+    /// `NotFound`), else `codex` looked up on `path`.
     pub fn from_env(
         artifax_codex_bin: Option<std::ffi::OsString>,
         path: Option<&OsStr>,
     ) -> CodexPush {
+        let mut rejected = None;
         let (bin, source) = match artifax_codex_bin {
             Some(v) if v.is_empty() => (None, CodexSource::Disabled),
-            Some(v) => (Some(PathBuf::from(v)), CodexSource::Env),
+            Some(v) if is_executable_file(Path::new(&v)) => {
+                (Some(PathBuf::from(v)), CodexSource::Env)
+            }
+            Some(v) => {
+                rejected = Some(PathBuf::from(v));
+                (None, CodexSource::NotFound)
+            }
             None => match find_on_path("codex", path) {
                 Some(p) => (Some(p), CodexSource::Path),
                 None => (None, CodexSource::NotFound),
@@ -70,8 +82,27 @@ impl CodexPush {
             bin,
             timeout: QUEUE_TIMEOUT,
             source,
+            rejected,
         }
     }
+
+    /// Why Codex push is unavailable; `None` when it is available.
+    pub fn reason(&self) -> Option<String> {
+        if self.available() {
+            return None;
+        }
+        Some(match (&self.source, &self.rejected) {
+            (CodexSource::Disabled, _) => {
+                "Codex push is off: ARTIFAX_CODEX_BIN is set empty".to_string()
+            }
+            (_, Some(p)) => format!(
+                "ARTIFAX_CODEX_BIN names {}, which is not an executable file; native push disabled",
+                p.display()
+            ),
+            _ => "codex is not on the daemon's PATH; native push disabled".to_string(),
+        })
+    }
+
     pub fn available(&self) -> bool {
         self.bin.is_some()
     }
@@ -79,14 +110,16 @@ impl CodexPush {
 
 /// The first executable regular file named `name` in the directories of `path`.
 pub fn find_on_path(name: &str, path: Option<&OsStr>) -> Option<PathBuf> {
-    use std::os::unix::fs::PermissionsExt;
     std::env::split_paths(path?)
         .map(|d| d.join(name))
-        .find(|p| {
-            std::fs::metadata(p)
-                .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-                .unwrap_or(false)
-        })
+        .find(|p| is_executable_file(p))
+}
+
+fn is_executable_file(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(p)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 #[derive(Debug, PartialEq)]
@@ -133,11 +166,21 @@ pub async fn run_queue(
 /// For each target that is a live Codex session with a known Codex session ID,
 /// claims its undelivered rows on watches with replies armed (tier `queue`)
 /// and runs `codex queue` in the background, never blocking the caller.
-/// Queued: the claim stands and the new states are published. Non-zero exit:
-/// the rows are released, the session is ended (so its rows go to the next
-/// session that publishes or watches), and the states are published
-/// (`agent_ended` when no other session remains). Timeout or spawn failure:
-/// the rows are released for the other tiers. Never retried.
+///
+/// A target with a feedback long-poll in progress (`wait_for_feedback`) is
+/// skipped: the woken poll delivers the rows in-band (tier `wait`). A row
+/// committed after that poll's last take and before it returns is left to the
+/// in-band tiers.
+///
+/// The claim comes first, so no other tier hands the rows over meanwhile: for
+/// up to the timeout (10 s) the rows read `delivered` by `queue` before
+/// `codex queue` has confirmed. Exit 0: the claim stands and the new states
+/// are published. Non-zero exit: the rows are released, the session is ended
+/// (so its rows go to the next session that publishes or watches), and the
+/// states are published (`agent_ended` when no other session remains).
+/// Timeout or spawn failure: the rows are released and marked push-failed, so
+/// they read `sent` waiting on the in-band tiers and `queue` does not take them
+/// again. Never retried.
 pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
     let Some(bin) = ctx.codex.bin.clone() else {
         return;
@@ -146,7 +189,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         let Ok(Some(session)) = st.get_session(sid) else {
             continue;
         };
-        if session.harness != "codex" || session.ended_at.is_some() {
+        if session.harness != "codex" || session.ended_at.is_some() || ctx.waiters.is_waiting(sid) {
             continue;
         }
         let Some(thread) = session.harness_session_id.clone() else {
@@ -253,15 +296,33 @@ mod tests {
             (p.bin.clone(), p.source, p.available()),
             (None, CodexSource::Disabled, false)
         );
-        let p = CodexPush::from_env(Some("/opt/fake/codex".into()), Some(&path));
+        let named = script(d.path(), "named-codex", "exit 0");
+        let p = CodexPush::from_env(Some(named.clone().into()), Some(&path));
         assert_eq!(
-            (p.bin.clone(), p.source),
-            (Some(PathBuf::from("/opt/fake/codex")), CodexSource::Env)
+            (p.bin.clone(), p.source, p.reason()),
+            (Some(named), CodexSource::Env, None)
         );
-        let empty = std::env::join_paths([tempfile::tempdir().unwrap().path()]).unwrap();
+        let p = CodexPush::from_env(Some("/opt/fake/codex".into()), Some(&path));
+        assert_eq!((p.bin.clone(), p.source), (None, CodexSource::NotFound));
         assert_eq!(
-            CodexPush::from_env(None, Some(&empty)).source,
-            CodexSource::NotFound
+            p.reason().as_deref(),
+            Some(
+                "ARTIFAX_CODEX_BIN names /opt/fake/codex, which is not an executable file; native push disabled"
+            )
+        );
+        std::fs::write(d.path().join("plain"), "").unwrap();
+        let plain = CodexPush::from_env(Some(d.path().join("plain").into()), Some(&path));
+        assert_eq!(plain.source, CodexSource::NotFound, "not executable");
+        let empty = std::env::join_paths([tempfile::tempdir().unwrap().path()]).unwrap();
+        let p = CodexPush::from_env(None, Some(&empty));
+        assert_eq!(p.source, CodexSource::NotFound);
+        assert_eq!(
+            p.reason().as_deref(),
+            Some("codex is not on the daemon's PATH; native push disabled")
+        );
+        assert_eq!(
+            CodexPush::default().reason().as_deref(),
+            Some("Codex push is off: ARTIFAX_CODEX_BIN is set empty")
         );
     }
 

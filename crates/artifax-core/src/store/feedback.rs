@@ -184,6 +184,7 @@ impl Store {
                    AND (?2 IS NULL OR t.artifact_id = ?2)
                    AND (NOT ?3 OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
                                           AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
+                   AND (?7 = 0 OR f.push_failed_at IS NULL)
                    AND (f.delivered_at IS NULL
                         OR (?4 AND f.acknowledged_at IS NULL
                             AND f.delivery_tier IN ('stop_hook', 'prompt_hook', 'queue', 'inject')
@@ -192,7 +193,15 @@ impl Store {
             )?;
             let rows = stmt
                 .query_map(
-                    params![q.session_id, q.artifact_id, q.tier.armed_only(), resends, Self::MAX_RESENDS, cutoff],
+                    params![
+                        q.session_id,
+                        q.artifact_id,
+                        q.tier.armed_only(),
+                        resends,
+                        Self::MAX_RESENDS,
+                        cutoff,
+                        q.tier == Tier::Queue
+                    ],
                     |r| {
                         Ok(Pending {
                             id: r.get(0)?,
@@ -278,15 +287,18 @@ impl Store {
     }
 
     /// Returns `queue` hand-overs that were not confirmed to undelivered, so
-    /// another tier can deliver them.
+    /// another tier can deliver them, and marks them push-failed: `queue` does
+    /// not take them again and [`Store::feedback_state`] reports them waiting
+    /// on the in-band tiers, until the row is retargeted to another session.
     pub fn release_feedback(&self, ids: &[String]) -> Result<Touched> {
         let mut touched = Touched::default();
+        let now = Store::now();
         self.with_tx(|tx| {
             for id in ids {
                 let n = tx.execute(
-                    "UPDATE feedback SET delivered_at = NULL, delivery_tier = NULL, last_sent_at = NULL
+                    "UPDATE feedback SET delivered_at = NULL, delivery_tier = NULL, last_sent_at = NULL, push_failed_at = ?2
                      WHERE id = ?1 AND delivery_tier = 'queue' AND acknowledged_at IS NULL",
-                    params![id],
+                    params![id, now],
                 )?;
                 if n > 0 {
                     let (aid, tid, target): (String, String, Option<String>) = tx.query_row(
@@ -379,7 +391,7 @@ impl Store {
                     tx.execute("DELETE FROM feedback WHERE id = ?1", params![fid])?;
                 } else {
                     tx.execute(
-                        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL WHERE id = ?1",
+                        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL, push_failed_at = NULL WHERE id = ?1",
                         params![fid, session_id],
                     )?;
                     touched.targets.insert(session_id.to_string());
@@ -423,7 +435,8 @@ impl Store {
     /// nothing was forwarded. Any acknowledged row: `acknowledged`; else any
     /// delivered row: `delivered`; else any row targeting a live session:
     /// `sent`, with the tier that session waits on (`queue` for an armed Codex
-    /// session with a known session ID when `codex_push`, `inject` for an
+    /// session with a known session ID when `codex_push` and `codex queue` has
+    /// not failed to take the row, `inject` for an
     /// armed Pi session, `stop_hook` for other armed sessions, else
     /// `piggyback`); else `agent_ended`.
     pub fn feedback_state(
@@ -443,12 +456,13 @@ impl Store {
             harness: Option<String>,
             has_hsid: bool,
             armed: bool,
+            push_failed: bool,
         }
         self.with_conn(|c| {
             let mut stmt = c.prepare(
                 "SELECT f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
                         f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
-                        COALESCE(w.replies_armed, 0)
+                        COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL
                  FROM feedback f
                  JOIN threads t ON t.id = f.thread_id
                  LEFT JOIN sessions s ON s.id = f.target_session_id
@@ -471,6 +485,7 @@ impl Store {
                         harness: r.get(8)?,
                         has_hsid: r.get::<_, Option<bool>>(9)?.unwrap_or(false),
                         armed: r.get::<_, i64>(10)? != 0,
+                        push_failed: r.get(11)?,
                     })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -503,7 +518,8 @@ impl Store {
                 return Ok(Some(state(FeedbackPhase::Delivered, tier_of(first), at, resends, exhausted)));
             }
             if let Some(r) = rows.iter().find(|r| r.target.is_some() && r.ended_at.is_none()) {
-                let tier = waiting_on(r.harness.as_deref().unwrap_or(""), r.has_hsid, r.armed, codex_push);
+                let push = codex_push && !r.push_failed;
+                let tier = waiting_on(r.harness.as_deref().unwrap_or(""), r.has_hsid, r.armed, push);
                 return Ok(Some(state(FeedbackPhase::Sent, Some(tier), &r.created_at, 0, false)));
             }
             let since = rows
@@ -878,6 +894,42 @@ mod tests {
             (None, None)
         );
         assert_eq!(take(&st, &owner, Tier::Piggyback).len(), 1);
+    }
+
+    #[test]
+    fn a_released_queue_claim_waits_on_the_in_band_tiers_and_is_not_queued_again() {
+        let (_d, st) = store();
+        let owner = session(&st, "codex", "cx");
+        let aid = artifact(&st, Some(&owner));
+        st.watch(&owner, &aid, true).unwrap();
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Queue)
+        );
+        let claimed = take(&st, &owner, Tier::Queue);
+        st.release_feedback(&[claimed[0].feedback_id.clone()])
+            .unwrap();
+        let s = st.feedback_state(&tid, true).unwrap().unwrap();
+        assert_eq!(
+            (s.state, s.tier),
+            (FeedbackPhase::Sent, Some(Tier::StopHook))
+        );
+        assert!(
+            take(&st, &owner, Tier::Queue).is_empty(),
+            "never queued twice"
+        );
+        // Handed to a new Codex session, the row may be queued for it.
+        st.end_session(&owner).unwrap();
+        let next = session(&st, "codex", "cx2");
+        st.watch(&next, &aid, true).unwrap();
+        st.retarget_untargeted(&aid, &next).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, true).unwrap().unwrap().tier,
+            Some(Tier::Queue)
+        );
+        assert_eq!(take(&st, &next, Tier::Queue).len(), 1);
     }
 
     #[test]

@@ -34,6 +34,7 @@ async fn server(bin: Option<PathBuf>, timeout: Duration) -> TestServer {
             bin,
             timeout,
             source,
+            ..Default::default()
         })
     })
     .await
@@ -197,21 +198,39 @@ async fn non_zero_exit_ends_the_session_and_reports_agent_ended() {
 #[tokio::test]
 async fn missing_binary_and_timeouts_release_rows_for_the_other_tiers() {
     let slow = tempfile::tempdir().unwrap();
-    for (bin, timeout) in [
-        (PathBuf::from("/nonexistent/codex"), Duration::from_secs(10)),
-        (fake_codex(slow.path(), 0, 5), Duration::from_millis(300)),
+    for (bin, timeout, ran) in [
+        (
+            PathBuf::from("/nonexistent/codex"),
+            Duration::from_secs(10),
+            None,
+        ),
+        (
+            fake_codex(slow.path(), 0, 5),
+            Duration::from_secs(2),
+            Some(slow.path().join("args.txt")),
+        ),
     ] {
         let ts = server(Some(bin), timeout).await;
         let (sid, aid) = codex_owner(&ts, Some("cx-3")).await;
+        let mut ev = ts.events(&format!("?artifact={aid}")).await;
         let t = ts.thread(&aid, 1, "@agent please").await;
         let tid = t["id"].as_str().unwrap();
-        tokio::time::sleep(timeout + Duration::from_millis(500)).await;
+        // Released and marked push-failed: waiting on the in-band tiers, not on Codex.
+        loop {
+            let e = ev.next_named("feedback_state").await;
+            if e["state"] == "sent" && e["tier"] == "stop_hook" {
+                break;
+            }
+        }
         let s = state_of(&ts, &aid, tid).await;
         assert_eq!(
             (s["state"].as_str(), s["tier"].as_str()),
-            (Some("sent"), Some("queue")),
-            "released, still waiting"
+            (Some("sent"), Some("stop_hook")),
+            "released, waiting on the in-band tiers"
         );
+        if let Some(args) = ran {
+            assert!(args.exists(), "the slow fake ran before it timed out");
+        }
         let sess: Value = ts
             .get_authed(&format!("/api/sessions/{sid}"))
             .await
@@ -294,7 +313,7 @@ async fn no_push_without_a_session_id_or_armed_replies_or_codex() {
     let push: Value = bare.get("/api/push").await.json().await.unwrap();
     assert_eq!(
         push,
-        json!({"codex": {"available": false, "bin": null, "source": "not_found"}})
+        json!({"codex": {"available": false, "bin": null, "source": "not_found", "reason": "codex is not on the daemon's PATH; native push disabled"}})
     );
     let claude = bare.register_session("claude", "c").await;
     let sess: Value = bare
@@ -312,4 +331,135 @@ async fn no_push_without_a_session_id_or_armed_replies_or_codex() {
         .await
         .unwrap();
     assert_eq!(sess["push"]["tier"], "inject");
+}
+
+#[tokio::test]
+async fn a_session_in_wait_for_feedback_gets_the_rows_in_band_not_by_queue() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
+    let (sid, aid) = codex_owner(&ts, Some("cx-6")).await;
+    let poll = ts
+        .authed(
+            ts.client
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=10", ts.base)),
+        )
+        .send();
+    let poll = tokio::spawn(poll);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let t = ts.thread(&aid, 1, "@agent while you wait").await;
+    let tid = t["id"].as_str().unwrap();
+    let fb: Value = poll.await.unwrap().unwrap().json().await.unwrap();
+    assert_eq!(fb["feedback"][0]["thread_id"], tid, "{fb}");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert!(
+        !d.path().join("args.txt").exists(),
+        "a waiting session is not queued to"
+    );
+    let s = state_of(&ts, &aid, tid).await;
+    assert_eq!(
+        (s["state"].as_str(), s["tier"].as_str()),
+        (Some("acknowledged"), Some("wait")),
+        "{s}"
+    );
+}
+
+#[tokio::test]
+async fn without_a_recorded_codex_home_codex_inherits_the_daemons() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
+    let res = ts
+        .post_json(
+            "/api/sessions/join",
+            json!({"harness": "codex", "parent_pid": 4244, "harness_session_id": "cx-7", "cwd": "/w"}),
+        )
+        .await;
+    let sid = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let a = ts.publish_as(&sid, "Inherited", "<h2>Goals</h2>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    ts.thread(&aid, 1, "@agent hi").await;
+    loop {
+        if ev.next_named("feedback_state").await["state"] == "delivered" {
+            break;
+        }
+    }
+    assert_eq!(
+        std::fs::read_to_string(d.path().join("codex_home.txt")).unwrap(),
+        std::env::var("CODEX_HOME").unwrap_or_default(),
+        "no CODEX_HOME is set for the child; it inherits the daemon's"
+    );
+    let sess: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sess["push"]["codex_home"], Value::Null);
+}
+
+#[tokio::test]
+async fn codex_home_is_ignored_for_other_harnesses_and_kept_on_a_rejoin_without_it() {
+    let ts = server(None, Duration::from_secs(10)).await;
+    let join = |hsid: &'static str, harness: &'static str, home: Option<&'static str>| {
+        let mut body = json!({"harness": harness, "parent_pid": 4245, "harness_session_id": hsid, "cwd": "/w"});
+        if let Some(h) = home {
+            body["codex_home"] = json!(h);
+        }
+        ts.post_json("/api/sessions/join", body)
+    };
+    let res = join("cl-1", "claude", Some("/tmp/nope")).await;
+    let sid = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let store = artifax_core::Store::open(&ts.home).unwrap();
+    assert_eq!(store.codex_home(&sid).unwrap(), None, "not a Codex session");
+    let res = join("cx-8", "codex", Some("/tmp/cxh8")).await;
+    let sid = res.json::<Value>().await.unwrap()["session"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let again = join("cx-8", "codex", None).await;
+    assert_eq!(
+        again.json::<Value>().await.unwrap()["session"]["id"],
+        sid.as_str()
+    );
+    let sess: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sess["push"]["codex_home"], "/tmp/cxh8");
+}
+
+#[tokio::test]
+async fn a_poll_the_client_abandoned_no_longer_holds_off_queue() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
+    let (sid, aid) = codex_owner(&ts, Some("cx-9")).await;
+    let poll = tokio::spawn(
+        ts.authed(
+            ts.client
+                .get(format!("{}/api/sessions/{sid}/feedback?wait=10", ts.base)),
+        )
+        .send(),
+    );
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    poll.abort();
+    let _ = poll.await;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    ts.thread(&aid, 1, "@agent after the poll").await;
+    loop {
+        let e = ev.next_named("feedback_state").await;
+        if e["state"] == "delivered" {
+            assert_eq!(e["tier"], "queue");
+            break;
+        }
+    }
+    assert!(d.path().join("args.txt").exists());
 }

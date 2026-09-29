@@ -108,4 +108,7 @@ pub const MIGRATIONS: &[&str] = &[
         session_id TEXT PRIMARY KEY REFERENCES sessions(id),
         codex_home TEXT
     );",
+    // 4: when `codex queue` failed to take a row (timeout or spawn failure);
+    // such a row is left to the in-band tiers and not queued again.
+    "ALTER TABLE feedback ADD COLUMN push_failed_at TEXT;",
 ];

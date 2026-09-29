@@ -52,7 +52,8 @@ pub struct FeedbackQuery {
 /// resend-eligible rows. A daemon that begins shutting down answers empty at once.
 /// An unknown session is 404; an ended one is 400 `unknown_session`, answered
 /// before any wait. A session that ends during the wait answers empty at the
-/// deadline.
+/// deadline. While a poll with `wait > 0` is in progress, the session is not
+/// pushed to with `codex queue` ([`crate::push::dispatch`]).
 ///
 /// Any holder of the token may read or acknowledge any session's feedback: the
 /// token is the local trust boundary, and sessions are not authenticated
@@ -81,6 +82,8 @@ pub async fn poll(
     let started = Instant::now();
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let notify = s.feedback_waiters.get(&sid);
+    // While this poll waits, tier 5 leaves the session's rows to it.
+    let _waiting = (q.wait > 0).then(|| s.feedback_waiters.enter(&sid));
     let mut shutdown = s.shutdown.clone();
     // A dropped sender means the state has no shutdown source; never end early then.
     let stopping = async move {
