@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 /// The daemon's budget for wrapped pages: 32 MiB.
 pub const DEFAULT_MAX_BYTES: usize = 32 << 20;
-/// What a "not wrappable" entry counts against the budget.
+/// What a "not wrappable" entry counts against the budget besides its key.
 const NEGATIVE_COST: usize = 64;
 
 type Key = (String, u32, String);
@@ -26,8 +26,13 @@ struct Inner {
     bytes: usize,
 }
 
-fn cost(v: &Option<Arc<String>>) -> usize {
-    v.as_ref().map_or(NEGATIVE_COST, |s| s.len())
+/// What an entry counts against the budget: its key's bytes, plus the wrapped
+/// page, or [`NEGATIVE_COST`] for a page that cannot be wrapped.
+fn cost(key: &Key, v: &Option<Arc<String>>) -> usize {
+    key.0.len()
+        + key.2.len()
+        + std::mem::size_of::<u32>()
+        + v.as_ref().map_or(NEGATIVE_COST, |s| s.len())
 }
 
 impl Inner {
@@ -73,7 +78,7 @@ impl WrapCache {
             }
         }
         let value = wrap()?.map(Arc::new);
-        let size = cost(&value);
+        let size = cost(&key, &value);
         let mut g = self.inner.lock().unwrap();
         if let Some(v) = g.map.get(&key).cloned() {
             // A concurrent caller filled it while we were wrapping.
@@ -88,7 +93,7 @@ impl WrapCache {
                 break;
             };
             if let Some(v) = g.map.remove(&old) {
-                g.bytes -= cost(&v);
+                g.bytes -= cost(&old, &v);
             }
         }
         g.bytes += size;
@@ -104,7 +109,7 @@ impl WrapCache {
         self.inner.lock().unwrap().map.contains_key(&key)
     }
 
-    /// Bytes the cached entries count against the budget.
+    /// Bytes the cached entries count against the budget (keys included).
     pub fn bytes(&self) -> usize {
         self.inner.lock().unwrap().bytes
     }
@@ -113,10 +118,10 @@ impl WrapCache {
     pub fn remove_artifact(&self, artifact_id: &str) {
         let mut g = self.inner.lock().unwrap();
         let mut freed = 0;
-        g.map.retain(|(id, _, _), v| {
-            let keep = id != artifact_id;
+        g.map.retain(|k, v| {
+            let keep = k.0 != artifact_id;
             if !keep {
-                freed += cost(v);
+                freed += cost(k, v);
             }
             keep
         });
@@ -157,7 +162,7 @@ mod tests {
         c.remove_artifact("x");
         assert!(!c.contains("x", 1, "index.html") && !c.contains("x", 1, "about.html"));
         assert!(c.contains("w", 1, "about.html"), "other artifacts stay");
-        assert_eq!(c.bytes(), 1);
+        assert_eq!(c.bytes(), "w".len() + "about.html".len() + 4 + 1);
         assert_eq!(page(&c, "x", "about.html", "B2").as_deref(), Some("B2"));
     }
 
@@ -181,8 +186,22 @@ mod tests {
     }
 
     #[test]
+    fn entries_cost_their_key_too() {
+        let c = WrapCache::new(1 << 20);
+        page(&c, "a", "index.html", "aaaa");
+        let key = "a".len() + "index.html".len() + 4;
+        assert_eq!(c.bytes(), key + 4);
+        c.get_or_wrap("a", 1, "latin1.html", || Ok(None)).unwrap();
+        assert_eq!(
+            c.bytes(),
+            key + 4 + "a".len() + "latin1.html".len() + 4 + 64
+        );
+    }
+
+    #[test]
     fn evicts_least_recently_used_pages_past_the_byte_budget() {
-        let c = WrapCache::new(10);
+        // Each of a, b and c costs 15 bytes of key and 4 of page.
+        let c = WrapCache::new(40);
         page(&c, "a", "index.html", "aaaa");
         page(&c, "b", "index.html", "bbbb");
         page(&c, "a", "index.html", "unused: a hit"); // a is now the most recent
@@ -192,15 +211,15 @@ mod tests {
             !c.contains("b", 1, "index.html"),
             "b was least recently used"
         );
-        assert_eq!(c.bytes(), 8);
+        assert_eq!(c.bytes(), 38);
         assert_eq!(
-            page(&c, "big", "index.html", "x".repeat(11).as_str()).map(|s| s.len()),
-            Some(11)
+            page(&c, "big", "index.html", "x".repeat(30).as_str()).map(|s| s.len()),
+            Some(30)
         );
         assert!(
             !c.contains("big", 1, "index.html"),
             "larger than the budget: served, not cached"
         );
-        assert_eq!(c.bytes(), 8);
+        assert_eq!(c.bytes(), 38);
     }
 }
