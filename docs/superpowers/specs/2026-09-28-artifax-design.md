@@ -203,8 +203,11 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   of `piggyback | stop_hook | prompt_hook | wait | queue | inject`.
   `acknowledged_at` is set when the target session reads, replies to, or
   resolves the thread; delivered but unacknowledged rows are resent (§10).
-- `docs(artifact_id, path, json, version, updated_at)` for the `db`
-  capability; `path` is the full document path such as `tasks/t1`.
+- `docs(artifact_id, path, collection, json, version, updated_at)` for the
+  `db` capability; `path` is the full document path such as `tasks/t1` and
+  `collection` its parent path, indexed for queries.
+- `leases(artifact_id, path, holder, expires_at)` for the `db` single-writer
+  lease (`acquire({holder})`, 30 s TTL).
 - `viewers(id, public_id, display_name, created_at)` for comment authors and
   the `user` capability, keyed by the `artifax_viewer` cookie (`id`, a
   ULID). The cookie is the viewer's credential and never appears in a
@@ -292,9 +295,21 @@ Agent- and shell-facing JSON API under `/api`:
   seen stays pending).
 - Docs (db capability): `GET/PUT/PATCH/DELETE /api/artifacts/<aid>/docs/<path>`,
   `GET /api/artifacts/<aid>/docs?collection=<c>&where=...&order_by=...&limit=&cursor=`,
-  `POST /api/artifacts/<aid>/docs:batch`. Versions enforce `if_version`.
-  Access rules from the artifact's declared `db.rules` are evaluated per
-  caller level (§9).
+  `POST /api/artifacts/<aid>/docs:batch` (at most 50 operations, atomic),
+  `POST /api/artifacts/<aid>/docs:str_replace`, `POST
+  /api/artifacts/<aid>/docs:acquire`. Callers holding the token (agents, the
+  CLI, the `db_*` tools) must send `if_version` when writing an existing
+  document; page-side writes through the bridge are marked `lww` and are
+  last-writer-wins, as claude.ai's `db.d.ts` promises. A page's requests
+  carry `X-Artifax-Via: page`. SSE `doc` events carry the path and version
+  only, and reach a subscriber only when its level may read that path
+  (private `data/users/<id>/` subtrees reach their owner alone). Access
+  rules from the artifact's declared `db.rules` are evaluated per caller
+  level (§9). Threads also gain `POST .../threads/<tid>/reopen` and `DELETE
+  .../threads/<tid>` (same-origin viewer at `interact` or above, or the
+  agent; `thread_deleted` SSE event) for the `comments` capability, and
+  `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
+  created by a page's `artifact.publish` carries `by_page: true`.
 - Sample: `POST /api/artifacts/<aid>/sample` streams text over SSE.
 - Room (phase 5): `GET /api/artifacts/<aid>/room` WebSocket.
 
@@ -399,11 +414,15 @@ The daemon wraps every version's `index.html` at serve time into the
 document skeleton claude.ai uses (doctype, charset, viewport, the small
 reset), inserts `<script src="/_artifax/bridge.js" data-artifact="<aid>"
 data-version="<n>" data-contract="0.2.61">` as the first element of
-`<body>`, then the page content. Recognition rule: if the file, after
+`<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
-(case-insensitive), it is a complete document and is served as-is with the bridge script inserted
-immediately after the first `<body ...>` tag; otherwise it is a fragment
-and is wrapped. This is what makes a self-republished page (which sends
+(case-insensitive), it is a complete document and is served as-is with the
+bridge script inserted immediately after the first `<head ...>` tag (after
+the first `<body ...>` tag when there is no head, after the doctype when
+there is neither), so `window.claude` exists before any page script, as
+`claude.d.ts` promises; otherwise it is a fragment and is wrapped. A
+republished document that already carries a bridge tag keeps exactly one,
+for the new version. This is what makes a self-republished page (which sends
 the full skeleton) round-trip without nesting. Wrapping is pure and cached
 per version.
 
@@ -428,7 +447,10 @@ exists in the surface.
 namespace or `null`. The bridge posts `{type:"artifax:use", name, id}` to
 the shell; the shell answers with grant state. Unknown or undeclared names
 resolve `null`. `use()` never rejects. A capability the artifact did not
-declare in `capabilities` resolves `null` except `permissions`.
+declare in `capabilities` resolves `null` except `permissions` and `user`:
+`user.d.ts` makes `isOwner()`, `canEdit()`, `can(name)` and `me()` work
+with no declaration, so `use("user")` always resolves a namespace, and only
+`id()`, `profiles()` and `search()` need the declaration.
 
 Capability behaviour, in the same shapes as the claude.ai 0.2.61 `.d.ts`
 files kept in `web/contract/`:
@@ -445,10 +467,15 @@ files kept in `web/contract/`:
   `self` is an alias.
 - **db**: `doc(path)`/`collection(path)` with get, set, update, delete,
   where, orderBy, limit, onSnapshot (over the SSE `doc` event). Rules from
-  the declaration raise per-path minimums; caller level is `admin` for the
-  owner shell on localhost, `interact` for a named LAN viewer, `view` for an
-  unnamed one. Last-writer-wins with version pins; `acquire({holder})`
-  single-writer lease with a 30 s TTL. `data/users/<id>/` is private per
+  the declaration raise per-path minimums; caller level is `owner` for a
+  caller holding the bearer token without a viewer cookie (the agent, the
+  CLI, the `db_*` tools), `admin` for the owner shell on localhost (token
+  with a cookie; on the tokenless SSE stream, a loopback peer with a literal
+  local `Host` and a cookie), `interact` for a named viewer, `view` for an
+  unnamed one; a viewer's level is fixed when its event stream opens. Token
+  callers must pin `if_version` on existing documents; page writes are
+  last-writer-wins. `acquire({holder})` is a single-writer lease with a 30 s
+  TTL. `data/users/<id>/` is private per
   viewer public ID.
 - **downloads**: `save({filename, data})` triggers a browser download after
   a shell confirmation.
@@ -460,7 +487,9 @@ files kept in `web/contract/`:
 - **comments**: `openComposer({element}|{range})` opens the shell composer
   anchored there; `customAnchors()` lets a page register named anchors for
   canvas content. Write verbs in the full form create threads and comments
-  as the viewer. The shell renders all threads; the page never lists them.
+  as the viewer; `resolve(id, false)` reopens and `delete(id)` deletes a
+  thread through the routes in §6, which need `interact` or above. The
+  shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
@@ -878,9 +907,11 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   reached, as an IP literal). Anything else, any other DNS name included, is
   403 `forbidden_host`. Artifact hosts (`<aid>.localhost`) never reach
   `/api`; the shell, content, and `/healthz` are not checked. LAN viewers can
-  view, comment, send to agent, resolve, and write `db` docs at
-  `interact` level; they cannot publish, delete, upload assets, or write
-  `admin`-level docs.
+  view, comment, send to agent, and resolve; once they have set a display
+  name they hold `interact` and may also write `db` docs at that level,
+  reopen or delete threads; unnamed viewers hold `view`. No LAN viewer can
+  publish, upload assets, or write `admin`-level docs. `db_*` tool results
+  carry documents as data beside an untrusted-text `note`, not wrapped.
 - The viewer routes (creating a thread, commenting, sending to the agent,
   resolving, `GET`/`PUT /api/viewers/me`) refuse a request whose `Origin` is
   not the daemon's own (`http://` plus the request's `Host`; artifact
