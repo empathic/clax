@@ -295,38 +295,87 @@ describe("ArtifactView", () => {
     expect(location.pathname).toBe(`/a/${ID}`);
   });
 
-  it("follows a link the page handed over as one history entry", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page, "doc.pdf": { content_type: "application/pdf", size: 1 } }))));
+  it("follows a link the page handed over as one history entry per greeting page, with its fragment", async () => {
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page, "doc.pdf": { content_type: "application/pdf", size: 1 } }))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    const win = frame.contentWindow!;
-    win.postMessage = (() => {}) as typeof win.postMessage;
+    const posted: { type: string; id?: string }[] = [];
+    // jsdom gives the frame a new window when its src changes; a browser keeps one WindowProxy.
+    const tap = () => { const w = frame.contentWindow!; w.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof w.postMessage; return w; };
+    let win = tap();
+    const settle = () => new Promise(r => setTimeout(r, 20));
     fromFrame(win, { type: "artifax:navigate", file: "about.html" });
-    await new Promise(r => setTimeout(r, 20));
+    await settle();
     expect(location.pathname).toBe(`/a/${ID}`);
     const depth = history.length;
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    fromFrame(win, { type: "artifax:navigate", file: "about.html" });
+    fromFrame(win, { type: "artifax:navigate", file: "about.html", hash: "#team" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
-    expect(history.length).toBe(depth + 1);
-    // Not an HTML page: the frame loads it as a plain link would, the URL stays.
+    expect(location.hash).toBe("#team");
+    // The outgoing document is no longer answered: a burst of links, a capability request.
+    fromFrame(win, { type: "artifax:navigate", file: "index.html" });
+    fromFrame(win, { type: "artifax:use", id: "stale", name: "permissions" });
+    await settle();
+    expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
+    expect(posted.some(m => m.id === "stale")).toBe(false);
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    await settle();
+    expect(location.hash).toBe("#team");
+    // Not an HTML page: the frame loads it in place, the URL stays.
     fromFrame(win, { type: "artifax:navigate", file: "doc.pdf" });
     await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/doc.pdf`, "the PDF in the frame");
     expect(location.pathname).toBe(`/a/${ID}/about.html`);
+    win = tap();
+    // Malformed requests are ignored: a non-string, a path outside the version, a missing page.
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    for (const bad of [{ file: 42 }, { file: "../index.html" }, { file: "missing.html" }]) fromFrame(win, { type: "artifax:navigate", ...bad });
+    await settle();
+    expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
+    // A fragment that is not one, or is too long, is dropped.
+    fromFrame(win, { type: "artifax:navigate", file: "index.html", hash: "team" });
+    await waitFor(() => location.pathname === `/a/${ID}`, "the index");
+    expect(location.hash).toBe("");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "artifax:navigate", file: "about.html", hash: `#${"x".repeat(512)}` });
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "about again");
+    expect(location.hash).toBe("");
   });
 
-  it("says so when the page of an opened thread never greets", async () => {
+  it("says so when the page of an opened thread never greets, and not when the viewer moved on", async () => {
     stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
     const t = { id: "tA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
     const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
-    (await import("./artifact")).pageWait.ms = 50;
-    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    const card = await waitFor(() => root.querySelector('[data-thread="tA"]'), "the card");
-    card.querySelector<HTMLButtonElement>("button.card-head")!.click();
-    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "navigated");
-    const banner = await waitFor(() => root.querySelector(".banner.notice"), "failure banner");
-    expect(banner.textContent).toContain("Could not open about.html");
+    const wait = (await import("./artifact")).pageWait;
+    const before = wait.ms;
+    wait.ms = 50;
+    try {
+      const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+      const win = frame.contentWindow!;
+      win.postMessage = (() => {}) as typeof win.postMessage;
+      const open = async () => {
+        const card = await waitFor(() => root.querySelector('[data-thread="tA"]'), "the card");
+        card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+        await waitFor(() => location.pathname === `/a/${ID}/about.html`, "navigated");
+      };
+      // A fast Back abandons the jump without a notice.
+      await open();
+      history.back();
+      await waitFor(() => location.pathname === `/a/${ID}`, "back on the index URL");
+      await new Promise(r => setTimeout(r, 120));
+      expect(root.querySelector(".banner.notice")).toBeNull();
+      // Another page greeting instead abandons it too.
+      await open();
+      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+      await new Promise(r => setTimeout(r, 120));
+      expect(root.querySelector(".banner.notice")).toBeNull();
+      // Nothing greets: the notice.
+      await open();
+      const banner = await waitFor(() => root.querySelector(".banner.notice"), "failure banner");
+      expect(banner.textContent).toContain("Could not open about.html");
+    } finally {
+      wait.ms = before;
+    }
   });
 
   it("closes the capability gate on a frame load that no hello preceded", async () => {

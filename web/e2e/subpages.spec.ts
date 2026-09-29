@@ -1,16 +1,16 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, publish, startDaemon } from "./fixtures";
+import { api, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
 test.afterAll(async () => { await d?.stop(); });
 
-const INDEX = `<main><h1>Home</h1><p>Start here.</p><a id="to-about" href="about.html">About us</a></main>`;
-const ABOUT = `<!doctype html><html><head><title>About</title></head><body><main><h2>Our team</h2><p>We build things.</p><a id="home" href="index.html">Home</a></main></body></html>`;
+const INDEX = `<main><h1>Home</h1><p>Start here.</p><a id="to-about" href="about.html">About us</a> <a id="to-team" href="about.html#people">The people</a> <a id="self" href="index.html">Home</a></main>`;
+const ABOUT = `<!doctype html><html><head><title>About</title></head><body><main><h2>Our team</h2><p>We build things.</p><a id="home" href="index.html">Home</a><div style="height:3000px"></div><h3 id="people">People</h3></main></body></html>`;
 
 /** The content frame once it shows `about.html` of version 1. */
 async function aboutFrame(page: Page, id: string): Promise<Frame> {
-  const url = new RegExp(`(${id}\\.localhost:\\d+/v/1/about\\.html|/c/${id}/v/1/about\\.html)$`);
+  const url = new RegExp(`(${id}\\.localhost:\\d+/v/1/about\\.html|/c/${id}/v/1/about\\.html)(#.*)?$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
   return page.frame({ url })!;
 }
@@ -83,6 +83,24 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
     await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
+  });
+
+  test(`${mode}: a link's fragment is kept, and a link to the same page stays with the browser`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `Fragments ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
+    const id = artifact.id;
+    const index = await openArtifact(page, d.base, id, 1, mode);
+    const depth = await page.evaluate(() => history.length);
+    await index.locator("#self").click();
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => history.length)).toBe(depth);
+    await expect(page).toHaveURL(`${d.base}/a/${id}`);
+    const home = await contentFrame(page, id, 1);
+    await home.locator("#to-team").click();
+    await expect(page).toHaveURL(`${d.base}/a/${id}/about.html#people`);
+    expect(await page.evaluate(() => history.length)).toBe(depth + 1);
+    const about = await aboutFrame(page, id);
+    await expect(about.locator("#people")).toBeInViewport();
+    await expect(about.locator("h2")).not.toBeInViewport();
   });
 
   test(`${mode}: one link inside the frame is one history entry`, async ({ page }) => {

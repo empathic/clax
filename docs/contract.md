@@ -648,7 +648,11 @@ and each move to another page is one history entry. A plain click on a link
 to another page of the version (no query, no modifier key, not cancelled by
 the page, not in comment mode) is handed to the shell, which pushes that
 page's URL and moves the frame without an entry of its own, so back and
-forward move between pages, also after the shell reloaded. Opening a thread
+forward move between pages, also after the shell reloaded. The link's
+fragment is kept, in the frame and in the address bar. A link to the page
+already shown stays with the browser; under another spelling of its path
+(`index.html` for the version's root) it is followed in place, without a
+history entry. Opening a thread
 on another page from the sidebar works the same way. Any other navigation
 inside the page (a script, a form) keeps the frame's own history entry, and
 the shell replaces its URL when the new page greets. A page the version does

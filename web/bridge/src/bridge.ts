@@ -14,14 +14,15 @@
  * file, and anchors on other files never resolve here. Once welcomed, a plain
  * click on a link to another page of the version that the page did not cancel
  * is cancelled and handed to the shell (`artifax:navigate`), which follows it
- * with one history entry.
+ * with one history entry; a link to this page under another spelling of its
+ * path (`index.html` for `/v/<n>/`) is followed in place.
  */
 import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
 import { acceptFromShell, shellOrigins } from "./channel";
 import { blockAncestor, renderClip } from "./clip";
 import { CommentMode } from "./comment-mode";
 import { helloFor, readMeta } from "./meta";
-import { linkedPage } from "./nav";
+import { linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
 import { makeUse } from "./use";
@@ -92,13 +93,15 @@ import { makeUse } from "./use";
   // Bubble phase on the window: the page's own handlers run first, and comment
   // mode's capture-phase handler stops a click before it gets here.
   addEventListener("click", e => {
-    if (!welcomed || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-    const a = (e.target as Element | null)?.closest?.("a[href]");
-    if (!(a instanceof HTMLAnchorElement) || a.hasAttribute("download") || (a.target && a.target !== "_self")) return;
-    const file = linkedPage(a.href, location.href, meta.file);
-    if (file === null) return;
+    const link = linkToHandOver(e, { welcomed, pageUrl: location.href, file: meta.file });
+    if (!link) return;
     e.preventDefault();
-    post({ type: "artifax:navigate", file });
+    if (link.kind === "page") post({ type: "artifax:navigate", file: link.file, ...(link.hash ? { hash: link.hash } : {}) });
+    // This page under another spelling: a fragment scrolls here (the browser's
+    // own fragment navigation); no fragment reloads in place, as a link to the
+    // page's own URL would.
+    else if (link.hash) location.hash = link.hash;
+    else location.reload();
   });
 
   addEventListener("message", e => {

@@ -52,8 +52,9 @@ export type BridgeToShell =
   | { type: "artifax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "artifax:cancel" }
   /** A plain click on a link to another page of this version, cancelled in the
-   * page and handed to the shell to follow (see `nav.ts`). */
-  | { type: "artifax:navigate"; file: string }
+   * page and handed to the shell to follow (see `nav.ts`); `hash` is the
+   * link's fragment, with its `#`. */
+  | { type: "artifax:navigate"; file: string; hash?: string }
   | UseRequest
   | CallRequest;
 

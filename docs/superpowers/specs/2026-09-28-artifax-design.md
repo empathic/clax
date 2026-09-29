@@ -399,7 +399,9 @@ file under `v/<digits>/` is reachable only through the versioned form):
   page the version does not hold shows a message instead of the frame). Each
   move to another page is one history entry. The bridge hands a plain click on
   a link to another page of the version to the shell (`artifax:navigate`),
-  which pushes that page's URL and moves the frame with `location.replace`;
+  which pushes that page's URL and moves the frame with `location.replace`,
+  both carrying the link's fragment (the shell takes a `#` fragment of at
+  most 512 characters, and at most one link per greeting page);
   the sidebar's jump to a thread on another page does the same, and
   `popstate` moves the frame to the URL's page. Any other navigation in the
   frame keeps the frame's own entry, and the shell replaces its URL when the

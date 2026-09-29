@@ -143,12 +143,17 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     });
   };
   const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
-  /** Sends the frame to the page published at `target`; `replace` keeps the
-   * frame's history entry (a history traversal already moved the URL). */
-  const navigateFrame = (target: string, replace: boolean) => {
+  /** Sends the frame to the page published at `target` (at `hash`, a fragment
+   * with its `#`); `replace` keeps the frame's history entry (the shell URL
+   * made or moved it). The outgoing document is done: the gate closes and
+   * its page and pins are forgotten until the next page greets. */
+  const navigateFrame = (target: string, replace: boolean, hash = "") => {
     const frame = frameRef.current;
     if (!frame) return;
-    const url = pageSrc(id, shown, origin ?? null, target);
+    helloOk.current = false;
+    setCurrentFile(null);
+    setResolved({});
+    const url = pageSrc(id, shown, origin ?? null, target) + hash;
     if (replace && frame.contentWindow) {
       try { frame.contentWindow.location.replace(url); return; } catch { /* fall back to src */ }
     }
@@ -158,9 +163,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
    * shell URL is pushed and the frame is moved without an entry of its own, so
    * back and forward (through `popstate`) move between pages, also after the
    * shell document was reloaded. */
-  const openPage = (target: string) => {
-    history.pushState(null, "", shellPath(id, pinnedVersion, target, shown));
-    navigateFrame(target, true);
+  const openPage = (target: string, hash = "") => {
+    history.pushState(null, "", shellPath(id, pinnedVersion, target, shown) + hash);
+    navigateFrame(target, true, hash);
   };
   /** Whether `f` is an HTML page of the shown version. */
   const isPage = (f: string) => {
@@ -186,8 +191,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // it shows another page.
   useEffect(() => {
     const onPop = () => {
+      clearPending();
       const r = parseShellPath(location.pathname);
-      if (r.kind === "artifact" && r.id === id && r.file !== fileRef.current) navigateFrame(r.file, true);
+      if (r.kind === "artifact" && r.id === id && r.file !== fileRef.current) navigateFrame(r.file, true, location.hash);
     };
     addEventListener("popstate", onPop);
     return () => removeEventListener("popstate", onPop);
@@ -226,22 +232,29 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
           const p = pendingScroll.current;
-          if (p?.thread.anchor.file === greeted) {
+          if (p) {
+            // The jump's page greeted: scroll there. Another page greeted: the
+            // viewer moved on, so the jump is dropped without a notice.
             clearPending();
-            send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
+            if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
           }
           break;
         }
         case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
         case "artifax:cancel": setCommenting(false); break;
-        case "artifax:navigate":
-          // A link the page handed over: an HTML page of this version is one
-          // history entry; anything else loads in the frame as a plain link would.
-          if (!helloOk.current) break;
-          if (isPage(m.file)) openPage(m.file);
-          else navigateFrame(m.file, false);
+        case "artifax:navigate": {
+          // A link the page handed over, from a document that greeted and is
+          // not already leaving (one entry per greeting page). An HTML page of
+          // this version is one history entry; another file of the version
+          // loads in the frame as a plain link would; anything else is ignored.
+          if (!helloOk.current || typeof m.file !== "string" || !holds(m.file)) break;
+          const hash = typeof m.hash === "string" && m.hash.startsWith("#") && m.hash.length <= 512 ? m.hash : "";
+          clearPending();
+          if (isPage(m.file)) openPage(m.file, hash);
+          else navigateFrame(m.file, false, hash);
           break;
+        }
         case "artifax:hover": break;
         case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
       }
