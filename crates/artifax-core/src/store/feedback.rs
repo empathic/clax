@@ -110,6 +110,13 @@ impl Store {
     /// every live watcher. With no live target, one untargeted row per comment.
     /// Idempotent; call it again after each new viewer comment on a sent thread.
     ///
+    /// "Without a row" is deliberate, not "never delivered": a resolve
+    /// deletes the thread's undelivered rows, so when a later viewer comment
+    /// reopens the thread, the comments whose rows were withdrawn are sent
+    /// again together with the new one. The agent never saw them, and they
+    /// are the context the reopening comment answers. Comments whose rows
+    /// were delivered keep their rows and are not resent.
+    ///
     /// # Errors
     /// `NotFound` when the thread or its artifact is gone; `thread_resolved`
     /// for a resolved thread.
@@ -644,6 +651,46 @@ mod tests {
         assert!(touched.targets.contains(&late));
         assert_eq!(targets(&st, &tid), vec![Some(late.clone())]);
         assert_eq!(take(&st, &late, Tier::Piggyback).len(), 1);
+    }
+
+    #[test]
+    fn comments_withdrawn_by_a_resolve_are_sent_again_when_a_comment_reopens() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let aid = artifact(&st, Some(&owner));
+        let tid = thread(&st, &aid, "first");
+        st.send_to_agent(&tid).unwrap();
+        let delivered = take(&st, &owner, Tier::Piggyback);
+        assert_eq!(delivered.len(), 1);
+        st.add_comment(
+            &tid,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                via_session_id: None,
+                body: "unseen".into(),
+            },
+        )
+        .unwrap();
+        st.send_to_agent(&tid).unwrap();
+        st.resolve_thread(&tid, "viewer:anonymous").unwrap();
+        st.add_comment(
+            &tid,
+            NewComment {
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                via_session_id: None,
+                body: "reopening".into(),
+            },
+        )
+        .unwrap();
+        st.send_to_agent(&tid).unwrap();
+        let items = take(&st, &owner, Tier::Piggyback);
+        assert_eq!(
+            items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
+            ["unseen", "reopening"],
+            "the withdrawn comment is sent again; the delivered one is not"
+        );
     }
 
     #[test]
