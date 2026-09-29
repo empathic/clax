@@ -260,6 +260,30 @@ describe("ArtifactView", () => {
     expect(root.querySelector("iframe")).toBeNull();
   });
 
+  it("opens the frame at the URL's fragment, and keeps the address bar's fragment in step with the frame's", async () => {
+    history.replaceState(null, "", `/a/${ID}/about.html#docs%2Fcontract.md`);
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))), undefined, "about.html");
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/about.html#docs%2Fcontract.md`);
+    const win = frame.contentWindow!;
+    win.postMessage = (() => {}) as typeof win.postMessage;
+    const depth = history.length;
+    const settle = () => new Promise(r => setTimeout(r, 20));
+    fromFrame(win, { type: "artifax:hash", hash: "#early" });
+    await settle();
+    expect(location.hash).toBe("#docs%2Fcontract.md");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "artifax:hash", hash: "#crates%2Fa.rs" });
+    await waitFor(() => location.hash === "#crates%2Fa.rs", "the frame's fragment in the address bar");
+    expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth]);
+    for (const bad of ["no-hash", 42, `#${"x".repeat(512)}`]) fromFrame(win, { type: "artifax:hash", hash: bad });
+    await settle();
+    expect(location.hash).toBe("#crates%2Fa.rs");
+    fromFrame(win, { type: "artifax:hash", hash: "" });
+    await waitFor(() => location.hash === "", "no fragment");
+    expect(location.pathname).toBe(`/a/${ID}/about.html`);
+  });
+
   it("puts the page the frame greets from in the address bar, and ignores a page the version does not hold", async () => {
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");

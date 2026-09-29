@@ -103,6 +103,24 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(about.locator("h2")).not.toBeInViewport();
   });
 
+  test(`${mode}: the address bar and the frame share the page's fragment`, async ({ page }) => {
+    const HASH = `<!doctype html><html><head><title>Hash</title></head><body><p id="h"></p><script>const show = () => { document.getElementById("h").textContent = location.hash; }; show(); addEventListener("hashchange", show);</script></body></html>`;
+    const { artifact } = await publish(d.base, d.token, `Hash ${mode}`, { "index.html": INDEX, "hash.html": HASH });
+    const id = artifact.id;
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    await page.goto(`${d.base}/a/${id}/hash.html#docs%2Fcontract.md`);
+    const url = new RegExp(`/v/1/hash\\.html#`);
+    await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && url.test(f.url()))).toBe(true);
+    const frame = page.frames().find(f => f !== page.mainFrame() && url.test(f.url()))!;
+    await expect(frame.locator("#h")).toHaveText("#docs%2Fcontract.md");
+    await frame.evaluate(() => { location.hash = "#crates%2Fa.rs"; });
+    await expect(page).toHaveURL(`${d.base}/a/${id}/hash.html#crates%2Fa.rs`);
+    await expect(frame.locator("#h")).toHaveText("#crates%2Fa.rs");
+    await page.evaluate(() => history.back());
+    await expect(frame.locator("#h")).toHaveText("#docs%2Fcontract.md");
+    await expect(page).toHaveURL(`${d.base}/a/${id}/hash.html#docs%2Fcontract.md`);
+  });
+
   test(`${mode}: one link inside the frame is one history entry`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `History ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
     const id = artifact.id;

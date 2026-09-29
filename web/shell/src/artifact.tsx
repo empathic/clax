@@ -19,6 +19,9 @@ import { ViewerName } from "./viewer-name";
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 type Props = { id: string; pinnedVersion: number | null; file?: string };
 
+/** A fragment the frame may report or a link may carry: "" or `#…`, at most 512 characters. */
+const validHash = (h: unknown): h is string => typeof h === "string" && (h === "" || h.startsWith("#")) && h.length <= 512;
+
 /** How long a page the shell sent the frame to may take to greet before the
  * jump is given up (settable for tests). */
 export const pageWait = { ms: 5000 };
@@ -121,6 +124,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // page, and it is scrolled to once that page greets, or given up after
   // `pageWait.ms` with a notice.
   const pendingScroll = useRef<{ thread: Thread; timer: ReturnType<typeof setTimeout> } | null>(null);
+  // The URL fragment the frame opens at, and the frame's latest known fragment.
+  const [startHash] = useState(() => location.hash);
+  const frameHash = useRef(startHash);
   const clearPending = () => { if (pendingScroll.current) clearTimeout(pendingScroll.current.timer); pendingScroll.current = null; };
   useEffect(() => clearPending, []);
   // Made while rendering, not in an effect, so it exists before the frame it
@@ -160,6 +166,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const navigateFrame = (target: string, replace: boolean, hash = "") => {
     const frame = frameRef.current;
     if (!frame) return;
+    frameHash.current = hash;
     helloOk.current = false;
     setCurrentFile(null);
     setResolved({});
@@ -168,6 +175,14 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       try { frame.contentWindow.location.replace(url); return; } catch { /* fall back to src */ }
     }
     frame.src = url;
+  };
+  /** Moves the frame, showing `page`, to the fragment `hash` in place (a
+   * fragment navigation keeps the document, so the gate stays open). No
+   * fragment is `#`, since dropping it would reload the page. */
+  const moveFragment = (page: string, hash: string) => {
+    const win = frameRef.current?.contentWindow;
+    frameHash.current = hash;
+    try { win?.location.replace(pageSrc(id, shown, origin ?? null, page) + (hash || "#")); } catch { /* the frame is gone */ }
   };
   /** Shows `target`, an HTML page of this version, as one history entry: the
    * shell URL is pushed and the frame is moved without an entry of its own, so
@@ -203,7 +218,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     const onPop = () => {
       clearPending();
       const r = parseShellPath(location.pathname);
-      if (r.kind === "artifact" && r.id === id && r.file !== fileRef.current) navigateFrame(r.file, true, location.hash);
+      if (r.kind !== "artifact" || r.id !== id) return;
+      if (r.file !== fileRef.current) navigateFrame(r.file, true, location.hash);
+      else if (location.hash !== frameHash.current) moveFragment(r.file, location.hash);
     };
     addEventListener("popstate", onPop);
     return () => removeEventListener("popstate", onPop);
@@ -256,13 +273,20 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
       case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
       case "artifax:cancel": setCommenting(false); break;
+      case "artifax:hash":
+        // The page's fragment moved (a link, a script): the address bar
+        // follows in place; the frame's own history entry carries the move.
+        if (!helloOk.current || !validHash(m.hash)) break;
+        frameHash.current = m.hash;
+        if (location.hash !== m.hash) history.replaceState(history.state, "", location.pathname + location.search + m.hash);
+        break;
       case "artifax:navigate": {
         // A link the page handed over, from a document that greeted and is
         // not already leaving (one entry per greeting page). An HTML page of
         // this version is one history entry; another file of the version
         // loads in the frame as a plain link would; anything else is ignored.
         if (!helloOk.current || typeof m.file !== "string" || !holds(m.file)) break;
-        const hash = typeof m.hash === "string" && m.hash.startsWith("#") && m.hash.length <= 512 ? m.hash : "";
+        const hash = validHash(m.hash) ? m.hash : "";
         clearPending();
         if (isPage(m.file)) openPage(m.file, hash);
         else navigateFrame(m.file, false, hash);
@@ -344,7 +368,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           ? <span class="hide-sm muted">open raw</span>
           : <a class="hide-sm" href={raw} target="_blank" rel="noopener">open raw</a>}
         {navigator.clipboard && (
-          <button disabled={deleted} onClick={() => { navigator.clipboard.writeText(location.origin + here(pinnedVersion)).catch(() => {}); }}>copy link</button>
+          <button disabled={deleted} onClick={() => { navigator.clipboard.writeText(location.origin + here(pinnedVersion) + location.hash).catch(() => {}); }}>copy link</button>
         )}
       </>
     }>
@@ -354,7 +378,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             ? <p class="empty">This artifact was deleted.</p>
             : missing
               ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
-              : <Frame id={id} n={shown} origin={origin} file={startFile} frameRef={frameRef} onLoad={onFrameLoad} />}
+              : <Frame id={id} n={shown} origin={origin} file={startFile} hash={startHash} frameRef={frameRef} onLoad={onFrameLoad} />}
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} />}
           {draft && <Composer key={draft.pickId} draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {

@@ -47,7 +47,8 @@ export function textIndex(root: Node): TextIndex {
   return { text, pieces };
 }
 
-function boundaryOffset(idx: TextIndex, container: Node, offset: number): number {
+/** The offset in `idx.text` of the boundary point (`container`, `offset`). */
+export function boundaryOffset(idx: TextIndex, container: Node, offset: number): number {
   if (container.nodeType === Node.TEXT_NODE) {
     const p = idx.pieces.find(x => x.node === container);
     if (p) return p.start + Math.min(offset, p.node.data.length);
@@ -59,7 +60,8 @@ function boundaryOffset(idx: TextIndex, container: Node, offset: number): number
   return idx.text.length;
 }
 
-function rangeAt(idx: TextIndex, start: number, end: number): Range | null {
+/** A range over `idx.text` from `start` to `end`, or null for a page without text. */
+export function rangeAt(idx: TextIndex, start: number, end: number): Range | null {
   if (!idx.pieces.length) return null;
   const locate = (off: number, atEnd: boolean) => {
     for (const p of idx.pieces) {

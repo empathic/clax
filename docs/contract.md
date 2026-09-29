@@ -607,8 +607,12 @@ session's ID (the version's, else the artifact owner's) when there is one.
 
 People comment on a page in the browser: comment mode outlines the element
 under the pointer; a click anchors a thread to that element, a text selection
-to that range. The bridge records the anchor (spec §9) and a PNG clip of the
-region, stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
+to that range. Over an element taller or wider than the viewport, or covering
+more than 60% of it (a whole file in one `<pre>`), comment mode targets the
+text under the pointer instead: its line in preformatted text, else the block
+or sentence around it, anchored as a range; the outline always stays inside
+the viewport. The bridge records the anchor (spec §9) and a PNG clip of the
+region (none for text inside such an oversized element), stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
 thread is plain until the person presses **Send to agent** or writes `@agent`
 (as a word, not inside an address) in a comment; from then on, every later
 viewer comment on it is sent too. A viewer comment on a resolved thread
@@ -660,6 +664,12 @@ not hold shows a message instead of the frame; a thread anchored on one is
 listed under Detached. The `url` in tool results and payloads stays
 the artifact URL (`/a/<id>`); every `url_or_id` argument accepts the page form
 too (the page is ignored; a version in it is used where the tool takes one).
+
+The address bar's fragment and the frame's stay in step: a shell URL with a
+fragment (`/a/<id>/source.html#docs%2Fcontract.md`) opens the frame at it,
+back and forward carry it to the frame, and a fragment change inside the page
+(a link or a script) replaces the address bar's fragment without a history
+entry of the shell's own; copy link includes it.
 
 ### Tools
 

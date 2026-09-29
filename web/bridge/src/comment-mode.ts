@@ -1,24 +1,27 @@
-// Comment mode inside the page: an outline on the hovered element, a pin that
-// follows the pointer, a click to pick an element, a text selection to pick a
-// range, Escape to cancel. A selection that already existed when the mode was
+// Comment mode inside the page: an outline on the hovered target, a pin that
+// follows the pointer, a click to pick it, a text selection to pick a range,
+// Escape to cancel. The target is the element under the pointer, or, inside
+// an oversized element, the text under it (see `target.ts`); the outline is
+// clamped to the viewport so all four borders show. A selection that already existed when the mode was
 // turned on is not a pick; turning the mode off drops any pending hover. The
 // overlay lives in a shadow root on <html>, so it never changes the page's
 // body, selectors, or text.
 
 import { OVERLAY_TAG } from "./anchor";
+import { chooseTarget, outlineBox, outlineColors, pageBackground, rectOf, viewportOf } from "./target";
 
 export interface ModeHooks {
-  hover(el: Element | null): void;
+  hover(target: Element | Range | null): void;
   pickElement(el: Element): void;
   pickRange(r: Range): void;
   cancel(): void;
 }
 
 const CSS = `:host{all:initial}
-.o{position:fixed;pointer-events:none;border:2px solid #c2410c;border-radius:3px;background:rgba(194,65,12,.08);z-index:2147483647;display:none}
+.o{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid var(--ax-border,#c2410c);border-radius:3px;background:var(--ax-tint,rgba(194,65,12,.18));z-index:2147483647;display:none}
 .o.flash{animation:f .9s ease-out 2}
 .pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#c2410c;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2147483647;display:none}
-@keyframes f{50%{background:rgba(194,65,12,.35)}}`;
+@keyframes f{50%{background:rgba(194,65,12,.4)}}`;
 
 export class CommentMode {
   private on = false;
@@ -27,7 +30,8 @@ export class CommentMode {
   private readonly pin: HTMLElement;
   private suppressClick = false;
   private frame = 0;
-  private hovered: Element | null = null;
+  private hovered: Element | Range | null = null;
+  private pointer = { x: 0, y: 0, el: null as Element | null };
   private selectionBefore: Range | null = null;
 
   constructor(private readonly doc: Document, private readonly hooks: ModeHooks) {
@@ -56,6 +60,9 @@ export class CommentMode {
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
     this.suppressClick = false;
     if (on) {
+      const c = outlineColors(pageBackground(this.doc));
+      this.host.style.setProperty("--ax-border", c.border);
+      this.host.style.setProperty("--ax-tint", c.tint);
       const sel = this.doc.getSelection();
       this.selectionBefore = sel && !sel.isCollapsed && sel.rangeCount ? sel.getRangeAt(0).cloneRange() : null;
     } else {
@@ -70,7 +77,7 @@ export class CommentMode {
 
   /** Outlines `target` briefly (after a scroll-to). */
   flash(target: Element | Range): void {
-    this.place(target.getBoundingClientRect());
+    this.place(rectOf(target));
     this.outline.classList.add("flash");
     setTimeout(() => {
       this.outline.classList.remove("flash");
@@ -79,7 +86,9 @@ export class CommentMode {
   }
 
   private place(r: DOMRect): void {
-    Object.assign(this.outline.style, { display: "block", left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+    const b = outlineBox(r, viewportOf(this.doc));
+    if (!b) { this.outline.style.display = "none"; return; }
+    Object.assign(this.outline.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
   }
 
   private target(e: Event): Element | null {
@@ -88,15 +97,22 @@ export class CommentMode {
     return el.closest?.(OVERLAY_TAG) ? null : el;
   }
 
+  /** The comment target for the pointer at (`x`, `y`) over `el`. */
+  private choose(el: Element | null, x: number, y: number): Element | Range | null {
+    return el ? chooseTarget(this.doc, el, x, y) : null;
+  }
+
   private onMove = (e: MouseEvent) => {
     Object.assign(this.pin.style, { display: "block", left: `${e.clientX}px`, top: `${e.clientY}px` });
-    const t = this.target(e);
-    if (t === this.hovered || this.frame) return;
+    this.pointer = { x: e.clientX, y: e.clientY, el: this.target(e) };
+    if (this.frame) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = 0;
       if (!this.on) return;
+      const t = this.choose(this.pointer.el, this.pointer.x, this.pointer.y);
+      if (sameTarget(t, this.hovered)) return;
       this.hovered = t;
-      if (t) this.place(t.getBoundingClientRect());
+      if (t) this.place(rectOf(t));
       else this.outline.style.display = "none";
       this.hooks.hover(t);
     });
@@ -124,14 +140,18 @@ export class CommentMode {
     e.preventDefault();
     e.stopPropagation();
     if (this.suppressClick) { this.suppressClick = false; return; }
-    const t = this.target(e);
-    if (t) this.hooks.pickElement(t);
+    const t = this.choose(this.target(e), e.clientX, e.clientY);
+    if (t instanceof Element) this.hooks.pickElement(t);
+    else if (t) this.hooks.pickRange(t);
   };
 
   private onKey = (e: KeyboardEvent) => {
     if (e.key === "Escape") this.hooks.cancel();
   };
 }
+
+const sameTarget = (a: Element | Range | null, b: Element | Range | null) =>
+  a === b || (a instanceof Range && b instanceof Range && sameRange(a, b));
 
 const sameRange = (a: Range, b: Range) =>
   a.startContainer === b.startContainer && a.startOffset === b.startOffset && a.endContainer === b.endContainer && a.endOffset === b.endOffset;

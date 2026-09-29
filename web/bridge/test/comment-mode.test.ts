@@ -33,6 +33,40 @@ describe("CommentMode", () => {
     expect(outline().style.display).toBe("block");
   });
 
+  it("targets the line under the pointer in an oversized preformatted element, and picks it as a range", async () => {
+    document.body.innerHTML = `<main><pre style="white-space: pre">alpha one\nbeta two\ngamma three</pre></main>`;
+    const pre = document.querySelector("pre")!;
+    pre.getBoundingClientRect = () => ({ left: 0, top: -2630, right: 900, bottom: 18445, width: 900, height: 21075, x: 0, y: -2630, toJSON() {} }) as DOMRect;
+    const d = document as unknown as { caretRangeFromPoint?: (x: number, y: number) => Range };
+    d.caretRangeFromPoint = (_x, y) => { const r = document.createRange(); r.setStart(pre.firstChild!, y < 50 ? 2 : 13); return r; };
+    try {
+      mode.set(true);
+      pre.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 20 }));
+      await nextFrame();
+      expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("alpha one");
+      pre.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 60 }));
+      await nextFrame();
+      expect(String(hooks.hover.mock.calls.at(-1)![0])).toBe("beta two");
+      expect(outline().style.display).toBe("block");
+      pre.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: 10, clientY: 60 }));
+      expect(hooks.pickElement).not.toHaveBeenCalled();
+      expect(String(hooks.pickRange.mock.calls[0][0])).toBe("beta two");
+    } finally {
+      delete d.caretRangeFromPoint;
+    }
+  });
+
+  it("keeps the outline of an oversized element inside the viewport", async () => {
+    document.body.innerHTML = `<div>x</div>`;
+    const div = document.querySelector("div")!;
+    div.getBoundingClientRect = () => ({ left: 20, top: -2630, right: 920, bottom: 18445, width: 900, height: 21075, x: 20, y: -2630, toJSON() {} }) as DOMRect;
+    mode.set(true);
+    div.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 10, clientY: 20 }));
+    await nextFrame();
+    const o = outline().style;
+    expect([o.top, o.height]).toEqual(["2px", `${innerHeight - 4}px`]);
+  });
+
   it("emits no hover and shows no outline after being turned off mid-frame", async () => {
     mode.set(true);
     fire(document.querySelector("h2")!, "mousemove");

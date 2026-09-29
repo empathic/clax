@@ -407,7 +407,10 @@ file under `v/<digits>/` is reachable only through the versioned form):
   frame keeps the frame's own entry, and the shell replaces its URL when the
   new page greets with a different `file`. A hello naming a page the version
   does not hold is ignored, and a frame load with no hello since the previous
-  load shows no pins. The version picker, the reload banner, and copy link keep
+  load shows no pins. The URL fragment and the frame's are kept in step: the
+  frame opens at the URL's fragment, and the bridge reports every fragment
+  change (`artifax:hash`), which the shell writes to its URL with
+  `replaceState`. The version picker, the reload banner, and copy link keep
   the current page. `url` in tool results stays `/a/<aid>`.
 
 - Header: title, version picker (`v3 of 3`, older versions read-only), copy
@@ -438,7 +441,12 @@ file under `v/<digits>/` is reachable only through the versioned form):
   Pins show only for the page in the frame. Detached threads (anchor not
   found on its own page in this version) are listed under "Detached".
 - Comment mode: works on every HTML page of the version (each is served
-  with the bridge, which greets the shell with its `file`). The bridge
+  with the bridge, which greets the shell with its `file`). Over an element
+  taller or wider than the viewport, or covering more than 60% of it, the
+  target is the text under the pointer (its line in preformatted text, else
+  its block or sentence), picked as a range anchor; the outline is clamped to
+  the viewport with all four borders visible, a tint of at least 16% and a
+  border of at least 3:1 contrast on light and dark pages. The bridge
   highlights the hovered element with an outline
   and shows a floating pin cursor. Click selects that element; drag-select
   text creates a range anchor. The composer opens in the shell with the
@@ -597,7 +605,9 @@ that version and stays attached to the version it was made on.
 ### Clips
 
 On composer open the bridge renders the anchored element (for a range, its
-nearest block ancestor) with `modern-screenshot` to a PNG at device pixel
+nearest block ancestor, unless that block is oversized as defined in §8
+"Comment mode", in which case no clip is taken and the thread says why)
+with `modern-screenshot` to a PNG at device pixel
 ratio, capped at 1600 px on the long side, and posts the bytes to the shell,
 which uploads them with the thread. Cross-origin images that taint the
 canvas are dropped from the render; the thread still stores the anchor and

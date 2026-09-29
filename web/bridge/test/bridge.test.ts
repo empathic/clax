@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 
-import { helloFor, readMeta } from "../src/meta";
+import { BRIDGE_TYPES } from "../src/protocol";
+import { hashFor, helloFor, readMeta } from "../src/meta";
 
 declare global { interface Window { claude?: { use(name: string): Promise<unknown> }; __artifax?: { artifact: string; version: number; contract: string; file: string } } }
 
@@ -34,6 +35,12 @@ describe("bridge", () => {
 
   it("reads its metadata from the script tag", () => {
     expect(window.__artifax).toEqual({ artifact: "7q3k9mzx2b4t", version: 3, contract: "0.2.61", file: "docs/about.html" });
+  });
+
+  it("reports the page's fragment to the shell", () => {
+    expect(hashFor("#docs%2Fcontract.md")).toEqual({ type: "artifax:hash", hash: "#docs%2Fcontract.md" });
+    expect(hashFor("")).toEqual({ type: "artifax:hash", hash: "" });
+    expect(BRIDGE_TYPES.has("artifax:hash")).toBe(true);
   });
 
   it("names its file in the hello, the index when the tag names none", () => {

@@ -17,6 +17,11 @@ export function readMeta(script: HTMLScriptElement | null): PageMeta {
   };
 }
 
+/** The message reporting the page's fragment `hash` to the shell. */
+export function hashFor(hash: string): Extract<BridgeToShell, { type: "artifax:hash" }> {
+  return { type: "artifax:hash", hash };
+}
+
 /** The `artifax:hello` this page greets the shell with. */
 export function helloFor(meta: PageMeta): Extract<BridgeToShell, { type: "artifax:hello" }> {
   return { type: "artifax:hello", artifact: meta.artifact, version: meta.version, file: meta.file };

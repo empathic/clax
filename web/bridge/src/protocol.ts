@@ -55,8 +55,10 @@ export type BridgeToShell =
    * page and handed to the shell to follow (see `nav.ts`); `hash` is the
    * link's fragment, with its `#`. */
   | { type: "artifax:navigate"; file: string; hash?: string }
+  /** The page's fragment (`#…`, or "" for none), after the welcome and on every change. */
+  | { type: "artifax:hash"; hash: string }
   | UseRequest
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["artifax:welcome", "artifax:comment-mode", "artifax:resolve-anchors", "artifax:scroll-to", "artifax:use-result", "artifax:call-result", "artifax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:use", "artifax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:hash", "artifax:use", "artifax:call"]);
