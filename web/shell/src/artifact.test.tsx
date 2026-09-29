@@ -202,7 +202,7 @@ describe("ArtifactView", () => {
     const t = (id: string, file: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: `Goals ${id}`, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "x" }] });
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tI", "index.html"), t("tA", "about.html")], next_cursor: null } : viewer)));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const posted: { type: string; anchors?: { id: string }[]; anchor?: { file: string } }[] = [];
@@ -216,7 +216,8 @@ describe("ArtifactView", () => {
     const card = root.querySelector('[data-thread="tA"]')!;
     expect(card.querySelector(".file-label")!.textContent).toBe("on about.html");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
-    await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/about.html`, "the frame navigated to about.html");
+    // One history entry: the shell URL is pushed and the frame is moved in place.
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the shell URL names about.html");
     expect(posted.some(m => m.type === "artifax:scroll-to")).toBe(false);
     win = tap();
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
@@ -241,20 +242,91 @@ describe("ArtifactView", () => {
     expect(root.querySelector("iframe")).toBeNull();
   });
 
-  it("puts the page the frame greets from in the address bar", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))));
+  it("puts the page the frame greets from in the address bar, and ignores a page the version does not hold", async () => {
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(location.pathname).toBe(`/a/${ID}`);
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => location.pathname === `/a/${ID}`, "back on the index's URL");
+    // A page the shown version does not hold: no address change, and no answers.
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "forged.html" });
+    fromFrame(win, { type: "artifax:use", id: "forged", name: "permissions" });
+    await new Promise(r => setTimeout(r, 30));
+    expect(location.pathname).toBe(`/a/${ID}`);
+    expect(posted.some(m => m.type === "artifax:use-result" && m.id === "forged")).toBe(false);
+  });
+
+  it("drops the pins when the frame loads a document that never greets", async () => {
+    const t = { id: "tI", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as typeof win.postMessage;
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread loaded");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "artifax:anchors", requestId: "r1", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    await waitFor(() => root.querySelector("button.thread-pin"), "the pin");
+    frame.dispatchEvent(new Event("load"));
+    expect(root.querySelector("button.thread-pin")).not.toBeNull();
+    frame.dispatchEvent(new Event("load"));
+    await waitFor(() => !root.querySelector("button.thread-pin"), "no pin over a document without the bridge");
+  });
+
+  it("lists a thread on a page the version does not hold as Detached, and opening it stays put", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = { id: "tG", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Gone", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "gone.html" },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const card = await waitFor(() => root.querySelector('.section-detached [data-thread="tG"]'), "the detached card");
+    card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+    await new Promise(r => setTimeout(r, 30));
+    expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/`);
+    expect(location.pathname).toBe(`/a/${ID}`);
+  });
+
+  it("follows a link the page handed over as one history entry", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page, "doc.pdf": { content_type: "application/pdf", size: 1 } }))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    win.postMessage = (() => {}) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:navigate", file: "about.html" });
+    await new Promise(r => setTimeout(r, 20));
+    expect(location.pathname).toBe(`/a/${ID}`);
     const depth = history.length;
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await new Promise(r => setTimeout(r, 20));
-    expect([location.pathname, history.length]).toEqual([`/a/${ID}`, depth]);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "artifax:navigate", file: "about.html" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
     expect(history.length).toBe(depth + 1);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => location.pathname === `/a/${ID}`, "back on the index's URL");
+    // Not an HTML page: the frame loads it as a plain link would, the URL stays.
+    fromFrame(win, { type: "artifax:navigate", file: "doc.pdf" });
+    await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/doc.pdf`, "the PDF in the frame");
+    expect(location.pathname).toBe(`/a/${ID}/about.html`);
+  });
+
+  it("says so when the page of an opened thread never greets", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = { id: "tA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    (await import("./artifact")).pageWait.ms = 50;
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    const card = await waitFor(() => root.querySelector('[data-thread="tA"]'), "the card");
+    card.querySelector<HTMLButtonElement>("button.card-head")!.click();
+    await waitFor(() => location.pathname === `/a/${ID}/about.html`, "navigated");
+    const banner = await waitFor(() => root.querySelector(".banner.notice"), "failure banner");
+    expect(banner.textContent).toContain("Could not open about.html");
   });
 
   it("closes the capability gate on a frame load that no hello preceded", async () => {

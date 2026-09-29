@@ -10,8 +10,9 @@ export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blo
 export const PIN_RIGHT_ROOM = 38;
 
 /** Numbered pins over the frame at the resolved rectangle of each attached
- * open thread on `file`, the page the frame shows (the index by default). */
-export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; width?: number; file?: string }) {
+ * open thread on `file`, the page the frame shows (the index by default;
+ * none when it is null, a document that did not greet). */
+export function Pins({ threads, resolved, onSelect, width, file = INDEX_FILE }: { threads: Thread[]; resolved: Record<string, AnchorResult>; onSelect(t: Thread): void; width?: number; file?: string | null }) {
   const ref = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState(0);
   useEffect(() => {

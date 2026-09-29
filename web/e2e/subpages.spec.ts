@@ -53,9 +53,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(card.locator(".file-label")).toHaveText("on about.html");
     await expect(page.locator(".section-detached .thread-card")).toHaveCount(0);
 
-    // Opening the thread takes the frame to its page and pins it there.
+    // Opening the thread takes the frame to its page and pins it there, as one history entry.
+    const depth = await page.evaluate(() => history.length);
     await card.locator("button.card-head").click();
     await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
+    expect(await page.evaluate(() => history.length)).toBe(depth + 1);
     await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await expect(card.locator(".file-label")).toHaveCount(0);
@@ -81,6 +83,30 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
     await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
     await expect(page.locator("button.thread-pin")).toHaveCount(1);
+  });
+
+  test(`${mode}: one link inside the frame is one history entry`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, `History ${mode}`, { "index.html": INDEX, "about.html": ABOUT });
+    const id = artifact.id;
+    await page.goto(`${d.base}/`);
+    const index = await openArtifact(page, d.base, id, 1, mode);
+    const step = (fn: () => void) => page.evaluate(fn).catch(() => { /* the document may be replaced */ });
+    const depth = await page.evaluate(() => history.length);
+    await index.locator("#to-about").click();
+    await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
+    await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
+    expect(await page.evaluate(() => history.length)).toBe(depth + 1);
+    await step(() => history.back());
+    await expect(page).toHaveURL(`${d.base}/a/${id}`);
+    await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && /\/v\/1\/$/.test(f.url()))).toBe(true);
+    await step(() => history.back());
+    await expect(page).toHaveURL(`${d.base}/`);
+    await step(() => history.forward());
+    await expect(page).toHaveURL(`${d.base}/a/${id}`);
+    await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && /\/v\/1\/$/.test(f.url()))).toBe(true);
+    await step(() => history.forward());
+    await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
+    await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
   });
 }
 

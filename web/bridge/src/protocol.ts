@@ -51,8 +51,11 @@ export type BridgeToShell =
   | { type: "artifax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "artifax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "artifax:cancel" }
+  /** A plain click on a link to another page of this version, cancelled in the
+   * page and handed to the shell to follow (see `nav.ts`). */
+  | { type: "artifax:navigate"; file: string }
   | UseRequest
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["artifax:welcome", "artifax:comment-mode", "artifax:resolve-anchors", "artifax:scroll-to", "artifax:use-result", "artifax:call-result", "artifax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:use", "artifax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["artifax:hello", "artifax:hover", "artifax:pick", "artifax:anchors", "artifax:cancel", "artifax:navigate", "artifax:use", "artifax:call"]);

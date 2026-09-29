@@ -643,10 +643,17 @@ to open the frame on that page (`/a/<id>/about.html`,
 `/a/<id>/v/2/docs/source.html`; `index.html` is never written). After
 `/a/<id>`, a `v` segment followed by an all-digit segment is a version and
 anything else starts the file path, so a file published under `v/<digits>/` is
-reachable only through the versioned form. The address bar follows the frame:
-when it moves to another page the shell pushes that page's URL, and back and
-forward move the frame between pages. A page the version does not hold shows
-a message instead of the frame. The `url` in tool results and payloads stays
+reachable only through the versioned form. The address bar follows the frame,
+and each move to another page is one history entry. A plain click on a link
+to another page of the version (no query, no modifier key, not cancelled by
+the page, not in comment mode) is handed to the shell, which pushes that
+page's URL and moves the frame without an entry of its own, so back and
+forward move between pages, also after the shell reloaded. Opening a thread
+on another page from the sidebar works the same way. Any other navigation
+inside the page (a script, a form) keeps the frame's own history entry, and
+the shell replaces its URL when the new page greets. A page the version does
+not hold shows a message instead of the frame; a thread anchored on one is
+listed under Detached. The `url` in tool results and payloads stays
 the artifact URL (`/a/<id>`); every `url_or_id` argument accepts the page form
 too (the page is ignored; a version in it is used where the tool takes one).
 

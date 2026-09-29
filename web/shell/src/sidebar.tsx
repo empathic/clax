@@ -18,13 +18,17 @@ type Props = {
   me?: Viewer | null;
   /** Rendered above the sections (the "Your name" field on narrow screens). */
   header?: ComponentChildren;
-  /** The page the frame shows (the index by default); threads on other pages are labelled with theirs. */
-  file?: string;
+  /** The page the frame shows (the index by default; null when the frame shows
+   * a document that did not greet); threads on other pages are labelled with theirs. */
+  file?: string | null;
+  /** Whether the shown version holds a page; a thread on a page it lacks is detached. */
+  holds?: (file: string) => boolean;
 };
 
 /** Open threads: those on the page shown and found (numbered like the pins),
- * then those on other pages (labelled "on <file>"); open threads on the page
- * shown and not found (Detached); then resolved threads. */
+ * then those on other pages of the version (labelled "on <file>"); open
+ * threads on the page shown and not found, or on a page the version does not
+ * hold (Detached); then resolved threads. */
 export function Sidebar(p: Props) {
   const [tick, setTick] = useState(() => new Date());
   const ticking = p.now === undefined && p.threads.some(t => t.status === "open" && t.sent_to_agent && hasElapsedLabel(t.feedback_state));
@@ -35,12 +39,14 @@ export function Sidebar(p: Props) {
     return () => clearInterval(timer);
   }, [ticking]);
   const now = p.now ?? tick;
-  const file = p.file ?? INDEX_FILE;
+  const file = p.file === undefined ? INDEX_FILE : p.file;
+  const holds = p.holds ?? (() => true);
   const open = p.threads.filter(t => t.status === "open");
   const here = open.filter(t => t.anchor.file === file);
-  const detached = here.filter(t => p.resolved[t.id] && !p.resolved[t.id].found);
+  const gone = open.filter(t => !holds(t.anchor.file));
+  const detached = [...here.filter(t => p.resolved[t.id] && !p.resolved[t.id].found), ...gone.filter(t => !here.includes(t))];
   const attached = here.filter(t => !detached.includes(t));
-  const elsewhere = open.filter(t => t.anchor.file !== file);
+  const elsewhere = open.filter(t => t.anchor.file !== file && !gone.includes(t));
   const done = p.threads.filter(t => t.status === "resolved");
   const numbers = new Map(attached.map((t, i) => [t.id, i + 1]));
   const section = (cls: string, title: string, list: Thread[]) => (

@@ -75,6 +75,21 @@ describe("Sidebar", () => {
     root.remove();
   });
 
+  it("lists a thread on a page the version does not hold under Detached", () => {
+    const threads: Thread[] = [
+      { ...base, id: "g", anchor: { ...anchor, file: "gone.html" }, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "gone page")] },
+      { ...base, id: "b", anchor: { ...anchor, file: "about.html" }, status: "open", sent_to_agent: false, comments: [comment("2", "viewer", "Alex", "there")] },
+    ];
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    render(<Sidebar threads={threads} resolved={{}} file="index.html" holds={f => f !== "gone.html"} now={new Date(base.created_at)} selected={null}
+      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />, root);
+    expect(Array.from(root.querySelectorAll(".section-detached .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["g"]);
+    expect(Array.from(root.querySelectorAll(".section-open .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["b"]);
+    render(null, root);
+    root.remove();
+  });
+
   it("selects a thread from its keyboard-reachable header button", () => {
     const onSelect = vi.fn();
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };

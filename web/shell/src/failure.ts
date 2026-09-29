@@ -6,6 +6,7 @@ export const POST_FAILED = "Could not post";
 export const NAME_FAILED = "Could not save your name";
 export const NAME_LOAD_FAILED = "Could not load your name";
 export const LOAD_FAILED = "Could not load comments";
+export const OPEN_FAILED = "Could not open";
 
 /** `<prefix>: <message>` for an API error, a network failure, or anything thrown. */
 export function failureText(prefix: string, e: unknown): string {

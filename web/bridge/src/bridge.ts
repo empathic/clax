@@ -11,13 +11,17 @@
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips), anchor resolution, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
- * file, and anchors on other files never resolve here.
+ * file, and anchors on other files never resolve here. Once welcomed, a plain
+ * click on a link to another page of the version that the page did not cancel
+ * is cancelled and handed to the shell (`artifax:navigate`), which follows it
+ * with one history entry.
  */
 import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
 import { acceptFromShell, shellOrigins } from "./channel";
 import { blockAncestor, renderClip } from "./clip";
 import { CommentMode } from "./comment-mode";
 import { helloFor, readMeta } from "./meta";
+import { linkedPage } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
 import { makeUse } from "./use";
@@ -84,12 +88,25 @@ import { makeUse } from "./use";
     cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
   });
 
+  let welcomed = false;
+  // Bubble phase on the window: the page's own handlers run first, and comment
+  // mode's capture-phase handler stops a click before it gets here.
+  addEventListener("click", e => {
+    if (!welcomed || e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = (e.target as Element | null)?.closest?.("a[href]");
+    if (!(a instanceof HTMLAnchorElement) || a.hasAttribute("download") || (a.target && a.target !== "_self")) return;
+    const file = linkedPage(a.href, location.href, meta.file);
+    if (file === null) return;
+    e.preventDefault();
+    post({ type: "artifax:navigate", file });
+  });
+
   addEventListener("message", e => {
     const m = acceptFromShell(e, window.parent, origins);
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
-      case "artifax:welcome": mode.set(m.mode === "comment"); rpc.connect(); break;
+      case "artifax:welcome": welcomed = true; mode.set(m.mode === "comment"); rpc.connect(); break;
       case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
       case "artifax:comment-mode": mode.set(m.on); break;
       case "artifax:resolve-anchors": anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;

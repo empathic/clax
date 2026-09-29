@@ -396,10 +396,16 @@ all-digit segment is a version and anything else starts the page path, so a
 file under `v/<digits>/` is reachable only through the versioned form):
 
 - URL: the frame opens on the page the URL names (`index.html` when none; a
-  page the version does not hold shows a message instead of the frame). When
-  the frame moves to another page (its bridge greets with a different
-  `file`), the shell pushes that page's URL; back and forward move the frame
-  between pages. The version picker, the reload banner, and copy link keep
+  page the version does not hold shows a message instead of the frame). Each
+  move to another page is one history entry. The bridge hands a plain click on
+  a link to another page of the version to the shell (`artifax:navigate`),
+  which pushes that page's URL and moves the frame with `location.replace`;
+  the sidebar's jump to a thread on another page does the same, and
+  `popstate` moves the frame to the URL's page. Any other navigation in the
+  frame keeps the frame's own entry, and the shell replaces its URL when the
+  new page greets with a different `file`. A hello naming a page the version
+  does not hold is ignored, and a frame load with no hello since the previous
+  load shows no pins. The version picker, the reload banner, and copy link keep
   the current page. `url` in tool results stays `/a/<aid>`.
 
 - Header: title, version picker (`v3 of 3`, older versions read-only), copy

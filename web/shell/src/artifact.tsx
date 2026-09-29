@@ -7,7 +7,7 @@ import { Composer, type Draft, Pins } from "./comments";
 import type { Declared } from "./caps/availability";
 import { CapabilityHost } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
-import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
+import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
 import { type Ask, PromptDialog, promptQueue } from "./prompt";
 import { artifactOrigin, pageSrc, probeOrigin } from "./origin";
@@ -18,6 +18,10 @@ import { ViewerName } from "./viewer-name";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 type Props = { id: string; pinnedVersion: number | null; file?: string };
+
+/** How long a page the shell sent the frame to may take to greet before the
+ * jump is given up (settable for tests). */
+export const pageWait = { ms: 5000 };
 
 export default function ArtifactView({ id, pinnedVersion, file: startFile = INDEX_FILE }: Props) {
   const [data, setData] = useState<{ artifact: Artifact; versions: Version[] } | null>(null);
@@ -80,20 +84,37 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const helloOk = useRef(false);
   const helloSinceLoad = useRef(false);
   useEffect(() => { helloOk.current = false; helloSinceLoad.current = false; }, [id, shown, origin]);
-  const onFrameLoad = () => {
-    if (!helloSinceLoad.current) helloOk.current = false;
-    helloSinceLoad.current = false;
-  };
   // The published file of the page in the frame, from its latest matching
   // hello (the URL's file until then): pins, anchor resolution, and scroll-to
-  // apply to its threads only, and the shell URL names it.
-  const [file, setFile] = useState(startFile);
-  const fileRef = useRef(startFile);
+  // apply to its threads only, and the shell URL names it. Null while the
+  // frame shows a document that did not greet: no pins are drawn over it.
+  const [file, setFile] = useState<string | null>(startFile);
+  const fileRef = useRef<string | null>(startFile);
+  const setCurrentFile = (f: string | null) => { fileRef.current = f; setFile(f); };
+  const onFrameLoad = () => {
+    if (!helloSinceLoad.current) {
+      helloOk.current = false;
+      setCurrentFile(null);
+      setResolved({});
+    }
+    helloSinceLoad.current = false;
+  };
+  // Whether the shown version holds `f` (the index always; any file while the
+  // versions are unknown).
+  const versionRef = useRef<Version | undefined>(undefined);
+  versionRef.current = data?.versions.find(v => v.n === shown);
+  const holds = (f: string) => f === INDEX_FILE || !versionRef.current || Object.hasOwn(versionRef.current.files, f);
   /** The shell URL of the current page in `version` (null: the latest). */
-  const here = (version: number | null) => shellPath(id, version, fileRef.current, shown);
+  const here = (version: number | null) => {
+    const r = parseShellPath(location.pathname);
+    return shellPath(id, version, fileRef.current ?? (r.kind === "artifact" ? r.file : INDEX_FILE), shown);
+  };
   // A thread on another page the viewer opened: the frame was sent to that
-  // page, and it is scrolled to once that page greets.
-  const pendingScroll = useRef<Thread | null>(null);
+  // page, and it is scrolled to once that page greets, or given up after
+  // `pageWait.ms` with a notice.
+  const pendingScroll = useRef<{ thread: Thread; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const clearPending = () => { if (pendingScroll.current) clearTimeout(pendingScroll.current.timer); pendingScroll.current = null; };
+  useEffect(() => clearPending, []);
   useEffect(() => {
     if (!data || origin === undefined) return;
     const host = new CapabilityHost(getToken().then(token => ({
@@ -133,13 +154,36 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     }
     frame.src = url;
   };
+  /** Shows `target`, an HTML page of this version, as one history entry: the
+   * shell URL is pushed and the frame is moved without an entry of its own, so
+   * back and forward (through `popstate`) move between pages, also after the
+   * shell document was reloaded. */
+  const openPage = (target: string) => {
+    history.pushState(null, "", shellPath(id, pinnedVersion, target, shown));
+    navigateFrame(target, true);
+  };
+  /** Whether `f` is an HTML page of the shown version. */
+  const isPage = (f: string) => {
+    const v = versionRef.current;
+    if (f === INDEX_FILE || !v) return true;
+    return Object.hasOwn(v.files, f) && v.files[f].content_type.split(";")[0].trim().toLowerCase() === "text/html";
+  };
   const scrollTo = (t: Thread) => {
     setSelected(t.id);
-    if (t.anchor.file === fileRef.current) { pendingScroll.current = null; send({ type: "artifax:scroll-to", anchor: t.anchor }); return; }
-    pendingScroll.current = t;
-    navigateFrame(t.anchor.file, false);
+    clearPending();
+    if (t.anchor.file === fileRef.current) { send({ type: "artifax:scroll-to", anchor: t.anchor }); return; }
+    // A thread on a page this version does not hold is detached: nothing to open.
+    if (!holds(t.anchor.file)) return;
+    const timer = setTimeout(() => {
+      if (pendingScroll.current?.thread !== t) return;
+      pendingScroll.current = null;
+      noticeFor(OPEN_FAILED)(`${OPEN_FAILED} ${t.anchor.file}: the page did not load`);
+    }, pageWait.ms);
+    pendingScroll.current = { thread: t, timer };
+    openPage(t.anchor.file);
   };
-  // Back and forward move the shell URL between pages; the frame follows.
+  // Back and forward move the shell URL between pages; the frame follows when
+  // it shows another page.
   useEffect(() => {
     const onPop = () => {
       const r = parseShellPath(location.pathname);
@@ -164,30 +208,40 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       const m = acceptFromFrame(e, frameWin(), origin ?? null);
       if (!m) return;
       switch (m.type) {
-        case "artifax:hello":
-          // A stale or foreign document in the frame gets no welcome and no anchors.
-          helloOk.current = helloMatches(m, id, shown);
-          if (!helloOk.current) break;
+        case "artifax:hello": {
+          // A stale or foreign document in the frame, or one naming a page
+          // this version does not hold, gets no welcome, no anchors, and no pins.
+          const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
+          helloOk.current = helloMatches(m, id, shown) && holds(greeted);
+          setResolved({});
+          if (!helloOk.current) { setCurrentFile(null); break; }
           helloSinceLoad.current = true;
           hostRef.current?.reset();
-          fileRef.current = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
-          setFile(fileRef.current);
-          {
-            // The address bar follows the frame to another page.
-            const r = parseShellPath(location.pathname);
-            if (r.kind !== "artifact" || r.file !== fileRef.current) history.pushState(null, "", here(pinnedVersion) + location.hash);
-          }
-          setResolved({});
+          setCurrentFile(greeted);
+          // The address bar follows the frame to another page. A link the page
+          // handed over already pushed its URL; any other navigation (a script,
+          // a form) made the frame's own history entry, so the URL is replaced.
+          const r = parseShellPath(location.pathname);
+          if (r.kind !== "artifact" || r.file !== greeted) history.replaceState(history.state, "", here(pinnedVersion) + location.hash);
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
-          if (pendingScroll.current?.anchor.file === fileRef.current) {
-            send({ type: "artifax:scroll-to", anchor: pendingScroll.current.anchor });
-            pendingScroll.current = null;
+          const p = pendingScroll.current;
+          if (p?.thread.anchor.file === greeted) {
+            clearPending();
+            send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
           }
           break;
+        }
         case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
         case "artifax:cancel": setCommenting(false); break;
+        case "artifax:navigate":
+          // A link the page handed over: an HTML page of this version is one
+          // history entry; anything else loads in the frame as a plain link would.
+          if (!helloOk.current) break;
+          if (isPage(m.file)) openPage(m.file);
+          else navigateFrame(m.file, false);
+          break;
         case "artifax:hover": break;
         case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
       }
@@ -242,11 +296,12 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   if (!data || origin === undefined) return <Shell title="Artifax"><p class="empty muted">Loading…</p></Shell>;
   const { artifact, versions } = data;
   const latest = artifact.current_version;
-  const raw = pageSrc(id, shown, origin, file);
+  const urlRoute = parseShellPath(location.pathname);
+  const raw = pageSrc(id, shown, origin, file ?? (urlRoute.kind === "artifact" ? urlRoute.file : INDEX_FILE));
   const version = versions.find(v => v.n === shown);
   // A page the URL names that the shown version does not hold (the index is
   // always there) gets a message instead of the daemon's 404 in the frame.
-  const missing = file !== INDEX_FILE && version !== undefined && !(file in version.files) ? file : null;
+  const missing = startFile !== INDEX_FILE && version !== undefined && !Object.hasOwn(version.files, startFile) ? startFile : null;
 
   return (
     <Shell title={artifact.title} right={
@@ -289,13 +344,13 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           {newer && !deleted && (
             <div class="banner"><span>v{newer} published</span><button class="primary" onClick={() => location.assign(here(null))}>Reload</button></div>
           )}
-          {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={shellPath(id, null, file, shown)}>latest</a></div>}
+          {shown < latest && !newer && !deleted && <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={here(null)}>latest</a></div>}
           {notice && (
             <div class="banner notice" role="alert"><span>{notice}</span><button onClick={() => setNotice(null)}>Dismiss</button></div>
           )}
           {ask && <PromptDialog ask={ask} />}
         </div>
-        {panel && <Sidebar threads={threads} resolved={resolved} selected={selected} file={file}
+        {panel && <Sidebar threads={threads} resolved={resolved} selected={selected} file={file} holds={holds}
           me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}
           onSelect={scrollTo}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}
