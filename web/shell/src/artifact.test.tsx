@@ -52,6 +52,19 @@ describe("ArtifactView", () => {
   beforeEach(() => { history.replaceState(null, "", `/a/${ID}`); });
   afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
 
+  it("disposes the capability host when it is replaced and on unmount", async () => {
+    const root = await mount(async () => new Response(JSON.stringify({ artifact: artifact(2).artifact, versions: [...artifact(1).versions, ...artifact(2).versions] })));
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    const { CapabilityHost } = await import("./caps/host");
+    const dispose = vi.spyOn(CapabilityHost.prototype, "dispose");
+    const { default: ArtifactView } = await import("./artifact");
+    render(<ArtifactView id={ID} pinnedVersion={1} />, root);
+    await waitFor(() => dispose.mock.calls.length === 1, "the replaced host's dispose");
+    render(null, root);
+    await waitFor(() => dispose.mock.calls.length === 2, "dispose on unmount");
+    expect(new Set(dispose.mock.instances).size).toBe(2);
+  });
+
   it("says not found only for a 404 status", async () => {
     const root = await mount(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
     await waitFor(() => root.textContent?.includes("Artifact not found"), "not-found message");

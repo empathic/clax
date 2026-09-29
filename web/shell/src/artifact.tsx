@@ -163,6 +163,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     })));
   }, [id, shown, origin, data]);
   hostRef.current = host;
+  // A replaced host (another artifact, version, or view) and the host at
+  // unmount are disposed, so their timers and late results never reach a frame.
+  useEffect(() => () => host?.dispose(), [host]);
   const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: t.id, anchor: t.anchor })) });
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };

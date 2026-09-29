@@ -157,4 +157,18 @@ describe("db fix round 1", () => {
     await db.doc("tasks/t1").set({ s: "x".repeat(MAX_DOC_BYTES - 10) });
     expect(f.calls).toHaveLength(1);
   });
+
+  it("bodies hold only plain objects, arrays and JSON scalars", async () => {
+    const f = fakeRpc();
+    const db = makeDb(f.rpc as never);
+    class Thing { a = 1; }
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    for (const body of [new Map(), new Set(), new Date(0), /x/, new Thing(), { m: { s: new Set() } }, { l: [new Date(0)] }, cyclic]) {
+      await expect(db.doc("tasks/t1").set(body as never)).rejects.toMatchObject({ code: "invalid_argument" });
+    }
+    const shared = { x: 1 };
+    await db.doc("tasks/t1").set({ a: [1, { b: null }], bare: Object.assign(Object.create(null), { y: 2 }), s1: shared, s2: shared });
+    expect(f.calls).toHaveLength(1);
+  });
 });

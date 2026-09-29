@@ -69,9 +69,25 @@ function jsonOf(v: unknown): string | null {
   }
 }
 
+/** Whether `v` holds only plain objects (prototype `Object.prototype` or
+ * null), arrays, and scalars at every level, without cycles: a `Map`, `Set`, `Date`, `RegExp`
+ * or class instance would otherwise serialize as something else, or `{}`. */
+function plainJson(v: unknown, path: Set<object> = new Set()): boolean {
+  if (v === null || typeof v !== "object") return true;
+  if (path.has(v)) return false; // a cycle
+  path.add(v);
+  const proto = Object.getPrototypeOf(v);
+  const ok = Array.isArray(v)
+    ? v.every(x => plainJson(x, path))
+    : (proto === Object.prototype || proto === null) && Object.values(v).every(x => plainJson(x, path));
+  path.delete(v);
+  return ok;
+}
+
 /** `v` when it is a plain JSON object within [`MAX_DOC_BYTES`]. */
 function checkBody(v: unknown): Record<string, unknown> {
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw invalid("a document body is a plain JSON object");
+  if (!plainJson(v)) throw invalid("a document body holds only plain objects, arrays, strings, numbers, booleans and null");
   const s = jsonOf(v);
   if (s === null) throw invalid("a document body is plain JSON");
   if (new TextEncoder().encode(s).length > MAX_DOC_BYTES) throw invalid(`a document is at most ${MAX_DOC_BYTES} bytes as JSON`);
@@ -140,9 +156,14 @@ export const dbHandler: HandlerFactory = env => {
   // Whether the event stream is down, and the poll that stands in for it.
   let streamDown = false;
   let poll: ReturnType<typeof setInterval> | null = null;
+  // The highest version delivered per document subscription: an older
+  // result is never delivered after it (versions are never reused).
+  const delivered = new Map<string, number>();
+  let disposed = false;
   const docUrl = (path: string) => `${base}/${path.split("/").map(encodeURIComponent).join("/")}`;
 
   async function request<T>(method: string, url: string, body?: unknown, missingIsNull = false): Promise<T | null> {
+    if (disposed) throw new CapError("unavailable", "this view has closed");
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (env.token) headers.authorization = `Bearer ${env.token}`;
     let res: Response;
@@ -191,11 +212,17 @@ export const dbHandler: HandlerFactory = env => {
     if (!spec) return;
     const n = ++fetchSeq;
     fetches.set(sub, n);
-    const live = () => subs.get(sub) === spec && fetches.get(sub) === n;
+    const live = () => !disposed && subs.get(sub) === spec && fetches.get(sub) === n;
     try {
       const docs = await current(spec);
       if (!live()) return;
       failures.delete(sub);
+      clearTimeout(retries.get(sub));
+      retries.delete(sub);
+      if (spec.kind === "doc" && docs.length) {
+        if (docs[0].version < (delivered.get(sub) ?? 0)) return;
+        delivered.set(sub, docs[0].version);
+      }
       env.post({ type: "artifax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
     } catch (e) {
       if (!live()) return;
@@ -222,6 +249,7 @@ export const dbHandler: HandlerFactory = env => {
     subs.delete(sub);
     fetches.delete(sub);
     failures.delete(sub);
+    delivered.delete(sub);
     clearTimeout(timers.get(sub));
     timers.delete(sub);
     clearTimeout(retries.get(sub));
@@ -235,7 +263,7 @@ export const dbHandler: HandlerFactory = env => {
   }
 
   function startPoll(): void {
-    if (poll !== null || !streamDown || subs.size === 0) return;
+    if (poll !== null || disposed || !streamDown || subs.size === 0) return;
     poll = setInterval(() => { for (const sub of subs.keys()) schedule(sub); }, POLL_MS);
   }
 
@@ -310,6 +338,7 @@ export const dbHandler: HandlerFactory = env => {
       }
     },
     onEvent(e: ArtifactEvent) {
+      if (disposed) return;
       if (e.type === "doc") {
         for (const [sub, spec] of subs) if (touches(spec, e.path)) schedule(sub);
       } else if (e.type === "resync" || e.type === "ready" || e.type === "version") {
@@ -325,6 +354,11 @@ export const dbHandler: HandlerFactory = env => {
       }
     },
     reset() {
+      for (const sub of [...subs.keys()]) drop(sub);
+      stopPoll();
+    },
+    dispose() {
+      disposed = true;
       for (const sub of [...subs.keys()]) drop(sub);
       stopPoll();
     },

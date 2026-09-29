@@ -78,4 +78,34 @@ describe("CapabilityHost", () => {
     ]);
     expect(storage.setItem).not.toHaveBeenCalled();
   });
+
+  it("dispose ends every handler: no further fetches, and late results post nothing", async () => {
+    vi.useFakeTimers();
+    try {
+      let release: (r: Response) => void = () => {};
+      let fetches = 0;
+      vi.stubGlobal("fetch", vi.fn(() => {
+        fetches++;
+        return fetches === 1 ? Promise.resolve(new Response(JSON.stringify({ doc: { path: "t/1", id: "1", data: {}, version: 1 } })))
+          : new Promise<Response>(r => { release = r; });
+      }));
+      const { e, posted } = env({ declared: { db: {} } });
+      const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+      await host.handle({ type: "artifax:call", id: "c1", ns: "db", method: "subscribe", args: ["s1", { kind: "doc", path: "t/1" }] });
+      host.onEvent({ type: "stream_down" });
+      const late = host.handle({ type: "artifax:call", id: "c2", ns: "db", method: "get", args: ["t/2"] });
+      await vi.advanceTimersByTimeAsync(0);
+      const before = posted.length;
+      host.dispose();
+      release(new Response(JSON.stringify({ doc: { path: "t/2", id: "2", data: {}, version: 2 } })));
+      await late;
+      await vi.advanceTimersByTimeAsync(120_000);
+      await host.handle({ type: "artifax:call", id: "c3", ns: "db", method: "get", args: ["t/3"] });
+      await host.handle({ type: "artifax:use", id: "u", name: "db" });
+      expect([fetches, posted.length]).toEqual([2, before]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
 });

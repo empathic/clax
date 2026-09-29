@@ -43,8 +43,23 @@ export function checkCollectionPath(path: string): string {
 
 const invalid = (message: string) => new CapabilityError("invalid_argument", message);
 
+/** Whether `v` holds only plain objects (prototype `Object.prototype` or
+ * null), arrays, and scalars at every level, without cycles. */
+function plainJson(v: unknown, path: Set<object> = new Set()): boolean {
+  if (v === null || typeof v !== "object") return true;
+  if (path.has(v)) return false; // a cycle
+  path.add(v);
+  const proto = Object.getPrototypeOf(v);
+  const ok = Array.isArray(v)
+    ? v.every(x => plainJson(x, path))
+    : (proto === Object.prototype || proto === null) && Object.values(v).every(x => plainJson(x, path));
+  path.delete(v);
+  return ok;
+}
+
 function plainObject(v: unknown): asserts v is Record<string, unknown> {
   if (v === null || typeof v !== "object" || Array.isArray(v)) throw invalid("a document body is a plain JSON object");
+  if (!plainJson(v)) throw invalid("a document body holds only plain objects, arrays, strings, numbers, booleans and null");
   let json: string;
   try {
     json = JSON.stringify(v);

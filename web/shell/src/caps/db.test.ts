@@ -248,6 +248,7 @@ describe("db handler", () => {
   });
 
   it("echoes this shell's own writes to matching subscriptions at once", async () => {
+    vi.useFakeTimers();
     let version = 1;
     const { h, posted } = setup(null, (m, url) => {
       if (m !== "GET") { version++; return json({ doc: doc("tasks/a", version), acquired: true, version, expires_at: "t", holder: "h", deleted: true }); }
@@ -260,7 +261,8 @@ describe("db handler", () => {
     const writes: [string, unknown[]][] = [["set", ["tasks/a", { v: 1 }]], ["update", ["tasks/a", { v: 2 }]], ["delete", ["tasks/a"]], ["acquire", ["locks/l", { holder: "h", data: { by: "h" } }]]];
     for (const [i, [method, args]] of writes.entries()) {
       await h.call(method, args);
-      await vi.waitFor(() => expect(posted.length).toBe(n + i + 1), { timeout: 20, interval: 1 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(posted.length).toBe(n + i + 1);
     }
     expect(posted.slice(n).map(m => (m as { data: { sub: string } }).data.sub)).toEqual(["q", "q", "q", "l"]);
   });
@@ -277,5 +279,75 @@ describe("db handler", () => {
     await h.call("subscribe", ["s1", { kind: "doc", path: "other/x" }]);
     await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
     expect(requests.map(r => r.url.split("/docs/")[1])).toEqual(["tasks/t1", "tasks/t1", "other/x"]);
+  });
+
+  it("refuses bodies holding anything but plain objects, arrays and JSON scalars", async () => {
+    class Thing { a = 1; }
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    const bad: unknown[] = [cyclic, new Map(), new Set(), new Date(0), /x/, new Thing(), { nested: { m: new Map() } }, { list: [new Set()] }, { d: new Date(0) }];
+    for (const body of bad) {
+      const { h, requests } = setup(null, () => json({ doc: doc("tasks/t1", 1) }));
+      await expect(h.call("set", ["tasks/t1", body]), String(body)).rejects.toMatchObject({ code: "invalid_argument" });
+      await expect(h.call("acquire", ["locks/l", { holder: "h", data: body }])).rejects.toMatchObject({ code: "invalid_argument" });
+      expect(requests).toEqual([]);
+    }
+    const { h, requests } = setup(null, () => json({ doc: doc("tasks/t1", 1) }));
+    const bare = Object.assign(Object.create(null), { x: 1 });
+    await h.call("set", ["tasks/t1", { a: [1, { b: [null, "s"] }], bare }]);
+    expect(requests[0].body).toEqual({ data: { a: [1, { b: [null, "s"] }], bare: { x: 1 } }, lww: true });
+  });
+
+  it("a successful refetch clears the pending retry", async () => {
+    vi.useFakeTimers();
+    let up = false;
+    const { h, requests, posted } = setup(null, () => (up ? json({ doc: doc("tasks/t1", 1) }) : json({}, 503)));
+    await h.call("subscribe", ["s1", { kind: "doc", path: "tasks/t1" }]);
+    up = true;
+    h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/t1", version: 1 });
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
+    expect([requests.length, posted.length]).toEqual([2, 1]);
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1] * 3);
+    expect(requests).toHaveLength(2);
+  });
+
+  it("never delivers an older version of a document after a newer one", async () => {
+    vi.useFakeTimers();
+    let answer: unknown = { doc: doc("tasks/t1", 3) };
+    let status = 200;
+    const { h, posted } = setup(null, () => json(answer, status));
+    await h.call("subscribe", ["s1", { kind: "doc", path: "tasks/t1" }]);
+    answer = { doc: doc("tasks/t1", 2) };
+    h.onEvent!({ type: "resync", dropped: 0 });
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
+    answer = { error: { code: "not_found", message: "gone" } };
+    status = 404;
+    h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/t1", version: null });
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
+    answer = { doc: doc("tasks/t1", 5) };
+    status = 200;
+    h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/t1", version: 5 });
+    await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
+    expect(posted.map(m => (m as { data: { docs: { version: number }[] } }).data.docs.map(d => d.version))).toEqual([[3], [], [5]]);
+  });
+
+  it("dispose drops every subscription and posts nothing afterwards", async () => {
+    vi.useFakeTimers();
+    let release: (r: Response) => void = () => {};
+    let n = 0;
+    const posted: ShellToBridge[] = [];
+    vi.stubGlobal("fetch", vi.fn(() => (++n === 1 ? Promise.resolve(json({}, 503)) : new Promise<Response>(r => { release = r; }))));
+    const h = dbHandler({ aid: "7q3k9mzx2b4t", token: null, post: (m: ShellToBridge) => posted.push(m) } as unknown as CapEnv, null as never);
+    await h.call("subscribe", ["s1", { kind: "doc", path: "tasks/t1" }]);
+    h.onEvent!({ type: "stream_down" });
+    void h.call("subscribe", ["s2", { kind: "doc", path: "tasks/t2" }]);
+    h.dispose!();
+    release(json({ doc: doc("tasks/t2", 1) }));
+    await vi.advanceTimersByTimeAsync(POLL_MS * 3);
+    expect([n, posted.length]).toEqual([2, 0]);
+    await expect(h.call("get", ["tasks/t1"])).rejects.toMatchObject({ code: "unavailable" });
+    h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/t1", version: 2 });
+    await vi.advanceTimersByTimeAsync(POLL_MS);
+    expect(n).toBe(2);
   });
 });

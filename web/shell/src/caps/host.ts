@@ -32,6 +32,8 @@ export interface Handler {
   onEvent?(e: ArtifactEvent): void;
   /** The frame loaded a new document: drop per-document state. */
   reset?(): void;
+  /** The host is gone: drop all state and never post, fetch, or schedule again. */
+  dispose?(): void;
 }
 
 export type HandlerFactory = (env: CapEnv, grants: Grants) => Handler;
@@ -47,11 +49,14 @@ function localStore(): Storage | null {
 export class CapabilityHost {
   private readonly handlers = new Map<string, Handler>();
   private readonly ready: Promise<{ env: CapEnv; grants: Grants }>;
+  private dead = false;
 
   constructor(env: Promise<CapEnv>, private readonly factories: Record<string, HandlerFactory> = REGISTRY, storage: Storage | null = localStore()) {
     // Without a viewer (its lookup failed) grants are kept for this page load
     // only, so every request is still answered.
-    this.ready = env.then(async e => {
+    this.ready = env.then(async given => {
+      // After dispose nothing reaches the frame, whatever resolves late.
+      const e: CapEnv = { ...given, post: m => { if (!this.dead) given.post(m); } };
       const viewer = await e.viewer().then(v => v.publicId, () => null);
       const grants = new Grants(grantsKey(e.aid, viewer ?? ""), viewer === null ? null : storage, e.declared, e.token !== null, e.prompt);
       return { env: e, grants };
@@ -59,8 +64,9 @@ export class CapabilityHost {
   }
 
   async handle(m: BridgeToShell): Promise<void> {
-    if (m.type !== "artifax:use" && m.type !== "artifax:call") return;
+    if (this.dead || (m.type !== "artifax:use" && m.type !== "artifax:call")) return;
     const { env, grants } = await this.ready;
+    if (this.dead) return;
     const owner = env.token !== null;
     if (m.type === "artifax:use") {
       const granted = typeof m.name === "string" && isAvailable(m.name, env.declared, owner);
@@ -91,10 +97,24 @@ export class CapabilityHost {
   }
 
   onEvent(e: ArtifactEvent): void {
+    if (this.dead) return;
     for (const h of this.handlers.values()) h.onEvent?.(e);
   }
 
   reset(): void {
     for (const h of this.handlers.values()) h.reset?.();
+  }
+
+  /** Ends this host (its artifact, version, or view was replaced, or the
+   * shell unmounted): every handler is disposed (or reset), and nothing it
+   * later answers, pushes, or fetches reaches any frame. */
+  dispose(): void {
+    if (this.dead) return;
+    this.dead = true;
+    for (const h of this.handlers.values()) {
+      if (h.dispose) h.dispose();
+      else h.reset?.();
+    }
+    this.handlers.clear();
   }
 }
