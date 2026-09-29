@@ -14,6 +14,7 @@ run() {
     fi
 }
 run "justfile"              scripts/test-justfile.sh
+run "installer"             scripts/test-ensure-artifax.sh
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace

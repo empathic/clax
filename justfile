@@ -33,6 +33,10 @@ web-e2e: web
 pi-test:
     @echo "Pi extension arrives in phase 2 Task 12"
 
+# Run the installer script tests
+installer-test:
+    ./scripts/test-ensure-artifax.sh
+
 # Run the Rust workspace tests
 test:
     cargo test --workspace
