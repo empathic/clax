@@ -540,3 +540,21 @@ git commit --no-gpg-sign -m "Harden the asset store: atomic writes, sane extensi
 - Spec §17 Phase 2 coverage: shim (T7), sessions (T5), hooks for start/end (T8), artifact tools and status (T6), HTTP MCP (T6), installer (T9), Claude plugin (T10), Codex plugin (T11), Pi extension (T12), release workflow (T9). Debts assigned by the coordinator: blocking store + timeouts (T1), asset store (T2), events and store minors (T3), CLI/web/lint/spec wording (T4).
 - Review Focus mapping: 1 → T7; 2 → T8; 3 → T5; 4 → T6; 5 → T6; 6 → T6.
 - Names used across tasks: `AppState::store_call`, `WrapCache`, `Session`, `RegisterSession`, `Store::{register_session, join_session, heartbeat, end_session, get_session, list_sessions, reap_sessions}`, `DaemonClient`, `ArtifaxTools`, `shim::run`, `HookInput`, `HookOutput`, `events::{session_start, session_end}`.
+
+---
+
+### Task 14: justfile conventions and `just dev`
+
+**Files:**
+- Modify: `justfile`, `README.md`
+- Create: `scripts/dev.sh`, `scripts/check.sh`
+
+**Why:** the person asked that `just` or `just help` list every recipe with a description, matching the toolpath and clash justfiles, and that `just dev` run an auto-reloading server for both frontend and backend changes so it can be left running.
+
+**Interfaces:**
+- `justfile` header: `set shell := ["bash", "-cu"]`; `default: help`; `help:` runs `@just --list --unsorted`. Every recipe has a one-line `#` comment above it (that is what `just --list` prints). Recipes, in this order: `help`, `dev`, `build`, `web`, `web-test`, `web-e2e`, `pi-test` (phase 2 Task 12 adds the body; until then it prints "not yet"), `test`, `lint` (clippy + `cargo check` with `-Dwarnings` + web lint), `fmt` (`cargo fmt --all` and `cd web && npx oxlint --fix` is not a formatter, so `fmt` is Rust only, documented), `check` (`scripts/check.sh`: fmt then the gates), `ci` (`scripts/quality_gates.sh`), `install` (`just web` then `cargo install --path crates/artifax-cli`), `uninstall` (`cargo uninstall artifax-cli`, `-rm ~/.local/bin/artifax`), `serve *ARGS` (`cargo run -p artifax-cli -- serve --foreground {{ARGS}}`), `stop`, `doctor`, `clean` (`cargo clean`, `rm -rf web/dist/_artifax web/dist/index.html web/node_modules`).
+- `scripts/dev.sh`: a bash script that (1) checks for `cargo-watch` (`cargo install cargo-watch` hint if missing) and `web/node_modules` (`npm ci` if missing); (2) starts `cd web && npx vite build -c vite.bridge.config.ts --watch` and `npx vite build -c vite.shell.config.ts --watch` in the background (the daemon's debug build reads `web/dist` from disk on every request, so a browser reload picks up frontend changes without a daemon restart); (3) runs `cargo watch -q -c -w crates -x 'run -q -p artifax-cli -- serve --foreground --port 7480'` in the foreground so a Rust change rebuilds and restarts the daemon (the daemon writes `daemon.json` on each start, so the CLI and shims keep working across restarts); (4) prints `Artifax dev: http://localhost:7480 (backend restarts on Rust changes; reload the browser for frontend changes)` once the first build is up; (5) traps `EXIT`/`INT` to kill the background watchers and stop the daemon (`POST /api/admin/shutdown` with the token from `~/.artifax/daemon.json`, then kill the process group). `ARTIFAX_HOME` is respected. `just dev` accepts extra args passed to `serve` (for example `--bind 0.0.0.0`).
+- `scripts/check.sh`: `cargo fmt --all` then `exec scripts/quality_gates.sh "$@"`.
+- README: a "Development" section listing `just help`, `just dev`, `just check`, `just ci`.
+
+- [ ] **Steps:** write the justfile and scripts; run `just help` and confirm every recipe shows a description; run `just dev` in the background for 60 s, touch a Rust file and confirm the daemon restarts (watch `~/.artifax/daemon.json`'s `started_at` change, using a scratch `ARTIFAX_HOME`), touch `web/shell/src/theme.css` and confirm `web/dist/_artifax/shell/*.css` is rebuilt, then stop it and confirm no `artifax serve`, `cargo watch`, or `vite` processes remain (`pgrep -fl 'artifax.*serve|cargo watch|vite build'`); add a `scripts/test-justfile.sh` that asserts every recipe in `just --list` has a description and that `just --evaluate` succeeds, and wire it into `quality_gates.sh`; commit `"Add just help and just dev with auto-reloading frontend and backend"`.
