@@ -164,3 +164,35 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
   await page.waitForTimeout(300);
   await expect(page.locator(".composer")).toHaveCount(0);
 });
+
+test("thread cards are reachable and selectable from the keyboard", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Keyboard", { "index.html": PAGE });
+  for (const [selector, quote, body] of [["body > main > h2", "Quarterly goals", "first"], ["body > main > p", "Grow revenue", "second"]]) {
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", body);
+    form.set("version", "1");
+    expect((await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`, { method: "POST", body: form })).status).toBe(201);
+  }
+  await page.goto(`${d.base}/a/${artifact.id}`);
+  await contentFrame(page, artifact.id, 1);
+  const first = page.locator(".thread-card").filter({ hasText: "first" });
+  const second = page.locator(".thread-card").filter({ hasText: "second" });
+  await first.locator("button.card-head").focus();
+  await page.keyboard.press("Enter");
+  await expect(first).toHaveClass(/selected/);
+  await page.keyboard.press("Tab"); // Send to agent
+  await page.keyboard.press("Tab"); // Resolve
+  await page.keyboard.press("Tab"); // Reply input
+  await page.keyboard.press("Tab"); // Reply button
+  await page.keyboard.press("Tab"); // the second card's header
+  await expect(second.locator("button.card-head")).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(second).toHaveClass(/selected/);
+  await expect(first).not.toHaveClass(/selected/);
+  const toggle = page.getByRole("button", { name: "Comment", exact: true });
+  await toggle.click();
+  await second.locator("button.card-head").focus();
+  await page.keyboard.press("Escape");
+  await expect(toggle).toHaveAttribute("aria-pressed", "false");
+});

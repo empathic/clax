@@ -4,6 +4,7 @@ export const SEND_FAILED = "Could not send to the agent";
 export const RESOLVE_FAILED = "Could not resolve";
 export const POST_FAILED = "Could not post";
 export const NAME_FAILED = "Could not save your name";
+export const NAME_LOAD_FAILED = "Could not load your name";
 export const LOAD_FAILED = "Could not load comments";
 
 /** `<prefix>: <message>` for an API error, a network failure, or anything thrown. */
@@ -23,4 +24,11 @@ export async function report<T>(p: Promise<T>, prefix: string, setNotice: (text:
     setNotice(failureText(prefix, e));
     return undefined;
   }
+}
+
+/** A notice setter for one kind of call: a failure text always shows, while a
+ * success (`null`) clears the notice only when one of `prefixes` raised it, so
+ * an unrelated success never hides a failure. `set` takes a value or updater. */
+export function scopedNotice(set: (u: string | null | ((prev: string | null) => string | null)) => void, ...prefixes: string[]): (text: string | null) => void {
+  return text => set(cur => (text !== null ? text : cur !== null && prefixes.some(p => cur.startsWith(`${p}:`)) ? null : cur));
 }

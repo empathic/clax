@@ -1,13 +1,14 @@
 import type { ComponentChildren } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import type { AnchorResult } from "../../bridge/src/protocol";
 import { anchorLabel, type Thread } from "./threads";
-import { waitingLabel } from "./waiting";
+import { hasElapsedLabel, waitingLabel } from "./waiting";
 
 type Props = {
   threads: Thread[];
   resolved: Record<string, AnchorResult>;
-  now: Date;
+  /** Fixed clock for tests; without it the sidebar ticks each second while a label shows elapsed time. */
+  now?: Date;
   selected: string | null;
   onSelect(t: Thread): void;
   onSend(t: Thread): void;
@@ -19,6 +20,15 @@ type Props = {
 
 /** Open threads found on this version, open threads not found (Detached), then resolved threads. */
 export function Sidebar(p: Props) {
+  const [tick, setTick] = useState(() => new Date());
+  const ticking = p.now === undefined && p.threads.some(t => t.status === "open" && t.sent_to_agent && hasElapsedLabel(t.feedback_state));
+  useEffect(() => {
+    if (!ticking) return;
+    setTick(new Date());
+    const timer = setInterval(() => setTick(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, [ticking]);
+  const now = p.now ?? tick;
   const open = p.threads.filter(t => t.status === "open");
   const detached = open.filter(t => p.resolved[t.id] && !p.resolved[t.id].found);
   const attached = open.filter(t => !detached.includes(t));
@@ -27,7 +37,7 @@ export function Sidebar(p: Props) {
   const section = (cls: string, title: string, list: Thread[]) => (
     <section class={cls}>
       <h2>{title} <span class="muted">{list.length}</span></h2>
-      {list.length === 0 ? <p class="muted small">None.</p> : list.map(t => <Card key={t.id} t={t} n={numbers.get(t.id)} {...p} />)}
+      {list.length === 0 ? <p class="muted small">None.</p> : list.map(t => <Card key={t.id} t={t} n={numbers.get(t.id)} {...p} now={now} />)}
     </section>
   );
   return (
@@ -40,15 +50,17 @@ export function Sidebar(p: Props) {
   );
 }
 
-function Card({ t, n, now, selected, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number }) {
+function Card({ t, n, now, selected, onSelect, onSend, onResolve, onReply }: Props & { t: Thread; n?: number; now: Date }) {
   const [reply, setReply] = useState("");
   const label = t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null;
   return (
     <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onClick={() => onSelect(t)}>
       <header>
-        {n !== undefined && <span class="thread-num">{n}</span>}
-        <span class="anchor-label">{anchorLabel(t.anchor)}</span>
-        <span class="muted small">v{t.version_n}</span>
+        <button type="button" class="card-head" aria-pressed={selected === t.id} onClick={e => { e.stopPropagation(); onSelect(t); }}>
+          {n !== undefined && <span class="thread-num">{n}</span>}
+          <span class="anchor-label">{anchorLabel(t.anchor)}</span>
+          <span class="muted small">v{t.version_n}</span>
+        </button>
       </header>
       {t.clip_url && <img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />}
       {t.comments.map(c => (

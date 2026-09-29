@@ -2,10 +2,10 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useRef, useState } from "preact/hooks";
 import type { AnchorResult, ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact } from "./api";
-import { acceptFromFrame, sendToFrame } from "./bridge-link";
+import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { Composer, type Draft, Pins } from "./comments";
 import { subscribe } from "./events";
-import { LOAD_FAILED, NAME_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report } from "./failure";
+import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
 import { artifactOrigin, contentSrc, probeOrigin } from "./origin";
 import { Sidebar } from "./sidebar";
@@ -30,12 +30,10 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const [resolved, setResolved] = useState<Record<string, AnchorResult>>({});
   const [draft, setDraft] = useState<Draft | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
-  const [now, setNow] = useState(() => new Date());
   const [notice, setNotice] = useState<string | null>(null);
   // A success clears only a notice its own kind of call raised, so the viewer
   // lookup finishing after a failed thread load cannot hide that failure.
-  const noticeFor = (prefix: string) => (text: string | null) =>
-    setNotice(cur => (text !== null ? text : cur?.startsWith(`${prefix}:`) ? null : cur));
+  const noticeFor = (prefix: string) => scopedNotice(setNotice, prefix);
   const threadsRef = useRef<Thread[]>([]);
   threadsRef.current = threads;
 
@@ -65,11 +63,6 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => { send({ type: "artifax:comment-mode", on: commenting }); }, [commenting]);
   useEffect(() => {
-    if (!threads.some(t => t.status === "open" && t.sent_to_agent && t.feedback_state && t.feedback_state.state !== "acknowledged")) return;
-    const timer = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(timer);
-  }, [threads]);
-  useEffect(() => {
     if (typeof matchMedia !== "function") return;
     const mq = matchMedia("(max-width: 480px)");
     const onChange = () => setNarrow(mq.matches);
@@ -81,8 +74,13 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       const m = acceptFromFrame(e, frameWin(), origin ?? null);
       if (!m) return;
       switch (m.type) {
-        case "artifax:hello": send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" }); resolveAll(); break;
-        case "artifax:pick": setCommenting(false); setDraft({ anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
+        case "artifax:hello":
+          // A stale or foreign document in the frame gets no welcome and no anchors.
+          if (!helloMatches(m, id, shown)) break;
+          send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
+          resolveAll();
+          break;
+        case "artifax:pick": setCommenting(false); setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: m.clipPng ? new Blob([m.clipPng], { type: "image/png" }) : null, clipError: m.clipError }); break;
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
         case "artifax:cancel": setCommenting(false); break;
         case "artifax:hover": break;
@@ -92,7 +90,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCommenting(false); };
     addEventListener("keydown", onKey);
     return () => { removeEventListener("message", onMessage); removeEventListener("keydown", onKey); };
-  }, [origin, commenting]);
+  }, [origin, commenting, id, shown]);
 
   useEffect(() => subscribe(id, e => {
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
@@ -119,7 +117,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
       <>
         <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => setCommenting(c => !c)}>Comment</button>
         <button aria-pressed={panel} onClick={() => setPanel(v => !v)}>Threads ({threads.filter(t => t.status === "open").length})</button>
-        {!narrow && <ViewerName setNotice={noticeFor(NAME_FAILED)} />}
+        {!narrow && <ViewerName setNotice={setNotice} />}
         <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); location.assign(n === latest ? `/a/${id}` : `/a/${id}/v/${n}`); }}>
           {versions.map(v => <option value={v.n} key={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>)}
         </select>
@@ -135,7 +133,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         <div class="stage">
           {deleted ? <p class="empty">This artifact was deleted.</p> : <Frame id={id} n={shown} origin={origin} frameRef={frameRef} />}
           {!deleted && <Pins threads={threads} resolved={resolved} onSelect={t => { setPanel(true); scrollTo(t); }} />}
-          {draft && <Composer draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
+          {draft && <Composer key={draft.pickId} draft={draft} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
               noticeFor(POST_FAILED)(null);
@@ -156,8 +154,8 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
             <div class="banner notice" role="alert"><span>{notice}</span><button onClick={() => setNotice(null)}>Dismiss</button></div>
           )}
         </div>
-        {panel && <Sidebar threads={threads} resolved={resolved} now={now} selected={selected}
-          header={narrow ? <ViewerName setNotice={noticeFor(NAME_FAILED)} /> : undefined}
+        {panel && <Sidebar threads={threads} resolved={resolved} selected={selected}
+          header={narrow ? <ViewerName setNotice={setNotice} /> : undefined}
           onSelect={scrollTo}
           onSend={t => saveThread(sendToAgent(id, t.id), SEND_FAILED)}
           onResolve={t => saveThread(resolveThread(id, t.id), RESOLVE_FAILED)}

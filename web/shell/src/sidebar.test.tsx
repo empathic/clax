@@ -30,4 +30,20 @@ describe("Sidebar", () => {
     render(null, root);
     root.remove();
   });
+
+  it("selects a thread from its keyboard-reachable header button", () => {
+    const onSelect = vi.fn();
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    render(<Sidebar threads={[t]} resolved={{}} now={new Date(base.created_at)} selected={null}
+      onSelect={onSelect} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />, root);
+    const head = root.querySelector<HTMLButtonElement>(".thread-card button.card-head")!;
+    expect(head.type).toBe("button");
+    head.click();
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(onSelect).toHaveBeenCalledWith(t);
+    render(null, root);
+    root.remove();
+  });
 });

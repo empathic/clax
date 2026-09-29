@@ -1,0 +1,34 @@
+import { render } from "preact";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { ViewerName } from "./viewer-name";
+
+describe("ViewerName", () => {
+  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+
+  it("sends a name save only after the initial lookup answered, so both use one viewer cookie", async () => {
+    const calls: string[] = [];
+    let answerGet!: () => void;
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+      const method = init?.method ?? "GET";
+      calls.push(method);
+      const res = (name: string | null) => new Response(JSON.stringify({ viewer: { id: "v", display_name: name, created_at: "x" } }));
+      if (method === "GET") return new Promise<Response>(r => { answerGet = () => r(res(null)); });
+      return Promise.resolve(res("Alex"));
+    }));
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    render(<ViewerName setNotice={vi.fn()} />, root);
+    await new Promise(r => setTimeout(r, 0));
+    const input = root.querySelector<HTMLInputElement>('input[aria-label="Your name"]')!;
+    input.value = "Alex";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await new Promise(r => setTimeout(r, 0));
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    await new Promise(r => setTimeout(r, 20));
+    expect(calls).toEqual(["GET"]);
+    answerGet();
+    await vi.waitFor(() => expect(calls).toEqual(["GET", "PUT"]));
+    expect(input.value).toBe("Alex");
+    render(null, root);
+  });
+});

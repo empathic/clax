@@ -14,3 +14,9 @@ export function acceptFromFrame(e: MessageEvent, frame: Window | null, frameOrig
 export function sendToFrame(frame: Window | null, frameOrigin: string | null, m: ShellToBridge): void {
   frame?.postMessage(m, frameOrigin ?? "*");
 }
+
+/** Whether a hello comes from the artifact and version the shell is showing;
+ * any other hello (a stale or foreign document in the frame) is ignored. */
+export function helloMatches(m: Extract<BridgeToShell, { type: "artifax:hello" }>, artifact: string, version: number): boolean {
+  return m.artifact === artifact && m.version === version;
+}

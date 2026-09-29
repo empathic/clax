@@ -39,3 +39,8 @@ export function waitingLabel(s: FeedbackState | null, now: Date): string | null 
       return "agent session ended; waiting for a new one";
   }
 }
+
+/** Whether the state's label shows elapsed time, so it needs a clock tick. */
+export function hasElapsedLabel(s: FeedbackState | null): boolean {
+  return !!s && (s.state === "sent" || (s.state === "delivered" && !s.exhausted));
+}
