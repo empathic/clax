@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 artifax-core = { path = "../artifax-core" }
 artifax-server = { path = "../artifax-server" }
+artifax-mcp = { path = "../artifax-mcp" }
 anyhow.workspace = true
 clap.workspace = true
 reqwest.workspace = true

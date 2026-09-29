@@ -3,6 +3,7 @@
 
 pub mod client;
 pub mod render;
+pub mod shim;
 pub mod tools;
 
 pub use client::{ClientError, DaemonClient};

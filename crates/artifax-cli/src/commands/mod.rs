@@ -1,6 +1,7 @@
 pub mod delete;
 pub mod doctor;
 pub mod list;
+pub mod mcp;
 pub mod open;
 pub mod pin;
 pub mod publish;

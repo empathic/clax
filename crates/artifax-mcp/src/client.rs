@@ -1,5 +1,7 @@
 //! Async HTTP client for the daemon's REST API.
 
+use artifax_core::RegisterSession;
+use artifax_core::model::Session;
 use serde_json::{Value, json};
 use std::time::Duration;
 
@@ -217,6 +219,36 @@ impl DaemonClient {
         )
         .await
     }
+    /// `POST /api/sessions`: registers (or rejoins) the harness session `r`.
+    pub async fn register_session(&self, r: &RegisterSession) -> Result<Session> {
+        let res = Self::json(self.request(reqwest::Method::POST, "/api/sessions").json(r)).await?;
+        session_of(res)
+    }
+
+    /// `PATCH /api/sessions/<id>` `{"heartbeat": true}`: marks the session seen now.
+    pub async fn heartbeat_session(&self, id: &str) -> Result<Session> {
+        self.patch_session(id, json!({"heartbeat": true})).await
+    }
+
+    /// `PATCH /api/sessions/<id>` `{"ended": true}`: ends the session.
+    pub async fn end_session(&self, id: &str) -> Result<Session> {
+        self.patch_session(id, json!({"ended": true})).await
+    }
+
+    async fn patch_session(&self, id: &str, body: Value) -> Result<Session> {
+        let res = Self::json(
+            self.request(reqwest::Method::PATCH, &format!("/api/sessions/{id}"))
+                .json(&body),
+        )
+        .await?;
+        session_of(res)
+    }
+}
+
+/// The `session` of a sessions route's response body.
+fn session_of(mut res: Value) -> Result<Session> {
+    serde_json::from_value(res["session"].take())
+        .map_err(|e| ClientError::BadResponse(format!("session: {e}")))
 }
 
 /// Classifies a reqwest failure: a failed connection is `Unreachable` (even when
