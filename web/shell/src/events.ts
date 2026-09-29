@@ -12,8 +12,13 @@ export type ArtifactEvent =
   /** The stream dropped events; refetch state. */
   | { type: "resync"; dropped: number };
 
-export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => void): () => void {
-  const es = new EventSource(`/api/events?artifact=${artifactId}`);
+/** Subscribes to the artifact's events. `token` (the owner shell's, from
+ * `/api/token`) goes in the query, since an EventSource cannot send headers;
+ * the daemon then counts the stream as the owner shell's. */
+export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => void, token: string | null = null): () => void {
+  const q = new URLSearchParams({ artifact: artifactId });
+  if (token) q.set("token", token);
+  const es = new EventSource(`/api/events?${q}`);
   const handler = (e: MessageEvent) => { try { onEvent(JSON.parse(e.data)); } catch { /* ignore malformed */ } };
   es.addEventListener("version", handler);
   es.addEventListener("artifact_deleted", handler);

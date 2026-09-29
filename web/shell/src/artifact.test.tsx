@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render } from "preact";
+import { forgetViewer } from "./threads";
 
 class FakeES {
-  static last: FakeES;
+  static last: FakeES | undefined;
   listeners = new Map<string, (e: MessageEvent) => void>();
   constructor(public url: string) { FakeES.last = this; }
   addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
@@ -26,7 +27,7 @@ const artifact = (n: number) => ({ artifact: { id: ID, title: "T", description: 
 const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
-async function mount(fetchImpl: () => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>) {
+async function mount(fetchImpl: (url: string) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>) {
   vi.stubGlobal("EventSource", FakeES);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -34,7 +35,7 @@ async function mount(fetchImpl: () => Promise<Response>, comments?: (url: string
       if (comments) return comments(url, init);
       return new Response(JSON.stringify(url.includes("/threads") ? { threads: [], next_cursor: null } : viewer));
     }
-    return fetchImpl();
+    return fetchImpl(url);
   }));
   sessionStorage.setItem("artifax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
@@ -45,7 +46,7 @@ async function mount(fetchImpl: () => Promise<Response>, comments?: (url: string
 }
 
 describe("ArtifactView", () => {
-  beforeEach(() => { vi.resetModules(); });
+  beforeEach(() => { vi.resetModules(); forgetViewer(); FakeES.last = undefined; });
   afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
 
   it("says not found only for a 404 status", async () => {
@@ -64,11 +65,11 @@ describe("ArtifactView", () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(current))));
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelector(".banner")).toBeNull();
-    FakeES.last.emit("resync", { dropped: 3 });
+    (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
     await new Promise(r => setTimeout(r, 30));
     expect(root.querySelector(".banner")).toBeNull();
     current = 4;
-    FakeES.last.emit("resync", { dropped: 3 });
+    (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
     await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v4 published"), "banner");
   });
 
@@ -84,8 +85,38 @@ describe("ArtifactView", () => {
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     await waitFor(() => listed === 1, "initial thread load");
     expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (0)");
-    FakeES.last.emit("ready", {});
+    (await waitFor(() => FakeES.last, "event stream")).emit("ready", {});
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the reload");
+  });
+
+  it("opens the event stream only after the viewer lookup answered, with the owner shell's token", async () => {
+    let answerViewer!: () => void;
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))),
+      url => url.includes("/threads")
+        ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
+        : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    await new Promise(r => setTimeout(r, 30));
+    expect(FakeES.last).toBeUndefined();
+    answerViewer();
+    const es = await waitFor(() => FakeES.last, "event stream");
+    expect(es.url).toBe(`/api/events?artifact=${ID}&token=tk`);
+  });
+
+  it("keeps a thread event that arrives while an older thread list is in flight", async () => {
+    let answerList!: () => void;
+    const t = { id: "01JB", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null },
+      status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      url => url.includes("/threads")
+        ? new Promise<Response>(r => { answerList = () => r(new Response(JSON.stringify({ threads: [], next_cursor: null }))); })
+        : Promise.resolve(new Response(JSON.stringify(viewer))));
+    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+    (await waitFor(() => FakeES.last, "event stream")).emit("thread", { type: "thread", artifact_id: ID, thread: t });
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the event");
+    answerList();
+    await new Promise(r => setTimeout(r, 30));
+    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (1)");
   });
 
   it("shows a failed thread load in the notice banner", async () => {

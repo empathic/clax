@@ -71,3 +71,8 @@ select { font: inherit; background: var(--card); color: var(--fg); border: 1px s
 .error { color: var(--danger); }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
 @media (max-width: 480px) { .topbar { flex-wrap: wrap; gap: 8px; } .topbar h1 { flex-basis: calc(100% - 40px); } .topbar button, .topbar select { padding: 4px 8px; font-size: 14px; } }
+.prompt-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); display: grid; place-items: center; z-index: 50; padding: var(--gutter); }
+.prompt { background: var(--card); color: var(--fg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; width: min(420px, 100%); box-shadow: 0 16px 40px rgba(0,0,0,.3); }
+.prompt h2 { font-size: 16px; margin: 0 0 8px; }
+.prompt p { margin: 0 0 12px; overflow-wrap: anywhere; }
+.prompt .actions { display: flex; gap: 8px; justify-content: flex-end; }

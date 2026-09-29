@@ -1,15 +1,18 @@
 import type { ComponentChildren } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import type { AnchorResult, ShellToBridge } from "../../bridge/src/protocol";
-import { ApiError, type Artifact, type Version, getArtifact } from "./api";
+import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { Composer, type Draft, Pins } from "./comments";
-import { subscribe } from "./events";
+import type { Declared } from "./caps/availability";
+import { CapabilityHost } from "./caps/host";
+import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
+import { type Ask, PromptDialog, promptQueue } from "./prompt";
 import { artifactOrigin, contentSrc, probeOrigin } from "./origin";
 import { Sidebar } from "./sidebar";
-import { type Thread, type Viewer, addComment, createThread, listThreads, resolveThread, sendToAgent, upsert } from "./threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "./threads";
 import { ViewerName } from "./viewer-name";
 
 type Props = { id: string; pinnedVersion: number | null };
@@ -37,6 +40,11 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
   const noticeFor = (prefix: string) => scopedNotice(setNotice, prefix);
   const threadsRef = useRef<Thread[]>([]);
   threadsRef.current = threads;
+  // Thread changes (events and this shell's own writes) since the latest
+  // `listThreads` request: its answer may predate them, so they are replayed
+  // on top of it. Only the latest request's answer is applied.
+  const threadLoad = useRef<{ n: number; since: ((ts: Thread[]) => Thread[])[] }>({ n: 0, since: [] });
+  const changeThreads = (f: (ts: Thread[]) => Thread[]) => { threadLoad.current.since.push(f); setThreads(f); };
 
   useEffect(() => {
     getArtifact(id).then(d => {
@@ -55,9 +63,34 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
 
   const frameWin = () => frameRef.current?.contentWindow ?? null;
   const send = (m: ShellToBridge) => sendToFrame(frameWin(), origin ?? null, m);
+  const [ask, setAsk] = useState<Ask | null>(null);
+  const prompt = useMemo(() => promptQueue(setAsk), []);
+  const hostRef = useRef<CapabilityHost | null>(null);
+  useEffect(() => {
+    if (!data || origin === undefined) return;
+    const host = new CapabilityHost(getToken().then(token => ({
+      aid: id,
+      version: shown,
+      pinned: pinnedVersion !== null,
+      token,
+      viewer: currentViewer,
+      declared: (data.artifact.capabilities ?? {}) as Declared,
+      prompt,
+      post: send,
+      reload: () => location.assign(`/a/${id}`),
+    })));
+    hostRef.current = host;
+    return () => { if (hostRef.current === host) hostRef.current = null; };
+  }, [id, shown, origin, data]);
   const resolveAll = () => send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.map(t => ({ id: t.id, anchor: t.anchor })) });
-  const loadThreads = () => { void report(listThreads(id), LOAD_FAILED, noticeFor(LOAD_FAILED)).then(ts => { if (ts) setThreads(ts); }); };
-  const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) setThreads(ts => upsert(ts, t)); }); };
+  const loadThreads = () => {
+    const load = { n: threadLoad.current.n + 1, since: [] as ((ts: Thread[]) => Thread[])[] };
+    threadLoad.current = load;
+    void report(listThreads(id), LOAD_FAILED, noticeFor(LOAD_FAILED)).then(ts => {
+      if (ts && threadLoad.current.n === load.n) setThreads(load.since.reduce((acc, f) => f(acc), ts));
+    });
+  };
+  const saveThread = (p: Promise<Thread>, prefix: string) => { void report(p, prefix, noticeFor(prefix)).then(t => { if (t) changeThreads(ts => upsert(ts, t)); }); };
   const scrollTo = (t: Thread) => { setSelected(t.id); send({ type: "artifax:scroll-to", anchor: t.anchor }); };
 
   useEffect(loadThreads, [id]);
@@ -78,6 +111,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         case "artifax:hello":
           // A stale or foreign document in the frame gets no welcome and no anchors.
           if (!helloMatches(m, id, shown)) break;
+          hostRef.current?.reset();
           send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
           resolveAll();
           break;
@@ -85,6 +119,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         case "artifax:anchors": setResolved(prev => { const next = m.requestId ? {} as Record<string, AnchorResult> : { ...prev }; for (const r of m.results) next[r.id] = r; return next; }); break;
         case "artifax:cancel": setCommenting(false); break;
         case "artifax:hover": break;
+        case "artifax:use": case "artifax:call": void hostRef.current?.handle(m); break;
       }
     };
     addEventListener("message", onMessage);
@@ -93,11 +128,13 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
     return () => { removeEventListener("message", onMessage); removeEventListener("keydown", onKey); };
   }, [origin, commenting, id, shown]);
 
-  useEffect(() => subscribe(id, e => {
+  const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
+  onEventRef.current = e => {
+    hostRef.current?.onEvent(e);
     if (e.type === "version" && e.n > latestKnown.current) { latestKnown.current = e.n; setNewer(e.n); }
     if (e.type === "artifact_deleted") setDeleted(true);
-    if (e.type === "thread") setThreads(ts => upsert(ts, e.thread));
-    if (e.type === "feedback_state") setThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
+    if (e.type === "thread") changeThreads(ts => upsert(ts, e.thread));
+    if (e.type === "feedback_state") changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
     // A (re)connect may follow a daemon restart that dropped events without a
     // resync; reload like a resync. The first one also covers anything
     // published between the initial load and the stream opening.
@@ -108,7 +145,28 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
         if (n > latestKnown.current) { latestKnown.current = n; setNewer(n); }
       }, err => { if (err instanceof ApiError && err.status === 404) setDeleted(true); });
     }
-  }), [id]);
+  };
+  useEffect(() => {
+    let live = true;
+    let stop: (() => void) | null = null;
+    const open = async (resync: boolean) => {
+      // The owner shell passes its token (null on a LAN view) so the daemon
+      // counts its stream as the owner shell's.
+      const token = await getToken();
+      if (!live) return;
+      stop?.();
+      stop = subscribe(id, e => onEventRef.current(e), token);
+      // Events between the old and the new stream are lost: refetch as on a resync.
+      if (resync) onEventRef.current({ type: "resync", dropped: 0 });
+    };
+    // The daemon reads the viewer cookie when the stream opens (its level for
+    // `doc` events is fixed then), so open it once the lookup has set the
+    // cookie, and reopen when a later lookup or a rename changes the viewer.
+    const first = () => { if (live && !stop) void open(false); };
+    void getViewer().then(first, first);
+    const off = onViewer(() => { if (live && stop) void open(true); });
+    return () => { live = false; off(); stop?.(); };
+  }, [id]);
 
   if (error) return <Shell title="Artifax"><p class="empty">{error}</p></Shell>;
   if (!data || origin === undefined) return <Shell title="Artifax"><p class="empty muted">Loading…</p></Shell>;
@@ -141,7 +199,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
             try {
               const { thread } = await createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip });
               noticeFor(POST_FAILED)(null);
-              setThreads(ts => upsert(ts, thread));
+              changeThreads(ts => upsert(ts, thread));
               setSelected(thread.id);
               setDraft(null);
               setPanel(true);
@@ -157,6 +215,7 @@ export default function ArtifactView({ id, pinnedVersion }: Props) {
           {notice && (
             <div class="banner notice" role="alert"><span>{notice}</span><button onClick={() => setNotice(null)}>Dismiss</button></div>
           )}
+          {ask && <PromptDialog ask={ask} />}
         </div>
         {panel && <Sidebar threads={threads} resolved={resolved} selected={selected}
           me={me} header={narrow ? <ViewerName setNotice={setNotice} onViewer={setMe} /> : undefined}

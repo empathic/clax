@@ -54,11 +54,48 @@ export async function sendToAgent(aid: string, tid: string): Promise<Thread> {
 export async function resolveThread(aid: string, tid: string): Promise<Thread> {
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/resolve`))).thread;
 }
-export async function getViewer(): Promise<Viewer> {
+let viewerMemo: Promise<Viewer> | null = null;
+const viewerListeners = new Set<(v: Viewer) => void>();
+
+/** Calls `fn` after every successful viewer lookup or rename; returns the unsubscriber. */
+export function onViewer(fn: (v: Viewer) => void): () => void {
+  viewerListeners.add(fn);
+  return () => { viewerListeners.delete(fn); };
+}
+
+const announceViewer = (v: Viewer) => { for (const fn of [...viewerListeners]) fn(v); };
+
+async function fetchViewer(): Promise<Viewer> {
   return (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me"))).viewer;
 }
+
+/** The viewer behind the cookie, fetched once per page: the first request sets
+ * the cookie, so every caller shares it. A failed lookup is retried next call. */
+export function getViewer(): Promise<Viewer> {
+  if (!viewerMemo) {
+    const p = fetchViewer();
+    viewerMemo = p;
+    p.then(announceViewer, () => { if (viewerMemo === p) viewerMemo = null; });
+  }
+  return viewerMemo;
+}
+
 export async function setViewerName(name: string): Promise<Viewer> {
-  return (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) }))).viewer;
+  const v = (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) }))).viewer;
+  viewerMemo = Promise.resolve(v);
+  announceViewer(v);
+  return v;
+}
+
+/** The viewer as capabilities see it: public ID and current name. */
+export async function currentViewer(): Promise<{ publicId: string; name: string | null }> {
+  const v = await getViewer();
+  return { publicId: v.public_id, name: v.display_name };
+}
+
+/** Forgets the fetched viewer (tests). */
+export function forgetViewer(): void {
+  viewerMemo = null;
 }
 
 /** `threads` with `t` replacing the thread of the same ID, or appended. */

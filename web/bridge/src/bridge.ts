@@ -1,8 +1,10 @@
 /**
  * Runtime bridge injected into every published page.
- * It exposes `window.claude.use(name)` and resolves `null` for every
- * capability, so pages written against the claude.ai contract load and
- * degrade correctly. When framed, it greets the shell with `artifax:hello`
+ * It exposes `window.claude.use(name)`, which resolves the frozen namespace of
+ * each capability the shell grants and `null` for the rest (see `use.ts`);
+ * unframed, every name resolves `null`. Capability calls and the shell's
+ * answers travel as `artifax:use`/`call`/`event` messages (see `protocol.ts`),
+ * queued until the shell's welcome. When framed, it greets the shell with `artifax:hello`
  * (target "*", no page data), then takes orders only from `window.parent` at
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
@@ -13,6 +15,8 @@ import { acceptFromShell, shellOrigins } from "./channel";
 import { blockAncestor, renderClip } from "./clip";
 import { CommentMode } from "./comment-mode";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
+import { Rpc } from "./rpc";
+import { makeUse } from "./use";
 
 (() => {
   const script = document.currentScript as HTMLScriptElement | null;
@@ -23,15 +27,12 @@ import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
   };
   (window as any).__artifax = meta;
 
-  const cache = new Map<string, Promise<null>>();
-  function use(name: string): Promise<null> {
-    let p = cache.get(name);
-    if (!p) {
-      p = Promise.resolve().then(() => null);
-      cache.set(name, p);
-    }
-    return p;
-  }
+  const framed = window.parent !== window;
+  let shellOrigin: string | null = null;
+  const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
+    window.parent.postMessage(m, shellOrigin ?? "*", transfer);
+  const rpc = new Rpc(m => post(m));
+  const use = makeUse({ framed, rpc });
 
   try {
     Object.defineProperty(window, "claude", {
@@ -45,12 +46,9 @@ import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
     console.warn("artifax: could not install window.claude", e);
   }
 
-  if (window.parent === window) return; // opened directly: there is no shell
+  if (!framed) return; // opened directly: there is no shell
 
   const origins = shellOrigins(location.href);
-  let shellOrigin: string | null = null;
-  const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
-    window.parent.postMessage(m, shellOrigin ?? "*", transfer);
   const box = (t: Element | Range): Box => { const r = t.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
 
   // Anchors are resolved once per shell request; scroll and resize only
@@ -92,7 +90,8 @@ import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
-      case "artifax:welcome": mode.set(m.mode === "comment"); break;
+      case "artifax:welcome": mode.set(m.mode === "comment"); rpc.connect(); break;
+      case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
       case "artifax:comment-mode": mode.set(m.on); break;
       case "artifax:resolve-anchors": anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
       case "artifax:scroll-to": {

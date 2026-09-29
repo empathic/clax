@@ -1,8 +1,10 @@
 import { render } from "preact";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { forgetViewer } from "./threads";
 import { ViewerName } from "./viewer-name";
 
 describe("ViewerName", () => {
+  beforeEach(() => { forgetViewer(); });
   afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
   it("sends a name save only after the initial lookup answered, so both use one viewer cookie", async () => {
@@ -11,7 +13,7 @@ describe("ViewerName", () => {
     vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
       const method = init?.method ?? "GET";
       calls.push(method);
-      const res = (name: string | null) => new Response(JSON.stringify({ viewer: { id: "v", display_name: name, created_at: "x" } }));
+      const res = (name: string | null) => new Response(JSON.stringify({ viewer: { public_id: "u_00000000000000000000aa", display_name: name, created_at: "x" } }));
       if (method === "GET") return new Promise<Response>(r => { answerGet = () => r(res(null)); });
       return Promise.resolve(res("Alex"));
     }));

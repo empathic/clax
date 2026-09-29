@@ -1,3 +1,4 @@
+import { expect, type Frame, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -69,4 +70,35 @@ export async function api(base: string, token: string, path: string, init: Reque
   const res = await fetch(`${base}${path}`, { ...init, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.status === 204 ? {} : res.json();
+}
+
+export type FrameMode = "subdomain" | "sandbox";
+
+/** The content frame showing version `n` of artifact `id`, in either frame mode. */
+export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
+  const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
+  await expect.poll(() => page.frame({ url }) !== null, { timeout: 15_000 }).toBe(true);
+  return page.frame({ url })!;
+}
+
+/** Opens the artifact's shell in `mode`. `lan: true` answers `/api/token` with
+ * 403, so the shell behaves as a LAN viewer's (no token, sandboxed frame). */
+export async function openArtifact(page: Page, base: string, id: string, n: number, mode: FrameMode, opts: { lan?: boolean } = {}): Promise<Frame> {
+  if (mode === "sandbox" || opts.lan) await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+  if (opts.lan) {
+    await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
+  }
+  await page.goto(`${base}/a/${id}`);
+  return contentFrame(page, id, n);
+}
+
+/** Creates an artifact whose index.html is `html`, declaring `capabilities`. */
+export async function publishWith(base: string, token: string, title: string, html: string, capabilities: Record<string, unknown>) {
+  const res = await fetch(`${base}/api/artifacts`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+    body: JSON.stringify({ title, capabilities, files: { "index.html": { content: html, encoding: "utf8" } } }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return (await res.json()) as { artifact: { id: string; current_version: number } };
 }

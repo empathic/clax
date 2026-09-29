@@ -16,11 +16,12 @@ beforeAll(async () => {
 describe("bridge", () => {
   afterEach(() => { vi.restoreAllMocks(); });
 
-  it("exposes only use() and resolves null for every capability", async () => {
+  it("exposes only use() and resolves null for every capability when unframed", async () => {
     expect(Object.keys(window.claude!)).toEqual(["use"]);
-    for (const name of ["db", "artifact", "permissions", "room", "sample", "nonsense"]) {
+    for (const name of ["db", "artifact", "self", "permissions", "room", "sample", "nonsense"]) {
       await expect(window.claude!.use(name)).resolves.toBeNull();
     }
+    expect(window.claude!.use("self")).toBe(window.claude!.use("artifact"));
   });
 
   it("is frozen and memoised", async () => {
