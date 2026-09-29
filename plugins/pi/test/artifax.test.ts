@@ -1,14 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { artifactRef, artifaxExtension, htmlTitle, isText, textPrefix } from "../src/artifax.ts";
-import { ensure } from "../src/daemon.ts";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { artifactRef, artifaxExtension, htmlTitle, INJECT_RETRY_MS, isText, textPrefix } from "../src/artifax.ts";
+import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, artifaxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 
@@ -410,12 +410,12 @@ describe("artifax Pi extension", () => {
 });
 
 /** Creates a thread on version 1 as a browser does; `@agent` in `body` sends it. */
-async function browserThread(aid: string, body: string): Promise<string> {
+async function browserThread(aid: string, body: string, base = daemon.base): Promise<string> {
   const form = new FormData();
   form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals" }));
   form.set("body", body);
   form.set("version", "1");
-  const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
+  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
   expect(res.status).toBe(201);
   return (await res.json()).thread.id;
 }
@@ -495,6 +495,115 @@ describe("comments", () => {
     expect(pi.sent).toHaveLength(1);
   }, 20_000);
 
+  it("tier 1 leaves error results alone and the feedback pending", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tier1-error");
+    const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi error" }, ctx)).json.artifact_id;
+    await browserThread(aid, "@agent after the error");
+    const failed = await pi.callToolAsPi("artifax_read", { url_or_id: aid, path: "missing.css" }, ctx);
+    expect(failed.isError).toBe(true);
+    expect(failed.content).toHaveLength(1);
+    expect(json(failed)).toMatchObject({ error: { code: "not_found" }, feedback: [] });
+    expect(parts(await pi.callToolAsPi("artifax_list", {}, ctx)).json.feedback).toHaveLength(1);
+  });
+
+  it("tier 1 does not piggyback on wait_for_feedback or on tools it did not register", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-tier1-skip");
+    const a = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi quiet" }, ctx)).json.artifact_id;
+    const b = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi busy" }, ctx)).json.artifact_id;
+    await browserThread(b, "@agent on the other page");
+    // Waiting on `a` hands over nothing; the comment on `b` is not appended.
+    const waited = await pi.callToolAsPi("artifax_wait_for_feedback", { url_or_id: a, timeout_s: 1 }, ctx);
+    expect(waited.content).toHaveLength(1);
+    expect(parts(waited).json).toEqual({ feedback: [], waited_s: 1, call_again: true });
+    const foreign = { type: "tool_result", toolName: "artifax_foreign", toolCallId: "call-2", input: {}, content: [{ type: "text", text: "{}" }], isError: false, details: undefined };
+    for (const h of pi.handlers.get("tool_result") ?? []) expect(await h(foreign, ctx)).toBeUndefined();
+    expect(parts(await pi.callToolAsPi("artifax_list", {}, ctx)).json.feedback).toHaveLength(1);
+  });
+
+  it("refuses a thread ID that is not a canonical ULID", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-bad-thread");
+    const aid = parts(await pi.callToolAsPi("artifax_publish", { html: "<h2>Goals</h2>", title: "Pi ULID" }, ctx)).json.artifact_id;
+    const res = await pi.callTool("artifax_comments_read", { url_or_id: aid, thread_id: "81K6AB3Q9X7N2M4P5R6S8T0V1W" }, ctx);
+    expect(res.isError).toBe(true);
+    expect(json(res).error).toEqual({ code: "invalid_args", message: "'81K6AB3Q9X7N2M4P5R6S8T0V1W' is not a thread ID" });
+  });
+
+  it("session_shutdown stops the injection loop without leaving a retry timer", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-inject-stop");
+    await pi.emit("session_start", {}, ctx);
+    await new Promise(r => setTimeout(r, 300));
+    // Timers of the retry length created from here on, and those cleared.
+    const created = new Set<unknown>();
+    const cleared = new Set<unknown>();
+    const set = vi.spyOn(globalThis, "setTimeout");
+    const clear = vi.spyOn(globalThis, "clearTimeout");
+    set.mockImplementation(((fn: () => void, ms?: number, ...rest: unknown[]) => {
+      const t = realSetTimeout(fn, ms, ...rest);
+      if (ms === INJECT_RETRY_MS) created.add(t);
+      return t;
+    }) as typeof setTimeout);
+    clear.mockImplementation(((t: unknown) => { cleared.add(t); realClearTimeout(t as NodeJS.Timeout); }) as typeof clearTimeout);
+    try {
+      await pi.emit("session_shutdown", {}, ctx);
+      await new Promise(r => realSetTimeout(r, 100));
+    } finally {
+      set.mockRestore();
+      clear.mockRestore();
+    }
+    const alive = [...created].filter(t => !cleared.has(t));
+    for (const t of alive) realClearTimeout(t as NodeJS.Timeout);
+    expect(alive).toHaveLength(0);
+  });
+
+  it("pauses the injection loop after an answer that came back empty at once", async () => {
+    let polls = 0;
+    const fake = await fakeDaemonHome((req, reply) => {
+      if (req.url?.startsWith("/api/sessions/s1/feedback")) { polls++; return reply({ feedback: [], text: null, waited_s: 0 }); }
+      return false;
+    });
+    try {
+      const pi = new FakePi();
+      artifaxExtension({ home: fake.home, env: withBin(join(scratch, "no-such-artifax")) })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-inject-empty");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      await new Promise(r => setTimeout(r, 1500));
+      expect(polls).toBeGreaterThanOrEqual(1);
+      expect(polls).toBeLessThanOrEqual(2);
+    } finally {
+      fake.close();
+    }
+  });
+
+  it("the injection loop never starts a stopped daemon, and resumes when one is back", async () => {
+    const home = join(scratch, "inject-restart");
+    const env = withBin(artifaxBin);
+    const stop = () => execFileSync(artifaxBin, ["stop"], { env: { ...env, ARTIFAX_HOME: home }, stdio: "ignore" });
+    try {
+      await ensure(home, { env, port: 0 });
+      const pi = new FakePi();
+      artifaxExtension({ home, env, port: 0 })(pi.api);
+      const { ctx } = fakeContext(scratch, "pi-inject-restart");
+      loaded.push({ pi, ctx });
+      await pi.emit("session_start", {}, ctx);
+      stop();
+      await new Promise(r => setTimeout(r, 6000));
+      expect(existsSync(join(home, "daemon.json"))).toBe(false);
+      expect(await discover(home)).toBeNull();
+
+      const d = endpointOf(await ensure(home, { env, port: 0 }));
+      const live = async () => ((await api(d, "/api/sessions")).sessions as any[]).find(s => s.harness_session_id === "pi-inject-restart" && s.ended_at === null);
+      await expect.poll(live, { timeout: 10_000, interval: 200 }).toBeTruthy();
+      const sid = (await live()).id;
+      const aid = (await api(d, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Back", files: { "index.html": { content: "<h2>Goals</h2>", encoding: "utf8" } } }) })).artifact.id;
+      await api(d, `/api/sessions/${sid}/watches/${aid}`, { method: "PUT", body: JSON.stringify({ replies_armed: true }) });
+      await browserThread(aid, "@agent welcome back", d.base);
+      await expect.poll(() => pi.sent.length, { timeout: 8000 }).toBe(1);
+    } finally {
+      stop();
+    }
+  }, 60_000);
+
   it("the tool schemas match the daemon's /mcp schemas", async () => {
     const mcp = await mcpTools(daemon);
     const { pi } = load(daemon.home, "pi-schemas");
@@ -510,6 +619,32 @@ describe("comments", () => {
     }
   });
 });
+
+/** The timer functions as they were before any test replaced them. */
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
+
+/** An Artifax home whose daemon answers `/healthz`, registers every session as
+ * `s1`, and passes other requests to `handle`, which answers through `reply` or
+ * returns false to leave the request unanswered. */
+async function fakeDaemonHome(handle: (req: import("node:http").IncomingMessage, reply: (body: unknown) => void) => unknown) {
+  const home = join(scratch, `fake-${Math.random().toString(36).slice(2)}`);
+  mkdirSync(home, { recursive: true });
+  const server = createHttpServer((req, res) => {
+    const reply = (body: unknown) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(body)); };
+    if (req.url === "/healthz") return reply({ version: "0.1.0" });
+    if (req.method === "POST" && req.url === "/api/sessions") {
+      return reply({ session: { id: "s1", harness: "pi", harness_session_id: "h", cwd: "/", pid: 1, parent_pid: 1, started_at: "", last_seen_at: "", ended_at: null } });
+    }
+    handle(req, reply);
+  });
+  await new Promise<void>(r => server.listen(0, "127.0.0.1", () => r()));
+  const port = (server.address() as { port: number }).port;
+  writeFileSync(join(home, "daemon.json"), JSON.stringify({
+    port, pid: process.pid, token: "t", started_at: "2026-01-01T00:00:00Z", bind: "127.0.0.1", version: "0.1.0",
+  }));
+  return { home, close: () => { server.closeAllConnections(); server.close(); } };
+}
 
 /** The daemon's /mcp `tools/list`, as input schemas by tool name. */
 async function mcpTools(d: { base: string; token: string }): Promise<Map<string, any>> {

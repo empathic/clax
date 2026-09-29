@@ -460,6 +460,14 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/feedback?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000, signal });
   }
 
+  /** [`feedback`] for a background poll: it only discovers a running daemon
+   * (registering the session there again when needed) and never starts one,
+   * so a daemon the person stopped stays stopped. */
+  pollFeedback(tier: string, waitS: number, signal: AbortSignal): Promise<any> {
+    const q = new URLSearchParams({ tier, wait: String(waitS) });
+    return this.json(() => `${this.sessionPath()}/feedback?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000, signal }, this.discoverFn);
+  }
+
   /** `POST /api/sessions/<sid>/feedback/ack` `{thread_ids}`: acknowledges every
    * row of the session on these threads. */
   ack(threadIds: string[]): Promise<any> {
