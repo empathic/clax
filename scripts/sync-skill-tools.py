@@ -48,8 +48,8 @@ def block(manifest, prefix, source, tools):
 DOC_LISTS = [
     ("docs/contract.md", r"^([A-Z][a-z-]+) tools: ", ""),
     ("README.md", r"^Each harness gets the same ([a-z-]+) tools", ""),
-    ("plugins/claude-code/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools", ""),
-    ("plugins/artifax/README.md", r"^- The `artifax` MCP server .*?: ([a-z-]+) tools", ""),
+    ("plugins/claude-code/README.md", r"^- The `artifax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
+    ("plugins/artifax/README.md", r"^- The `artifax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "artifax_"),
 ]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
@@ -74,7 +74,8 @@ def doc_problems(tools):
     problems = []
     for path, opening, prefix in DOC_LISTS:
         text = open(os.path.join(ROOT, path)).read()
-        m = re.search(opening, text, re.M | re.S)
+        # Each opening matches within one line, so it cannot span paragraphs.
+        m = re.search(opening, text, re.M)
         if not m:
             problems.append(f"{path}: no tool list matching {opening!r}")
             continue
@@ -88,6 +89,9 @@ def doc_problems(tools):
 
 
 def main():
+    if sys.argv[1:] not in ([], ["--check"]):
+        print("usage: scripts/sync-skill-tools.py [--check]", file=sys.stderr)
+        sys.exit(2)
     check = sys.argv[1:] == ["--check"]
     tools = [t["name"] for t in json.load(open(os.path.join(ROOT, FIXTURE)))["tools"]]
     stale = []

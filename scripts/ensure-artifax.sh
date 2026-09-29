@@ -186,7 +186,10 @@ resolve_existing() {
             echo "$ARTIFAX_BIN"
             return 0
         fi
-        log "warning: \$ARTIFAX_BIN is set to '${ARTIFAX_BIN}' but is not a usable Artifax CLI; ignoring it."
+        # Hook mode folds this into its single no-binary line (see main).
+        if [ "$MODE" != hook ]; then
+            log "warning: \$ARTIFAX_BIN is set to '${ARTIFAX_BIN}' but is not a usable Artifax CLI; ignoring it."
+        fi
     fi
     if candidate="$(command -v artifax 2>/dev/null)" && is_artifax "$candidate"; then
         echo "$candidate"
@@ -309,11 +312,14 @@ path_hint() {
 # which macOS's bash 3.2 lacks), and this chain must abort on a failed
 # download or checksum.
 install_artifax() {
-    check_dependencies
     local target version dest_dir
+    # Armed first, so a missing tool or an unsupported platform is logged and
+    # names the remedies like a failed download.
+    DOWNLOADING="setup"
+    trap on_exit EXIT
+    check_dependencies
     target="$(resolve_target)"
     DOWNLOADING=1
-    trap on_exit EXIT
     version="$(fetch_latest_version)"
     dest_dir="$(choose_install_dir)"
 
@@ -339,6 +345,8 @@ on_exit() {
     if [ "$rc" != 0 ] && [ -n "$DOWNLOADING" ]; then
         if [ "$DOWNLOADING" = verify ]; then
             log "artifax: no binary found, and the downloaded release failed verification."
+        elif [ "$DOWNLOADING" = setup ]; then
+            log "artifax: no binary found, and a release cannot be downloaded here (see the error above)."
         else
             log "artifax: no binary found, and the release download failed: no Artifax release has been published yet."
         fi
@@ -349,12 +357,40 @@ on_exit() {
     exit "$rc"
 }
 
+# Runs a hook with the found binary and always exits 0: a hook must never
+# fail its harness. Its stderr passes through; its stdout only when it exited
+# 0. A non-zero exit is logged with the end of its stderr.
+run_hook() {
+    local bin="$1" out rc errfile="" tail=""
+    shift
+    errfile="$(mktemp 2>/dev/null)" || errfile=""
+    if [ -n "$errfile" ]; then
+        if out="$("$bin" "$@" 2>"$errfile")"; then rc=0; else rc=$?; fi
+        cat "$errfile" >&2 2>/dev/null || true
+        tail="$(tr '\n"' " '" < "$errfile" 2>/dev/null)" || tail=""
+        rm -f "$errfile"
+    else
+        if out="$("$bin" "$@")"; then rc=0; else rc=$?; fi
+    fi
+    if [ "$rc" = 0 ]; then
+        if [ -n "$out" ]; then printf '%s\n' "$out"; fi
+    else
+        tail="${tail% }"
+        if [ "${#tail}" -gt 200 ]; then tail="${tail: -200}"; fi
+        log_failure "artifax exited ${rc}: ${tail}" "$rc"
+    fi
+    exit 0
+}
+
 main() {
-    local bin
+    local bin why=""
     if ! bin="$(resolve_existing)"; then
         if [ "${1:-}" = exec ] && [ "${2:-}" = hook ]; then
-            log "artifax: no binary found; ${REMEDY}"
-            log_failure "no binary found" 0
+            if [ -n "${ARTIFAX_BIN:-}" ]; then
+                why=" (ARTIFAX_BIN '${ARTIFAX_BIN}' is not a usable Artifax CLI)"
+            fi
+            log "artifax: no binary found${why}; ${REMEDY}"
+            log_failure "no binary found${why}" 0
             exit 0
         fi
         install_artifax
@@ -365,6 +401,7 @@ main() {
     case "${1:-}" in
         exec)
             shift
+            if [ "${1:-}" = hook ]; then run_hook "$bin" "$@"; fi
             exec "$bin" "$@"
             ;;
         "")

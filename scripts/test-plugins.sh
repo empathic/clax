@@ -254,6 +254,9 @@ for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Comment loop")" ]; then pass "$f has a Comment loop section"; else fail "$f has no '## Comment loop' section"; fi
 done
 same_section "Comment loop" "${skill_copies[@]}"
+for f in "${skill_copies[@]}"; do
+    if [ -n "$(section "$f" "Data (db)")" ]; then pass "$f has a Data (db) section"; else fail "$f has no '## Data (db)' section"; fi
+done
 same_section "Data (db)" "${skill_copies[@]}"
 
 # Every tool list names exactly the tools in plugins/pi/test/fixtures/contract.json:

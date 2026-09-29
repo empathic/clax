@@ -42,12 +42,16 @@ fails a Claude Code turn.
 - `cargo install --path crates/artifax-cli` (above) is the simplest: with
   `~/.cargo/bin` on the `PATH` Claude Code starts with, the launcher finds
   `artifax` there. Run it again after changing the Rust code.
-- Or build with `cargo build -p artifax-cli` and let the launcher find the
-  checkout's `target/debug/artifax` (or `target/release/artifax` when newer).
-  It looks above the plugin directory, so this works when Claude Code runs the
-  plugin from the checkout itself; when it runs its own copy (under
-  `~/.claude/plugins`), set `ARTIFAX_SOURCE_DIR=/path/to/artifax` in the
+- A plugin installed from a marketplace (`/plugin install`) runs from Claude
+  Code's own copy under `~/.claude/plugins/cache`, not from the checkout, so
+  the launcher cannot find the checkout's build by itself: install with
+  `cargo install` (above), or set `ARTIFAX_SOURCE_DIR=/path/to/artifax` in the
   environment Claude Code starts with.
+- Only when Claude Code loads the plugin straight from the checkout
+  (`claude --plugin-dir /path/to/artifax/plugins/claude-code`) does
+  `cargo build -p artifax-cli` suffice: the launcher looks above the plugin
+  directory and uses the checkout's `target/debug/artifax` (or
+  `target/release/artifax` when newer).
 - Or set `ARTIFAX_BIN` to a binary.
 
 Claude Code installs the plugin when you run `/plugin install`; after changing

@@ -1139,8 +1139,8 @@ fn every_hook_run_appends_a_line_to_hooks_log() {
 #[test]
 fn doctor_agent_checks_each_layer_of_the_integration() {
     let e = Env::new();
-    // Last night's Codex cache copy: the right version, a skill that predates
-    // the generated tools block.
+    // A Codex cache copy whose manifest version matches this binary but whose
+    // skill has no generated tools block: plugin passes, skill is stale.
     let root = ".codex/plugins/cache/artifax/artifax/0.2.0";
     write(
         e.dir.path(),

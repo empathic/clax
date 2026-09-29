@@ -31,6 +31,14 @@ for t in bash env awk sort head grep curl tar sha256sum shasum mktemp uname mv c
     if p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ]; then ln -sf "$p" "$TOOLS/$t"; fi
 done
 
+# The same tools without curl.
+NOCURL="$ROOT/nocurl"
+mkdir -p "$NOCURL"
+for t in "$TOOLS"/*; do
+    name="${t##*/}"
+    [ "$name" = curl ] || ln -sf "$(readlink "$t")" "$NOCURL/$name"
+done
+
 fake_artifax() { # dir version-line
     mkdir -p "$1"
     printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "%s"; else echo "args: $*"; fi\n' "$2" > "$1/artifax"
@@ -234,6 +242,52 @@ fake_artifax "$FAKEBIN" "artifax 0.2.0"
 run exec hook --agent codex stop
 if [ "$RC" = 0 ] && [ "$OUT" = "args: hook --agent codex stop" ]; then pass "hook mode runs a found binary"
 else fail "hook mode runs a found binary (rc=$RC out=$OUT)"; fi
+
+new_env
+plugin_copy "$SANDBOX/cache/plugin"
+ARTIFAX_BIN="$SANDBOX/missing" run_copy "$SANDBOX/cache/plugin/scripts/ensure-artifax.sh" exec hook --agent codex stop
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] \
+    && echo "$ERR" | grep -q "no binary found" && echo "$ERR" | grep -q "ARTIFAX_BIN '$SANDBOX/missing'"; then
+    pass "hook mode folds an unusable ARTIFAX_BIN into its one line"
+else fail "hook mode folds an unusable ARTIFAX_BIN into its one line (rc=$RC err=$ERR)"; fi
+
+# A found binary that fails: exit 0, no stdout, stderr passed on, failure logged.
+new_env
+mkdir -p "$FAKEBIN"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "artifax 0.2.0"; exit 0; fi\necho "partial output"\necho "boom: daemon exploded" >&2\nexit 3\n' > "$FAKEBIN/artifax"
+chmod +x "$FAKEBIN/artifax"
+run exec hook --agent claude prompt
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "boom: daemon exploded"; then
+    pass "hook mode exits 0 and drops stdout when the binary fails"
+else fail "hook mode exits 0 and drops stdout when the binary fails (rc=$RC out=$OUT err=$ERR)"; fi
+if hooks_log | grep -q "mode=hook agent=claude exit=3 reason=\"artifax exited 3: boom: daemon exploded\""; then
+    pass "a failing hook binary is logged with its stderr"
+else fail "a failing hook binary is logged with its stderr ($(hooks_log))"; fi
+
+# A found binary that succeeds: its stdout passes through, nothing is logged.
+new_env
+fake_artifax "$FAKEBIN" "artifax 0.2.0"
+run exec hook --agent codex stop
+if [ "$RC" = 0 ] && [ "$OUT" = "args: hook --agent codex stop" ] && [ -z "$(hooks_log)" ]; then
+    pass "hook mode passes a succeeding binary's stdout through"
+else fail "hook mode passes a succeeding binary's stdout through (rc=$RC out=$OUT log=$(hooks_log))"; fi
+
+# MCP mode: setup failures before any download still log and name the remedies.
+new_env
+printf '#!/bin/sh\ncase "$1" in -s) echo FreeBSD ;; -m) echo x86_64 ;; esac\n' > "$FAKEBIN/uname"
+chmod +x "$FAKEBIN/uname"
+run exec mcp --agent codex
+if [ "$RC" = 1 ] && echo "$ERR" | grep -q "unsupported OS" && echo "$ERR" | grep -q "cargo install --path crates/artifax-cli" \
+    && hooks_log | grep -q "mode=mcp agent=codex exit=1"; then
+    pass "an unsupported platform in mcp mode logs and names the remedies"
+else fail "an unsupported platform in mcp mode logs and names the remedies (rc=$RC err=$ERR log=$(hooks_log))"; fi
+
+new_env
+PATH="$FAKEBIN:$NOCURL" run exec mcp --agent codex
+if [ "$RC" = 1 ] && echo "$ERR" | grep -q "required commands not found: curl" && echo "$ERR" | grep -q "ARTIFAX_BIN" \
+    && hooks_log | grep -q "mode=mcp agent=codex exit=1"; then
+    pass "a missing curl in mcp mode logs and names the remedies"
+else fail "a missing curl in mcp mode logs and names the remedies (rc=$RC err=$ERR log=$(hooks_log))"; fi
 
 # --- Download ---------------------------------------------------------------
 
