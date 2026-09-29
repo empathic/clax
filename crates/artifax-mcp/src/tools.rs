@@ -241,17 +241,21 @@ fn is_text(content_type: &str) -> bool {
         )
 }
 
-/// The first `max` bytes of `bytes` as text. A cut through a multi-byte character
-/// drops that character; other invalid UTF-8 is replaced with U+FFFD.
+/// The first `max` bytes of `bytes` as text. When the cut falls inside a
+/// multi-byte character, that character's bytes are dropped; any other invalid
+/// UTF-8 is replaced with U+FFFD (as a streaming UTF-8 decoder does).
 fn text_prefix(bytes: &[u8], max: usize) -> String {
-    let mut slice = &bytes[..bytes.len().min(max)];
-    if let Err(e) = std::str::from_utf8(slice)
-        && e.error_len().is_none()
-        && slice.len() < bytes.len()
+    let mut end = bytes.len().min(max);
+    if end < bytes.len()
+        && let Some(last) = bytes[..end].utf8_chunks().last()
     {
-        slice = &slice[..e.valid_up_to()];
+        let tail = last.invalid();
+        // An invalid tail that is a valid start of a sequence was cut short.
+        if !tail.is_empty() && std::str::from_utf8(tail).is_err_and(|e| e.error_len().is_none()) {
+            end -= tail.len();
+        }
     }
-    String::from_utf8_lossy(slice).into_owned()
+    String::from_utf8_lossy(&bytes[..end]).into_owned()
 }
 
 /// The MCP tool set. Each instance talks to one daemon and attributes its
@@ -799,68 +803,62 @@ impl ServerHandler for ArtifaxTools {
 mod tests {
     use super::*;
 
+    /// The contract fixture shared with the Pi extension's tests.
+    fn fixture() -> Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/pi/test/fixtures/contract.json");
+        serde_json::from_slice(&std::fs::read(&path).expect("read contract.json"))
+            .expect("contract.json is JSON")
+    }
+
+    fn cases(name: &str) -> Vec<Value> {
+        let cases = fixture()[name].as_array().expect("fixture section").clone();
+        assert!(!cases.is_empty(), "{name}");
+        cases
+    }
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
     #[test]
-    fn artifact_ref_reads_versions_from_every_url_form() {
-        let id = "7q3k9mzx2b4t";
-        for (s, v) in [
-            (format!("http://localhost:7480/a/{id}"), None),
-            (format!("/a/{id}"), None),
-            (format!("http://localhost:7480/a/{id}/v/3"), Some(3)),
-            (format!("http://127.0.0.1:7480/c/{id}/v/2/"), Some(2)),
-            (
-                format!("http://127.0.0.1:7480/c/{id}/v/2/img/a.png"),
-                Some(2),
-            ),
-            (format!("http://{id}.localhost:7480/v/4/"), Some(4)),
-            (format!("http://{id}.localhost/v/5/app.js?x#y"), Some(5)),
-            (format!("http://{id}.localhost:7480/"), None),
-        ] {
-            assert_eq!(artifact_ref(&s).unwrap(), (id.to_string(), v), "{s}");
-        }
-        for bad in [
-            "http://localhost:7480/c/nope/v/1/",
-            "http://evil.localhost:7480/v/1/",
-            "http://localhost:7480/x/7q3k9mzx2b4t",
-        ] {
-            assert!(artifact_ref(bad).is_err(), "{bad}");
+    fn artifact_ref_matches_the_fixture() {
+        for c in cases("artifact_ref") {
+            let input = c["input"].as_str().unwrap();
+            match c.get("error") {
+                Some(_) => assert!(artifact_ref(input).is_err(), "{input}"),
+                None => assert_eq!(
+                    artifact_ref(input).unwrap(),
+                    (
+                        c["id"].as_str().unwrap().to_string(),
+                        c["version"].as_u64().map(|v| v as u32)
+                    ),
+                    "{input}"
+                ),
+            }
         }
     }
 
     #[test]
-    fn artifact_id_accepts_ids_and_urls() {
-        let id = "7q3k9mzx2b4t";
-        for s in [
-            id.to_string(),
-            format!("http://localhost:7480/a/{id}"),
-            format!("http://localhost:7480/a/{id}/v/2?x=1"),
-            format!(" {id} "),
-        ] {
-            assert_eq!(artifact_id(&s).unwrap(), id, "{s}");
+    fn text_prefix_matches_the_fixture() {
+        for c in cases("text_prefix") {
+            let (h, max) = (c["hex"].as_str().unwrap(), c["max"].as_u64().unwrap());
+            assert_eq!(
+                text_prefix(&hex(h), max as usize),
+                c["text"].as_str().unwrap(),
+                "{h} {max}"
+            );
         }
-        assert!(artifact_id("http://localhost/a/").is_err());
-        assert!(artifact_id("nope").is_err());
     }
 
     #[test]
-    fn text_prefix_never_splits_a_character() {
-        let s = "aé".as_bytes();
-        assert_eq!(text_prefix(s, 2), "a");
-        assert_eq!(text_prefix(s, 3), "aé");
-        assert_eq!(text_prefix(&[b'a', 0xff, b'b'], 10), "a\u{FFFD}b");
-    }
-
-    #[test]
-    fn text_types() {
-        for t in [
-            "text/html; charset=utf-8",
-            "application/json",
-            "application/javascript",
-            "image/svg+xml",
-        ] {
-            assert!(is_text(t), "{t}");
-        }
-        for t in ["image/png", "application/octet-stream", "font/woff2"] {
-            assert!(!is_text(t), "{t}");
+    fn is_text_matches_the_fixture() {
+        for c in cases("is_text") {
+            let t = c["content_type"].as_str().unwrap();
+            assert_eq!(is_text(t), c["text"].as_bool().unwrap(), "{t:?}");
         }
     }
 }

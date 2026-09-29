@@ -213,8 +213,21 @@ const WHITESPACE = /[\t\n\v\f\r \u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202
 const TRAILING_WHITESPACE = new RegExp(`${WHITESPACE.source}$`);
 const BASIC_ENTITIES: Record<string, string> = { "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": "\"", "&apos;": "'" };
 
+/** Tags [`htmlTitle`] looks for: the title, and elements whose contents it skips. */
+const SKIPPED_OR_TITLE = ["title", "script", "style", "svg"];
+
+/** True when `lower` opens a `name` tag at `at` (a `<`): the name is followed
+ * by `>`, ASCII whitespace or `/`. */
+function tagStarts(lower: string, at: number, name: string): boolean {
+  if (!lower.startsWith(name, at + 1)) return false;
+  const next = lower[at + 1 + name.length];
+  return next !== undefined && /[>\t\n\f\r /]/.test(next);
+}
+
 /** The text of the first `<title>` element of `html`, for use as an artifact
- * title: the tag name matches in any case and may carry attributes; the five
+ * title. `<!-- comments -->` and the contents of `<script>`, `<style>` and
+ * `<svg>` elements are skipped (an unclosed one hides the rest of the page).
+ * Tag names match in any case and may carry attributes; the five
  * entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any other
  * entity is kept as written); runs of whitespace become one space; the result
  * is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `undefined`
@@ -226,21 +239,33 @@ export function htmlTitle(html: string): string | undefined {
   let from = 0;
   let bodyStart: number;
   for (;;) {
-    const at = lower.indexOf("<title", from);
+    const at = lower.indexOf("<", from);
     if (at < 0) return undefined;
-    const after = at + "<title".length;
-    const next = lower[after];
-    if (next === ">") {
-      bodyStart = after + 1;
-      break;
+    if (lower.startsWith("<!--", at)) {
+      const end = lower.indexOf("-->", at + 4);
+      if (end < 0) return undefined;
+      from = end + 3;
+      continue;
     }
-    if (next !== undefined && /[\t\n\f\r /]/.test(next)) {
-      const gt = lower.indexOf(">", after);
-      if (gt < 0) return undefined;
+    const name = SKIPPED_OR_TITLE.find(n => tagStarts(lower, at, n));
+    if (name === undefined) {
+      from = at + 1;
+      continue;
+    }
+    const gt = lower.indexOf(">", at + 1 + name.length);
+    if (gt < 0) return undefined;
+    if (name === "title") {
       bodyStart = gt + 1;
       break;
     }
-    from = after;
+    if (lower[gt - 1] === "/") {
+      // Self-closing, as `<svg/>`: no contents to skip.
+      from = gt + 1;
+      continue;
+    }
+    const close = lower.indexOf(`</${name}`, gt + 1);
+    if (close < 0) return undefined;
+    from = close + name.length + 2;
   }
   const bodyEnd = lower.indexOf("</title", bodyStart);
   if (bodyEnd < 0) return undefined;

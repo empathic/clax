@@ -119,6 +119,11 @@
       "text": "a�é"
     },
     {
+      "hex": "61ffc3a9",
+      "max": 3,
+      "text": "a�"
+    },
+    {
       "hex": "",
       "max": 0,
       "text": ""
@@ -250,6 +255,46 @@
     {
       "html": "<title>aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa b</title>",
       "title": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    {
+      "html": "<!-- <title>Old</title> --><title>Real</title>",
+      "title": "Real"
+    },
+    {
+      "html": "<svg><title>Icon</title></svg><title>Page</title>",
+      "title": "Page"
+    },
+    {
+      "html": "<!-- <title>Hidden</title> -->",
+      "title": null
+    },
+    {
+      "html": "<!-- <title>x</title>",
+      "title": null
+    },
+    {
+      "html": "<script>var t = '<title>x</title>';</script><title>Doc</title>",
+      "title": "Doc"
+    },
+    {
+      "html": "<STYLE media=all>/* <title>s</title> */</STYLE><title>Styled</title>",
+      "title": "Styled"
+    },
+    {
+      "html": "<SVG viewBox=\"0 0 1 1\"><title>i</title></SVG><title>Case</title>",
+      "title": "Case"
+    },
+    {
+      "html": "<svg/><title>After</title>",
+      "title": "After"
+    },
+    {
+      "html": "<svga><title>Not svg</title></svga>",
+      "title": "Not svg"
+    },
+    {
+      "html": "<script><title>only in script</title>",
+      "title": null
     }
   ],
   "tools": [

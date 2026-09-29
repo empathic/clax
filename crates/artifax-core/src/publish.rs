@@ -115,7 +115,9 @@ pub fn content_type_for(path: &str) -> String {
 pub const MAX_DERIVED_TITLE_CHARS: usize = 200;
 
 /// The text of the first `<title>` element of `html`, for use as an artifact
-/// title: the tag name matches in any case and may carry attributes; the five
+/// title. `<!-- comments -->` and the contents of `<script>`, `<style>` and
+/// `<svg>` elements are skipped (an unclosed one hides the rest of the page).
+/// Tag names match in any case and may carry attributes; the five
 /// entities `&amp;` `&lt;` `&gt;` `&quot;` `&apos;` are decoded once (any
 /// other entity is kept as written); runs of whitespace become one space; the
 /// result is trimmed and cut to [`MAX_DERIVED_TITLE_CHARS`] characters. `None`
@@ -124,15 +126,31 @@ pub fn html_title(html: &str) -> Option<String> {
     let lower = html.to_ascii_lowercase();
     let mut from = 0;
     let body_start = loop {
-        let at = from + lower[from..].find("<title")?;
-        let after = at + "<title".len();
-        match lower.as_bytes().get(after) {
-            Some(b'>') => break after + 1,
-            Some(b) if b.is_ascii_whitespace() || *b == b'/' => {
-                break after + lower[after..].find('>')? + 1;
-            }
-            _ => from = after,
+        let at = from + lower[from..].find('<')?;
+        let rest = &lower[at..];
+        if let Some(comment) = rest.strip_prefix("<!--") {
+            from = at + 4 + comment.find("-->")? + 3;
+            continue;
         }
+        let Some(name) = ["title", "script", "style", "svg"]
+            .into_iter()
+            .find(|n| tag_starts(rest, n))
+        else {
+            from = at + 1;
+            continue;
+        };
+        let after = at + 1 + name.len();
+        let gt = after + lower[after..].find('>')?;
+        if name == "title" {
+            break gt + 1;
+        }
+        if lower.as_bytes()[gt - 1] == b'/' {
+            // Self-closing, as `<svg/>`: no contents to skip.
+            from = gt + 1;
+            continue;
+        }
+        let close = format!("</{name}");
+        from = gt + 1 + lower[gt + 1..].find(&close)? + close.len();
     };
     let body_end = body_start + lower[body_start..].find("</title")?;
     let text = decode_basic_entities(&html[body_start..body_end]);
@@ -145,6 +163,16 @@ pub fn html_title(html: &str) -> Option<String> {
         .collect();
     let title = title.trim_end().to_string();
     (!title.is_empty()).then_some(title)
+}
+
+/// True when `rest` (lowercased, starting at `<`) opens a `name` tag: the name
+/// is followed by `>`, ASCII whitespace or `/`.
+fn tag_starts(rest: &str, name: &str) -> bool {
+    rest[1..].starts_with(name)
+        && rest
+            .as_bytes()
+            .get(1 + name.len())
+            .is_some_and(|b| *b == b'>' || *b == b'/' || b.is_ascii_whitespace())
 }
 
 /// `s` with `&amp;`, `&lt;`, `&gt;`, `&quot;` and `&apos;` decoded in one pass.
@@ -495,52 +523,17 @@ mod tests {
     }
 
     #[test]
-    fn html_title_is_none_without_a_usable_title() {
-        assert_eq!(html_title("<p>no title here</p>"), None);
-        assert_eq!(html_title("<title></title>"), None);
-        assert_eq!(html_title("<title> \n\t </title>"), None);
-        assert_eq!(html_title("<title>never closed"), None);
-        assert_eq!(html_title("<titles>x</titles>"), None);
-    }
-
-    #[test]
-    fn html_title_decodes_entities_and_collapses_whitespace() {
-        assert_eq!(
-            html_title("<head><title>\n  Q3   Review\n</title></head>").as_deref(),
-            Some("Q3 Review")
-        );
-        assert_eq!(
-            html_title("<title>A &amp; B &lt;C&gt; &quot;d&quot; &apos;e&apos;</title>").as_deref(),
-            Some("A & B <C> \"d\" 'e'")
-        );
-        // Decoded once: `&amp;lt;` is the text `&lt;`; unknown entities stay.
-        assert_eq!(
-            html_title("<title>&amp;lt; &copy; &#39;</title>").as_deref(),
-            Some("&lt; &copy; &#39;")
-        );
-    }
-
-    #[test]
-    fn html_title_accepts_attributes_and_any_case() {
-        assert_eq!(
-            html_title("<TITLE lang=\"en\">Upper</TITLE>").as_deref(),
-            Some("Upper")
-        );
-        assert_eq!(
-            html_title("<Title\tid=t>Mixed</tItLe>").as_deref(),
-            Some("Mixed")
-        );
-        assert_eq!(
-            html_title("<title>first</title><title>second</title>").as_deref(),
-            Some("first")
-        );
-    }
-
-    #[test]
-    fn html_title_is_cut_at_200_characters() {
-        let long = "é".repeat(250);
-        let t = html_title(&format!("<title>{long}</title>")).unwrap();
-        assert_eq!(t.chars().count(), MAX_DERIVED_TITLE_CHARS);
+    fn html_title_matches_the_contract_fixture() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../plugins/pi/test/fixtures/contract.json");
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).expect("read contract.json")).unwrap();
+        let cases = fixture["html_title"].as_array().unwrap();
+        assert!(!cases.is_empty());
+        for c in cases {
+            let html = c["html"].as_str().unwrap();
+            assert_eq!(html_title(html).as_deref(), c["title"].as_str(), "{html:?}");
+        }
         assert_eq!(MAX_DERIVED_TITLE_CHARS, 200);
     }
 }
