@@ -40,14 +40,26 @@ fn error_object(err: Value) -> CallToolResult {
 }
 
 /// The error result for a failed daemon call. An unreachable daemon is
-/// `daemon_unreachable` naming `log`; an API error passes the daemon's `error`
-/// object through unchanged (so a conflict keeps its `current`).
+/// `daemon_unreachable` naming `log`; a request past its deadline is `timeout`
+/// (also naming `log`); an unparseable success body is `bad_response`; an API
+/// error passes the daemon's `error` object through unchanged (so a conflict
+/// keeps its `current`).
 pub fn client_error(e: ClientError, log: &Path) -> CallToolResult {
     match e {
         ClientError::Unreachable(m) => error(
             "daemon_unreachable",
             format!("the artifax daemon did not respond ({m}); see its log"),
             json!({"log": log.to_string_lossy()}),
+        ),
+        ClientError::Timeout(m) => error(
+            "timeout",
+            "the daemon did not respond in time; for a publish, read the artifact before retrying",
+            json!({"detail": m, "log": log.to_string_lossy()}),
+        ),
+        ClientError::BadResponse(m) => error(
+            "bad_response",
+            format!("the daemon's response could not be read: {m}"),
+            json!({}),
         ),
         ClientError::Api { error, .. } => error_object(error),
     }

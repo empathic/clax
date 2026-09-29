@@ -87,11 +87,12 @@ pub struct PublishArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReadArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID. A URL naming a version (`/a/<id>/v/<n>`) selects that
+    /// version unless `version` is given.
     pub url_or_id: String,
     /// Published path to read; defaults to index.html.
     pub path: Option<String>,
-    /// Version to read; defaults to the current version.
+    /// Version to read; defaults to the URL's version, else the current version.
     pub version: Option<u32>,
     /// Most bytes of content to return (default 200000); longer files are cut
     /// and flagged `truncated`.
@@ -103,6 +104,19 @@ pub struct ReadArgs {
 pub struct ListArgs {
     /// Most artifacts to return.
     pub limit: Option<u32>,
+    /// `all` (default) lists every artifact; `mine` only those this session created.
+    pub scope: Option<ListScope>,
+}
+
+/// Which artifacts `list` returns.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum ListScope {
+    /// Artifacts whose owner is this tool set's session (none without a session).
+    Mine,
+    /// Every artifact.
+    #[default]
+    All,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -138,22 +152,47 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
     render::error("not_found", message, json!({}))
 }
 
-/// The artifact ID in a bare ID or any URL whose path contains `/a/<id>`.
-fn artifact_id(url_or_id: &str) -> Result<String, CallToolResult> {
+/// The artifact ID, and the version when the reference names one, in a bare ID
+/// or a URL of one of these forms (query and fragment ignored):
+/// `.../a/<id>`, `.../a/<id>/v/<n>`, `.../c/<id>/v/<n>/...`, and the per-artifact
+/// origin `http://<id>.localhost:<port>/v/<n>/...`.
+fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();
-    let candidate = match s.find("/a/") {
-        Some(i) => s[i + 3..].split(['/', '?', '#']).next().unwrap_or(""),
-        None => s,
+    let s = s.split(['?', '#']).next().unwrap_or("");
+    let parse = |c: &str| ArtifactId::parse(c).ok().map(|id| id.as_str().to_string());
+    let version_in = |segs: &[&str]| match segs {
+        ["v", n, ..] => n.parse::<u32>().ok(),
+        _ => None,
     };
-    ArtifactId::parse(candidate)
-        .map(|id| id.as_str().to_string())
-        .map_err(|_| {
-            render::error(
-                "invalid_id",
-                format!("'{url_or_id}' is not an artifact ID or URL"),
-                json!({}),
-            )
-        })
+    if let Some(id) = parse(s) {
+        return Ok((id, None));
+    }
+    let (host, path) = match s.split_once("://") {
+        Some((_, rest)) => rest.split_once('/').unwrap_or((rest, "")),
+        None => ("", s),
+    };
+    let segs: Vec<&str> = path.split('/').filter(|seg| !seg.is_empty()).collect();
+    let hostname = host.rsplit_once(':').map_or(host, |(h, _)| h);
+    if let Some(id) = hostname.strip_suffix(".localhost").and_then(parse) {
+        return Ok((id, version_in(&segs)));
+    }
+    for (i, seg) in segs.iter().enumerate() {
+        if matches!(*seg, "a" | "c")
+            && let Some(id) = segs.get(i + 1).and_then(|c| parse(c))
+        {
+            return Ok((id, version_in(&segs[i + 2..])));
+        }
+    }
+    Err(render::error(
+        "invalid_id",
+        format!("'{url_or_id}' is not an artifact ID or URL"),
+        json!({}),
+    ))
+}
+
+/// The artifact ID in a reference accepted by [`artifact_ref`].
+fn artifact_id(url_or_id: &str) -> Result<String, CallToolResult> {
+    artifact_ref(url_or_id).map(|(id, _)| id)
 }
 
 fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
@@ -252,13 +291,20 @@ impl ArtifaxTools {
         format!("{}/a/{id}", self.browser_base)
     }
 
-    /// `p` as given when absolute, else relative to the session's working
-    /// directory, or to this process's when there is no session.
-    fn local_path(&self, p: &str) -> PathBuf {
+    /// `p` as given when absolute, else joined to the session's working
+    /// directory. A relative path with no session working directory (the
+    /// daemon's `/mcp`) is an `invalid_args` error: resolving it against the
+    /// daemon's own directory could publish the wrong file.
+    fn local_path(&self, p: &str) -> Result<PathBuf, CallToolResult> {
         let path = PathBuf::from(p);
+        if path.is_absolute() {
+            return Ok(path);
+        }
         match &self.session {
-            Some(s) if path.is_relative() && !s.cwd.is_empty() => Path::new(&s.cwd).join(path),
-            _ => path,
+            Some(s) if !s.cwd.is_empty() => Ok(Path::new(&s.cwd).join(path)),
+            _ => Err(invalid(format!(
+                "file paths must be absolute when the tool is called without a session working directory (got '{p}')"
+            ))),
         }
     }
 
@@ -270,7 +316,7 @@ impl ArtifaxTools {
                         "files.{name}: encoding applies only to content"
                     )));
                 }
-                file_entry(&self.local_path(&p))?
+                file_entry(&self.local_path(&p)?)?
             }
             (None, Some(c)) => json!({"content": c, "encoding": f.encoding.unwrap_or_default()}),
             _ => {
@@ -287,7 +333,7 @@ impl ArtifaxTools {
 
     async fn do_publish(&self, a: PublishArgs) -> Outcome {
         let page = match (&a.file_path, &a.html) {
-            (Some(p), None) => file_entry(&self.local_path(p))?,
+            (Some(p), None) => file_entry(&self.local_path(p)?)?,
             (None, Some(h)) => json!({"content": h, "encoding": "utf8"}),
             _ => return Err(invalid("pass exactly one of file_path and html")),
         };
@@ -335,7 +381,12 @@ impl ArtifaxTools {
                     }
                 };
                 body["if_version"] = json!(current);
-                self.client.publish_version(&id, &body).await
+                match self.client.publish_version(&id, &body).await {
+                    Err(e @ ClientError::Api { status: 409, .. }) => {
+                        return Err(self.conflict(&id, e).await);
+                    }
+                    r => r,
+                }
             }
         }
         .map_err(|e| self.fail(e))?;
@@ -353,10 +404,42 @@ impl ArtifaxTools {
         }))
     }
 
+    /// The error result for a publish conflict: the daemon's error plus a summary
+    /// of the current version and how to merge. When the summary cannot be
+    /// fetched, the daemon's error alone.
+    async fn conflict(&self, id: &str, e: ClientError) -> CallToolResult {
+        let ClientError::Api { status, mut error } = e else {
+            return self.fail(e);
+        };
+        if let Ok(got) = self.client.get(id).await {
+            let n = got["artifact"]["current_version"].as_u64().unwrap_or(0);
+            if let Some(v) = got["versions"]
+                .as_array()
+                .and_then(|vs| vs.iter().find(|v| v["n"].as_u64() == Some(n)))
+            {
+                let files: Vec<&String> = v["files"]
+                    .as_object()
+                    .map(|m| m.keys().collect())
+                    .unwrap_or_default();
+                error["current_version"] = json!({
+                    "n": n,
+                    "label": v["label"],
+                    "created_at": v["created_at"],
+                    "files": files,
+                    "url": format!("{}/v/{n}", self.artifact_url(id)),
+                });
+                error["hint"] = json!(format!(
+                    "read the current version, merge your change, and retry with if_version = {n}"
+                ));
+            }
+        }
+        self.fail(ClientError::Api { status, error })
+    }
+
     async fn do_read(&self, a: ReadArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let (id, url_version) = artifact_ref(&a.url_or_id)?;
         let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
-        let n = match a.version {
+        let n = match a.version.or(url_version) {
             Some(n) => n,
             None => got["artifact"]["current_version"].as_u64().unwrap_or(0) as u32,
         };
@@ -398,11 +481,19 @@ impl ArtifaxTools {
     async fn do_list(&self, a: ListArgs) -> Outcome {
         let res = self.client.list().await.map_err(|e| self.fail(e))?;
         let limit = a.limit.map_or(usize::MAX, |l| l as usize);
+        let mine = |x: &&Value| match a.scope.unwrap_or_default() {
+            ListScope::All => true,
+            ListScope::Mine => self
+                .session
+                .as_ref()
+                .is_some_and(|s| x["owner_session_id"].as_str() == Some(s.id.as_str())),
+        };
         let artifacts: Vec<Value> = res["artifacts"]
             .as_array()
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
+            .filter(mine)
             .take(limit)
             .map(|x| {
                 let id = x["id"].as_str().unwrap_or_default();
@@ -456,7 +547,7 @@ impl ArtifaxTools {
         }
         let mut files = Vec::with_capacity(paths.len());
         for p in &paths {
-            let path = self.local_path(p);
+            let path = self.local_path(p)?;
             let bytes = read_local(&path)?;
             let name = path
                 .file_name()
@@ -550,7 +641,7 @@ impl ArtifaxTools {
     }
 
     #[tool(
-        description = "List artifacts, pinned first and then most recently updated, with their URLs and current versions."
+        description = "List artifacts, pinned first and then most recently updated, with their URLs and current versions. `scope: mine` lists only those this session created."
     )]
     pub async fn list(
         &self,
@@ -625,6 +716,33 @@ impl ServerHandler for ArtifaxTools {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn artifact_ref_reads_versions_from_every_url_form() {
+        let id = "7q3k9mzx2b4t";
+        for (s, v) in [
+            (format!("http://localhost:7480/a/{id}"), None),
+            (format!("/a/{id}"), None),
+            (format!("http://localhost:7480/a/{id}/v/3"), Some(3)),
+            (format!("http://127.0.0.1:7480/c/{id}/v/2/"), Some(2)),
+            (
+                format!("http://127.0.0.1:7480/c/{id}/v/2/img/a.png"),
+                Some(2),
+            ),
+            (format!("http://{id}.localhost:7480/v/4/"), Some(4)),
+            (format!("http://{id}.localhost/v/5/app.js?x#y"), Some(5)),
+            (format!("http://{id}.localhost:7480/"), None),
+        ] {
+            assert_eq!(artifact_ref(&s).unwrap(), (id.to_string(), v), "{s}");
+        }
+        for bad in [
+            "http://localhost:7480/c/nope/v/1/",
+            "http://evil.localhost:7480/v/1/",
+            "http://localhost:7480/x/7q3k9mzx2b4t",
+        ] {
+            assert!(artifact_ref(bad).is_err(), "{bad}");
+        }
+    }
 
     #[test]
     fn artifact_id_accepts_ids_and_urls() {

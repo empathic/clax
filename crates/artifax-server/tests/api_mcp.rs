@@ -1,6 +1,7 @@
 mod common;
 use common::TestServer;
 use serde_json::{Value, json};
+use std::net::{IpAddr, UdpSocket};
 
 const ACCEPT: &str = "application/json, text/event-stream";
 
@@ -191,4 +192,37 @@ async fn raw_file_route_serves_unwrapped_bytes_sandboxed() {
         .get(&format!("/api/artifacts/{id}/versions/9/files/index.html"))
         .await;
     assert_eq!(res.status(), 404);
+}
+
+/// A non-loopback IPv4 address of this machine (connecting a UDP socket sends nothing).
+fn non_loopback_ipv4() -> Option<IpAddr> {
+    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("10.255.255.255:1").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+#[tokio::test]
+async fn mcp_accepts_the_daemons_own_address_when_bound_to_it() {
+    let Some(ip) = non_loopback_ipv4() else {
+        eprintln!("skipping: this machine has no non-loopback IPv4 address");
+        return;
+    };
+    let ts = TestServer::spawn_on(ip, |_| {}).await;
+    assert_eq!(ts.base, format!("http://{ip}:{}", ts.addr.port()));
+    let res = mcp_post(&ts, &initialize())
+        .bearer_auth(&ts.token)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let init = rpc_message(res).await;
+    assert!(init["result"]["instructions"].is_string(), "{init}");
+    let res = mcp_post(&ts, &initialize())
+        .bearer_auth(&ts.token)
+        .header("host", "evil.com")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
 }

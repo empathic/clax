@@ -31,7 +31,8 @@ impl TestServer {
         Self::spawn_on(IpAddr::V4(Ipv4Addr::LOCALHOST), f).await
     }
 
-    /// Like `spawn_with`, listening on `bind`. `base` always targets loopback.
+    /// Like `spawn_with`, listening on `bind`. `base` targets `bind`, or the
+    /// same-family loopback when `bind` is unspecified.
     pub async fn spawn_on(bind: IpAddr, f: impl FnOnce(&mut AppState)) -> TestServer {
         let dir = tempfile::tempdir().unwrap();
         let home = Home::at(dir.path().join("ax"));
@@ -69,7 +70,7 @@ impl TestServer {
             .unwrap();
         });
         TestServer {
-            base: format!("http://127.0.0.1:{port}"),
+            base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             token,
             home,
             client: reqwest::Client::new(),

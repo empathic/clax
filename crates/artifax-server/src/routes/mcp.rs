@@ -1,9 +1,10 @@
 //! `/mcp`: the Artifax tool set over MCP streamable HTTP, behind the bearer token.
 //!
-//! The tools call this daemon's own REST API over loopback with its token, and
-//! attribute publishes to no session. rmcp refuses a `Host` other than
-//! `localhost`, `127.0.0.1` or `::1` (DNS rebinding). The endpoint is not under
-//! the request timeout layers: a session's event stream stays open.
+//! The tools call this daemon's own REST API at `AppState::self_base` with its
+//! token, and attribute publishes to no session. rmcp refuses a `Host` other
+//! than `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port
+//! (DNS rebinding). The endpoint is not under the request timeout layers: a
+//! session's event stream stays open.
 
 use crate::auth::RequireToken;
 use crate::routes::artifacts::PUBLISH_BODY_LIMIT;
@@ -28,8 +29,14 @@ pub fn router(state: &AppState) -> Router<AppState> {
         None,
         state.home.log_path(),
     );
+    // The daemon's own authority joins the loopback names, so a daemon bound to
+    // a specific address (`serve --bind <ip>`) can serve /mcp at that address.
+    let own = state
+        .self_base
+        .split_once("://")
+        .map_or(state.self_base.as_str(), |(_, a)| a);
     let config = StreamableHttpServerConfig::default()
-        .with_allowed_hosts(["localhost", "127.0.0.1", "::1"])
+        .with_allowed_hosts(["localhost", "127.0.0.1", "::1", own])
         .with_max_request_body_bytes(PUBLISH_BODY_LIMIT);
     // End open MCP sessions when the daemon starts shutting down, so they do not
     // hold the graceful drain open.

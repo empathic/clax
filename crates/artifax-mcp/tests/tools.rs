@@ -1,5 +1,6 @@
 use artifax_mcp::tools::{
-    FileArg, FileEncoding, ListArgs, PublishArgs, ReadArgs, StatusArgs, TargetArgs,
+    AssetUploadArgs, FileArg, FileEncoding, ListArgs, ListScope, PublishArgs, ReadArgs, StatusArgs,
+    TargetArgs,
 };
 use artifax_mcp::{ArtifaxTools, DaemonClient};
 use artifax_server::testing::TestServer;
@@ -124,13 +125,26 @@ async fn stale_if_version_is_an_error_result_naming_current() {
         .to_string();
     let e = err(t
         .publish(Parameters(PublishArgs {
-            id: Some(id),
+            id: Some(id.clone()),
             if_version: Some(7),
             ..html("A", "<p>2")
         }))
         .await);
     assert_eq!(e["error"]["code"], "conflict");
     assert_eq!(e["error"]["current"], 1);
+    let cur = &e["error"]["current_version"];
+    assert_eq!(cur["n"], 1, "{e}");
+    assert_eq!(cur["files"], serde_json::json!(["index.html"]));
+    assert!(cur["created_at"].is_string());
+    assert!(cur["label"].is_null());
+    assert_eq!(
+        cur["url"],
+        format!("http://localhost:{}/a/{id}/v/1", ts.addr.port())
+    );
+    assert_eq!(
+        e["error"]["hint"],
+        "read the current version, merge your change, and retry with if_version = 1"
+    );
 }
 
 #[tokio::test]
@@ -293,7 +307,12 @@ async fn list_is_pinned_first_then_most_recent_and_honours_limit() {
     assert!(first["updated_at"].is_string());
     assert!(first["owner_session_id"].is_null());
 
-    let l = ok(t.list(Parameters(ListArgs { limit: Some(1) })).await);
+    let l = ok(t
+        .list(Parameters(ListArgs {
+            limit: Some(1),
+            ..Default::default()
+        }))
+        .await);
     assert_eq!(l["artifacts"].as_array().unwrap().len(), 1);
 
     let u = ok(t
@@ -331,7 +350,7 @@ async fn asset_upload_returns_blob_urls() {
     std::fs::write(&a, [1u8, 2, 3]).unwrap();
     std::fs::write(&b, "hello").unwrap();
     let r = ok(t
-        .asset_upload(Parameters(artifax_mcp::tools::AssetUploadArgs {
+        .asset_upload(Parameters(AssetUploadArgs {
             url_or_id: id,
             file_path: Some(a.to_string_lossy().into()),
             file_paths: Some(vec![b.to_string_lossy().into()]),
@@ -386,4 +405,218 @@ async fn unreachable_daemon_is_an_error_result_naming_the_log() {
         assert_eq!(e["error"]["code"], "daemon_unreachable", "{e}");
         assert_eq!(e["error"]["log"], log.to_string_lossy().as_ref());
     }
+}
+
+/// Registers a live session whose working directory is `cwd` and returns tools
+/// that publish as it.
+async fn session_tools(ts: &TestServer, cwd: &str) -> (ArtifaxTools, artifax_core::model::Session) {
+    let res = ts
+        .post_json(
+            "/api/sessions",
+            serde_json::json!({"harness": "claude", "cwd": cwd}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let v: Value = res.json().await.unwrap();
+    let session: artifax_core::model::Session =
+        serde_json::from_value(v["session"].clone()).unwrap();
+    let tools = ArtifaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), Some(session.id.clone())),
+        format!("http://localhost:{}", ts.addr.port()),
+        Some(session.clone()),
+        ts.home.log_path(),
+    );
+    (tools, session)
+}
+
+#[tokio::test]
+async fn relative_paths_need_a_session_working_directory() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    // daemon.json-style relative names must never resolve against the daemon's cwd.
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            file_path: Some("page.html".into()),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args");
+    assert!(
+        e["error"]["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("file paths must be absolute when the tool is called without a session working directory"),
+        "{e}"
+    );
+    let mut files = BTreeMap::new();
+    files.insert(
+        "data.json".to_string(),
+        Some(FileArg {
+            path: Some("daemon.json".into()),
+            ..Default::default()
+        }),
+    );
+    let e = err(t
+        .publish(Parameters(PublishArgs {
+            files: Some(files),
+            ..html("A", "<p>")
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args");
+    let id = ok(t.publish(Parameters(html("A", "<p>"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let e = err(t
+        .asset_upload(Parameters(AssetUploadArgs {
+            url_or_id: id,
+            file_path: Some("a.png".into()),
+            file_paths: None,
+        }))
+        .await);
+    assert_eq!(e["error"]["code"], "invalid_args");
+
+    // With a session, relative paths resolve against its working directory.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("page.html"), "<p>relative").unwrap();
+    let (st, _) = session_tools(&ts, &dir.path().to_string_lossy()).await;
+    let p = ok(st
+        .publish(Parameters(PublishArgs {
+            file_path: Some("page.html".into()),
+            ..Default::default()
+        }))
+        .await);
+    let r = ok(st
+        .read(Parameters(ReadArgs {
+            url_or_id: p["artifact_id"].as_str().unwrap().to_string(),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(r["content"], "<p>relative");
+}
+
+#[tokio::test]
+async fn list_scope_mine_filters_by_owner_session() {
+    let ts = TestServer::spawn().await;
+    let anon = tools_for(&ts);
+    let (st, session) = session_tools(&ts, "/tmp").await;
+    ok(anon.publish(Parameters(html("theirs", "<p>"))).await);
+    let mine_id = ok(st.publish(Parameters(html("mine", "<p>"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let titles = |v: &Value| -> Vec<String> {
+        v["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["title"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let mine = ok(st
+        .list(Parameters(ListArgs {
+            scope: Some(ListScope::Mine),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(titles(&mine), ["mine"]);
+    assert_eq!(mine["artifacts"][0]["id"], mine_id.as_str());
+    assert_eq!(
+        mine["artifacts"][0]["owner_session_id"],
+        session.id.as_str()
+    );
+    let all = ok(st
+        .list(Parameters(ListArgs {
+            scope: Some(ListScope::All),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(titles(&all), ["mine", "theirs"]);
+    assert_eq!(
+        titles(&ok(st.list(Parameters(ListArgs::default())).await)).len(),
+        2
+    );
+    // Without a session, `mine` is empty.
+    let none = ok(anon
+        .list(Parameters(ListArgs {
+            scope: Some(ListScope::Mine),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(titles(&none), Vec::<String>::new());
+}
+
+#[tokio::test]
+async fn read_accepts_every_url_form_and_takes_the_version_from_it() {
+    let ts = TestServer::spawn().await;
+    let t = tools_for(&ts);
+    let port = ts.addr.port();
+    let id = ok(t.publish(Parameters(html("V", "<p>one"))).await)["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ok(t.publish(Parameters(PublishArgs {
+        id: Some(id.clone()),
+        ..html("V", "<p>two")
+    }))
+    .await);
+    for (url, want_version, want) in [
+        (format!("http://localhost:{port}/a/{id}"), 2, "<p>two"),
+        (format!("http://localhost:{port}/a/{id}/v/1"), 1, "<p>one"),
+        (format!("http://127.0.0.1:{port}/c/{id}/v/1/"), 1, "<p>one"),
+        (
+            format!("http://{id}.localhost:{port}/v/1/index.html"),
+            1,
+            "<p>one",
+        ),
+    ] {
+        let r = ok(t
+            .read(Parameters(ReadArgs {
+                url_or_id: url.clone(),
+                ..Default::default()
+            }))
+            .await);
+        assert_eq!(r["version"], want_version, "{url}");
+        assert_eq!(r["content"], want, "{url}");
+    }
+    // An explicit `version` wins over the URL's.
+    let r = ok(t
+        .read(Parameters(ReadArgs {
+            url_or_id: format!("http://localhost:{port}/a/{id}/v/1"),
+            version: Some(2),
+            ..Default::default()
+        }))
+        .await);
+    assert_eq!(r["content"], "<p>two");
+}
+
+#[tokio::test]
+async fn a_non_json_success_body_is_bad_response() {
+    // A plain HTTP server that answers every request 200 with a non-JSON body.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        loop {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let mut buf = [0u8; 4096];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\ncontent-length: 5\r\nconnection: close\r\n\r\nhello",
+                    )
+                    .await;
+            });
+        }
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let t = ArtifaxTools::new(
+        DaemonClient::new(format!("http://127.0.0.1:{port}"), "t".into(), None),
+        format!("http://localhost:{port}"),
+        None,
+        dir.path().join("daemon.log"),
+    );
+    let e = err(t.status(Parameters(StatusArgs {})).await);
+    assert_eq!(e["error"]["code"], "bad_response", "{e}");
 }

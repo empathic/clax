@@ -7,13 +7,21 @@ use std::time::Duration;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// Deadline for publishes and asset uploads.
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(120);
+/// Deadline for establishing a connection; a live daemon on loopback accepts at once.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Why a daemon call failed.
 #[derive(Debug)]
 pub enum ClientError {
-    /// No HTTP response arrived: the connection was refused or dropped, or the
-    /// request timed out.
+    /// No connection: refused, not established within the connect timeout, or
+    /// dropped before a response.
     Unreachable(String),
+    /// Connected, but the request did not complete within its deadline; a write
+    /// may or may not have taken effect.
+    Timeout(String),
+    /// The daemon answered with a success status but a body that is not the
+    /// expected JSON.
+    BadResponse(String),
     /// The daemon answered with an error status; `error` is the body's `error`
     /// object (`code`, `message`, and any extra fields such as `current`).
     Api { status: u16, error: Value },
@@ -23,6 +31,8 @@ impl std::fmt::Display for ClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ClientError::Unreachable(m) => write!(f, "daemon unreachable: {m}"),
+            ClientError::Timeout(m) => write!(f, "daemon timed out: {m}"),
+            ClientError::BadResponse(m) => write!(f, "bad daemon response: {m}"),
             ClientError::Api { status, error } => write!(f, "HTTP {status}: {error}"),
         }
     }
@@ -48,6 +58,7 @@ impl DaemonClient {
     pub fn new(base: String, token: String, session_id: Option<String>) -> DaemonClient {
         let http = reqwest::Client::builder()
             .no_proxy()
+            .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
             .expect("reqwest client builds with static settings");
@@ -76,10 +87,7 @@ impl DaemonClient {
     }
 
     async fn send(req: reqwest::RequestBuilder) -> Result<reqwest::Response> {
-        let res = req
-            .send()
-            .await
-            .map_err(|e| ClientError::Unreachable(e.to_string()))?;
+        let res = req.send().await.map_err(transport_error)?;
         let status = res.status();
         if status.is_success() {
             return Ok(res);
@@ -103,9 +111,8 @@ impl DaemonClient {
         if res.status() == reqwest::StatusCode::NO_CONTENT {
             return Ok(json!({}));
         }
-        res.json()
-            .await
-            .map_err(|e| ClientError::Unreachable(format!("reading response: {e}")))
+        let bytes = res.bytes().await.map_err(transport_error)?;
+        serde_json::from_slice(&bytes).map_err(|e| ClientError::BadResponse(e.to_string()))
     }
 
     /// `GET /healthz`: `{version, pid, started_at}`.
@@ -181,7 +188,7 @@ impl DaemonClient {
         res.bytes()
             .await
             .map(|b| b.to_vec())
-            .map_err(|e| ClientError::Unreachable(format!("reading response: {e}")))
+            .map_err(transport_error)
     }
 
     /// `POST /api/artifacts/<id>/assets` (multipart field `file`): `{asset, url}`.
@@ -209,6 +216,16 @@ impl DaemonClient {
             .multipart(form),
         )
         .await
+    }
+}
+
+/// Classifies a reqwest failure: a failed connection is `Unreachable` (even when
+/// it was the connect timeout), any other timeout is `Timeout`.
+fn transport_error(e: reqwest::Error) -> ClientError {
+    if e.is_timeout() && !e.is_connect() {
+        ClientError::Timeout(e.to_string())
+    } else {
+        ClientError::Unreachable(e.to_string())
     }
 }
 

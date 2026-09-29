@@ -228,6 +228,8 @@ Agent- and shell-facing JSON API under `/api`:
   (W; publish body below; `if_version` for conflict detection),
   `PATCH /api/artifacts/<aid>` (W: title, pinned, capabilities),
   `DELETE /api/artifacts/<aid>` (W), `GET /api/artifacts/<aid>/files`,
+  `GET /api/artifacts/<aid>/versions/<n>/files/<path>` (a file's stored bytes,
+  unwrapped; `Content-Security-Policy: sandbox`, `nosniff`),
   `POST /api/artifacts/<aid>/assets` (W or viewer-with-write-grant; see §9),
   `DELETE /api/artifacts/<aid>/assets/<id>` (W).
 - Sessions: `POST /api/sessions` (W, register), `PATCH /api/sessions/<id>`
