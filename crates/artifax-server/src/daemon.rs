@@ -216,7 +216,9 @@ pub async fn serve(
         started_at,
         version: cfg.version,
         shutdown: events_shutdown,
-        wrap_cache: Arc::new(crate::wrap_cache::WrapCache::new(64)),
+        wrap_cache: Arc::new(crate::wrap_cache::WrapCache::new(
+            crate::wrap_cache::DEFAULT_MAX_BYTES,
+        )),
         request_timeout: Duration::from_secs(30),
         publish_timeout: Duration::from_secs(120),
         sse_keep_alive: Duration::from_secs(15),

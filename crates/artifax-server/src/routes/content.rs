@@ -6,6 +6,7 @@ use crate::host::OnArtifactOrigin;
 use crate::routes::artifacts::{parse_id, path};
 use crate::state::AppState;
 use artifax_core::model::CONTRACT_VERSION;
+use artifax_core::model::FileMeta;
 use artifax_core::publish::INDEX;
 use artifax_core::wrap::wrap_page;
 use artifax_core::{ArtifactId, CoreError};
@@ -14,6 +15,7 @@ use axum::extract::rejection::PathRejection;
 use axum::extract::{Extension, Path, State};
 use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{Html, IntoResponse, Redirect, Response};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// Content served on the main origin must not run same-origin with the API.
@@ -44,15 +46,13 @@ pub async fn index(
 ) -> Result<Response, ApiError> {
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
-    let html = wrapped_page(&s, id, n, INDEX.to_string())
-        .await?
-        .ok_or_else(|| {
-            ApiError::from(CoreError::Io(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "index.html is not UTF-8",
-            )))
-        })?;
-    Ok(sandboxed(page_response(&html), &origin))
+    match lookup(&s, id, n, INDEX.to_string(), true).await? {
+        Served::Page(html) => Ok(sandboxed(page_response(&html), &origin)),
+        Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "index.html is not UTF-8",
+        )))),
+    }
 }
 
 fn page_response(html: &str) -> Response {
@@ -73,28 +73,40 @@ fn is_html(content_type: &str) -> bool {
         .eq_ignore_ascii_case("text/html")
 }
 
-/// The HTML page at `file` of version `n` wrapped with the bridge
-/// ([`wrap_page`]), from the wrap cache when present. `None` when the file is
-/// not UTF-8, so it cannot be wrapped. `NotFound` when the artifact, the
-/// version, or the file is gone.
-async fn wrapped_page(
+/// A file of a version as it is served.
+enum Served {
+    /// An HTML page wrapped with the bridge ([`wrap_page`]).
+    Page(Arc<String>),
+    /// Any other file, or an HTML file that is not UTF-8: streamed as stored.
+    Raw(PathBuf, FileMeta),
+}
+
+/// `file` of version `n`, in one store call. It is wrapped when `always_wrap`
+/// is set or its stored content type is `text/html`, through the wrap cache,
+/// which also remembers a file that is not UTF-8 (served raw). `NotFound` when
+/// the artifact, the version, or the file is gone.
+async fn lookup(
     s: &AppState,
     id: ArtifactId,
     n: u32,
     file: String,
-) -> Result<Option<Arc<String>>, ApiError> {
+    always_wrap: bool,
+) -> Result<Served, ApiError> {
     let cache = s.wrap_cache.clone();
     s.store_call(move |st| {
+        let (disk, meta) = st.file_path(&id, n, &file)?.ok_or(CoreError::NotFound)?;
+        if !always_wrap && !is_html(&meta.content_type) {
+            return Ok(Served::Raw(disk, meta));
+        }
         st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-        let (disk, _) = st.file_path(&id, n, &file)?.ok_or(CoreError::NotFound)?;
         let wrapped = cache.get_or_wrap(id.as_str(), n, &file, || {
-            let page = String::from_utf8(std::fs::read(&disk)?)
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-            Ok(wrap_page(&page, id.as_str(), n, CONTRACT_VERSION, &file))
+            Ok(String::from_utf8(std::fs::read(&disk)?)
+                .ok()
+                .map(|page| wrap_page(&page, id.as_str(), n, CONTRACT_VERSION, &file)))
         });
         match wrapped {
-            Ok(html) => Ok(Some(html)),
-            Err(e) if e.kind() == std::io::ErrorKind::InvalidData => Ok(None),
+            Ok(Some(html)) => Ok(Served::Page(html)),
+            Ok(None) => Ok(Served::Raw(disk, meta)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(CoreError::NotFound),
             Err(e) => Err(CoreError::Io(e)),
         }
@@ -116,17 +128,10 @@ pub async fn file(
     if rel == INDEX {
         return Ok(Redirect::permanent("./").into_response());
     }
-    let (disk, meta) = {
-        let id = id.clone();
-        let rel = rel.clone();
-        s.store_call(move |st| st.file_path(&id, n, &rel)?.ok_or(CoreError::NotFound))
-            .await?
+    let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
+        Served::Page(html) => return Ok(sandboxed(page_response(&html), &origin)),
+        Served::Raw(disk, meta) => (disk, meta),
     };
-    if is_html(&meta.content_type)
-        && let Some(html) = wrapped_page(&s, id, n, rel).await?
-    {
-        return Ok(sandboxed(page_response(&html), &origin));
-    }
     let f = tokio::fs::File::open(&disk)
         .await
         .map_err(|_| ApiError::not_found())?;

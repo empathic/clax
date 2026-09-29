@@ -51,7 +51,7 @@ impl TestServer {
             started_at: Store::now(),
             version: "test",
             shutdown: tokio::sync::watch::channel(false).1,
-            wrap_cache: Arc::new(WrapCache::new(64)),
+            wrap_cache: Arc::new(WrapCache::new(crate::wrap_cache::DEFAULT_MAX_BYTES)),
             request_timeout: Duration::from_secs(30),
             publish_timeout: Duration::from_secs(120),
             sse_keep_alive: Duration::from_secs(15),

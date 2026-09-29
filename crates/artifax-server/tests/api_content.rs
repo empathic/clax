@@ -394,3 +394,37 @@ async fn wrapped_pages_are_cached_per_file_until_the_artifact_is_deleted() {
         404
     );
 }
+
+#[tokio::test]
+async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
+    let cache = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let slot = cache.clone();
+    let ts = TestServer::spawn_with(move |s| {
+        *slot.lock().unwrap() = Some(s.wrap_cache.clone());
+    })
+    .await;
+    let cache = cache.lock().unwrap().clone().unwrap();
+    let res = ts
+        .post_json(
+            "/api/artifacts",
+            serde_json::json!({"title": "L", "files": {
+                "index.html": {"content": "<p>i</p>", "encoding": "utf8"},
+                "latin1.html": {"content": "PHA+Y2Fm6TwvcD4=", "encoding": "base64"}
+            }}),
+        )
+        .await;
+    assert_eq!(res.status(), 201);
+    let id = res.json::<serde_json::Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    for _ in 0..2 {
+        let res = ts.get(&format!("/c/{id}/v/1/latin1.html")).await;
+        assert_eq!(res.status(), 200);
+        assert_eq!(res.bytes().await.unwrap().as_ref(), b"<p>caf\xe9</p>");
+        assert!(
+            cache.contains(&id, 1, "latin1.html"),
+            "the result is remembered, so the file is not read to find out again"
+        );
+    }
+}
