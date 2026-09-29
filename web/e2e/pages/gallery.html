@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sketch Gallery</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  img { max-width: 100%; border: 1px solid currentColor; }
+</style>
+</head>
+<body>
+<h1>Sketch gallery</h1>
+<button id="upload">Upload a sketch</button>
+<button id="remove">Delete it</button>
+<p id="status" role="status">waiting</p>
+<img id="shown" alt="">
+<script>
+(async () => {
+  const assets = await claude.use("assets");
+  const status = document.getElementById("status");
+  if (!assets) { status.textContent = "read-only"; document.getElementById("upload").disabled = true; return; }
+  status.textContent = "ready";
+  let last = null;
+  document.getElementById("upload").onclick = async () => {
+    const c = document.createElement("canvas"); c.width = 40; c.height = 20;
+    const g = c.getContext("2d"); g.fillStyle = "#c2410c"; g.fillRect(0, 0, 40, 20);
+    const blob = await new Promise(r => c.toBlob(r, "image/png"));
+    try {
+      last = await assets.upload(blob);
+      const img = document.getElementById("shown");
+      img.onload = async () => { status.textContent = JSON.stringify({ loaded: img.naturalWidth, files: (await assets.list()).usage.files, type: last.contentType }); };
+      img.src = last.url;
+    } catch (e) { status.textContent = e.code; }
+  };
+  document.getElementById("remove").onclick = async () => {
+    const a = await assets.delete(last.url);
+    const b = await assets.delete(last.id);
+    status.textContent = JSON.stringify({ first: a.deleted, second: b.deleted });
+  };
+})();
+</script>
+</body>
+</html>

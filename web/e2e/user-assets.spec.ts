@@ -1,0 +1,53 @@
+import { readFileSync } from "node:fs";
+import { test, expect } from "@playwright/test";
+import { openArtifact, publishWith, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+
+const html = (name: string) => readFileSync(new URL(`./pages/${name}`, import.meta.url), "utf8");
+const facts = async (f: import("@playwright/test").Frame) => {
+  await expect(f.locator("#facts")).not.toHaveText("waiting");
+  return JSON.parse((await f.locator("#facts").textContent())!);
+};
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: user in the owner shell`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Who ${mode}`, html("who.html"), { user: { scopes: ["profile"] }, db: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    expect(await facts(f)).toMatchObject({ isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true, name: "", isMe: true, stranger: "", search: 0 });
+    const name = page.getByRole("textbox", { name: "Your name" });
+    await name.fill("Alex");
+    await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+    await f.locator("#refresh").click();
+    await expect(f.locator("#greeting")).toHaveText("Hello, Alex");
+    await expect.poll(async () => (await facts(f)).search, { timeout: 30_000 }).toBe(1);
+    expect(await facts(f)).toMatchObject({ name: "Alex", meResolved: "Alex", search: 1 });
+  });
+
+  test(`${mode}: assets upload, display, list, and delete`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Gallery ${mode}`, html("gallery.html"), { assets: {}, db: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#status")).toHaveText("ready");
+    await f.locator("#upload").click();
+    await expect(f.locator("#status")).toHaveText(JSON.stringify({ loaded: 40, files: 1, type: "image/png" }));
+    await f.locator("#remove").click();
+    await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
+  });
+}
+
+test("LAN: user is not the owner, can write data only once named; assets resolves null", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Who LAN", html("who.html"), { user: { scopes: ["profile"] }, db: {} });
+  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
+  expect(await facts(f)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: true, search: 0 });
+  const name = page.getByRole("textbox", { name: "Your name" });
+  await name.fill("Sam");
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  await f.locator("#refresh").click();
+  await expect.poll(async () => (await facts(f)).dataWrite, { timeout: 30_000 }).toBe(true);
+  const { artifact: g } = await publishWith(d.base, d.token, "Gallery LAN", html("gallery.html"), { assets: {} });
+  const page2 = await page.context().newPage();
+  const f2 = await openArtifact(page2, d.base, g.id, 1, "sandbox", { lan: true });
+  await expect(f2.locator("#status")).toHaveText("read-only");
+});

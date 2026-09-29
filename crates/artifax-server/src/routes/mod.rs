@@ -109,6 +109,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/threads/{tid}/resolve",
             post(threads::resolve),
         )
+        .route("/api/viewers", get(viewers::lookup))
         .route("/api/viewers/me", get(viewers::me).put(viewers::set_me))
         .route("/api/sessions/{id}/watches", get(watches::list))
         .route(

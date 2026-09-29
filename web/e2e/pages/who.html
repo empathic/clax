@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who Is Here</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  img { width: 32px; height: 32px; border-radius: 50%; vertical-align: middle; }
+</style>
+</head>
+<body>
+<h1>Who is here</h1>
+<p><img id="avatar" alt=""> <span id="greeting">Hello</span></p>
+<button id="refresh">Refresh</button>
+<pre id="facts">waiting</pre>
+<script>
+(async () => {
+  const user = await claude.use("user");
+  const show = async () => {
+    const me = user ? await user.me() : null;
+    if (me) { document.getElementById("avatar").src = me.avatarUrl; document.getElementById("greeting").textContent = "Hello, " + (me.name || "you"); }
+    const ids = me && me.id ? [me.id, "u_ffffffffffffffffffffff"] : [];
+    const people = user ? await user.profiles(ids) : {};
+    document.getElementById("facts").textContent = JSON.stringify({
+      isOwner: user ? await user.isOwner() : false,
+      canEdit: user ? await user.canEdit() : false,
+      dataWrite: user ? await user.can("data.write") : null,
+      filesWrite: user ? await user.can("files.write") : null,
+      idShape: me && /^u_[0-9a-f]{22}$/.test(me.id),
+      name: me ? me.name : "",
+      meResolved: me && me.id ? people[me.id].name : null,
+      isMe: me && me.id ? people[me.id].isMe : null,
+      stranger: people["u_ffffffffffffffffffffff"] ? people["u_ffffffffffffffffffffff"].name : null,
+      search: user ? (await user.search("")).length : 0,
+    });
+  };
+  document.getElementById("refresh").onclick = show;
+  await show();
+})();
+</script>
+</body>
+</html>

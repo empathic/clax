@@ -2,6 +2,7 @@
 import type { CapabilityName, Local } from "../capabilities";
 import type { Rpc } from "../rpc";
 import { artifactLocals } from "./artifact";
+import { assetsLocals } from "./assets";
 import { makeDb } from "./db";
 import { downloadsLocals } from "./downloads";
 
@@ -10,6 +11,8 @@ export function localsFor(name: CapabilityName, rpc: Rpc, config: unknown): Loca
   switch (name) {
     case "artifact":
       return artifactLocals(rpc);
+    case "assets":
+      return assetsLocals(rpc);
     case "db":
       return makeDb(rpc) as unknown as Local;
     case "downloads":

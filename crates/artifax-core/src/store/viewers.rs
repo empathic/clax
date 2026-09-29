@@ -85,6 +85,38 @@ impl Store {
     }
 }
 
+impl Store {
+    /// The viewers with these public IDs, in the order given; unknown IDs,
+    /// and anything that is not a public ID, are skipped.
+    pub fn viewers_by_public_ids(&self, ids: &[String]) -> Result<Vec<Viewer>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(&format!("{VIEWER_SELECT} WHERE public_id = ?1"))?;
+            let mut out = Vec::new();
+            for id in ids.iter().filter(|i| is_public_id(i)) {
+                if let Some(v) = stmt.query_row(params![id], row_to_viewer).optional()? {
+                    out.push(v);
+                }
+            }
+            Ok(out)
+        })
+    }
+
+    /// Up to `limit` named viewers whose name contains `q`, ignoring case,
+    /// ordered by name (then public ID).
+    pub fn search_viewers(&self, q: &str, limit: usize) -> Result<Vec<Viewer>> {
+        self.with_conn(|c| {
+            let mut stmt = c.prepare(&format!(
+                "{VIEWER_SELECT} WHERE display_name IS NOT NULL AND instr(lower(display_name), lower(?1)) > 0
+                 ORDER BY display_name COLLATE NOCASE, public_id LIMIT ?2"
+            ))?;
+            let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+            Ok(stmt
+                .query_map(params![q, limit], row_to_viewer)?
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::MAX_NAME_CHARS;
@@ -175,5 +207,39 @@ mod tests {
                 })
             ));
         }
+    }
+
+    #[test]
+    fn lookups_by_public_id_and_name_search() {
+        let (_d, st) = store();
+        let alex = st.upsert_viewer(&new_ulid(), Some("Alex Chen")).unwrap();
+        let sam = st.upsert_viewer(&new_ulid(), Some("Sam")).unwrap();
+        let anon = st.upsert_viewer(&new_ulid(), None).unwrap();
+        let found = st
+            .viewers_by_public_ids(&[
+                alex.public_id.clone(),
+                anon.public_id.clone(),
+                "u_ffffffffffffffffffffff".into(),
+            ])
+            .unwrap();
+        assert_eq!(found.len(), 2);
+        let names: Vec<_> = st
+            .search_viewers("A", 8)
+            .unwrap()
+            .into_iter()
+            .map(|v| v.display_name.unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["Alex Chen", "Sam"],
+            "case-insensitive substring, by name, named only"
+        );
+        assert_eq!(
+            st.search_viewers("chen", 8).unwrap()[0].public_id,
+            alex.public_id
+        );
+        assert!(st.search_viewers("zz", 8).unwrap().is_empty());
+        assert_eq!(st.search_viewers("a", 1).unwrap().len(), 1);
+        let _ = sam;
     }
 }
