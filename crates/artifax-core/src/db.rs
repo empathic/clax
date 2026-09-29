@@ -1,6 +1,6 @@
 //! The `db` capability's document paths, access levels, and declared access
-//! rules (spec §9 "db"; `web/contract/0.2.61/db.d.ts`, "PATH GRAMMAR" and
-//! "ACCESS RULES"). Evaluation is pure: the store loads the artifact's
+//! rules (spec §9 "db"; db.d.ts 0.2.61 (shipped under web/contract/ from
+//! Task 5), "PATH GRAMMAR" and "ACCESS RULES"). Evaluation is pure: the store loads the artifact's
 //! declaration on every call and asks [`Rules::allows`].
 
 use crate::{CoreError, Result};
@@ -294,6 +294,8 @@ impl Rules {
     /// The viewer public ID owning the private subtree that holds `path`
     /// (`<prefix>/<viewer>/...` under a private prefix), or `None` when the
     /// path is shared or a rule declared at that prefix opens the subtrees.
+    /// `path` is not checked here: callers validate it with [`doc_path`] or
+    /// [`collection_path`] first.
     pub fn private_to(&self, path: &str) -> Option<String> {
         let segs: Vec<&str> = path.split('/').collect();
         for p in self.self_prefixes() {
@@ -309,10 +311,12 @@ impl Rules {
 
     /// The minimum (read, write) levels at `segs`: for each, the deepest rule
     /// whose path is a prefix of `segs` and sets it (`{self}` matches only
-    /// `viewer`), else the root defaults `view` and `interact`.
+    /// `viewer`; at equal depth a literal rule wins over a `{self}` rule),
+    /// else the root defaults `view` and `interact`.
     fn levels(&self, segs: &[&str], viewer: Option<&str>) -> (Level, Level) {
-        let mut read: Option<(usize, Level)> = None;
-        let mut write: Option<(usize, Level)> = None;
+        // Rank: deeper first; at equal depth a literal rule beats a `{self}` rule.
+        let mut read: Option<((usize, bool), Level)> = None;
+        let mut write: Option<((usize, bool), Level)> = None;
         for r in &self.rules {
             if r.path.len() > segs.len() {
                 continue;
@@ -327,16 +331,19 @@ impl Rules {
             if !hit {
                 continue;
             }
-            let depth = r.path.len();
+            let rank = (
+                r.path.len(),
+                r.path.last().map(String::as_str) != Some(SELF_SEGMENT),
+            );
             if let Some(l) = r.read
-                && read.is_none_or(|(d, _)| depth > d)
+                && read.is_none_or(|(d, _)| rank > d)
             {
-                read = Some((depth, l));
+                read = Some((rank, l));
             }
             if let Some(l) = r.write
-                && write.is_none_or(|(d, _)| depth > d)
+                && write.is_none_or(|(d, _)| rank > d)
             {
-                write = Some((depth, l));
+                write = Some((rank, l));
             }
         }
         (
@@ -349,6 +356,14 @@ impl Rules {
     /// admits only its own viewer, whatever the level (the owner included);
     /// otherwise the caller's level must meet the minimum: `min(read, write)`
     /// to read, `max(write, interact)` to write.
+    ///
+    /// For each of read and write the deepest matching rule that sets it
+    /// decides; when a `{self}` rule and a literal rule match at the same
+    /// depth (`votes/{self}` and `votes/u_x` for viewer `u_x`), the literal
+    /// rule wins, whatever the declaration order.
+    ///
+    /// `path` is not checked here: callers validate it with [`doc_path`] or
+    /// [`collection_path`] first.
     pub fn allows(&self, path: &str, op: Op, caller: &Caller) -> bool {
         if let Some(owner) = self.private_to(path)
             && caller.viewer.as_deref() != Some(owner.as_str())
@@ -365,7 +380,10 @@ impl Rules {
     }
 
     /// The minimum level that reads `path` (`min(read, write)`), with `{self}`
-    /// rules matching `viewer`; `/api/events` compares subscribers to it.
+    /// rules matching `viewer` (a literal rule beats a `{self}` rule at equal
+    /// depth, as in [`Rules::allows`]); `/api/events` compares subscribers to
+    /// it. `path` is not checked here: callers validate it with [`doc_path`]
+    /// or [`collection_path`] first.
     pub fn read_level(&self, path: &str, viewer: Option<&str>) -> Level {
         let segs: Vec<&str> = path.split('/').collect();
         let (read, write) = self.levels(&segs, viewer);
@@ -605,6 +623,78 @@ mod tests {
                 "invalid_capabilities",
                 "{caps}"
             );
+        }
+    }
+
+    #[test]
+    fn paths_at_each_limit_pass_and_one_over_fails() {
+        assert!(doc_path(&vec!["a"; MAX_SEGMENTS].join("/")).is_ok());
+        assert!(doc_path(&vec!["a"; MAX_SEGMENTS + 2].join("/")).is_err());
+        assert!(collection_path(&vec!["a"; MAX_SEGMENTS - 1].join("/")).is_ok());
+        assert!(collection_path(&vec!["a"; MAX_SEGMENTS + 1].join("/")).is_err());
+        assert!(doc_path(&format!("a/{}", "x".repeat(MAX_SEGMENT_BYTES))).is_ok());
+        assert!(doc_path(&format!("a/{}", "x".repeat(MAX_SEGMENT_BYTES + 1))).is_err());
+        // Six segments and five slashes: 5 * 166 + 165 + 5 = 1000 bytes.
+        let at = format!("{}/{}", vec!["x".repeat(166); 5].join("/"), "y".repeat(165));
+        assert_eq!(at.len(), MAX_PATH_BYTES);
+        assert!(doc_path(&at).is_ok());
+        let over = format!("{at}y");
+        assert_eq!(over.len(), MAX_PATH_BYTES + 1);
+        assert_eq!(code(doc_path(&over).unwrap_err()), "invalid_argument");
+        for bad in ["a/b\u{1}", "a/b\n", "a/\u{7f}b", "a\tb/c"] {
+            assert_eq!(
+                code(doc_path(bad).unwrap_err()),
+                "invalid_argument",
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn rule_paths_with_empty_segments_are_refused() {
+        for path in ["a//b", "/a/b", "a/b/", "/"] {
+            let caps = json!({"db": {"rules": [{"path": path, "write": "admin"}]}});
+            assert_eq!(
+                code(Rules::from_capabilities(&caps).unwrap_err()),
+                "invalid_capabilities",
+                "{path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn read_level_applies_self_rules_only_to_the_matching_viewer() {
+        let r = Rules::from_capabilities(&json!({"db": {"rules": [
+            {"path": "data/users/{self}", "read": "admin", "write": "admin"}
+        ]}}))
+        .unwrap();
+        let me = "u_00000000000000000000aa";
+        let other = "u_00000000000000000000bb";
+        let path = format!("data/users/{me}/p");
+        assert_eq!(r.read_level(&path, Some(me)), Level::Admin);
+        assert_eq!(r.read_level(&path, Some(other)), Level::View);
+        assert_eq!(r.read_level(&path, None), Level::View);
+    }
+
+    #[test]
+    fn a_literal_rule_beats_a_self_rule_at_equal_depth_in_either_order() {
+        let me = "u_00000000000000000000aa";
+        let self_rule = json!({"path": "votes/{self}", "read": "view", "write": "interact"});
+        let literal = json!({"path": format!("votes/{me}"), "read": "admin", "write": "admin"});
+        for rules in [
+            vec![self_rule.clone(), literal.clone()],
+            vec![literal.clone(), self_rule.clone()],
+        ] {
+            let r = Rules::from_capabilities(&json!({"db": {"rules": rules}})).unwrap();
+            let inter = caller(Level::Interact, Some(me));
+            let path = format!("votes/{me}/v");
+            assert!(!r.allows(&path, Op::Read, &inter), "{rules:?}");
+            assert!(!r.allows(&path, Op::Write, &inter), "{rules:?}");
+            assert!(
+                r.allows(&path, Op::Write, &caller(Level::Admin, Some(me))),
+                "{rules:?}"
+            );
+            assert_eq!(r.read_level(&path, Some(me)), Level::Admin, "{rules:?}");
         }
     }
 }
