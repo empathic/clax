@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_PAGE_BYTES, artifactHandler } from "./artifact";
+import { MAX_PAGE_BYTES, NO_GESTURE, artifactHandler } from "./artifact";
+import { frameGesture } from "./gesture";
+
+// The viewer's gesture check itself is gesture.test.ts's; here it is a switch.
+vi.mock("./gesture", () => ({ frameGesture: vi.fn(() => true) }));
+const gesture = (on: boolean) => vi.mocked(frameGesture).mockReturnValue(on);
 import { forgetBudgets } from "./budget";
 import type { CapEnv } from "./host";
 
@@ -23,12 +28,6 @@ function stub(publish: () => Response, caps: Record<string, unknown> = { artifac
   return bodies;
 }
 
-/** Sets `navigator.userActivation` (undefined: the API is missing). */
-function activation(hasBeenActive: boolean | undefined) {
-  if (hasBeenActive === undefined) delete (navigator as { userActivation?: unknown }).userActivation;
-  else Object.defineProperty(navigator, "userActivation", { value: { hasBeenActive, isActive: false }, configurable: true });
-}
-
 /** Makes every Blob measure `pad` bytes more than its content, so a page a few
  * bytes long stands in for one at the size limit without allocating it. */
 function padBlobs(pad: number) {
@@ -44,7 +43,7 @@ const posts = (calls: { init: RequestInit }[]) => calls.filter(c => c.init.metho
 describe("artifact.publish in the shell", () => {
   const fresh = () => { sessionStorage.clear(); forgetBudgets(); };
   beforeEach(fresh);
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); fresh(); activation(undefined); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); fresh(); gesture(true); });
 
   it("publishes with the shown version, marks the page as the publisher, and reloads", async () => {
     vi.useFakeTimers();
@@ -213,18 +212,12 @@ describe("artifact.publish in the shell", () => {
     expect(calls.length).toBe(n);
   });
 
-  it("refuses a publish before the viewer has acted in this page load", async () => {
+  it("refuses a publish without the viewer's latest input in the page (on load, on a timer, after input to the shell)", async () => {
     const calls = stub(ok);
-    activation(false);
-    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: "publish after the viewer acts, never on load" });
+    gesture(false);
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: NO_GESTURE });
     expect(calls).toHaveLength(0);
-    activation(true);
-    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
-  });
-
-  it("skips the gesture check where navigator.userActivation is missing", async () => {
-    activation(undefined);
-    stub(ok);
+    gesture(true);
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
   });
 

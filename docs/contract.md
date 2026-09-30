@@ -691,12 +691,14 @@ a pick of its own only in comment mode, while no pick of the bridge's is
 pending, and while that gesture check passes (see "The viewer's gesture"
 under the `comments` capability): within the browser's user-activation
 window (about five seconds) after the viewer's latest input, once the viewer
-has clicked or pressed a key in the page, has moved the pointer onto the
-page since their latest input to the shell, or has Tabbed into the page. The
-page can move focus into itself, so after a click on the shell's Comment
-button it can forge a pick as soon as the viewer moves the pointer onto the
-page within that window, but not while the pointer is still on the button or
-elsewhere in the shell. The page shares the bridge's window and can always
+has clicked or pressed a key in the page, has moved the pointer onto or
+over the page (more than 2 px) since their latest input to the shell, or has
+Tabbed into the page. The page can move focus into itself, so after a click
+on the shell's Comment button, or on Cancel or Post in a composer that
+brings comment mode back, it can forge a pick as soon as the viewer moves
+the pointer onto or over the page within that window, but not while the
+pointer has not moved since that click, even when the control clicked has
+vanished from under it. The page shares the bridge's window and can always
 act then, and it controls what it renders. The composer then shows the
 pick's quote or area label and its screenshot (not where it anchors), and
 nothing is posted without the viewer. A composer waiting for a page area's screenshot keeps Post disabled
@@ -786,33 +788,45 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   text is accepted and inert: only `sendToClaude` sends a page comment to the
   agent.
 - **The viewer's gesture.** `openComposer` and `compose` resolve `{opened:
-  false}`, `sendToClaude` rejects `claude_unavailable`, and a `reply` into a
-  thread sent to the agent rejects `unavailable`, unless the shell judges
-  that the viewer's latest input went to the page. It judges from its own
-  trusted events, never from anything the page or the bridge reports, and
-  all of these must hold:
+  false}`, `sendToClaude` rejects `claude_unavailable`, a `reply` into a
+  thread sent to the agent rejects `unavailable`, and `artifact.publish`
+  rejects `rate_limited`, unless the shell judges that the viewer's latest
+  input went to the page. It judges from its own trusted events, never from
+  anything the page or the bridge reports, and all of these must hold:
   - the shell window has transient user activation (about five seconds after
     the viewer's latest input);
   - focus is in the content frame, and no pointer press or key press has
-    reached the shell since focus entered it (a modifier key alone, Escape,
-    and Option+Up or Down do not count: they act on the page);
+    reached the shell since focus entered it (only the keys the shell hands
+    to the page do not count: Option, Option+Up or Down, and Escape, in
+    comment mode, with the pointer over the page and focus outside a text
+    field);
   - the viewer, not the page, can have moved focus there. Either the pointer
-    was over the frame when focus entered it, or is over it now, having moved
-    onto the frame after the viewer's latest input to the shell; or focus
-    entered with a Tab or Shift+Tab pressed in the shell.
+    arrived on the page by a real move after the viewer's latest input to
+    the shell, and was on it when focus entered or is on it now; or focus
+    entered with a Tab or Shift+Tab pressed in the shell. A real move is an
+    arrival more than 2 px from where the pointer was at that input (from
+    the shell's own pointer moves and presses, for key presses too), so a
+    shell control over the page that vanishes from under a resting pointer
+    (Cancel or Post in the composer, Allow or Don't allow in the consent
+    dialog, a pin the page's scroll moves, a banner's Dismiss) does not
+    count as the pointer arriving.
 
   A page can move focus into itself (`window.focus()`), but that counts only
-  under the last condition. So while the pointer is on a shell control, or
-  rests on the page (arrived there before) while the viewer types in the
-  shell, a page calling on a
-  timer or at load cannot ride input the viewer gives the shell (a shell
-  button, the name field, a reply, the consent dialog), and cannot open the
-  composer or speak to the agent. What remains: within the activation window
-  after the viewer's input to the shell, once the viewer moves the pointer
-  onto the page, or after they Tab into it, the page can pull focus into
-  itself and have such a call counted without a click or key in the page.
-  These refusals count against a budget of 20 per minute per artifact in a
-  tab; past it such calls reject `rate_limited`.
+  under the last condition. So a page calling on a timer or at load cannot
+  ride input the viewer gives the shell (a shell button, the name field, a
+  reply, the composer, the consent dialog, a pin, a banner) while the
+  pointer has not moved since, and cannot open the composer, speak to the
+  agent, or republish. What remains: within the activation window after the
+  viewer's input to the shell, once the viewer moves the pointer onto or
+  over the page by more than 2 px, or after they Tab into it, the page can
+  pull focus into itself and have such a call counted without a click or
+  key in the page. After a mouse click (or a key press with the pointer
+  resting on a shell element) over the page, the shell keeps a transparent
+  9 px square under the pointer, beneath its controls, so the viewer's first
+  move out of it counts as arriving on the page; a click on it without
+  moving is spent there. The comments refusals count against a budget of 20
+  per minute per artifact in a tab; past it such calls reject
+  `rate_limited`.
 - **Anchors.** Anchors from the page always name the page the frame shows and
   the version the view shows. Text follows the contract's rule (non-blank, at
   most 4096 bytes of UTF-8, no control characters but newline and tab).

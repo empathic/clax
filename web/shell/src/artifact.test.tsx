@@ -114,6 +114,7 @@ describe("ArtifactView", () => {
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    gestureIn(frame);
     fromFrame(win, { type: "artifax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
     await waitFor(() => answer, "the publish request");
     const es = await waitFor(() => FakeES.last, "event stream");
@@ -1108,9 +1109,10 @@ function gestureIn(frame: HTMLIFrameElement, active = true) {
   Object.defineProperty(navigator, "userActivation", { value: { isActive: active }, configurable: true });
   const control = document.createElement("button");
   document.body.appendChild(control);
-  gesture!.notePointerOver(control);
+  gesture!.notePointerOver(control, 900, 10);
+  gesture!.notePointerAt(900, 10);
   control.focus();
-  gesture!.notePointerOver(frame);
+  gesture!.notePointerOver(frame, 100, 100);
   frame.focus();
   control.remove();
 }

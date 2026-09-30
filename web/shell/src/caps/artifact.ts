@@ -8,15 +8,18 @@
 // this view to the live version; other open views reload on the SSE `version`
 // event, which carries `by_page`.
 //
-// Two guards run before any request, so a page that publishes on load cannot
-// loop (publish, reload, publish...): the shell window must have seen a user
-// gesture in this page load (sticky activation; a click inside the frame
-// counts), and a per-tab budget kept across reloads allows one publish per
-// [`PUBLISH_GAP_MS`] and [`PUBLISH_PER_MINUTE`] a minute.
+// Two guards run before any request. A publish is the last act of the
+// viewer's own interaction with the page: it needs the viewer's latest input
+// to have gone to the page (`frameGesture`, gesture.ts), so a page cannot
+// publish on load (and loop: publish, reload, publish...), on a timer, or on
+// the back of input the viewer gave the shell. And a per-tab budget kept
+// across reloads allows one publish per [`PUBLISH_GAP_MS`] and
+// [`PUBLISH_PER_MINUTE`] a minute.
 import { INDEX_FILE } from "../../../bridge/src/protocol";
 import { type Version, getArtifact } from "../api";
 import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
+import { frameGesture } from "./gesture";
 import type { HandlerFactory } from "./host";
 
 /** Largest page a publish accepts, as the daemon's per-file cap. */
@@ -29,14 +32,7 @@ export const RELOAD_DELAY_MS = 50;
 export const PUBLISH_GAP_MS = 2_000;
 /** Most publishes of one artifact from one tab in any minute. */
 export const PUBLISH_PER_MINUTE = 10;
-export const NO_GESTURE = "publish after the viewer acts, never on load";
-
-/** Whether the shell window has seen a user gesture in this page load; true
- * where the browser does not report activation. */
-function viewerActed(): boolean {
-  const ua = (globalThis.navigator as { userActivation?: { hasBeenActive?: boolean } } | undefined)?.userActivation;
-  return ua ? ua.hasBeenActive === true : true;
-}
+export const NO_GESTURE = "publish from the viewer's own input in the page, never on load or a timer";
 
 const isHtml = (contentType: string) => contentType.split(";")[0].trim().toLowerCase() === "text/html";
 
@@ -113,7 +109,7 @@ export const artifactHandler: HandlerFactory = env => {
       if (env.files && !(Object.hasOwn(env.files, page) && isHtml(env.files[page].content_type))) {
         throw new CapError("invalid_content", `${page} is not an HTML page of v${env.version}`);
       }
-      if (!viewerActed()) throw new CapError("rate_limited", NO_GESTURE);
+      if (!frameGesture()) throw new CapError("rate_limited", NO_GESTURE);
       const wait = takeSlot(`artifax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });
       if (wait > 0) throw new CapError("rate_limited", `publishing too often; wait ${seconds(wait)} s and batch changes into one publish`);
       // Counted before the lookup, so this view's own SSE `version` event cannot reload it first.

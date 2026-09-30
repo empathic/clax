@@ -3,7 +3,7 @@ import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
 import { forgetBudgets } from "./budget";
 import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
-import { forgetGestures, noteShellInput, notePointerOver } from "./gesture";
+import { forgetGestures, noteShellInput, notePointerAt, notePointerOver } from "./gesture";
 import { Grants } from "./grants";
 import type { CapEnv, CommentsUi } from "./host";
 
@@ -24,7 +24,8 @@ const control = document.createElement("button");
 document.body.append(frame, control);
 const gesture = (on: boolean) => {
   Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
-  if (on) { control.focus(); notePointerOver(frame); frame.focus(); } else { notePointerOver(control); control.focus(); noteShellInput(); }
+  // The pointer really moves from the shell onto the frame (from (900, 10) to (100, 100)).
+  if (on) { control.focus(); notePointerOver(control, 900, 10); notePointerAt(900, 10); notePointerOver(frame, 100, 100); frame.focus(); } else { notePointerOver(control, 900, 10); notePointerAt(900, 10); control.focus(); noteShellInput(); }
 };
 
 function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {

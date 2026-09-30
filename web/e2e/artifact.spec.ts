@@ -151,7 +151,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page that publishes on load publishes nothing`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `On load ${mode}`, pageHtml("publish-on-load.html"), { artifact: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(f.locator("#status")).toHaveText("rate_limited: publish after the viewer acts, never on load");
+    await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
     await page.waitForTimeout(500);
     expect(await current(artifact.id)).toBe(1);
   });

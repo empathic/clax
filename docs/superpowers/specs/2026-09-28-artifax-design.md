@@ -528,23 +528,30 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `window.parent` cannot read or alter what it posts. `frameGesture` holds
   only when the viewer's latest input went to the frame, as the shell sees
   it from its own trusted events: transient user activation, focus in the
-  frame with no pointer or key press in the shell since it entered (a
-  modifier alone, Escape, and Option+Up/Down excepted), and the viewer able
-  to have moved focus there (the pointer over the frame when focus entered
-  it, or now, having moved onto it after the viewer's latest input to the
-  shell; or a Tab or Shift+Tab pressed in the shell). The page's own
-  `window.focus()` counts only under that last condition. This bounds
-  forgery, it does not end it: a page can post a pick of its own only in
-  comment mode, while no pick of the bridge's is pending, and within the
-  browser's user-activation window (about five seconds) after the viewer's
-  latest input, once the viewer has clicked or pressed a key in the page,
-  has moved the pointer onto it since their latest input to the shell, or
-  has Tabbed into it. So after a click on the shell's Comment button a page
-  can forge a pick once the viewer moves the pointer onto it within that
-  window, never while the pointer is still in the shell (its script shares
-  the bridge's window, can act then, and controls what gets rendered); the
-  composer then shows the pick's quote or area label and its screenshot
-  (not where it anchors), and nothing is posted without the viewer.
+  frame with no pointer or key press in the shell since it entered (only
+  the keys the shell forwards to the page excepted), and the viewer able to
+  have moved focus there: the pointer arrived on the frame by a real move
+  after the viewer's latest shell input (more than 2 px from where it was at
+  that input, so a shell control vanishing from under a resting pointer is
+  no arrival) and was on it when focus entered or is now; or a Tab or
+  Shift+Tab pressed in the shell. The page's own `window.focus()` counts
+  only under that last condition. After a mouse press (or a key press with
+  the pointer on a shell element) over the frame, the shell keeps a 9 px
+  transparent square under the pointer, beneath its controls, so the
+  viewer's first move out of it arrives on the frame and counts. This
+  bounds forgery, it does not end it: a page can post a pick of its own
+  only in comment mode, while no pick of the bridge's is pending, and within
+  the browser's user-activation window (about five seconds) after the
+  viewer's latest input, once the viewer has clicked or pressed a key in
+  the page, has moved the pointer onto or over it (more than 2 px) since
+  their latest input to the shell, or has Tabbed into it. So after a click
+  on the shell's Comment button, or on Cancel or Post in a composer that
+  brings comment mode back, a page can forge a pick once the viewer moves
+  the pointer within that window, never while it rests where the click was
+  (its script shares the bridge's window, can act then, and controls what
+  gets rendered); the composer then shows the pick's quote or area label
+  and its screenshot (not where it anchors), and nothing is posted without
+  the viewer.
   Comment mode is off while a pick's composer is open and comes
   back on when it closes (posted, `@agent` included, cancelled, or closed
   with Escape), so the viewer comments again without pressing Comment; a
@@ -634,9 +641,13 @@ files kept in `web/contract/`:
 - **artifact**: `publish(html)` sends the complete document to
   `POST /api/artifacts/<aid>/versions` with `if_version` = the version the
   frame is showing; the shell attaches the token only if the viewer is the
-  owner (the shell is on localhost). Conflict rejects `conflict` and the
-  shell reloads to the winner. Read-only viewers (LAN) reject `not_writer`.
-  `self` is an alias.
+  owner (the shell is on localhost). A publish is the last act of the
+  viewer's own interaction with the page: without `frameGesture` (§8) it
+  rejects `rate_limited` before any request, so a page cannot publish on
+  load, on a timer, or on the back of input to the shell; a per-tab budget
+  also allows one publish per 2 s and 10 a minute. Conflict rejects
+  `conflict` and the shell reloads to the winner. Read-only viewers (LAN)
+  reject `not_writer`. `self` is an alias.
 - **db**: `doc(path)`/`collection(path)` with get, set, update, delete,
   where, orderBy, limit, onSnapshot (over the SSE `doc` event). Rules from
   the declaration raise per-path minimums; caller level is `owner` for a

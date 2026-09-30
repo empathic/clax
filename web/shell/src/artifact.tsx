@@ -5,7 +5,7 @@ import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, takePick, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
-import { frameGesture } from "./caps/gesture";
+import { frameGesture, registerShield, setForwardedKeys } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
@@ -461,15 +461,16 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // can post a pick of its own only while no pick of the bridge's is
         // pending and within the user-activation window (about five seconds)
         // after the viewer's latest input, once the viewer has clicked or
-        // pressed a key in the page, moved the pointer onto it since their
-        // latest input to the shell, or Tabbed into it. The page can move
-        // focus into itself, so after a click on the shell's Comment button
-        // it can forge a pick once the pointer reaches the page, never while
-        // the pointer is still in the shell. The composer then shows the
-        // pick's quote or area label and screenshot, not where it anchors,
-        // and nothing is posted without the viewer. The bridge never has two
-        // picks in flight, so a start arriving while another is pending means
-        // one was forged: both are refused.
+        // pressed a key in the page, moved the pointer onto or over it (more
+        // than 2 px) since their latest input to the shell, or Tabbed into
+        // it. The page can move focus into itself, so after a click on the
+        // shell's Comment button, or on Cancel or Post in a composer that
+        // brings comment mode back, it can forge a pick once the pointer
+        // moves, never while it rests where that click was. The composer
+        // then shows the pick's quote or area label and screenshot, not where
+        // it anchors, and nothing is posted without the viewer. The bridge
+        // never has two picks in flight, so a start arriving while another is
+        // pending means one was forged: both are refused.
         if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64 && frameGesture()) {
           const now = Date.now();
           for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);
@@ -541,30 +542,32 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     // as it leaves).
     let overFrame = false;
     const onOver = (e: MouseEvent) => { overFrame = e.target === frameRef.current; };
-    const onKey = (e: KeyboardEvent) => {
+    // Option widening works with focus in the shell: while comment mode is
+    // on and the pointer is over the frame, Option and, with it held, Up and
+    // Down are forwarded to the page (not from a text field), and so is
+    // Escape, which drops a drag in progress or else answers artifax:cancel
+    // (ending comment mode). They are the page's keys, not input to the shell
+    // (`setForwardedKeys`).
+    const forwards = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       const typing = !!t && (t.localName === "input" || t.localName === "textarea" || t.isContentEditable);
-      // Escape with the pointer over the frame in comment mode goes to the
-      // page, which drops a drag in progress or else answers artifax:cancel
-      // (ending comment mode); anywhere else it ends comment mode here.
-      if (e.key === "Escape" && !(commentingRef.current && overFrame && !typing)) {
-        if (e.type === "keydown") setCommenting(false);
-        return;
-      }
-      // Option widening works with focus in the shell: while comment mode is
-      // on and the pointer is over the frame, Option and, with it held, Up
-      // and Down are forwarded to the page (not from a text field).
-      if (!commentingRef.current || !overFrame || typing) return;
-      const down = e.type === "keydown";
-      if (e.key === "Alt" || e.key === "Escape" || ((e.key === "ArrowUp" || e.key === "ArrowDown") && e.altKey)) {
-        sendRef.current({ type: "artifax:key", key: e.key, down });
+      if (!commentingRef.current || !overFrame || typing) return false;
+      return e.key === "Alt" || e.key === "Escape" || ((e.key === "ArrowUp" || e.key === "ArrowDown") && e.altKey);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (forwards(e)) {
+        sendRef.current({ type: "artifax:key", key: e.key as "Alt" | "ArrowUp" | "ArrowDown" | "Escape", down: e.type === "keydown" });
         if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
+      } else if (e.key === "Escape" && e.type === "keydown") {
+        // Escape anywhere else ends comment mode here.
+        setCommenting(false);
       }
     };
+    const unforward = setForwardedKeys(forwards);
     addEventListener("mouseover", onOver);
     addEventListener("keydown", onKey);
     addEventListener("keyup", onKey);
-    return () => { removeEventListener("message", onMessage); removeEventListener("mouseover", onOver); removeEventListener("keydown", onKey); removeEventListener("keyup", onKey); };
+    return () => { unforward(); removeEventListener("message", onMessage); removeEventListener("mouseover", onOver); removeEventListener("keydown", onKey); removeEventListener("keyup", onKey); };
   }, []);
 
   const onEventRef = useRef<(e: ArtifactEvent) => void>(() => {});
@@ -656,6 +659,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             : missing
               ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
               : <Frame id={id} n={shown} origin={origin} file={startFile} hash={startHash} frameRef={frameRef} onLoad={onFrameLoad} />}
+          {!deleted && !missing && <div class="frame-shield" aria-hidden="true" ref={registerShield} />}
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} onHover={t => setHovered(t?.id ?? null)} />}
           {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {

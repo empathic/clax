@@ -183,10 +183,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer.locator(".composer-quote")).toContainText("worth a comment");
     await composer.getByRole("button", { name: "Cancel" }).click();
     await expect(composer).toHaveCount(0);
-    // Again, then an area drag over the empty panel.
-    await comment.click();
+    // Cancel brings comment mode back on, and the page forges again on the
+    // back of the viewer's Cancel click in the shell: refused.
+    await expect(comment).toHaveAttribute("aria-pressed", "true");
     await expect(f.locator("#forged")).toHaveText("2");
     await forgedSeen(1);
+    await page.waitForTimeout(500);
+    await expect(composer).toHaveCount(0);
+    // The viewer turns comment mode off and on (a fresh Comment click for the
+    // page to ride): refused again. Then the viewer drags an area over the
+    // empty panel.
+    await comment.click();
+    await expect(comment).toHaveAttribute("aria-pressed", "false");
+    await comment.click();
+    await expect(f.locator("#forged")).toHaveText("3");
+    await forgedSeen(2);
     await page.waitForTimeout(500);
     await expect(composer).toHaveCount(0);
     // boundingBox is in the shell's viewport.
@@ -200,5 +211,252 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.up();
     await expect(composer).toHaveCount(1);
     await expect(composer.locator(".composer-quote")).toHaveText(/^Area in #empty/);
+  });
+}
+
+// A page that acts only on a signal from the test (`window.go(kind, delayMs)`),
+// so each attack runs at a known moment: "open" pulls focus and calls
+// openComposer, "send" pulls focus and calls sendToClaude, "forge" pulls focus
+// and posts a pick of its own (start and pick, with a magenta screenshot).
+// The result goes into #result; `create` at load (with `?ask`) raises the
+// consent dialog without any gesture. The page is tall, with #target 600 px
+// down, so a scroll-to moves it.
+const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Attacker</title>
+<style>body{margin:0;font:16px/24px sans-serif}main{padding:16px}#empty{height:200px;background:#f8fafc}#target{position:absolute;top:600px;left:40px;margin:0}#spacer{height:3000px}</style></head>
+<body><main><h1 id="t">Attack</h1><p id="para">The viewer's own paragraph, worth a comment.</p><div id="empty"></div><p id="result">-</p><button id="b">Do it</button><h2 id="target">Pinned target</h2><div id="spacer"></div></main>
+<script>(async () => {
+  const c = await claude.use("comments");
+  const el = document.getElementById("t");
+  const anchor = await c.anchorFor(el);
+  const out = document.getElementById("result");
+  const show = r => r && typeof r === "object" && "threadId" in r ? "sent" : JSON.stringify(r);
+  async function forge() {
+    const cv = new OffscreenCanvas(1, 1);
+    const ctx = cv.getContext("2d");
+    ctx.fillStyle = "#ff00ff";
+    ctx.fillRect(0, 0, 1, 1);
+    const png = await (await cv.convertToBlob({ type: "image/png" })).arrayBuffer();
+    window.focus();
+    const a = { kind: "element", selector: "#para", quote: "FORGED BY PAGE", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
+    parent.postMessage({ type: "artifax:pick-start", pickId: "forged" }, "*");
+    parent.postMessage({ type: "artifax:pick", pickId: "forged", version: window.__artifax.version, anchor: a, clipPng: png }, "*");
+    return "forged";
+  }
+  const act = kind => kind === "forge" ? forge()
+    : (window.focus(), kind === "open" ? c.openComposer({ element: el }) : c.sendToClaude({ anchor, text: "From the page, not the viewer." }));
+  window.go = (kind, delay = 0) => setTimeout(async () => { out.textContent = await act(kind).then(show, e => e.code); }, delay);
+  document.getElementById("b").addEventListener("click", async () => { out.textContent = await act("open").then(show, e => e.code); });
+  ${askAtLoad ? `c.create({ anchor, text: "Asked at load." }).then(() => { document.getElementById("t").dataset.asked = "yes"; }, e => { document.getElementById("t").dataset.asked = e.code; });` : ""}
+  document.getElementById("t").dataset.ready = "yes";
+})().catch(e => { document.getElementById("result").textContent = "setup " + (e.code || e.message); });</script></body></html>`;
+
+/** Signals the page to act; returns once it has answered. */
+async function go(f: Frame, kind: "open" | "send" | "forge", delayMs = 0) {
+  await f.evaluate(([k, ms]) => { document.getElementById("result")!.textContent = "-"; (window as unknown as { go(k: string, ms: number): void }).go(k, ms); }, [kind, delayMs] as const);
+  await expect(f.locator("#result")).not.toHaveText("-", { timeout: 10_000 + delayMs });
+}
+
+const threadsOf = async (id: string) => ((await api(d.base, d.token, `/api/artifacts/${id}/threads?include_resolved=true`)) as { threads: { id: string; sent_to_agent: boolean; comments: { body: string }[] }[] }).threads;
+
+/** Opens `id` and waits for its page to set up. */
+async function openReady(page: Page, id: string, mode: "subdomain" | "sandbox") {
+  const f = await openArtifact(page, d.base, id, 1, mode);
+  await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
+  return f;
+}
+
+/** The viewer picks the paragraph (moving there from the shell) and gets the composer. */
+async function pickPara(page: Page, f: Frame) {
+  await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await f.locator("#para").click();
+  const composer = page.locator(".composer");
+  await expect(composer.locator(".composer-quote")).toContainText("worth a comment");
+  return composer;
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const delay of [0, 500]) {
+    test(`${mode}: a page forging a pick${delay ? " 500 ms" : ""} after the viewer's Cancel in the composer opens nothing; comment mode resumes and the viewer's next click picks`, async ({ page }) => {
+      const id = await publishLive(`Cancel ${mode} ${delay}`, ATTACKER(false), { comments: { composer_only: true } });
+      await record(page);
+      const f = await openReady(page, id, mode);
+      const composer = await pickPara(page, f);
+      await composer.getByRole("button", { name: "Cancel" }).click();
+      await expect(composer).toHaveCount(0);
+      await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
+      // The composer has gone from under the resting pointer.
+      await page.waitForTimeout(300);
+      await go(f, "forge", delay);
+      await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
+      await page.waitForTimeout(500);
+      await expect(composer).toHaveCount(0);
+      // The viewer moves on and clicks another element: that pick counts.
+      await f.locator("#target").click();
+      await expect(composer.locator(".composer-quote")).toContainText("Pinned target");
+    });
+  }
+
+  test(`${mode}: a page forging a pick after the viewer's Post opens nothing`, async ({ page }) => {
+    const id = await publishLive(`Post ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    await record(page);
+    const f = await openReady(page, id, mode);
+    const composer = await pickPara(page, f);
+    await composer.locator("textarea").fill("A real comment.");
+    await composer.getByRole("button", { name: "Post comment" }).click();
+    await expect(composer).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
+    await page.waitForTimeout(300);
+    await go(f, "forge");
+    await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
+    await page.waitForTimeout(500);
+    await expect(composer).toHaveCount(0);
+    expect((await threadsOf(id)).map(t => t.comments[0].body)).toEqual(["A real comment."]);
+  });
+
+  test(`${mode}: after the viewer clicks Allow for the page's own create, the page cannot send to the agent`, async ({ page }) => {
+    const id = await publishLive(`Allow ${mode}`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id, mode);
+    const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+    // The dialog sits over the frame, so its buttons do too.
+    const fb = await frameBox(page);
+    const ab = (await allow.boundingBox())!;
+    expect(ab.x > fb.x && ab.x + ab.width < fb.x + fb.width && ab.y > fb.y && ab.y + ab.height < fb.y + fb.height).toBe(true);
+    await allow.click();
+    await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
+    await page.waitForTimeout(300);
+    await go(f, "send");
+    await expect(f.locator("#result")).toHaveText("claude_unavailable");
+    expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
+  });
+
+  test(`${mode}: after the viewer answers Allow with Enter, the pointer resting over the page, the page cannot send to the agent`, async ({ page }) => {
+    const id = await publishLive(`Allow key ${mode}`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id, mode);
+    const dialog = page.getByRole("dialog");
+    const allow = dialog.getByRole("button", { name: "Allow", exact: true });
+    await expect(allow).toBeEnabled();
+    // The pointer comes to rest on the dialog's backdrop, over the frame.
+    const fb = await frameBox(page);
+    await page.mouse.move(fb.x + 30, fb.y + fb.height - 30, { steps: 4 });
+    await page.keyboard.press("Tab");
+    await expect(allow).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
+    await page.waitForTimeout(300);
+    await go(f, "send");
+    await expect(f.locator("#result")).toHaveText("claude_unavailable");
+    expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
+  });
+
+  test(`${mode}: after the viewer clicks Don't allow, the page cannot reach sendToClaude or the composer`, async ({ page }) => {
+    const id = await publishLive(`Deny ${mode}`, ATTACKER(true), { comments: {} });
+    const f = await openReady(page, id, mode);
+    await page.getByRole("dialog").getByRole("button", { name: "Don't allow", exact: true }).click();
+    await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
+    await page.waitForTimeout(300);
+    // Refused at the gesture check (claude_unavailable), not at consent.
+    await go(f, "send");
+    await expect(f.locator("#result")).toHaveText("claude_unavailable");
+    await go(f, "open");
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
+    await expect(page.locator(".composer")).toHaveCount(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  });
+
+  test(`${mode}: after the viewer clicks a pin that the page's scroll moves away, the page cannot open the composer`, async ({ page }) => {
+    const id = await publishLive(`Pin ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "#target", quote: "Pinned target", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", "A pinned note.");
+    form.set("version", "1");
+    expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
+    const f = await openReady(page, id, mode);
+    const pin = page.locator(".thread-pin");
+    await expect(pin).toHaveCount(1);
+    const before = (await pin.boundingBox())!;
+    await pin.click();
+    // The page scrolls the target to the middle: the pin leaves the pointer.
+    await expect.poll(async () => (await pin.boundingBox())?.y ?? -1).not.toBe(before.y);
+    await page.waitForTimeout(500);
+    await go(f, "open");
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
+    await expect(page.locator(".composer")).toHaveCount(0);
+  });
+
+  test(`${mode}: after the viewer dismisses a banner over the page, the page cannot open the composer`, async ({ page }) => {
+    const id = await publishLive(`Banner ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    // The thread list fails, so the shell says so in a banner.
+    await page.route(u => u.pathname === `/api/artifacts/${id}/threads`, route => route.request().method() !== "GET"
+      ? route.continue()
+      : route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "down" } }) }));
+    const f = await openReady(page, id, mode);
+    const banner = page.locator(".banner.notice");
+    await expect(banner).toContainText("Could not load comments");
+    const fb = await frameBox(page);
+    const bb = (await banner.boundingBox())!;
+    expect(bb.y > fb.y && bb.x > fb.x && bb.x + bb.width < fb.x + fb.width).toBe(true);
+    await banner.getByRole("button", { name: "Dismiss" }).click();
+    await expect(banner).toHaveCount(0);
+    await page.waitForTimeout(300);
+    await go(f, "open");
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
+    await expect(page.locator(".composer")).toHaveCount(0);
+  });
+
+  test(`${mode}: a tap on the page's button after a tap on the shell's name field opens the composer`, async ({ browser }) => {
+    const id = await publishLive(`Tap ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const ctx = await browser.newContext({ hasTouch: true });
+    const page = await ctx.newPage();
+    const f = await openReady(page, id, mode);
+    const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+    await page.touchscreen.tap(nb.x + nb.width / 2, nb.y + nb.height / 2);
+    const bb = (await f.locator("#b").boundingBox())!;
+    await page.touchscreen.tap(bb.x + bb.width / 2, bb.y + bb.height / 2);
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
+    await expect(page.locator(".composer")).toHaveCount(1);
+    await ctx.close();
+  });
+
+  test(`${mode}: a Shift+Tab from the shell back into the page and a key there opens the composer`, async ({ page }) => {
+    const id = await publishLive(`Shift-Tab ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
+    // A thread, so the Threads panel after the page has controls to start from.
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "#t", quote: "Title", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", "A note.");
+    form.set("version", "1");
+    expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
+    const f = await openArtifact(page, d.base, id, 1, mode);
+    const threads = page.getByRole("button", { name: /^Threads/ });
+    await expect(threads).toHaveText("Threads (1)");
+    if ((await threads.getAttribute("aria-pressed")) !== "true") await threads.click();
+    await page.locator(".sidebar .card-head").first().click();
+    await page.keyboard.press("Shift+Tab");
+    for (let i = 0; i < 10 && (await f.locator("#focused").textContent()) !== "yes"; i++) await page.keyboard.press("Shift+Tab");
+    await expect(f.locator("#focused")).toHaveText("yes");
+    await page.keyboard.press("Enter");
+    await expect(f.locator("#clicked")).toHaveText(JSON.stringify({ opened: true }));
+    await expect(page.locator(".composer")).toHaveCount(1);
+  });
+
+  test(`${mode}: a page republishing itself on a timer after the viewer clicked the shell is refused; the viewer's click in the page publishes`, async ({ page }) => {
+    const html = `<!doctype html><html><head><title>Autosave</title></head><body><p id="status">-</p><button id="save">Save</button><script>(async () => {
+  const a = await claude.use("artifact");
+  const next = "<!doctype html><html><body><p id=\\"done\\">republished</p></body></html>";
+  const s = document.getElementById("status");
+  setInterval(() => { window.focus(); a.publish(next).then(() => { s.textContent = "published"; }, e => { s.textContent = e.code + ": " + e.message; }); }, 300);
+  document.getElementById("save").addEventListener("click", () => { a.publish(next).catch(() => {}); });
+})();</script></body></html>`;
+    const res = await fetch(`${d.base}/api/artifacts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${d.token}` },
+      body: JSON.stringify({ title: `Autosave ${mode}`, capabilities: { artifact: {} }, files: { "index.html": { content: html, encoding: "utf8" } } }) });
+    const id = ((await res.json()) as { artifact: { id: string } }).artifact.id;
+    const f = await openArtifact(page, d.base, id, 1, mode);
+    await page.waitForTimeout(1_000);
+    await page.getByRole("textbox", { name: "Your name" }).click();
+    await page.waitForTimeout(2_000);
+    const current = async () => ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
+    expect(await current()).toBe(1);
+    await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
+    await f.locator("#save").click();
+    await expect.poll(current).toBe(2);
   });
 }
