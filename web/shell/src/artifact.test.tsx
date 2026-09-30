@@ -865,6 +865,28 @@ describe("ArtifactView", () => {
     expect(posted.some(m => m.type === "artifax:focus" && m.id === "tZ")).toBe(false);
   });
 
+  it("tells the frame which threads were made on the version shown, to resolve and to scroll to", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = (id: string, n: number) => ({ id, artifact_id: ID, version_n: n, anchor: { ...pick("x", `Goals ${id}`).anchor }, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "x" }] });
+    const two = { artifact: artifact(2).artifact, versions: [...artifact(1).versions, ...artifact(2).versions] };
+    const root = await mount(async () => new Response(JSON.stringify(two)),
+      async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tOld", 1), t("tNew", 2)], next_cursor: null } : viewer)));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; anchors?: { id: string; sameVersion?: boolean }[]; anchor?: { quote: string | null }; sameVersion?: boolean }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    await waitFor(() => root.querySelector('[data-thread="tOld"]'), "threads");
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
+    const req = await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.length === 2 && posted.filter(m => m.type === "artifax:resolve-anchors").at(-1), "the resolve request");
+    expect(req.anchors!.map(a => a.sameVersion)).toEqual([false, true]);
+    for (const [id, same] of [["tOld", false], ["tNew", true]] as const) {
+      root.querySelector<HTMLButtonElement>(`[data-thread="${id}"] button.card-head`)!.click();
+      const scroll = await waitFor(() => posted.filter(m => m.type === "artifax:scroll-to").at(-1)?.anchor?.quote === `Goals ${id}` && posted.filter(m => m.type === "artifax:scroll-to").at(-1), `scroll to ${id}`);
+      expect(scroll.sameVersion).toBe(same);
+    }
+  });
+
   it("forwards Option and, with it, Up and Down to the frame while commenting with the pointer over it", async () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");

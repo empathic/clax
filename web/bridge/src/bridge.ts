@@ -94,15 +94,16 @@ import { makeUse } from "./use";
   // The thread the shell focuses (hovered in its list, or selected); its
   // area, if it is one, is outlined dashed.
   let focusId: string | null = null;
+  // One cache for resolving and focusing. A detached thread is retried when
+  // the page changes (content rendered late), not only on scroll or resize.
+  const cache = () => resolutions ??= new AnchorCache(document, undefined, meta.file, () => reflow());
   const updateFocus = (flash = false) => {
     const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
-    const r = f?.anchor.kind === "area" ? (resolutions ??= new AnchorCache(document, undefined, meta.file)).resolve(f.id, f.anchor, f.sameVersion === true) : null;
+    const r = f?.anchor.kind === "area" ? cache().resolve(f.id, f.anchor, f.sameVersion === true) : null;
     mode.showFocus(f && r ? placeOf(f.anchor, r) : null, flash);
   };
   const resolveAll = (requestId: string | null) => {
-    // A detached thread is retried when the page changes (content rendered
-    // late), not only on scroll or resize.
-    const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file, () => reflow());
+    const resolved = cache();
     const results: AnchorResult[] = anchors.map(({ id, anchor, sameVersion }) => {
       const r = resolved.resolve(id, anchor, sameVersion === true);
       return r ? { id, found: true, method: r.method, rect: placeOf(anchor, r) } : { id, found: false, method: null, rect: null };

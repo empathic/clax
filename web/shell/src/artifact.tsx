@@ -444,10 +444,13 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       case "artifax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
         // frame holds the viewer's gesture (`frameGesture`). So a page can
-        // post a pick of its own only while the viewer's latest input was in
-        // the frame (a click, drag, or key press there, or focus moved into
-        // it, within the user-activation window) and no pick of the bridge's
-        // is pending; the composer then shows the pick's quote or area label
+        // post a pick of its own only within the user-activation window
+        // (about five seconds) after the viewer's latest input to the shell
+        // or the frame, while focus is in the frame and no input has reached
+        // the shell since focus entered it (the page can move focus into
+        // itself, so a click on the shell's Comment button is enough), and
+        // while no pick of the bridge's is pending; the composer then shows
+        // the pick's quote or area label
         // and screenshot, not where it anchors, and nothing is posted without
         // the viewer. The bridge never has two picks in flight, so a start
         // arriving while another is pending means one was forged: both are

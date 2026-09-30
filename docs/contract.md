@@ -687,12 +687,13 @@ click or release) arrived while the frame held the viewer's gesture (the
 check `compose` uses); each start counts once (a pick dropped because
 comment mode ended uses its start up, and ending comment mode forgets every
 start), and two starts pending at once are both refused. So a page can post
-a pick of its own only while the viewer's latest input was in the frame (a
-click, drag, or key press there, or moving focus into it, such as by Tab,
-within the browser's user-activation window, about five seconds), in comment
-mode, and while no pick of the bridge's is pending: the page shares the
-bridge's window and can always act on such input, and it controls what it
-renders. The composer then shows the pick's quote or area label and its
+a pick of its own only within the browser's user-activation window (about
+five seconds) after the viewer's latest input to the shell or the frame,
+while focus is in the frame and no input has reached the shell since focus
+entered it (the page can move focus into itself, so a click on the shell's
+Comment button is enough), in comment mode, and while no pick of the
+bridge's is pending: the page shares the bridge's window and can always act
+then, and it controls what it renders. The composer then shows the pick's quote or area label and its
 screenshot (not where it anchors), and nothing is posted without the
 viewer. A composer waiting for a page area's screenshot keeps Post disabled
 and, after 10 seconds without it, says "No screenshot: it was not taken in
