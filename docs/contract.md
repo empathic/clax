@@ -1,15 +1,15 @@
-# Artifax contract
+# Clax contract
 
-This document is the contract between Artifax and the agents that publish to
+This document is the contract between Clax and the agents that publish to
 it: the tools, how a harness session is identified, what a published page must
 do, what the daemon guarantees about isolation, and what does not exist yet.
 The implementation is the authority where the two disagree:
-`crates/artifax-mcp/src/tools.rs` (arguments), `crates/artifax-mcp/src/render.rs`
-(result shape), `crates/artifax-server/src/routes/` (daemon errors),
-`crates/artifax-core/src/store/sessions.rs` (sessions),
-`crates/artifax-core/src/feedback.rs` and
-`crates/artifax-core/src/store/feedback.rs` (comment delivery),
-`crates/artifax-hooks/src/events.rs` (hooks), and `plugins/pi/src/artifax.ts`
+`crates/clax-mcp/src/tools.rs` (arguments), `crates/clax-mcp/src/render.rs`
+(result shape), `crates/clax-server/src/routes/` (daemon errors),
+`crates/clax-core/src/store/sessions.rs` (sessions),
+`crates/clax-core/src/feedback.rs` and
+`crates/clax-core/src/store/feedback.rs` (comment delivery),
+`crates/clax-hooks/src/events.rs` (hooks), and `plugins/pi/src/clax.ts`
 (the Pi tools).
 
 ## Tools
@@ -20,9 +20,9 @@ Twenty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 "Comments and feedback"), and the data tools `db_get`, `db_list`,
 `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`,
 `db_batch` (see "Runtime capabilities"). The MCP implementation lives in
-`crates/artifax-mcp` and is served two ways:
+`crates/clax-mcp` and is served two ways:
 
-- the stdio shim `artifax mcp --agent <claude|codex>`, which a harness
+- the stdio shim `clax mcp --agent <claude|codex>`, which a harness
   starts once per session and which attributes publishes to that session
   (Pi does not use it; `--agent pi` is a usage error);
 - the daemon's `/mcp` endpoint (MCP streamable HTTP, bearer token required),
@@ -36,25 +36,25 @@ Names as the model sees them:
 
 | Harness | Tool name |
 |---|---|
-| Claude Code, plugin install | `mcp__plugin_artifax_artifax__<tool>` |
-| Claude Code, plain `.mcp.json` entry named `artifax` | `mcp__artifax__<tool>` |
-| Codex | `mcp__artifax__<tool>` |
-| Pi | `artifax_<tool>` |
+| Claude Code, plugin install | `mcp__plugin_clax_clax__<tool>` |
+| Claude Code, plain `.mcp.json` entry named `clax` | `mcp__clax__<tool>` |
+| Codex | `mcp__clax__<tool>` |
+| Pi | `clax_<tool>` |
 
 The command line covers the same operations for scripts and harnesses
-without MCP: `artifax publish`, `read`, `list`, `open`, `delete`, `pin`,
+without MCP: `clax publish`, `read`, `list`, `open`, `delete`, `pin`,
 `unpin`, `asset upload` and `status`, each with `--json` for one JSON object
-on stdout. `artifax read <ID|URL> [--version N] [--path P] [--max-bytes N]`
-and `artifax asset upload <ID|URL> <file>...` run the `read` and
+on stdout. `clax read <ID|URL> [--version N] [--path P] [--max-bytes N]`
+and `clax asset upload <ID|URL> <file>...` run the `read` and
 `asset_upload` tools, and with `--json` print exactly the tool's result object
 (including `feedback`) on one line; a tool error exits 1 with
 `error: <code>: <message>` on stderr. Without `--json`, `read` writes the
 file's content (no trailing newline added) and `asset upload` prints one asset
 URL per line. The other commands' JSON is their own shape, not the tool
-result shape below. `artifax publish` takes a new artifact's title from
-`--title`, else the page's `<title>`, as the `publish` tool does. `artifax
+result shape below. `clax publish` takes a new artifact's title from
+`--title`, else the page's `<title>`, as the `publish` tool does. `clax
 open` exits 1 with `could not open a browser; open <url> yourself` when the
-opener fails (see `open`); `artifax open --json` only prints the URL.
+opener fails (see `open`); `clax open --json` only prints the URL.
 
 ### Results
 
@@ -94,7 +94,7 @@ Pi's own validation message (`Validation failed for tool ...`), not JSON.
 These come from the tool layer itself, not the daemon:
 
 - `daemon_unreachable`: the daemon could not be found, started, or connected
-  to. Extra field `log`, the daemon log path (`<ARTIFAX_HOME>/logs/daemon.log`).
+  to. Extra field `log`, the daemon log path (`<CLAX_HOME>/logs/daemon.log`).
 - `timeout`: a request to the daemon passed its client-side deadline. Extra
   fields `detail` and `log`. For a publish, the outcome is unknown; read the
   artifact before retrying.
@@ -339,7 +339,7 @@ Errors: `invalid_id`, `not_found`.
 
 Checks that the artifact exists, then opens its URL in a browser on the
 machine running the tool (`open` on macOS, `xdg-open` elsewhere). With
-`ARTIFAX_NO_OPEN` set, no browser is started.
+`CLAX_NO_OPEN` set, no browser is started.
 
 ```json
 { "url": "http://localhost:7480/a/7q3k9mzx2b4t", "opened": true, "feedback": [] }
@@ -350,7 +350,7 @@ exits successfully within that time, or is still running then (best effort:
 some openers hand off and linger, so one that fails later is still reported as
 opened). It is `false` when the opener cannot be started or exits
 unsuccessfully (for example `xdg-open` with no display or handler), or when
-`ARTIFAX_NO_OPEN` is set; then give the person `url`.
+`CLAX_NO_OPEN` is set; then give the person `url`.
 
 Errors: `invalid_id`, `not_found`.
 
@@ -439,7 +439,7 @@ No arguments.
   "push": {
     "tier": null,
     "available": false,
-    "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next artifax tool call, or during wait_for_feedback"
+    "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"
   },
   "feedback": []
 }
@@ -452,7 +452,7 @@ last registration or heartbeat: the shim heartbeats every 60 s, so its
 `last_seen_at` lags by up to a minute and a `cwd` the `SessionStart` hook
 filled in appears after the next heartbeat; Pi sends no heartbeat, so under Pi
 it is the row as registered. `daemon_version` (the daemon's version again) is
-present only when it differs from the Artifax version of the tools answering
+present only when it differs from the Clax version of the tools answering
 (the shim's binary, or the Pi package, which carries the same version), which
 signals version skew.
 
@@ -487,12 +487,12 @@ Errors: only those every tool can return.
 ## Sessions
 
 A session is one harness conversation. Publishes made through a session's
-tools carry it (the `X-Artifax-Session` header on the daemon's publish routes)
+tools carry it (the `X-Clax-Session` header on the daemon's publish routes)
 and the artifact records it as `owner_session_id`; the gallery shows which
 session published each artifact and whether that session is live.
 
 The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
-Code, else from `ARTIFAX_SESSION_ID` for any harness, else sends none.
+Code, else from `CLAX_SESSION_ID` for any harness, else sends none.
 
 A session row has `harness` (`claude`, `codex`, `pi`), `harness_session_id`
 (the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
@@ -544,14 +544,14 @@ Claude Code passes `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID` and
 `harness_session_id` set to `CLAUDE_CODE_SESSION_ID` and `cwd` set to
 `CLAUDE_PROJECT_DIR` (else its own working directory), so the row is keyed by
 the Claude session ID from the start. Hooks never start a daemon: when one is
-running, the `SessionStart` hook (`artifax hook --agent claude session-start`)
+running, the `SessionStart` hook (`clax hook --agent claude session-start`)
 joins by that same ID and adds the daemon URL to the session context, and the
 `SessionEnd` hook ends every live row with that ID; when none is running, they
 do nothing. If `CLAUDE_CODE_SESSION_ID` is absent, the shim registers as under
 Codex and the hook's parent-PID join applies.
 
-The `UserPromptSubmit` hook (`artifax hook --agent claude prompt`) and the
-`Stop` hook (`artifax hook --agent claude stop`) hand comments over (tiers 3
+The `UserPromptSubmit` hook (`clax hook --agent claude prompt`) and the
+`Stop` hook (`clax hook --agent claude stop`) hand comments over (tiers 3
 and 2 under "Comments and feedback"); the `SessionStart` hook also appends
 comments already waiting for the session to its context.
 
@@ -563,7 +563,7 @@ exits or through the reaper.
 Codex passes only `PATH`, `PWD` and the variables the plugin's `env_vars`
 lists to MCP servers, and starts the shim in the plugin's own directory. The
 shim therefore registers with no `harness_session_id` (unless
-`ARTIFAX_SESSION_ID` is set in its environment, which the plugin does not
+`CLAX_SESSION_ID` is set in its environment, which the plugin does not
 forward), its parent process
 (Codex) as `parent_pid`, and Codex's working directory as `cwd`, read with
 `lsof` on macOS or from `/proc/<pid>/cwd` on Linux (empty when that fails). The
@@ -573,7 +573,7 @@ the daemon gives the ID to the shim's row by matching Codex's PID among them.
 The hook also fills an empty `cwd`, records its `CODEX_HOME` (when set) for
 `codex queue`, and adds the daemon URL and any comments already waiting for
 the session (those tier 3 would carry) to the session context. The `Stop`
-hook (`artifax hook --agent codex stop`) hands comments over at the end of a
+hook (`clax hook --agent codex stop`) hands comments over at the end of a
 turn. The `SessionEnd` hook ends the row by the
 Codex session ID.
 
@@ -606,7 +606,7 @@ The daemon's `/mcp` endpoint has no session: publishes have no owner,
 `list` with `scope: "mine"` is empty, `status` reports `null` for `harness`
 and `session`, and relative file paths are rejected.
 
-The `artifax` CLI has no session either: `artifax publish` never attributes a
+The `clax` CLI has no session either: `clax publish` never attributes a
 publish to one. A new artifact it publishes has no owner, so comments sent to
 the agent on it wait, undelivered, until an agent session watches it (the
 `watch` tool) or publishes a version of it. After the URL the command prints
@@ -630,7 +630,7 @@ lines from 120 px above to 120 px below it at the block's width, with the
 picked text marked in the outline's tint (from 120 px above the start of a
 range taller than that); for an element larger than that, the whole element
 scaled down when it is wholly in view, else its part in the viewport, grown
-within it to that size. Clips are stored at `<ARTIFAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
+within it to that size. Clips are stored at `<CLAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
 thread is plain until the person presses **Send to agent** or writes `@agent`
 (as a word, not inside an address) in a comment; from then on, every later
 viewer comment on it is sent too. A viewer comment on a resolved thread
@@ -682,7 +682,7 @@ block); Option never starts an area drag. Option, Up, Down, and Escape work
 with focus in the page or in the shell while the pointer is over the page.
 Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only while comment mode is on and only
-after its start (`artifax:pick-start`, sent by the bridge at the viewer's
+after its start (`clax:pick-start`, sent by the bridge at the viewer's
 click or release) arrived while the frame held the viewer's gesture (the
 check `compose` uses); each start counts once (a pick dropped because
 comment mode ended uses its start up, and ending comment mode forgets every
@@ -758,7 +758,7 @@ level `interact` or above: a viewer with a display name (its cookie), or the
 owner shell (the token); an unnamed viewer, or a request with neither, gets
 403 `forbidden` asking for a name. They refuse a foreign `Origin` like the
 other viewer routes. An agent reopens with the body `{"as": "agent"}` and
-deletes with `?as=agent`, holding the token and `X-Artifax-Session` naming a
+deletes with `?as=agent`, holding the token and `X-Clax-Session` naming a
 live session (400 `unknown_session` otherwise); on a thread that was not sent
 to the agent it gets 200 `{guidance}` and nothing changes. A thread of
 another or a deleted artifact is 404.
@@ -767,7 +767,7 @@ another or a deleted artifact is 404.
 
 A page that declares `capabilities: {comments: {}}` (or `{"composer_only":
 true}`, optionally with `"customAnchors": true`) gets `claude.use("comments")`
-per the 0.2.61 `comments.d.ts`, in every view: Artifax has no public links.
+per the 0.2.61 `comments.d.ts`, in every view: Clax has no public links.
 `openComposer` and `customAnchors().compose` open the shell's composer on the
 page's element, range, or anchor; the viewer types and posts. The write
 verbs (`create`, `reply`, `sendToClaude`, `resolve`, `delete`) need the full
@@ -881,12 +881,12 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
 
     So after 5.5 s without shell input, the shell's activation comes from
     the viewer's input to the page. The exception would be an activation
-    source none of these see; Artifax knows of none, beyond script the
-    viewer runs on the Artifax tab themselves (a bookmarklet).
+    source none of these see; Clax knows of none, beyond script the
+    viewer runs on the Clax tab themselves (a bookmarklet).
 
     Without the composer tier's check each call rejects with the code in the
     table. With it but within the 5.5 seconds, each rejects
-    `shell_input_recent` (an Artifax extension to the contract's codes, in
+    `shell_input_recent` (an Clax extension to the contract's codes, in
     the shipped typings), with nothing written: the page should ask the
     viewer to click again. What remains: within the activation window after
     the viewer's own click or key in the page, the page can make such a
@@ -1066,9 +1066,9 @@ changes.
 Each forwarded comment is rendered as:
 
 ```
-[artifax] Comment sent to you on "Quarterly Review" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9...
+[clax] Comment sent to you on "Quarterly Review" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9...
 Anchored on: main > section:nth-of-type(2) > h2  «Quarterly goals»  (v3)
-Clip: /Users/alex/.artifax/artifacts/7q3k9mzx2b4t/clips/01J9....png
+Clip: /Users/alex/.clax/artifacts/7q3k9mzx2b4t/clips/01J9....png
 Alex: "Make this a two-column layout and drop the third bullet."
 Reply with comments_reply, then comments_resolve when done.
 ```
@@ -1087,7 +1087,7 @@ characters followed by `…`. Author names lose control characters, `"` and `:`,
 `comments` capability, as the viewer, has ` (written by the page)` after the
 author's name (`Alex (written by the page): "…"`). A resend says `Comment sent to you
 (resent)`. A thread without a clip says `Clip: none (no screenshot was captured
-for this comment)`. The payload starts with `[artifax] N comments sent to
+for this comment)`. The payload starts with `[clax] N comments sent to
 you:` (`1 comment` for one) on its own line, followed by the comments
 separated by blank lines. Tool results carry this text after `---` in a
 second text block; the Stop hook's `reason`, the prompt hook's
@@ -1105,7 +1105,7 @@ Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 
 | Tier | Claude Code | Codex | Pi |
 |---|---|---|---|
-| 1, tool result | next artifax tool call (shim) | next artifax tool call (shim) | next `artifax_*` tool call (`tool_result` handler) |
+| 1, tool result | next clax tool call (shim) | next clax tool call (shim) | next `clax_*` tool call (`tool_result` handler) |
 | 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | none |
 | 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none |
 | 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting |
@@ -1118,12 +1118,12 @@ the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
 
 Tier 5 for Codex needs the Codex session ID (from the `SessionStart` hook, so
-hooks must be enabled and trusted), `codex` from `ARTIFAX_CODEX_BIN` when it
+hooks must be enabled and trusted), `codex` from `CLAX_CODEX_BIN` when it
 is set, else from the daemon's `PATH`, and the session's `CODEX_HOME` (passed
 by the hook when set; otherwise `codex` uses its default). A set
-`ARTIFAX_CODEX_BIN` is never followed by a `PATH` search: the empty string
+`CLAX_CODEX_BIN` is never followed by a `PATH` search: the empty string
 turns Codex push off on purpose, and a value that is not an executable file
-turns it off with a reason naming that value. `artifax doctor --agent codex`
+turns it off with a reason naming that value. `clax doctor --agent codex`
 checks the first two, naming where `codex` came from. `GET /api/push` reports
 only the daemon's `codex`: without the token `{"codex": {available, source,
 reason}}` (where `codex` came from, and why push is off when it is); with the
@@ -1171,7 +1171,7 @@ The thread's waiting indicator follows the `feedback_state` event:
 
 | State | Indicator |
 |---|---|
-| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next artifax tool call, the end of its turn, Codex to pick up the queued message, Pi to take the message>" |
+| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the end of its turn, Codex to pick up the queued message, Pi to take the message>" |
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
@@ -1238,7 +1238,7 @@ Minimal skeleton:
 
 ## Security model
 
-- The daemon binds `127.0.0.1` by default. `artifax serve --bind 0.0.0.0` (or
+- The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
   another address) serves on the LAN.
 - Every `/api/**` route answers only when the `Host` header is literally
   `localhost`, `127.0.0.1` or `[::1]` (port optional), or exactly the IP and
@@ -1250,7 +1250,7 @@ Minimal skeleton:
   content, blob, and `/healthz` paths are not subject to this check.
 - Every route that changes state, except the viewer routes below, requires
   `Authorization: Bearer <token>` with the token from
-  `<ARTIFAX_HOME>/daemon.json` (mode 0600): creating and publishing artifacts,
+  `<CLAX_HOME>/daemon.json` (mode 0600): creating and publishing artifacts,
   changing and deleting them, uploading and deleting assets, registering,
   joining and ending sessions, watches, taking and acknowledging a session's
   feedback, and shutting the daemon down. Reading sessions and their watches
@@ -1274,7 +1274,7 @@ Minimal skeleton:
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
   host the daemon serves only `/v/<n>/...` (that artifact's content),
-  `/healthz`, `/_artifax/...` and `/_blob/...`; every other path, the API
+  `/healthz`, `/_clax/...` and `/_blob/...`; every other path, the API
   included, is a 404. The host must be exactly a valid 12-character lowercase
   artifact ID followed by `.localhost` and an optional numeric port.
 - The viewer probes `http://<id>.localhost:<port>/healthz` (1 s timeout,
@@ -1303,7 +1303,7 @@ Minimal skeleton:
   itself: it writes only through the shell's `comments` capability, after
   the viewer's consent; requests without an `Origin` header (scripts) are
   allowed. The daemon serves plain HTTP only. A viewer is identified by the
-  `artifax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
+  `clax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
   the daemon accepts only when it is a ULID. The cookie never leaves the
   daemon: no response body, event, thread view, comment, or log carries it.
   Outside the cookie a viewer is named by its public ID (`u_` and 22
@@ -1316,18 +1316,18 @@ Minimal skeleton:
   in `owner_session_id` and each version's `session_id`, which are not
   credentials).
   Agent replies and resolves need
-  the token and `X-Artifax-Session` naming a live session (400
+  the token and `X-Clax-Session` naming a live session (400
   `unknown_session` otherwise). Thread views carry `clip_path` only for
   requests with the token and never in `/api/events`; the clip itself
   (`GET /api/artifacts/<aid>/threads/<tid>/clip`) is served with
   `Content-Security-Policy: sandbox` and `X-Content-Type-Options: nosniff`.
   Comment text is untrusted input: tool results and the skill say so, and the
   payload quotes it as a JSON string.
-- Published pages and uploaded files are untrusted content: Artifax never
+- Published pages and uploaded files are untrusted content: Clax never
   executes them outside the browser.
 - No telemetry. The daemon makes no calls off the machine; the Claude Code
   and Codex plugins' launcher script tries to download a release only when
-  no `artifax` binary is found (installed, or built in a source checkout),
+  no `clax` binary is found (installed, or built in a source checkout),
   only for the MCP server (never for a hook), and no release has been
   published yet.
 
@@ -1341,9 +1341,9 @@ Minimal skeleton:
   response is ever `immutable` or long-lived, so a page never runs with a
   bridge older than the daemon's.
 - The bridge tag names the bridge by version:
-  `/_artifax/bridge.js?v=<hash>`, a short hash of the bridge bundle. In a
+  `/_clax/bridge.js?v=<hash>`, a short hash of the bridge bundle. In a
   release build that URL is immutable (`public, max-age=31536000,
-  immutable`); the bare `/_artifax/bridge.js`, a `?v=` naming another
+  immutable`); the bare `/_clax/bridge.js`, a `?v=` naming another
   bundle, and every bridge URL of a debug build (which reads the bundle from
   disk, where `just dev` rebuilds it) are `no-cache`.
   A page republished from its served DOM keeps exactly one bridge tag, at

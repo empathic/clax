@@ -7,7 +7,7 @@ vi.setConfig({ testTimeout: 20_000 });
 let hooks: { [K in keyof ModeHooks]: ReturnType<typeof vi.fn> };
 let mode: CommentMode;
 const nextFrame = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
-const outline = () => document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+const outline = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
 const fire = (el: Element, type: string) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true }));
 function select(el: Element, from: number, to: number) {
   const r = document.createRange();
@@ -19,7 +19,7 @@ function select(el: Element, from: number, to: number) {
 }
 
 beforeEach(() => {
-  document.querySelectorAll("artifax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<h2>Quarterly goals</h2><p>Grow revenue</p>`;
   document.getSelection()!.removeAllRanges();
   hooks = { hover: vi.fn(), pickElement: vi.fn(), pickRange: vi.fn(), pickArea: vi.fn(), cancel: vi.fn() };
@@ -38,7 +38,7 @@ describe("CommentMode", () => {
 
   it("moves an overlay created before <body> to the end of the document when the mode turns on and when the pin shows", () => {
     const root = document.documentElement;
-    const overlay = document.querySelector("artifax-overlay")!;
+    const overlay = document.querySelector("clax-overlay")!;
     root.insertBefore(overlay, document.body);
     mode.set(true);
     expect(root.lastElementChild).toBe(overlay);
@@ -49,7 +49,7 @@ describe("CommentMode", () => {
 
   it("moves an overlay created before <body> to the end of the document when it outlines", async () => {
     const root = document.documentElement;
-    const overlay = document.querySelector("artifax-overlay")!;
+    const overlay = document.querySelector("clax-overlay")!;
     root.insertBefore(overlay, document.body);
     mode.set(true);
     fire(document.querySelector("h2")!, "mousemove");
@@ -116,7 +116,7 @@ describe("CommentMode", () => {
     mode.set(true);
     fire(document.querySelector("h3")!, "mousemove");
     await nextFrame();
-    const host = document.querySelector<HTMLElement>("artifax-overlay")!;
+    const host = document.querySelector<HTMLElement>("clax-overlay")!;
     expect(host.style.getPropertyValue("--ax-border")).toBe("#fdba74");
     fire(document.getElementById("l")!, "mousemove");
     await nextFrame();
@@ -182,7 +182,7 @@ describe("CommentMode", () => {
 });
 
 describe("drawing areas", () => {
-  const areaBox = () => document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
+  const areaBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".a")!;
   const at = (el: Element, type: string, x: number, y: number, init: MouseEventInit = {}) => {
     const e = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: type === "mouseup" || type === "click" ? 0 : 1, ...init });
     el.dispatchEvent(e);
@@ -354,7 +354,7 @@ describe("drawing areas", () => {
 describe("trusted input", () => {
   it("ignores events the page dispatched itself", async () => {
     mode.set(false);
-    document.querySelectorAll("artifax-overlay").forEach(n => n.remove());
+    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
     const strict = new CommentMode(document, hooks);
     try {
       strict.set(true);

@@ -16,7 +16,7 @@ const parsed = () => {
   document.dispatchEvent(new Event("readystatechange"));
   document.dispatchEvent(new Event("DOMContentLoaded"));
 };
-const anchorsFor = (requestId: string | null) => posted.filter(m => m.type === "artifax:anchors" && m.requestId === requestId);
+const anchorsFor = (requestId: string | null) => posted.filter(m => m.type === "clax:anchors" && m.requestId === requestId);
 
 beforeAll(async () => {
   addEventListener("error", e => { errors.push(e.message); });
@@ -24,30 +24,30 @@ beforeAll(async () => {
   setReadyState("loading");
   document.body.remove();
   const script = document.createElement("script");
-  script.setAttribute("src", "/_artifax/bridge.js?v=0123456789ab");
+  script.setAttribute("src", "/_clax/bridge.js?v=0123456789ab");
   script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "1"; script.dataset.contract = "0.2.61"; script.dataset.file = "index.html";
   document.head.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
   await import("../src/bridge");
-  send({ type: "artifax:welcome", mode: "view" });
+  send({ type: "clax:welcome", mode: "view" });
 });
 
 describe("bridge orders that arrive before <body>", () => {
   it("a resize or scroll before the parse neither resolves anchors nor throws", async () => {
     expect(document.body).toBeNull();
-    send({ type: "artifax:resolve-anchors", requestId: "r1", anchors: [{ id: "a", anchor }] });
+    send({ type: "clax:resolve-anchors", requestId: "r1", anchors: [{ id: "a", anchor }] });
     dispatchEvent(new Event("resize"));
     dispatchEvent(new Event("scroll"));
     await frames();
     expect(errors).toEqual([]);
-    expect(posted.filter(m => m.type === "artifax:anchors")).toEqual([]);
+    expect(posted.filter(m => m.type === "clax:anchors")).toEqual([]);
     parsed();
     expect(anchorsFor("r1")).toHaveLength(1);
   });
 
   it("a thread not found re-resolves when the page renders its content later, without a scroll", async () => {
     const late = { ...anchor, selector: "#late" };
-    send({ type: "artifax:resolve-anchors", requestId: "r3", anchors: [{ id: "b", anchor: late }] });
+    send({ type: "clax:resolve-anchors", requestId: "r3", anchors: [{ id: "b", anchor: late }] });
     expect(anchorsFor("r3")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
     const before = anchorsFor(null).length;
     document.body.insertAdjacentHTML("beforeend", "<div id=\"late\">Rendered late</div>");
@@ -59,7 +59,7 @@ describe("bridge orders that arrive before <body>", () => {
   it("a parse stopped in <head> (no <body>) resolves nothing and does not throw", () => {
     setReadyState("loading");
     document.body.remove();
-    send({ type: "artifax:resolve-anchors", requestId: "r4", anchors: [{ id: "a", anchor }] });
+    send({ type: "clax:resolve-anchors", requestId: "r4", anchors: [{ id: "a", anchor }] });
     setReadyState("interactive");
     document.dispatchEvent(new Event("readystatechange"));
     expect(errors).toEqual([]);
@@ -68,7 +68,7 @@ describe("bridge orders that arrive before <body>", () => {
 
   it("a resolution deferred for the parse is dropped when custom anchors went live meanwhile", () => {
     setReadyState("loading");
-    send({ type: "artifax:resolve-anchors", requestId: "r2", anchors: [{ id: "a", anchor }] });
+    send({ type: "clax:resolve-anchors", requestId: "r2", anchors: [{ id: "a", anchor }] });
     commentsContext.live = true;
     try {
       parsed();

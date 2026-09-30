@@ -12,7 +12,7 @@ describe("Rpc", () => {
     void rpc.call("db", "get", ["tasks/t1"]);
     expect(sent).toEqual([]);
     rpc.connect();
-    expect(sent.map(m => m.type)).toEqual(["artifax:use", "artifax:call"]);
+    expect(sent.map(m => m.type)).toEqual(["clax:use", "clax:call"]);
     expect(sent[1]).toMatchObject({ ns: "db", method: "get", args: ["tasks/t1"] });
   });
 
@@ -22,9 +22,9 @@ describe("Rpc", () => {
     rpc.connect();
     const a = rpc.use("db");
     const b = rpc.use("room");
-    const [ua, ub] = sent as Extract<BridgeToShell, { type: "artifax:use" }>[];
-    rpc.accept({ type: "artifax:use-result", id: ua.id, granted: true, config: { rules: [] } });
-    rpc.accept({ type: "artifax:use-result", id: ub.id, granted: false, config: null });
+    const [ua, ub] = sent as Extract<BridgeToShell, { type: "clax:use" }>[];
+    rpc.accept({ type: "clax:use-result", id: ua.id, granted: true, config: { rules: [] } });
+    rpc.accept({ type: "clax:use-result", id: ub.id, granted: false, config: null });
     await expect(a).resolves.toEqual({ config: { rules: [] } });
     await expect(b).resolves.toBeNull();
   });
@@ -48,8 +48,8 @@ describe("Rpc", () => {
     const rpc = new Rpc(m => sent.push(m));
     rpc.connect();
     const p = rpc.call("artifact", "publish", ["<!doctype html>"]);
-    const id = (sent[0] as Extract<BridgeToShell, { type: "artifax:call" }>).id;
-    rpc.accept({ type: "artifax:call-result", id, ok: false, error: { code: "conflict", message: "newer version", live: "4" } });
+    const id = (sent[0] as Extract<BridgeToShell, { type: "clax:call" }>).id;
+    rpc.accept({ type: "clax:call-result", id, ok: false, error: { code: "conflict", message: "newer version", live: "4" } });
     const e = await p.catch(x => x);
     expect(e).toBeInstanceOf(CapabilityError);
     expect(e).toMatchObject({ code: "conflict", message: "newer version", live: "4" });
@@ -65,10 +65,10 @@ describe("Rpc", () => {
     const rpc = new Rpc(() => {});
     const seen: unknown[] = [];
     const off = rpc.on("db", "snapshot", d => seen.push(d));
-    rpc.accept({ type: "artifax:event", ns: "db", topic: "snapshot", data: 1 });
-    rpc.accept({ type: "artifax:event", ns: "db", topic: "other", data: 2 });
+    rpc.accept({ type: "clax:event", ns: "db", topic: "snapshot", data: 1 });
+    rpc.accept({ type: "clax:event", ns: "db", topic: "other", data: 2 });
     off();
-    rpc.accept({ type: "artifax:event", ns: "db", topic: "snapshot", data: 3 });
+    rpc.accept({ type: "clax:event", ns: "db", topic: "snapshot", data: 3 });
     expect(seen).toEqual([1]);
   });
 });

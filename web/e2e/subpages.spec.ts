@@ -75,7 +75,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     form.set("body", "about note");
     form.set("version", "1");
     expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
-    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     await page.goto(`${d.base}/a/${id}/about.html`);
     const about = await aboutFrame(page, id);
     await expect(about.locator("h2")).toHaveText("Our team");
@@ -111,7 +111,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const HASH = `<!doctype html><html><head><title>Hash</title></head><body><p id="h"></p><script>const show = () => { document.getElementById("h").textContent = location.hash; }; show(); addEventListener("hashchange", show);</script></body></html>`;
     const { artifact } = await publish(d.base, d.token, `Hash ${mode}`, { "index.html": INDEX, "hash.html": HASH });
     const id = artifact.id;
-    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
     await page.goto(`${d.base}/a/${id}/hash.html#docs%2Fcontract.md`);
     const url = new RegExp(`/v/1/hash\\.html#`);
     await expect.poll(() => page.frames().some(f => f !== page.mainFrame() && url.test(f.url()))).toBe(true);

@@ -104,9 +104,9 @@ declare namespace Claude {
      *   publish was attempted, which such an artifact never accepts; use
      *   the files form.
      * - `rate_limited` — publishing too often; slow down and batch.
-     * - `shell_input_recent` — (Artifax extension, not a claude.ai code)
+     * - `shell_input_recent` — (Clax extension, not a claude.ai code)
      *   the call came from the viewer's click in the page, but within
-     *   5.5 s of their input to the Artifax window around it; nothing was
+     *   5.5 s of their input to the Clax window around it; nothing was
      *   published. Tell the viewer to click again. Not charged to any
      *   budget.
      * - `consent_required` — legacy code from shells that gated
@@ -138,7 +138,7 @@ declare namespace Claude {
       | "invalid_content"
       | "read_only_path"
       | "rate_limited"
-      // Artifax extension: not a claude.ai code.
+      // Clax extension: not a claude.ai code.
       | "shell_input_recent"
       | "consent_required"
       | "upstream_error"

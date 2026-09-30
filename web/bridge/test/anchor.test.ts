@@ -7,7 +7,7 @@ const h2 = () => document.querySelectorAll("h2")[1];
 
 beforeEach(() => {
   document.body.innerHTML = PAGE;
-  document.querySelectorAll("artifax-overlay").forEach(n => n.remove());
+  document.querySelectorAll("clax-overlay").forEach(n => n.remove());
 });
 
 describe("cssPath", () => {
@@ -83,7 +83,7 @@ describe("range anchors", () => {
 
 it("text index skips scripts, styles, and the overlay", () => {
   document.body.innerHTML = `<script>var x = "Quarterly goals"</script><style>p{}</style><p>Quarterly goals</p>`;
-  const overlay = document.createElement("artifax-overlay");
+  const overlay = document.createElement("clax-overlay");
   overlay.textContent = "Quarterly goals";
   document.documentElement.appendChild(overlay);
   expect(textIndex(document.body).text).toBe("Quarterly goals");

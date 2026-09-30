@@ -25,12 +25,12 @@ for f in "${json_files[@]}"; do
 done
 
 for f in plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/.mcp.json plugins/claude-code/hooks/hooks.json \
-    plugins/artifax/.codex-plugin/plugin.json plugins/artifax/.mcp.json plugins/artifax/hooks/hooks.json \
-    plugins/artifax/skills/artifax/SKILL.md plugins/artifax/README.md; do
+    plugins/clax/.codex-plugin/plugin.json plugins/clax/.mcp.json plugins/clax/hooks/hooks.json \
+    plugins/clax/skills/clax/SKILL.md plugins/clax/README.md; do
     [ -f "$f" ] || fail "$f is missing"
 done
 
-for plugin in plugins/claude-code plugins/artifax; do
+for plugin in plugins/claude-code plugins/clax; do
     # .mcp.json: a bare map of servers or a mcpServers wrapper, each with a command.
     if python3 - "$plugin/.mcp.json" 2>/dev/null <<'PY'
 import json, sys
@@ -55,18 +55,18 @@ PY
 done
 
 # The Codex plugin's MCP server and hooks run the shim as the codex agent.
-if python3 - plugins/artifax/.mcp.json plugins/artifax/hooks/hooks.json 2>/dev/null <<'PY'
+if python3 - plugins/clax/.mcp.json plugins/clax/hooks/hooks.json 2>/dev/null <<'PY'
 import json, sys
-server = json.load(open(sys.argv[1]))["mcpServers"]["artifax"]
+server = json.load(open(sys.argv[1]))["mcpServers"]["clax"]
 hooks = json.load(open(sys.argv[2]))["hooks"]
 argv = [server["command"], *server.get("args", [])]
 cmds = [h["command"] for event in ("SessionStart", "SessionEnd", "Stop") for entry in hooks[event] for h in entry["hooks"]]
 ok = argv[-4:] == ["exec", "mcp", "--agent", "codex"] and all("exec hook --agent codex" in c for c in cmds)
 # Codex expands no plugin-root variable in .mcp.json but resolves a relative cwd
 # against the plugin root, so the script path is relative to that cwd.
-ok = ok and server.get("cwd") == "./" and argv[1] == "./scripts/ensure-artifax.sh"
+ok = ok and server.get("cwd") == "./" and argv[1] == "./scripts/ensure-clax.sh"
 # Hooks run in a shell with PLUGIN_ROOT exported.
-ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-artifax.sh"' in c for c in cmds)
+ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-clax.sh"' in c for c in cmds)
 sys.exit(0 if ok else 1)
 PY
 then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Codex MCP server and hooks must run the shim with --agent codex"; fi
@@ -76,15 +76,15 @@ if python3 - plugins/claude-code/hooks/hooks.json 2>/dev/null <<'PY'
 import json, sys
 hooks = json.load(open(sys.argv[1]))["hooks"]
 cmds = [h["command"] for event in ("SessionStart", "SessionEnd", "UserPromptSubmit", "Stop") for entry in hooks[event] for h in entry["hooks"]]
-prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent claude '
+prefix = '"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent claude '
 sys.exit(0 if cmds and all(c.startswith(prefix) for c in cmds) else 1)
 PY
 then pass "the Claude Code hooks quote \${CLAUDE_PLUGIN_ROOT} and use --agent claude"
-else fail "the Claude Code hooks must run \"\${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude"; fi
+else fail "the Claude Code hooks must run \"\${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude"; fi
 
 # The Claude Code plugin hands feedback over at Stop and prompt submit; the
 # Codex plugin at Stop. Stop hooks get 10 s.
-if python3 - plugins/claude-code/hooks/hooks.json plugins/artifax/hooks/hooks.json 2>/dev/null <<'PY'
+if python3 - plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json 2>/dev/null <<'PY'
 import json, sys
 claude = json.load(open(sys.argv[1]))["hooks"]
 codex = json.load(open(sys.argv[2]))["hooks"]
@@ -92,7 +92,7 @@ def cmds(hooks, event):
     return [h for e in hooks.get(event, []) for h in e.get("hooks", [])]
 ok = all(h["command"].endswith("exec hook --agent claude stop") and h["timeout"] == 10 for h in cmds(claude, "Stop")) and cmds(claude, "Stop")
 ok = ok and all(h["command"].endswith("exec hook --agent claude prompt") and isinstance(h["timeout"], int) for h in cmds(claude, "UserPromptSubmit")) and cmds(claude, "UserPromptSubmit")
-ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec hook --agent codex stop' in h["command"] and h["timeout"] == 10 for h in cmds(codex, "Stop")) and cmds(codex, "Stop")
+ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent codex stop' in h["command"] and h["timeout"] == 10 for h in cmds(codex, "Stop")) and cmds(codex, "Stop")
 sys.exit(0 if ok else 1)
 PY
 then pass "Stop and prompt hooks are wired"; else fail "the Claude Stop/UserPromptSubmit or Codex Stop hooks are missing or misconfigured"; fi
@@ -103,8 +103,8 @@ done
 
 # One version everywhere: the workspace, both plugin manifests, the Pi package,
 # and the installer's MIN_VERSION.
-if out="$(python3 - Cargo.toml plugins/claude-code/.claude-plugin/plugin.json plugins/artifax/.codex-plugin/plugin.json \
-    plugins/pi/package.json scripts/ensure-artifax.sh 2>&1 <<'PY'
+if out="$(python3 - Cargo.toml plugins/claude-code/.claude-plugin/plugin.json plugins/clax/.codex-plugin/plugin.json \
+    plugins/pi/package.json scripts/ensure-clax.sh 2>&1 <<'PY'
 import json, re, sys
 cargo, claude, codex, pi, installer = sys.argv[1:6]
 def first(pattern, text):
@@ -127,7 +127,7 @@ else fail "versions differ: $out"; fi
 
 # The Rust tools and the Pi extension carry the same twenty-two tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
-if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/artifax-mcp/src/tools.rs plugins/pi/src/artifax.ts 2>&1 <<'PY'
+if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs plugins/pi/src/clax.ts 2>&1 <<'PY'
 import json, sys
 tools = json.load(open(sys.argv[1]))["tools"]
 missing = []
@@ -142,7 +142,7 @@ if len(tools) != 22 or missing:
     print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 22")
     sys.exit(1)
 PY
-)"; then pass "the twenty-two tool descriptions match in tools.rs and artifax.ts"
+)"; then pass "the twenty-two tool descriptions match in tools.rs and clax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.
@@ -166,13 +166,13 @@ PY
 then pass "Codex marketplace sources are ./plugins/<name> and exist"; else fail "a Codex marketplace source is not ./plugins/<name> or does not exist"; fi
 
 # The Codex manifest: pinned fields, companion paths that resolve, no top-level hooks.
-if python3 - plugins/artifax/.codex-plugin/plugin.json 2>/dev/null <<'PY'
+if python3 - plugins/clax/.codex-plugin/plugin.json 2>/dev/null <<'PY'
 import json, os, sys
 m = json.load(open(sys.argv[1]))
 root = os.path.dirname(os.path.dirname(sys.argv[1]))
 i = m.get("interface", {})
 prompts = i.get("defaultPrompt")
-ok = (m.get("name") == "artifax" and m.get("version") == "0.2.0"
+ok = (m.get("name") == "clax" and m.get("version") == "0.2.0"
       and m.get("mcpServers") == "./.mcp.json" and os.path.isfile(os.path.join(root, ".mcp.json"))
       and m.get("skills") == "./skills/" and os.path.isdir(os.path.join(root, "skills"))
       and "hooks" not in m
@@ -180,13 +180,13 @@ ok = (m.get("name") == "artifax" and m.get("version") == "0.2.0"
       and all(isinstance(p, str) and 0 < len(p) <= 128 for p in prompts))
 sys.exit(0 if ok else 1)
 PY
-then pass "plugins/artifax/.codex-plugin/plugin.json has the pinned fields"; else fail "plugins/artifax/.codex-plugin/plugin.json is missing pinned fields"; fi
+then pass "plugins/clax/.codex-plugin/plugin.json has the pinned fields"; else fail "plugins/clax/.codex-plugin/plugin.json is missing pinned fields"; fi
 
-for installer in plugins/claude-code/scripts/ensure-artifax.sh plugins/artifax/scripts/ensure-artifax.sh; do
-    if cmp -s scripts/ensure-artifax.sh "$installer"; then
-        pass "$installer matches scripts/ensure-artifax.sh"
+for installer in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
+    if cmp -s scripts/ensure-clax.sh "$installer"; then
+        pass "$installer matches scripts/ensure-clax.sh"
     else
-        fail "$installer differs from scripts/ensure-artifax.sh (or is missing)"
+        fail "$installer differs from scripts/ensure-clax.sh (or is missing)"
     fi
     [ -x "$installer" ] || fail "$installer is not executable"
 done
@@ -211,7 +211,7 @@ done
 # The three skill copies (Claude Code, Codex, Pi) share the page contract word
 # for word (docs/contract.md carries the same section), and "Comment loop" and
 # "What is not yet available" are the same in all three.
-skill_copies=(plugins/claude-code/skills/artifax/SKILL.md plugins/artifax/skills/artifax/SKILL.md plugins/pi/skills/artifax/SKILL.md)
+skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md)
 # The lines from "## <heading>" up to, not including, the next "## " heading.
 section() {
     awk -v h="## $2" '
@@ -222,7 +222,7 @@ section() {
 }
 for f in "${skill_copies[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
-    if [ "$(frontmatter "$f" name)" = "artifax" ]; then pass "$f is named artifax"; else fail "$f frontmatter name is not artifax"; fi
+    if [ "$(frontmatter "$f" name)" = "clax" ]; then pass "$f is named clax"; else fail "$f frontmatter name is not clax"; fi
     if [ -n "$(section "$f" "Page contract")" ]; then pass "$f has a Page contract section"; else fail "$f has no '## Page contract' section"; fi
 done
 same_section() {
@@ -266,12 +266,42 @@ if out="$(python3 scripts/sync-skill-tools.py --check 2>&1)"; then
     pass "the skills, docs/contract.md and the READMEs list exactly the fixture's tools"
 else fail "$out"; fi
 
+# The previous name appears only in the approved exceptions listed in
+# docs/superpowers/plans/2026-09-29-clax-rename.md: the plans written before
+# the rename, the two plans that carried it out, and the spec's name-history
+# note. It is assembled from two halves so this file is not an exception.
+OLD="arti""fax"
+name_exceptions=(
+    docs/superpowers/plans/2026-09-28-phase-1-daemon-publish-viewer.md
+    docs/superpowers/plans/2026-09-28-phase-2-mcp-and-plugins.md
+    docs/superpowers/plans/2026-09-28-phase-2-scoped.md
+    docs/superpowers/plans/2026-09-28-phase-3-comments-and-feedback.md
+    docs/superpowers/plans/2026-09-28-phase-4-runtime-capabilities.md
+    docs/superpowers/plans/2026-09-28-phase-5-room-and-sample.md
+    docs/superpowers/plans/2026-09-29-clax-rename.md
+    docs/superpowers/plans/2026-09-29-svelte-port.md
+    docs/superpowers/specs/2026-09-28-clax-design.md
+)
+excludes=()
+for f in "${name_exceptions[@]}"; do excludes+=(":(exclude)$f"); done
+stray="$(git grep -il "$OLD" -- . "${excludes[@]}"; git ls-files | grep -i "$OLD")"
+if [ -z "$stray" ]; then pass "the previous name appears only in the approved exceptions"
+else fail "the previous name remains in: $(echo $stray | head -c 2000)"; fi
+spec=docs/superpowers/specs/2026-09-28-clax-design.md
+stray="$(awk -v old="$OLD" '
+    /<!-- name-history:begin -->/ { on = 1; next }
+    /<!-- name-history:end -->/ { on = 0; next }
+    !on && index(tolower($0), old) { print NR }
+' "$spec" 2>/dev/null)"
+if [ -f "$spec" ] && [ -z "$stray" ]; then pass "$spec names the previous name only in its name-history note"
+else fail "$spec is missing or names the previous name outside its name-history note (lines: $(echo $stray))"; fi
+
 validator="$HOME/.codex/skills/.system/plugin-creator/scripts/validate_plugin.py"
 if [ -f "$validator" ]; then
-    if out="$(python3 "$validator" plugins/artifax 2>&1)"; then
-        pass "the Codex plugin validator accepts plugins/artifax"
+    if out="$(python3 "$validator" plugins/clax 2>&1)"; then
+        pass "the Codex plugin validator accepts plugins/clax"
     else
-        fail "the Codex plugin validator rejects plugins/artifax: $out"
+        fail "the Codex plugin validator rejects plugins/clax: $out"
     fi
 else
     echo "SKIP: $validator not found; the Codex plugin validator was not run"

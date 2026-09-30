@@ -3,8 +3,8 @@
  * It exposes `window.claude.use(name)`, which resolves the frozen namespace of
  * each capability the shell grants and `null` for the rest (see `use.ts`);
  * unframed, every name resolves `null`. Capability calls and the shell's
- * answers travel as `artifax:use`/`call`/`event` messages (see `protocol.ts`),
- * queued until the shell's welcome. When framed, it greets the shell with `artifax:hello`
+ * answers travel as `clax:use`/`call`/`event` messages (see `protocol.ts`),
+ * queued until the shell's welcome. When framed, it greets the shell with `clax:hello`
  * (target "*"; artifact, version, and the page's published file, no page
  * content), then takes orders only from `window.parent` at
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
@@ -16,10 +16,10 @@
  * page of a version carries the bridge; anchors it builds name this page's
  * file, and anchors on other files never resolve here. Once welcomed, a plain
  * click on a link to another page of the version that the page did not cancel
- * is cancelled and handed to the shell (`artifax:navigate`), which follows it
+ * is cancelled and handed to the shell (`clax:navigate`), which follows it
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
- * on every `hashchange` it reports the page's fragment (`artifax:hash`).
+ * on every `hashchange` it reports the page's fragment (`clax:hash`).
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -47,7 +47,7 @@ import { makeUse } from "./use";
   const script = document.currentScript as HTMLScriptElement | null;
   if (!isFirstBridge(script)) return;
   const meta = readMeta(script);
-  (window as any).__artifax = meta;
+  (window as any).__clax = meta;
   commentsContext.version = meta.version;
   commentsContext.file = meta.file;
 
@@ -71,7 +71,7 @@ import { makeUse } from "./use";
     });
   } catch (e) {
     // A page that already defined a non-configurable window.claude wins.
-    console.warn("artifax: could not install window.claude", e);
+    console.warn("clax: could not install window.claude", e);
   }
 
   if (!framed) return; // opened directly: there is no shell
@@ -108,7 +108,7 @@ import { makeUse } from "./use";
       const r = resolved.resolve(id, anchor, sameVersion === true);
       return r ? { id, found: true, method: r.method, rect: placeOf(anchor, r) } : { id, found: false, method: null, rect: null };
     });
-    post({ type: "artifax:anchors", requestId, results });
+    post({ type: "clax:anchors", requestId, results });
     updateFocus();
   };
   let raf = 0;
@@ -124,14 +124,14 @@ import { makeUse } from "./use";
 
   const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    post({ type: "artifax:pick-start", pickId });
+    post({ type: "clax:pick-start", pickId });
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
     try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
-    post({ type: "artifax:pick", pickId, version: meta.version, anchor, clipPng, clipError }, clipPng ? [clipPng] : []);
+    post({ type: "clax:pick", pickId, version: meta.version, anchor, clipPng, clipError }, clipPng ? [clipPng] : []);
   };
   const mode = new CommentMode(document, {
-    hover: t => post({ type: "artifax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
+    hover: t => post({ type: "clax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
     pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)).finally(() => mode.captured()); },
     pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)).finally(() => mode.captured()); },
     // The clip starts at once, from the page as it is at release: the drawn
@@ -143,7 +143,7 @@ import { makeUse } from "./use";
       const clip = renderAreaClip(el, areaBox(anchor.area!, boxOf(el)));
       void pick(anchor, () => clip).finally(() => mode.captured());
     },
-    cancel: () => { mode.set(false); post({ type: "artifax:cancel" }); },
+    cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
   });
 
   // The shell's comment mode; the bridge's own hit testing follows it unless
@@ -158,7 +158,7 @@ import { makeUse } from "./use";
     const link = linkToHandOver(e, { welcomed, pageUrl: location.href, file: meta.file });
     if (!link) return;
     e.preventDefault();
-    if (link.kind === "page") post({ type: "artifax:navigate", file: link.file, ...(link.hash ? { hash: link.hash } : {}) });
+    if (link.kind === "page") post({ type: "clax:navigate", file: link.file, ...(link.hash ? { hash: link.hash } : {}) });
     else followInPlace(link.hash, location);
   });
 
@@ -170,10 +170,10 @@ import { makeUse } from "./use";
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
-      case "artifax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
-      case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
-      case "artifax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
-      case "artifax:resolve-anchors": {
+      case "clax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
+      case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
+      case "clax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
+      case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,
         // and only the latest request's.
@@ -184,7 +184,7 @@ import { makeUse } from "./use";
         });
         break;
       }
-      case "artifax:scroll-to": whenParsed(document, () => {
+      case "clax:scroll-to": whenParsed(document, () => {
         if (commentsContext.live) return;
         const r = resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
         if (!r) return;
@@ -199,8 +199,8 @@ import { makeUse } from "./use";
         }
       }); break;
       // The focused thread's area is outlined once the page has parsed.
-      case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
-      case "artifax:key": {
+      case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
+      case "clax:key": {
         const k = forwardedKey(m);
         if (k) mode.key(k.key, k.down);
         break;

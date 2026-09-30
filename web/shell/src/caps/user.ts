@@ -1,6 +1,6 @@
 // user.d.ts in the shell. Identity is the viewer's public ID (the cookie's
 // viewer, never the cookie); names come from the viewers table and need scope
-// "profile". Artifax has no emails and no guests: `email` is always null and
+// "profile". Clax has no emails and no guests: `email` is always null and
 // `guest` always false. Every read resolves; none rejects.
 import type { Declared } from "./availability";
 import { CapError } from "./errors";

@@ -1,4 +1,4 @@
-// Starts a real Artifax daemon for the tests, as web/e2e/fixtures.ts does.
+// Starts a real Clax daemon for the tests, as web/e2e/fixtures.ts does.
 import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
 /** The binary `cargo run` builds. */
-export const artifaxBin = join(repoRoot, "target", "debug", "artifax");
+export const claxBin = join(repoRoot, "target", "debug", "clax");
 
 export interface TestDaemon {
   home: string;
@@ -17,9 +17,9 @@ export interface TestDaemon {
 }
 
 export async function startDaemon(): Promise<TestDaemon> {
-  const home = mkdtempSync(join(tmpdir(), "artifax-pi-"));
-  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "artifax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
-    { cwd: repoRoot, env: { ...process.env, ARTIFAX_HOME: home, ARTIFAX_CODEX_BIN: "" }, stdio: ["ignore", "ignore", "inherit"] });
+  const home = mkdtempSync(join(tmpdir(), "clax-pi-"));
+  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: ["ignore", "ignore", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";

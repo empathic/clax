@@ -25,7 +25,7 @@ const lineRect = (frame: Frame, n: number) => frame.evaluate(line => {
 
 /** The comment-mode outline's rectangle in the frame's viewport, and the viewport height. */
 const outline = (frame: Frame) => frame.evaluate(() => {
-  const o = document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+  const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
   const b = o.getBoundingClientRect();
   return { shown: o.style.display === "block", top: b.top, bottom: b.bottom, height: b.height, vh: document.documentElement.clientHeight };
 });
@@ -64,7 +64,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const composer = page.locator(".composer");
     await expect(composer.locator(".composer-quote")).toHaveText("«line 161: the quick brown fox»");
     // The clip is the region around the line, not the whole 6,000 px block.
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.clipError).toBeUndefined();
     const clip = await clipStats(page, pick.pickId);
     expect(clip.h).toBeLessThan(400);
@@ -138,7 +138,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
     await page.mouse.click(fb.x + r.x + 5, fb.y + r.y + r.h / 2);
     await expect(page.locator(".composer .composer-quote")).toHaveText(`«let v1000 = "line 1000";»`);
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "range", quote: `let v1000 = "line 1000";` });
     expect(pick.clipError).toBeUndefined();
     const clip = await clipStats(page, pick.pickId);
@@ -161,8 +161,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.move(fb.x + r.x + 120, fb.y + r.y + r.h / 2, { steps: 5 });
     await page.mouse.up();
-    await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
-    const pick = await last(page, "artifax:pick");
+    await expect.poll(async () => (await last(page, "clax:pick")).anchor.kind).toBe("range");
+    const pick = await last(page, "clax:pick");
     expect("line 3: the quick brown fox").toContain(pick.anchor.quote);
     expect(pick.clipError).toBeUndefined();
     await expectVisibleClip(page, pick.pickId);
@@ -183,7 +183,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
     const fb = (await page.locator("iframe.frame").boundingBox())!;
     await page.mouse.click(fb.x + 200, fb.y + 200);
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "element", selector: "#big" });
     expect(pick.clipError).toBeUndefined();
     const clip = await clipStats(page, pick.pickId);
@@ -216,7 +216,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(fb.x + r.x + 30, fb.y + r.y + r.h / 2);
     await page.mouse.click(fb.x + r.x + 30, fb.y + r.y + r.h / 2);
     await expect(page.locator(".composer .composer-quote")).toHaveText("«line 151: the quick brown fox»");
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.clipError).toBeUndefined();
     await expectVisibleClip(page, pick.pickId);
     expect(await checked()).toEqual([false, true, false]);
@@ -246,8 +246,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const fb = (await page.locator("iframe.frame").boundingBox())!;
     await page.mouse.move(fb.x + 200, fb.y + 200);
     await page.mouse.up();
-    await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
-    const pick = await last(page, "artifax:pick");
+    await expect.poll(async () => (await last(page, "clax:pick")).anchor.kind).toBe("range");
+    const pick = await last(page, "clax:pick");
     expect(pick.clipError).toBeUndefined();
     const clip = await clipStats(page, pick.pickId);
     // At most 2,400 CSS px tall at the block's width, whatever the scale.

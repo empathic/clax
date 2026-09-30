@@ -3,12 +3,12 @@ import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { BRIDGE_TYPES } from "../src/protocol";
 import { hashFor, helloFor, isBridgeSrc, isFirstBridge, readMeta } from "../src/meta";
 
-declare global { interface Window { claude?: { use(name: string): Promise<unknown> }; __artifax?: { artifact: string; version: number; contract: string; file: string } } }
+declare global { interface Window { claude?: { use(name: string): Promise<unknown> }; __clax?: { artifact: string; version: number; contract: string; file: string } } }
 
 // window.claude is defined non-configurable, so the bridge loads once and
 // every test shares that single load.
 let first: HTMLScriptElement;
-const bridgeScript = (src = "/_artifax/bridge.js?v=0123456789ab") => {
+const bridgeScript = (src = "/_clax/bridge.js?v=0123456789ab") => {
   const s = document.createElement("script");
   s.setAttribute("src", src);
   return s;
@@ -17,7 +17,7 @@ const runAs = (script: HTMLScriptElement) => Object.defineProperty(document, "cu
 beforeAll(async () => {
   document.body.innerHTML = "";
   // A page's own global of the bridge's name does not keep the bridge out.
-  (window as { __artifax?: unknown }).__artifax = { preset: true };
+  (window as { __clax?: unknown }).__clax = { preset: true };
   const script = first = bridgeScript();
   script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "3"; script.dataset.contract = "0.2.61"; script.dataset.file = "docs/about.html";
   document.body.appendChild(script);
@@ -43,13 +43,13 @@ describe("bridge", () => {
   });
 
   it("reads its metadata from the script tag", () => {
-    expect(window.__artifax).toEqual({ artifact: "7q3k9mzx2b4t", version: 3, contract: "0.2.61", file: "docs/about.html" });
+    expect(window.__clax).toEqual({ artifact: "7q3k9mzx2b4t", version: 3, contract: "0.2.61", file: "docs/about.html" });
   });
 
   it("reports the page's fragment to the shell", () => {
-    expect(hashFor("#docs%2Fcontract.md")).toEqual({ type: "artifax:hash", hash: "#docs%2Fcontract.md" });
-    expect(hashFor("")).toEqual({ type: "artifax:hash", hash: "" });
-    expect(BRIDGE_TYPES.has("artifax:hash")).toBe(true);
+    expect(hashFor("#docs%2Fcontract.md")).toEqual({ type: "clax:hash", hash: "#docs%2Fcontract.md" });
+    expect(hashFor("")).toEqual({ type: "clax:hash", hash: "" });
+    expect(BRIDGE_TYPES.has("clax:hash")).toBe(true);
   });
 
   it("names its file in the hello, the index when the tag names none", () => {
@@ -57,18 +57,18 @@ describe("bridge", () => {
     tag.dataset.artifact = "7q3k9mzx2b4t"; tag.dataset.version = "2";
     expect(readMeta(tag)).toEqual({ artifact: "7q3k9mzx2b4t", version: 2, contract: "", file: "index.html" });
     tag.dataset.file = "about.html";
-    expect(helloFor(readMeta(tag))).toEqual({ type: "artifax:hello", artifact: "7q3k9mzx2b4t", version: 2, file: "about.html" });
+    expect(helloFor(readMeta(tag))).toEqual({ type: "clax:hello", artifact: "7q3k9mzx2b4t", version: 2, file: "about.html" });
     expect(readMeta(null).file).toBe("index.html");
   });
 
-  it("installs although the page preset a window.__artifax", () => {
-    expect(window.__artifax).not.toEqual({ preset: true });
+  it("installs although the page preset a window.__clax", () => {
+    expect(window.__clax).not.toEqual({ preset: true });
     expect(window.claude).toBeDefined();
   });
 
   it("a duplicate bridge tag in the same document stands down", async () => {
     const installed = window.claude;
-    const meta = window.__artifax;
+    const meta = window.__clax;
     const dup = bridgeScript();
     dup.dataset.artifact = "7q3k9mzx2b4t"; dup.dataset.version = "9";
     document.body.appendChild(dup);
@@ -79,7 +79,7 @@ describe("bridge", () => {
       await import("../src/bridge");
       expect(warn).not.toHaveBeenCalled();
       expect(window.claude).toBe(installed);
-      expect(window.__artifax).toBe(meta);
+      expect(window.__clax).toBe(meta);
     } finally {
       dup.remove();
       runAs(first);
@@ -87,10 +87,10 @@ describe("bridge", () => {
   });
 
   it("counts only the daemon's exact tag forms when finding the first bridge", () => {
-    expect(isBridgeSrc("/_artifax/bridge.js")).toBe(true);
-    expect(isBridgeSrc("/_artifax/bridge.js?v=0a1b")).toBe(true);
-    for (const src of ["/_artifax/bridge.jsx", "/_artifax/bridge.js?v=XY", "https://x/_artifax/bridge.js", "/_artifax/bridge.js?v=1&x", null]) expect(isBridgeSrc(src)).toBe(false);
-    const other = bridgeScript("/_artifax/bridge.js?v=NOTHEX");
+    expect(isBridgeSrc("/_clax/bridge.js")).toBe(true);
+    expect(isBridgeSrc("/_clax/bridge.js?v=0a1b")).toBe(true);
+    for (const src of ["/_clax/bridge.jsx", "/_clax/bridge.js?v=XY", "https://x/_clax/bridge.js", "/_clax/bridge.js?v=1&x", null]) expect(isBridgeSrc(src)).toBe(false);
+    const other = bridgeScript("/_clax/bridge.js?v=NOTHEX");
     other.dataset.artifact = "x";
     const noData = bridgeScript();
     document.body.prepend(other, noData);

@@ -18,19 +18,19 @@ export function readMeta(script: HTMLScriptElement | null): PageMeta {
 }
 
 /** The message reporting the page's fragment `hash` to the shell. */
-export function hashFor(hash: string): Extract<BridgeToShell, { type: "artifax:hash" }> {
-  return { type: "artifax:hash", hash };
+export function hashFor(hash: string): Extract<BridgeToShell, { type: "clax:hash" }> {
+  return { type: "clax:hash", hash };
 }
 
-/** The `artifax:hello` this page greets the shell with. */
-export function helloFor(meta: PageMeta): Extract<BridgeToShell, { type: "artifax:hello" }> {
-  return { type: "artifax:hello", artifact: meta.artifact, version: meta.version, file: meta.file };
+/** The `clax:hello` this page greets the shell with. */
+export function helloFor(meta: PageMeta): Extract<BridgeToShell, { type: "clax:hello" }> {
+  return { type: "clax:hello", artifact: meta.artifact, version: meta.version, file: meta.file };
 }
 
 /** Whether `src` is a bridge URL exactly as the daemon writes it: the bare
- * `/_artifax/bridge.js` or `/_artifax/bridge.js?v=<lowercase hex>`. */
+ * `/_clax/bridge.js` or `/_clax/bridge.js?v=<lowercase hex>`. */
 export function isBridgeSrc(src: string | null): boolean {
-  return src !== null && /^\/_artifax\/bridge\.js(\?v=[0-9a-f]+)?$/.test(src);
+  return src !== null && /^\/_clax\/bridge\.js(\?v=[0-9a-f]+)?$/.test(src);
 }
 
 /** Whether `script` is the first daemon bridge tag (bridge URL and

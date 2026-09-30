@@ -1,4 +1,4 @@
-// HTTP client for the Artifax daemon's REST API.
+// HTTP client for the Clax daemon's REST API.
 //
 // Requests go through node:http rather than fetch because fetch cannot bound
 // connection setup separately from the whole request.
@@ -138,7 +138,7 @@ function send(url: string, opts: RequestOptions): Promise<RawResponse> {
 
 /** Sends a request; a non-success status becomes an `api` failure carrying the
  * body's `error` object, refreshable when the token was refused (401) or the
- * session named by `X-Artifax-Session` is no longer live (400
+ * session named by `X-Clax-Session` is no longer live (400
  * `unknown_session`). */
 async function attempt(url: string, opts: RequestOptions): Promise<RawResponse> {
   const res = await send(url, opts);
@@ -215,7 +215,7 @@ interface Stale {
  * connect or is refused with 401 (the daemon restarted, on a new port or with a
  * new token) or with `unknown_session` (the session was ended under it), after
  * which the request is retried once. Tool requests may start a daemon; ending
- * the session only finds one. Every request carries `X-Artifax-Session` once a
+ * the session only finds one. Every request carries `X-Clax-Session` once a
  * session is registered.
  */
 export class DaemonClient {
@@ -301,7 +301,7 @@ export class DaemonClient {
 
   private headers(endpoint: Endpoint, extra: Record<string, string> = {}): Record<string, string> {
     const h: Record<string, string> = { authorization: `Bearer ${endpoint.token}`, ...extra };
-    if (this.sessionId) h["x-artifax-session"] = this.sessionId;
+    if (this.sessionId) h["x-clax-session"] = this.sessionId;
     return h;
   }
 
@@ -394,7 +394,7 @@ export class DaemonClient {
     if (contentType !== undefined && /[\r\n"]/.test(contentType)) {
       throw new ClientError("api", "invalid content type", 400, { code: "invalid_content_type", message: `invalid content type '${contentType}'` });
     }
-    const boundary = `artifax-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+    const boundary = `clax-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
     const name = filename.replace(/["\r\n\\]/g, "_");
     const body = Buffer.concat([
       Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${name}"\r\n${contentType === undefined ? "" : `Content-Type: ${contentType}\r\n`}\r\n`),

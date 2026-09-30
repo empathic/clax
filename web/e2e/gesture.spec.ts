@@ -17,7 +17,7 @@ async function publishLive(title: string, html: string, capabilities: Record<str
   const s = await registerSession(d.base, d.token);
   const res = await fetch(`${d.base}/api/artifacts`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${d.token}`, "x-artifax-session": s.id },
+    headers: { "content-type": "application/json", authorization: `Bearer ${d.token}`, "x-clax-session": s.id },
     body: JSON.stringify({ title, capabilities, files: { "index.html": { content: html, encoding: "utf8" } } }),
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
@@ -82,11 +82,11 @@ async function forge() {
   window.focus();
   const anchor = { kind: "element", selector: "#para", quote: "FORGED BY PAGE", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
   const pickId = "forged" + n;
-  parent.postMessage({ type: "artifax:pick-start", pickId }, "*");
-  parent.postMessage({ type: "artifax:pick", pickId, version: window.__artifax.version, anchor, clipPng: png }, "*");
+  parent.postMessage({ type: "clax:pick-start", pickId }, "*");
+  parent.postMessage({ type: "clax:pick", pickId, version: window.__clax.version, anchor, clipPng: png }, "*");
   document.getElementById("forged").textContent = String(++n);
 }
-addEventListener("message", e => { if (e.data && e.data.type === "artifax:comment-mode" && e.data.on) setTimeout(forge, 150); });
+addEventListener("message", e => { if (e.data && e.data.type === "clax:comment-mode" && e.data.on) setTimeout(forge, 150); });
 </script></body></html>`;
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -177,7 +177,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await record(page);
     const f = await openArtifact(page, d.base, id, 1, mode);
     const comment = page.getByRole("button", { name: "Comment", exact: true });
-    const forgedSeen = (n: number) => expect.poll(() => page.evaluate(pid => (window as any).artifaxMsgs.filter((m: any) => m.pickId === pid).length, `forged${n}`)).toBe(2);
+    const forgedSeen = (n: number) => expect.poll(() => page.evaluate(pid => (window as any).claxMsgs.filter((m: any) => m.pickId === pid).length, `forged${n}`)).toBe(2);
     await comment.click();
     await expect(f.locator("#forged")).toHaveText("1");
     await forgedSeen(0);
@@ -245,8 +245,8 @@ const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Atta
     const png = await (await cv.convertToBlob({ type: "image/png" })).arrayBuffer();
     window.focus();
     const a = { kind: "element", selector: "#para", quote: "FORGED BY PAGE", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
-    parent.postMessage({ type: "artifax:pick-start", pickId: "forged" }, "*");
-    parent.postMessage({ type: "artifax:pick", pickId: "forged", version: window.__artifax.version, anchor: a, clipPng: png }, "*");
+    parent.postMessage({ type: "clax:pick-start", pickId: "forged" }, "*");
+    parent.postMessage({ type: "clax:pick", pickId: "forged", version: window.__clax.version, anchor: a, clipPng: png }, "*");
     return "forged";
   }
   const act = kind => kind === "forge" ? forge()
@@ -301,7 +301,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       // The composer has gone from under the resting pointer.
       await page.waitForTimeout(300);
       await go(f, "forge", delay);
-      await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
+      await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
       await page.waitForTimeout(500);
       await expect(composer).toHaveCount(0);
       // The viewer moves on and clicks another element: that pick counts.
@@ -324,7 +324,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
     await page.waitForTimeout(300);
     await go(f, "forge");
-    await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
     await page.waitForTimeout(500);
     await expect(composer).toHaveCount(0);
     expect((await threadsOf(id)).map(t => t.comments[0].body)).toEqual(["A real comment."]);
@@ -704,7 +704,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await f.evaluate(() => {
       let n = 0;
       addEventListener("message", e => {
-        if (e.data?.type === "artifax:comment-mode" && e.data.on) setInterval(() => parent.postMessage({ type: "artifax:pick-start", pickId: `spam${n++}` }, "*"), 100);
+        if (e.data?.type === "clax:comment-mode" && e.data.on) setInterval(() => parent.postMessage({ type: "clax:pick-start", pickId: `spam${n++}` }, "*"), 100);
       });
     });
     const comment = page.getByRole("button", { name: "Comment", exact: true });
@@ -843,7 +843,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         // Reload with the shell's script held back until the viewer's input.
         let release!: () => void;
         const held = new Promise<void>(r => { release = r; });
-        await page.route("**/_artifax/shell/index-*.js", async route => { await held; await route.continue(); });
+        await page.route("**/_clax/shell/index-*.js", async route => { await held; await route.continue(); });
         await page.goto(`${d.base}/a/${id}`, { waitUntil: "commit" });
         await page.waitForTimeout(300);
         if (how === "a key") await page.keyboard.press("a");

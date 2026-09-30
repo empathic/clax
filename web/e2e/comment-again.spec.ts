@@ -11,7 +11,7 @@ const INDEX = `<!doctype html><html><head><title>Again</title>${STYLE}</head><bo
 const ABOUT = `<!doctype html><html><head><title>About</title>${STYLE}</head><body><main><h2 id="team">Our team</h2><p id="we">We build things.</p></main></body></html>`;
 
 /** Whether the comment-mode hover outline is shown in the page. */
-const outlined = (frame: Frame) => frame.evaluate(() => document.querySelector("artifax-overlay")?.shadowRoot?.querySelector<HTMLElement>(".o")?.style.display === "block");
+const outlined = (frame: Frame) => frame.evaluate(() => document.querySelector("clax-overlay")?.shadowRoot?.querySelector<HTMLElement>(".o")?.style.display === "block");
 
 async function post(page: Page, text: string) {
   const composer = page.locator(".composer");

@@ -1,14 +1,14 @@
 {
-  "name": "artifax",
+  "name": "clax",
   "interface": {
-    "displayName": "Artifax"
+    "displayName": "Clax"
   },
   "plugins": [
     {
-      "name": "artifax",
+      "name": "clax",
       "source": {
         "source": "local",
-        "path": "./plugins/artifax"
+        "path": "./plugins/clax"
       },
       "policy": {
         "installation": "AVAILABLE",

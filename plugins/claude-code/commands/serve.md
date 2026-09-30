@@ -1,23 +1,23 @@
 ---
-description: Start, stop, or check the Artifax daemon
+description: Start, stop, or check the Clax daemon
 argument-hint: "[--bind 0.0.0.0 | stop | status]"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh:*)
 ---
 
 ## Context
 
-- Daemon status: !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec status --json`
+- Daemon status: !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec status --json`
 
 ## Your task
 
-Manage the local Artifax daemon.
+Manage the local Clax daemon.
 
 User arguments: $ARGUMENTS
 
 Always invoke the CLI through the wrapper, with literal arguments and no shell variables:
 
 ```
-"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec <artifax arguments...>
+"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec <clax arguments...>
 ```
 
 - No arguments: run `exec serve` to start the daemon in the background (a no-op when it already runs) and report its URL.

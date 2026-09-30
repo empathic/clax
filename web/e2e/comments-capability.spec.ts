@@ -106,7 +106,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     // is sent carry opaque handles, and neither they nor store IDs let it act.
     await f.evaluate(() => {
       (window as any).seen = [];
-      addEventListener("message", e => { if (e.data?.type === "artifax:resolve-anchors") (window as any).seen.push(...e.data.anchors.map((a: { id: string }) => a.id)); });
+      addEventListener("message", e => { if (e.data?.type === "clax:resolve-anchors") (window as any).seen.push(...e.data.anchors.map((a: { id: string }) => a.id)); });
     });
     const tid = await viewerDoes(page, f, () => {
       (window as any).viewerAct = async (c: any) => {
@@ -163,7 +163,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     // The bridge's own hover outline stands down while the page anchors.
     await f.locator("#goals h2").hover();
     await f.locator("#goals p").hover();
-    await expect(f.locator("artifax-overlay .o")).toBeHidden();
+    await expect(f.locator("clax-overlay .o")).toBeHidden();
     await f.locator("#canvas").click({ position: { x: 50, y: 50 } });
     const composer = page.locator(".composer");
     await expect(composer.locator(".composer-quote")).toContainText("Red square");

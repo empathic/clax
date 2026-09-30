@@ -170,7 +170,7 @@ export const dbHandler: HandlerFactory = env => {
     try {
       res = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
     } catch {
-      throw new CapError("unavailable", "the Artifax daemon could not be reached");
+      throw new CapError("unavailable", "the Clax daemon could not be reached");
     }
     if (res.ok) return (await res.json()) as T;
     if (missingIsNull && res.status === 404) return null;
@@ -223,7 +223,7 @@ export const dbHandler: HandlerFactory = env => {
         if (docs[0].version < (delivered.get(sub) ?? 0)) return;
         delivered.set(sub, docs[0].version);
       }
-      env.post({ type: "artifax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
+      env.post({ type: "clax:event", ns: "db", topic: "snapshot", data: { sub, docs } });
     } catch (e) {
       if (!live()) return;
       if (e instanceof CapError && e.code === "unavailable") {
@@ -235,7 +235,7 @@ export const dbHandler: HandlerFactory = env => {
         return;
       }
       drop(sub);
-      env.post({ type: "artifax:event", ns: "db", topic: "snapshot-error", data: { sub, code: e instanceof CapError ? e.code : "unavailable", message: e instanceof Error ? e.message : String(e) } });
+      env.post({ type: "clax:event", ns: "db", topic: "snapshot-error", data: { sub, code: e instanceof CapError ? e.code : "unavailable", message: e instanceof Error ? e.message : String(e) } });
     }
   }
 

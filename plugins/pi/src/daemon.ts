@@ -1,4 +1,4 @@
-// Finding, and when needed starting, the Artifax daemon for an Artifax home.
+// Finding, and when needed starting, the Clax daemon for an Clax home.
 import { execFile } from "node:child_process";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isIP, isIPv6 } from "node:net";
@@ -6,12 +6,12 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { probe, type Endpoint } from "./client.ts";
 
-/** The command that installs the Artifax CLI, named when no binary is found. */
+/** The command that installs the Clax CLI, named when no binary is found. */
 export const INSTALL_HINT =
-  "install it with `cargo install --path crates/artifax-cli` from a clone of https://github.com/empathic/artifax " +
-  "(or download a release from https://github.com/empathic/artifax/releases), or set ARTIFAX_BIN to its path";
+  "install it with `cargo install --path crates/clax-cli` from a clone of https://github.com/empathic/clax " +
+  "(or download a release from https://github.com/empathic/clax/releases), or set CLAX_BIN to its path";
 
-/** How long `artifax serve --json` may take; it gives up on its own after
+/** How long `clax serve --json` may take; it gives up on its own after
  * about 5 s when the daemon does not become ready. */
 const SERVE_TIMEOUT_MS = 10_000;
 
@@ -26,7 +26,7 @@ export interface DaemonInfo {
 }
 
 export interface DaemonOptions {
-  /** Environment for locating (`ARTIFAX_BIN`, `PATH`) and running the binary;
+  /** Environment for locating (`CLAX_BIN`, `PATH`) and running the binary;
    * defaults to this process's. */
   env?: NodeJS.ProcessEnv;
   /** Port for a daemon this call starts (0 = any free port); the CLI's default
@@ -34,10 +34,10 @@ export interface DaemonOptions {
   port?: number;
 }
 
-/** `$ARTIFAX_HOME`, else `$HOME/.artifax`; an empty variable counts as unset. */
-export function artifaxHome(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.ARTIFAX_HOME) return env.ARTIFAX_HOME;
-  return join(env.HOME || homedir(), ".artifax");
+/** `$CLAX_HOME`, else `$HOME/.clax`; an empty variable counts as unset. */
+export function claxHome(env: NodeJS.ProcessEnv = process.env): string {
+  if (env.CLAX_HOME) return env.CLAX_HOME;
+  return join(env.HOME || homedir(), ".clax");
 }
 
 /** The daemon log in `home`, named when the daemon cannot be reached. */
@@ -107,23 +107,23 @@ function executable(path: string): boolean {
   }
 }
 
-/** The `artifax` binary: `ARTIFAX_BIN` when set (which must then be
- * executable), else the first `artifax` on `PATH`. Throws naming the install
+/** The `clax` binary: `CLAX_BIN` when set (which must then be
+ * executable), else the first `clax` on `PATH`. Throws naming the install
  * command when there is none. */
 export function findBinary(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.ARTIFAX_BIN) {
-    if (executable(env.ARTIFAX_BIN)) return env.ARTIFAX_BIN;
-    throw new Error(`ARTIFAX_BIN is set to '${env.ARTIFAX_BIN}', which is not an executable file; ${INSTALL_HINT}`);
+  if (env.CLAX_BIN) {
+    if (executable(env.CLAX_BIN)) return env.CLAX_BIN;
+    throw new Error(`CLAX_BIN is set to '${env.CLAX_BIN}', which is not an executable file; ${INSTALL_HINT}`);
   }
   for (const dir of (env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
-    const candidate = join(dir, "artifax");
+    const candidate = join(dir, "clax");
     if (executable(candidate)) return candidate;
   }
-  throw new Error(`the artifax CLI was not found on PATH; ${INSTALL_HINT}`);
+  throw new Error(`the clax CLI was not found on PATH; ${INSTALL_HINT}`);
 }
 
-/** The running daemon for `home`, starting one with `artifax serve --json`
+/** The running daemon for `home`, starting one with `clax serve --json`
  * (which returns once the daemon answers) when discovery finds none. */
 export async function ensure(home: string, opts: DaemonOptions = {}): Promise<DaemonInfo> {
   const found = await discover(home);
@@ -132,13 +132,13 @@ export async function ensure(home: string, opts: DaemonOptions = {}): Promise<Da
   const bin = findBinary(env);
   const args = ["serve", "--json", ...(opts.port === undefined ? [] : ["--port", String(opts.port)])];
   await new Promise<void>((resolve, reject) => {
-    execFile(bin, args, { env: { ...env, ARTIFAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
+    execFile(bin, args, { env: { ...env, CLAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (!err) return resolve();
       const detail = String(stderr).trim() || err.message;
       reject(new Error(`\`${bin} serve\` failed: ${detail}; see ${logPath(home)}`));
     });
   });
   const started = await discover(home);
-  if (!started) throw new Error(`the artifax daemon did not answer after \`${bin} serve\`; see ${logPath(home)}`);
+  if (!started) throw new Error(`the clax daemon did not answer after \`${bin} serve\`; see ${logPath(home)}`);
   return started;
 }

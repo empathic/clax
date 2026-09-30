@@ -1,5 +1,5 @@
 // Per-viewer, per-artifact permission state (permissions.d.ts). Grants persist
-// in localStorage under `artifax.grants.v1:<aid>:<viewer public ID>`; a denial
+// in localStorage under `clax.grants.v1:<aid>:<viewer public ID>`; a denial
 // or a dismissed prompt lasts for the page load only. One dialog at a time.
 import { CAPABILITIES, type Declared, consentGated, isAvailable } from "./availability";
 
@@ -7,7 +7,7 @@ export type PermissionState = "granted" | "prompt" | "denied" | "unavailable";
 export type Prompt = { title: string; body: string; allow: string; deny: string };
 export type PromptAnswer = "allow" | "deny" | "dismiss";
 
-export const grantsKey = (aid: string, viewer: string) => `artifax.grants.v1:${aid}:${viewer}`;
+export const grantsKey = (aid: string, viewer: string) => `clax.grants.v1:${aid}:${viewer}`;
 
 const ASKS: Record<string, string> = { comments: "post comments on this artifact under your name" };
 

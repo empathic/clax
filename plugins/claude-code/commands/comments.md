@@ -1,16 +1,16 @@
 ---
 description: Show an artifact's comment threads and act on the ones sent to you
 argument-hint: "[artifact ID or URL]"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh:*), mcp__plugin_artifax_artifax__comments_read, mcp__plugin_artifax_artifax__comments_reply, mcp__plugin_artifax_artifax__comments_resolve, mcp__plugin_artifax_artifax__publish, mcp__plugin_artifax_artifax__read
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh:*), mcp__plugin_clax_clax__comments_read, mcp__plugin_clax_clax__comments_reply, mcp__plugin_clax_clax__comments_resolve, mcp__plugin_clax_clax__publish, mcp__plugin_clax_clax__read
 ---
 
 ## Context
 
-- Artifacts (pinned first, then most recently updated): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec list --json`
+- Artifacts (pinned first, then most recently updated): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec list --json`
 
 ## Your task
 
-Show the comment threads on an artifact with the `comments_read` tool of the `artifax` MCP server.
+Show the comment threads on an artifact with the `comments_read` tool of the `clax` MCP server.
 
 User arguments: $ARGUMENTS
 

@@ -2,7 +2,7 @@
 # Manual end-to-end check of the Claude Code path. Not a quality gate: it runs a
 # real `claude -p` session, which calls a model and needs credentials.
 #
-# Builds artifax, starts a daemon in a scratch ARTIFAX_HOME, has Claude publish a
+# Builds clax, starts a daemon in a scratch CLAX_HOME, has Claude publish a
 # page through the MCP shim, then verifies the page and the registered session.
 #
 # Modes:
@@ -10,7 +10,7 @@
 #                 as a plugin, so the installer script, MCP shim, and both hooks run.
 #                 Also asserts the session carries a harness session ID and is
 #                 ended (SessionEnd) after the run.
-#   --mcp-config  points --mcp-config at target/debug/artifax mcp --agent claude.
+#   --mcp-config  points --mcp-config at target/debug/clax mcp --agent claude.
 #
 # Usage: scripts/smoke-claude.sh [--plugin-dir|--mcp-config] [scratch-dir]
 set -euo pipefail
@@ -23,13 +23,13 @@ esac
 if [ -z "$MODE" ]; then
     if claude --help 2>&1 | grep -q -- '--plugin-dir'; then MODE=--plugin-dir; else MODE=--mcp-config; fi
 fi
-SCRATCH="${1:-${TMPDIR:-/tmp}/artifax-smoke-claude}"
+SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-claude}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd)"
 HOME_DIR="$SCRATCH/home"
 CWD="$SCRATCH/cwd"
-BIN="$REPO/target/debug/artifax"
-export ARTIFAX_HOME="$HOME_DIR"
-export ARTIFAX_NO_OPEN=1
+BIN="$REPO/target/debug/clax"
+export CLAX_HOME="$HOME_DIR"
+export CLAX_NO_OPEN=1
 
 cleanup() { "$BIN" stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
@@ -38,21 +38,21 @@ die() { echo "smoke: FAIL: $1" >&2; exit 1; }
 rm -rf "$HOME_DIR" "$CWD"
 mkdir -p "$HOME_DIR" "$CWD"
 
-echo "smoke: building artifax"
-cargo build -q -p artifax-cli
+echo "smoke: building clax"
+cargo build -q -p clax-cli
 
 echo "smoke: starting daemon in $HOME_DIR"
 "$BIN" serve --port 0 >/dev/null
 BASE="$("$BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')"
 echo "smoke: daemon at $BASE"
 
-PROMPT="Publish a one-line HTML page containing the word Smoke via the artifax publish tool, passing title \"Smoke\", then call the artifax status tool. Reply with only the artifact URL."
-TOOLS="mcp__artifax__publish mcp__artifax__status"
+PROMPT="Publish a one-line HTML page containing the word Smoke via the clax publish tool, passing title \"Smoke\", then call the clax status tool. Reply with only the artifact URL."
+TOOLS="mcp__clax__publish mcp__clax__status"
 # A plugin's MCP server is named plugin_<plugin>_<server>.
-PLUGIN_TOOLS="mcp__plugin_artifax_artifax__publish mcp__plugin_artifax_artifax__status"
+PLUGIN_TOOLS="mcp__plugin_clax_clax__publish mcp__plugin_clax_clax__status"
 echo "smoke: running claude ($MODE)"
 if [ "$MODE" = --plugin-dir ]; then
-    export ARTIFAX_BIN="$BIN"
+    export CLAX_BIN="$BIN"
     OUT="$(cd "$CWD" && claude -p "$PROMPT" --max-turns 4 --plugin-dir "$REPO/plugins/claude-code" --allowedTools $PLUGIN_TOOLS </dev/null)" \
         || die "claude exited non-zero; output: $OUT"
 else
@@ -60,10 +60,10 @@ else
     python3 - "$CONFIG" "$BIN" "$HOME_DIR" <<'PY'
 import json, sys
 config, binary, home = sys.argv[1:4]
-json.dump({"mcpServers": {"artifax": {
+json.dump({"mcpServers": {"clax": {
     "command": binary,
     "args": ["mcp", "--agent", "claude"],
-    "env": {"ARTIFAX_HOME": home, "ARTIFAX_NO_OPEN": "1"},
+    "env": {"CLAX_HOME": home, "CLAX_NO_OPEN": "1"},
 }}}, open(config, "w"), indent=2)
 PY
     OUT="$(cd "$CWD" && claude -p "$PROMPT" --max-turns 4 --mcp-config "$CONFIG" --strict-mcp-config --allowedTools $TOOLS </dev/null)" \

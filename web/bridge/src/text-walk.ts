@@ -1,5 +1,5 @@
 // Walking the text a reader sees (not in scripts, styles, templates, or the
-// Artifax overlay) outward from one point, without indexing a whole element:
+// Clax overlay) outward from one point, without indexing a whole element:
 // the finer comment targets (`target.ts`) and region clips (`clip.ts`) work
 // from windows of text around the pointer or the picked range.
 

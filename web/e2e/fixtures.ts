@@ -8,9 +8,9 @@ import { fileURLToPath } from "node:url";
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
 export async function startDaemon() {
-  const home = mkdtempSync(join(tmpdir(), "artifax-e2e-"));
-  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "artifax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
-    { cwd: repoRoot, env: { ...process.env, ARTIFAX_HOME: home, ARTIFAX_CODEX_BIN: "" }, stdio: ["ignore", "inherit", "inherit"] });
+  const home = mkdtempSync(join(tmpdir(), "clax-e2e-"));
+  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: ["ignore", "inherit", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";
@@ -58,7 +58,7 @@ export async function registerSession(base: string, token: string, harness = "cl
 export async function publishAs(base: string, token: string, sessionId: string, title: string, files: Record<string, string>, ifVersion?: number, id?: string) {
   const body = { title, if_version: ifVersion, files: Object.fromEntries(Object.entries(files).map(([k, v]) => [k, { content: v, encoding: "utf8" }])) };
   const url = id ? `${base}/api/artifacts/${id}/versions` : `${base}/api/artifacts`;
-  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "x-artifax-session": sessionId }, body: JSON.stringify(body) });
+  const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "x-clax-session": sessionId }, body: JSON.stringify(body) });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return res.json() as Promise<{ artifact: { id: string; current_version: number } }>;
 }
@@ -66,7 +66,7 @@ export async function publishAs(base: string, token: string, sessionId: string, 
 /** A JSON API call with the token (and, when given, the session header). */
 export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string } = {}) {
   const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${token}` };
-  if (init.session) headers["x-artifax-session"] = init.session;
+  if (init.session) headers["x-clax-session"] = init.session;
   const res = await fetch(`${base}${path}`, { ...init, headers });
   if (!res.ok) throw new Error(`${path}: ${res.status} ${await res.text()}`);
   return res.status === 204 ? {} : res.json();
@@ -84,7 +84,7 @@ export async function contentFrame(page: Page, id: string, n: number): Promise<F
 /** Opens the artifact's shell in `mode`. `lan: true` answers `/api/token` with
  * 403, so the shell behaves as a LAN viewer's (no token, sandboxed frame). */
 export async function openArtifact(page: Page, base: string, id: string, n: number, mode: FrameMode, opts: { lan?: boolean } = {}): Promise<Frame> {
-  if (mode === "sandbox" || opts.lan) await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+  if (mode === "sandbox" || opts.lan) await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
   if (opts.lan) {
     await page.route("**/api/token", r => r.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }) }));
   }
@@ -103,25 +103,25 @@ export async function publishWith(base: string, token: string, title: string, ht
   return (await res.json()) as { artifact: { id: string; current_version: number } };
 }
 
-/** Records every artifax:* message the shell page receives; clips are reduced
- * to their byte length in the log and kept by pick ID in `artifaxClips`. */
+/** Records every clax:* message the shell page receives; clips are reduced
+ * to their byte length in the log and kept by pick ID in `claxClips`. */
 export async function record(page: Page) {
   await page.addInitScript(() => {
-    (window as any).artifaxMsgs = [];
-    (window as any).artifaxClips = {};
+    (window as any).claxMsgs = [];
+    (window as any).claxClips = {};
     addEventListener("message", e => {
       const m = e.data;
-      if (m && typeof m.type === "string" && m.type.startsWith("artifax:")) {
-        if (m.clipPng) (window as any).artifaxClips[m.pickId] = m.clipPng;
-        (window as any).artifaxMsgs.push({ ...m, clipPng: undefined, clipBytes: m.clipPng ? m.clipPng.byteLength : 0 });
+      if (m && typeof m.type === "string" && m.type.startsWith("clax:")) {
+        if (m.clipPng) (window as any).claxClips[m.pickId] = m.clipPng;
+        (window as any).claxMsgs.push({ ...m, clipPng: undefined, clipBytes: m.clipPng ? m.clipPng.byteLength : 0 });
       }
     });
   });
 }
 
 export async function last(page: Page, type: string): Promise<any> {
-  await expect.poll(() => page.evaluate(t => (window as any).artifaxMsgs.some((m: any) => m.type === t), type), { timeout: 30_000 }).toBe(true);
-  return page.evaluate(t => (window as any).artifaxMsgs.filter((m: any) => m.type === t).at(-1), type);
+  await expect.poll(() => page.evaluate(t => (window as any).claxMsgs.some((m: any) => m.type === t), type), { timeout: 30_000 }).toBe(true);
+  return page.evaluate(t => (window as any).claxMsgs.filter((m: any) => m.type === t).at(-1), type);
 }
 
 /** Decodes a recorded clip: its size, the share of pixels that are not fully
@@ -129,7 +129,7 @@ export async function last(page: Page, type: string): Promise<any> {
  * (background) pixel, so blank clips fail whether transparent or opaque. */
 export async function clipStats(page: Page, pickId: string) {
   return page.evaluate(async id => {
-    const buf = (window as any).artifaxClips[id] as ArrayBuffer;
+    const buf = (window as any).claxClips[id] as ArrayBuffer;
     const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
     const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
     ctx.drawImage(bmp, 0, 0);
@@ -155,7 +155,7 @@ export async function expectVisibleClip(page: Page, pickId: string) {
  * background (its top-left pixel), within a tolerance, and the rows they span. */
 export async function tintStats(page: Page, pickId: string, rgb: [number, number, number], share: number) {
   return page.evaluate(async ({ id, tint, alpha }) => {
-    const buf = (window as any).artifaxClips[id] as ArrayBuffer;
+    const buf = (window as any).claxClips[id] as ArrayBuffer;
     const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
     const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
     ctx.drawImage(bmp, 0, 0);
@@ -180,7 +180,7 @@ export async function tintStats(page: Page, pickId: string, rgb: [number, number
  * in rows `fromRow` to `toRow` (all rows when absent), and the rows they span. */
 export async function colorStats(page: Page, pickId: string, rgb: [number, number, number], tol: number, fromRow = 0, toRow = Infinity) {
   return page.evaluate(async ({ id, want, near, from, to }) => {
-    const buf = (window as any).artifaxClips[id] as ArrayBuffer;
+    const buf = (window as any).claxClips[id] as ArrayBuffer;
     const bmp = await createImageBitmap(new Blob([buf], { type: "image/png" }));
     const ctx = new OffscreenCanvas(bmp.width, bmp.height).getContext("2d")!;
     ctx.drawImage(bmp, 0, 0);

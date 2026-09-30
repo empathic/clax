@@ -1,17 +1,17 @@
 {
-  "name": "@empathic/artifax-pi",
+  "name": "@empathic/clax-pi",
   "version": "0.2.0",
-  "description": "Artifax tools for the Pi coding agent: publish HTML pages to a local Artifax server",
+  "description": "Clax tools for the Pi coding agent: publish HTML pages to a local Clax server",
   "license": "Apache-2.0",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/empathic/artifax",
+    "url": "https://github.com/empathic/clax",
     "directory": "plugins/pi"
   },
   "pi": {
     "extensions": [
-      "src/artifax.ts"
+      "src/clax.ts"
     ],
     "skills": [
       "skills"

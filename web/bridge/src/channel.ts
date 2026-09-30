@@ -14,10 +14,10 @@ export function shellOrigins(href: string): string[] {
   return [`${u.protocol}//${u.host}`];
 }
 
-/** The keys the shell forwards to comment mode (`artifax:key`). */
+/** The keys the shell forwards to comment mode (`clax:key`). */
 const FORWARDED_KEYS: ReadonlySet<string> = new Set(["Alt", "ArrowUp", "ArrowDown", "Escape"]);
 
-/** The key and direction of a forwarded `artifax:key`, or null for any other
+/** The key and direction of a forwarded `clax:key`, or null for any other
  * key or a malformed message. */
 export function forwardedKey(m: { key?: unknown; down?: unknown }): { key: string; down: boolean } | null {
   return typeof m.key === "string" && FORWARDED_KEYS.has(m.key) && typeof m.down === "boolean" ? { key: m.key, down: m.down } : null;

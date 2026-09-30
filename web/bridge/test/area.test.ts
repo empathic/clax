@@ -71,9 +71,9 @@ describe("the containing element", () => {
     d.elementsFromPoint = () => [p, s, main, document.body, document.documentElement];
     expect(containingElement(document, { left: 30, top: 290, width: 400, height: 50 })).toBe(s);
   });
-  it("skips the Artifax overlay", () => {
+  it("skips the Clax overlay", () => {
     document.body.innerHTML = `<p>x</p>`;
-    const overlay = document.createElement("artifax-overlay");
+    const overlay = document.createElement("clax-overlay");
     document.documentElement.appendChild(overlay);
     place(overlay, { left: 0, top: 0, width: 5000, height: 5000 });
     place(document.body, { left: 0, top: 0, width: 800, height: 600 });

@@ -32,7 +32,7 @@ const LATE = `<!doctype html><html><head><title>Late</title><script src="slow.js
   document.getElementById("app").innerHTML = "<h2>Quarterly goals</h2><p>Grow revenue.</p>";
 </script></head><body><main id="app"></main></body></html>`;
 
-const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelectorAll("script[src^='/_artifax/bridge.js']")).map(s => ({ first: s === document.head.firstElementChild, version: (s as HTMLScriptElement).dataset.version })));
+const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelectorAll("script[src^='/_clax/bridge.js']")).map(s => ({ first: s === document.head.firstElementChild, version: (s as HTMLScriptElement).dataset.version })));
 
 // A page whose `<head>` blocks on a script, so the shell's welcome and anchor
 // requests reach the bridge before `<body>` exists.
@@ -70,7 +70,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(f.locator("#out")).toHaveText("function");
     const headOf = (fr: Frame) => fr.evaluate(() => {
       const h = document.head.cloneNode(true) as HTMLHeadElement;
-      h.querySelectorAll("script[src^='/_artifax/bridge.js']").forEach(s => s.remove());
+      h.querySelectorAll("script[src^='/_clax/bridge.js']").forEach(s => s.remove());
       return h.innerHTML;
     });
     const head1 = await headOf(f);

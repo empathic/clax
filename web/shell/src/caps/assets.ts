@@ -116,7 +116,7 @@ export const assetsHandler: HandlerFactory = env => {
         res = await fetch(url, { ...init, signal: ac.signal });
       } catch {
         if (disposed) throw closed();
-        throw new CapError("store_unavailable", "the Artifax daemon could not be reached");
+        throw new CapError("store_unavailable", "the Clax daemon could not be reached");
       }
       if (disposed) throw closed();
       const out = await read(res);

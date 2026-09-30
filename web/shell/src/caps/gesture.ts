@@ -124,7 +124,7 @@
 // pointer leaving it), or input before the script ran. So once the quiet time has
 // passed, an active `navigator.userActivation` comes from input to the
 // frame, unless Chromium grants the shell activation through a source none
-// of these see; Artifax knows of none beyond script the viewer runs on the
+// of these see; Clax knows of none beyond script the viewer runs on the
 // tab themselves (a bookmarklet). Its residual: a page can act within the
 // activation window after the viewer's own click or key in the page,
 // whatever that input was meant for. The cost: a viewer who clicks a page's

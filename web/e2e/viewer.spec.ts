@@ -45,7 +45,7 @@ test("viewer renders content with the bridge, and shows a banner on republish", 
 
 test("fallback mode uses the sandboxed path-based frame", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Fallback", { "index.html": "<p id=p>fallback</p>" });
-  await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch {} });
+  await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
   await page.goto(`${d.base}/a/${artifact.id}`);
   const iframe = page.locator("iframe.frame");
   await expect(iframe).toHaveAttribute("sandbox", /allow-scripts/);

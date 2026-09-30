@@ -1,16 +1,16 @@
 ---
 description: Open an artifact in the browser
 argument-hint: "[artifact ID or URL]"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh:*)
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh:*)
 ---
 
 ## Context
 
-- Artifacts (newest first, pinned first): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec list --json`
+- Artifacts (newest first, pinned first): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec list --json`
 
 ## Your task
 
-Open an artifact in the user's browser with the `open` tool of the `artifax` MCP server.
+Open an artifact in the user's browser with the `open` tool of the `clax` MCP server.
 
 User arguments: $ARGUMENTS
 

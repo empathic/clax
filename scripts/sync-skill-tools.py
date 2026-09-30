@@ -2,9 +2,9 @@
 """Regenerate the tool block in each skill's intro from the tool fixture.
 
 The block between `<!-- tools:begin` and `<!-- tools:end -->` in each
-plugins/*/skills/artifax/SKILL.md names the plugin version (from that
+plugins/*/skills/clax/SKILL.md names the plugin version (from that
 plugin's manifest) and every tool in plugins/pi/test/fixtures/contract.json,
-with the harness's naming. `artifax doctor --agent <x>` reads the version and
+with the harness's naming. `clax doctor --agent <x>` reads the version and
 tool count from this block in the installed skill.
 
 It also checks, in both modes, that the hand-written tool lists in
@@ -27,19 +27,19 @@ END = "<!-- tools:end -->"
 
 # skill, manifest carrying its version, tool-name prefix, where the tools come from
 SKILLS = [
-    ("plugins/claude-code/skills/artifax/SKILL.md", "plugins/claude-code/.claude-plugin/plugin.json", "",
-     "as the `artifax` MCP server"),
-    ("plugins/artifax/skills/artifax/SKILL.md", "plugins/artifax/.codex-plugin/plugin.json", "",
-     "as the `artifax` MCP server"),
-    ("plugins/pi/skills/artifax/SKILL.md", "plugins/pi/package.json", "artifax_",
-     "from the Artifax Pi extension, named `artifax_<tool>`"),
+    ("plugins/claude-code/skills/clax/SKILL.md", "plugins/claude-code/.claude-plugin/plugin.json", "",
+     "as the `clax` MCP server"),
+    ("plugins/clax/skills/clax/SKILL.md", "plugins/clax/.codex-plugin/plugin.json", "",
+     "as the `clax` MCP server"),
+    ("plugins/pi/skills/clax/SKILL.md", "plugins/pi/package.json", "clax_",
+     "from the Clax Pi extension, named `clax_<tool>`"),
 ]
 
 
 def block(manifest, prefix, source, tools):
     version = json.load(open(os.path.join(ROOT, manifest)))["version"]
     names = ", ".join("`" + prefix + t + "`" for t in tools)
-    text = f"This is Artifax plugin {version}. It provides {len(tools)} tools {source}: {names}."
+    text = f"This is Clax plugin {version}. It provides {len(tools)} tools {source}: {names}."
     return "\n".join([BEGIN, *textwrap.wrap(text, 78, break_on_hyphens=False), END])
 
 
@@ -48,9 +48,9 @@ def block(manifest, prefix, source, tools):
 DOC_LISTS = [
     ("docs/contract.md", r"^([A-Z][a-z-]+) tools: ", ""),
     ("README.md", r"^Each harness gets the same ([a-z-]+) tools", ""),
-    ("plugins/claude-code/README.md", r"^- The `artifax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
-    ("plugins/artifax/README.md", r"^- The `artifax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
-    ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "artifax_"),
+    ("plugins/claude-code/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
+    ("plugins/clax/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
+    ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "clax_"),
 ]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
@@ -66,7 +66,7 @@ def number(word):
 
 
 def names(text, prefix=""):
-    found = set(re.findall(r"`([a-z_]+)`", text)) - {"artifax"}
+    found = set(re.findall(r"`([a-z_]+)`", text)) - {"clax"}
     return {n[len(prefix):] for n in found if n.startswith(prefix)}
 
 

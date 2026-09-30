@@ -40,7 +40,7 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
     }
     return fetchImpl(url, init);
   }));
-  sessionStorage.setItem("artifax.origin-ok", "0");
+  sessionStorage.setItem("clax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
   gesture = await import("./caps/gesture");
   const root = document.createElement("div");
@@ -74,7 +74,7 @@ describe("ArtifactView", () => {
     const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
     (await import("./nav")).nav.assign = assign;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    fromFrame(frame.contentWindow!, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
     const es = await waitFor(() => FakeES.last, "event stream");
     es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
@@ -112,17 +112,17 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; ok?: boolean }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     gestureIn(frame);
-    fromFrame(win, { type: "artifax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
+    fromFrame(win, { type: "clax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
     await waitFor(() => answer, "the publish request");
     const es = await waitFor(() => FakeES.last, "event stream");
     es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
     await new Promise(r => setTimeout(r, 30));
     expect(assign).not.toHaveBeenCalled();
     answer(new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }));
-    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "p1" && m.ok === false), "the publish result");
+    await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "p1" && m.ok === false), "the publish result");
     await waitFor(() => assign.mock.calls.length === 1, "the held reload");
     expect(assign).toHaveBeenCalledWith(`/a/${ID}`);
   });
@@ -241,12 +241,12 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: unknown[] = [];
     win.postMessage = ((m: unknown) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
     await new Promise(r => setTimeout(r, 20));
-    expect(posted.filter(m => (m as { type: string }).type === "artifax:welcome")).toHaveLength(0);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
-    await waitFor(() => posted.some(m => (m as { type: string }).type === "artifax:welcome"), "welcome");
+    expect(posted.filter(m => (m as { type: string }).type === "clax:welcome")).toHaveLength(0);
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
+    await waitFor(() => posted.some(m => (m as { type: string }).type === "clax:welcome"), "welcome");
   });
 
   it("welcomes a hello, and answers a capability request, that arrive as soon as the frame is inserted", async () => {
@@ -258,13 +258,13 @@ describe("ArtifactView", () => {
       const win = frame.contentWindow!;
       win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
       // Before the render that inserted the frame has run its effects.
-      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
-      fromFrame(win, { type: "artifax:use", id: "early", name: "permissions" });
+      fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
+      fromFrame(win, { type: "clax:use", id: "early", name: "permissions" });
     });
     seen.observe(document.body, { subtree: true, childList: true });
     await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
-    await waitFor(() => posted.some(m => m.type === "artifax:use-result" && m.id === "early"), "the answer to the early request");
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    await waitFor(() => posted.some(m => m.type === "clax:use-result" && m.id === "early"), "the answer to the early request");
   });
 
   it("answers capability requests only after a hello for the shown artifact and version", async () => {
@@ -273,21 +273,21 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
-    const results = () => posted.filter(m => m.type === "artifax:use-result").map(m => m.id);
+    const results = () => posted.filter(m => m.type === "clax:use-result").map(m => m.id);
     await new Promise(r => setTimeout(r, 30));
-    fromFrame(win, { type: "artifax:use", id: "before", name: "permissions" });
+    fromFrame(win, { type: "clax:use", id: "before", name: "permissions" });
     await new Promise(r => setTimeout(r, 30));
     expect(results()).toEqual([]);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
-    fromFrame(win, { type: "artifax:use", id: "matched", name: "permissions" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
+    fromFrame(win, { type: "clax:use", id: "matched", name: "permissions" });
     await waitFor(() => results().includes("matched"), "use answer after the hello");
     // The frame navigated to another document, which greets as something else.
-    fromFrame(win, { type: "artifax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
-    fromFrame(win, { type: "artifax:use", id: "foreign", name: "permissions" });
-    fromFrame(win, { type: "artifax:call", id: "foreign-call", ns: "permissions", method: "state", args: [] });
+    fromFrame(win, { type: "clax:hello", artifact: "9zzzzzzzzzzz", version: 2, file: "index.html" });
+    fromFrame(win, { type: "clax:use", id: "foreign", name: "permissions" });
+    fromFrame(win, { type: "clax:call", id: "foreign-call", ns: "permissions", method: "state", args: [] });
     await new Promise(r => setTimeout(r, 30));
     expect(results()).toEqual(["matched"]);
-    expect(posted.some(m => m.type === "artifax:call-result")).toBe(false);
+    expect(posted.some(m => m.type === "clax:call-result")).toBe(false);
   });
 
   it("follows the page the frame shows: resolves its threads only, and opens another page's thread on that page", async () => {
@@ -304,24 +304,24 @@ describe("ArtifactView", () => {
     let win = tap();
     // Anchors go under opaque handles, never the threads' store IDs; the quote names the thread here.
     const lastResolve = () => {
-      const anchors = posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors;
+      const anchors = posted.filter(m => m.type === "clax:resolve-anchors").at(-1)?.anchors;
       for (const a of anchors ?? []) expect(a.id).toMatch(/^a[0-9a-f]{24}$/);
       return anchors?.map(a => a.anchor.quote.replace("Goals ", ""));
     };
     await waitFor(() => root.querySelector('[data-thread="tA"]'), "threads in the sidebar");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => lastResolve()?.join() === "tI", "resolution of the index's threads only");
     const card = root.querySelector('[data-thread="tA"]')!;
     expect(card.querySelector(".file-label")!.textContent).toBe("on about.html");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
     // One history entry: the shell URL is pushed and the frame is moved in place.
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the shell URL names about.html");
-    expect(posted.some(m => m.type === "artifax:scroll-to")).toBe(false);
+    expect(posted.some(m => m.type === "clax:scroll-to")).toBe(false);
     win = tap();
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
 
     await waitFor(() => lastResolve()?.join() === "tA", "resolution of about.html's threads");
-    const scroll = await waitFor(() => posted.find(m => m.type === "artifax:scroll-to"), "scroll to the thread once its page greeted");
+    const scroll = await waitFor(() => posted.find(m => m.type === "clax:scroll-to"), "scroll to the thread once its page greeted");
     expect(scroll.anchor!.file).toBe("about.html");
     await waitFor(() => !root.querySelector('[data-thread="tA"] .file-label') && root.querySelector('[data-thread="tI"] .file-label'), "labels follow the page");
   });
@@ -349,17 +349,17 @@ describe("ArtifactView", () => {
     win.postMessage = (() => {}) as typeof win.postMessage;
     const depth = history.length;
     const settle = () => new Promise(r => setTimeout(r, 20));
-    fromFrame(win, { type: "artifax:hash", hash: "#early" });
+    fromFrame(win, { type: "clax:hash", hash: "#early" });
     await settle();
     expect(location.hash).toBe("#docs%2Fcontract.md");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
-    fromFrame(win, { type: "artifax:hash", hash: "#crates%2Fa.rs" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "clax:hash", hash: "#crates%2Fa.rs" });
     await waitFor(() => location.hash === "#crates%2Fa.rs", "the frame's fragment in the address bar");
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth]);
-    for (const bad of ["no-hash", 42, `#${"x".repeat(512)}`]) fromFrame(win, { type: "artifax:hash", hash: bad });
+    for (const bad of ["no-hash", 42, `#${"x".repeat(512)}`]) fromFrame(win, { type: "clax:hash", hash: bad });
     await settle();
     expect(location.hash).toBe("#crates%2Fa.rs");
-    fromFrame(win, { type: "artifax:hash", hash: "" });
+    fromFrame(win, { type: "clax:hash", hash: "" });
     await waitFor(() => location.hash === "", "no fragment");
     expect(location.pathname).toBe(`/a/${ID}/about.html`);
   });
@@ -369,11 +369,11 @@ describe("ArtifactView", () => {
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     await new Promise(r => setTimeout(r, 20));
     const replace = vi.spyOn(history, "replaceState");
     try {
-      for (let i = 0; i < 40; i++) fromFrame(win, { type: "artifax:hash", hash: `#h${i}` });
+      for (let i = 0; i < 40; i++) fromFrame(win, { type: "clax:hash", hash: `#h${i}` });
       await waitFor(() => location.hash === "#h39", "the latest fragment");
       expect(replace).toHaveBeenCalledTimes(1);
     } finally {
@@ -394,11 +394,11 @@ describe("ArtifactView", () => {
     const onError = (e: ErrorEvent) => { errors.push(e.error); };
     window.addEventListener("error", onError);
     try {
-      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-      await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "the welcome");
-      fromFrame(win, { type: "artifax:hash", hash: "#x" });
+      fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+      await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
+      fromFrame(win, { type: "clax:hash", hash: "#x" });
       await new Promise(r => setTimeout(r, 40));
-      fromFrame(win, { type: "artifax:navigate", file: "about.html" });
+      fromFrame(win, { type: "clax:navigate", file: "about.html" });
       await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/about.html`, "the frame on the about page");
       expect(push).toHaveBeenCalled();
       expect(replace).toHaveBeenCalled();
@@ -417,19 +417,19 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     await new Promise(r => setTimeout(r, 20));
     expect(location.pathname).toBe(`/a/${ID}`);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => location.pathname === `/a/${ID}`, "back on the index's URL");
     // A page the shown version does not hold: no address change, and no answers.
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "forged.html" });
-    fromFrame(win, { type: "artifax:use", id: "forged", name: "permissions" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "forged.html" });
+    fromFrame(win, { type: "clax:use", id: "forged", name: "permissions" });
     await new Promise(r => setTimeout(r, 30));
     expect(location.pathname).toBe(`/a/${ID}`);
-    expect(posted.some(m => m.type === "artifax:use-result" && m.id === "forged")).toBe(false);
+    expect(posted.some(m => m.type === "clax:use-result" && m.id === "forged")).toBe(false);
   });
 
   it("drops the pins when the frame loads a document that never greets", async () => {
@@ -442,23 +442,23 @@ describe("ArtifactView", () => {
     const sent: { type: string; anchors?: { id: string }[] }[] = [];
     win.postMessage = ((m: (typeof sent)[number]) => { sent.push(m); }) as typeof win.postMessage;
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread loaded");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    const handle = (await waitFor(() => sent.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "anchors sent")).id;
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    const handle = (await waitFor(() => sent.filter(m => m.type === "clax:resolve-anchors").at(-1)?.anchors?.[0], "anchors sent")).id;
     expect(handle).not.toBe("tI");
     // A result naming the store ID (which the frame never learns) places nothing.
-    fromFrame(win, { type: "artifax:anchors", requestId: "r0", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    fromFrame(win, { type: "clax:anchors", requestId: "r0", results: [{ id: "tI", found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await new Promise(r => setTimeout(r, 20));
     expect(root.querySelector("button.thread-pin")).toBeNull();
-    fromFrame(win, { type: "artifax:anchors", requestId: "r1", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    fromFrame(win, { type: "clax:anchors", requestId: "r1", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await waitFor(() => root.querySelector("button.thread-pin"), "the pin");
     // Every greeting page gets new handles; the old ones no longer place pins.
-    const count = sent.filter(m => m.type === "artifax:resolve-anchors").length;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    const again = (await waitFor(() => sent.filter(m => m.type === "artifax:resolve-anchors")[count]?.anchors?.[0], "anchors sent again")).id;
+    const count = sent.filter(m => m.type === "clax:resolve-anchors").length;
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    const again = (await waitFor(() => sent.filter(m => m.type === "clax:resolve-anchors")[count]?.anchors?.[0], "anchors sent again")).id;
     expect(again).not.toBe(handle);
-    fromFrame(win, { type: "artifax:anchors", requestId: "r2", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    fromFrame(win, { type: "clax:anchors", requestId: "r2", results: [{ id: handle, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await waitFor(() => !root.querySelector("button.thread-pin"), "a stale handle places nothing");
-    fromFrame(win, { type: "artifax:anchors", requestId: "r3", results: [{ id: again, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
+    fromFrame(win, { type: "clax:anchors", requestId: "r3", results: [{ id: again, found: true, method: "exact", rect: { x: 10, y: 40, w: 100, h: 20 } }] });
     await waitFor(() => root.querySelector("button.thread-pin"), "the pin again");
     frame.dispatchEvent(new Event("load"));
     expect(root.querySelector("button.thread-pin")).not.toBeNull();
@@ -488,39 +488,39 @@ describe("ArtifactView", () => {
     const tap = () => { const w = frame.contentWindow!; w.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof w.postMessage; return w; };
     let win = tap();
     const settle = () => new Promise(r => setTimeout(r, 20));
-    fromFrame(win, { type: "artifax:navigate", file: "about.html" });
+    fromFrame(win, { type: "clax:navigate", file: "about.html" });
     await settle();
     expect(location.pathname).toBe(`/a/${ID}`);
     const depth = history.length;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    fromFrame(win, { type: "artifax:navigate", file: "about.html", hash: "#team" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:navigate", file: "about.html", hash: "#team" });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "the about page's URL");
     expect(location.hash).toBe("#team");
     // The outgoing document is no longer answered: a burst of links, a capability request.
-    fromFrame(win, { type: "artifax:navigate", file: "index.html" });
-    fromFrame(win, { type: "artifax:use", id: "stale", name: "permissions" });
+    fromFrame(win, { type: "clax:navigate", file: "index.html" });
+    fromFrame(win, { type: "clax:use", id: "stale", name: "permissions" });
     await settle();
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
     expect(posted.some(m => m.id === "stale")).toBe(false);
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
     await settle();
     expect(location.hash).toBe("#team");
     // Not an HTML page: the frame loads it in place, the URL stays.
-    fromFrame(win, { type: "artifax:navigate", file: "doc.pdf" });
+    fromFrame(win, { type: "clax:navigate", file: "doc.pdf" });
     await waitFor(() => frame.getAttribute("src") === `/c/${ID}/v/1/doc.pdf`, "the PDF in the frame");
     expect(location.pathname).toBe(`/a/${ID}/about.html`);
     win = tap();
     // Malformed requests are ignored: a non-string, a path outside the version, a missing page.
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "about.html" });
-    for (const bad of [{ file: 42 }, { file: "../index.html" }, { file: "missing.html" }]) fromFrame(win, { type: "artifax:navigate", ...bad });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
+    for (const bad of [{ file: 42 }, { file: "../index.html" }, { file: "missing.html" }]) fromFrame(win, { type: "clax:navigate", ...bad });
     await settle();
     expect([location.pathname, history.length]).toEqual([`/a/${ID}/about.html`, depth + 1]);
     // A fragment that is not one, or is too long, is dropped.
-    fromFrame(win, { type: "artifax:navigate", file: "index.html", hash: "team" });
+    fromFrame(win, { type: "clax:navigate", file: "index.html", hash: "team" });
     await waitFor(() => location.pathname === `/a/${ID}`, "the index");
     expect(location.hash).toBe("");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    fromFrame(win, { type: "artifax:navigate", file: "about.html", hash: `#${"x".repeat(512)}` });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:navigate", file: "about.html", hash: `#${"x".repeat(512)}` });
     await waitFor(() => location.pathname === `/a/${ID}/about.html`, "about again");
     expect(location.hash).toBe("");
   });
@@ -551,7 +551,7 @@ describe("ArtifactView", () => {
       expect(root.querySelector(".banner.notice")).toBeNull();
       // Another page greeting instead abandons it too.
       await open();
-      fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+      fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
       await new Promise(r => setTimeout(r, 120));
       expect(root.querySelector(".banner.notice")).toBeNull();
       // Nothing greets: the notice.
@@ -569,15 +569,15 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
-    const results = () => posted.filter(m => m.type === "artifax:use-result").map(m => m.id);
+    const results = () => posted.filter(m => m.type === "clax:use-result").map(m => m.id);
     await new Promise(r => setTimeout(r, 30));
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
     frame.dispatchEvent(new Event("load"));
-    fromFrame(win, { type: "artifax:use", id: "greeted", name: "permissions" });
+    fromFrame(win, { type: "clax:use", id: "greeted", name: "permissions" });
     await waitFor(() => results().includes("greeted"), "a load right after the hello keeps the gate open");
     // The frame navigated to a document without a bridge: it loads without greeting.
     frame.dispatchEvent(new Event("load"));
-    fromFrame(win, { type: "artifax:use", id: "silent", name: "permissions" });
+    fromFrame(win, { type: "clax:use", id: "silent", name: "permissions" });
     await new Promise(r => setTimeout(r, 30));
     expect(results()).toEqual(["greeted"]);
   });
@@ -623,7 +623,7 @@ describe("ArtifactView", () => {
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     // A pick counts only in comment mode.
     viewerPick(frame, pick("p0", "Not in comment mode"));
     await new Promise(r => setTimeout(r, 30));
@@ -652,7 +652,7 @@ describe("ArtifactView", () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
     const settle = () => new Promise(r => setTimeout(r, 30));
@@ -661,14 +661,14 @@ describe("ArtifactView", () => {
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
     gestureIn(frame, false);
-    fromFrame(win, { type: "artifax:pick-start", pickId: "f2" });
+    fromFrame(win, { type: "clax:pick-start", pickId: "f2" });
     fromFrame(win, pick("f2", "No gesture"));
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
     // The page's forged start beside the bridge's real one: neither counts.
     gestureIn(frame);
-    fromFrame(win, { type: "artifax:pick-start", pickId: "real" });
-    fromFrame(win, { type: "artifax:pick-start", pickId: "forged" });
+    fromFrame(win, { type: "clax:pick-start", pickId: "real" });
+    fromFrame(win, { type: "clax:pick-start", pickId: "forged" });
     fromFrame(win, pick("forged", "Forged"));
     fromFrame(win, pick("real", "Real"));
     await settle();
@@ -700,12 +700,12 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean }; ok?: boolean; value?: { opened?: boolean } }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
-    fromFrame(win, { type: "artifax:call", id: "r1", ns: "comments", method: "register", args: [] });
-    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "r1"), "registered");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:call", id: "r1", ns: "comments", method: "register", args: [] });
+    await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "r1"), "registered");
     buttonNamed(root, "Comment").click();
-    const lastMode = () => posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)?.data;
+    const lastMode = () => posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)?.data;
     await waitFor(() => lastMode()?.on === true && lastMode()?.canArea === true, "areas on in comment mode");
     const card = await waitFor(() => root.querySelector('[data-thread="tS"]'), "the thread");
     buttonNamed(card, "Send to agent").click();
@@ -714,8 +714,8 @@ describe("ArtifactView", () => {
     await waitFor(() => lastMode()?.canArea === true, "areas on again");
     // A page area: the composer opens at once, waiting for its screenshot.
     gestureIn(frame);
-    fromFrame(win, { type: "artifax:call", id: "c1", ns: "comments", method: "compose", args: [{ anchor: "body > h2", dom: true, area: true, clipPending: true, version: 1 }] });
-    await waitFor(() => posted.find(m => m.type === "artifax:call-result" && m.id === "c1"), "compose answered");
+    fromFrame(win, { type: "clax:call", id: "c1", ns: "comments", method: "compose", args: [{ anchor: "body > h2", dom: true, area: true, clipPending: true, version: 1 }] });
+    await waitFor(() => posted.find(m => m.type === "clax:call-result" && m.id === "c1"), "compose answered");
     expect(posted.find(m => m.id === "c1")!.value).toMatchObject({ opened: true });
     await waitFor(() => root.querySelector(".composer")?.textContent?.includes("Taking the screenshot…"), "capturing");
     const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
@@ -736,7 +736,7 @@ describe("ArtifactView", () => {
           ? new Response(JSON.stringify({ thread: { id: `01JX${++posts}`, artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: posts > 1, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, ...(posts === 1 ? { clip_error: "clip is not a PNG" } : {}) }), { status: 201 })
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
-    fromFrame(frame.contentWindow!, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
     viewerPick(frame, { ...pick("big", "Photo"), clipPng: new ArrayBuffer(5 * 1024 * 1024 + 1) });
@@ -767,13 +767,13 @@ describe("ArtifactView", () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    const hello = () => fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    const hello = () => fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     hello();
     const comment = buttonNamed(root, "Comment");
     const on = async () => { if (comment.getAttribute("aria-pressed") !== "true") comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode on"); };
     const off = async () => { comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off"); };
     const settle = () => new Promise(r => setTimeout(r, 30));
-    const start = (id: string) => { gestureIn(frame); fromFrame(win, { type: "artifax:pick-start", pickId: id }); };
+    const start = (id: string) => { gestureIn(frame); fromFrame(win, { type: "clax:pick-start", pickId: id }); };
     const opensWith = async (quote: string) => {
       await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes(quote), quote);
       buttonNamed(root, "Cancel").click();
@@ -832,10 +832,10 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const toFrame: { type: string; on?: boolean }[] = [];
     win.postMessage = ((m: (typeof toFrame)[number]) => { toFrame.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     const comment = buttonNamed(root, "Comment");
     const pressed = () => comment.getAttribute("aria-pressed") === "true";
-    const lastMode = () => toFrame.filter(m => m.type === "artifax:comment-mode").at(-1)?.on;
+    const lastMode = () => toFrame.filter(m => m.type === "clax:comment-mode").at(-1)?.on;
     const settle = () => new Promise(r => setTimeout(r, 30));
     const type = async (text: string) => {
       const t = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
@@ -888,7 +888,7 @@ describe("ArtifactView", () => {
     await waitFor(() => !pressed() && lastMode() === false, "comment mode off on Escape");
     comment.click();
     await waitFor(pressed, "comment mode on");
-    fromFrame(win, { type: "artifax:cancel" });
+    fromFrame(win, { type: "clax:cancel" });
     await waitFor(() => !pressed(), "comment mode off on the page's cancel");
   });
 
@@ -908,15 +908,15 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; value?: { opened?: boolean } }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     const comment = buttonNamed(root, "Comment");
     const pressed = () => comment.getAttribute("aria-pressed") === "true";
     const settle = () => new Promise(r => setTimeout(r, 30));
     const pageOpens = async (id: string) => {
       gestureIn(frame);
-      fromFrame(win, { type: "artifax:call", id, ns: "comments", method: "openComposer", args: [{ anchor: pick("x", "Goals").anchor }] });
-      await waitFor(() => posted.find(m => m.type === "artifax:call-result" && m.id === id)?.value?.opened, `the page's composer ${id}`);
+      fromFrame(win, { type: "clax:call", id, ns: "comments", method: "openComposer", args: [{ anchor: pick("x", "Goals").anchor }] });
+      await waitFor(() => posted.find(m => m.type === "clax:call-result" && m.id === id)?.value?.opened, `the page's composer ${id}`);
     };
     const cancelStaysOff = async () => {
       buttonNamed(root, "Cancel").click();
@@ -963,11 +963,11 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean } }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
-    fromFrame(win, { type: "artifax:call", id: "r1", ns: "comments", method: "register", args: [] });
-    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "r1"), "registered");
-    const modes = () => posted.filter(m => m.type === "artifax:event" && m.topic === "mode").map(m => m.data);
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:call", id: "r1", ns: "comments", method: "register", args: [] });
+    await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "r1"), "registered");
+    const modes = () => posted.filter(m => m.type === "clax:event" && m.topic === "mode").map(m => m.data);
     buttonNamed(root, "Comment").click();
     await waitFor(() => modes().at(-1)?.on === true, "mode on");
     viewerPick(frame, pick("p1", "Goals"));
@@ -983,27 +983,27 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; key?: string; down?: boolean }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     const comment = buttonNamed(root, "Comment");
     comment.click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
     frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
-    expect(posted.filter(m => m.type === "artifax:key").at(-1)).toEqual({ type: "artifax:key", key: "Escape", down: true });
+    expect(posted.filter(m => m.type === "clax:key").at(-1)).toEqual({ type: "clax:key", key: "Escape", down: true });
     await new Promise(r => setTimeout(r, 30));
     // The page dropped a drag: comment mode stays on.
     expect(comment.getAttribute("aria-pressed")).toBe("true");
-    fromFrame(win, { type: "artifax:cancel" });
+    fromFrame(win, { type: "clax:cancel" });
     await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off on the page's answer");
     // Away from the frame, Escape ends comment mode in the shell.
     comment.click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode again");
     root.querySelector("header")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    const keys = posted.filter(m => m.type === "artifax:key").length;
+    const keys = posted.filter(m => m.type === "clax:key").length;
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off");
-    expect(posted.filter(m => m.type === "artifax:key")).toHaveLength(keys);
+    expect(posted.filter(m => m.type === "clax:key")).toHaveLength(keys);
   });
 
   it("focuses the frame on the thread hovered in the list or selected, by its anchor handle, so its drawn area is outlined", async () => {
@@ -1018,23 +1018,23 @@ describe("ArtifactView", () => {
     const posted: { type: string; id?: string | null; anchors?: { id: string }[] }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
     const card = await waitFor(() => root.querySelector('[data-thread="tZ"]'), "the card");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     // The frame knows the thread only by the opaque handle it was sent.
-    const first = await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "the resolve request");
+    const first = await waitFor(() => posted.filter(m => m.type === "clax:resolve-anchors").at(-1)?.anchors?.[0], "the resolve request");
     // Made on the version shown: the frame skips the area's fingerprint.
     expect((first as { sameVersion?: boolean }).sameVersion).toBe(true);
     const handle = first.id;
     expect(handle).not.toBe("tZ");
-    const lastFocus = () => posted.filter(m => m.type === "artifax:focus").at(-1);
-    expect(lastFocus()).toEqual({ type: "artifax:focus", id: null });
+    const lastFocus = () => posted.filter(m => m.type === "clax:focus").at(-1);
+    expect(lastFocus()).toEqual({ type: "clax:focus", id: null });
     card.dispatchEvent(new MouseEvent("mouseenter"));
     await waitFor(() => lastFocus()?.id === handle, "focus on the hovered card");
     card.dispatchEvent(new MouseEvent("mouseleave"));
     await waitFor(() => lastFocus()?.id === null, "focus cleared");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
     await waitFor(() => lastFocus()?.id === handle, "focus on the selected thread");
-    expect(posted.some(m => m.type === "artifax:focus" && m.id === "tZ")).toBe(false);
+    expect(posted.some(m => m.type === "clax:focus" && m.id === "tZ")).toBe(false);
   });
 
   it("tells the frame which threads were made on the version shown, to resolve and to scroll to", async () => {
@@ -1049,12 +1049,12 @@ describe("ArtifactView", () => {
     const posted: { type: string; anchors?: { id: string; sameVersion?: boolean }[]; anchor?: { quote: string | null }; sameVersion?: boolean }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
     await waitFor(() => root.querySelector('[data-thread="tOld"]'), "threads");
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 2, file: "index.html" });
-    const req = await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.length === 2 && posted.filter(m => m.type === "artifax:resolve-anchors").at(-1), "the resolve request");
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 2, file: "index.html" });
+    const req = await waitFor(() => posted.filter(m => m.type === "clax:resolve-anchors").at(-1)?.anchors?.length === 2 && posted.filter(m => m.type === "clax:resolve-anchors").at(-1), "the resolve request");
     expect(req.anchors!.map(a => a.sameVersion)).toEqual([false, true]);
     for (const [id, same] of [["tOld", false], ["tNew", true]] as const) {
       root.querySelector<HTMLButtonElement>(`[data-thread="${id}"] button.card-head`)!.click();
-      const scroll = await waitFor(() => posted.filter(m => m.type === "artifax:scroll-to").at(-1)?.anchor?.quote === `Goals ${id}` && posted.filter(m => m.type === "artifax:scroll-to").at(-1), `scroll to ${id}`);
+      const scroll = await waitFor(() => posted.filter(m => m.type === "clax:scroll-to").at(-1)?.anchor?.quote === `Goals ${id}` && posted.filter(m => m.type === "clax:scroll-to").at(-1), `scroll to ${id}`);
       expect(scroll.sameVersion).toBe(same);
     }
   });
@@ -1065,15 +1065,15 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; key?: string; down?: boolean }[] = [];
     win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
-    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
-    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
-    const keys = () => posted.filter(m => m.type === "artifax:key").map(m => `${m.key}:${m.down}`);
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    const keys = () => posted.filter(m => m.type === "clax:key").map(m => `${m.key}:${m.down}`);
     const press = (key: string, type = "keydown", altKey = false) => { const e = new KeyboardEvent(type, { key, altKey, bubbles: true, cancelable: true }); document.body.dispatchEvent(e); return e; };
     frame.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
     press("Alt");
     expect(keys()).toEqual([]);
     buttonNamed(root, "Comment").click();
-    await waitFor(() => posted.some(m => m.type === "artifax:comment-mode"), "comment mode on");
+    await waitFor(() => posted.some(m => m.type === "clax:comment-mode"), "comment mode on");
     press("Alt");
     expect(press("ArrowUp", "keydown", true).defaultPrevented).toBe(true);
     press("ArrowDown", "keydown", true);
@@ -1121,10 +1121,10 @@ function gestureIn(frame: HTMLIFrameElement, active = true) {
  * frame holds the gesture, then the pick. */
 function viewerPick(frame: HTMLIFrameElement, m: { pickId: string; [k: string]: unknown }) {
   gestureIn(frame);
-  fromFrame(frame.contentWindow!, { type: "artifax:pick-start", pickId: m.pickId });
+  fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: m.pickId });
   fromFrame(frame.contentWindow!, m);
 }
 
 function pick(pickId: string, quote: string) {
-  return { type: "artifax:pick", pickId, version: 1, anchor: { kind: "element", selector: "body > h2", quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } };
+  return { type: "clax:pick", pickId, version: 1, anchor: { kind: "element", selector: "body > h2", quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } };
 }

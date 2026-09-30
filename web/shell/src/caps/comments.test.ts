@@ -54,7 +54,7 @@ function daemon(t: Thread = T("01J9C")) {
   return f;
 }
 const lastUrl = () => (fetch as unknown as Fetch).mock.calls.at(-1)![0] as string;
-const threadsPushed = (posted: ShellToBridge[]) => posted.filter(m => m.type === "artifax:event" && m.topic === "threads") as unknown as { data: { list: { id: string; anchor: string }[] } }[];
+const threadsPushed = (posted: ShellToBridge[]) => posted.filter(m => m.type === "clax:event" && m.topic === "threads") as unknown as { data: { list: { id: string; anchor: string }[] } }[];
 
 describe("comments in the shell", () => {
   beforeEach(() => { vi.spyOn(performance, "now").mockImplementation(() => clock); gesture(true); });
@@ -270,7 +270,7 @@ describe("comments in the shell", () => {
     expect(opened.label).toBe("Blue square");
     // A session the page started gets the mode, but no thread list.
     h.uiChanged!();
-    expect(posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true } });
+    expect(posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true } });
     expect(threadsPushed(posted)).toHaveLength(0);
     state.composing = false;
     expect(await h.call("compose", [{ anchor: "body > h2", dom: true, label: "Title", version: 1 }])).toEqual({ opened: true });
@@ -316,12 +316,12 @@ describe("comments in the shell", () => {
     // While a post or send is in flight the page is told areas are off, and the flag is ignored.
     state.busy = true;
     h.uiChanged!();
-    expect(posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: false } });
+    expect(posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: false } });
     expect(await areaCall()).toEqual({ opened: false });
     expect(ui.dismiss).toHaveBeenCalledTimes(1);
     state.busy = false;
     h.uiChanged!();
-    expect(posted.filter(m => m.type === "artifax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: true } });
+    expect(posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)).toMatchObject({ data: { on: true, canArea: true } });
     // Outside comment mode the flag is ignored: the usual element anchor, no nonce.
     state.mode = false;
     state.composing = false;

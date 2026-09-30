@@ -10,7 +10,7 @@ export const AFFIX = 32;
 export const MAX_QUOTE = 2000;
 /** The daemon's limit on selector length, in characters. */
 export const MAX_SELECTOR = 1024;
-export const OVERLAY_TAG = "artifax-overlay";
+export const OVERLAY_TAG = "clax-overlay";
 const SKIP = new Set(["SCRIPT", "STYLE", "NOSCRIPT", "TEMPLATE"]);
 const SIMPLE_TAG = /^[A-Za-z][A-Za-z0-9-]*$/;
 
@@ -29,7 +29,7 @@ export interface TextIndex { text: string; pieces: Piece[] }
 export interface Resolved { method: ResolveMethod; element: Element; range: Range | null }
 
 /** The concatenated data of the text nodes under `root` that a reader sees
- * (not in scripts, styles, or the Artifax overlay), with each node's offset. */
+ * (not in scripts, styles, or the Clax overlay), with each node's offset. */
 export function textIndex(root: Node): TextIndex {
   const doc = root.ownerDocument ?? (root as Document);
   const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {

@@ -2,7 +2,7 @@
 # End-to-end run of the comment loop with no model: a scripted MCP client
 # drives the stdio shim as a Claude Code session would, HTTP calls play the
 # browser, and the Stop hook and a fake `codex` cover tiers 2 and 5. Uses a
-# scratch ARTIFAX_HOME and leaves no daemon behind. Prints one PASS line per
+# scratch CLAX_HOME and leaves no daemon behind. Prints one PASS line per
 # step; any failure exits non-zero.
 #
 # Usage: scripts/smoke-comment-loop.sh
@@ -10,12 +10,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 TMPROOT="${TMPDIR:-/tmp}"
-SCRATCH="$(mktemp -d "${TMPROOT%/}/artifax-loop.XXXXXX")"
-export ARTIFAX_HOME="$SCRATCH/home"
-export ARTIFAX_NO_OPEN=1
-BIN="$REPO/target/debug/artifax"
+SCRATCH="$(mktemp -d "${TMPROOT%/}/clax-loop.XXXXXX")"
+export CLAX_HOME="$SCRATCH/home"
+export CLAX_NO_OPEN=1
+BIN="$REPO/target/debug/clax"
 FAKE="$SCRATCH/fakebin"
-mkdir -p "$ARTIFAX_HOME" "$FAKE"
+mkdir -p "$CLAX_HOME" "$FAKE"
 
 cleanup() {
     "$BIN" stop >/dev/null 2>&1 || true
@@ -24,7 +24,7 @@ cleanup() {
 trap cleanup EXIT
 
 # A fake codex that records `codex queue` calls. The daemon takes it from
-# ARTIFAX_CODEX_BIN, inherited from the shim that starts it, so the real
+# CLAX_CODEX_BIN, inherited from the shim that starts it, so the real
 # codex on PATH is never run.
 cat >"$FAKE/codex" <<SH
 #!/bin/sh
@@ -32,16 +32,16 @@ printf '%s\n' "\$@" > "$SCRATCH/codex-args.txt"
 exit 0
 SH
 chmod +x "$FAKE/codex"
-export ARTIFAX_CODEX_BIN="$FAKE/codex"
+export CLAX_CODEX_BIN="$FAKE/codex"
 
-echo "smoke: building artifax"
-cargo build -q -p artifax-cli
+echo "smoke: building clax"
+cargo build -q -p clax-cli
 
 python3 - "$BIN" "$SCRATCH" "$REPO" <<'PY'
 import json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
 
 BIN, SCRATCH, REPO = sys.argv[1], sys.argv[2], sys.argv[3]
-HOME = os.environ["ARTIFAX_HOME"]
+HOME = os.environ["CLAX_HOME"]
 
 def fail(msg):
     print(f"smoke: FAIL: {msg}", file=sys.stderr)
@@ -60,7 +60,7 @@ class Shim:
     def __init__(self, session_id):
         env = dict(os.environ, CLAUDE_CODE_SESSION_ID=session_id, RUST_LOG="error")
         env.pop("CLAUDE_PROJECT_DIR", None)
-        env.pop("ARTIFAX_SESSION_ID", None)
+        env.pop("CLAX_SESSION_ID", None)
         self.p = subprocess.Popen([BIN, "--port", "0", "mcp", "--agent", "claude"], stdin=subprocess.PIPE,
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=SCRATCH, text=True, bufsize=1)
         self.n = 0
@@ -115,7 +115,7 @@ def http(method, path, body=None, ctype="application/json", token=False, session
     if token:
         req.add_header("authorization", f"Bearer {tok}")
     if session:
-        req.add_header("x-artifax-session", session)
+        req.add_header("x-clax-session", session)
     with OPENER.open(req, timeout=20) as r:
         raw = r.read()
         return json.loads(raw) if raw else {}
@@ -160,8 +160,8 @@ if len(listed["feedback"]) != 1 or not trailing:
 lines = trailing.split("\n")
 expect = [
     "---",
-    "[artifax] 1 comment sent to you:",
-    f'[artifax] Comment sent to you on "Quarterly Review" ({url}), thread {t1["id"]}',
+    "[clax] 1 comment sent to you:",
+    f'[clax] Comment sent to you on "Quarterly Review" ({url}), thread {t1["id"]}',
     "Anchored on: body > main > h2  «Quarterly goals»  (v1)",
 ]
 if lines[:4] != expect or not lines[4].startswith("Clip: /") or lines[5] != 'Viewer: "Make this a two-column layout and drop the third bullet."' \
@@ -179,12 +179,12 @@ ok("tier 1: delivered once")
 
 # 4. Tier 2: the Stop hook blocks once with a new comment, then allows.
 t2 = browser_thread(aid, "@agent and tighten the spacing")
-FIXTURES = os.path.join(REPO, "crates", "artifax-hooks", "tests", "fixtures")
+FIXTURES = os.path.join(REPO, "crates", "clax-hooks", "tests", "fixtures")
 def stop(active):
     # The Stop hook's stdin is the recorded Claude Code fixture, re-keyed to this session.
     event = json.load(open(os.path.join(FIXTURES, "claude-stop-active.json" if active else "claude-stop.json")))
     event["session_id"], event["cwd"] = "smoke-loop-1", SCRATCH
-    env = {k: v for k, v in os.environ.items() if k not in ("ARTIFAX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR")}
+    env = {k: v for k, v in os.environ.items() if k not in ("CLAX_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR")}
     r = subprocess.run([BIN, "hook", "--agent", "claude", "stop"], input=json.dumps(event), env=env,
                        capture_output=True, text=True, timeout=10)
     return r.returncode, r.stdout.strip()
@@ -273,7 +273,7 @@ for _ in range(200):
 time.sleep(0.2)
 st = http("GET", f"/api/artifacts/{caid}/threads/{ct['id']}")["thread"]["feedback_state"]
 args = open(args_path).read().split("\n") if os.path.exists(args_path) else []
-if st["state"] != "delivered" or st["tier"] != "queue" or len(args) < 5 or args[:4] != ["queue", "--thread", "cx-smoke", "--message"] or args[4] != "[artifax] 1 comment sent to you:":
+if st["state"] != "delivered" or st["tier"] != "queue" or len(args) < 5 or args[:4] != ["queue", "--thread", "cx-smoke", "--message"] or args[4] != "[clax] 1 comment sent to you:":
     fail(f"codex queue: {st} {args[:5]}")
 ok("tier 5: the daemon ran `codex queue --thread cx-smoke --message <payload>` and marked the row delivered by queue")
 
@@ -281,7 +281,7 @@ shim.close()
 ok("the shim exited when its stdin closed")
 PY
 
-INFO="$ARTIFAX_HOME/daemon.json"
+INFO="$CLAX_HOME/daemon.json"
 PID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$INFO")"
 "$BIN" stop >/dev/null
 for _ in $(seq 1 50); do kill -0 "$PID" 2>/dev/null || break; sleep 0.1; done

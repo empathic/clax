@@ -14,7 +14,7 @@ run() {
     fi
 }
 run "justfile"              scripts/test-justfile.sh
-run "installer"             scripts/test-ensure-artifax.sh
+run "installer"             scripts/test-ensure-clax.sh
 run "plugins"               scripts/test-plugins.sh
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings

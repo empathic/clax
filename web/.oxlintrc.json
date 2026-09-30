@@ -6,6 +6,6 @@
     "suspicious": "warn"
   },
   "rules": {
-    "no-underscore-dangle": ["warn", { "allow": ["__artifax"] }]
+    "no-underscore-dangle": ["warn", { "allow": ["__clax"] }]
   }
 }

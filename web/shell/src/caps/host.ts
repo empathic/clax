@@ -1,5 +1,5 @@
-// The shell end of the capability protocol: answers a frame's `artifax:use`
-// from the declaration and the view (availability.ts), runs `artifax:call`s
+// The shell end of the capability protocol: answers a frame's `clax:use`
+// from the declaration and the view (availability.ts), runs `clax:call`s
 // through one handler per capability, and relays SSE events to handlers that
 // follow the stream. Every call is answered, with a value or `{code, message}`.
 import type { Anchor, Box, BridgeToShell, ShellToBridge } from "../../../bridge/src/protocol";
@@ -112,24 +112,24 @@ export class CapabilityHost {
   }
 
   async handle(m: BridgeToShell): Promise<void> {
-    if (this.dead || (m.type !== "artifax:use" && m.type !== "artifax:call")) return;
+    if (this.dead || (m.type !== "clax:use" && m.type !== "clax:call")) return;
     const { env, grants } = await this.ready;
     if (this.dead) return;
     const owner = env.token !== null;
-    if (m.type === "artifax:use") {
+    if (m.type === "clax:use") {
       const granted = typeof m.name === "string" && isAvailable(m.name, env.declared, owner);
-      env.post({ type: "artifax:use-result", id: m.id, granted, config: granted ? declaredConfig(m.name, env.declared) : null });
+      env.post({ type: "clax:use-result", id: m.id, granted, config: granted ? declaredConfig(m.name, env.declared) : null });
       return;
     }
     try {
       if (!isAvailable(m.ns, env.declared, owner)) throw new CapError("not_granted", `${m.ns} is not available to this view`);
       const value = await this.handler(m.ns, env, grants).call(m.method, Array.isArray(m.args) ? m.args : []);
-      env.post({ type: "artifax:call-result", id: m.id, ok: true, value });
+      env.post({ type: "clax:call-result", id: m.id, ok: true, value });
     } catch (e) {
       const error = e instanceof CapError
         ? { ...e.extra, code: e.code, message: e.message }
         : { code: "upstream_error", message: e instanceof Error ? e.message : String(e) };
-      env.post({ type: "artifax:call-result", id: m.id, ok: false, error });
+      env.post({ type: "clax:call-result", id: m.id, ok: false, error });
     }
   }
 

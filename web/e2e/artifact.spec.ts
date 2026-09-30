@@ -36,12 +36,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await current(artifact.id)).toBe(2);
     const stored = await (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/2/files/index.html`)).text();
     expect(stored.startsWith("<!doctype html>")).toBe(true);
-    expect(stored).not.toContain("/_artifax/bridge.js");
+    expect(stored).not.toContain("/_clax/bridge.js");
     const served = await (await fetch(`${d.base}/c/${artifact.id}/v/2/`)).text();
-    expect(served.match(/\/_artifax\/bridge\.js/g)?.length).toBe(1);
+    expect(served.match(/\/_clax\/bridge\.js/g)?.length).toBe(1);
     // The bridge goes right after the doctype and its whitespace; the page
     // follows as stored.
-    expect(served, "served as the full document, not wrapped again").toMatch(/^<!doctype html>\n<script src="\/_artifax\/bridge\.js[^>]*><\/script><html/);
+    expect(served, "served as the full document, not wrapped again").toMatch(/^<!doctype html>\n<script src="\/_clax\/bridge\.js[^>]*><\/script><html/);
     await ctx.close();
   });
 
@@ -52,9 +52,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // What each page hears back for its publish, from inside the frame.
     const heard: unknown[] = [];
     for (const p of [pa, pb]) {
-      await p.exposeFunction("artifaxHeard", (m: unknown) => { heard.push(m); });
+      await p.exposeFunction("claxHeard", (m: unknown) => { heard.push(m); });
       await p.addInitScript(() => {
-        addEventListener("message", e => { if (e.data?.type === "artifax:call-result") (window as unknown as { artifaxHeard(m: unknown): void }).artifaxHeard(e.data); });
+        addEventListener("message", e => { if (e.data?.type === "clax:call-result") (window as unknown as { claxHeard(m: unknown): void }).claxHeard(e.data); });
       });
     }
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
@@ -95,7 +95,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const ctx = await browser.newContext();
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
     for (const p of [pa, pb]) {
-      if (mode === "sandbox") await p.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+      if (mode === "sandbox") await p.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
       await p.goto(`${d.base}/a/${artifact.id}/votes/poll.html`);
     }
     const a = await fileFrame(pa, artifact.id, 1, "votes/poll.html");
@@ -161,13 +161,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // activation, reports its first true sample through a binding (which is no
     // gesture), and the click is a raw mouse event inside the frame's box.
     const act: { seen: { falseSamples: number; firstActive: number } | null } = { seen: null };
-    await page.exposeFunction("artifaxActivated", (falseSamples: number, firstActive: number) => { act.seen ??= { falseSamples, firstActive }; });
+    await page.exposeFunction("claxActivated", (falseSamples: number, firstActive: number) => { act.seen ??= { falseSamples, firstActive }; });
     await page.addInitScript(() => {
       if (window !== window.top) { addEventListener("click", () => { (window as unknown as { clicked: boolean }).clicked = true; }); return; }
       let falseSamples = 0;
       const tick = () => {
         if (!navigator.userActivation.hasBeenActive) { falseSamples++; setTimeout(tick, 10); return; }
-        (window as unknown as { artifaxActivated: (n: number, t: number) => void }).artifaxActivated(falseSamples, Date.now());
+        (window as unknown as { claxActivated: (n: number, t: number) => void }).claxActivated(falseSamples, Date.now());
       };
       tick();
     });
@@ -197,9 +197,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: twelve publishes from one click: one lands, the rest are rate_limited`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Burst ${mode}`, pageHtml("publish-burst.html"), { artifact: {} });
     const heard: { ok: boolean; error?: { code: string } }[] = [];
-    await page.exposeFunction("artifaxHeard", (m: { ok: boolean; error?: { code: string } }) => { heard.push(m); });
+    await page.exposeFunction("claxHeard", (m: { ok: boolean; error?: { code: string } }) => { heard.push(m); });
     await page.addInitScript(() => {
-      addEventListener("message", e => { if (e.data?.type === "artifax:call-result") (window as unknown as { artifaxHeard(m: unknown): void }).artifaxHeard(e.data); });
+      addEventListener("message", e => { if (e.data?.type === "clax:call-result") (window as unknown as { claxHeard(m: unknown): void }).claxHeard(e.data); });
     });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await f.locator("#burst").click();

@@ -2,9 +2,9 @@
 # Manual end-to-end check of the Pi extension. Not a quality gate.
 #
 # Runs `pi -p "hello"` with only this repository's extension loaded
-# (plugins/pi), a scratch PI_CODING_AGENT_DIR, and a scratch ARTIFAX_HOME. The
-# extension's session_start handler starts the daemon (through ARTIFAX_BIN,
-# the working tree's target/debug/artifax) and registers the Pi session, before
+# (plugins/pi), a scratch PI_CODING_AGENT_DIR, and a scratch CLAX_HOME. The
+# extension's session_start handler starts the daemon (through CLAX_BIN,
+# the working tree's target/debug/clax) and registers the Pi session, before
 # Pi calls a model. Without a provider API key the model call fails; the
 # script reports that and still checks the registration. The person's own
 # ~/.pi is never read or written: the script fails if anything under it
@@ -19,18 +19,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
-SCRATCH="${1:-${TMPDIR:-/tmp}/artifax-smoke-pi}"
+SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-pi}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export PI_CODING_AGENT_DIR="$SCRATCH/pi-home"
-export ARTIFAX_HOME="$SCRATCH/artifax-home"
-export ARTIFAX_BIN="$REPO/target/debug/artifax"
-export ARTIFAX_NO_OPEN=1
+export CLAX_HOME="$SCRATCH/clax-home"
+export CLAX_BIN="$REPO/target/debug/clax"
+export CLAX_NO_OPEN=1
 export PI_OFFLINE=1
 CWD="$SCRATCH/cwd"
 MARKER="$SCRATCH/started"
 
 die() { echo "smoke: FAIL: $1" >&2; exit 1; }
-cleanup() { "$ARTIFAX_BIN" stop >/dev/null 2>&1 || true; }
+cleanup() { "$CLAX_BIN" stop >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 
 REAL_PI_HOME="$(cd "$HOME/.pi/agent" 2>/dev/null && pwd -P || true)"
@@ -42,14 +42,14 @@ elif [ -x "$REPO/plugins/pi/node_modules/.bin/pi" ]; then PI_CMD=("$REPO/plugins
 else PI_CMD=(npx --yes @mariozechner/pi-coding-agent@0.73.1)
 fi
 
-rm -rf "$PI_CODING_AGENT_DIR" "$ARTIFAX_HOME" "$CWD"
-mkdir -p "$PI_CODING_AGENT_DIR" "$ARTIFAX_HOME" "$CWD"
+rm -rf "$PI_CODING_AGENT_DIR" "$CLAX_HOME" "$CWD"
+mkdir -p "$PI_CODING_AGENT_DIR" "$CLAX_HOME" "$CWD"
 touch "$MARKER"
 
-echo "smoke: building artifax"
-cargo build -q -p artifax-cli
+echo "smoke: building clax"
+cargo build -q -p clax-cli
 
-echo "smoke: running ${PI_CMD[*]} -p hello (PI_CODING_AGENT_DIR=$PI_CODING_AGENT_DIR, ARTIFAX_HOME=$ARTIFAX_HOME)"
+echo "smoke: running ${PI_CMD[*]} -p hello (PI_CODING_AGENT_DIR=$PI_CODING_AGENT_DIR, CLAX_HOME=$CLAX_HOME)"
 set +e
 (cd "$CWD" && "${PI_CMD[@]}" --no-session --no-extensions --no-skills -nc -e "$REPO/plugins/pi" -p "hello") \
     >"$SCRATCH/pi.out" 2>"$SCRATCH/pi.err" </dev/null
@@ -64,8 +64,8 @@ if [ -d "$HOME/.pi" ] && [ -n "$(find "$HOME/.pi" -newer "$MARKER" -print -quit)
     die "something under ~/.pi changed during the run"
 fi
 
-INFO="$ARTIFAX_HOME/daemon.json"
-[ -f "$INFO" ] || die "the extension started no daemon ($INFO is missing); see $ARTIFAX_HOME/logs/daemon.log"
+INFO="$CLAX_HOME/daemon.json"
+[ -f "$INFO" ] || die "the extension started no daemon ($INFO is missing); see $CLAX_HOME/logs/daemon.log"
 PORT="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$INFO")"
 # Session reads need the daemon's bearer token.
 TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$INFO")"

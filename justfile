@@ -18,7 +18,7 @@ build:
 # Install web dependencies and build the frontend bundles
 web:
     cd web && npm ci
-    rm -rf web/dist/_artifax web/dist/index.html
+    rm -rf web/dist/_clax web/dist/index.html
     cd web && npm run build
 
 # Run the web lint, typecheck, and unit tests
@@ -35,7 +35,7 @@ pi-test:
 
 # Run the installer script tests
 installer-test:
-    ./scripts/test-ensure-artifax.sh
+    ./scripts/test-ensure-clax.sh
 
 # Check the plugin manifests, commands, and skill
 plugin-test:
@@ -63,28 +63,28 @@ check *GATES:
 ci *GATES:
     ./scripts/quality_gates.sh {{GATES}}
 
-# Build the frontend and install the artifax binary
+# Build the frontend and install the clax binary
 install: web
-    cargo install --path crates/artifax-cli
+    cargo install --path crates/clax-cli
 
-# Remove the installed artifax binary
+# Remove the installed clax binary
 uninstall:
-    -cargo uninstall artifax-cli
-    -rm ~/.local/bin/artifax
+    -cargo uninstall clax-cli
+    -rm ~/.local/bin/clax
 
-# Run the daemon in the foreground (extra args go to `artifax serve`)
+# Run the daemon in the foreground (extra args go to `clax serve`)
 serve *ARGS:
-    cargo run -p artifax-cli -- serve --foreground {{ARGS}}
+    cargo run -p clax-cli -- serve --foreground {{ARGS}}
 
 # Stop the running daemon
 stop:
-    cargo run -q -p artifax-cli -- stop
+    cargo run -q -p clax-cli -- stop
 
 # Check the local setup and daemon health
 doctor:
-    cargo run -q -p artifax-cli -- doctor
+    cargo run -q -p clax-cli -- doctor
 
 # Remove build output and web dependencies
 clean:
     cargo clean
-    rm -rf web/dist/_artifax web/dist/index.html web/node_modules
+    rm -rf web/dist/_clax web/dist/index.html web/node_modules

@@ -217,7 +217,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
    * (none when it was not sent to this page). */
   const sendFocus = () => {
     const tid = focusRef.current;
-    send({ type: "artifax:focus", id: tid === null ? null : anchorIds.current.byThread.get(tid) ?? null });
+    send({ type: "clax:focus", id: tid === null ? null : anchorIds.current.byThread.get(tid) ?? null });
   };
   // How many of this view's own page publishes are in flight (the `artifact`
   // handler counts them; one that ends in a reload keeps its count). A page
@@ -316,7 +316,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => () => host?.dispose(), [host]);
   const resolveAll = () => {
     if (customLive.current) return;
-    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: anchorHandle(t.id), anchor: t.anchor, sameVersion: t.version_n === shown })) });
+    send({ type: "clax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: anchorHandle(t.id), anchor: t.anchor, sameVersion: t.version_n === shown })) });
   };
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
@@ -376,7 +376,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     if (t.anchor.file === fileRef.current) {
       // A custom-anchors page brings its own threads into view; the shell
       // never scrolls it.
-      if (!hostRef.current?.reveal(t.id)) send({ type: "artifax:scroll-to", anchor: t.anchor, sameVersion: t.version_n === shown });
+      if (!hostRef.current?.reveal(t.id)) send({ type: "clax:scroll-to", anchor: t.anchor, sameVersion: t.version_n === shown });
       return;
     }
     // A thread on a page this version does not hold is detached: nothing to open.
@@ -406,7 +406,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
   useEffect(() => {
-    send({ type: "artifax:comment-mode", on: commenting });
+    send({ type: "clax:comment-mode", on: commenting });
     // A pick still in flight when comment mode ends is moot: its start must
     // not stand in the way of the viewer's next pick.
     if (!commenting) startedPicks.current.clear();
@@ -446,7 +446,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     const m = acceptFromFrame(e, frameWin(), origin ?? null);
     if (!m) return;
     switch (m.type) {
-      case "artifax:hello": {
+      case "clax:hello": {
         // A stale or foreign document in the frame, or one naming a page
         // this version does not hold, gets no welcome, no anchors, and no pins.
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
@@ -463,7 +463,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // a form) made the frame's own history entry, so the URL is replaced.
         const r = parseShellPath(location.pathname);
         if (r.kind !== "artifact" || r.file !== greeted) setUrl(here(pinnedVersion) + location.hash);
-        send({ type: "artifax:welcome", mode: commenting ? "comment" : "view" });
+        send({ type: "clax:welcome", mode: commenting ? "comment" : "view" });
         resolveAll();
         sendFocus();
         const p = pendingScroll.current;
@@ -471,11 +471,11 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           // The jump's page greeted: scroll there. Another page greeted: the
           // viewer moved on, so the jump is dropped without a notice.
           clearPending();
-          if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor, sameVersion: p.thread.version_n === shown });
+          if (p.thread.anchor.file === greeted) send({ type: "clax:scroll-to", anchor: p.thread.anchor, sameVersion: p.thread.version_n === shown });
         }
         break;
       }
-      case "artifax:pick-start":
+      case "clax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
         // viewer's latest input went to the frame (`frameGesture`, the
         // composer tier). A refused start shows the viewer the hint only when
@@ -503,7 +503,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           else startedPicks.current.set(m.pickId, now);
         }
         break;
-      case "artifax:pick": {
+      case "clax:pick": {
         // A pick counts only after its gesture-checked start (each start
         // once, used up even when the pick is dropped), while the viewer is in
         // comment mode; a clip the daemon would not keep is dropped here, with
@@ -516,7 +516,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: png && !tooBig ? new Blob([png], { type: "image/png" }) : null, clipError: tooBig ? "the screenshot was too large to keep" : m.clipError });
         break;
       }
-      case "artifax:anchors": {
+      case "clax:anchors": {
         if (customLive.current) break;
         const byHandle = anchorIds.current.byHandle;
         setResolved(prev => {
@@ -529,8 +529,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         });
         break;
       }
-      case "artifax:cancel": setCommenting(false); break;
-      case "artifax:hash":
+      case "clax:cancel": setCommenting(false); break;
+      case "clax:hash":
         // The page's fragment moved (a link, a script): the address bar
         // follows in place, once per animation frame with the latest
         // fragment; the frame's own history entry carries the move.
@@ -543,7 +543,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           });
         }
         break;
-      case "artifax:navigate": {
+      case "clax:navigate": {
         // A link the page handed over, from a document that greeted and is
         // not already leaving (one entry per greeting page). An HTML page of
         // this version is one history entry; another file of the version
@@ -555,8 +555,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         else navigateFrame(m.file, false, hash);
         break;
       }
-      case "artifax:hover": break;
-      case "artifax:use": case "artifax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
+      case "clax:hover": break;
+      case "clax:use": case "clax:call": if (helloOk.current) void hostRef.current?.handle(m); break;
     }
   };
   useEffect(() => {
@@ -570,7 +570,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     // Option widening works with focus in the shell: while comment mode is
     // on and the pointer is over the frame, Option and, with it held, Up and
     // Down are forwarded to the page (not from a text field), and so is
-    // Escape, which drops a drag in progress or else answers artifax:cancel
+    // Escape, which drops a drag in progress or else answers clax:cancel
     // (ending comment mode). They are the page's keys, not input to the shell
     // (`setForwardedKeys`).
     const forwards = (e: KeyboardEvent) => {
@@ -581,7 +581,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     };
     const onKey = (e: KeyboardEvent) => {
       if (forwards(e)) {
-        sendRef.current({ type: "artifax:key", key: e.key as "Alt" | "ArrowUp" | "ArrowDown" | "Escape", down: e.type === "keydown" });
+        sendRef.current({ type: "clax:key", key: e.key as "Alt" | "ArrowUp" | "ArrowDown" | "Escape", down: e.type === "keydown" });
         if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
       } else if (e.key === "Escape" && e.type === "keydown") {
         // Escape anywhere else ends comment mode here.
@@ -649,8 +649,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     return () => { live = false; off(); stop?.(); };
   }, [id]);
 
-  if (error) return <Shell title="Artifax"><p class="empty">{error}</p></Shell>;
-  if (!data || origin === undefined) return <Shell title="Artifax"><p class="empty muted">Loading…</p></Shell>;
+  if (error) return <Shell title="Clax"><p class="empty">{error}</p></Shell>;
+  if (!data || origin === undefined) return <Shell title="Clax"><p class="empty muted">Loading…</p></Shell>;
   const { artifact, versions } = data;
   const latest = artifact.current_version;
   const urlRoute = parseShellPath(location.pathname);

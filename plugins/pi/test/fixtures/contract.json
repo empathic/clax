@@ -1,5 +1,5 @@
 {
-  "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/artifax-mcp/src/tools.rs, artifax-core html_title) and the Pi extension (plugins/pi/src/artifax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources.",
+  "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/clax-mcp/src/tools.rs, clax-core html_title) and the Pi extension (plugins/pi/src/clax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources.",
   "artifact_ref": [
     {
       "input": "7q3k9mzx2b4t",
@@ -342,7 +342,7 @@
     },
     {
       "name": "status",
-      "description": "Report the Artifax daemon's URL and version and the session publishes are attributed to."
+      "description": "Report the Clax daemon's URL and version and the session publishes are attributed to."
     },
     {
       "name": "comments_read",

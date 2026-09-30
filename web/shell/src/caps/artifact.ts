@@ -34,7 +34,7 @@ export const PUBLISH_GAP_MS = 2_000;
 /** Most publishes of one artifact from one tab in any minute. */
 export const PUBLISH_PER_MINUTE = 10;
 export const NO_GESTURE = "publish from the viewer's own input in the page, never on load or a timer";
-export const SHELL_RECENT = `publish from the viewer's click in the page, not within ${SHELL_QUIET_MS / 1000} s of their input to the Artifax window; ask them to click again`;
+export const SHELL_RECENT = `publish from the viewer's click in the page, not within ${SHELL_QUIET_MS / 1000} s of their input to the Clax window; ask them to click again`;
 
 const isHtml = (contentType: string) => contentType.split(";")[0].trim().toLowerCase() === "text/html";
 
@@ -49,7 +49,7 @@ function base64(bytes: Uint8Array): string {
 /** The html argument, checked before anything is requested. */
 function checkHtml(html: unknown): string {
   if (html !== null && typeof html === "object" && !Array.isArray(html)) {
-    throw new CapError("capability_disabled", "the files form of publish is not available in Artifax; publish a complete HTML page");
+    throw new CapError("capability_disabled", "the files form of publish is not available in Clax; publish a complete HTML page");
   }
   if (typeof html !== "string" || !DOCTYPE.test(html)) throw new CapError("invalid_content", "publish takes a complete page that begins with <!doctype html>");
   if (new Blob([html]).size > MAX_PAGE_BYTES) throw new CapError("too_large", `a page is at most ${MAX_PAGE_BYTES} bytes`);
@@ -89,7 +89,7 @@ export const artifactHandler: HandlerFactory = env => {
     try {
       res = await fetch(`${base}/versions/${env.version}/files/${INDEX_FILE}`);
     } catch {
-      throw new CapError("upstream_error", "the Artifax daemon could not be reached");
+      throw new CapError("upstream_error", "the Clax daemon could not be reached");
     }
     if (!res.ok) throw new CapError("upstream_error", `the index of v${env.version} could not be read (HTTP ${res.status})`);
     const index = base64(new Uint8Array(await res.arrayBuffer()));
@@ -114,7 +114,7 @@ export const artifactHandler: HandlerFactory = env => {
       const g = frameGestureStrict();
       if (g === "no_gesture") throw new CapError("rate_limited", NO_GESTURE);
       if (g === "shell_input_recent") throw new CapError("shell_input_recent", SHELL_RECENT);
-      const wait = takeSlot(`artifax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });
+      const wait = takeSlot(`clax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });
       if (wait > 0) throw new CapError("rate_limited", `publishing too often; wait ${seconds(wait)} s and batch changes into one publish`);
       // Counted before the lookup, so this view's own SSE `version` event cannot reload it first.
       claim();
@@ -132,11 +132,11 @@ export const artifactHandler: HandlerFactory = env => {
         try {
           res = await fetch(`${base}/versions`, {
             method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${env.token}`, "x-artifax-via": "page" },
+            headers: { "content-type": "application/json", authorization: `Bearer ${env.token}`, "x-clax-via": "page" },
             body: JSON.stringify({ if_version: env.version, files }),
           });
         } catch {
-          throw new CapError("upstream_error", "the Artifax daemon could not be reached");
+          throw new CapError("upstream_error", "the Clax daemon could not be reached");
         }
         if (disposed) throw closed();
         if (res.status === 201) {

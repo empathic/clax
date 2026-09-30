@@ -50,21 +50,21 @@ jobs:
         # install; on the arm64 runner the native musl-gcc targets it.
         env:
           CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --target ${{ matrix.target }} -p artifax-cli --bin artifax
+        run: cargo build --release --target ${{ matrix.target }} -p clax-cli --bin clax
 
       - name: Package
         shell: bash
         run: |
-          tar czf artifax-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release artifax
-          sha256sum artifax-${{ matrix.target }}.tar.gz > artifax-${{ matrix.target }}.tar.gz.sha256 2>/dev/null || \
-            shasum -a 256 artifax-${{ matrix.target }}.tar.gz > artifax-${{ matrix.target }}.tar.gz.sha256
+          tar czf clax-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release clax
+          sha256sum clax-${{ matrix.target }}.tar.gz > clax-${{ matrix.target }}.tar.gz.sha256 2>/dev/null || \
+            shasum -a 256 clax-${{ matrix.target }}.tar.gz > clax-${{ matrix.target }}.tar.gz.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: artifax-${{ matrix.target }}
+          name: clax-${{ matrix.target }}
           path: |
-            artifax-${{ matrix.target }}.tar.gz
-            artifax-${{ matrix.target }}.tar.gz.sha256
+            clax-${{ matrix.target }}.tar.gz
+            clax-${{ matrix.target }}.tar.gz.sha256
 
   release:
     name: Create Release

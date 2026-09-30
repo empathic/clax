@@ -19,7 +19,7 @@
 // uncharged). The rest (`canSendToClaude`, `register`, `release`,
 // `composeClip`, `openThread`, `placed`, `exitMode`) write nothing as the
 // viewer and need no gesture. Refusals for the lack of a gesture are
-// budgeted, so a page polling on a timer is soon cut off. Artifax has no public links: every view
+// budgeted, so a page polling on a timer is soon cut off. Clax has no public links: every view
 // that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
 import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
@@ -141,7 +141,7 @@ function mapped(e: unknown): CapError {
   return new CapError("unavailable", e instanceof Error ? e.message : String(e));
 }
 
-const event = (topic: string, data: unknown) => ({ type: "artifax:event" as const, ns: "comments", topic, data });
+const event = (topic: string, data: unknown) => ({ type: "clax:event" as const, ns: "comments", topic, data });
 type Listed = { id: string; anchor: string; resolved: boolean; active: boolean };
 
 export const commentsHandler: HandlerFactory = (env, grants) => {
@@ -180,7 +180,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   };
   const budget = (kind: "opens" | "writes" | "refusals") => {
     const limits = kind === "opens" ? OPEN_RATE : kind === "writes" ? WRITE_RATE : REFUSED_RATE;
-    return takeSlot(`artifax.comment-${kind}.v1:${env.aid}`, { perWindow: limits });
+    return takeSlot(`clax.comment-${kind}.v1:${env.aid}`, { perWindow: limits });
   };
   const opening = () => {
     const wait = budget("opens");
@@ -210,7 +210,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     // is charged to the budget.
     if (g === "no_gesture") refused();
     if (g === "shell_input_recent") {
-      throw new CapError("shell_input_recent", `${what} needs the viewer's click in the page, not within ${SHELL_QUIET_MS / 1000} s of their input to the Artifax window; ask them to click again`);
+      throw new CapError("shell_input_recent", `${what} needs the viewer's click in the page, not within ${SHELL_QUIET_MS / 1000} s of their input to the Clax window; ask them to click again`);
     }
     throw new CapError(code, `${what} needs the viewer's own gesture in the page`);
   };

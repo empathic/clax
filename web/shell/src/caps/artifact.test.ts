@@ -53,7 +53,7 @@ describe("artifact.publish in the shell", () => {
     const post = calls.find(c => c.init.method === "POST")!;
     expect(post.url).toBe("/api/artifacts/7q3k9mzx2b4t/versions");
     expect(JSON.parse(String(post.init.body))).toEqual({ if_version: 3, files: { "index.html": { content: DOC, encoding: "utf8" } } });
-    expect((post.init.headers as Record<string, string>)["x-artifax-via"]).toBe("page");
+    expect((post.init.headers as Record<string, string>)["x-clax-via"]).toBe("page");
     expect((post.init.headers as Record<string, string>).authorization).toBe("Bearer tok");
     vi.runAllTimers();
     expect(e.reload).toHaveBeenCalledTimes(1);

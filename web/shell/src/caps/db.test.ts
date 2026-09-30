@@ -92,7 +92,7 @@ describe("db handler", () => {
     const { h, posted } = setup(null, () => json({ docs: [doc("tasks/a", version)], next_cursor: null }));
     await h.call("subscribe", ["s1", { kind: "query", collection: "tasks", where: [], orderBy: null, desc: false, limit: null }]);
     expect(posted).toHaveLength(1);
-    expect(posted[0]).toMatchObject({ type: "artifax:event", ns: "db", topic: "snapshot", data: { sub: "s1" } });
+    expect(posted[0]).toMatchObject({ type: "clax:event", ns: "db", topic: "snapshot", data: { sub: "s1" } });
     version = 2;
     h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/a", version: 2 });
     h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/b", version: 1 });

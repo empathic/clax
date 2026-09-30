@@ -2,11 +2,11 @@
 # Manual end-to-end check of the Codex path. Not a quality gate: it runs a real
 # `codex exec` session, which calls a model and needs credentials.
 #
-# Installs this repository's Codex marketplace and the artifax plugin into a
+# Installs this repository's Codex marketplace and the clax plugin into a
 # scratch CODEX_HOME, has Codex publish a page through the plugin's MCP server,
 # then verifies the page and the registered session. The plugin's installer
-# script resolves the working tree's target/debug/artifax (ARTIFAX_BIN), and the
-# shim starts the daemon itself in a scratch ARTIFAX_HOME; this script starts
+# script resolves the working tree's target/debug/clax (CLAX_BIN), and the
+# shim starts the daemon itself in a scratch CLAX_HOME; this script starts
 # nothing. The person's own ~/.codex is never read or written, except that
 # ~/.codex/auth.json is copied into the scratch home for the run (Codex needs
 # credentials) and that copy is deleted on exit.
@@ -25,18 +25,18 @@ cd "$(dirname "$0")/.."
 REPO="$PWD"
 HOOKS=""
 if [ "${1:-}" = --hooks ]; then HOOKS=1; shift; fi
-SCRATCH="${1:-${TMPDIR:-/tmp}/artifax-smoke-codex}"
+SCRATCH="${1:-${TMPDIR:-/tmp}/clax-smoke-codex}"
 SCRATCH="$(mkdir -p "$SCRATCH" && cd "$SCRATCH" && pwd -P)"
 export CODEX_HOME="$SCRATCH/codex-home"
-export ARTIFAX_HOME="$SCRATCH/artifax-home"
-export ARTIFAX_BIN="$REPO/target/debug/artifax"
-export ARTIFAX_NO_OPEN=1
+export CLAX_HOME="$SCRATCH/clax-home"
+export CLAX_BIN="$REPO/target/debug/clax"
+export CLAX_NO_OPEN=1
 CWD="$SCRATCH/cwd"
 REAL_CODEX_HOME="$(cd "$HOME/.codex" 2>/dev/null && pwd -P || true)"
 
 die() { echo "smoke: FAIL: $1" >&2; exit 1; }
 cleanup() {
-    "$ARTIFAX_BIN" stop >/dev/null 2>&1 || true
+    "$CLAX_BIN" stop >/dev/null 2>&1 || true
     if [ -f "$CODEX_HOME/auth.json" ]; then
         rm -f "$CODEX_HOME/auth.json"
         echo "smoke: removed the copied auth.json from $CODEX_HOME"
@@ -48,11 +48,11 @@ trap cleanup EXIT
     && die "the scratch CODEX_HOME resolves to ~/.codex"
 [ -f "$HOME/.codex/auth.json" ] || die "no ~/.codex/auth.json to copy; log in to Codex first"
 
-rm -rf "$CODEX_HOME" "$ARTIFAX_HOME" "$CWD"
-mkdir -p "$CODEX_HOME" "$ARTIFAX_HOME" "$CWD"
+rm -rf "$CODEX_HOME" "$CLAX_HOME" "$CWD"
+mkdir -p "$CODEX_HOME" "$CLAX_HOME" "$CWD"
 
-echo "smoke: building artifax"
-cargo build -q -p artifax-cli
+echo "smoke: building clax"
+cargo build -q -p clax-cli
 
 echo "smoke: preparing CODEX_HOME=$CODEX_HOME"
 {
@@ -65,14 +65,14 @@ chmod 600 "$CODEX_HOME/auth.json"
 echo "smoke: copied ~/.codex/auth.json into the scratch home (deleted on exit)"
 
 codex plugin marketplace add "$REPO" >/dev/null
-codex plugin add artifax@artifax >/dev/null
-codex mcp list | awk 'NR > 1 { print $1 }' | grep -qx artifax || die "codex mcp list does not show artifax"
-echo "smoke: plugin installed; codex mcp list shows artifax"
+codex plugin add clax@clax >/dev/null
+codex mcp list | awk 'NR > 1 { print $1 }' | grep -qx clax || die "codex mcp list does not show clax"
+echo "smoke: plugin installed; codex mcp list shows clax"
 # `codex exec` runs with approval policy "never", which refuses MCP tool calls
 # that would prompt, so the scratch home pre-approves the plugin's tools.
-printf '\n[plugins."artifax@artifax".mcp_servers.artifax]\ndefault_tools_approval_mode = "approve"\n' >> "$CODEX_HOME/config.toml"
+printf '\n[plugins."clax@clax".mcp_servers.clax]\ndefault_tools_approval_mode = "approve"\n' >> "$CODEX_HOME/config.toml"
 
-PROMPT="Publish a one-line HTML page containing the word Smoke via the artifax publish tool, passing title \"Smoke\", and reply with only its URL"
+PROMPT="Publish a one-line HTML page containing the word Smoke via the clax publish tool, passing title \"Smoke\", and reply with only its URL"
 EXTRA=()
 if [ -n "$HOOKS" ]; then EXTRA+=(--dangerously-bypass-hook-trust); fi
 echo "smoke: running codex exec${HOOKS:+ (hooks enabled)}"
@@ -84,8 +84,8 @@ echo "smoke: codex replied: $OUT"
 URL="$(printf '%s' "$OUT" | grep -Eo 'https?://[^ )>"`]*/a/[a-z0-9]+' | head -1 || true)"
 [ -n "$URL" ] || die "no /a/<id> URL in codex's reply"
 
-BASE="$("$ARTIFAX_BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')" \
-    || die "no daemon running in $ARTIFAX_HOME (the shim should have started one)"
+BASE="$("$CLAX_BIN" status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["url"].rstrip("/"))')" \
+    || die "no daemon running in $CLAX_HOME (the shim should have started one)"
 echo "smoke: daemon at $BASE (started by the shim)"
 
 ID="${URL##*/a/}"
@@ -98,7 +98,7 @@ grep -q Smoke "$SCRATCH/page.html" || die "page $BASE/c/$ID/v/1/ does not contai
 echo "smoke: $BASE/a/$ID is 200 and its page contains Smoke"
 
 # Session reads need the daemon's bearer token.
-TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$ARTIFAX_HOME/daemon.json")"
+TOKEN="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["token"])' "$CLAX_HOME/daemon.json")"
 curl -s -H "Authorization: Bearer $TOKEN" "$BASE/api/sessions" > "$SCRATCH/sessions.json"
 python3 - "$SCRATCH/sessions.json" "$HOOKS" "$CWD" <<'PY' || die "session check failed (see above)"
 import json, os, sys

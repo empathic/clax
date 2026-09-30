@@ -18,14 +18,14 @@ export default function Gallery() {
   return (
     <>
       <header class="topbar">
-        <h1>Artifax</h1><span class="muted hide-sm">local artifacts</span>
+        <h1>Clax</h1><span class="muted hide-sm">local artifacts</span>
         <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query}
           onInput={e => setQuery((e.currentTarget as HTMLInputElement).value)} />
       </header>
       <main class="wrap">
         {error && <p class="empty">Could not load artifacts: {error}</p>}
         {artifacts && artifacts.length === 0 && (
-          <p class="empty">No artifacts yet. Publish one with <code>artifax publish index.html</code>.</p>
+          <p class="empty">No artifacts yet. Publish one with <code>clax publish index.html</code>.</p>
         )}
         {artifacts && artifacts.length > 0 && shown && shown.length === 0 && (
           <p class="empty">No artifacts match your search.</p>

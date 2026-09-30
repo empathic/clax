@@ -118,7 +118,7 @@ test("the viewer name attributes comments", async ({ page }) => {
 
 test("sandboxed frames support comment mode too", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Sandboxed", { "index.html": PAGE });
-  await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch {} });
+  await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await expect(page.locator("iframe.frame")).toHaveAttribute("sandbox", /allow-scripts/);
   await pickHeading(page, artifact.id, 1);

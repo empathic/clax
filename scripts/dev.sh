@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Runs the daemon and the web bundlers with auto-reload. Extra args go to `artifax serve`.
+# Runs the daemon and the web bundlers with auto-reload. Extra args go to `clax serve`.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 PORT=7480
 ARGS="$*"
 
-if [ -n "${ARTIFAX_HOME:-}" ]; then
-    echo "Artifax dev: serving ARTIFAX_HOME=$ARTIFAX_HOME"
+if [ -n "${CLAX_HOME:-}" ]; then
+    echo "Clax dev: serving CLAX_HOME=$CLAX_HOME"
 else
-    echo "Artifax dev: serving ARTIFAX_HOME=$HOME/.artifax (the default home; ARTIFAX_HOME=<scratch dir> just dev keeps it untouched)"
+    echo "Clax dev: serving CLAX_HOME=$HOME/.clax (the default home; CLAX_HOME=<scratch dir> just dev keeps it untouched)"
 fi
 
 if ! cargo watch --version >/dev/null 2>&1; then
@@ -33,8 +33,8 @@ cleanup() {
         pkill -P "$pid" 2>/dev/null || true
         kill "$pid" 2>/dev/null || true
     done
-    if [ -x target/debug/artifax ]; then
-        target/debug/artifax stop >/dev/null 2>&1 || true
+    if [ -x target/debug/clax ]; then
+        target/debug/clax stop >/dev/null 2>&1 || true
     fi
 }
 trap cleanup EXIT
@@ -47,7 +47,7 @@ done
 (
     for _ in $(seq 1 600); do
         if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-            echo "Artifax dev: http://localhost:$PORT (backend restarts on Rust changes; reload the browser for frontend changes)"
+            echo "Clax dev: http://localhost:$PORT (backend restarts on Rust changes; reload the browser for frontend changes)"
             exit 0
         fi
         sleep 1
@@ -57,7 +57,7 @@ done
 # ARGS is deliberately unquoted so it splits into separate serve flags.
 # Run in the background and wait so signals interrupt the wait and fire the trap.
 cargo watch -q -w crates -w Cargo.toml -w Cargo.lock \
-    -x "run -q -p artifax-cli -- serve --foreground --port $PORT $ARGS" &
+    -x "run -q -p clax-cli -- serve --foreground --port $PORT $ARGS" &
 watch_pid=$!
 while :; do
     rc=0

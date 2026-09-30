@@ -7,7 +7,7 @@ import type { FeedbackState, Tier } from "./threads";
 // `wait`/`prompt_hook` entries of WAITING_ON and the `piggyback`/`wait`
 // entries of DELIVERED_VIA exist for type completeness only.
 const WAITING_ON: Record<Tier, string> = {
-  piggyback: "its next artifax tool call",
+  piggyback: "its next clax tool call",
   stop_hook: "the end of its turn",
   prompt_hook: "your next message to it",
   wait: "its wait_for_feedback loop",

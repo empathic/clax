@@ -1,4 +1,4 @@
-const CACHE_KEY = "artifax.origin-ok";
+const CACHE_KEY = "clax.origin-ok";
 
 export function artifactOrigin(id: string, loc: Location = location): string | null {
   if (loc.hostname !== "localhost" && loc.hostname !== "127.0.0.1") return null;

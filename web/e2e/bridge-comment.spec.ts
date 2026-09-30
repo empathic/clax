@@ -21,18 +21,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: hover outlines, element and range picks carry anchors and clips`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `Bridge ${mode}`, { "index.html": PAGE });
     await record(page);
-    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch {} });
+    if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch {} });
     await page.goto(`${d.base}/a/${artifact.id}`);
     const frame = await contentFrame(page, artifact.id, 1);
-    expect((await last(page, "artifax:hello")).version).toBe(1);
+    expect((await last(page, "clax:hello")).version).toBe(1);
 
-    await toFrame(page, { type: "artifax:comment-mode", on: true });
+    await toFrame(page, { type: "clax:comment-mode", on: true });
     await frame.locator("h2").hover();
-    await expect(frame.locator("artifax-overlay .o")).toBeVisible();
-    expect((await last(page, "artifax:hover")).selector).toBe("body > main > h2");
+    await expect(frame.locator("clax-overlay .o")).toBeVisible();
+    expect((await last(page, "clax:hover")).selector).toBe("body > main > h2");
 
     await frame.locator("h2").click();
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals" });
     expect(pick.clipError).toBeUndefined();
     expect(pick.clipBytes).toBeGreaterThan(0);
@@ -43,20 +43,20 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.move(box.x + 90, box.y + box.height / 2, { steps: 5 });
     await page.mouse.up();
-    await expect.poll(async () => (await last(page, "artifax:pick")).anchor.kind).toBe("range");
-    const range = await last(page, "artifax:pick");
+    await expect.poll(async () => (await last(page, "clax:pick")).anchor.kind).toBe("range");
+    const range = await last(page, "clax:pick");
     expect(range.anchor.quote.length).toBeGreaterThan(0);
     expect("Grow revenue and keep costs flat this quarter.").toContain(range.anchor.quote);
     expect(range.clipError).toBeUndefined();
     await expectVisibleClip(page, range.pickId);
 
-    await toFrame(page, { type: "artifax:resolve-anchors", requestId: "r1", anchors: [{ id: "t1", anchor: pick.anchor }] });
-    const res = await last(page, "artifax:anchors");
+    await toFrame(page, { type: "clax:resolve-anchors", requestId: "r1", anchors: [{ id: "t1", anchor: pick.anchor }] });
+    const res = await last(page, "clax:anchors");
     expect(res.requestId).toBe("r1");
     expect(res.results[0]).toMatchObject({ id: "t1", found: true, method: "exact" });
 
-    await toFrame(page, { type: "artifax:comment-mode", on: false });
+    await toFrame(page, { type: "clax:comment-mode", on: false });
     await frame.locator("h2").hover();
-    await expect(frame.locator("artifax-overlay .o")).toBeHidden();
+    await expect(frame.locator("clax-overlay .o")).toBeHidden();
   });
 }

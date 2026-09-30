@@ -17,7 +17,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   const { artifact } = await publishAs(d.base, d.token, s.id, "Quarterly Review", {
     "index.html": "<main><h2>Quarterly goals</h2><ul><li>Ship</li><li>Grow</li><li>Drop this</li></ul></main>",
   });
-  if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("artifax.origin-ok", "0"); } catch { /* storage blocked */ } });
+  if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage blocked */ } });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await page.getByLabel("Your name").fill("Alex");
   await page.getByLabel("Your name").press("Enter");
@@ -27,7 +27,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   expect(frame.url()).toContain(mode === "subdomain" ? `${artifact.id}.localhost:` : `/c/${artifact.id}/v/1/`);
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await frame.locator("h2").hover();
-  await expect(frame.locator("artifax-overlay .o")).toBeVisible();
+  await expect(frame.locator("clax-overlay .o")).toBeVisible();
   await frame.locator("h2").click();
   const composer = page.locator(".composer");
   await expect(composer.locator("img.clip")).toBeVisible();

@@ -1,0 +1,23 @@
+{
+  "name": "clax",
+  "version": "0.2.0",
+  "description": "Local artifacts with comment-driven development: publish HTML pages, view them, and get feedback back",
+  "author": {
+    "name": "Empathic"
+  },
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Clax",
+    "shortDescription": "Publish and preview HTML artifacts locally",
+    "longDescription": "Clax runs a local server that hosts HTML pages published by agents. Publish pages, small apps, dashboards, and reports from Codex, open them in a browser, and publish new versions as the work changes. Every publish is kept as a numbered version.",
+    "developerName": "Empathic",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": [
+      "Publish this page as an artifact and open it",
+      "List my artifacts",
+      "Update the artifact with the latest changes"
+    ]
+  }
+}

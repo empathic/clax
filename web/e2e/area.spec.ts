@@ -76,7 +76,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Over the red square and some green around it: 120 × 100.
     const r: R = { x: pic.x + 90, y: pic.y + 50, w: 120, h: 100 };
     await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", selector: "#pic", quote: null, file: "index.html" });
     // Pointer events land on whole pixels, so the fractions are within a pixel of the drag's.
     const near = (a: Record<string, number>, b: Record<string, number>, tol: number) => { for (const k of Object.keys(b)) expect(Math.abs(a[k] - b[k]), k).toBeLessThanOrEqual(tol); };
@@ -103,7 +103,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(Math.abs(pin.y - (fb.y + r.y - 12))).toBeLessThan(4);
     // The posted thread is selected, so its area is outlined dashed in the page.
     const focus = (f: Frame) => f.evaluate(() => {
-      const o = document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
+      const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
       const b = o.getBoundingClientRect();
       return { shown: o.style.display === "block", x: b.x, y: b.y, w: b.width, h: b.height, dashed: getComputedStyle(o).borderTopStyle };
     });
@@ -152,7 +152,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // From the empty padding left of the badge, across the badge.
     const r: R = { x: panel.x + 60, y: badge.y - 20, w: badge.x + badge.w + 20 - (panel.x + 60), h: badge.h + 40 };
     await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
-    let pick = await last(page, "artifax:pick");
+    let pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", selector: "#panel" });
     expect(pick.clipError).toBeUndefined();
     const clip = await expectAreaClip(page, pick.pickId, r.w, r.h);
@@ -164,8 +164,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const para = await rectOf(frame, "#para");
     const first = pick.pickId;
     await drag(page, para.x + 20, para.y + 5, para.x + 220, para.y + 40, true);
-    await expect.poll(async () => (await last(page, "artifax:pick")).pickId).not.toBe(first);
-    pick = await last(page, "artifax:pick");
+    await expect.poll(async () => (await last(page, "clax:pick")).pickId).not.toBe(first);
+    pick = await last(page, "clax:pick");
     expect(pick.anchor.kind).toBe("area");
     expect(pick.clipError).toBeUndefined();
     await expectAreaClip(page, pick.pickId, 200, 35);
@@ -175,8 +175,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await stillCommenting(page, frame);
     const second = pick.pickId;
     await drag(page, para.x + 2, para.y + 12, para.x + 150, para.y + 12);
-    await expect.poll(async () => (await last(page, "artifax:pick")).pickId).not.toBe(second);
-    pick = await last(page, "artifax:pick");
+    await expect.poll(async () => (await last(page, "clax:pick")).pickId).not.toBe(second);
+    pick = await last(page, "clax:pick");
     expect(pick.anchor.kind).toBe("range");
     expect("The quick brown fox jumps").toContain(pick.anchor.quote.trim().slice(0, 10));
   });
@@ -188,7 +188,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await frame.evaluate(() => scrollTo(0, 2000));
     await commentMode(page, frame);
     const outline = () => frame.evaluate(() => {
-      const o = document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
+      const o = document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".o")!;
       const b = o.getBoundingClientRect();
       return { shown: o.style.display === "block", h: b.height, vh: document.documentElement.clientHeight };
     });
@@ -198,16 +198,16 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Focus is in the shell (the Comment button): the shell forwards Option.
     await page.keyboard.down("Alt");
     await expect.poll(async () => { const o = await outline(); return o.shown && o.h > o.vh - 10; }).toBe(true);
-    const hover = await last(page, "artifax:hover");
+    const hover = await last(page, "clax:hover");
     expect(hover.selector).toBe("#src");
     // Up widens to <main>, Down comes back to the <pre>.
     await page.keyboard.press("ArrowUp");
-    await expect.poll(async () => (await last(page, "artifax:hover")).selector).toBe("#m");
+    await expect.poll(async () => (await last(page, "clax:hover")).selector).toBe("#m");
     await page.keyboard.press("ArrowDown");
-    await expect.poll(async () => (await last(page, "artifax:hover")).selector).toBe("#src");
+    await expect.poll(async () => (await last(page, "clax:hover")).selector).toBe("#src");
     await page.mouse.click(fb.x + 60, fb.y + 200);
     await page.keyboard.up("Alt");
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "element", selector: "#src" });
     expect(pick.clipError).toBeUndefined();
     await expectVisibleClip(page, pick.pickId);
@@ -232,7 +232,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // 260 × 120 from inside the red bar's column across into the blue bar.
     const r: R = { x: chart.x + 40, y: chart.y + 80, w: 260, h: 120 };
     await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", selector: "#chart" });
     expect(pick.clipError).toBeUndefined();
     const clip = await expectAreaClip(page, pick.pickId, r.w, r.h);
@@ -256,7 +256,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // From inside the green box down into the empty canvas below the page.
     const r: R = { x: 40, y: box.y + 60, w: 200, h: 340 };
     await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "area", selector: "html", html_hash: null });
     expect(pick.clipError).toBeUndefined();
     const clip = await expectAreaClip(page, pick.pickId, r.w, r.h);
@@ -290,7 +290,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(fb.x + para.x + 150, fb.y + para.y + 12, { steps: 6 });
     await page.mouse.up();
     await page.keyboard.up("Alt");
-    const pick = await last(page, "artifax:pick");
+    const pick = await last(page, "clax:pick");
     expect(pick.anchor).toMatchObject({ kind: "element", selector: "#para" });
     expect(pick.anchor.quote).toContain("The quick brown fox jumps over the lazy dog");
     expect(pick.clipError).toBeUndefined();
@@ -312,12 +312,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       ctx.fillRect(0, 0, 1, 1);
       const png = await (await c.convertToBlob({ type: "image/png" })).arrayBuffer();
       const anchor = { kind: "element", selector: "#para", quote: "forged", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
-      const version = (window as unknown as { __artifax: { version: number } }).__artifax.version;
-      parent.postMessage({ type: "artifax:pick", pickId: "forged1", version, anchor, clipPng: png.slice(0) }, "*");
-      parent.postMessage({ type: "artifax:pick-start", pickId: "forged2" }, "*");
-      parent.postMessage({ type: "artifax:pick", pickId: "forged2", version, anchor, clipPng: png.slice(0) }, "*");
+      const version = (window as unknown as { __clax: { version: number } }).__clax.version;
+      parent.postMessage({ type: "clax:pick", pickId: "forged1", version, anchor, clipPng: png.slice(0) }, "*");
+      parent.postMessage({ type: "clax:pick-start", pickId: "forged2" }, "*");
+      parent.postMessage({ type: "clax:pick", pickId: "forged2", version, anchor, clipPng: png.slice(0) }, "*");
     });
-    await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);
+    await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);
     await page.waitForTimeout(300);
     await expect(page.locator(".composer")).toHaveCount(0);
     // A page that replaces window.parent after load cannot divert the bridge's picks.
@@ -338,7 +338,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const box = await rectOf(frame, "#box");
     const r: R = { x: 40, y: box.y + 60, w: 200, h: 340 };
     await drag(page, r.x, r.y, r.x + r.w, r.y + r.h);
-    expect((await last(page, "artifax:pick")).anchor.selector).toBe("html");
+    expect((await last(page, "clax:pick")).anchor.selector).toBe("html");
     await post(page, "Resize me");
     const pinInFrame = async () => {
       const fb = await frameBox(page);
@@ -366,19 +366,19 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
     await page.keyboard.press("Escape");
     await expect(button).toHaveAttribute("aria-pressed", "false");
-    const keys = await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:cancel").length);
+    const keys = await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:cancel").length);
     expect(keys).toBeGreaterThan(0);
     await commentMode(page, frame);
     // Focus on the shell's Comment button, as after clicking it (the press moves it into the page).
     await button.focus();
-    const picks = await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:pick").length);
+    const picks = await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick").length);
     await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
     await page.mouse.down();
     await page.mouse.move(fb.x + panel.x + 200, fb.y + panel.y + 180, { steps: 5 });
     await page.keyboard.press("Escape");
     await page.mouse.up();
     await page.waitForTimeout(300);
-    expect(await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:pick").length)).toBe(picks);
+    expect(await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick").length)).toBe(picks);
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
     await page.keyboard.press("Escape");
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "false");

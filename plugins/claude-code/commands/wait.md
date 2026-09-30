@@ -1,12 +1,12 @@
 ---
 description: Wait for comments sent to you and act on each as it arrives
 argument-hint: "[artifact ID or URL]"
-allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh:*), mcp__plugin_artifax_artifax__wait_for_feedback, mcp__plugin_artifax_artifax__comments_read, mcp__plugin_artifax_artifax__comments_reply, mcp__plugin_artifax_artifax__comments_resolve, mcp__plugin_artifax_artifax__publish, mcp__plugin_artifax_artifax__read
+allowed-tools: Bash(${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh:*), mcp__plugin_clax_clax__wait_for_feedback, mcp__plugin_clax_clax__comments_read, mcp__plugin_clax_clax__comments_reply, mcp__plugin_clax_clax__comments_resolve, mcp__plugin_clax_clax__publish, mcp__plugin_clax_clax__read
 ---
 
 ## Context
 
-- Artifacts (pinned first, then most recently updated): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh" exec list --json`
+- Artifacts (pinned first, then most recently updated): !`"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec list --json`
 
 ## Your task
 

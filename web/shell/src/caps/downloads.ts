@@ -4,7 +4,7 @@
 // (first wins), and at most [`PROMPTS_PER_WINDOW`] prompts per
 // [`PROMPT_WINDOW_MS`] per artifact in a tab, saved or declined, so a page
 // cannot loop the dialog. Ordinary saves have no size limit; export answers (`request`)
-// are not issued in Artifax, so any `request` names no open request.
+// are not issued in Clax, so any `request` names no open request.
 import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
 import type { PromptAnswer } from "./grants";
@@ -101,7 +101,7 @@ export const downloadsHandler: HandlerFactory = env => {
         throw new CapError("rejected_extension", `'${name || filename}' needs one of these extensions: ${ALLOWED_EXTENSIONS.join(", ")}`);
       }
       if (open) throw new CapError("rate_limited", "a save prompt is already open");
-      const wait = takeSlot(`artifax.download-prompts.v1:${env.aid}`, { perWindow: { n: PROMPTS_PER_WINDOW, ms: PROMPT_WINDOW_MS } });
+      const wait = takeSlot(`clax.download-prompts.v1:${env.aid}`, { perWindow: { n: PROMPTS_PER_WINDOW, ms: PROMPT_WINDOW_MS } });
       if (wait > 0) throw new CapError("rate_limited", `too many save prompts; wait ${seconds(wait)} s`);
       open = true;
       let answer: PromptAnswer;

@@ -1,18 +1,18 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/artifax-core",
-    "crates/artifax-server",
-    "crates/artifax-cli",
-    "crates/artifax-mcp",
-    "crates/artifax-hooks",
+    "crates/clax-core",
+    "crates/clax-server",
+    "crates/clax-cli",
+    "crates/clax-mcp",
+    "crates/clax-hooks",
 ]
 
 [workspace.package]
 version = "0.2.0"
 edition = "2024"
 license = "Apache-2.0"
-repository = "https://github.com/empathic/artifax"
+repository = "https://github.com/empathic/clax"
 
 [workspace.dependencies]
 anyhow = "1"

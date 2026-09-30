@@ -87,7 +87,7 @@ describe("Gallery", () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ artifacts: [] }))));
     const root = await mount();
     expect(root.textContent).toContain("No artifacts yet");
-    expect(root.textContent).toContain("artifax publish");
+    expect(root.textContent).toContain("clax publish");
   });
 
   it("search narrows cards by title and description", async () => {

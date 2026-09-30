@@ -31,7 +31,7 @@ async function publishLive(title: string, withThread = false) {
   const s = await registerSession(d.base, d.token);
   const res = await fetch(`${d.base}/api/artifacts`, {
     method: "POST",
-    headers: { "content-type": "application/json", authorization: `Bearer ${d.token}`, "x-artifax-session": s.id },
+    headers: { "content-type": "application/json", authorization: `Bearer ${d.token}`, "x-clax-session": s.id },
     body: JSON.stringify({ title, capabilities: { comments: {} }, files: { "index.html": { content: PAGE, encoding: "utf8" } } }),
   });
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);

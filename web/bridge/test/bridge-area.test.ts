@@ -5,7 +5,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 const posted: { type: string; requestId?: string | null; results?: { id: string; found: boolean }[] }[] = [];
 const shell = { postMessage: (m: { type: string }) => { posted.push(m); } };
 const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
-const focusBox = () => document.querySelector("artifax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
+const focusBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
 
 // An area drawn on a section that, by selector alone, now finds a section
 // with another child count and unlike text: another element on a later
@@ -23,40 +23,40 @@ beforeAll(async () => {
   window.scrollBy = () => {};
   document.body.innerHTML = `<section id="live"><h2>Open issues: 43</h2></section>`;
   const script = document.createElement("script");
-  script.setAttribute("src", "/_artifax/bridge.js?v=0123456789ab");
+  script.setAttribute("src", "/_clax/bridge.js?v=0123456789ab");
   script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "2"; script.dataset.contract = "0.2.61"; script.dataset.file = "index.html";
   document.head.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
   await import("../src/bridge");
-  send({ type: "artifax:welcome", mode: "view" });
+  send({ type: "clax:welcome", mode: "view" });
 });
 
 // No detached thread is left for the bridge to retry while the test document is torn down.
-afterAll(() => { send({ type: "artifax:resolve-anchors", requestId: "end", anchors: [] }); });
+afterAll(() => { send({ type: "clax:resolve-anchors", requestId: "end", anchors: [] }); });
 
 describe("sameVersion from the shell", () => {
   it("skips the fingerprint when resolving threads of the version shown, and checks it for others", () => {
-    send({ type: "artifax:resolve-anchors", requestId: "r1", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }, { id: "unsaid", anchor: area }] });
-    const res = posted.filter(m => m.type === "artifax:anchors" && m.requestId === "r1").at(-1)!.results!;
+    send({ type: "clax:resolve-anchors", requestId: "r1", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }, { id: "unsaid", anchor: area }] });
+    const res = posted.filter(m => m.type === "clax:anchors" && m.requestId === "r1").at(-1)!.results!;
     expect(res.map(r => [r.id, r.found])).toEqual([["same", true], ["other", false], ["unsaid", false]]);
   });
 
   it("outlines the focused area by the same rule", () => {
-    send({ type: "artifax:resolve-anchors", requestId: "r2", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }] });
-    send({ type: "artifax:focus", id: "other" });
+    send({ type: "clax:resolve-anchors", requestId: "r2", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }] });
+    send({ type: "clax:focus", id: "other" });
     expect(focusBox().style.display).not.toBe("block");
-    send({ type: "artifax:focus", id: "same" });
+    send({ type: "clax:focus", id: "same" });
     expect(focusBox().style.display).toBe("block");
-    send({ type: "artifax:focus", id: null });
+    send({ type: "clax:focus", id: null });
     expect(focusBox().style.display).toBe("none");
   });
 
   it("scrolls to an area of the version shown, and not to one of another version", async () => {
     const wait = () => new Promise(r => setTimeout(r, 450));
-    send({ type: "artifax:scroll-to", anchor: area, sameVersion: false });
+    send({ type: "clax:scroll-to", anchor: area, sameVersion: false });
     await wait();
     expect(focusBox().style.display).toBe("none");
-    send({ type: "artifax:scroll-to", anchor: area, sameVersion: true });
+    send({ type: "clax:scroll-to", anchor: area, sameVersion: true });
     await wait();
     expect(focusBox().style.display).toBe("block");
   });

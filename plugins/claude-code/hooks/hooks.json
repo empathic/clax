@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude session-start",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude session-start",
             "timeout": 5
           }
         ]
@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude prompt",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude prompt",
             "timeout": 5
           }
         ]
@@ -27,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude stop",
             "timeout": 10
           }
         ]
@@ -38,7 +38,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-artifax.sh\" exec hook --agent claude session-end",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude session-end",
             "timeout": 5
           }
         ]

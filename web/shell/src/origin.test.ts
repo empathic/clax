@@ -26,7 +26,7 @@ describe("probeOrigin", () => {
   it("is false when the probe answers with a non-OK status", async () => {
     sessionStorage.clear();
     expect(await probeOrigin("http://x.localhost:1", async () => new Response("no", { status: 502 }))).toBe(false);
-    expect(sessionStorage.getItem("artifax.origin-ok")).toBe("0");
+    expect(sessionStorage.getItem("clax.origin-ok")).toBe("0");
   });
   it("still answers when storage throws on read and write", async () => {
     const boom = () => { throw new DOMException("denied", "SecurityError"); };

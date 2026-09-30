@@ -23,7 +23,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(doc.headers()["etag"]).toBeTruthy();
 
     const src = await frame.evaluate(() => document.querySelector("script[data-artifact]")!.getAttribute("src"));
-    expect(src).toMatch(/^\/_artifax\/bridge\.js\?v=[0-9a-f]{12}$/);
+    expect(src).toMatch(/^\/_clax\/bridge\.js\?v=[0-9a-f]{12}$/);
     const bridge = seen.find(r => r.url().endsWith(src!))!;
     expect(bridge.status()).toBe(200);
     // The e2e daemon is a debug build (`cargo run`), which reads the bridge from
@@ -31,7 +31,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(bridge.headers()["cache-control"]).toBe("no-cache");
     expect(bridge.headers()["etag"]).toBeTruthy();
 
-    const bare = await fetch(`${d.base}/_artifax/bridge.js`);
+    const bare = await fetch(`${d.base}/_clax/bridge.js`);
     expect(bare.headers.get("cache-control")).toBe("no-cache");
   });
 }

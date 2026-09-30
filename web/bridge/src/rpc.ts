@@ -53,7 +53,7 @@ export class Rpc {
     return new Promise(resolve => {
       const timer = setTimeout(() => { this.uses.delete(id); resolve(null); }, this.timeoutMs);
       this.uses.set(id, r => { clearTimeout(timer); resolve(r); });
-      this.send({ type: "artifax:use", id, name });
+      this.send({ type: "clax:use", id, name });
     });
   }
 
@@ -68,11 +68,11 @@ export class Rpc {
     const id = this.nextId();
     return new Promise((resolve, reject) => {
       this.calls.set(id, { resolve, reject });
-      this.send({ type: "artifax:call", id, ns, method, args });
+      this.send({ type: "clax:call", id, ns, method, args });
     });
   }
 
-  /** Listens for `artifax:event` pushes of `ns`/`topic`; returns the unsubscriber. */
+  /** Listens for `clax:event` pushes of `ns`/`topic`; returns the unsubscriber. */
   on(ns: string, topic: string, fn: (data: unknown) => void): () => void {
     const key = `${ns}\u0000${topic}`;
     let set = this.listeners.get(key);
@@ -84,14 +84,14 @@ export class Rpc {
   /** Takes a shell message (already checked for window, origin, and type). */
   accept(m: ShellToBridge): void {
     switch (m.type) {
-      case "artifax:use-result": {
+      case "clax:use-result": {
         const done = this.uses.get(m.id);
         if (!done) return;
         this.uses.delete(m.id);
         done(m.granted ? { config: m.config } : null);
         return;
       }
-      case "artifax:call-result": {
+      case "clax:call-result": {
         const p = this.calls.get(m.id);
         if (!p) return;
         this.calls.delete(m.id);
@@ -102,7 +102,7 @@ export class Rpc {
         }
         return;
       }
-      case "artifax:event":
+      case "clax:event":
         for (const fn of [...(this.listeners.get(`${m.ns}\u0000${m.topic}`) ?? [])]) {
           try { fn(m.data); } catch (e) { reportError(e); }
         }
