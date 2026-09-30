@@ -29,4 +29,5 @@ run "cargo test"            cargo test --workspace
 run "comment loop"          scripts/smoke-comment-loop.sh
 run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
+run "time to usable"        bash -c 'cd web && npm run perf'
 echo "all gates passed"

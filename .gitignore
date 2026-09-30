@@ -7,3 +7,5 @@ web/test-results/
 .DS_Store
 .claude/worktrees/
 .superpowers/
+web/perf/results.json
+web/perf/test-results/

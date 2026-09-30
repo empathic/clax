@@ -129,7 +129,7 @@ crates/
   clax-hooks/                      per-harness hook protocol adapters (Claude Code, Codex JSON shapes)
   clax-cli/                        binary `clax`: serve, mcp, hook, publish, list, open, ..., doctor
 web/
-  shell/                           Preact + TypeScript: gallery, artifact shell, comment sidebar
+  shell/                           Svelte 5 (runes) + TypeScript, Vite SPA: gallery, artifact shell, comment sidebar
   bridge/                          vanilla TypeScript: window.claude.use, comment mode, clips
   contract/                        the .d.ts files pages are written against (copied from claude.ai 0.2.61)
   dist/                            built assets, embedded into clax-server via rust-embed
@@ -163,7 +163,7 @@ clax-cli ── clax-server ── clax-core
 
 Key crates: `axum`, `tokio`, `tower-http`, `rusqlite` (bundled),
 `rust-embed`, `rmcp` (official Rust MCP SDK), `serde`, `ulid`, `reqwest`
-(shim, hooks, and the sample provider), `clap`. Web: Preact, Vite,
+(shim, hooks, and the sample provider), `clap`. Web: Svelte 5, Vite,
 TypeScript, `modern-screenshot` for clips. No CSS framework.
 
 ## 5. Storage and data model
@@ -254,6 +254,12 @@ Browser-facing:
   published page the frame opens on (`GET /a/<aid>/<path>`,
   `GET /a/<aid>/v/<n>/<path>`); every `/a/<aid>/...` path serves the shell
   (see §8 for how it reads the path).
+- `GET /` → `index.html`; `GET /a/<id>[/v/<n>][/<file>]` → `artifact.html` with
+  the bootstrap block and, when the frame mode is known, the content `<iframe>`
+  (§8 Time to usable). Both are HTML responses: `Cache-Control: no-cache`, an
+  `ETag` over the exact bytes sent, and `Vary: Cookie`. The bootstrap never
+  holds the daemon token and is escaped for a `<script>` element (`<`, `>`,
+  `&`, U+2028 and U+2029 as `\u` escapes).
 - `GET /c/<aid>/v/<n>/` wrapped content document (bridge prepended).
   `GET /c/<aid>/v/<n>/<path>` supporting files; a file stored as
   `text/html` is wrapped exactly like the index (the bridge tag carries
@@ -264,6 +270,11 @@ Browser-facing:
   404s everything else.
 - `GET /_blob/<asset_id>` asset bytes.
 - `GET /_clax/bridge.js`, `/_clax/shell/*` static.
+- `GET /_clax/bridge/<part>-<hash>.js`: the bridge's lazy parts, ES modules
+  with content-hashed names, `Cache-Control: public, max-age=31536000,
+  immutable` and `Access-Control-Allow-Origin: *` (a sandboxed frame imports
+  them from an opaque origin). The eager `bridge.js` names them, so its `?v=`
+  hash changes whenever a part does.
 
 Browser caching (every route above):
 
@@ -654,14 +665,48 @@ file under `v/<digits>/` is reachable only through the versioned form):
   selected one. The composer opens in the shell with the
   quote and clip preview.
 
-The shell is Preact + TypeScript with CSS tokens on `:root`, dark mode via
-`prefers-color-scheme`, phone width supported, so it follows the same page
-contract it asks of artifacts.
+The shell is Svelte 5 (runes mode, no SvelteKit, no SSR) + TypeScript with
+CSS tokens on `:root`, dark mode via `prefers-color-scheme`, phone width
+supported, so it follows the same page contract it asks of artifacts.
 
 Phase 1 builds the gallery, the header without the comment mode toggle,
 thread sidebar, and viewer name, the content frame in both origin modes,
 and the version banner. The comment affordances are added in phase 3 and
 must not be stubbed into phase 1.
+
+### Time to usable
+
+Opening a shell link must be fast. *Link → first paint* runs from the shell
+document's navigation start to the artifact frame's first contentful paint.
+*Link → comment ready* runs to the moment the bridge turns comment mode on in
+the frame, for a viewer who presses **Comment** as soon as they can. Both are
+measured in Chromium for a warm browser (the shell's files cached, cookies set,
+a fresh tab), in both frame modes, by `web/perf/usable.perf.ts`, a quality gate
+with budgets in `web/perf/budget.json`.
+
+What makes it fast:
+
+- The shell has two entries. `/` serves `index.html` (the gallery); `/a/…`
+  serves `artifact.html`, whose body already holds the page skeleton. Each
+  entry loads only its own view's code. The shell's CSS is inlined in both.
+- For `/a/…` the daemon injects a bootstrap block into `artifact.html`:
+  `<script type="application/json" id="clax-boot">`, holding the artifact with
+  its versions, every thread, and the viewer when the request's viewer cookie
+  names one. The shell reads it instead of making its first API calls.
+- When the request carries a `clax_frame` cookie (`subdomain` or `sandbox`,
+  set by the shell once it has decided the frame mode), or comes from a
+  non-loopback host (always `sandbox`), the daemon also injects the content
+  `<iframe>` itself. The artifact then loads in parallel with the shell's
+  JavaScript. The shell adopts that frame when its own decision agrees, and
+  replaces it otherwise. Messages the frame posts before the shell has mounted
+  are buffered by an inline listener and replayed in order.
+- The bridge loads eagerly only what every page needs (`window.claude`, the
+  hello, the channel, link handover). Comment mode with anchors and areas,
+  clip rendering, and the page-side capability members are separate parts
+  under `/_clax/bridge/`, loaded on first use: comment mode right after the
+  welcome, clip rendering when comment mode turns on, capability members on
+  the first `claude.use`. A part that cannot load (the page's own CSP forbids
+  it) makes the bridge post `clax:degraded`, and the shell says so.
 
 ## 9. Runtime bridge and capabilities
 
@@ -692,6 +737,10 @@ the full skeleton) round-trip without nesting. Wrapping is pure and cached
 per version and file. The bridge greets the shell with its page's `file`,
 records it on every anchor it builds, and never resolves an anchor whose
 `file` is another page.
+
+The bridge's comment mode, clip rendering and page-side capability members
+are lazy parts (§8 Time to usable); the protocol gains `clax:degraded`
+(bridge → shell: `{ part: "comment" | "clip" | "caps", message }`).
 
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.
@@ -1331,6 +1380,11 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   download anything. `install.sh`, which a person runs by hand, downloads
   a release and checks it against the release's `SHA256SUMS`, which comes
   from the same place, so the check protects integrity, not authenticity.
+- The shell HTML for `/a/…` embeds only what `GET /api/artifacts/<id>`,
+  `GET /api/artifacts/<id>/threads` (without the token) and
+  `GET /api/viewers/me` (for the cookie's own viewer, never creating one)
+  would answer the same browser, is never served on an artifact origin, and
+  never holds the daemon token.
 
 ## 15. Error handling
 
@@ -1395,6 +1449,12 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
   web lint (oxlint) and typecheck, Playwright, and the plugin tests; CI runs
   the same script.
+- Shell unit tests use Vitest with jsdom and `@testing-library/svelte`.
+  `svelte-check --fail-on-warnings` runs with the typecheck. Two gates hold
+  time to usable: `web/perf` (Playwright timing, budgets in
+  `web/perf/budget.json`) and `web/scripts/bundle-size.mjs` (gzip sizes of
+  each entry's critical JavaScript and of the eager bridge, budgets in
+  `web/perf/bundle-budget.json`).
 
 ## 17. Phases
 
