@@ -45,6 +45,161 @@ fn needs_replacing(info: &DaemonInfo, ours: &str) -> bool {
     }
 }
 
+/// Appends one timestamped line to the daemon log, best effort: the record
+/// of a replacement or rollback that no tracing subscriber may be there to
+/// see.
+fn log_line(home: &Home, msg: &str) {
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(home.log_path())
+    {
+        let _ = writeln!(f, "{} clax client: {msg}", clax_core::Store::now());
+    }
+}
+
+/// True when `e` is a failure to connect at all (nothing listens on the port).
+fn is_connect_error(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<reqwest::Error>()
+        .is_some_and(reqwest::Error::is_connect)
+}
+
+/// Stops the daemon `target` describes, for a replacement, with the start
+/// lock held. It posts `/api/admin/shutdown` (2 s timeout), waits up to 7 s
+/// for the PID to exit and, if it has not and `daemon.json` still names that
+/// PID, sends `SIGTERM` and waits 3 s more.
+///
+/// `answered` is whether `target` answered `/healthz` under the lock. When it
+/// did not, and nothing accepts a connection on its port, the daemon is taken
+/// as gone: its PID may belong to another process by now.
+fn stop_for_replacement(home: &Home, target: &DaemonInfo, answered: bool) -> anyhow::Result<()> {
+    let client = Client::from_info(target.clone()).with_timeout(Duration::from_secs(2));
+    match client.shutdown() {
+        Ok(()) => {}
+        Err(e) if !answered && is_connect_error(&e) => {
+            log_line(
+                home,
+                &format!(
+                    "nothing listens on port {}; taking pid {} as gone",
+                    target.port, target.pid
+                ),
+            );
+            return Ok(());
+        }
+        Err(e) => {
+            log_line(
+                home,
+                &format!(
+                    "the old daemon did not take the shutdown request ({e:#}); waiting for it to exit"
+                ),
+            );
+        }
+    }
+    let wait = |d: Duration| {
+        let deadline = Instant::now() + d;
+        while Instant::now() < deadline && pid_alive(target.pid) {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        !pid_alive(target.pid)
+    };
+    if wait(Duration::from_secs(7)) {
+        return Ok(());
+    }
+    let recorded = read_daemon_info(home).is_some_and(|i| i.pid == target.pid);
+    if recorded {
+        log_line(
+            home,
+            &format!(
+                "pid {} did not exit within 7 s; sending SIGTERM",
+                target.pid
+            ),
+        );
+        // SAFETY: kill(2) on a PID that daemon.json names under the start lock.
+        unsafe { libc::kill(target.pid as libc::pid_t, libc::SIGTERM) };
+        if wait(Duration::from_secs(3)) {
+            return Ok(());
+        }
+    }
+    bail!(
+        "clax daemon v{} (pid {}) on port {} did not exit after a shutdown request{}; end it with `kill {}` and try again",
+        target.version,
+        target.pid,
+        target.port,
+        if recorded { " and SIGTERM" } else { "" },
+        target.pid
+    )
+}
+
+/// The error for a replacement whose new daemon (`exe`) failed to start with
+/// `err`, after trying to start the previous daemon's executable again on
+/// its port and bind address.
+fn roll_back(
+    home: &Home,
+    target: &DaemonInfo,
+    exe: &std::path::Path,
+    bind: IpAddr,
+    err: &anyhow::Error,
+) -> anyhow::Error {
+    let log = home.log_path();
+    let head = format!(
+        "the new clax daemon ({}) failed to start on port {}: {err:#}",
+        exe.display(),
+        target.port
+    );
+    log_line(home, &head);
+    let previous = target
+        .exe
+        .as_deref()
+        .map(std::path::Path::new)
+        .filter(|p| p.exists() && *p != exe);
+    let Some(previous) = previous else {
+        let msg = format!(
+            "{head}. The previous daemon v{} was stopped, and its executable is unknown, gone, or the one that failed, so no clax daemon is running. See {}",
+            target.version,
+            log.display()
+        );
+        log_line(home, "no clax daemon is running");
+        return anyhow!(msg);
+    };
+    match Client::spawn(home, previous, target.port, bind, true) {
+        Ok(c) => {
+            let msg = format!(
+                "{head}. The previous daemon v{} ({}) is running again on port {} (pid {}). See {} for why the new one failed",
+                c.info.version,
+                previous.display(),
+                c.info.port,
+                c.info.pid,
+                log.display()
+            );
+            log_line(
+                home,
+                &format!(
+                    "rolled back to {} (pid {}) on port {}",
+                    previous.display(),
+                    c.info.pid,
+                    c.info.port
+                ),
+            );
+            anyhow!(msg)
+        }
+        Err(e2) => {
+            log_line(
+                home,
+                &format!(
+                    "restarting {} failed too; no clax daemon is running",
+                    previous.display()
+                ),
+            );
+            anyhow!(
+                "{head}. Restarting the previous daemon ({}) failed too: {e2:#}. No clax daemon is running. See {}",
+                previous.display(),
+                log.display()
+            )
+        }
+    }
+}
+
 impl Client {
     fn from_info(info: DaemonInfo) -> Client {
         Client {
@@ -112,6 +267,19 @@ impl Client {
         port: u16,
         bind: IpAddr,
     ) -> anyhow::Result<Client> {
+        Client::spawn(home, exe, port, bind, false)
+    }
+
+    /// As [`Client::spawn_locked`]; with `stop_if_late`, a daemon that has
+    /// not answered by the deadline is stopped (`SIGTERM`, then `SIGKILL`
+    /// after 3 s) so it cannot take the port a rollback needs.
+    fn spawn(
+        home: &Home,
+        exe: &std::path::Path,
+        port: u16,
+        bind: IpAddr,
+        stop_if_late: bool,
+    ) -> anyhow::Result<Client> {
         let probe = probe_client().context("building probe client")?;
         let log = std::fs::OpenOptions::new()
             .create(true)
@@ -170,6 +338,20 @@ impl Client {
             }
             std::thread::sleep(Duration::from_millis(100));
         }
+        if stop_if_late {
+            // SAFETY: kill(2) on the child this call spawned, which the
+            // reaper thread has not yet reaped (it has not sent its status).
+            unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGTERM) };
+            if exited.recv_timeout(Duration::from_secs(3)).is_err() {
+                // SAFETY: as above.
+                unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGKILL) };
+                let _ = exited.recv_timeout(Duration::from_secs(2));
+            }
+            bail!(
+                "daemon did not become ready within 5s and was stopped; see {}",
+                home.log_path().display()
+            )
+        }
         bail!(
             "daemon did not become ready within 5s; see {}",
             home.log_path().display()
@@ -181,8 +363,20 @@ impl Client {
     /// a newer or equal daemon is kept, with a warning logged once per process
     /// when the versions differ.
     pub fn connect_matching_version(home: &Home, port: u16) -> anyhow::Result<Client> {
+        Client::connect_matching_version_with_bind(home, port, IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+
+    /// As [`Client::connect_matching_version`], starting the daemon bound to
+    /// `bind` when none is running. The version rule applies to whichever
+    /// daemon [`Client::connect_with_bind`] returns, including one another
+    /// client started while this one waited for the start lock.
+    pub fn connect_matching_version_with_bind(
+        home: &Home,
+        port: u16,
+        bind: IpAddr,
+    ) -> anyhow::Result<Client> {
         let ours = env!("CARGO_PKG_VERSION");
-        let c = Client::connect(home, port)?;
+        let c = Client::connect_with_bind(home, port, bind)?;
         if !needs_replacing(&c.info, ours) {
             if c.info.version != ours {
                 static WARNED: std::sync::Once = std::sync::Once::new();
@@ -195,35 +389,30 @@ impl Client {
             }
             return Ok(c);
         }
-        tracing::info!(
-            "replacing clax daemon v{} (pid {}) with v{ours} on port {}",
-            c.info.version,
-            c.info.pid,
-            c.info.port
-        );
         let exe = std::env::current_exe().context("finding this executable")?;
         Client::replace(home, &c, &exe, |info| !needs_replacing(info, ours))
+            .with_context(|| format!("upgrading the clax daemon to v{ours}"))
     }
 
     /// Replaces the daemon `old` names with one started from `exe` on the
     /// same port and bind address. Holds the start lock throughout, so no
     /// other client starts a daemon in the gap. Under the lock it re-reads
     /// `daemon.json`: a different live daemon that `accept`s is used as it
-    /// is (another client already replaced `old`). Otherwise it asks the
-    /// daemon to shut down (SSE streams and long polls end; in-flight
-    /// requests get the daemon's 5 s drain), waits up to 7 s for its PID to
-    /// exit, and starts `exe`.
+    /// is (another client already replaced `old`). Otherwise the daemon
+    /// `daemon.json` names now (or `old`, when none answers) is stopped
+    /// (see `stop_for_replacement`) and `exe` is started on that daemon's port
+    /// and bind address. Each replacement is recorded in the daemon log.
+    ///
+    /// When `exe` fails to start, the previous daemon's recorded executable,
+    /// if it still exists and is not `exe`, is started again on the same port
+    /// and bind address. The error then says whether it is running again or
+    /// no daemon is running, and names the log.
     pub fn replace(
         home: &Home,
         old: &Client,
         exe: &std::path::Path,
         accept: impl Fn(&DaemonInfo) -> bool,
     ) -> anyhow::Result<Client> {
-        let bind: IpAddr = old
-            .info
-            .bind
-            .parse()
-            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
         home.ensure_dirs()?;
         let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
         let current = Client::discover(home);
@@ -233,22 +422,40 @@ impl Client {
         {
             return Ok(Client::from_info(c.info.clone()));
         }
-        let target = current.unwrap_or_else(|| Client::from_info(old.info.clone()));
-        if let Err(e) = target.shutdown() {
-            tracing::info!(error = %e, "the old daemon did not take the shutdown request; waiting for it to exit");
-        }
-        let deadline = Instant::now() + Duration::from_secs(7);
-        while Instant::now() < deadline && pid_alive(target.info.pid) {
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        if pid_alive(target.info.pid) {
-            bail!(
-                "clax daemon v{} (pid {}) did not exit within 7 s; stop it with `clax stop` and try again",
-                target.info.version,
-                target.info.pid
+        let answered = current.is_some();
+        let target = current.map_or_else(|| old.info.clone(), |c| c.info);
+        let bind: IpAddr = target
+            .bind
+            .parse()
+            .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let what = format!(
+            "clax daemon v{} (pid {}{}) on {}:{}",
+            target.version,
+            target.pid,
+            target
+                .exe
+                .as_deref()
+                .map(|e| format!(", {e}"))
+                .unwrap_or_default(),
+            target.bind,
+            target.port
+        );
+        tracing::info!("replacing {what} with {}", exe.display());
+        log_line(home, &format!("replacing {what} with {}", exe.display()));
+        stop_for_replacement(home, &target, answered)?;
+        let new = match Client::spawn(home, exe, target.port, bind, true) {
+            Ok(c) => c,
+            Err(e) => return Err(roll_back(home, &target, exe, bind, &e)),
+        };
+        if new.info.port != target.port {
+            let msg = format!(
+                "the replacement daemon listens on port {}, not {} (the port was taken); open viewers must be reopened",
+                new.info.port, target.port
             );
+            tracing::warn!("{msg}");
+            log_line(home, &msg);
         }
-        Client::spawn_locked(home, exe, target.info.port, bind)
+        Ok(new)
     }
 
     /// Errors when the running daemon is bound to a different address than `requested`.
@@ -378,5 +585,274 @@ mod tests {
         assert!(!needs_replacing(&info("0.2.0"), "0.2.0"));
         assert!(!needs_replacing(&info("0.3.0"), "0.2.0"));
         assert!(!needs_replacing(&info("test"), "0.2.0"));
+    }
+
+    /// A stand-in daemon executable: `serve --foreground --port P --bind B`
+    /// listens on 127.0.0.1 (on `listen` instead of P when given), records
+    /// B, `version` and its own path in daemon.json, answers `/healthz`, and
+    /// on `POST /api/admin/shutdown` exits, or with `hang` never answers.
+    fn fake_exe(
+        dir: &std::path::Path,
+        name: &str,
+        version: &str,
+        hang: bool,
+        listen: Option<u16>,
+    ) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let script = format!(
+            r#"#!/usr/bin/env python3
+import json, os, sys, threading, time
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+a = sys.argv
+port = int(a[a.index("--port") + 1])
+bind = a[a.index("--bind") + 1]
+listen = {listen}
+home = os.environ["CLAX_HOME"]
+me = os.path.realpath(__file__)
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *args): pass
+    def reply(self, body):
+        b = json.dumps(body).encode()
+        self.send_response(200)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+    def do_GET(self):
+        self.reply({{"version": "{version}", "pid": os.getpid()}})
+    def do_POST(self):
+        if {hang}:
+            time.sleep(3600)
+        self.reply({{}})
+        self.wfile.flush()
+        def stop():
+            srv.server_close()
+            try: os.remove(os.path.join(home, "daemon.json"))
+            except OSError: pass
+            os._exit(0)
+        threading.Thread(target=stop).start()
+srv = ThreadingHTTPServer(("127.0.0.1", port if listen is None else listen), H)
+srv.daemon_threads = True
+info = {{"port": srv.server_address[1], "pid": os.getpid(), "token": "t", "started_at": "s",
+        "bind": bind, "version": "{version}", "exe": me}}
+tmp = os.path.join(home, "daemon.json.tmp")
+with open(tmp, "w") as f: json.dump(info, f)
+os.rename(tmp, os.path.join(home, "daemon.json"))
+srv.serve_forever()
+"#,
+            listen = listen.map_or("None".to_string(), |p| p.to_string()),
+            hang = if hang { "True" } else { "False" },
+        );
+        std::fs::write(&path, script).unwrap();
+        make_executable(&path);
+        path
+    }
+
+    fn make_executable(path: &std::path::Path) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        make_executable(&path);
+        path
+    }
+
+    /// A scratch home under `dir` with a fake daemon from `exe` running on
+    /// an ephemeral port bound (as recorded) to `bind`.
+    fn running(dir: &std::path::Path, exe: &std::path::Path, bind: &str) -> (Home, Client) {
+        let home = Home::at(dir.join("ax"));
+        home.ensure_dirs().unwrap();
+        let _lock = DaemonLock::acquire(&home).unwrap();
+        let c = Client::spawn_locked(&home, exe, 0, bind.parse().unwrap()).unwrap();
+        (home, c)
+    }
+
+    fn stop(home: &Home) {
+        if let Some(c) = Client::discover(home) {
+            let _ = c.shutdown();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline && pid_alive(c.info.pid) {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+    }
+
+    fn log(home: &Home) -> String {
+        std::fs::read_to_string(home.log_path()).unwrap_or_default()
+    }
+
+    #[test]
+    fn a_new_daemon_that_fails_to_start_rolls_back_to_the_old_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let bad = script(dir.path(), "bad", "exit 1");
+        let e = format!(
+            "{:#}",
+            Client::replace(&home, &old, &bad, |_| false)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("failed to start"), "{e}");
+        assert!(e.contains("running again"), "{e}");
+        assert!(e.contains("daemon.log"), "{e}");
+        let now = Client::discover(&home).expect("the old executable runs again");
+        assert_eq!(now.info.version, "0.0.1");
+        assert_eq!(now.info.port, old.info.port, "same port");
+        assert_ne!(now.info.pid, old.info.pid);
+        assert!(log(&home).contains("rolled back"), "{}", log(&home));
+        stop(&home);
+    }
+
+    #[test]
+    fn a_failed_rollback_says_no_daemon_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        // The old executable now fails too, as the new one does.
+        std::fs::write(&old_exe, "#!/bin/sh\nexit 1\n").unwrap();
+        let bad = script(dir.path(), "bad", "exit 1");
+        let e = format!(
+            "{:#}",
+            Client::replace(&home, &old, &bad, |_| false)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("failed too"), "{e}");
+        assert!(e.contains("No clax daemon is running"), "{e}");
+        assert!(Client::discover(&home).is_none());
+    }
+
+    #[test]
+    fn a_rollback_without_the_old_executable_says_no_daemon_is_running() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        std::fs::remove_file(&old_exe).unwrap();
+        let bad = script(dir.path(), "bad", "exit 1");
+        let e = format!(
+            "{:#}",
+            Client::replace(&home, &old, &bad, |_| false)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("no clax daemon is running"), "{e}");
+        assert!(Client::discover(&home).is_none());
+    }
+
+    #[test]
+    fn a_new_daemon_that_never_answers_is_stopped_before_the_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let pid_file = dir.path().join("slow.pid");
+        let slow = script(
+            dir.path(),
+            "slow",
+            &format!("echo $$ > {}\nexec sleep 60", pid_file.display()),
+        );
+        let e = format!(
+            "{:#}",
+            Client::replace(&home, &old, &slow, |_| false)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("running again"), "{e}");
+        let pid: u32 = std::fs::read_to_string(&pid_file)
+            .unwrap()
+            .trim()
+            .parse()
+            .unwrap();
+        assert!(!pid_alive(pid), "the late daemon was stopped");
+        stop(&home);
+    }
+
+    #[test]
+    fn an_old_daemon_that_ignores_shutdown_is_terminated_promptly() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", true, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
+        let started = Instant::now();
+        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(15),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(c.info.version, "0.0.2");
+        assert!(!pid_alive(old.info.pid));
+        assert!(log(&home).contains("SIGTERM"), "{}", log(&home));
+        stop(&home);
+    }
+
+    #[test]
+    fn the_replacement_takes_the_bind_of_the_daemon_it_replaces_and_is_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        // Recorded as bound to every address; the fake listens on loopback.
+        let (home, current) = running(dir.path(), &old_exe, "0.0.0.0");
+        // A caller's stale view of the same daemon, as bound to loopback.
+        let mut info = current.info.clone();
+        info.bind = "127.0.0.1".into();
+        let old = Client::from_info(info);
+        let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
+        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        assert_eq!(c.info.bind, "0.0.0.0");
+        assert_eq!(c.info.port, current.info.port);
+        let log = log(&home);
+        assert!(log.contains("replacing clax daemon v0.0.1"), "{log}");
+        stop(&home);
+    }
+
+    #[test]
+    fn a_replacement_on_another_port_is_logged() {
+        let dir = tempfile::tempdir().unwrap();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, Some(0));
+        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        assert_ne!(c.info.port, old.info.port);
+        let log = log(&home);
+        assert!(log.contains(&format!("not {}", old.info.port)), "{log}");
+        stop(&home);
+    }
+
+    #[test]
+    fn a_vanished_daemon_whose_pid_was_reused_is_not_waited_on_or_signalled() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        // An unrelated live process holds the old daemon's PID, and nothing
+        // listens on its port any more.
+        let mut other = Command::new("sleep").arg("60").spawn().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let mut gone = info("0.0.1");
+        gone.pid = other.id();
+        gone.port = port;
+        let old = Client::from_info(gone);
+        let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
+        let started = Instant::now();
+        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+        assert_eq!(c.info.version, "0.0.2");
+        assert!(
+            other.try_wait().unwrap().is_none(),
+            "the unrelated process is untouched"
+        );
+        let _ = other.kill();
+        let _ = other.wait();
+        stop(&home);
     }
 }

@@ -12,6 +12,11 @@ pub struct Args {
     /// Run the daemon in this process instead of the background.
     #[arg(long)]
     pub foreground: bool,
+    /// Report this version instead of the build's, so a test can run a
+    /// genuine older daemon. Debug builds only.
+    #[cfg(debug_assertions)]
+    #[arg(long, hide = true, requires = "foreground")]
+    pub report_version: Option<String>,
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
@@ -29,7 +34,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             stale_check_interval: std::time::Duration::from_secs(30),
             reap_interval: std::time::Duration::from_secs(60),
             port: cli.port_for(home)?,
-            version: env!("CARGO_PKG_VERSION"),
+            version: reported_version(a),
             codex: clax_server::push::CodexPush::from_env(
                 std::env::var_os("CLAX_CODEX_BIN"),
                 std::env::var_os("PATH").as_deref(),
@@ -39,10 +44,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     }
     let bind = a.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
     let port = cli.port_for(home)?;
-    let c = match Client::discover(home) {
-        Some(_) => Client::connect_matching_version(home, port)?,
-        None => Client::connect_with_bind(home, port, bind)?,
-    };
+    let c = Client::connect_matching_version_with_bind(home, port, bind)?;
     if let Some(requested) = a.bind {
         c.require_bind(requested)?;
     }
@@ -54,6 +56,17 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         )
     });
     Ok(())
+}
+
+/// The version a foreground daemon reports: the build's, or in a debug build
+/// `--report-version`.
+fn reported_version(a: &Args) -> &'static str {
+    #[cfg(debug_assertions)]
+    if let Some(v) = &a.report_version {
+        return Box::leak(v.clone().into_boxed_str());
+    }
+    let _ = a;
+    env!("CARGO_PKG_VERSION")
 }
 
 /// Closes every descriptor above stdio that this process inherited.
