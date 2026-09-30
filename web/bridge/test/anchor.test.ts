@@ -188,6 +188,30 @@ describe("AnchorCache", () => {
     cache.disconnect();
     walks.mockRestore();
   });
+  it("reports a change that evicts a detached anchor, so it can be retried without a scroll", async () => {
+    const a = buildElementAnchor(document, h2());
+    document.body.innerHTML = `<p>nothing</p>`;
+    const retry = vi.fn();
+    const cache = new AnchorCache(document, new Map(), "index.html", retry);
+    expect(cache.resolve("t1", a)).toBeNull();
+    document.body.insertAdjacentHTML("beforeend", "<h3>Quarterly goals</h3>");
+    await flush();
+    expect(retry).toHaveBeenCalledTimes(1);
+    expect(cache.resolve("t1", a)?.method).toBe("quote");
+    document.body.insertAdjacentHTML("beforeend", "<p>more</p>");
+    await flush();
+    expect(retry).toHaveBeenCalledTimes(1);
+    cache.disconnect();
+  });
+  it("without a <body> (a parse stopped in <head>) resolves nothing and does not throw", () => {
+    const doc = document.implementation.createHTMLDocument("");
+    doc.body.remove();
+    const a = buildElementAnchor(document, h2());
+    const cache = new AnchorCache(doc);
+    expect(cache.resolve("t1", a)).toBeNull();
+    expect(resolveAnchor(doc, a)).toBeNull();
+    cache.disconnect();
+  });
   it("retries detached anchors after any change", async () => {
     const a = buildElementAnchor(document, h2());
     document.body.innerHTML = `<p>nothing</p>`;

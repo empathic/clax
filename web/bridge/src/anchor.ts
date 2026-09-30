@@ -192,6 +192,8 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
     const el = a.custom_name ? custom.get(a.custom_name) : undefined;
     return el ? { method: "custom", element: el, range: null } : null;
   }
+  // A parse stopped in <head> (window.stop()) leaves no <body> to anchor in.
+  if (!doc.body) return null;
   const idx = textIndex(doc.body);
   const el = a.selector ? query(doc, a.selector) : null;
   if (el) {
@@ -218,15 +220,18 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
 
 /** Resolutions of the shell's anchors by thread ID, kept until the DOM under
  * the resolved element changes (a detached anchor is retried after any change
- * under `body`) or `reset` is called, so scroll and resize only re-measure. */
+ * under `body`) or `reset` is called, so scroll and resize only re-measure.
+ * `retry` is called when a change evicts a detached anchor, so content a page
+ * renders late can be resolved without waiting for a scroll. */
 export class AnchorCache {
   private readonly entries = new Map<string, { anchor: Anchor; res: Resolved | null }>();
   private readonly observer: MutationObserver;
 
-  constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map(), private readonly file: string = INDEX_FILE) {
-    const win = doc.defaultView!;
+  constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map(), private readonly file: string = INDEX_FILE, private readonly retry: () => void = () => {}) {
+    const win = doc.defaultView ?? window;
     this.observer = new win.MutationObserver(records => this.invalidate(records));
-    this.observer.observe(doc.body, { subtree: true, childList: true, characterData: true, attributes: true });
+    const root = doc.body ?? doc.documentElement;
+    if (root) this.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
   }
 
   resolve(id: string, anchor: Anchor): Resolved | null {
@@ -247,9 +252,14 @@ export class AnchorCache {
   }
 
   private invalidate(records: MutationRecord[]): void {
+    let detached = false;
     for (const [id, { res }] of this.entries) {
       const el = res?.element;
-      if (!el || !el.isConnected || records.some(r => el.contains(r.target))) this.entries.delete(id);
+      if (!el || !el.isConnected || records.some(r => el.contains(r.target))) {
+        this.entries.delete(id);
+        if (!res) detached = true;
+      }
     }
+    if (detached) this.retry();
   }
 }

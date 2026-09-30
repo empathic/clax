@@ -45,6 +45,27 @@ describe("bridge orders that arrive before <body>", () => {
     expect(anchorsFor("r1")).toHaveLength(1);
   });
 
+  it("a thread not found re-resolves when the page renders its content later, without a scroll", async () => {
+    const late = { ...anchor, selector: "#late" };
+    send({ type: "artifax:resolve-anchors", requestId: "r3", anchors: [{ id: "b", anchor: late }] });
+    expect(anchorsFor("r3")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
+    const before = anchorsFor(null).length;
+    document.body.insertAdjacentHTML("beforeend", "<div id=\"late\">Rendered late</div>");
+    await frames();
+    const after = anchorsFor(null).slice(before);
+    expect(after).toEqual([expect.objectContaining({ results: [expect.objectContaining({ id: "b", found: true })] })]);
+  });
+
+  it("a parse stopped in <head> (no <body>) resolves nothing and does not throw", () => {
+    setReadyState("loading");
+    document.body.remove();
+    send({ type: "artifax:resolve-anchors", requestId: "r4", anchors: [{ id: "a", anchor }] });
+    setReadyState("interactive");
+    document.dispatchEvent(new Event("readystatechange"));
+    expect(errors).toEqual([]);
+    expect(anchorsFor("r4")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
+  });
+
   it("a resolution deferred for the parse is dropped when custom anchors went live meanwhile", () => {
     setReadyState("loading");
     send({ type: "artifax:resolve-anchors", requestId: "r2", anchors: [{ id: "a", anchor }] });

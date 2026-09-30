@@ -25,6 +25,13 @@ const ROUND_TRIP = `<!doctype html><html lang="en"><head><title>Round trip</titl
   };
 </script></body></html>`;
 
+// Renders its anchored content from a module script, which runs after the
+// parse ends; the blocking head script makes the shell's anchor request arrive
+// while the page is still loading.
+const LATE = `<!doctype html><html><head><title>Late</title><script src="slow.js"></script><script type="module">
+  document.getElementById("app").innerHTML = "<h2>Quarterly goals</h2><p>Grow revenue.</p>";
+</script></head><body><main id="app"></main></body></html>`;
+
 const bridges = (f: Frame) => f.evaluate(() => Array.from(document.querySelectorAll("script[src^='/_artifax/bridge.js']")).map(s => ({ first: s === document.head.firstElementChild, version: (s as HTMLScriptElement).dataset.version })));
 
 // A page whose `<head>` blocks on a script, so the shell's welcome and anchor
@@ -61,6 +68,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `Round trip ${mode}`, ROUND_TRIP, { artifact: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(f.locator("#out")).toHaveText("function");
+    const headOf = (fr: Frame) => fr.evaluate(() => {
+      const h = document.head.cloneNode(true) as HTMLHeadElement;
+      h.querySelectorAll("script[src^='/_artifax/bridge.js']").forEach(s => s.remove());
+      return h.innerHTML;
+    });
+    const head1 = await headOf(f);
     await f.locator("#go").click();
     const g = await contentFrame(page, artifact.id, 2);
     await expect(g.locator("#out")).toHaveText("function");
@@ -69,6 +82,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(stored).toContain('data-version="1"');
     expect(await bridges(g)).toEqual([{ first: true, version: "2" }]);
     expect(await g.evaluate(() => document.documentElement.lang)).toBe("en");
+    // Republishing the served DOM again and again leaves <head> as it was.
+    expect(await headOf(g)).toBe(head1);
+    let prev = g;
+    for (const n of [3, 4]) {
+      await page.waitForTimeout(2_100); // the shell's gap between publishes
+      await prev.locator("#go").click();
+      const next = await contentFrame(page, artifact.id, n);
+      await expect(next.locator("#out")).toHaveText("function");
+      expect(await headOf(next)).toBe(head1);
+      prev = next;
+    }
   });
 
   test(`${mode}: a sub page's <head> script sees window.claude.use`, async ({ page }) => {
@@ -80,6 +104,31 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(f.locator("#out")).toHaveText("function");
     expect(await f.evaluate(() => (document.head.firstElementChild as HTMLScriptElement).dataset.file)).toBe("early.html");
     expect(await bridges(f)).toEqual([{ first: true, version: "1" }]);
+  });
+
+  test(`${mode}: a thread on content a module script renders pins without a scroll`, async ({ page, browser }) => {
+    const { artifact } = await publish(d.base, d.token, `Late ${mode}`, { "index.html": LATE, "slow.js": "window.slow = 1;" });
+    const id = artifact.id;
+    const f = await openArtifact(page, d.base, id, 1, mode);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await f.locator("h2").hover();
+    await f.locator("h2").click();
+    const composer = page.locator(".composer");
+    await composer.locator("textarea").fill("Pin me late.");
+    await composer.getByRole("button", { name: "Post comment" }).click();
+    await expect(page.locator("button.thread-pin")).toHaveCount(1);
+
+    const ctx = await browser.newContext();
+    try {
+      const slow = await ctx.newPage();
+      await slow.route("**/slow.js", async r => { await new Promise(res => setTimeout(res, 2000)); await r.continue(); });
+      const g = await openArtifact(slow, d.base, id, 1, mode);
+      await expect(g.locator("h2")).toHaveText("Quarterly goals");
+      await expect(slow.locator("button.thread-pin")).toHaveCount(1);
+      expect(await g.evaluate(() => scrollY)).toBe(0);
+    } finally {
+      await ctx.close();
+    }
   });
 
   test(`${mode}: anchors requested before <body> exists resolve once the page has parsed`, async ({ page, browser }) => {

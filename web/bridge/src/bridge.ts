@@ -77,7 +77,9 @@ import { makeUse } from "./use";
   let latestResolve: unknown = null;
   let resolutions: AnchorCache | null = null;
   const resolveAll = (requestId: string | null) => {
-    const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file);
+    // A detached thread is retried when the page changes (content rendered
+    // late), not only on scroll or resize.
+    const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file, () => reflow());
     const results: AnchorResult[] = anchors.map(({ id, anchor }) => {
       const r = resolved.resolve(id, anchor);
       return r ? { id, found: true, method: r.method, rect: box(r.range ?? r.element) } : { id, found: false, method: null, rect: null };
