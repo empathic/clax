@@ -305,6 +305,7 @@ fn doctor_runs_all_checks() {
         .collect();
     for n in [
         "home",
+        "config",
         "daemon",
         "daemon_json_mode",
         "db_integrity",
@@ -1380,4 +1381,32 @@ fn a_daemon_started_without_port_uses_the_homes_serve_port() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["port"].as_u64().unwrap(), u64::from(port));
     e.stop();
+}
+
+#[test]
+fn doctor_and_status_name_a_config_that_does_not_parse() {
+    let e = Env::new();
+    std::fs::create_dir_all(e.dir.path().join("ax")).unwrap();
+    std::fs::write(e.dir.path().join("ax/config.toml"), "[serve\nport = 1\n").unwrap();
+    let c = doctor_check(&e, &[], "config");
+    assert_eq!(c["ok"], false, "{c}");
+    assert!(c["detail"].as_str().unwrap().contains("config.toml"), "{c}");
+    let out = e.cmd().arg("status").output().unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("config.toml"), "{err}");
+}
+
+#[test]
+fn doctor_reports_the_homes_serve_port() {
+    let e = Env::new();
+    std::fs::create_dir_all(e.dir.path().join("ax")).unwrap();
+    std::fs::write(
+        e.dir.path().join("ax/config.toml"),
+        "[serve]\nport = 7481\n",
+    )
+    .unwrap();
+    let c = doctor_check(&e, &[], "config");
+    assert_eq!(c["ok"], true, "{c}");
+    assert_eq!(c["detail"], "[serve] port = 7481");
 }

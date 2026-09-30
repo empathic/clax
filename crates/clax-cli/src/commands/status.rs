@@ -29,5 +29,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             |_| format!("not running (home {})", home.root().display()),
         ),
     }
+    // A config.toml that would stop the next start is named here, where a
+    // person looking into "not running" will see it.
+    if let Err(e) = cli.port_for(home) {
+        eprintln!("error: {e}");
+    }
     Ok(())
 }
