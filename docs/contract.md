@@ -687,15 +687,19 @@ click or release) arrived while the frame held the viewer's gesture (the
 check `compose` uses); each start counts once (a pick dropped because
 comment mode ended uses its start up, and ending comment mode forgets every
 start), and two starts pending at once are both refused. So a page can post
-a pick of its own only within the browser's user-activation window (about
-five seconds) after the viewer's latest input to the shell or the frame,
-while focus is in the frame and no input has reached the shell since focus
-entered it (the page can move focus into itself, so a click on the shell's
-Comment button is enough), in comment mode, and while no pick of the
-bridge's is pending: the page shares the bridge's window and can always act
-then, and it controls what it renders. The composer then shows the pick's quote or area label and its
-screenshot (not where it anchors), and nothing is posted without the
-viewer. A composer waiting for a page area's screenshot keeps Post disabled
+a pick of its own only in comment mode, while no pick of the bridge's is
+pending, and while that gesture check passes (see "The viewer's gesture"
+under the `comments` capability): within the browser's user-activation
+window (about five seconds) after the viewer's latest input, once the viewer
+has clicked or pressed a key in the page, has moved the pointer onto the
+page since their latest input to the shell, or has Tabbed into the page. The
+page can move focus into itself, so after a click on the shell's Comment
+button it can forge a pick as soon as the viewer moves the pointer onto the
+page within that window, but not while the pointer is still on the button or
+elsewhere in the shell. The page shares the bridge's window and can always
+act then, and it controls what it renders. The composer then shows the
+pick's quote or area label and its screenshot (not where it anchors), and
+nothing is posted without the viewer. A composer waiting for a page area's screenshot keeps Post disabled
 and, after 10 seconds without it, says "No screenshot: it was not taken in
 time".
 
@@ -773,14 +777,32 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   agent.
 - **The viewer's gesture.** `openComposer` and `compose` resolve `{opened:
   false}`, `sendToClaude` rejects `claude_unavailable`, and a `reply` into a
-  thread sent to the agent rejects `unavailable`, unless the viewer has just
-  clicked or typed inside the page: the shell window has transient user
-  activation, focus is in the content frame, and no pointer or key input has
-  reached the shell since focus entered the frame. Input the viewer gives the
-  shell itself (typing a reply, the consent dialog) never counts, so a page
-  calling on a timer or at load can never open the composer or speak to the
-  agent. These refusals count against a budget of 20 per minute per artifact
-  in a tab; past it such calls reject `rate_limited`.
+  thread sent to the agent rejects `unavailable`, unless the shell judges
+  that the viewer's latest input went to the page. It judges from its own
+  trusted events, never from anything the page or the bridge reports, and
+  all of these must hold:
+  - the shell window has transient user activation (about five seconds after
+    the viewer's latest input);
+  - focus is in the content frame, and no pointer press or key press has
+    reached the shell since focus entered it (a modifier key alone, Escape,
+    and Option+Up or Down do not count: they act on the page);
+  - the viewer, not the page, can have moved focus there. Either the pointer
+    was over the frame when focus entered it, or is over it now, having moved
+    onto the frame after the viewer's latest input to the shell; or focus
+    entered with a Tab or Shift+Tab pressed in the shell.
+
+  A page can move focus into itself (`window.focus()`), but that counts only
+  under the last condition. So while the pointer is on a shell control, or
+  rests on the page (arrived there before) while the viewer types in the
+  shell, a page calling on a
+  timer or at load cannot ride input the viewer gives the shell (a shell
+  button, the name field, a reply, the consent dialog), and cannot open the
+  composer or speak to the agent. What remains: within the activation window
+  after the viewer's input to the shell, once the viewer moves the pointer
+  onto the page, or after they Tab into it, the page can pull focus into
+  itself and have such a call counted without a click or key in the page.
+  These refusals count against a budget of 20 per minute per artifact in a
+  tab; past it such calls reject `rate_limited`.
 - **Anchors.** Anchors from the page always name the page the frame shows and
   the version the view shows. Text follows the contract's rule (non-blank, at
   most 4096 bytes of UTF-8, no control characters but newline and tab).

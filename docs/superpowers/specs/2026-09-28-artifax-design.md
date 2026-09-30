@@ -525,16 +525,26 @@ file under `v/<digits>/` is reachable only through the versioned form):
   when its pick is dropped, and every start is forgotten when comment mode
   ends or a page greets); two starts pending at once are both refused. The
   bridge keeps the shell's window as it was at load, so a page replacing
-  `window.parent` cannot read or alter what it posts. This bounds forgery, it
-  does not end it: a page can post a pick of its own only within the
+  `window.parent` cannot read or alter what it posts. `frameGesture` holds
+  only when the viewer's latest input went to the frame, as the shell sees
+  it from its own trusted events: transient user activation, focus in the
+  frame with no pointer or key press in the shell since it entered (a
+  modifier alone, Escape, and Option+Up/Down excepted), and the viewer able
+  to have moved focus there (the pointer over the frame when focus entered
+  it, or now, having moved onto it after the viewer's latest input to the
+  shell; or a Tab or Shift+Tab pressed in the shell). The page's own
+  `window.focus()` counts only under that last condition. This bounds
+  forgery, it does not end it: a page can post a pick of its own only in
+  comment mode, while no pick of the bridge's is pending, and within the
   browser's user-activation window (about five seconds) after the viewer's
-  latest input to the shell or the frame, while focus is in the frame and no
-  input has reached the shell since focus entered it (the page can move focus
-  into itself, so a click on the shell's Comment button is enough), in
-  comment mode, and while no pick of the bridge's is pending (its script
-  shares the bridge's window, can act then, and controls what gets rendered); the composer then shows the pick's quote or area label and its
-  screenshot (not where it anchors), and nothing is posted without the
-  viewer.
+  latest input, once the viewer has clicked or pressed a key in the page,
+  has moved the pointer onto it since their latest input to the shell, or
+  has Tabbed into it. So after a click on the shell's Comment button a page
+  can forge a pick once the viewer moves the pointer onto it within that
+  window, never while the pointer is still in the shell (its script shares
+  the bridge's window, can act then, and controls what gets rendered); the
+  composer then shows the pick's quote or area label and its screenshot
+  (not where it anchors), and nothing is posted without the viewer.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the
@@ -651,7 +661,7 @@ files kept in `web/contract/`:
   Page-written comments are stored with `via_page` and shown and forwarded
   as written by the page; an `@agent` in them is inert. Opening the
   composer, `sendToClaude`, and a reply into a sent thread need the
-  viewer's recent gesture (the shell's transient user activation). A
+  viewer's latest input to have gone to the page (`frameGesture`, §8). A
   custom-anchors page is told only the threads on its own page, as handles.
   The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,

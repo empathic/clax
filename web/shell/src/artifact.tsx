@@ -443,18 +443,19 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       }
       case "artifax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
-        // frame holds the viewer's gesture (`frameGesture`). So a page can
-        // post a pick of its own only within the user-activation window
-        // (about five seconds) after the viewer's latest input to the shell
-        // or the frame, while focus is in the frame and no input has reached
-        // the shell since focus entered it (the page can move focus into
-        // itself, so a click on the shell's Comment button is enough), and
-        // while no pick of the bridge's is pending; the composer then shows
-        // the pick's quote or area label
-        // and screenshot, not where it anchors, and nothing is posted without
-        // the viewer. The bridge never has two picks in flight, so a start
-        // arriving while another is pending means one was forged: both are
-        // refused.
+        // viewer's latest input went to the frame (`frameGesture`). So a page
+        // can post a pick of its own only while no pick of the bridge's is
+        // pending and within the user-activation window (about five seconds)
+        // after the viewer's latest input, once the viewer has clicked or
+        // pressed a key in the page, moved the pointer onto it since their
+        // latest input to the shell, or Tabbed into it. The page can move
+        // focus into itself, so after a click on the shell's Comment button
+        // it can forge a pick once the pointer reaches the page, never while
+        // the pointer is still in the shell. The composer then shows the
+        // pick's quote or area label and screenshot, not where it anchors,
+        // and nothing is posted without the viewer. The bridge never has two
+        // picks in flight, so a start arriving while another is pending means
+        // one was forged: both are refused.
         if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64 && frameGesture()) {
           const now = Date.now();
           for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);

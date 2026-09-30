@@ -3,7 +3,7 @@ import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
 import { forgetBudgets } from "./budget";
 import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
-import { forgetGestures, noteShellInput } from "./gesture";
+import { forgetGestures, noteShellInput, notePointerOver } from "./gesture";
 import { Grants } from "./grants";
 import type { CapEnv, CommentsUi } from "./host";
 
@@ -15,15 +15,16 @@ const T = (id: string, anchor: Partial<Thread["anchor"]> = {}, more: Partial<Thr
   ...more,
 });
 
-/** A viewer gesture in the content frame (activation with focus moved into
- * `iframe.frame`), or none: activation given to a shell control. */
+/** A viewer gesture in the content frame (activation, the pointer moved onto
+ * `iframe.frame` and focus into it), or none: activation given to a shell
+ * control under the pointer. */
 const frame = document.createElement("iframe");
 frame.className = "frame";
 const control = document.createElement("button");
 document.body.append(frame, control);
 const gesture = (on: boolean) => {
   Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
-  if (on) { control.focus(); frame.focus(); } else { control.focus(); noteShellInput(); }
+  if (on) { control.focus(); notePointerOver(frame); frame.focus(); } else { notePointerOver(control); control.focus(); noteShellInput(); }
 };
 
 function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {

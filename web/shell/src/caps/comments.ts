@@ -332,7 +332,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const d = (args[0] ?? {}) as { anchor?: unknown; clipPng?: unknown; clipError?: unknown };
           const anchor = pageAnchor(d.anchor, pageFile());
           const u = ui();
-          // Only from the viewer's own gesture: a timer or load never opens (or focuses) it.
+          // Only from the viewer's own gesture (gesture.ts says exactly what counts); never at load.
           if (!gestured()) return { opened: false };
           opening();
           const clip = d.clipPng instanceof ArrayBuffer && d.clipPng.byteLength > 0 && d.clipPng.byteLength <= MAX_CLIP_BYTES ? new Blob([d.clipPng], { type: "image/png" }) : null;

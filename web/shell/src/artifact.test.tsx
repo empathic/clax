@@ -26,6 +26,9 @@ const page = { content_type: "text/html", size: 1 };
 
 const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
 
+/** The gesture module the mounted view uses (from the same module registry). */
+let gesture: typeof import("./caps/gesture") | undefined;
+
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
   vi.stubGlobal("EventSource", FakeES);
@@ -39,6 +42,7 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
   }));
   sessionStorage.setItem("artifax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
+  gesture = await import("./caps/gesture");
   const root = document.createElement("div");
   document.body.appendChild(root);
   render(<ArtifactView id={ID} pinnedVersion={pinned} file={file} />, root);
@@ -931,12 +935,15 @@ function fromFrame(win: Window, data: unknown) {
 }
 
 /** The viewer's gesture in the content frame: transient activation, with
- * focus moved into the frame after the shell's own control. */
+ * the pointer moved onto the frame and focus into it after the shell's own
+ * control. */
 function gestureIn(frame: HTMLIFrameElement, active = true) {
   Object.defineProperty(navigator, "userActivation", { value: { isActive: active }, configurable: true });
   const control = document.createElement("button");
   document.body.appendChild(control);
+  gesture!.notePointerOver(control);
   control.focus();
+  gesture!.notePointerOver(frame);
   frame.focus();
   control.remove();
 }
