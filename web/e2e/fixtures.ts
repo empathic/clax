@@ -206,3 +206,14 @@ export async function reach(page: Page, loc: Locator) {
   const b = (await loc.boundingBox())!;
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
 }
+
+/** Waits until 5.5 s have passed since the shell's script started (bounded by
+ * DOMContentLoaded, which follows it): the strict gesture tier counts that
+ * start as input to the shell (web/shell/src/caps/gesture.ts), so a write the
+ * viewer makes by a click in the page is refused until then. */
+export async function pastShellStart(page: Page) {
+  await page.waitForFunction(() => {
+    const n = performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined;
+    return !!n && n.domContentLoadedEventEnd > 0 && performance.now() > n.domContentLoadedEventEnd + 5_600;
+  }, undefined, { polling: 200, timeout: 30_000 });
+}

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SHELL_INPUT_EVENTS, SHELL_QUIET_MS, forgetGestures, hintAllowed, frameGesture, frameGestureStrict, noteQuietBreak, noteShellInput, noteShieldPress, noteShellKey, notePointerAt, notePointerOver, onShieldPress, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
+import { SHELL_INPUT_EVENTS, SHELL_QUIET_MS, forgetGestures, pickHintAllowed, frameGesture, frameGestureStrict, noteQuietBreak, noteShellInput, noteShieldPress, noteShellKey, notePointerAt, notePointerOver, onShieldPress, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
 
 const active = (on: boolean) => Object.defineProperty(navigator, "userActivation", { value: { isActive: on }, configurable: true });
 const nextTask = () => new Promise(r => setTimeout(r, 0));
@@ -225,18 +225,85 @@ describe("frame gestures", () => {
   });
 
   it("records every activating or interaction event type as shell input", () => {
-    expect([...SHELL_INPUT_EVENTS].sort()).toEqual(["auxclick", "click", "contextmenu", "dblclick", "dragend", "dragstart", "drop", "keydown", "mousedown", "pointercancel", "pointerdown", "pointerup", "touchend", "wheel"]);
+    expect([...SHELL_INPUT_EVENTS].sort()).toEqual(["auxclick", "beforeinput", "click", "compositionend", "compositionstart", "compositionupdate", "contextmenu", "dblclick", "dragend", "dragstart", "drop", "input", "keydown", "mousedown", "pointercancel", "pointerdown", "pointerup", "textInput", "touchend", "wheel"]);
   });
 
-  it("allows the hint at most once per trusted viewer event", () => {
+  it("takes a blur of the shell window to anything but the content frame as shell input (N14)", () => {
     clickShell();
-    expect(hintAllowed()).toBe(true);
-    expect(hintAllowed()).toBe(false);
-    notePointerAt(10, 10);
-    expect(hintAllowed()).toBe(true);
-    expect(hintAllowed()).toBe(false);
+    arrive();
+    pull();
+    expect(frameGesture()).toBe(true);
+    // A frame in the shell document (a password manager's menu) takes focus.
+    const other = document.createElement("iframe");
+    document.body.append(other);
+    other.focus();
+    window.dispatchEvent(new Event("blur"));
+    frame.focus();
+    expect(frameGesture()).toBe(false);
+    other.remove();
+    // Another window: focus leaves the document.
+    clickShell();
+    arrive();
+    pull();
+    expect(frameGesture()).toBe(true);
+    button.focus();
+    button.blur();
+    window.dispatchEvent(new Event("blur"));
+    frame.focus();
+    expect(frameGesture()).toBe(false);
+  });
+
+  it("takes focus sitting in a foreign frame in the shell document as shell input, however it got there (N14)", async () => {
+    clickShell();
+    arrive();
+    frame.focus();
+    expect(frameGesture()).toBe(true);
+    // Focus moves from the content frame to another frame: no event here.
+    const other = document.createElement("iframe");
+    document.body.append(other);
+    other.focus();
+    await new Promise(r => setTimeout(r, 150));
+    frame.focus();
+    expect(frameGesture()).toBe(false);
+    other.remove();
+  });
+
+  it("keeps counting a pointer that arrived after shell input that left focus in the frame: a wheel over the shell", () => {
+    clickShell();
+    arrive();
+    frame.focus();
+    expect(frameGesture()).toBe(true);
+    // The pointer leaves for the shell, a wheel there, and it comes back:
+    // focus never left the frame, so no new entry is seen.
+    notePointerOver(button, BUTTON.x, BUTTON.y);
+    notePointerAt(BUTTON.x, BUTTON.y);
     noteShellInput();
-    expect(hintAllowed()).toBe(true);
+    expect(frameGesture()).toBe(false);
+    notePointerAt(520, 200);
+    notePointerOver(frame, 480, 200);
+    expect(frameGesture()).toBe(true);
+  });
+
+  it("allows a refused pick's hint only when it can be the viewer's own press: pointer over the frame's box, focus in the frame, no counted arrival since shell input (N10)", () => {
+    // The pointer on a shell control: never.
+    clickShell();
+    pull();
+    expect(pickHintAllowed()).toBe(false);
+    // Resting on the frame where the shell input left it, focus in the frame:
+    // a press there is refused, and the hint says why, each time.
+    clickShell(CANCEL);
+    notePointerOver(frame, CANCEL.x, CANCEL.y);
+    pull();
+    expect(pickHintAllowed()).toBe(true);
+    expect(pickHintAllowed()).toBe(true);
+    // Focus in the shell (the viewer typing there): never.
+    button.focus();
+    expect(pickHintAllowed()).toBe(false);
+    // A counted arrival: the viewer's press would count, so the advice would be wrong.
+    notePointerAt(CANCEL.x - 20, CANCEL.y);
+    notePointerOver(frame, CANCEL.x - 20, CANCEL.y);
+    pull();
+    expect(pickHintAllowed()).toBe(false);
   });
 
   it("does not count the keys the shell forwards to the page, and counts them otherwise", () => {
@@ -316,6 +383,19 @@ describe("frame gestures", () => {
       expect(frameGestureStrict()).toBe("ok");
     });
 
+    it("counts the shell's script starting as shell input (N13)", () => {
+      // The shell's script starts now (input before it was not seen).
+      forgetGestures();
+      stop();
+      stop = watchGestures(document);
+      arrive();
+      pull();
+      expect(frameGesture()).toBe(true);
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      t += 5_500;
+      expect(frameGestureStrict()).toBe("ok");
+    });
+
     it("is no_gesture without frameGesture", () => {
       t += 10_000;
       expect(frameGestureStrict()).toBe("no_gesture");
@@ -351,12 +431,35 @@ describe("frame gestures", () => {
       notePointerOver(frame, CANCEL.x, CANCEL.y);
       pull();
       expect(frameGesture()).toBe(false);
-      // The first move out of the hole lands on a band and lowers it; the
-      // arrival that follows counts.
-      notePointerAt(CANCEL.x + 6, CANCEL.y);
+      // A move over a shell control leaves the bands up.
+      notePointerAt(CANCEL.x, CANCEL.y);
+      expect(shielded()).toBe(true);
+      // A band move without real movement (a layout re-hit-test) leaves
+      // them up too, and counts nothing.
+      notePointerAt(CANCEL.x + 6, CANCEL.y, "mouse", true, false);
+      expect(shielded()).toBe(true);
+      expect(frameGesture()).toBe(false);
+      // The first real move out of the hole lands on a band: it counts as the
+      // arrival and lowers them, however small (N12).
+      notePointerAt(CANCEL.x + 5, CANCEL.y, "mouse", true, true);
       expect(shielded()).toBe(false);
       expect(el.style.display).toBe("");
-      notePointerOver(frame, CANCEL.x + 6, CANCEL.y);
+      expect(frameGesture()).toBe(true);
+      // The frame's own mouseover after it keeps the arrival, even within 2 px.
+      notePointerOver(frame, CANCEL.x + 1, CANCEL.y);
+      expect(frameGesture()).toBe(true);
+    });
+
+    it("counts a 1 px move on a band after a press on a shell control as the arrival (N12)", () => {
+      clickShell(CANCEL);
+      raiseShieldIfOverFrame(document, true);
+      // Full cover: the pointer is on a band.
+      notePointerOver(bands[0], CANCEL.x, CANCEL.y);
+      pull();
+      expect(frameGesture()).toBe(false);
+      notePointerAt(CANCEL.x - 1, CANCEL.y, "mouse", true, true);
+      expect(shielded()).toBe(false);
+      notePointerOver(frame, CANCEL.x - 2, CANCEL.y);
       expect(frameGesture()).toBe(true);
     });
 
@@ -385,18 +488,20 @@ describe("frame gestures", () => {
       notePointerOver(frame, 340, 250);
       pull();
       expect(frameGesture()).toBe(false);
-      // A real move lands on a band, lowers them, and then counts.
-      notePointerAt(360, 250);
+      // A real move lands on a band, lowers them, and counts.
+      notePointerAt(341, 250, "mouse", true, true);
       expect(shielded()).toBe(false);
-      notePointerOver(button, 520, 250);
-      notePointerAt(520, 250);
-      notePointerOver(frame, 480, 250);
       expect(frameGesture()).toBe(true);
-      // A touch press on a band lowers them and shows no hint.
+      // A touch press on a band is the finger on the page: it lowers them and
+      // counts as the arrival, with no hint (the tap's click reaches the page).
+      noteShellInput();
       raiseShieldIfOverFrame();
+      expect(frameGesture()).toBe(false);
       noteShieldPress(300, 250, "touch");
       expect(shielded()).toBe(false);
       expect(hint).toHaveBeenCalledTimes(1);
+      pull();
+      expect(frameGesture()).toBe(true);
       off();
     });
 

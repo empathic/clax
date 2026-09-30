@@ -18,90 +18,117 @@
 // `SHELL_INPUT_EVENTS` (each type through which Chromium or the HTML spec
 // lets input grant a document activation, or that marks the viewer's
 // interaction with it: presses, releases, clicks, keys, a drop, a drag's
-// start and end, a cancelled pointer, a wheel), captured on the shell window.
-// The keys the shell forwards to the page (Option, Option+Up/Down and Escape
-// in comment mode with the pointer over the frame, `setForwardedKeys`) are
-// the one exception: they are not shell input for `frameGesture()`, though
-// the strict tier still waits them out.
+// start and end, a cancelled pointer, a wheel, and the text events an input
+// method, the emoji picker or dictation dispatch with no key press), captured
+// on the shell window. Also shell input: the shell window losing focus to
+// anything but the content frame; focus sitting in another frame embedded in
+// the shell's document (an extension's menu; checked every `FOCUS_POLL_MS`,
+// since focus moving there from the content frame fires nothing here); and
+// the pointer leaving such a frame while the shell has activation. The keys
+// the shell forwards to the page (Option, Option+Up/Down and Escape in
+// comment mode with the pointer over the frame, `setForwardedKeys`) are the
+// one exception: they are not shell input for `frameGesture()`, though the
+// strict tier still waits them out.
 //
 // `frameGesture()` holds when all of these hold:
 //
 // 1. the shell window has transient user activation;
-// 2. focus is in the content frame (`iframe.frame`), and no shell input has
-//    reached the shell window since it entered;
+// 2. focus is in the content frame (`iframe.frame`);
 // 3. the viewer, not the page, can have moved focus there: either
-//    - the pointer arrived on the frame by a real move after the viewer's
-//      latest input to the shell, and was on it when focus entered (a click
-//      or tap in the frame, or the bridge's `window.focus()` on an area
-//      drag's press) or is on it now;
-//    - or focus entered after a Tab or Shift+Tab key press in the shell that
-//      was the latest shell input, before focus reached any shell element
+//    - the pointer's arrival on the frame counted after the viewer's latest
+//      input to the shell, and the pointer is on the frame now;
+//    - or focus entered after that input, with no shell input since, and at
+//      entry either the pointer's arrival had so counted (a click or tap in
+//      the frame, or the bridge's `window.focus()` on an area drag's press)
+//      or a Tab or Shift+Tab key press in the shell that was the latest
+//      shell input moved it there, before focus reached any shell element
 //      and within `TAB_MS` (keyboard entry).
 //
-// A real move. The shell sees the pointer arrive on the frame as a `mouseover`
-// on the iframe element (also sent before a touch tap's press). Chromium also
-// sends that `mouseover`, with unchanged coordinates, whenever the layout
-// changes under a resting pointer: a shell control over the frame vanishing
-// (the composer on Cancel or Post, the consent dialog, a banner's Dismiss),
-// or an element the page moves (a pin) coming and going. So the shell records
-// the pointer's position from every trusted pointer event it gets (moves,
-// presses, and the boundary events `mouseover` and a `mouseout` leaving the
-// window), and an arrival counts only when both hold:
-// - its coordinates differ from those of the previous boundary event, when
-//   that was the latest pointer event (a boundary event at the same spot is a
-//   layout change, never a move; a `mousemove` there is a move);
-// - they are more than 2 px from where the pointer was at the viewer's latest
+// A counted arrival. The shell sees the pointer arrive on the frame as a
+// `mouseover` on the iframe element (also sent before a touch tap's press).
+// Chromium also sends that `mouseover`, with unchanged coordinates, whenever
+// the layout changes under a resting pointer: a shell control over the frame
+// vanishing (the composer on Cancel or Post, the consent dialog, a banner's
+// Dismiss), or an element the page moves (a pin) coming and going. So the
+// shell records the pointer's position from every trusted pointer event it
+// gets (moves, presses, and the boundary events `mouseover` and a `mouseout`
+// leaving the window), and an arrival counts when one of these holds:
+// - a `mouseover` of the frame whose coordinates differ from those of the
+//   previous boundary event, when that was the latest pointer event (a
+//   boundary event at the same spot is a layout change, never a move), and
+//   lie more than 2 px from where the pointer was at the viewer's latest
 //   shell input (for key presses too). After a key press with no known
-//   position, an arrival counts only after a trusted move since that key.
-// Before any shell input every arrival counts.
+//   position, such an arrival counts only after a trusted move since that
+//   key. Before any shell input every such arrival counts;
+// - a trusted move over one of the shield's bands (below) with real
+//   movement, however small: non-zero `movementX`/`movementY`, or screen
+//   coordinates changed since the previous pointer event. Chromium's
+//   re-hit-tests after a layout change send boundary events, and no move
+//   with movement;
+// - a wheel over a band;
+// - a touch press on a band.
 //
 // The shield. Moves inside a cross-origin frame never reach the shell, so a
 // pointer resting over the frame after shell input (a click on Cancel, Post,
-// Allow, a pin or Dismiss over the page, or keys typed with the pointer on the
-// page) would have to leave the frame and come back before a click in the page
-// counted. So at such input the shell covers the frame with transparent bands
+// Allow, a pin or Dismiss over the page, keys or an input method's text with
+// the pointer on the page, or the window losing focus) would have to leave
+// the frame and come back before a click in the page counted. So at such
+// input the shell covers the frame with transparent bands
 // (`registerShield`), beneath every shell control, that leave a 9 px hole
 // where the pointer was last seen. After a press on a shell control the hole
 // stays closed for `DOUBLE_CLICK_MS`, so the second click of a double-click
-// on that control lands on a band, not in the page. A press, drag or wheel in
-// the hole reaches the page. The viewer's first move out of the hole lands on
-// a band: that trusted `mousemove` lowers the bands (so at most one move is
-// lost to the page), and the pointer's arrival on the frame then counts. A
-// press on a band (the second click of a double-click, a re-press before the
-// hole opens, or a press after a move the shell could not see) reaches
-// neither the page nor any shell control: it is shell input, it never counts
-// as the pointer's arrival, the bands stay until the pointer moves, and a
-// mouse press shows the hint (`onShieldPress`); a touch press lowers them and
-// shows none. Touch input raises no bands: a tap's arrival
-// always comes at the tap's own coordinates. A key press while the pointer is
-// on a band leaves the bands as they are. The hint shows at most once per
-// trusted viewer event in the shell (`hintAllowed`).
+// on that control within that time lands on a band, not in the page; a
+// slower double-click, which a platform may allow, reaches the page. A
+// press, drag or wheel in the hole reaches the page. The bands stay up until
+// the viewer's own input over them: a move with real movement, a wheel or a
+// touch press, each of which counts as the pointer's arrival and lowers them
+// (so the page loses at most that one move or wheel event; a touch tap's
+// click, hit-tested after the bands come down, reaches the page). A mouse
+// press on a band (the second click of a double-click, a re-press before
+// the hole opens, or a press after a move the shell could not see) reaches
+// neither the page nor any shell control: it is shell input, it never
+// counts as the pointer's arrival, the bands stay up, and it shows the hint
+// (`onShieldPress`). Touch input raises no bands. A key press while the
+// pointer is on a band leaves the bands as they are. A touch tap inside the
+// hole reaches the page without counting as an arrival.
+//
+// A pick start the shell refuses shows the hint only when it can be the
+// viewer's own press (`pickHintAllowed`: the pointer over the frame's box,
+// focus in the frame, no counted arrival since the latest shell input), so
+// a page posting starts can show it only while a press of the viewer's there
+// would be refused the same way.
 //
 // Residual of `frameGesture()` (what a hostile page can still do): within the
 // activation window (about five seconds) after the viewer's latest input to
-// the shell, once the viewer moves the pointer onto or over the frame by more
-// than 2 px, or Tabs into it, the page can pull focus into itself and have a
-// composer-tier call counted without a click or key in the page: it can open
-// the composer, prefilled, or forge a pick. The viewer sees that composer, and
-// nothing is posted without them.
+// the shell, once the viewer moves the pointer onto or over the frame, turns
+// the wheel or touches it there, or Tabs into it, the page can pull focus
+// into itself and have a composer-tier call counted without a click or key
+// in the page: it can open the composer, prefilled, or forge a pick. The
+// viewer sees that composer, and nothing is posted without them.
 //
 // `frameGestureStrict()` adds: no shell input of any kind, forwarded keys
-// included, for the last `SHELL_QUIET_MS`. Every input to the shell that
-// Chromium lets grant it activation arrives as one of `SHELL_INPUT_EVENTS`
-// (an assistive technology's press dispatches a `pointerdown` too), and
-// Chromium keeps that activation 5 s; so once the quiet time has passed, an
-// active `navigator.userActivation` comes from input to the frame, unless
-// Chromium grants the shell activation through an input that dispatches none
-// of those events, which Artifax knows of none. Its residual: a page can act
-// within the activation window after the viewer's own click or key in the
-// page, whatever that input was meant for. The cost: a viewer who clicks a
-// page's control within that time after using the shell is refused
-// (`shell_input_recent`) and must click again.
+// included, for the last `SHELL_QUIET_MS`, with the shell's script starting
+// counted as such input (input before it was not seen). Chromium keeps a
+// transient activation 5 s, and every input to the shell that Chromium lets
+// grant it activation is one of `SHELL_INPUT_EVENTS` (an assistive
+// technology's press dispatches a `pointerdown` too), input to another frame
+// in the shell's document (seen as that frame taking focus, or the pointer
+// leaving it), or input before the script ran. So once the quiet time has
+// passed, an active `navigator.userActivation` comes from input to the
+// frame, unless Chromium grants the shell activation through a source none
+// of these see; Artifax knows of none beyond script the viewer runs on the
+// tab themselves (a bookmarklet). Its residual: a page can act within the
+// activation window after the viewer's own click or key in the page,
+// whatever that input was meant for. The cost: a viewer who clicks a page's
+// control within that time after using the shell, or after the shell loads,
+// is refused (`shell_input_recent`) and must click again.
 
 /** Chromium's transient user activation lasts 5 s from the input that
  * granted it; half a second more so a shell input's activation has surely
  * expired before a strict call may rely on `isActive`. */
 export const SHELL_QUIET_MS = 5_500;
+/** How long the gesture hint stays on screen. */
+export const HINT_MS = 2_500;
 /** How long a Tab press may take to move focus into the frame; a Tab that
  * moves focus to a shell element ends the wait at once. */
 const TAB_MS = 500;
@@ -111,20 +138,26 @@ const MOVE_PX = 2;
 const HOLE_PX = 4;
 /** After a press on a shell control over the frame, the hole stays closed
  * this long (a double-click's interval), so the second click of a
- * double-click aimed at the shell never reaches the page. */
+ * double-click on that control within it never reaches the page. */
 const DOUBLE_CLICK_MS = 500;
+/** How often the shell checks whether focus sits in a foreign frame. */
+const FOCUS_POLL_MS = 100;
 
 /** Every event type through which Chromium or the HTML spec lets the viewer's
  * input to a document grant it user activation, or that marks their
- * interaction with it (a drag's start and end, a cancelled pointer): each
- * trusted one reaching the shell window is shell input, for both tiers,
- * except a key the shell forwards to the page (`setForwardedKeys`). The rule
- * is allow-all: an input type left out of this list is the exception that
- * needs a reason, not the default. */
+ * interaction with it (a drag's start and end, a cancelled pointer, text an
+ * input method composes or commits): each trusted one reaching the shell
+ * window is shell input, for both tiers, except a key the shell forwards to
+ * the page (`setForwardedKeys`). The rule is allow-all: an input type left
+ * out of this list is the exception that needs a reason, not the default. */
 export const SHELL_INPUT_EVENTS = [
   "keydown", "mousedown", "pointerdown", "pointerup", "touchend", "click", "auxclick", "dblclick",
   "contextmenu", "drop", "dragstart", "dragend", "pointercancel", "wheel",
+  "beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "textInput",
 ] as const;
+/** The input types that carry text (an input method's composition or commit,
+ * the emoji picker, dictation, or typing): the shell treats them like a key. */
+const TEXT_EVENTS: ReadonlySet<string> = new Set(["beforeinput", "input", "compositionstart", "compositionupdate", "compositionend", "textInput"]);
 
 // Event order, not time: a counter bumped by each recorded event.
 let seq = 0;
@@ -145,6 +178,8 @@ let tabAt = -1;
 type Pos = { x: number; y: number };
 /** Where the pointer last was, from any trusted pointer event in the shell. */
 let lastPos: Pos | null = null;
+/** The same, in screen coordinates, when the event gave them. */
+let lastScreen: Pos | null = null;
 /** Whether `lastPos` came from a boundary event (`mouseover`, `mouseout`). */
 let lastWasBoundary = false;
 let lastPointerType = "";
@@ -160,14 +195,19 @@ let holeAt: Pos | null = null;
 let raised = 0;
 /** Whether the latest `mouseover` targeted one of the shield's bands. */
 let overShield = false;
-/** Trusted viewer events in the shell (moves, presses, keys), and the count
- * the hint was last shown at: the hint shows at most once per such event. */
-let viewerEvents = 0;
-let hintAt = -1;
+/** Whether the latest `mouseover` targeted a foreign frame (`isForeignFrame`). */
+let overForeign = false;
+/** A touch press on a band whose release and click are still to come: they
+ * are that tap's, not new input. */
+let touchOnBand = false;
 let forwarded: (e: KeyboardEvent) => boolean = () => false;
-let shieldPressed: () => void = () => {};
+let shieldPressed: (pointerType: string) => void = () => {};
 
 const isFrame = (el: EventTarget | null) => el instanceof HTMLIFrameElement && el.classList.contains("frame");
+/** Another document embedded in the shell's (an extension's menu beside a
+ * field): input to it activates the shell and reaches none of its listeners. */
+const isForeignFrame = (el: EventTarget | null) => (el instanceof HTMLIFrameElement || el instanceof HTMLObjectElement || el instanceof HTMLEmbedElement) && !isFrame(el);
+const activeNow = () => (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive === true;
 const isShield = (el: EventTarget | null) => !!shield && el instanceof Node && el !== shield && shield.contains(el);
 const pointerFresh = () => pointerOnFrameSince > lastShellInput;
 const far = (a: Pos, x: number, y: number) => Math.abs(x - a.x) > MOVE_PX || Math.abs(y - a.y) > MOVE_PX;
@@ -177,7 +217,6 @@ const now = () => performance.now();
  * `tab`: a Tab or Shift+Tab key press, whose default action may move focus
  * into the frame. */
 export function noteShellInput(tab = false): void {
-  viewerEvents++;
   const at = ++seq;
   lastShellInput = at;
   lastShellInputAt = now();
@@ -187,20 +226,34 @@ export function noteShellInput(tab = false): void {
 }
 
 /** Records trusted shell input that `frameGesture` does not count (a key the
- * shell forwards to the page): only `frameGestureStrict` waits for it. */
+ * shell forwards to the page, the shell's script starting): only
+ * `frameGestureStrict` waits for it. */
 export function noteQuietBreak(): void {
   lastShellInputAt = now();
 }
 
+/** Counts the pointer as having arrived on the frame now, by the viewer's own
+ * input over it (a real move, a wheel or a touch press on a band), and
+ * lowers the shield. */
+function arriveOnFrame(): void {
+  overFrame = true;
+  overShield = false;
+  if (!pointerFresh()) pointerOnFrameSince = ++seq;
+  lowerShield();
+}
+
 /** Records a trusted pointer move or press at (x, y) in the shell (the watcher
- * does this; tests call it). A move lowers the shield. */
-export function notePointerAt(x: number, y: number, pointerType = "mouse"): void {
-  viewerEvents++;
+ * does this; tests call it). `band`: the move is over one of the shield's
+ * bands; `moved`: it shows real movement (non-zero `movementX`/`movementY`,
+ * or screen coordinates changed since the previous pointer event). A band
+ * move with real movement is the pointer's arrival on the frame, and lowers
+ * the shield; one without leaves the shield up. */
+export function notePointerAt(x: number, y: number, pointerType = "mouse", band = false, moved = true): void {
   lastPos = { x, y };
   lastWasBoundary = false;
   lastPointerType = pointerType;
   lastMoveAt = ++seq;
-  if (holeAt) lowerShield();
+  if (band && holeAt && moved) arriveOnFrame();
 }
 
 /** Records the pointer moving onto `target` at (x, y) (the watcher does this
@@ -229,9 +282,9 @@ export function registerShield(el: HTMLElement | null): void {
   if (!el) holeAt = null;
 }
 
-/** Sets what the shell does when a press lands on the shield (its hint);
- * returns the reset. */
-export function onShieldPress(f: () => void): () => void {
+/** Sets what the shell does when a mouse press lands on the shield (its
+ * hint); returns the reset. */
+export function onShieldPress(f: (pointerType: string) => void): () => void {
   shieldPressed = f;
   return () => { if (shieldPressed === f) shieldPressed = () => {}; };
 }
@@ -292,13 +345,14 @@ function layBands(r: DOMRect, hole: Pos | null): void {
   shield.style.display = "block";
 }
 
-/** Whether the shell may show its gesture hint now: at most once per trusted
- * viewer event in the shell, so a page posting pick starts on a timer cannot
- * keep it on screen. Records the showing. */
-export function hintAllowed(): boolean {
-  if (viewerEvents === hintAt) return false;
-  hintAt = viewerEvents;
-  return true;
+/** Whether a pick start the shell refused may show the hint: only when it
+ * can be the viewer's own press, and the hint is true advice for it. The
+ * pointer is over the frame's box (on the frame or a band, not on a shell
+ * control), focus is in the frame (a press in the page puts it there), and
+ * the pointer has made no counted arrival since the viewer's latest shell
+ * input (so a press there is refused for want of a move). */
+export function pickHintAllowed(doc: Document = document): boolean {
+  return (overFrame || overShield) && !pointerFresh() && isFrame(doc.activeElement);
 }
 
 /** Sets which key events the shell forwards to the page (not input to the
@@ -317,21 +371,23 @@ export function noteShellKey(e: KeyboardEvent): boolean {
 }
 
 /** Records a trusted press on one of the shield's bands at (x, y) (the
- * watcher does this; tests call it). The press reaches neither the page nor
- * any shell control, and is shell input like any other (both tiers). It
- * never counts as the pointer arriving on the page: it is recorded as a
- * boundary position (so the frame's `mouseover` at that spot does not count),
- * and a mouse press leaves the bands up, so the viewer's next move lands on
- * a band, lowers them, and is seen. A mouse press tells the viewer why
- * (`onShieldPress`). A touch press lowers the bands (a finger cannot move
- * them away) and shows no hint. */
+ * watcher does this; tests call it). The press reaches no shell control, and
+ * is shell input like any other (both tiers).
+ * - A mouse press never counts as the pointer arriving on the page: it is
+ *   recorded as a boundary position (so the frame's `mouseover` at that spot
+ *   does not count), the bands stay up, so the viewer's next move lands on a
+ *   band and counts, and the viewer is told why (`onShieldPress`).
+ * - A touch press is the finger on the page: it counts as the pointer's
+ *   arrival and lowers the bands, so the tap's click, hit-tested after it,
+ *   reaches the page and counts. */
 export function noteShieldPress(x: number, y: number, pointerType = "mouse"): void {
-  if (pointerType === "touch") lowerShield();
   lastPos = { x, y };
   lastWasBoundary = true;
   lastPointerType = pointerType;
   noteShellInput();
-  if (pointerType !== "touch") shieldPressed();
+  touchOnBand = pointerType === "touch";
+  if (touchOnBand) { arriveOnFrame(); return; }
+  shieldPressed(pointerType);
 }
 
 function enterFrame(): void {
@@ -342,10 +398,12 @@ function enterFrame(): void {
 /** Watches `doc` (the shell document) for trusted input, for the pointer
  * moving onto and off the content frame, and for focus moving into the frame;
  * returns the unwatcher. Input is captured on the shell window, before any
- * shell handler can stop it. */
+ * shell handler can stop it. The watch starting (the shell's script running)
+ * counts toward the strict tier's quiet time: input before it was not seen. */
 export function watchGestures(doc: Document = document): () => void {
   const win = doc.defaultView;
   if (!win) return () => {};
+  noteQuietBreak();
   const onInput = (e: Event) => {
     if (!e.isTrusted) return;
     if (e.type === "keydown") {
@@ -358,33 +416,70 @@ export function watchGestures(doc: Document = document): () => void {
       if (k.key === "Tab") setTimeout(() => { if (tabAt === at && frameEnteredAt < at && isFrame(doc.activeElement)) enterFrame(); }, 0);
       return;
     }
+    if (TEXT_EVENTS.has(e.type)) {
+      // Text with no key press of its own (an input method, the emoji
+      // picker, dictation) is handled like a key; after a key or a press the
+      // shield is already where that input left it.
+      noteShellInput();
+      if (!holeAt) raiseShieldIfOverFrame(doc);
+      return;
+    }
     if (isShield(e.target)) {
       // Nor does a press on a band move focus.
       if (e.type === "mousedown") e.preventDefault();
       if (e.type === "pointerdown") { const p = e as PointerEvent; noteShieldPress(p.clientX, p.clientY, p.pointerType); return; }
-      if (e.type === "wheel") lowerShield();
+      // A touch tap's own release on the band it lowered.
+      if (touchOnBand) { noteQuietBreak(); return; }
       noteShellInput();
+      // A wheel on a band is the viewer's input over the page: it counts as
+      // the pointer's arrival, and the wheel's next events reach the page.
+      if (e.type === "wheel") arriveOnFrame();
       return;
     }
     if (e.type === "pointerdown") {
+      touchOnBand = false;
       // The shield sits beneath every shell control, so raising it at the
       // press leaves the press's click to its control.
       const p = e as PointerEvent;
       notePointerAt(p.clientX, p.clientY, p.pointerType);
+      noteScreen(p);
       noteShellInput();
       raiseShieldIfOverFrame(doc, true);
       return;
     }
     noteShellInput();
   };
-  const onMove = (e: MouseEvent) => { if (e.isTrusted) notePointerAt(e.clientX, e.clientY, e instanceof PointerEvent ? e.pointerType : lastPointerType || "mouse"); };
-  const onOver = (e: MouseEvent) => { if (e.isTrusted) notePointerOver(e.target, e.clientX, e.clientY); };
-  const onOut = (e: MouseEvent) => { if (e.isTrusted && e.relatedTarget === null) notePointerOver(null, e.clientX, e.clientY); };
+  const noteScreen = (e: MouseEvent) => { if (Number.isFinite(e.screenX) && Number.isFinite(e.screenY)) lastScreen = { x: e.screenX, y: e.screenY }; };
+  const onMove = (e: MouseEvent) => {
+    if (!e.isTrusted) return;
+    // Real movement: Chromium's layout re-hit-tests send boundary events, and
+    // any move they send has no movement and the same screen position.
+    const moved = e.movementX !== 0 || e.movementY !== 0 || (!!lastScreen && (e.screenX !== lastScreen.x || e.screenY !== lastScreen.y));
+    noteScreen(e);
+    notePointerAt(e.clientX, e.clientY, e instanceof PointerEvent ? e.pointerType : lastPointerType || "mouse", isShield(e.target), moved);
+  };
+  // The pointer leaving a foreign frame while the shell is active: the
+  // viewer may have clicked or typed in it, which the shell cannot see.
+  const leaveForeign = (to: EventTarget | null) => {
+    if (overForeign && activeNow()) noteShellInput();
+    overForeign = isForeignFrame(to);
+  };
+  const onOver = (e: MouseEvent) => { if (!e.isTrusted) return; noteScreen(e); leaveForeign(e.target); notePointerOver(e.target, e.clientX, e.clientY); };
+  const onOut = (e: MouseEvent) => { if (!e.isTrusted || e.relatedTarget !== null) return; noteScreen(e); leaveForeign(null); notePointerOver(null, e.clientX, e.clientY); };
+  // Focus in a foreign frame is shell input for as long as it stays there:
+  // focus moving there from the content frame fires nothing in the shell.
+  const focusPoll = win.setInterval(() => { if (isForeignFrame(doc.activeElement)) noteShellInput(); }, FOCUS_POLL_MS);
   const onFocus = (e: FocusEvent) => { if (isFrame(e.target)) enterFrame(); else tabAt = -1; };
   // Focus moving into a cross-origin frame (a click, Tab, or the page's own
   // window.focus()) fires no focus event on the iframe element in Chromium;
-  // the shell window's blur, with the frame focused, marks it.
-  const onBlur = () => { if (isFrame(doc.activeElement)) enterFrame(); };
+  // the shell window's blur, with the frame focused, marks it. A blur to
+  // anything else (another frame in the shell document, which activates the
+  // shell when clicked, or another window) is shell input.
+  const onBlur = () => {
+    if (isFrame(doc.activeElement)) { enterFrame(); return; }
+    noteShellInput();
+    raiseShieldIfOverFrame(doc);
+  };
   const on: [string, EventListener][] = [
     ...SHELL_INPUT_EVENTS.map(t => [t, onInput] as [string, EventListener]),
     ["pointermove", onMove as EventListener], ["mousemove", onMove as EventListener],
@@ -394,6 +489,7 @@ export function watchGestures(doc: Document = document): () => void {
   for (const [t, f] of on) win.addEventListener(t, f, true);
   win.addEventListener("blur", onBlur);
   return () => {
+    win.clearInterval(focusPoll);
     for (const [t, f] of on) win.removeEventListener(t, f, true);
     win.removeEventListener("blur", onBlur);
   };
@@ -405,8 +501,8 @@ export function frameGesture(doc: Document = document): boolean {
   const ua = (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation;
   if (ua?.isActive !== true) return false;
   if (!isFrame(doc.activeElement)) return false;
-  if (lastShellInput >= frameEnteredAt) return false;
-  return entryByViewer || pointerFresh();
+  if (pointerFresh()) return true;
+  return lastShellInput < frameEnteredAt && entryByViewer;
 }
 
 /** The strict tier (see the header): "ok", "no_gesture" when
@@ -427,6 +523,7 @@ export function forgetGestures(): void {
   overFrame = false;
   tabAt = -1;
   lastPos = null;
+  lastScreen = null;
   lastWasBoundary = false;
   lastPointerType = "";
   lastMoveAt = -1;
@@ -434,8 +531,8 @@ export function forgetGestures(): void {
   forwarded = () => false;
   shieldPressed = () => {};
   overShield = false;
-  viewerEvents = 0;
-  hintAt = -1;
+  overForeign = false;
+  touchOnBand = false;
   lowerShield();
 }
 

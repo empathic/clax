@@ -532,43 +532,64 @@ file under `v/<digits>/` is reachable only through the versioned form):
   types through which input can grant a document activation or marks the
   viewer's interaction (`keydown`, `mousedown`, `pointerdown`, `pointerup`,
   `touchend`, `click`, `auxclick`, `dblclick`, `contextmenu`, `drop`,
-  `dragstart`, `dragend`, `pointercancel`, `wheel`), except the keys the
-  shell forwards to the page. `frameGesture` (the composer tier:
-  `openComposer`, `compose`, picks) holds only when the viewer's latest
-  input went to the frame, as the shell sees it from its own trusted
-  events: transient user activation, focus in the frame with no shell input
-  since it entered, and the viewer able to have moved focus there: the
-  pointer arrived on the frame by a real move after the viewer's latest
-  shell input (at a spot other than the boundary event just before it,
-  which a layout change under a resting pointer repeats, and more than 2 px
-  from where it was at that input; the shell takes positions from every
-  trusted pointer event, boundary events included) and was on it when focus
-  entered or is now; or a Tab or Shift+Tab pressed in the shell.
+  `dragstart`, `dragend`, `pointercancel`, `wheel`, and the text events
+  `beforeinput`, `input`, `compositionstart`, `compositionupdate`,
+  `compositionend` and `textInput`, which an input method, the emoji picker
+  or dictation dispatch without a key press); the shell window losing focus
+  to anything but the content frame; focus sitting in another frame in the
+  shell's document (checked every 100 ms); and the pointer leaving such a
+  frame while the shell has activation. The keys the shell forwards to the
+  page are the exception. `frameGesture` (the composer tier: `openComposer`,
+  `compose`, picks) holds only when the viewer's latest input went to the
+  frame, as the shell sees it from its own trusted events: transient user
+  activation, focus in the frame, and either the pointer arrived on the
+  frame after the viewer's latest shell input and is on it now, or focus
+  entered after that input with none since and, at entry, the pointer had
+  so arrived or a Tab or Shift+Tab pressed in the shell moved it. An
+  arrival counts only by the viewer's own input over the frame: a
+  `mouseover` of it at a spot other than the boundary event just before it
+  (which a layout change under a resting pointer repeats) and more than
+  2 px from where the pointer was at that input (the shell takes positions
+  from every trusted pointer event, boundary events included); a `mousemove`
+  over a band (below) with real movement, however small (non-zero
+  `movementX`/`movementY` or changed screen coordinates, which layout
+  re-hit-tests never send); a wheel over a band; or a touch press on a band.
   `frameGestureStrict` (every write as the viewer: `create`, `reply`,
   `resolve`, `delete`, `sendToClaude`; and `artifact.publish`) adds no shell
-  input of any kind for 5.5 s: every input Chromium lets grant the shell
-  activation arrives as one of those events, and the activation lasts 5 s,
-  so the activation is then the frame's unless an activation source exists
-  that dispatches none of them (none is known); within that time it rejects
-  `shell_input_recent` (uncharged). After shell input with a mouse over the
-  frame, the shell covers the frame with transparent bands, beneath its
-  controls, leaving a 9 px hole where it last saw the pointer (closed for
-  500 ms after a press on a shell control, so a double-click's second click
-  never reaches the page): input in the hole reaches the page, the first
-  move out of it lowers the bands (at most that one move is lost) and
-  counts, and a press on a band reaches neither the page nor a shell
-  control, is shell input, does not count as the pointer's arrival, leaves
-  the bands up until the pointer moves, and shows "Move the pointer, then
-  click again" (a touch press lowers them and shows nothing);
-  a pick refused in comment mode shows "Move the pointer to pick"; the hint
-  shows at most once per trusted viewer event in the shell. A pick's
+  input of any kind for 5.5 s, the shell's script starting included (so
+  these wait 5.5 s after the shell loads): every input Chromium lets grant
+  the shell activation is one of those events, input to another frame in
+  the shell's document (seen as that frame taking focus or the pointer
+  leaving it), or input before the script ran, and the activation lasts
+  5 s, so the activation is then the frame's unless a source none of these
+  see exists (none is known beyond script the viewer runs on the tab
+  themselves); within that time it rejects `shell_input_recent`
+  (uncharged). After shell input with a mouse over the frame (a key, text
+  from an input method, a press on a shell control over it, the window
+  losing focus), the shell covers the frame with transparent bands, beneath
+  its controls, leaving a 9 px hole where it last saw the pointer (closed
+  for 500 ms after a press on a shell control, so a double-click's second
+  click within 500 ms never reaches the page): input in the hole reaches the
+  page; the bands stay until the viewer's own input over them (a move with
+  real movement, a wheel, a touch press), which counts as the arrival and
+  lowers them (the page loses that one move or wheel event; a touch tap's
+  click, hit-tested after, reaches the page and counts); a mouse press on a
+  band reaches neither the page nor a shell control, is shell input, does
+  not count as the pointer's arrival, leaves the bands up, and shows "Move
+  the pointer, then click again" ("Move the pointer to pick" in comment
+  mode). A pick refused in comment mode shows "Move the pointer to pick"
+  only when it can be the viewer's own press (pointer over the frame or a
+  band, focus in the frame, no arrival counted since the latest shell
+  input), so a page posting starts cannot show it while the viewer uses the
+  shell or while their press would count. A pick's
   composer takes focus when it opens, so the viewer types at once. This bounds forgery, it does not end
   it: a page can post a pick of its own only in comment mode, while no pick
   of the bridge's is pending, and within the browser's user-activation
   window (about five seconds) after the viewer's latest input, once the
   viewer has clicked or pressed a key in the page, has moved the pointer
-  onto or over it (more than 2 px, not by a layout change) since their
-  latest input to the shell, or has Tabbed into it. So after a click on the
+  onto or over it (by a real move, not a layout change), turned the wheel or
+  touched it there since their latest input to the shell, or has Tabbed
+  into it. So after a click on the
   shell's Comment button, or on Cancel or Post in a composer that brings
   comment mode back, a page can forge a pick once the viewer moves the
   pointer within that window, never while it rests where that input left it

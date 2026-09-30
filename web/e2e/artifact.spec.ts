@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, pastShellStart, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -27,6 +27,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     await openArtifact(pb, d.base, artifact.id, 1, mode);
     await expect(a.locator("#count")).toHaveText("0");
+    await pastShellStart(pa);
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
       const f = await contentFrame(p, artifact.id, 2);
@@ -59,6 +60,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     const b = await openArtifact(pb, d.base, artifact.id, 1, mode);
+    for (const p of [pa, pb]) await pastShellStart(p);
     const isPublish = (r: import("@playwright/test").Response) => r.url().endsWith(`/api/artifacts/${artifact.id}/versions`) && r.request().method() === "POST";
     // Both publishes are held until both are in flight, so they race at the daemon.
     let arrived = 0;
@@ -100,6 +102,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
     const a = await fileFrame(pa, artifact.id, 1, "votes/poll.html");
     await expect(a.locator("#count")).toHaveText("0");
+    await pastShellStart(pa);
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
       await expect((await fileFrame(p, artifact.id, 2, "votes/poll.html")).locator("#count")).toHaveText("1");
@@ -164,6 +167,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       addEventListener("message", e => { if (e.data?.type === "artifax:call-result") (window as unknown as { artifaxHeard(m: unknown): void }).artifaxHeard(e.data); });
     });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await pastShellStart(page);
     await f.locator("#burst").click();
     await expect.poll(() => heard.length).toBe(12);
     expect(heard.filter(m => m.ok)).toHaveLength(1);

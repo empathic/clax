@@ -74,6 +74,30 @@ async function clickShell(page: Page, loc: import("@playwright/test").Locator) {
   await page.mouse.up();
 }
 
+type P = { x: number; y: number };
+/** A hand starting from rest: step lengths 1, 1, 2, 3, 5, … px, one event
+ * each about 8 ms apart, from `a` toward `b`; ends on `b`. */
+async function glide(page: Page, a: P, b: P) {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  let s = 0;
+  for (const step of [1, 1, 2, 3, 5, 8, 13, 20, 30, 40, 40, 40, 40, 40, 40, 40]) {
+    s += step;
+    if (s >= len) break;
+    await page.mouse.move(a.x + (dx * s) / len, a.y + (dy * s) / len);
+    await page.waitForTimeout(8);
+  }
+  await page.mouse.move(b.x, b.y);
+}
+
+/** The centre of `loc`, rounded to whole pixels (a press point at which a
+ * boundary event lands exactly 2 px away after a 1, 1 px start). */
+async function whole(loc: import("@playwright/test").Locator) {
+  const b = (await loc.boundingBox())!;
+  return { x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) };
+}
+
 const composer = (page: Page) => page.locator(".composer");
 const quote = (page: Page) => page.locator(".composer .composer-quote");
 const hint = (page: Page) => page.locator(".gesture-hint");
@@ -188,6 +212,104 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(f.locator("#result")).toHaveText("sent");
     expect(((await api(d.base, d.token, `/api/artifacts/${id}/threads`)) as { threads: { sent_to_agent: boolean }[] }).threads.map(t => t.sent_to_agent)).toEqual([true]);
   });
+
+  test(`${mode}: flow 1 with a hand's ease-in move (1, 1, 2 px) from a whole-pixel Post: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 1 ease ${mode}`), mode);
+    await firstPick(page, f);
+    const post = await whole(composer(page).getByRole("button", { name: "Post comment" }));
+    await page.mouse.move(post.x, post.y, { steps: 10 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(composer(page)).toHaveCount(0);
+    await page.waitForTimeout(100);
+    await glide(page, post, await centre(f, "#p2"));
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(quote(page)).toContainText("Second paragraph");
+  });
+
+  test(`${mode}: flow 4 with a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 4 ease ${mode}`), mode);
+    await firstPick(page, f);
+    const cancel = await whole(composer(page).getByRole("button", { name: "Cancel" }));
+    await page.mouse.move(cancel.x, cancel.y, { steps: 10 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(composer(page)).toHaveCount(0);
+    await page.waitForTimeout(100);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(hint(page)).toHaveText("Move the pointer to pick");
+    await glide(page, cancel, await centre(f, "#p2"));
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(quote(page)).toContainText("Second paragraph");
+  });
+
+  test(`${mode}: flow 6 variant, then a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 6b ease ${mode}`), mode);
+    await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+    const c = await whole(f.locator("#open"));
+    await page.mouse.move(c.x, c.y, { steps: 10 });
+    await page.keyboard.type("Sam", { delay: 120 });
+    await page.waitForTimeout(300);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(hint(page)).toHaveText("Move the pointer, then click again");
+    await glide(page, c, { x: c.x + 14, y: c.y });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
+  });
+
+  test(`${mode}: flow 6 variant, then a wheel on a band: the page's button works after it (N12)`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 6b wheel ${mode}`), mode);
+    await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+    const c = await whole(f.locator("#open"));
+    await page.mouse.move(c.x, c.y, { steps: 10 });
+    await page.keyboard.type("Sam", { delay: 120 });
+    await page.waitForTimeout(300);
+    await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
+    await page.mouse.wheel(0, 40);
+    await page.waitForTimeout(300);
+    await page.mouse.wheel(0, -40);
+    await page.waitForTimeout(300);
+    const c2 = await whole(f.locator("#open"));
+    await page.mouse.move(c2.x, c2.y);
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
+  });
+
+  for (const how of ["keys typed with the mouse resting on the page", "Post clicked with the mouse"] as const) {
+    test(`${mode}: a finger's first tap on the page after ${how}: works (N12)`, async ({ browser }) => {
+      const ctx = await browser.newContext({ hasTouch: true });
+      const page = await ctx.newPage();
+      const f = await open(page, await publishLive(`Hybrid ${how.slice(0, 4)} ${mode}`), mode);
+      if (how === "Post clicked with the mouse") {
+        await firstPick(page, f);
+        await clickShell(page, composer(page).getByRole("button", { name: "Post comment" }));
+        await expect(composer(page)).toHaveCount(0);
+      } else {
+        await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+        const b = await centre(f, "#open");
+        await page.mouse.move(b.x + 150, b.y + 200, { steps: 10 });
+        await page.keyboard.type("Sam", { delay: 120 });
+        await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
+      }
+      await page.waitForTimeout(700);
+      const target = await centre(f, how === "Post clicked with the mouse" ? "#p2" : "#open");
+      const done = how === "Post clicked with the mouse"
+        ? async () => (await quote(page).count()) > 0 && ((await quote(page).textContent()) ?? "").includes("Second paragraph")
+        : async () => (await f.locator("#result").textContent()) === JSON.stringify({ opened: true });
+      // The tap lands on a band: it counts as the finger's arrival, and its
+      // click, hit-tested after the bands come down, reaches the page.
+      await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
+      await page.touchscreen.tap(target.x, target.y);
+      await expect.poll(done).toBe(true);
+      await ctx.close();
+    });
+  }
 
   for (const delay of [30, 120]) {
     test(`${mode}: flow 6 variant, typing in the name field at ${delay} ms a key with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {

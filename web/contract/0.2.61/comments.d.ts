@@ -109,9 +109,12 @@ declare namespace Claude {
      *   the viewer to click again. Not charged to any budget.
      * - `unavailable` — comments cannot be used from this view right now
      *   (the service is briefly degraded, commenting is switched off for
-     *   this artifact, or the consent prompt could not be shown). One
-     *   retry from a fresh gesture is reasonable; if it repeats, hide
-     *   write affordances for this visit.
+     *   this artifact, or the consent prompt could not be shown). In
+     *   Artifax, also the refusal of {@link Comments.create},
+     *   {@link Comments.reply}, {@link Comments.resolve} and
+     *   {@link Comments.delete} made without the viewer's own click or key
+     *   in the page. One retry from a fresh gesture is reasonable; if it
+     *   repeats, hide write affordances for this visit.
      * - `upstream_error` — anything else: a transient fault, or a
      *   condition retrying cannot fix (the artifact's thread or reply
      *   limit — design for deliberate, viewer-initiated threads, not one

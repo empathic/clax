@@ -551,11 +551,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   }
 }
 
-// A page that, once armed (`arm(verb)`), starts on its own timer at its first
-// `mousemove`: every 250 ms for 6 s it pulls focus into itself and calls
-// sendToClaude ("send") or artifact.publish ("publish"), recording each
-// outcome in `window.res`. `ask()` raises its consent dialog.
-const TIMER_PAGE = `<!doctype html><html><head><title>Timer</title>
+// A page that, once armed (`arm(verb)`, or at load with `armAtLoad`), starts
+// on its own timer at its first `mousemove`: every 250 ms for 6 s it pulls
+// focus into itself and calls sendToClaude ("send") or artifact.publish
+// ("publish"), recording each outcome in `window.res`. `ask()` raises its
+// consent dialog.
+const timerPage = (armAtLoad?: "send" | "publish") => `<!doctype html><html><head><title>Timer</title>
 <style>body{margin:0;font:16px/24px sans-serif}main{padding:16px}</style></head>
 <body><main><h1 id="t">A page with a timer</h1><p id="p">Some text to pick.</p></main><div style="height:1500px"></div>
 <script>(async () => {
@@ -576,8 +577,10 @@ const TIMER_PAGE = `<!doctype html><html><head><title>Timer</title>
     };
     tick();
   }, { once: true });
+  ${armAtLoad ? `window.arm(${JSON.stringify(armAtLoad)});` : ""}
   document.body.dataset.ready = "yes";
 })();</script></body></html>`;
+const TIMER_PAGE = timerPage();
 
 /** Drops `text` at (x, y) of the shell's viewport, as a drag from another
  * application does (no pointer or key event reaches the shell). */
@@ -687,8 +690,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await presses()).toBe(before);
   });
 
-  test(`${mode}: a page posting pick starts on a timer cannot keep the hint on screen (N10)`, async ({ page }) => {
+  test(`${mode}: a page posting pick starts cannot show the hint while the viewer is idle on a shell control, moves over the shell, or types in it (N10)`, async ({ page }) => {
     const id = await publishLive(`Hint ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    await page.addInitScript(() => {
+      if (window.top !== window) return;
+      const w = window as unknown as { hints: number };
+      w.hints = 0;
+      new MutationObserver(ms => { for (const m of ms) for (const n of m.addedNodes) if (n instanceof Element && n.matches(".gesture-hint")) w.hints++; })
+        .observe(document, { childList: true, subtree: true });
+    });
     const f = await openReady(page, id, mode);
     // On comment mode, the page posts a pick start of its own every 100 ms.
     await f.evaluate(() => {
@@ -697,18 +707,53 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         if (e.data?.type === "artifax:comment-mode" && e.data.on) setInterval(() => parent.postMessage({ type: "artifax:pick-start", pickId: `spam${n++}` }, "*"), 100);
       });
     });
-    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    const comment = page.getByRole("button", { name: "Comment", exact: true });
+    const cb = (await comment.boundingBox())!;
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 4 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(comment).toHaveAttribute("aria-pressed", "true");
+    // Idle on the Comment button.
+    await page.waitForTimeout(1_500);
+    // Moving over the shell's sidebar and header.
+    const name = page.getByRole("textbox", { name: "Your name" });
+    const nb = (await name.boundingBox())!;
+    for (let i = 0; i < 20; i++) { await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await page.waitForTimeout(100); }
+    // Typing in the name field, with the pointer resting on the page.
+    await page.mouse.down();
+    await page.mouse.up();
+    const fb = await frameBox(page);
+    await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height - 40, { steps: 6 });
+    await name.pressSequentially("Sam Smith", { delay: 120 });
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => (window as unknown as { hints: number }).hints)).toBe(0);
+  });
+
+  test(`${mode}: the viewer's own second refused press in the page, after the hint has gone, shows the hint again (N10)`, async ({ page }) => {
+    const id = await publishLive(`Hint again ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id, mode);
+    const composer = await pickPara(page, f);
+    const cancel = composer.getByRole("button", { name: "Cancel" });
+    const cb = (await cancel.boundingBox())!;
+    await page.mouse.move(Math.round(cb.x + cb.width / 2), Math.round(cb.y + cb.height / 2), { steps: 6 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(composer).toHaveCount(0);
+    // Past the double-click interval the hole is open: the press reaches the
+    // page, whose pick is refused.
+    await page.waitForTimeout(700);
+    await page.mouse.down();
+    await page.mouse.up();
     const hint = page.locator(".gesture-hint");
     await expect(hint).toHaveText("Move the pointer to pick");
     await expect(hint).toHaveCount(0, { timeout: 4_000 });
-    // The viewer is idle: it does not come back.
-    for (let i = 0; i < 15; i++) {
-      expect(await hint.count()).toBe(0);
-      await page.waitForTimeout(100);
-    }
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(hint).toHaveText("Move the pointer to pick");
+    await expect(composer).toHaveCount(0);
   });
 
-  test(`${mode}: a touch tap that lands on a band shows no hint (N6)`, async ({ browser }) => {
+  test(`${mode}: a touch tap that lands on a band counts as the finger's arrival: it opens the composer (N12)`, async ({ browser }) => {
     const id = await publishLive(`Touch band ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
     const ctx = await browser.newContext({ hasTouch: true });
     const page = await ctx.newPage();
@@ -723,9 +768,145 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(bb.x + bb.width / 2 + 40, bb.y + 60, { steps: 6 });
     await page.keyboard.press("S");
     await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
+    // The tap lowers the bands, and its click, hit-tested after, reaches the page.
     await page.touchscreen.tap(bb.x + bb.width / 2, bb.y + bb.height / 2);
-    await page.waitForTimeout(600);
-    await expect(page.locator(".gesture-hint")).toHaveCount(0);
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
     await ctx.close();
+  });
+}
+
+/** Stores the page's comments grant: the page raises its consent dialog and
+ * the viewer allows it. */
+async function grant(page: Page, f: Frame) {
+  await f.evaluate(() => { void (window as unknown as { ask(): Promise<unknown> }).ask(); });
+  const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+  await expect(allow).toBeEnabled();
+  await allow.click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+}
+
+/** After the page's timer has run: nothing was sent to the agent (and the
+ * page was refused at the gesture check, before any consent dialog), or the
+ * artifact is still at v1. */
+async function expectRefused(page: Page, f: Frame | null, id: string, verb: "send" | "publish") {
+  if (verb === "send") {
+    expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    if (f) expect(await f.evaluate(() => (window as unknown as { res: string[] }).res)).not.toContain("ok");
+  } else {
+    const cur = ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
+    expect(cur).toBe(1);
+  }
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const verb of ["send", "publish"] as const) {
+    const call = verb === "send" ? "sendToClaude" : "artifact.publish";
+    for (const how of ["a composition, then its commit", "a commit alone (the emoji picker, dictation)"] as const) {
+      test(`${mode}: ${how} from an input method into the name field, then a move onto the page, gives the page no strict gesture for ${call} (N11)`, async ({ page }) => {
+        const id = await publishLive(`IME ${verb} ${how.slice(0, 8)} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
+        const f = await openArtifact(page, d.base, id, 1, mode);
+        await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
+        if (verb === "send") await grant(page, f);
+        // Focus in the name field, by the viewer's click.
+        const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+        await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 8 });
+        await page.mouse.down();
+        await page.mouse.up();
+        await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
+        // Quiet: more than 5.5 s with no input to the shell before the commit.
+        await page.waitForTimeout(6_000);
+        const cdp = await page.context().newCDPSession(page);
+        if (how.startsWith("a composition")) {
+          await cdp.send("Input.imeSetComposition", { text: "かな", selectionStart: 2, selectionEnd: 2 });
+          await page.waitForTimeout(150);
+          await cdp.send("Input.insertText", { text: "仮名" });
+        } else {
+          await cdp.send("Input.insertText", { text: "👍" });
+        }
+        await cdp.detach();
+        // The viewer moves over the page; the page's timer starts.
+        const fb = await frameBox(page);
+        await page.mouse.move(fb.x + 150, fb.y + 300, { steps: 10 });
+        await page.waitForTimeout(6_500);
+        await expectRefused(page, f, id, verb);
+      });
+    }
+
+    for (const how of ["a key", "a click"] as const) {
+      test(`${mode}: ${how} on the shell before its script runs, then a move onto the page as it loads, gives the page no strict gesture for ${call} (N13)`, async ({ page }) => {
+        const id = await publishLive(`Load ${verb} ${how} ${mode}`, timerPage(verb), { comments: {}, artifact: {} });
+        // Learn the frame's box on a first load; the layout is the same next time.
+        const f0 = await openArtifact(page, d.base, id, 1, mode);
+        await expect(f0.locator("body")).toHaveAttribute("data-ready", "yes");
+        const fb = await frameBox(page);
+        // Reload with the shell's script held back until the viewer's input.
+        let release!: () => void;
+        const held = new Promise<void>(r => { release = r; });
+        await page.route("**/_artifax/shell/index-*.js", async route => { await held; await route.continue(); });
+        await page.goto(`${d.base}/a/${id}`, { waitUntil: "commit" });
+        await page.waitForTimeout(300);
+        if (how === "a key") await page.keyboard.press("a");
+        else { await page.mouse.move(40, 40); await page.mouse.down(); await page.mouse.up(); }
+        release();
+        // The viewer moves over the page as it shows; its timer starts.
+        for (let i = 0; i < 12; i++) {
+          await page.waitForTimeout(250);
+          await page.mouse.move(fb.x + fb.width / 2 + (i % 2) * 30, fb.y + fb.height / 2 + i * 5, { steps: 3 });
+        }
+        await page.waitForTimeout(4_000);
+        await expectRefused(page, null, id, verb);
+      });
+    }
+
+    for (const from of ["the shell", "the page"] as const) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
+      const id = await publishLive(`Other frame ${verb} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
+      const f = await openArtifact(page, d.base, id, 1, mode);
+      await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
+      if (verb === "send") await grant(page, f);
+      // A frame of another origin beside the name field, as an extension injects.
+      const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+      const xf = { x: nb.x, y: nb.y + nb.height + 40, w: 180, h: 50 };
+      const src = d.base.replace("localhost", "127.0.0.1") + "/healthz";
+      await page.evaluate(({ url, r }) => {
+        const i = document.createElement("iframe");
+        i.src = url;
+        Object.assign(i.style, { position: "fixed", left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px`, zIndex: "9999", background: "white" });
+        document.body.appendChild(i);
+      }, { url: src, r: xf });
+      // Focus where the viewer left it: the name field, or the page's text.
+      const at = from === "the shell" ? { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 } : await (async () => { const b = (await f.locator("#p").boundingBox())!; return { x: b.x + 20, y: b.y + b.height / 2 }; })();
+      await page.mouse.move(at.x, at.y, { steps: 8 });
+      await page.mouse.down();
+      await page.mouse.up();
+      await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
+      await page.waitForTimeout(6_000);
+      await page.mouse.move(xf.x + 40, xf.y + 20, { steps: 5 });
+      await page.mouse.down();
+      await page.mouse.up();
+      const fb = await frameBox(page);
+      await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2, { steps: 10 });
+      await page.waitForTimeout(6_500);
+      await expectRefused(page, f, id, verb);
+    });
+  }
+
+  test(`${mode}: after a click in the page, a wheel over the shell and a click back in the page still count`, async ({ page }) => {
+    const id = await publishLive(`Wheel shell ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id, mode);
+    const pb = (await f.locator("#para").boundingBox())!;
+    await page.mouse.move(pb.x + 20, pb.y + pb.height / 2, { steps: 8 });
+    await page.mouse.down();
+    await page.mouse.up();
+    // Focus stays in the page while the viewer scrolls the shell's header.
+    const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+    await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 8 });
+    await page.mouse.wheel(0, 40);
+    await page.waitForTimeout(200);
+    const bb = (await f.locator("#b").boundingBox())!;
+    await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 8 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
   });
 }

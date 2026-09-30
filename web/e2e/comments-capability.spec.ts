@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, pastShellStart, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -84,6 +84,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
   test(`${mode}: create asks once, then posts as the viewer`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Notes ${mode}`, BOARD, { comments: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await pastShellStart(page);
     await f.locator(".note").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
     const allowed = Date.now();
@@ -132,6 +133,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     // even a thread its own page wrote.
     const other = await page.context().newPage();
     const g = await openArtifact(other, d.base, artifact.id, 1, "sandbox", { lan: true });
+    await pastShellStart(other);
     await expect(other.locator(".section-open .thread-card")).toHaveCount(2);
     const refused = await viewerDoes(other, g, () => {
       (window as any).viewerAct = async (c: any) => {
