@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MAX_PAGE_BYTES, NO_GESTURE, artifactHandler } from "./artifact";
-import { frameGesture } from "./gesture";
+import { MAX_PAGE_BYTES, NO_GESTURE, SHELL_RECENT, artifactHandler } from "./artifact";
+import { frameGestureStrict } from "./gesture";
 
 // The viewer's gesture check itself is gesture.test.ts's; here it is a switch.
-vi.mock("./gesture", () => ({ frameGesture: vi.fn(() => true) }));
-const gesture = (on: boolean) => vi.mocked(frameGesture).mockReturnValue(on);
+vi.mock("./gesture", () => ({ SHELL_QUIET_MS: 5_500, frameGestureStrict: vi.fn(() => "ok") }));
+const gesture = (g: "ok" | "no_gesture" | "shell_input_recent") => vi.mocked(frameGestureStrict).mockReturnValue(g);
 import { forgetBudgets } from "./budget";
 import type { CapEnv } from "./host";
 
@@ -43,7 +43,7 @@ const posts = (calls: { init: RequestInit }[]) => calls.filter(c => c.init.metho
 describe("artifact.publish in the shell", () => {
   const fresh = () => { sessionStorage.clear(); forgetBudgets(); };
   beforeEach(fresh);
-  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); fresh(); gesture(true); });
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers(); fresh(); gesture("ok"); });
 
   it("publishes with the shown version, marks the page as the publisher, and reloads", async () => {
     vi.useFakeTimers();
@@ -212,12 +212,14 @@ describe("artifact.publish in the shell", () => {
     expect(calls.length).toBe(n);
   });
 
-  it("refuses a publish without the viewer's latest input in the page (on load, on a timer, after input to the shell)", async () => {
+  it("refuses a publish without the strict gesture: none (on load, on a timer), or shell input within the quiet time", async () => {
     const calls = stub(ok);
-    gesture(false);
+    gesture("no_gesture");
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "rate_limited", message: NO_GESTURE });
+    gesture("shell_input_recent");
+    await expect(artifactHandler(env(), null as never).call("publish", [DOC])).rejects.toMatchObject({ code: "shell_input_recent", message: SHELL_RECENT });
     expect(calls).toHaveLength(0);
-    gesture(true);
+    gesture("ok");
     await expect(artifactHandler(env(), null as never).call("publish", [DOC])).resolves.toEqual({ version: "4" });
   });
 

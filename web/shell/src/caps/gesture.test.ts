@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { forgetGestures, frameGesture, noteShellInput, noteShellKey, notePointerAt, notePointerOver, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
+import { SHELL_QUIET_MS, forgetGestures, frameGesture, frameGestureStrict, noteQuietBreak, noteShellInput, noteShieldPress, noteShellKey, notePointerAt, notePointerOver, onShieldPress, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
 
 const active = (on: boolean) => Object.defineProperty(navigator, "userActivation", { value: { isActive: on }, configurable: true });
 const nextTask = () => new Promise(r => setTimeout(r, 0));
@@ -243,53 +243,138 @@ describe("frame gestures", () => {
     for (const k of ["Shift", "Control", "Meta", "Escape", "a"]) expect(noteShellKey(key(k)), k).toBe(true);
   });
 
+  it("does not count a boundary event at the spot of the previous one: a layout change under a resting pointer (N1)", () => {
+    // The pointer rests on the page; the page raises its consent dialog under
+    // it, the viewer answers with a key, and the dialog goes.
+    clickShell();
+    arrive(300, 250);
+    notePointerOver(button, 300, 250);
+    noteShellInput();
+    notePointerOver(frame, 300, 250);
+    pull();
+    expect(frameGesture()).toBe(false);
+  });
+
+  it("does not count a pin brought under a pointer that moved unseen inside the page, then taken away (N1, typing first)", () => {
+    clickShell();
+    arrive(300, 250);
+    noteShellInput(); // typing in the shell; the pointer then moves inside the page, unseen
+    notePointerOver(button, 320, 150); // a pin the page scrolled under it
+    notePointerOver(frame, 320, 150); // and away
+    pull();
+    expect(frameGesture()).toBe(false);
+  });
+
+  it("counts an arrival at the spot of a move just before it (the shield lowered by that move)", () => {
+    clickShell(CANCEL);
+    notePointerAt(CANCEL.x - 20, CANCEL.y);
+    notePointerOver(frame, CANCEL.x - 20, CANCEL.y);
+    pull();
+    expect(frameGesture()).toBe(true);
+  });
+
+  describe("the strict tier", () => {
+    let t = 0;
+    beforeEach(() => { t = 100_000; vi.spyOn(performance, "now").mockImplementation(() => t); });
+    afterEach(() => { vi.restoreAllMocks(); });
+
+    it("needs frameGesture and no trusted shell input for 5.5 s", () => {
+      expect(SHELL_QUIET_MS).toBe(5_500);
+      clickShell();
+      arrive();
+      pull();
+      expect(frameGesture()).toBe(true);
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      t += 5_499;
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      t += 1;
+      expect(frameGestureStrict()).toBe("ok");
+      // A key the shell forwards, a release or a wheel restarts the wait.
+      noteQuietBreak();
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      setForwardedKeys(e => e.key === "Alt");
+      t += 6_000;
+      expect(noteShellKey(key("Alt"))).toBe(false);
+      expect(frameGesture()).toBe(true);
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      t += 6_000;
+      expect(frameGestureStrict()).toBe("ok");
+    });
+
+    it("is no_gesture without frameGesture", () => {
+      t += 10_000;
+      expect(frameGestureStrict()).toBe("no_gesture");
+    });
+  });
+
   describe("the shield", () => {
     let stage: HTMLDivElement;
     let el: HTMLDivElement;
+    let bands: HTMLDivElement[];
     beforeEach(() => {
       stage = document.createElement("div");
-      stage.getBoundingClientRect = () => new DOMRect(0, 0, 500, 400);
       el = document.createElement("div");
+      bands = [0, 1, 2, 3].map(() => document.createElement("div"));
+      el.append(...bands);
       stage.append(el);
       document.body.append(stage);
       registerShield(el);
     });
     afterEach(() => stage.remove());
 
-    it("rises under the pointer at a press on a control over the frame, and falls when the pointer leaves its square", () => {
+    it("rises at shell input over the frame's box with a 9 px hole under the pointer, and falls on the next move", () => {
       clickShell(CANCEL);
       raiseShieldIfOverFrame();
       expect(shielded()).toBe(true);
-      expect(el.style).toMatchObject({ display: "block", left: `${CANCEL.x - 4}px`, top: `${CANCEL.y - 4}px`, width: "9px", height: "9px" });
-      // The composer closes: the pointer is over the shield, not the frame.
-      notePointerOver(el, CANCEL.x, CANCEL.y);
-      notePointerAt(CANCEL.x + 3, CANCEL.y + 3);
-      expect(shielded()).toBe(true);
-      // The first move out of it arrives on the frame at a new position.
-      notePointerOver(frame, CANCEL.x - 30, CANCEL.y - 30);
+      expect(el.style.display).toBe("block");
+      const [top, bottom, left, right] = bands;
+      expect(top.style).toMatchObject({ top: "0px", height: `${CANCEL.y - 4}px` });
+      expect(bottom.style.top).toBe(`${CANCEL.y + 5}px`);
+      expect(left.style).toMatchObject({ top: `${CANCEL.y - 4}px`, width: `${CANCEL.x - 4}px`, height: "9px" });
+      expect(right.style.left).toBe(`${CANCEL.x + 5}px`);
+      // The composer closes: the pointer, in the hole, is over the frame.
+      notePointerOver(frame, CANCEL.x, CANCEL.y);
+      pull();
+      expect(frameGesture()).toBe(false);
+      // The first move out of the hole lands on a band and lowers it; the
+      // arrival that follows counts.
+      notePointerAt(CANCEL.x + 6, CANCEL.y);
       expect(shielded()).toBe(false);
       expect(el.style.display).toBe("");
-      pull();
+      notePointerOver(frame, CANCEL.x + 6, CANCEL.y);
       expect(frameGesture()).toBe(true);
     });
 
-    it("rises for a key press with the pointer resting on a shell element over the frame (the consent dialog's backdrop)", () => {
-      notePointerOver(button, 300, 250);
-      notePointerAt(300, 250);
+    it("rises for keys typed with the pointer resting on the page, under the pointer", () => {
+      clickShell();
+      arrive(300, 250);
       noteShellInput();
       raiseShieldIfOverFrame();
       expect(shielded()).toBe(true);
+      expect(bands[2].style.width).toBe("296px");
     });
 
-    it("does not rise for input outside the frame's box, for touch, or with the pointer on the page itself", () => {
+    it("does nothing at a press on a band: not shell input, the shield falls, and the viewer is told", () => {
+      const hint = vi.fn();
+      const off = onShieldPress(hint);
+      clickShell();
+      arrive(300, 250);
+      pull();
+      expect(frameGesture()).toBe(true);
+      raiseShieldIfOverFrame();
+      noteShieldPress(340, 250);
+      expect(hint).toHaveBeenCalledTimes(1);
+      expect(shielded()).toBe(false);
+      expect(frameGesture()).toBe(true);
+      expect(frameGestureStrict()).toBe("shell_input_recent");
+      off();
+    });
+
+    it("does not rise for input outside the frame's box, or for touch", () => {
       clickShell();
       raiseShieldIfOverFrame();
       expect(shielded()).toBe(false);
       notePointerAt(CANCEL.x, CANCEL.y, "touch");
-      noteShellInput();
-      raiseShieldIfOverFrame();
-      expect(shielded()).toBe(false);
-      arrive(480, 200);
       noteShellInput();
       raiseShieldIfOverFrame();
       expect(shielded()).toBe(false);

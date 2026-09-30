@@ -97,6 +97,10 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
     setClipUrl(u);
     return () => URL.revokeObjectURL(u);
   }, [draft.clip]);
+  // The viewer types at once: focus moves from the page to the textarea when
+  // the composer opens (a script focus, not the viewer's input to the shell).
+  const textarea = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => { textarea.current?.focus(); }, []);
   const quote = draft.anchor.quote?.replace(/\s+/g, " ").trim();
   return (
     <form class="composer" onSubmit={async e => {
@@ -110,7 +114,7 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
       <p class="composer-quote">{draft.label ?? (quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "custom" ? draft.anchor.custom_name : draft.anchor.kind === "area" ? areaLabel(draft.anchor) : draft.anchor.selector)}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : draft.capturing ? <p class="muted small">Taking the screenshot…</p> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
-      <textarea autoFocus rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}
+      <textarea ref={textarea} rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}
         onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
       <div class="actions">
         <button type="button" onClick={onCancel}>Cancel</button>

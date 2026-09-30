@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
-import { contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -22,6 +22,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(card).toContainText("Split this card in two.");
     const threads = await (await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`)).json();
     expect(threads.threads[0].anchor.selector).toBe("#goals");
+    await reach(page, f.locator(".note"));
     await f.locator(".note").click();
     await expect(f.locator("#status")).toHaveText("not_granted");
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -58,6 +59,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     await f.locator(".note").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
     await expect(f.locator("#status")).toHaveText("created string");
+    await reach(page, f.locator(".note"));
     await f.locator(".note").click();
     await expect(f.locator("#status")).toHaveText("created string");
     await expect(page.getByRole("dialog")).toHaveCount(0);

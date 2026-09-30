@@ -5,7 +5,7 @@ import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, takePick, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
-import { frameGesture, registerShield, setForwardedKeys } from "./caps/gesture";
+import { frameGesture, onShieldPress, registerShield, setForwardedKeys } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
@@ -48,6 +48,11 @@ function setUrl(url: string, push = false): boolean {
  * jump is given up (settable for tests). */
 export const pageWait = { ms: 5000 };
 
+/** How long the gesture hint stays. */
+const HINT_MS = 2_500;
+export const MOVE_TO_PICK = "Move the pointer to pick";
+export const MOVE_TO_CLICK = "Move the pointer, then click again";
+
 export default function ArtifactView({ id, pinnedVersion, file: startFile = INDEX_FILE }: Props) {
   const [data, setData] = useState<{ artifact: Artifact; versions: Version[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +78,22 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   busyRef.current = busy;
   const whileBusy = <T,>(p: Promise<T>): Promise<T> => { setBusy(n => n + 1); return p.finally(() => setBusy(n => n - 1)); };
   const [notice, setNotice] = useState<string | null>(null);
+  // A brief hint when the viewer's press did not count as their gesture in
+  // the page (a refused pick in comment mode, a press on the shield): the
+  // shell could not see the pointer move there since their input to it.
+  const [hint, setHint] = useState<string | null>(null);
+  const hintTimer = useRef(0);
+  const showHint = (text: string) => {
+    setHint(text);
+    clearTimeout(hintTimer.current);
+    hintTimer.current = window.setTimeout(() => setHint(null), HINT_MS);
+  };
+  const showHintRef = useRef(showHint);
+  showHintRef.current = showHint;
+  useEffect(() => {
+    const off = onShieldPress(() => showHintRef.current(commentingRef.current ? MOVE_TO_PICK : MOVE_TO_CLICK));
+    return () => { off(); clearTimeout(hintTimer.current); };
+  }, []);
   const [me, setMe] = useState<Viewer | null>(null);
   // A success clears only a notice its own kind of call raised, so the viewer
   // lookup finishing after a failed thread load cannot hide that failure.
@@ -457,21 +478,24 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       }
       case "artifax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
-        // viewer's latest input went to the frame (`frameGesture`). So a page
-        // can post a pick of its own only while no pick of the bridge's is
-        // pending and within the user-activation window (about five seconds)
-        // after the viewer's latest input, once the viewer has clicked or
-        // pressed a key in the page, moved the pointer onto or over it (more
-        // than 2 px) since their latest input to the shell, or Tabbed into
-        // it. The page can move focus into itself, so after a click on the
-        // shell's Comment button, or on Cancel or Post in a composer that
-        // brings comment mode back, it can forge a pick once the pointer
-        // moves, never while it rests where that click was. The composer
-        // then shows the pick's quote or area label and screenshot, not where
-        // it anchors, and nothing is posted without the viewer. The bridge
-        // never has two picks in flight, so a start arriving while another is
-        // pending means one was forged: both are refused.
-        if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64 && frameGesture()) {
+        // viewer's latest input went to the frame (`frameGesture`, the
+        // composer tier); a refused start shows the viewer the hint. So a
+        // page can post a pick of its own only while no pick of the bridge's
+        // is pending and within the user-activation window (about five
+        // seconds) after the viewer's latest input, once the viewer has
+        // clicked or pressed a key in the page, moved the pointer onto or
+        // over it (more than 2 px, not by a layout change) since their latest
+        // input to the shell, or Tabbed into it. The page can move focus into
+        // itself, so after a click on the shell's Comment button, or on
+        // Cancel or Post in a composer that brings comment mode back, it can
+        // forge a pick once the pointer moves, never while it rests where
+        // that input left it. The composer then shows the pick's quote or
+        // area label and screenshot, not where it anchors, and nothing is
+        // posted without the viewer. The bridge never has two picks in
+        // flight, so a start arriving while another is pending means one was
+        // forged: both are refused.
+        if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64) {
+          if (!frameGesture()) { showHint(MOVE_TO_PICK); break; }
           const now = Date.now();
           for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);
           if (startedPicks.current.size) startedPicks.current.clear();
@@ -659,7 +683,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
             : missing
               ? <p class="empty">v{shown} has no page {missing}. <a href={shellPath(id, pinnedVersion, INDEX_FILE)}>Open the index</a></p>
               : <Frame id={id} n={shown} origin={origin} file={startFile} hash={startHash} frameRef={frameRef} onLoad={onFrameLoad} />}
-          {!deleted && !missing && <div class="frame-shield" aria-hidden="true" ref={registerShield} />}
+          {!deleted && !missing && <div class="frame-shield" aria-hidden="true" ref={registerShield}><div /><div /><div /><div /></div>}
+          {hint && <p class="gesture-hint" role="status">{hint}</p>}
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} onHover={t => setHovered(t?.id ?? null)} />}
           {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {

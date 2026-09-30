@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -57,6 +57,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(dialog).toContainText("post comments on this artifact under your name");
     await dialog.getByRole("button", { name: "Don't allow" }).click();
     await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
+    await reach(page, frame.locator("#ask"));
     await frame.locator("#ask").click();
     await expect(frame.locator("#out")).toHaveText(JSON.stringify({ comments: "denied" }));
     await expect(page.getByRole("dialog")).toHaveCount(0);

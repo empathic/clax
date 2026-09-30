@@ -215,7 +215,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Releasing Option returns to the line under the pointer.
     await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
     await stillCommenting(page, frame);
-    await page.mouse.move(fb.x + 62, fb.y + 202);
+    // In steps, as a hand moves: the shell's bands over the page take the
+    // first move after the Cancel click (web/shell/src/caps/gesture.ts).
+    await page.mouse.move(fb.x + 62, fb.y + 202, { steps: 4 });
     await expect.poll(async () => { const o = await outline(); return o.shown && o.h < 40; }).toBe(true);
   });
 }

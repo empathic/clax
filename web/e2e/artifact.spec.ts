@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -206,9 +206,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(download.suggestedFilename()).toBe("q3 report.csv");
     expect(readFileSync(await download.path(), "utf8")).toBe("quarter,revenue\nQ3,120\n");
     await expect(f.locator("#status")).toHaveText("saved");
+    await reach(page, f.locator("#csv"));
     await f.locator("#csv").click();
     await page.getByRole("dialog").getByRole("button", { name: "Cancel" }).click();
     await expect(f.locator("#status")).toHaveText("declined");
+    await reach(page, f.locator("#exe"));
     await f.locator("#exe").click();
     await expect(f.locator("#status")).toHaveText("rejected_extension");
     await expect(page.getByRole("dialog")).toHaveCount(0);

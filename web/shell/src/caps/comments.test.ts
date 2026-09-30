@@ -22,8 +22,13 @@ const frame = document.createElement("iframe");
 frame.className = "frame";
 const control = document.createElement("button");
 document.body.append(frame, control);
-const gesture = (on: boolean) => {
+/** The shell's clock (`performance.now`, spied in `beforeEach`): a gesture
+ * comes `quiet` enough after any shell input for the strict tier unless told
+ * otherwise. */
+let clock = 0;
+const gesture = (on: boolean, quiet = true) => {
   Object.defineProperty(navigator, "userActivation", { value: { isActive: true }, configurable: true });
+  if (on && quiet) clock += 10_000;
   // The pointer really moves from the shell onto the frame (from (900, 10) to (100, 100)).
   if (on) { control.focus(); notePointerOver(control, 900, 10); notePointerAt(900, 10); notePointerOver(frame, 100, 100); frame.focus(); } else { notePointerOver(control, 900, 10); notePointerAt(900, 10); control.focus(); noteShellInput(); }
 };
@@ -52,7 +57,7 @@ const lastUrl = () => (fetch as unknown as Fetch).mock.calls.at(-1)![0] as strin
 const threadsPushed = (posted: ShellToBridge[]) => posted.filter(m => m.type === "artifax:event" && m.topic === "threads") as unknown as { data: { list: { id: string; anchor: string }[] } }[];
 
 describe("comments in the shell", () => {
-  beforeEach(() => { gesture(true); });
+  beforeEach(() => { vi.spyOn(performance, "now").mockImplementation(() => clock); gesture(true); });
   afterEach(() => {
     vi.unstubAllGlobals();
     sessionStorage.clear();
@@ -162,6 +167,9 @@ describe("comments in the shell", () => {
     state.threads = [T("01J9C")];
     expect(await h.call("reply", [threadId, "plain"])).toMatchObject({ commentId: expect.any(String) });
     state.threads = [T("01J9C", {}, { sent_to_agent: true })];
+    // Within the quiet time after the shell input: the viewer can click again.
+    gesture(true, false);
+    await expect(h.call("reply", [threadId, "soon"])).rejects.toMatchObject({ code: "shell_input_recent" });
     gesture(true);
     expect(await h.call("reply", [threadId, "now"])).toMatchObject({ commentId: expect.any(String) });
   });
@@ -196,6 +204,9 @@ describe("comments in the shell", () => {
     expect(lookups()).toBe(2);
     gesture(false);
     await expect(h.call("sendToClaude", [{ anchor: T("x").anchor, text: "please" }])).rejects.toMatchObject({ code: "claude_unavailable" });
+    expect(urls.some(u => u.endsWith("/threads"))).toBe(false);
+    gesture(true, false);
+    await expect(h.call("sendToClaude", [{ anchor: T("x").anchor, text: "please" }])).rejects.toMatchObject({ code: "shell_input_recent" });
     expect(urls.some(u => u.endsWith("/threads"))).toBe(false);
     gesture(true);
     const r = (await h.call("sendToClaude", [{ anchor: T("x").anchor, text: "please" }])) as { threadId: string };

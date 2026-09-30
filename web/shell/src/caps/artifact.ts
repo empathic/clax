@@ -9,17 +9,18 @@
 // event, which carries `by_page`.
 //
 // Two guards run before any request. A publish is the last act of the
-// viewer's own interaction with the page: it needs the viewer's latest input
-// to have gone to the page (`frameGesture`, gesture.ts), so a page cannot
-// publish on load (and loop: publish, reload, publish...), on a timer, or on
-// the back of input the viewer gave the shell. And a per-tab budget kept
+// viewer's own interaction with the page: it needs the strict gesture tier
+// (`frameGestureStrict`, gesture.ts), so a page cannot publish on load (and
+// loop: publish, reload, publish...), on a timer, or on the back of input the
+// viewer gave the shell; within `SHELL_QUIET_MS` of such input it rejects
+// `shell_input_recent`, and the viewer can click again. And a per-tab budget kept
 // across reloads allows one publish per [`PUBLISH_GAP_MS`] and
 // [`PUBLISH_PER_MINUTE`] a minute.
 import { INDEX_FILE } from "../../../bridge/src/protocol";
 import { type Version, getArtifact } from "../api";
 import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
-import { frameGesture } from "./gesture";
+import { SHELL_QUIET_MS, frameGestureStrict } from "./gesture";
 import type { HandlerFactory } from "./host";
 
 /** Largest page a publish accepts, as the daemon's per-file cap. */
@@ -33,6 +34,7 @@ export const PUBLISH_GAP_MS = 2_000;
 /** Most publishes of one artifact from one tab in any minute. */
 export const PUBLISH_PER_MINUTE = 10;
 export const NO_GESTURE = "publish from the viewer's own input in the page, never on load or a timer";
+export const SHELL_RECENT = `publish from the viewer's click in the page, not within ${SHELL_QUIET_MS / 1000} s of their input to the Artifax window; ask them to click again`;
 
 const isHtml = (contentType: string) => contentType.split(";")[0].trim().toLowerCase() === "text/html";
 
@@ -109,7 +111,9 @@ export const artifactHandler: HandlerFactory = env => {
       if (env.files && !(Object.hasOwn(env.files, page) && isHtml(env.files[page].content_type))) {
         throw new CapError("invalid_content", `${page} is not an HTML page of v${env.version}`);
       }
-      if (!frameGesture()) throw new CapError("rate_limited", NO_GESTURE);
+      const g = frameGestureStrict();
+      if (g === "no_gesture") throw new CapError("rate_limited", NO_GESTURE);
+      if (g === "shell_input_recent") throw new CapError("shell_input_recent", SHELL_RECENT);
       const wait = takeSlot(`artifax.publish-budget.v1:${env.aid}`, { gapMs: PUBLISH_GAP_MS, perWindow: { n: PUBLISH_PER_MINUTE, ms: 60_000 } });
       if (wait > 0) throw new CapError("rate_limited", `publishing too often; wait ${seconds(wait)} s and batch changes into one publish`);
       // Counted before the lookup, so this view's own SSE `version` event cannot reload it first.

@@ -1,5 +1,5 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, publish, startDaemon } from "./fixtures";
+import { reach, api, openArtifact, publish, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -27,6 +27,7 @@ async function backOn(page: Page, frame: Frame, sel: string) {
   const toggle = page.getByRole("button", { name: "Comment", exact: true });
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  await reach(page, frame.locator(sel));
   await frame.locator(sel).hover();
   await expect.poll(() => outlined(frame)).toBe(true);
 }

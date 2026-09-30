@@ -137,7 +137,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.getByRole("dialog")).toHaveCount(0);
     const threads = async () => ((await api(d.base, d.token, `/api/artifacts/${id}/threads?include_resolved=true`)) as { threads: { sent_to_agent: boolean }[] }).threads;
     expect(await threads()).toHaveLength(0);
-    // The viewer's own click asks consent and sends.
+    // The viewer's own click in the page within 5.5 s of their click on the
+    // name field is refused with a code the page can show ("click again").
+    const named = Date.now();
+    await f.locator("#b").click();
+    await expect(f.locator("#clicked")).toHaveText("shell_input_recent");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    // Past that, their click asks consent and sends.
+    await page.waitForTimeout(Math.max(0, 5_700 - (Date.now() - named)));
     await f.locator("#b").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
     await expect(f.locator("#clicked")).toHaveText("sent");
@@ -223,7 +230,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 // down, so a scroll-to moves it.
 const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Attacker</title>
 <style>body{margin:0;font:16px/24px sans-serif}main{padding:16px}#empty{height:200px;background:#f8fafc}#target{position:absolute;top:600px;left:40px;margin:0}#spacer{height:3000px}</style></head>
-<body><main><h1 id="t">Attack</h1><p id="para">The viewer's own paragraph, worth a comment.</p><div id="empty"></div><p id="result">-</p><button id="b">Do it</button><h2 id="target">Pinned target</h2><div id="spacer"></div></main>
+<body><main><h1 id="t">Attack</h1><p id="para">The viewer's own paragraph, worth a comment.</p><div id="empty"></div><p id="result">-</p><button id="b">Do it</button> <button id="send">Send</button><h2 id="target">Pinned target</h2><div id="spacer"></div></main>
 <script>(async () => {
   const c = await claude.use("comments");
   const el = document.getElementById("t");
@@ -246,6 +253,10 @@ const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Atta
     : (window.focus(), kind === "open" ? c.openComposer({ element: el }) : c.sendToClaude({ anchor, text: "From the page, not the viewer." }));
   window.go = (kind, delay = 0) => setTimeout(async () => { out.textContent = await act(kind).then(show, e => e.code); }, delay);
   document.getElementById("b").addEventListener("click", async () => { out.textContent = await act("open").then(show, e => e.code); });
+  document.getElementById("send").addEventListener("click", async () => { out.textContent = await act("send").then(show, e => e.code); });
+  // The page raises its own consent dialog (create needs no gesture), and scrolls itself.
+  window.ask = () => c.create({ anchor, text: "Asked by the page." }).then(() => { document.getElementById("t").dataset.asked = "yes"; }, e => { document.getElementById("t").dataset.asked = e.code; });
+  window.scrollPage = dy => scrollBy(0, dy);
   ${askAtLoad ? `c.create({ anchor, text: "Asked at load." }).then(() => { document.getElementById("t").dataset.asked = "yes"; }, e => { document.getElementById("t").dataset.asked = e.code; });` : ""}
   document.getElementById("t").dataset.ready = "yes";
 })().catch(e => { document.getElementById("result").textContent = "setup " + (e.code || e.message); });</script></body></html>`;
@@ -291,7 +302,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await page.waitForTimeout(500);
       await expect(composer).toHaveCount(0);
       // The viewer moves on and clicks another element: that pick counts.
-      await f.locator("#target").click();
+      const tb = (await f.locator("#target").boundingBox())!;
+      await page.mouse.move(tb.x + 20, tb.y + tb.height / 2, { steps: 8 });
+      await page.mouse.down();
+      await page.mouse.up();
       await expect(composer.locator(".composer-quote")).toContainText("Pinned target");
     });
   }
@@ -456,7 +470,80 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const current = async () => ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
     expect(await current()).toBe(1);
     await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
+    // More than 5.5 s after the click on the name field, the viewer's click in the page publishes.
+    await page.waitForTimeout(3_700);
     await f.locator("#save").click();
     await expect.poll(current).toBe(2);
   });
+}
+
+/** The pointer comes to rest on the page at (x, y) of the shell's viewport,
+ * moving there in steps from where it is. */
+async function restAt(page: Page, x: number, y: number) {
+  await page.mouse.move(x, y, { steps: 6 });
+  await page.waitForTimeout(100);
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const key of ["Enter", "Space"] as const) {
+    test(`${mode}: with the pointer resting on the page, the page's own consent dialog answered by ${key} gives it no gesture (A1)`, async ({ page }) => {
+      const id = await publishLive(`A1 ${key} ${mode}`, ATTACKER(false), { comments: {} });
+      const f = await openReady(page, id, mode);
+      await page.getByRole("textbox", { name: "Your name" }).click();
+      const fb = await frameBox(page);
+      await restAt(page, fb.x + fb.width / 2, fb.y + fb.height / 2);
+      // The dialog appears under the resting pointer.
+      await f.evaluate(() => { void (window as unknown as { ask(): Promise<void> }).ask(); });
+      const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+      await expect(allow).toBeEnabled();
+      await page.keyboard.press("Tab");
+      await expect(allow).toBeFocused();
+      await page.keyboard.press(key);
+      await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
+      await page.waitForTimeout(300);
+      await go(f, "send");
+      await expect(f.locator("#result")).not.toHaveText("sent");
+      expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
+      await go(f, "open");
+      await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
+    });
+  }
+
+  for (const order of ["pin, then typing", "typing, then pin"] as const) {
+    test(`${mode}: a pin the page scrolls under the resting pointer and away gives it no gesture on keys typed in the shell (A2, ${order})`, async ({ page }) => {
+      const id = await publishLive(`A2 ${order} ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+      const form = new FormData();
+      form.set("anchor", JSON.stringify({ kind: "element", selector: "#target", quote: "Pinned target", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+      form.set("body", "A pinned note.");
+      form.set("version", "1");
+      expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
+      const f = await openReady(page, id, mode);
+      const pin = page.locator(".thread-pin");
+      await expect(pin).toHaveCount(1);
+      const name = page.getByRole("textbox", { name: "Your name" });
+      await name.click();
+      const pb = (await pin.boundingBox())!;
+      const x = pb.x + pb.width / 2;
+      const y = pb.y + pb.height / 2 - 200;
+      await restAt(page, x, y);
+      const scroll = async (dy: number) => {
+        const before = (await pin.boundingBox())!.y;
+        await f.evaluate(v => { (window as unknown as { scrollPage(dy: number): void }).scrollPage(v); }, dy);
+        await expect.poll(async () => (await pin.boundingBox())?.y ?? before).not.toBe(before);
+        await page.waitForTimeout(150);
+      };
+      if (order === "pin, then typing") {
+        await scroll(200);
+        await name.pressSequentially("Sam", { delay: 60 });
+        await scroll(-200);
+      } else {
+        await name.pressSequentially("Sam", { delay: 60 });
+        await scroll(200);
+        await scroll(-200);
+      }
+      await go(f, "open");
+      await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
+      await expect(page.locator(".composer")).toHaveCount(0);
+    });
+  }
 }

@@ -525,29 +525,39 @@ file under `v/<digits>/` is reachable only through the versioned form):
   when its pick is dropped, and every start is forgotten when comment mode
   ends or a page greets); two starts pending at once are both refused. The
   bridge keeps the shell's window as it was at load, so a page replacing
-  `window.parent` cannot read or alter what it posts. `frameGesture` holds
+  `window.parent` cannot read or alter what it posts. Page calls and picks
+  that need the viewer's gesture use one of two tiers (`caps/gesture.ts`).
+  `frameGesture` (the composer tier: `openComposer`, `compose`, picks) holds
   only when the viewer's latest input went to the frame, as the shell sees
   it from its own trusted events: transient user activation, focus in the
   frame with no pointer or key press in the shell since it entered (only
   the keys the shell forwards to the page excepted), and the viewer able to
   have moved focus there: the pointer arrived on the frame by a real move
-  after the viewer's latest shell input (more than 2 px from where it was at
-  that input, so a shell control vanishing from under a resting pointer is
-  no arrival) and was on it when focus entered or is now; or a Tab or
-  Shift+Tab pressed in the shell. The page's own `window.focus()` counts
-  only under that last condition. After a mouse press (or a key press with
-  the pointer on a shell element) over the frame, the shell keeps a 9 px
-  transparent square under the pointer, beneath its controls, so the
-  viewer's first move out of it arrives on the frame and counts. This
-  bounds forgery, it does not end it: a page can post a pick of its own
-  only in comment mode, while no pick of the bridge's is pending, and within
-  the browser's user-activation window (about five seconds) after the
-  viewer's latest input, once the viewer has clicked or pressed a key in
-  the page, has moved the pointer onto or over it (more than 2 px) since
-  their latest input to the shell, or has Tabbed into it. So after a click
-  on the shell's Comment button, or on Cancel or Post in a composer that
-  brings comment mode back, a page can forge a pick once the viewer moves
-  the pointer within that window, never while it rests where the click was
+  after the viewer's latest shell input (at a spot other than the boundary
+  event just before it, which a layout change under a resting pointer
+  repeats, and more than 2 px from where it was at that input; the shell
+  takes positions from every trusted pointer event, boundary events
+  included) and was on it when focus entered or is now; or a Tab or
+  Shift+Tab pressed in the shell. `frameGestureStrict` (`sendToClaude`, a
+  reply into a sent thread, `artifact.publish`) adds no trusted shell input
+  of any kind (press, release, key, wheel) for 5.5 s, so the activation can
+  only be the frame's; within that time it rejects `shell_input_recent`.
+  After shell input with a mouse over the frame, the shell covers the frame
+  with transparent bands, beneath its controls, leaving a 9 px hole under
+  the pointer: input in the hole reaches the page, the first move out of it
+  lowers the bands and counts, and a press on a band reaches nothing and
+  shows "Move the pointer, then click again"; a pick refused in comment mode
+  shows "Move the pointer to pick". A pick's composer takes focus when it
+  opens, so the viewer types at once. This bounds forgery, it does not end
+  it: a page can post a pick of its own only in comment mode, while no pick
+  of the bridge's is pending, and within the browser's user-activation
+  window (about five seconds) after the viewer's latest input, once the
+  viewer has clicked or pressed a key in the page, has moved the pointer
+  onto or over it (more than 2 px, not by a layout change) since their
+  latest input to the shell, or has Tabbed into it. So after a click on the
+  shell's Comment button, or on Cancel or Post in a composer that brings
+  comment mode back, a page can forge a pick once the viewer moves the
+  pointer within that window, never while it rests where that input left it
   (its script shares the bridge's window, can act then, and controls what
   gets rendered); the composer then shows the pick's quote or area label
   and its screenshot (not where it anchors), and nothing is posted without
@@ -642,10 +652,12 @@ files kept in `web/contract/`:
   `POST /api/artifacts/<aid>/versions` with `if_version` = the version the
   frame is showing; the shell attaches the token only if the viewer is the
   owner (the shell is on localhost). A publish is the last act of the
-  viewer's own interaction with the page: without `frameGesture` (§8) it
-  rejects `rate_limited` before any request, so a page cannot publish on
-  load, on a timer, or on the back of input to the shell; a per-tab budget
-  also allows one publish per 2 s and 10 a minute. Conflict rejects
+  viewer's own interaction with the page: it needs the strict gesture tier
+  (`frameGestureStrict`, §8), so without the viewer's gesture it rejects
+  `rate_limited` and within 5.5 s of their input to the shell
+  `shell_input_recent`, before any request; a page cannot publish on load,
+  on a timer, or on the back of input to the shell. A per-tab budget also
+  allows one publish per 2 s and 10 a minute. Conflict rejects
   `conflict` and the shell reloads to the winner. Read-only viewers (LAN)
   reject `not_writer`. `self` is an alias.
 - **db**: `doc(path)`/`collection(path)` with get, set, update, delete,
@@ -680,7 +692,9 @@ files kept in `web/contract/`:
   Page-written comments are stored with `via_page` and shown and forwarded
   as written by the page; an `@agent` in them is inert. Opening the
   composer, `sendToClaude`, and a reply into a sent thread need the
-  viewer's latest input to have gone to the page (`frameGesture`, §8). A
+  viewer's latest input to have gone to the page: opening the composer the
+  composer tier (`frameGesture`), `sendToClaude` and the reply the strict
+  one (`frameGestureStrict`, which may reject `shell_input_recent`), §8. A
   custom-anchors page is told only the threads on its own page, as handles.
   The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
