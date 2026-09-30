@@ -11,8 +11,8 @@
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
  * rectangle, Option widening with keys the shell forwards, and the keys the
- * viewer types in the page after a pick handed to the shell's composer, see
- * `key-trap.ts`), anchor
+ * viewer types in the page after a pick kept from the page until the shell's
+ * composer has focus, see `key-trap.ts`), anchor
  * resolution (an area's rectangle projected onto its element's current box),
  * the dashed outline of the focused thread's area, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
@@ -126,8 +126,8 @@ import { makeUse } from "./use";
   addEventListener("resize", reflow);
 
   // The keys the viewer types in the page after a pick, until the shell's
-  // composer takes focus, go to that composer, not the page.
-  const keys = new KeyTrap(window, (pickId, k, done) => post({ type: "clax:keys", pickId, keys: k, ...(done ? { done } : {}) }));
+  // composer takes focus, are kept from the page (and dropped).
+  const keys = new KeyTrap(window);
   /** Posts the pick's start with its anchor (the shell opens the composer on
    * it), then starts its clip in the same task, from the page as it is now,
    * and posts the pick with the clip once it is taken. */
@@ -209,6 +209,7 @@ import { makeUse } from "./use";
       }); break;
       // The focused thread's area is outlined once the page has parsed.
       case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
+      case "clax:pick-refused": if (typeof m.pickId === "string") keys.end(m.pickId); break;
       case "clax:key": {
         const k = forwardedKey(m);
         if (k) mode.key(k.key, k.down);

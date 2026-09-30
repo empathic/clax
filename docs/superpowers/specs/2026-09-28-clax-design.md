@@ -536,13 +536,12 @@ file under `v/<digits>/` is reachable only through the versioned form):
   ID once, for its clip only (a pending pick is forgotten when comment mode
   comes back on or a page greets); a second start with the viewer's gesture
   while one is pending and comment mode is off means one was forged, so
-  both are refused and the composer closes. From the pick until focus leaves
-  the page (or 2 s), the bridge keeps every key and text event from the page
-  (`key-trap.ts`, listening on the window before any page script) and
-  forwards the text keys as `clax:keys {pickId, keys, done?}`; the shell
-  puts them, as text only, in the composer that pick's taken start opened,
-  until `done` or 1 s, at most 500, ahead of keys typed in the composer
-  (held until `done`). The
+  both are refused and the composer closes (it stays when the viewer has
+  typed in it). From the pick until focus leaves the page, the shell answers
+  `clax:pick-refused {pickId}`, or 2 s pass, the bridge keeps every key and
+  text event from the page and drops it (`key-trap.ts`, listening on the
+  window before any page script); nothing typed in the page is handed on,
+  and no page text ever enters a composer. The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. Page calls and picks
   that need the viewer's gesture use one of two tiers (`caps/gesture.ts`;

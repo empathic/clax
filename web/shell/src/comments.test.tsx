@@ -1,7 +1,7 @@
 import { render } from "preact";
 import { act } from "preact/test-utils";
 import { describe, expect, it, vi } from "vitest";
-import { Composer, type Draft, MAX_EARLY_KEYS, PIN_RIGHT_ROOM, Pins, earlyKeys, isSubmitKey, nextDraft, submitKeysLabel, typeKeys, withClip, withEarly } from "./comments";
+import { Composer, type Draft, PIN_RIGHT_ROOM, Pins, isSubmitKey, nextDraft, submitKeysLabel, withClip } from "./comments";
 import { Sidebar } from "./sidebar";
 import { type Thread, areaLabel } from "./threads";
 
@@ -114,95 +114,6 @@ describe("page-opened composers", () => {
   });
 });
 
-describe("keys typed in the page before the composer had focus", () => {
-  const d = (quote: string): Omit<Draft, "pickId"> => ({ anchor: { ...anchor, quote }, version: 1, clip: null });
-  it("are taken only as characters, newlines and Backspace, at most the room left", () => {
-    expect(earlyKeys(["V", "i", "a", " ", "é", "😀", "\n", "Backspace"], 100)).toEqual(["V", "i", "a", " ", "é", "😀", "\n", "Backspace"]);
-    expect(earlyKeys(["a", "b", "c"], 2)).toEqual(["a", "b"]);
-    expect(earlyKeys(["a"], 0)).toEqual([]);
-    for (const bad of [["ab"], ["\u0007"], ["\r"], ["Enter"], ["Tab"], [5], [""], "abc", null, { 0: "a" }, Array(MAX_EARLY_KEYS + 1).fill("a")]) expect(earlyKeys(bad, 100)).toBeNull();
-  });
-  it("are typed at the end of the text, Backspace removing a whole character", () => {
-    expect(typeKeys("", ["V", "i", "a"])).toBe("Via");
-    expect(typeKeys("Vi", ["x", "Backspace", "a", "\n"])).toBe("Via\n");
-    expect(typeKeys("a😀", ["Backspace"])).toBe("a");
-    expect(typeKeys("", ["Backspace"])).toBe("");
-  });
-  it("go only to the composer for their pick, until it has all of them", () => {
-    const open: Draft = { pickId: "p1", ...d("a"), early: { keys: ["V"], done: false } };
-    expect(withEarly(open, "p1", ["i"], false)!.early).toEqual({ keys: ["V", "i"], done: false });
-    expect(withEarly(open, "p1", [], true)!.early).toEqual({ keys: ["V"], done: true });
-    expect(withEarly(open, "p2", ["i"], false)).toBe(open);
-    expect(withEarly(null, "p1", ["i"], false)).toBeNull();
-    const done = { ...open, early: { keys: ["V"], done: true } };
-    expect(withEarly(done, "p1", ["i"], false)).toBe(done);
-    const pageOpened: Draft = { pickId: "p1", ...d("a") };
-    expect(withEarly(pageOpened, "p1", ["i"], false)).toBe(pageOpened);
-  });
-  it("come before keys typed in the composer while they arrive, and none are lost", async () => {
-    const draft: Draft = { pickId: "p1", ...d("a"), capturing: true, clipToken: "p1", early: { keys: [], done: false } };
-    const onText = vi.fn();
-    const root = document.createElement("div");
-    document.body.appendChild(root);
-    const show = (dr: Draft) => act(() => { render(<Composer draft={dr} onCancel={vi.fn()} onSubmit={vi.fn(async () => {})} onText={onText} />, root); });
-    show(draft);
-    const textarea = root.querySelector("textarea")!;
-    expect(document.activeElement).toBe(textarea);
-    show({ ...draft, early: { keys: ["V", "i"], done: false } });
-    expect(textarea.value).toBe("Vi");
-    // Typed in the composer before the page's last keys are in: held.
-    for (const key of ["t", "h"]) {
-      const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
-      textarea.dispatchEvent(e);
-      expect(e.defaultPrevented).toBe(true);
-    }
-    // A shortcut is not text: it is not held.
-    const cut = new KeyboardEvent("keydown", { key: "x", metaKey: true, bubbles: true, cancelable: true });
-    textarea.dispatchEvent(cut);
-    expect(cut.defaultPrevented).toBe(false);
-    show({ ...draft, early: { keys: ["V", "i", "a", " "], done: false } });
-    expect(textarea.value).toBe("Via ");
-    show({ ...draft, early: { keys: ["V", "i", "a", " "], done: true } });
-    expect(textarea.value).toBe("Via th");
-    expect(onText).toHaveBeenLastCalledWith("Via th");
-    // Once all are in, keys typed here go straight in.
-    const e = new KeyboardEvent("keydown", { key: "e", bubbles: true, cancelable: true });
-    textarea.dispatchEvent(e);
-    expect(e.defaultPrevented).toBe(false);
-    act(() => { render(null, root); });
-    root.remove();
-  });
-  it("post on the shortcut pressed while keys are held, once every key is in", () => {
-    const draft: Draft = { pickId: "p1", ...d("a"), early: { keys: ["O"], done: false } };
-    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
-    const root = document.createElement("div");
-    document.body.appendChild(root);
-    const show = (dr: Draft) => act(() => { render(<Composer draft={dr} onCancel={vi.fn()} onSubmit={onSubmit} />, root); });
-    show(draft);
-    const textarea = root.querySelector("textarea")!;
-    act(() => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "k", bubbles: true, cancelable: true })); });
-    const submit = new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true });
-    act(() => { textarea.dispatchEvent(submit); });
-    expect(submit.defaultPrevented).toBe(true);
-    expect(onSubmit).not.toHaveBeenCalled();
-    show({ ...draft, early: { keys: ["O"], done: true } });
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("Ok");
-    act(() => { render(null, root); });
-    root.remove();
-  });
-  it("hold nothing in a composer the page opened", () => {
-    const root = document.createElement("div");
-    document.body.appendChild(root);
-    act(() => { render(<Composer draft={{ pickId: "p", ...d("a") }} onCancel={vi.fn()} onSubmit={vi.fn(async () => {})} />, root); });
-    const e = new KeyboardEvent("keydown", { key: "a", bubbles: true, cancelable: true });
-    root.querySelector("textarea")!.dispatchEvent(e);
-    expect(e.defaultPrevented).toBe(false);
-    act(() => { render(null, root); });
-    root.remove();
-  });
-});
-
 describe("the submit shortcut", () => {
   const draft = (extra: Partial<Draft> = {}): Draft => ({ pickId: "p", anchor, version: 1, clip: null, ...extra });
   const key = (el: Element, init: KeyboardEventInit) => {
@@ -277,20 +188,36 @@ describe("the submit shortcut", () => {
     slow.done();
   });
 
-  it("posts on the shortcut pressed while the screenshot is taken once it is in, with the text as it is then", () => {
+  it("posts on the shortcut pressed while the screenshot is taken once it is in, exactly the text shown then", () => {
+    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
+    const d = draft({ capturing: true, clipToken: "t" });
+    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const ta = m.root.querySelector("textarea")!;
+    act(() => { ta.value = "Why flat?"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(key(ta, { metaKey: true }).defaultPrevented).toBe(true);
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
+    act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith("Why flat?");
+    expect(ta.value).toBe("Why flat?");
+    m.done();
+  });
+
+  it("drops a queued shortcut when the text is edited after it, so a half-finished edit is never posted", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
     const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
     const ta = m.root.querySelector("textarea")!;
     act(() => { ta.value = "Why flat"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
-    expect(key(ta, { metaKey: true }).defaultPrevented).toBe(true);
-    expect(onSubmit).not.toHaveBeenCalled();
-    expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    key(ta, { ctrlKey: true });
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
-    act(() => { ta.value = "Why flat?"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    act(() => { ta.value = "Why flat, and why"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(m.root.textContent).toContain("Taking the screenshot…");
     act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
-    expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("Why flat?");
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
     m.done();
   });
 
