@@ -23,7 +23,7 @@ pub fn id_from(s: &str) -> anyhow::Result<String> {
 /// [`clax_mcp::tools::open_in_browser`].
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let id = id_from(&a.target)?;
-    let c = Client::connect(home, cli.port)?;
+    let c = Client::connect(home, cli.port_for(home))?;
     c.get(&format!("/api/artifacts/{id}"))?;
     let url = c.browser_url(&format!("/a/{id}"));
     if !cli.json && !clax_mcp::tools::open_in_browser(&url) {

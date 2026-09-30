@@ -17,9 +17,10 @@ pub struct Cli {
     /// Emit one JSON object on stdout instead of text.
     #[arg(long, global = true)]
     pub json: bool,
-    /// Port to use when starting a daemon (0 = any free port).
-    #[arg(long, global = true, default_value_t = clax_server::daemon::DEFAULT_PORT)]
-    pub port: u16,
+    /// Port to use when starting a daemon (0 = any free port). Default: the
+    /// home's `[serve] port` in config.toml, else 7480.
+    #[arg(long, global = true)]
+    pub port: Option<u16>,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
@@ -55,6 +56,19 @@ pub enum Cmd {
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
     Hook(commands::hook::Args),
+}
+
+impl Cli {
+    /// `--port` when given, else the home's `[serve] port`, else 7480.
+    pub fn port_for(&self, home: &clax_core::Home) -> u16 {
+        self.port
+            .or_else(|| {
+                clax_core::config::HomeConfig::load(home.root())
+                    .ok()
+                    .and_then(|c| c.serve_port())
+            })
+            .unwrap_or(clax_server::daemon::DEFAULT_PORT)
+    }
 }
 
 /// True when the command line names the `hook` subcommand: a hook must never

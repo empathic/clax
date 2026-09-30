@@ -1355,3 +1355,29 @@ fn publish_says_when_no_agent_session_will_get_the_comments() {
     assert_eq!(v["session"], sid, "{v}");
     e.stop();
 }
+
+#[test]
+fn a_daemon_started_without_port_uses_the_homes_serve_port() {
+    let e = Env::new();
+    // A port the kernel picks, recorded in the home's config.toml.
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    std::fs::create_dir_all(e.dir.path().join("ax")).unwrap();
+    std::fs::write(
+        e.dir.path().join("ax/config.toml"),
+        format!("[serve]\nport = {port}\n"),
+    )
+    .unwrap();
+    let out = e.cmd().args(["serve", "--json"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["port"].as_u64().unwrap(), u64::from(port));
+    e.stop();
+}

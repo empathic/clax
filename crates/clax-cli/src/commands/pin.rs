@@ -6,7 +6,7 @@ pub struct Args {
 }
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args, pinned: bool) -> anyhow::Result<()> {
     let id = super::open::id_from(&a.target)?;
-    let c = Client::connect(home, cli.port)?;
+    let c = Client::connect(home, cli.port_for(home))?;
     c.patch(
         &format!("/api/artifacts/{id}"),
         &serde_json::json!({"pinned": pinned}),

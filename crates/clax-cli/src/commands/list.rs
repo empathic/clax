@@ -9,7 +9,7 @@ pub struct Args {
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
-    let c = Client::connect(home, cli.port)?;
+    let c = Client::connect(home, cli.port_for(home))?;
     if let Some(target) = &a.files {
         let id = super::open::id_from(target)?;
         let res = c.get(&format!("/api/artifacts/{id}/files"))?;

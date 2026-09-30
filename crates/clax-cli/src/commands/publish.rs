@@ -120,7 +120,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         let (src, dest) = split_file_spec(spec)?;
         files.insert(dest, file_entry(&src)?);
     }
-    let c = Client::connect(home, cli.port)?;
+    let c = Client::connect(home, cli.port_for(home))?;
     let target = match (&a.id, &a.url) {
         (Some(id), _) => Some(super::open::id_from(id)?),
         (_, Some(u)) => Some(super::open::id_from(u)?),

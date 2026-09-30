@@ -28,7 +28,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             bind: a.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
             stale_check_interval: std::time::Duration::from_secs(30),
             reap_interval: std::time::Duration::from_secs(60),
-            port: cli.port,
+            port: cli.port_for(home),
             version: env!("CARGO_PKG_VERSION"),
             codex: clax_server::push::CodexPush::from_env(
                 std::env::var_os("CLAX_CODEX_BIN"),
@@ -39,7 +39,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     }
     let c = Client::connect_with_bind(
         home,
-        cli.port,
+        cli.port_for(home),
         a.bind.unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST)),
     )?;
     if let Some(requested) = a.bind {

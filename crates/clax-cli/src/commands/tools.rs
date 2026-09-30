@@ -15,7 +15,7 @@ where
     F: FnOnce(ClaxTools) -> Fut,
     Fut: Future<Output = Result<CallToolResult, rmcp::ErrorData>>,
 {
-    let c = Client::connect(home, cli.port)?;
+    let c = Client::connect(home, cli.port_for(home))?;
     let tools = ClaxTools::new(
         DaemonClient::new(c.base.clone(), c.token.clone(), None),
         c.browser_url(""),
