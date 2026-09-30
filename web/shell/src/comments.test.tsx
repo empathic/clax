@@ -196,7 +196,7 @@ describe("the submit shortcut", () => {
     act(() => { ta.value = "Why flat?"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(key(ta, { metaKey: true }).defaultPrevented).toBe(true);
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.getAttribute("aria-disabled")).toBe("true");
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
     act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
     expect(onSubmit).toHaveBeenCalledTimes(1);
@@ -235,6 +235,42 @@ describe("the submit shortcut", () => {
     act(() => { render(<Composer draft={{ ...moved, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(ta.value).toBe("Here");
+    m.done();
+  });
+
+  it("drops a queued shortcut when the composer moves to another anchor with its screenshot already settled", () => {
+    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
+    const d = draft({ capturing: true, clipToken: "t" });
+    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const ta = m.root.querySelector("textarea")!;
+    act(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    key(ta, { metaKey: true });
+    const moved = { ...d, anchor: { ...d.anchor, selector: "body > p" }, capturing: undefined, clipToken: undefined, clipError: "anchored by the page" };
+    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(ta.value).toBe("Here");
+    m.done();
+  });
+
+  it("keeps Post focusable while the screenshot is taken, and a click or Enter on it queues the post like the shortcut", () => {
+    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
+    const d = draft({ capturing: true, clipToken: "t" });
+    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const ta = m.root.querySelector("textarea")!;
+    const postButton = m.root.querySelector<HTMLButtonElement>("button[type=submit]")!;
+    act(() => { ta.value = "Ship it"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(postButton.disabled).toBe(false);
+    expect(postButton.getAttribute("aria-disabled")).toBe("true");
+    postButton.focus();
+    expect(document.activeElement).toBe(postButton);
+    // A click (Enter on a focused button clicks it) submits the form.
+    act(() => { postButton.click(); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
+    act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    expect(onSubmit).toHaveBeenCalledWith("Ship it");
+    expect(postButton.getAttribute("aria-disabled")).toBeNull();
     m.done();
   });
 

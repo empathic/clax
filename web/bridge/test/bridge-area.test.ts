@@ -1,10 +1,11 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { dispatchTrusted } from "./trusted";
 
 // The bridge framed by a stand-in shell, on a parsed page: how it passes
 // `sameVersion` from the shell's orders to area re-anchoring.
 const posted: { type: string; requestId?: string | null; results?: { id: string; found: boolean }[] }[] = [];
 const shell = { postMessage: (m: { type: string }) => { posted.push(m); } };
-const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
+const send = (data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
 const focusBox = () => document.querySelector("clax-overlay")!.shadowRoot!.querySelector<HTMLElement>(".f")!;
 
 // An area drawn on a section that, by selector alone, now finds a section

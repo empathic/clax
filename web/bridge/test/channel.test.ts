@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { acceptFromShell, forwardedKey, shellOrigins } from "../src/channel";
+import { trusted } from "./trusted";
 
 describe("shellOrigins", () => {
   it("allows the loopback shell for subdomain content", () => {
@@ -12,9 +13,14 @@ describe("shellOrigins", () => {
 
 describe("acceptFromShell", () => {
   const origins = ["http://localhost:7480"];
-  const ev = (data: unknown, origin: string, source: Window | null) => new MessageEvent("message", { data, origin, source });
+  const ev = (data: unknown, origin: string, source: Window | null) => trusted(new MessageEvent("message", { data, origin, source }));
   it("accepts known messages from the parent at an allowed origin", () => {
     expect(acceptFromShell(ev({ type: "clax:comment-mode", on: true }, "http://localhost:7480", window), window, origins)).toEqual({ type: "clax:comment-mode", on: true });
+  });
+  it("rejects a message the page made up and dispatched itself, whatever source and origin it names", () => {
+    const forged = new MessageEvent("message", { data: { type: "clax:composer-ready", pickId: "p1" }, origin: "http://localhost:7480", source: window });
+    expect(forged.isTrusted).toBe(false);
+    expect(acceptFromShell(forged, window, origins)).toBeNull();
   });
   it("rejects other sources, origins, and types", () => {
     expect(acceptFromShell(ev({ type: "clax:comment-mode", on: true }, "http://evil.test", window), window, origins)).toBeNull();

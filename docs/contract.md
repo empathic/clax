@@ -695,12 +695,14 @@ and a pending pick is forgotten when comment mode comes back on or a page
 greets. The bridge renders the pick's screenshot only once the shell says
 the composer's textarea has focus (`clax:composer-ready`), and renders none
 for a start the shell refused (`clax:pick-refused`) or that gets no answer
-within 5 seconds. So the screenshot's work, which can hold the main thread
+within 5 seconds; it then tells the shell no screenshot was taken, so a
+composer waiting for it says so at once. The composer takes focus as it is
+first rendered, and the screenshot's work, which can hold the main thread
 a same-process frame shares with the shell, never delays that focus: in
-Chromium the textarea had focus 31–34 ms after the click or release, on a
-light page and on one whose screenshot held the main thread for 1.5
-seconds, and every key typed from 60 ms on landed in it, those typed during
-that hold once it ended. A key or input method composition begun in the
+Chromium the textarea had focus 15–19 ms after the click or release (26 ms
+at most), on a light page and on one whose screenshot held the main thread
+for 1.5 seconds, and every key typed from 60 ms on landed in it, those typed
+during that hold once it ended. A key or input method composition begun in the
 page before the textarea has focus goes to the page, as any key there
 does. No text from the page ever enters a composer. So a page can post
 a pick of its own only in comment mode, while no pick of the bridge's is
@@ -718,11 +720,13 @@ not while the pointer rests where that input left it, whatever the layout
 does around it. The page shares the bridge's window and can always act then,
 and it controls what it renders. The composer then shows the pick's quote or
 area label and its screenshot (not where it anchors), and
-nothing is posted without the viewer. A composer waiting for its screenshot (a pick's, or a page area's) keeps Post disabled
-and, after 10 seconds without it, says "No screenshot: it was not taken in
-time"; the submit shortcut pressed meanwhile posts, once the screenshot is
-in or that wait ends, exactly the text the textarea shows then, and any edit
-after the shortcut cancels it.
+nothing is posted without the viewer. A composer waiting for its screenshot (a pick's, or a page area's) shows Post as waiting
+(`aria-disabled`, still reachable with Tab) and, after 10 seconds without
+it, says "No screenshot: it was not taken in time". Post pressed meanwhile
+(a click, Enter on it, or the submit shortcut) posts once the screenshot is
+in or that wait ends, exactly the text the textarea showed when it was
+pressed, on the anchor shown then: an edit after it, or a move of the
+composer to another anchor, cancels it.
 
 Comment mode is off while the composer a pick opened is open, and comes back
 on when that composer closes (posted, `@agent` included, cancelled, or

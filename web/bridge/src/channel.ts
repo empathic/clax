@@ -23,9 +23,11 @@ export function forwardedKey(m: { key?: unknown; down?: unknown }): { key: strin
   return typeof m.key === "string" && FORWARDED_KEYS.has(m.key) && typeof m.down === "boolean" ? { key: m.key, down: m.down } : null;
 }
 
-/** The message when it came from `parent` at one of `origins` with a shell message type. */
+/** The message when the browser delivered it (a page's own `dispatchEvent`
+ * of a made-up `MessageEvent`, which can name any source and origin, is not
+ * trusted), from `parent` at one of `origins`, with a shell message type. */
 export function acceptFromShell(e: MessageEvent, parent: Window | null, origins: string[]): ShellToBridge | null {
-  if (!parent || e.source !== parent || !origins.includes(e.origin)) return null;
+  if (!e.isTrusted || !parent || e.source !== parent || !origins.includes(e.origin)) return null;
   const d = e.data;
   if (!d || typeof d !== "object" || !SHELL_TYPES.has(d.type)) return null;
   return d as ShellToBridge;

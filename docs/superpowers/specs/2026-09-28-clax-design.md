@@ -555,11 +555,15 @@ file under `v/<digits>/` is reachable only through the versioned form):
   typed in it). The bridge renders the clip only after the shell's
   `clax:composer-ready {pickId}`, sent once the composer's textarea has
   focus, and none after `clax:pick-refused {pickId}` (sent for every start
-  the shell refuses) or when no answer comes within 5 s. The clip's work,
-  which can hold a main thread the frame shares with the shell, so never
+  the shell refuses) or when no answer comes within 5 s (it then posts the
+  pick with no clip, so the composer stops waiting; `pick.ts`). The
+  composer focuses its textarea in a layout effect, and the clip's work,
+  which can hold a main thread the frame shares with the shell, never
   delays that focus; keys typed during it wait in the browser's input queue
   and reach the focused textarea. A key typed in the page before that focus
-  (about 30 ms) goes to the page; no page text ever enters a composer. The
+  (15–19 ms measured) goes to the page; no page text ever enters a
+  composer. The bridge takes only trusted `message` events (`isTrusted`),
+  so a page cannot pass a message of its own making off as the shell's. The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. Page calls and picks
   that need the viewer's gesture use one of two tiers (`caps/gesture.ts`;
@@ -804,7 +808,7 @@ files kept in `web/contract/`:
 The bridge also handles comment mode (hit testing, outline, text selection),
 anchor creation and re-resolution, and clip rendering, on messages from the
 shell. The bridge never trusts messages that do not come from its shell's
-window and origin.
+window and origin, nor any the browser did not deliver itself (`isTrusted`).
 
 ### Anchors
 
