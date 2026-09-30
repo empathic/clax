@@ -11,12 +11,15 @@
 # first `clax` on PATH whose --version names clax. This script never
 # downloads, builds, or looks anywhere else.
 #
-# With no binary, or when the MCP server exits with an error (as it does at
-# startup over a malformed config.toml), MCP mode answers the MCP client
-# itself with a minimal server whose one tool, `status`, states the reason.
-# With no binary, hook mode prints one line and exits 0, and other modes
-# print the reason and exit 1. A binary whose version is not $CLAX_VERSION
-# (this plugin's) runs, with a warning.
+# MCP mode first runs `clax mcp <args> --preflight` (the home, config.toml and
+# port; no daemon), then execs `clax mcp`, so the harness is its parent. With
+# no binary, or when the preflight fails, it answers the MCP client itself
+# with a minimal server whose one tool, `status`, states the reason. A clax
+# that exits later in the session is not relayed: the client sees the
+# connection close. With no binary, hook mode prints one line and exits 0,
+# and other modes print the reason and exit 1. A binary whose version is not
+# $CLAX_VERSION (this plugin's) runs; MCP and CLI modes warn about it, hooks
+# stay silent.
 #
 # Every failure, and every MCP start, appends one line to
 # ${CLAX_HOME:-~/.clax}/logs/hooks.log (rotated to hooks.log.1 past 1 MiB).
@@ -45,7 +48,10 @@ for a in "$@"; do
     if [ "$prev" = --agent ]; then AGENT="$a"; fi
     prev="$a"
 done
-BIN="" GOT_VERSION="" WARNING="" REASON="" TRIED=""
+BIN="" GOT_VERSION="" WARNING="" REASON="" TRIED="" CHECK_WHY=""
+MCP_ARGS=()
+# How long `clax --version` and `clax mcp --preflight` may take.
+PROBE_SECS=5
 
 log() { echo "$@" >&2; }
 oneline() { printf '%s' "$1" | tr '\n"' " '"; }
@@ -71,13 +77,58 @@ fail_line() {
     hooks_log "launcher mode=$MODE agent=$AGENT exit=$1 reason=\"$(oneline "$REASON")\" tried=\"$(oneline "$TRIED")\" argv=\"$(oneline "$ARGV")\""
 }
 
+# Runs "$@" with stdin from /dev/null, killing it after $1 seconds. Sets
+# RUN_RC (124 when it was killed), RUN_OUT and RUN_ERR (its stdout and
+# stderr).
+bounded() {
+    local limit="$1" dir p w
+    shift
+    RUN_OUT="" RUN_ERR="" RUN_RC=0
+    if ! dir="$(mktemp -d 2>/dev/null)"; then
+        RUN_OUT="$("$@" < /dev/null 2>/dev/null)"
+        RUN_RC=$?
+        return 0
+    fi
+    "$@" < /dev/null > "$dir/out" 2> "$dir/err" &
+    p=$!
+    (
+        trap 'kill "$s" 2>/dev/null; exit 0' TERM
+        sleep "$limit" &
+        s=$!
+        wait "$s"
+        kill -KILL "$p"
+    ) > /dev/null 2>&1 &
+    w=$!
+    wait "$p"
+    RUN_RC=$?
+    if kill -0 "$w" 2>/dev/null; then
+        kill "$w" 2>/dev/null
+        wait "$w" 2>/dev/null
+    else
+        RUN_RC=124
+    fi
+    RUN_OUT="$(cat "$dir/out" 2>/dev/null)"
+    RUN_ERR="$(cat "$dir/err" 2>/dev/null)"
+    rm -rf "$dir"
+}
+
+# The first non-blank line of $1, trimmed, with double quotes as single ones.
+first_line() {
+    printf '%s\n' "$1" | awk 'NF { sub(/^[ \t]+/, ""); sub(/[ \t\r]+$/, ""); print; exit }' | tr '"' "'"
+}
+
 # True when $1 is an executable file whose --version names clax; sets
-# GOT_VERSION to that line.
+# GOT_VERSION to that line. Otherwise sets CHECK_WHY to what went wrong.
 check_bin() {
-    GOT_VERSION=""
-    [ -f "$1" ] && [ -x "$1" ] || return 1
-    GOT_VERSION="$("$1" --version 2>/dev/null < /dev/null | head -1)"
-    case "$GOT_VERSION" in "clax "*) return 0 ;; *) return 1 ;; esac
+    GOT_VERSION="" CHECK_WHY=""
+    if [ ! -f "$1" ] || [ ! -x "$1" ]; then CHECK_WHY="not an executable file"; return 1; fi
+    bounded "$PROBE_SECS" "$1" --version
+    GOT_VERSION="$(first_line "$RUN_OUT")"
+    if [ "$RUN_RC" = 124 ]; then CHECK_WHY="\`--version\` did not finish within ${PROBE_SECS} s"; return 1; fi
+    if [ "$RUN_RC" != 0 ]; then CHECK_WHY="\`--version\` exited $RUN_RC: $(first_line "$RUN_ERR")"; return 1; fi
+    case "$GOT_VERSION" in "clax "*) return 0 ;; esac
+    CHECK_WHY="\`--version\` printed '$GOT_VERSION', not clax"
+    return 1
 }
 
 # Sets BIN (and GOT_VERSION, TRIED); on failure sets REASON and returns 1.
@@ -90,21 +141,28 @@ resolve() {
             TRIED="CLAX_BIN=$CLAX_BIN: $GOT_VERSION"
             return 0
         fi
-        TRIED="CLAX_BIN=$CLAX_BIN: not a usable clax"
-        REASON="CLAX_BIN is set to '$CLAX_BIN', which is not a usable clax binary. Unset CLAX_BIN, or point it at a clax binary."
+        TRIED="CLAX_BIN=$CLAX_BIN: $CHECK_WHY"
+        REASON="CLAX_BIN is set to '$CLAX_BIN', which is not a usable clax binary ($CHECK_WHY). Unset CLAX_BIN, or point it at a clax binary."
         return 1
     fi
+    local bad=""
     for dir in ${PATH:-}; do
-        [ -n "$dir" ] || continue
+        [ -n "$dir" ] && [ -e "$dir/clax" ] || continue
         if check_bin "$dir/clax"; then
             BIN="$dir/clax"
             TRIED="${TRIED:+$TRIED; }$BIN: $GOT_VERSION"
             return 0
         fi
-        if [ -e "$dir/clax" ]; then TRIED="${TRIED:+$TRIED; }$dir/clax: not clax"; fi
+        TRIED="${TRIED:+$TRIED; }$dir/clax: $CHECK_WHY"
+        bad="${bad:+$bad; }$dir/clax: $CHECK_WHY"
     done
     TRIED="${TRIED:+$TRIED; }PATH has no clax: ${PATH:-(empty)}"
-    REASON="no clax binary is on PATH. Install it with \`just install\` in a Clax checkout (it puts clax in ~/.cargo/bin), or with the release installer (~/.local/bin), and start the harness from a shell whose PATH includes that directory."
+    local install="with \`just install\` in a Clax checkout (it puts clax in ~/.cargo/bin), or with the release installer (~/.local/bin), and start the harness from a shell whose PATH includes that directory."
+    if [ -n "$bad" ]; then
+        REASON="no usable clax binary is on PATH ($bad). Reinstall it $install"
+    else
+        REASON="no clax binary is on PATH. Install it $install"
+    fi
     return 1
 }
 
@@ -124,18 +182,64 @@ json_string() {
     done
     printf '"%s"' "$out"
 }
-json_field() { printf '%s' "$2" | sed -nE "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/p" | head -1; }
+# Prints a JSON-RPC message's top-level "method" and "id" and its
+# params.protocolVersion, as raw JSON separated by \037 (empty when absent).
+# Keys nested deeper, such as a tool call's arguments, are skipped.
+parse_request() {
+    printf '%s\n' "$1" | awk '
+    function emit(k, raw) {
+        if (depth == 1 && k == "id") id = raw
+        else if (depth == 1 && k == "method") method = raw
+        else if (depth == 2 && parent[2] == "params" && k == "protocolVersion") proto = raw
+    }
+    {
+        n = length($0); depth = 0; instr = 0; esc = 0; tok = ""; scal = ""
+        wantkey = 0; expect = 0; key = ""; id = ""; method = ""; proto = ""
+        for (i = 1; i <= n; i++) {
+            c = substr($0, i, 1)
+            if (instr) {
+                tok = tok c
+                if (esc) esc = 0
+                else if (c == "\\") esc = 1
+                else if (c == "\"") {
+                    instr = 0
+                    if (wantkey) { key = substr(tok, 2, length(tok) - 2); wantkey = 0 }
+                    else if (expect) { emit(key, tok); expect = 0 }
+                }
+                continue
+            }
+            if (scal != "" && (c == "," || c == "}" || c == "]" || c == " " || c == "\t" || c == "\r")) {
+                emit(key, scal); scal = ""; expect = 0
+            }
+            if (c == "\"") { instr = 1; tok = c }
+            else if (c == "{" || c == "[") {
+                depth++; type[depth] = c; parent[depth] = expect ? key : ""
+                wantkey = (c == "{"); expect = 0
+            }
+            else if (c == "}" || c == "]") { depth--; wantkey = 0; expect = 0 }
+            else if (c == ":") expect = 1
+            else if (c == ",") { wantkey = (type[depth] == "{"); expect = 0 }
+            else if (expect && c != " " && c != "\t" && c != "\r") scal = scal c
+        }
+        printf "%s\037%s\037%s\n", method, id, proto
+    }'
+}
 reply() { printf '{"jsonrpc":"2.0","id":%s,"result":%s}\n' "$1" "$2"; }
 
-# The status tool's text: the reason, or, when no clax was found and one has
-# appeared since, that it is there now.
+# The status tool's text: the reason, or, once the cause is gone (a clax has
+# appeared on PATH, or the preflight now passes), that it is fixed.
 status_text() {
     local found
-    if [ -z "$BIN" ] && found="$(resolve > /dev/null 2>&1 && echo "$BIN")" && [ -n "$found" ]; then
-        echo "clax is now available at $found. Reconnect the clax MCP server (/mcp in Claude Code), or start a new session, to use it."
-    else
-        echo "$1"
+    if [ -z "$BIN" ]; then
+        if found="$(resolve > /dev/null 2>&1 && echo "$BIN")" && [ -n "$found" ]; then
+            echo "clax is now available at $found. Reconnect the clax MCP server (/mcp in Claude Code), or start a new session, to use it."
+            return 0
+        fi
+    elif preflight; then
+        echo "clax can start now. Reconnect the clax MCP server (/mcp in Claude Code), or start a new session, to use it."
+        return 0
     fi
+    echo "$1"
 }
 
 # A minimal MCP server on stdin/stdout whose one tool, status, states why clax
@@ -145,13 +249,16 @@ serve_unavailable() {
     local text line method id proto
     text="Clax is unavailable: $REASON (Details: ${CLAX_HOME:-~/.clax}/logs/hooks.log.)"
     while IFS= read -r line || [ -n "$line" ]; do
-        method="$(json_field method "$line")"
-        id="$(printf '%s' "$line" | sed -nE 's/.*"id"[[:space:]]*:[[:space:]]*("([^"\\]|\\.)*"|-?[0-9]+).*/\1/p' | head -1)"
-        [ -n "$method" ] && [ -n "$id" ] || continue
+        IFS=$'\037' read -r method id proto <<EOF
+$(parse_request "$line")
+EOF
+        # Requests only: a string method and a string or number ID.
+        case "$method" in \"*\") method="${method#\"}"; method="${method%\"}" ;; *) continue ;; esac
+        case "$id" in \"*\" | -[0-9]* | [0-9]*) ;; *) continue ;; esac
+        case "$proto" in \"*\") ;; *) proto='"2025-06-18"' ;; esac
         case "$method" in
             initialize)
-                proto="$(json_field protocolVersion "$line")"
-                reply "$id" "{\"protocolVersion\":\"${proto:-2025-06-18}\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"clax\",\"version\":\"$CLAX_VERSION\"},\"instructions\":$(json_string "$text")}"
+                reply "$id" "{\"protocolVersion\":$proto,\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"clax\",\"version\":\"$CLAX_VERSION\"},\"instructions\":$(json_string "$text")}"
                 ;;
             tools/list)
                 reply "$id" "{\"tools\":[{\"name\":\"status\",\"description\":$(json_string "Clax could not start. Call this tool for the reason and the fix."),\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}"
@@ -191,62 +298,21 @@ run_hook() {
     exit 0
 }
 
-# The error clax printed on stderr file $1: from its last line that starts
-# with "error:" to the end (else the whole file), on one line, at most 600
-# characters.
-error_text() {
-    local text
-    text="$(awk '/^error:/ { buf = "" } { buf = buf $0 " " } END { print buf }' "$1" 2>/dev/null | tr '"' "'")" || text=""
-    text="$(printf '%s' "$text" | tr -s ' ')"
-    text="${text% }"
-    if [ "${#text}" -gt 600 ]; then text="${text:0:600}..."; fi
-    printf '%s' "$text"
-}
-
-# Runs the MCP server on the client's stdin and stdout. Its stderr passes
-# through and is also kept, so that when it exits non-zero (as it does at
-# startup over a malformed config.toml) the client gets the reason from the
-# fallback server instead of a closed pipe. TERM, INT and HUP are forwarded
-# to it, and the wrapper then exits with its status.
-run_mcp() {
-    local bin="$1" dir pid tee_pid rc i stopping=0
-    shift
-    dir="$(mktemp -d 2>/dev/null)" || dir=""
-    if [ -z "$dir" ] || ! mkfifo "$dir/stderr" 2>/dev/null; then
-        if [ -n "$dir" ]; then rm -rf "$dir"; fi
-        exec "$bin" "$@"
+# Runs `clax <MCP_ARGS> --preflight`. True when it passes, or when the binary
+# predates --preflight; otherwise sets REASON.
+preflight() {
+    bounded "$PROBE_SECS" "$BIN" ${MCP_ARGS[@]+"${MCP_ARGS[@]}"} --preflight
+    [ "$RUN_RC" = 0 ] && return 0
+    case "$RUN_ERR" in *"'--preflight'"*) return 0 ;; esac
+    if [ "$RUN_RC" = 124 ]; then
+        REASON="\`clax mcp --preflight\` did not finish within ${PROBE_SECS} s."
+    else
+        local why
+        why="$(first_line "$RUN_ERR")"
+        why="${why#error: }"
+        REASON="clax cannot start its MCP server: ${why:-\`clax mcp --preflight\` exited $RUN_RC}. Fix that, then reconnect the clax MCP server (/mcp in Claude Code) or start a new session."
     fi
-    tee "$dir/stderr.log" < "$dir/stderr" >&2 &
-    tee_pid=$!
-    # An explicit stdin redirection: a background command's stdin would
-    # otherwise be /dev/null.
-    "$bin" "$@" 0<&0 2>"$dir/stderr" &
-    pid=$!
-    trap 'stopping=1; kill -TERM "$pid" 2>/dev/null' TERM INT HUP
-    while :; do
-        wait "$pid"
-        rc=$?
-        if kill -0 "$pid" 2>/dev/null; then continue; fi
-        break
-    done
-    trap - TERM INT HUP
-    # The tee ends when the server's stderr closes; bound the wait in case a
-    # process it started still holds it.
-    for (( i = 0; i < 40; i++ )); do
-        kill -0 "$tee_pid" 2>/dev/null || break
-        sleep 0.05
-    done
-    kill "$tee_pid" 2>/dev/null
-    wait "$tee_pid" 2>/dev/null
-    if [ "$rc" = 0 ] || [ "$stopping" = 1 ]; then
-        rm -rf "$dir"
-        exit "$rc"
-    fi
-    REASON="clax exited ${rc}: $(error_text "$dir/stderr.log")"
-    rm -rf "$dir"
-    fail_line fallback
-    serve_unavailable
-    exit 0
+    return 1
 }
 
 main() {
@@ -261,7 +327,8 @@ main() {
                 if [ -n "$WARNING" ]; then log "clax: warning: $WARNING"; fi
                 hooks_log "launch mode=mcp agent=$AGENT bin=\"$(oneline "$BIN")\" version=\"$GOT_VERSION\" warning=\"$(oneline "$WARNING")\""
                 shift
-                run_mcp "$BIN" "$@"
+                MCP_ARGS=("$@")
+                if preflight; then exec "$BIN" "$@"; fi
                 ;;
             *)
                 if [ -n "$WARNING" ]; then log "clax: warning: $WARNING"; fi
@@ -277,6 +344,7 @@ main() {
             exit 0
             ;;
         mcp)
+            # No binary, or a failed preflight.
             fail_line fallback
             log "clax: $REASON"
             serve_unavailable

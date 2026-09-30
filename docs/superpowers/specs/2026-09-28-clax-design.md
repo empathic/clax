@@ -1169,10 +1169,15 @@ object. The other commands print their own JSON shape.
 - `scripts/ensure-clax.sh`: a thin wrapper. It runs `$CLAX_BIN`, else the
   first `clax` on `PATH` that reports itself as clax; it never downloads,
   builds, or looks anywhere else. A binary whose version differs from the
-  plugin's (`CLAX_VERSION` in the wrapper) runs with a warning. With no
-  binary, MCP mode answers the MCP client with a minimal server whose one
-  tool, `status`, states the reason; hooks print one line and exit 0. Every
-  failure and every MCP start is one line in `~/.clax/logs/hooks.log`.
+  plugin's (`CLAX_VERSION` in the wrapper) runs; MCP and CLI modes warn about
+  it, hooks stay silent. MCP mode runs `clax mcp --preflight` (the home, its
+  `config.toml` and the port; no daemon, no network), then execs `clax mcp`,
+  so the harness is the shim's parent (§11). With no usable binary, or a
+  failed preflight, MCP mode answers the MCP client with a minimal server
+  whose one tool, `status`, states the reason. A `clax mcp` that exits later
+  in the session is not relayed: the client sees the connection close. With
+  no usable binary, hooks print one line and exit 0. Every failure and every
+  MCP start is one line in `~/.clax/logs/hooks.log`.
 - Installation: `clax init` writes the plugins embedded in the binary to
   `~/.clax/marketplace/` and registers them (`claude plugin marketplace
   add`, `claude plugin install clax@clax`); `clax uninit` removes them.

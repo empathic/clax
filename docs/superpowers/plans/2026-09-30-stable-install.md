@@ -3557,16 +3557,21 @@ marketplace directory. Neither touches Clax's data.
 The Claude Code and Codex plugins start `clax` through
 `scripts/ensure-clax.sh`, which runs `CLAX_BIN`, else the first `clax` on
 `PATH` whose `--version` names clax. It never downloads, builds, or looks
-anywhere else. A `clax` of another version than the plugin's runs with a
-warning. When there is none:
+anywhere else. A `clax` of another version than the plugin's runs; the MCP
+server and other commands warn about it, hooks stay silent. Before it starts
+the MCP server, the wrapper runs `clax mcp --preflight`, which reads the home,
+its `config.toml` and the port without starting a daemon, and then replaces
+itself with `clax mcp`, so the harness is its parent. When there is no usable
+`clax`, or the preflight fails:
 
 - The MCP server answers the MCP client itself. `initialize` succeeds, with
   `instructions` that start `Clax is unavailable:`. `tools/list` offers one
   tool, `status`, whose call returns the reason and the fix
-  (`isError: true`), or says to reconnect once a `clax` has appeared. `ping`
+  (`isError: true`), or says to reconnect once the cause is gone. `ping`
   answers `{}`. Any other request gets JSON-RPC error -32601 with the same
-  reason.
-- A hook prints one line to stderr and exits 0.
+  reason. A `clax mcp` that exits later in a session is not relayed: the
+  client sees the connection close.
+- A hook (no usable `clax` only) prints one line to stderr and exits 0.
 - Other commands print the reason and exit 1.
 
 Every MCP start adds a `launch mode=mcp agent=<harness> bin="<path>"
