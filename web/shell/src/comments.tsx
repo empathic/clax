@@ -83,6 +83,17 @@ export function Pins({ threads, resolved, onSelect, onHover, width, file = INDEX
   );
 }
 
+/** Whether `e` is the shortcut that posts a comment: Enter with Cmd or Ctrl
+ * (either, on every platform), and not while an IME composition is in progress. */
+export function isSubmitKey(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "isComposing">): boolean {
+  return e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing;
+}
+
+/** The submit shortcut as `platform` names it: "⌘↵" on Apple platforms, "Ctrl+Enter" elsewhere. */
+export function submitKeysLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): string {
+  return /Mac|iPhone|iPad|iPod/.test(platform) ? "⌘↵" : "Ctrl+Enter";
+}
+
 /** The composer for `draft`; `onText` hears the typed text on every input, and "" when it closes. */
 export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void }) {
   const [body, setBody] = useState("");
@@ -102,23 +113,31 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
   const textarea = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { textarea.current?.focus(); }, []);
   const quote = draft.anchor.quote?.replace(/\s+/g, " ").trim();
+  const canPost = !busy && !!body.trim() && !draft.capturing;
+  // Set before the first await, so a second Post or shortcut in the same
+  // render cannot post twice.
+  const posting = useRef(false);
+  const post = async () => {
+    if (!canPost || posting.current) return;
+    posting.current = true;
+    setBusy(true);
+    // `onSubmit` reports a failure in the stage's notice banner and rethrows;
+    // the draft stays so the viewer can retry.
+    try { await onSubmit(body); } catch { posting.current = false; setBusy(false); }
+  };
   return (
-    <form class="composer" onSubmit={async e => {
-      e.preventDefault();
-      if (!body.trim() || busy) return;
-      setBusy(true);
-      // `onSubmit` reports a failure in the stage's notice banner and rethrows;
-      // the draft stays so the viewer can retry.
-      try { await onSubmit(body); } catch { setBusy(false); }
-    }}>
+    <form class="composer" onSubmit={e => { e.preventDefault(); void post(); }}>
       <p class="composer-quote">{draft.label ?? (quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "custom" ? draft.anchor.custom_name : draft.anchor.kind === "area" ? areaLabel(draft.anchor) : draft.anchor.selector)}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : draft.capturing ? <p class="muted small">Taking the screenshot…</p> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
       <textarea ref={textarea} rows={3} placeholder="Comment… (@agent sends it to the agent)" value={body} onInput={e => { const v = (e.target as HTMLTextAreaElement).value; setBody(v); onText?.(v); }}
-        onKeyDown={e => { if (e.key === "Escape") onCancel(); }} />
+        onKeyDown={e => {
+          if (e.key === "Escape") onCancel();
+          else if (isSubmitKey(e)) { e.preventDefault(); void post(); }
+        }} />
       <div class="actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" class="primary" disabled={busy || !body.trim() || !!draft.capturing}>Post comment</button>
+        <button type="submit" class="primary" title={`Post comment (${submitKeysLabel()})`} disabled={!canPost}>Post comment</button>
       </div>
     </form>
   );

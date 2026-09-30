@@ -1,6 +1,7 @@
 import { render } from "preact";
+import { act } from "preact/test-utils";
 import { describe, expect, it, vi } from "vitest";
-import { type Draft, PIN_RIGHT_ROOM, Pins, nextDraft, takePick, withClip } from "./comments";
+import { Composer, type Draft, PIN_RIGHT_ROOM, Pins, isSubmitKey, nextDraft, submitKeysLabel, takePick, withClip } from "./comments";
 import { Sidebar } from "./sidebar";
 import { type Thread, areaLabel } from "./threads";
 
@@ -116,10 +117,117 @@ describe("page-opened composers", () => {
     const moved = { ...waiting, clipToken: "t3" };
     expect(withClip(moved, "t1", png)).toBe(moved);
   });
-  it("say a screenshot is being taken", async () => {
-    const { Composer } = await import("./comments");
+  it("say a screenshot is being taken", () => {
     const { root, done } = mount(<Composer draft={{ pickId: "p", ...d("a"), capturing: true }} onCancel={vi.fn()} onSubmit={vi.fn(async () => {})} />);
     expect(root.textContent).toContain("Taking the screenshot…");
+    done();
+  });
+});
+
+describe("the submit shortcut", () => {
+  const draft = (extra: Partial<Draft> = {}): Draft => ({ pickId: "p", anchor, version: 1, clip: null, ...extra });
+  const key = (el: Element, init: KeyboardEventInit) => {
+    const e = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
+    act(() => { el.dispatchEvent(e); });
+    return e;
+  };
+  function composer(extra: Partial<Draft> = {}, onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {})) {
+    const m = mount(<Composer draft={draft(extra)} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const ta = m.root.querySelector("textarea")!;
+    const typeText = (v: string) => act(() => { ta.value = v; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    return { ...m, ta, typeText, onSubmit };
+  }
+
+  it("is Enter with Cmd or Ctrl, outside an IME composition", () => {
+    const k = { key: "Enter", metaKey: false, ctrlKey: false, isComposing: false };
+    expect(isSubmitKey({ ...k, metaKey: true })).toBe(true);
+    expect(isSubmitKey({ ...k, ctrlKey: true })).toBe(true);
+    expect(isSubmitKey(k)).toBe(false);
+    expect(isSubmitKey({ ...k, metaKey: true, isComposing: true })).toBe(false);
+    expect(isSubmitKey({ ...k, key: "a", metaKey: true })).toBe(false);
+    expect(submitKeysLabel("MacIntel")).toBe("⌘↵");
+    expect(submitKeysLabel("Win32")).toBe("Ctrl+Enter");
+    expect(submitKeysLabel("Linux x86_64")).toBe("Ctrl+Enter");
+  });
+
+  for (const mod of ["metaKey", "ctrlKey"] as const) {
+    it(`posts the comment on ${mod === "metaKey" ? "Cmd" : "Ctrl"}+Enter, once`, () => {
+      const { ta, typeText, onSubmit, done } = composer();
+      typeText("Looks good.");
+      const e = key(ta, { [mod]: true });
+      expect(e.defaultPrevented).toBe(true);
+      key(ta, { [mod]: true });
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onSubmit).toHaveBeenCalledWith("Looks good.");
+      done();
+    });
+  }
+
+  it("leaves plain Enter to the textarea", () => {
+    const { ta, typeText, onSubmit, done } = composer();
+    typeText("Line one");
+    const e = key(ta, {});
+    expect(e.defaultPrevented).toBe(false);
+    expect(onSubmit).not.toHaveBeenCalled();
+    done();
+  });
+
+  it("does nothing while Post is disabled: empty text, a screenshot being taken, or a post in flight", async () => {
+    const empty = composer();
+    empty.typeText("   ");
+    key(empty.ta, { metaKey: true });
+    expect(empty.onSubmit).not.toHaveBeenCalled();
+    empty.done();
+
+    const capturing = composer({ capturing: true });
+    capturing.typeText("Waiting on the clip.");
+    key(capturing.ta, { ctrlKey: true });
+    expect(capturing.onSubmit).not.toHaveBeenCalled();
+    capturing.done();
+
+    let finish!: () => void;
+    const slow = composer({}, vi.fn(() => new Promise<void>(r => { finish = r; })));
+    slow.typeText("Slow.");
+    key(slow.ta, { metaKey: true });
+    expect(slow.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
+    key(slow.ta, { metaKey: true });
+    act(() => { slow.root.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    expect(slow.onSubmit).toHaveBeenCalledTimes(1);
+    finish();
+    slow.done();
+  });
+
+  it("ignores the shortcut during an IME composition", () => {
+    const { ta, typeText, onSubmit, done } = composer();
+    typeText("変換中");
+    key(ta, { metaKey: true, isComposing: true });
+    expect(onSubmit).not.toHaveBeenCalled();
+    done();
+  });
+
+  it("names the shortcut in Post's tooltip", () => {
+    const { root, done } = composer();
+    expect(root.querySelector("button[type=submit]")!.getAttribute("title")).toBe(`Post comment (${submitKeysLabel()})`);
+    done();
+  });
+
+  it("sends a sidebar reply on Cmd+Enter or Ctrl+Enter, never an empty one or mid-composition", () => {
+    const onReply = vi.fn();
+    const { root, done } = mount(<Sidebar threads={[thread("a")]} resolved={{}} now={new Date()} selected={null}
+      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={onReply} />);
+    const input = root.querySelector<HTMLInputElement>("input[aria-label=Reply]")!;
+    const typeText = (v: string) => act(() => { input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    key(input, { metaKey: true });
+    typeText("First reply.");
+    key(input, { metaKey: true, isComposing: true });
+    expect(onReply).not.toHaveBeenCalled();
+    expect(key(input, { metaKey: true }).defaultPrevented).toBe(true);
+    expect(onReply).toHaveBeenLastCalledWith(expect.objectContaining({ id: "a" }), "First reply.");
+    expect(input.value).toBe("");
+    typeText("Second reply.");
+    key(input, { ctrlKey: true });
+    expect(onReply).toHaveBeenLastCalledWith(expect.objectContaining({ id: "a" }), "Second reply.");
+    expect(onReply).toHaveBeenCalledTimes(2);
     done();
   });
 });

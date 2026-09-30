@@ -134,6 +134,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(quote(page)).toContainText("Second paragraph");
   });
 
+  test(`${mode}: flow 2 with Cmd+Enter in the textarea, pointer resting on the page, then click a different element: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 2 Cmd+Enter ${mode}`), mode);
+    const threads = page.getByRole("button", { name: /^Threads/ });
+    if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
+    await firstPick(page, f);
+    await page.keyboard.press("Meta+Enter");
+    await expect(composer(page)).toHaveCount(0);
+    await expect(page.locator(".thread-card").filter({ hasText: "A first comment." })).toHaveCount(1);
+    await clickIn(page, f, "#p2");
+    await expect(quote(page)).toContainText("Second paragraph");
+  });
+
   test(`${mode}: flow 3, after Post, drag an area without moving first: the hint shows, and after a move the drag works`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 3 ${mode}`), mode);
     await firstPick(page, f);
@@ -184,6 +196,22 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.keyboard.type("A reply.");
     await page.keyboard.press("Enter");
     await expect(page.locator(".thread-card").first()).toContainText("A reply.");
+    await clickIn(page, f, "#p2");
+    await expect(quote(page)).toContainText("Second paragraph");
+  });
+
+  test(`${mode}: flow 5 with Cmd+Enter in the reply box, then a click in the page: works`, async ({ page }) => {
+    const f = await open(page, await publishLive(`Flow 5 Cmd+Enter ${mode}`, true), mode);
+    const threads = page.getByRole("button", { name: /^Threads/ });
+    await expect(threads).toHaveText("Threads (1)");
+    if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
+    await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
+    const reply = page.getByRole("textbox", { name: "Reply" }).first();
+    await clickShell(page, reply);
+    await page.keyboard.type("A reply by shortcut.");
+    await page.keyboard.press("Meta+Enter");
+    await expect(page.locator(".thread-card").first().locator(".comment", { hasText: "A reply by shortcut." })).toHaveCount(1);
+    await expect(reply).toHaveValue("");
     await clickIn(page, f, "#p2");
     await expect(quote(page)).toContainText("Second paragraph");
   });

@@ -2,6 +2,7 @@ import type { ComponentChildren } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE } from "../../bridge/src/protocol";
 import { anchorLabel, resolvedByLabel, type Thread, type Viewer } from "./threads";
+import { isSubmitKey } from "./comments";
 import { hasElapsedLabel, waitingLabel } from "./waiting";
 
 type Props = {
@@ -69,6 +70,7 @@ export function Sidebar(p: Props) {
 
 function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onReply, onHover }: Props & { t: Thread; n?: number; now: Date }) {
   const [reply, setReply] = useState("");
+  const send = () => { if (reply.trim()) { onReply(t, reply); setReply(""); } };
   const label = t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null;
   return (
     <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onClick={() => onSelect(t)}
@@ -96,8 +98,9 @@ function Card({ t, n, now, me, selected, file, onSelect, onSend, onResolve, onRe
           <button onClick={() => onResolve(t)}>Resolve</button>
         </div>
       )}
-      <form class="reply" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); if (reply.trim()) { onReply(t, reply); setReply(""); } }}>
-        <input aria-label="Reply" placeholder="Reply…" value={reply} onInput={e => setReply((e.target as HTMLInputElement).value)} />
+      <form class="reply" onClick={e => e.stopPropagation()} onSubmit={e => { e.preventDefault(); send(); }}>
+        <input aria-label="Reply" placeholder="Reply…" value={reply} onInput={e => setReply((e.target as HTMLInputElement).value)}
+          onKeyDown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } }} />
         <button type="submit">Reply</button>
       </form>
     </article>
