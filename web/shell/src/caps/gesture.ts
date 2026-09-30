@@ -562,4 +562,6 @@ export function forgetGestures(): void {
   lowerShield();
 }
 
-if (typeof document !== "undefined") watchGestures(document);
+/** Stops the watch this module starts on the shell document as it loads.
+ * Tests call it: each fresh import of the module starts its own watch. */
+export const unwatchShell: () => void = typeof document !== "undefined" ? watchGestures(document) : () => {};

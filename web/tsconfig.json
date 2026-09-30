@@ -4,5 +4,5 @@
     "jsx": "react-jsx", "jsxImportSource": "preact", "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "noEmit": true, "skipLibCheck": true, "types": ["vite/client", "node"]
   },
-  "include": ["shell/src", "bridge/src", "bridge/test", "e2e"]
+  "include": ["shell/src", "shell/test-setup.ts", "bridge/src", "bridge/test", "e2e"]
 }

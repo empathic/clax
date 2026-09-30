@@ -28,6 +28,10 @@ const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: 
 
 /** The gesture module the mounted view uses (from the same module registry). */
 let gesture: typeof import("./caps/gesture") | undefined;
+/** Every gesture module instance a mount loaded: each watches the document
+ * until its `unwatchShell` runs. */
+const gestureModules = new Set<typeof import("./caps/gesture")>();
+afterEach(() => { for (const g of gestureModules) g.unwatchShell(); gestureModules.clear(); });
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
@@ -43,6 +47,7 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
   sessionStorage.setItem("clax.origin-ok", "0");
   const { default: ArtifactView } = await import("./artifact");
   gesture = await import("./caps/gesture");
+  gestureModules.add(gesture);
   const root = document.createElement("div");
   document.body.appendChild(root);
   render(<ArtifactView id={ID} pinnedVersion={pinned} file={file} />, root);
