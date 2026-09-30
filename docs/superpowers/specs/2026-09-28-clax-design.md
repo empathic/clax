@@ -68,7 +68,8 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D12 | MCP tool names mirror claude.ai's tools (`publish`, `read`, `list`, `comments_read`, `db_get`, ...) | Agents that already know the Artifact tools transfer that knowledge; skill files carry the contract. |
 | D13 | Five phases, each shippable; phase 1 has no comments, no capabilities | Per the standing instruction; comments and capabilities are the churn-prone parts. |
 | D14 | Pi adapter is specified against the published extension API and clash-pi, and verified against Pi 0.73.1 in phase 2 (§13) | Pi was not installed when this was designed. |
-| D15 | The product is Clax: binary `clax`, crates `clax-*`, home `~/.clax`, variables `CLAX_*`, message prefix `clax:`, routes `/_clax/`, plugin and skill `clax`; renamed from its first name with a clean break (no aliases, no migration; see the name-history note) | One name everywhere; nothing was released under the first name, so there is nothing to carry over. |
+| D15 | The product is Clax: binary `clax`, crates `clax-*`, home `~/.clax`, variables `CLAX_*`, message prefix `clax:`, routes `/_clax/`, plugin and skill `clax`; renamed from its first name with a clean break (no aliases, no migration; see the name-history note); `clax init` and `clax uninit` do remove the harnesses' registrations of the first name's plugin and marketplace, which are harness settings, not Clax data | One name everywhere; nothing was released under the first name, so there is nothing to carry over. |
+| D16 | The plugins run the `clax` on `PATH` (or `$CLAX_BIN`) through a thin wrapper and never download or build; `just install` installs `clax` from the checkout and `clax init` registers the plugins embedded in the binary with each harness; `just dev <harness>` runs a fresh build from a temporary directory on `PATH` with the plugin loaded from the checkout, on `~/.clax-dev` and port 7481; releases and `install.sh` serve people without a checkout | Local use never depends on a public repository or a release; a registered plugin always matches the installed binary; a moved checkout breaks nothing. |
 
 ## 3. Architecture
 
@@ -114,8 +115,8 @@ Components:
   `window.claude.use`, comment-mode hit testing and highlighting, anchor
   resolution, and screenshot clips.
 - **Plugins**. One directory per harness that packages the shim command,
-  hooks, skills, and slash commands, plus an installer script that finds or
-  downloads the binary (toolpath's `ensure-path.sh` pattern).
+  hooks, skills, and slash commands, plus a thin wrapper that runs the
+  `clax` on `PATH` and explains when there is none (§13, D16).
 
 ## 4. Repository layout
 
@@ -145,6 +146,11 @@ docs/superpowers/plans/            one plan per phase
 docs/contract.md                   the tool contract, sessions, page contract, and security model,
                                    for agents and humans
 justfile, scripts/quality_gates.sh same gate style as toolpath
+scripts/ensure-clax.sh             the plugins' wrapper (copied into both plugins' scripts/)
+scripts/dev.sh, watch.sh           `just dev <harness>` and `just watch`
+scripts/*release*, check-version.sh, bump-version.sh
+                                   release packaging and version checks (.github/workflows/release.yml)
+install.sh                         installs a release into ~/.local/bin, for people without a checkout
 ```
 
 Dependency graph:
@@ -166,14 +172,16 @@ Root: `~/.clax/` (override with `CLAX_HOME`).
 
 ```
 ~/.clax/
-  daemon.json            {port, pid, token, started_at, bind}  mode 0600
+  daemon.json            {port, pid, token, started_at, bind, version, exe}  mode 0600
   clax.db                SQLite
   artifacts/<aid>/
     versions/<n>/index.html          the page as published (before wrapping)
     versions/<n>/files/<path>        supporting files for that version
     assets/<asset_id>.<ext>          asset store, shared across versions
     clips/<thread_id>.png            comment screenshot clips
-  config.toml            bind address, port, sample provider, key env var name
+  config.toml            [serve] port (a daemon started for this home listens there; default 7480);
+                         later: bind address, sample provider, key env var name
+  marketplace/           the plugins embedded in the binary, written and registered by `clax init`
   logs/daemon.log
 ```
 
@@ -416,16 +424,23 @@ payload lines, which must stay one line); anything else is `invalid_path`.
    re-checks, then spawns `clax serve --daemonize` detached (new session,
    stdio to `logs/daemon.log`), and polls `/healthz` for up to 5 seconds. The
    spawning client holds the lock until `/healthz` answers.
-3. `clax serve` binds `127.0.0.1:7480` by default, tries the next 20
+3. `clax serve` binds `127.0.0.1` on `--port`, else the home's `[serve] port`, else 7480, tries the next 20
    ports if busy, and writes `daemon.json` atomically. `clax serve` itself
    does not take the lock.
 4. `clax stop` sends `POST /api/admin/shutdown` (W). The daemon also
    exits if `daemon.json` is replaced by a newer daemon (checked every 30 s)
    and exits when `daemon.json` is missing on two consecutive checks, so a
    stale process cannot shadow a new one.
-5. Version skew: the shim compares `/healthz` version with its own; on
-   mismatch it asks the daemon to shut down and restarts it. Storage
-   migrations run on daemon start.
+5. Version skew: `daemon.json` records the daemon's `version` and `exe`
+   (its executable's canonical path). A client that finds a daemon older
+   than itself replaces it; a newer daemon, or one of the same version, is
+   kept (a newer daemon serves older clients, and two plugins at different
+   versions must not restart each other's daemon). A replacement holds
+   `daemon.lock` throughout: it re-reads `daemon.json`, asks the daemon to
+   shut down (SSE streams and long polls end, in-flight requests get 5 s),
+   waits up to 7 s for its PID to exit, starts the new executable on the old
+   port and bind address, and waits for `/healthz`. Storage migrations run
+   on daemon start.
 
 ## 8. Shell UI and viewer
 
@@ -1144,9 +1159,17 @@ object. The other commands print their own JSON shape.
 - `commands/`: `/clax:open [id]`, `/clax:comments [id]`,
   `/clax:watch [id] [off]`, `/clax:wait [id]`, `/clax:serve`
   (start, stop, status, bind for LAN), `/clax:doctor`.
-- `scripts/ensure-clax.sh`: toolpath's `ensure-path.sh` adapted
-  (`CLAX_BIN`, `CLAX_INSTALL_DIR`, GitHub release download with
-  checksum, `exec` subcommand).
+- `scripts/ensure-clax.sh`: a thin wrapper. It runs `$CLAX_BIN`, else the
+  first `clax` on `PATH` that reports itself as clax; it never downloads,
+  builds, or looks anywhere else. A binary whose version differs from the
+  plugin's (`CLAX_VERSION` in the wrapper) runs with a warning. With no
+  binary, MCP mode answers the MCP client with a minimal server whose one
+  tool, `status`, states the reason; hooks print one line and exit 0. Every
+  failure and every MCP start is one line in `~/.clax/logs/hooks.log`.
+- Installation: `clax init` writes the plugins embedded in the binary to
+  `~/.clax/marketplace/` and registers them (`claude plugin marketplace
+  add`, `claude plugin install clax@clax`); `clax uninit` removes them.
+  `just dev claude` loads the checkout's plugin with `--plugin-dir`.
 - Root `.claude-plugin/marketplace.json` lists it.
 
 ### Codex (`plugins/clax`)
@@ -1163,11 +1186,9 @@ must point at `./plugins/<plugin-name>`.
   ["./scripts/ensure-clax.sh", "exec", "mcp", "--agent", "codex"], "cwd":
   "./", "env_vars": [...]}}}`. Codex expands no plugin-root variable in
   `.mcp.json` but resolves a relative `cwd` against the installed plugin
-  root. It starts MCP servers with a minimal environment, so `env_vars`
-  forwards `CLAX_HOME`, `CLAX_NO_OPEN`, `CLAX_BIN`,
-  `CLAX_INSTALL_DIR`, `CLAX_CONFIG_DIR`, `CLAX_RELEASE_BASE_URL`,
-  `CLAX_RELEASE_VERSION`, and `CLAX_CODEX_BIN` (which a daemon the
-  shim starts inherits, §10).
+  root. It starts MCP servers with a minimal environment (which keeps `PATH`),
+  so `env_vars` forwards `CLAX_HOME`, `CLAX_NO_OPEN`, `CLAX_BIN` and
+  `CLAX_CODEX_BIN` (which a daemon the shim starts inherits, §10).
 - `hooks/hooks.json` in Claude Code's format: `SessionStart` →
   `bash "${PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent codex
   session-start` (joins the session, records `CODEX_HOME`, and prints the
@@ -1178,9 +1199,14 @@ must point at `./plugins/<plugin-name>`.
   in a shell with `PLUGIN_ROOT` exported.
 - `skills/clax/SKILL.md`: same content as the Claude skill, with Codex
   tool naming (`mcp__clax__<tool>`).
-- `scripts/ensure-clax.sh`: a copy of the Claude plugin's installer.
-- Root `.agents/plugins/marketplace.json` lists it. Install:
-  `codex plugin marketplace add <repo>` then `codex plugin add clax@clax`.
+- `scripts/ensure-clax.sh`: a copy of the Claude plugin's wrapper.
+- Root `.agents/plugins/marketplace.json` lists it. Installed by `clax init`
+  (`codex plugin marketplace add ~/.clax/marketplace`, `codex plugin add
+  clax@clax`). Codex has no flag that loads a plugin from a directory: it
+  loads plugins from its install cache (`$CODEX_HOME/plugins/cache/`).
+  `just dev codex`, like every `just dev`, puts the fresh build first on
+  `PATH` and runs on the dev home `~/.clax-dev`; Codex then loads the Clax
+  plugin from its install cache.
 
 Person-side settings, documented in the plugin README rather than set by the
 plugin:
@@ -1201,6 +1227,10 @@ plugin:
   lists once one exists). Installed from a clone with
   `pi install /absolute/path/to/clax/plugins/pi`, or loaded for one run
   with `pi -e <path>`. It needs the `clax` CLI on `PATH` or `CLAX_BIN`.
+- The extension runs `$CLAX_BIN`, else `clax` on `PATH`, and never
+  downloads. `clax init` runs `pi install ~/.clax/marketplace/plugins/pi`;
+  `just dev pi` loads the checkout's extension and skill with `-e` and
+  `--skill` (and `-ne`, so an installed copy does not load twice).
 - `src/clax.ts` registers `clax_<tool>` for the fourteen tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
   identical to the MCP tools. The package carries the Clax version, so
@@ -1294,8 +1324,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   its shape); the skills say so.
 - `sample()` spends the configured key; consent is per viewer per artifact
   and the shell shows a running count of calls.
-- No telemetry, no outbound calls except `sample()` and release downloads
-  by the installer script.
+- No telemetry, no outbound calls except `sample()`. The plugins never
+  download anything. `install.sh`, which a person runs by hand, downloads
+  a release and checks it against the release's `SHA256SUMS`, which comes
+  from the same place, so the check protects integrity, not authenticity.
 
 ## 15. Error handling
 
@@ -1343,12 +1375,20 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   agent reply visible via SSE, `window.claude.use` for each capability in
   both origin modes (`*.localhost` and opaque sandbox), db `onSnapshot`,
   self-publish reload.
-- **Plugins**: shell tests for `ensure-clax.sh`; a Claude Code smoke test
+- **Plugins**: shell tests for `ensure-clax.sh` (the `PATH` lookup, the
+  fallback MCP server, hooks), and tests of `clax init`/`uninit` and
+  `just dev` against fake `claude`, `codex` and `pi` commands and scratch
+  harness configuration directories; a Claude Code smoke test
   that loads the plugin from the repo path and runs a scripted session;
   structure checks and Codex's plugin validator for the Codex plugin, and a
   manual Codex smoke test that installs it into a scratch `CODEX_HOME`; the Pi extension through a fake
   `ExtensionAPI` object against a real daemon, plus a manual `pi -p` smoke
   test (`scripts/smoke-pi.sh`).
+- **Release**: `scripts/test-release.sh` checks the version, bump and
+  packaging scripts; `scripts/test-install.sh` runs `install.sh` against a
+  local fake release server; `.github/workflows/release.yml` builds,
+  smoke-tests and packages every target on pull requests that touch it and
+  on manual runs, and publishes only on a `v*` tag.
 - `scripts/quality_gates.sh` runs fmt, clippy `-D warnings`, cargo test,
   web lint (oxlint) and typecheck, Playwright, and the plugin tests; CI runs
   the same script.
