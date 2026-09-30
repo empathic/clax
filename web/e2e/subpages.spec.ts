@@ -47,6 +47,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.screenshot({ path: test.info().outputPath(`${mode}-about-pin.png`) });
 
     // Back on the index: no pin, and the thread is labelled with its page.
+    // Comment mode came back after the post; a link is followed once it is off.
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await about.locator("#home").click();
     await expect(page).toHaveURL(`${d.base}/a/${id}`);
     await expect(page.locator("button.thread-pin")).toHaveCount(0);

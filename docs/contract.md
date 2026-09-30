@@ -703,6 +703,16 @@ nothing is posted without the viewer. A composer waiting for a page area's scree
 and, after 10 seconds without it, says "No screenshot: it was not taken in
 time".
 
+Comment mode is off while the composer a pick opened is open, and comes back
+on when that composer closes (posted, `@agent` included, cancelled, or
+closed with Escape), so the viewer picks the next target without pressing
+Comment again; while a failed post keeps the composer open, it stays off.
+A composer the page opened (`openComposer`, `compose`) does not turn it on
+when it closes, nor does one the viewer turned comment mode on and off over
+with the Comment button, nor one that closes after the artifact was deleted.
+Comment mode still ends when the viewer presses Comment or presses Escape
+with no composer open.
+
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
 document skeleton, a full document as written plus the bridge tag; a page that

@@ -545,6 +545,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   the bridge's window, can act then, and controls what gets rendered); the
   composer then shows the pick's quote or area label and its screenshot
   (not where it anchors), and nothing is posted without the viewer.
+  Comment mode is off while a pick's composer is open and comes
+  back on when it closes (posted, `@agent` included, cancelled, or closed
+  with Escape), so the viewer comments again without pressing Comment; a
+  failed post keeps the composer open and comment mode off. A composer the
+  page opened (`openComposer`, `compose`), or one the viewer turned comment
+  mode on and off over with the Comment button, does not turn it on when it
+  closes, nor does one that closes after the artifact was deleted. Comment
+  mode still ends on the Comment button and on Escape with no composer open.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the
@@ -804,8 +812,9 @@ which still lets the viewer post, as for other clips.
 ### Data flow
 
 1. Viewer enters comment mode, picks an element or selection, writes a
-   comment. Shell posts the thread with anchor and clip. Everyone with the
-   shell open sees the pin via SSE.
+   comment. Shell posts the thread with anchor and clip, and comment mode
+   comes back on for the next pick. Everyone with the shell open sees the
+   pin via SSE.
 2. Viewer presses **Send to agent** on the thread (or writes `@agent` in a
    comment). The daemon sets `sent_to_agent`, then creates one `feedback`
    row per target session: the artifact's owner session and every session
