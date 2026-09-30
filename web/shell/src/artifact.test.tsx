@@ -653,39 +653,107 @@ describe("ArtifactView", () => {
     expect(textarea.value).toBe("");
   });
 
-  it("opens no composer for a pick the page forged: without a start, with a start outside the viewer's gesture, or beside another pending start", async () => {
+  it("opens no composer for a pick the page forged: without a start, with a start outside the viewer's gesture or without an anchor, or beside another pending start", async () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
-    buttonNamed(root, "Comment").click();
-    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode");
+    const comment = buttonNamed(root, "Comment");
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
     const settle = () => new Promise(r => setTimeout(r, 30));
     gestureIn(frame);
     fromFrame(win, pick("f1", "No start"));
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
     gestureIn(frame, false);
-    fromFrame(win, { type: "clax:pick-start", pickId: "f2" });
+    fromFrame(win, startOf(pick("f2", "No gesture")));
     fromFrame(win, pick("f2", "No gesture"));
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
-    // The page's forged start beside the bridge's real one: neither counts.
     gestureIn(frame);
-    fromFrame(win, { type: "clax:pick-start", pickId: "real" });
-    fromFrame(win, { type: "clax:pick-start", pickId: "forged" });
+    fromFrame(win, { type: "clax:pick-start", pickId: "f3" });
+    fromFrame(win, pick("f3", "No anchor"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    expect(comment.getAttribute("aria-pressed")).toBe("true");
+    // The page's forged start beside the bridge's real one: neither counts,
+    // the composer the first opened closes, and comment mode comes back.
+    gestureIn(frame);
+    fromFrame(win, startOf(pick("real", "Real")));
+    fromFrame(win, startOf(pick("forged", "Forged")));
     fromFrame(win, pick("forged", "Forged"));
     fromFrame(win, pick("real", "Real"));
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
-    // A start is used once: a second pick under it is dropped.
-    viewerPick(frame, pick("ok", "Quarterly goals"));
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back");
+    // A start is used once: a second pick under its ID changes nothing.
+    viewerPick(frame, { ...pick("ok", "Quarterly goals"), clipError: "first" });
     await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Quarterly goals"), "the viewer's pick");
-    buttonNamed(root, "Comment").click();
-    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode again");
-    fromFrame(win, pick("ok", "Replayed"));
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode again");
+    fromFrame(win, { ...pick("ok", "Replayed"), clipError: "replayed" });
     await settle();
     expect(root.querySelector(".composer-quote")!.textContent).toContain("Quarterly goals");
+    expect(root.querySelector(".composer")!.textContent).toContain("No screenshot: first");
+  });
+
+  it("opens the composer at the viewer's pick start, focused and taking the screenshot, and moves the keys they typed in the page into it", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    const comment = buttonNamed(root, "Comment");
+    comment.click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode");
+    const keys = (pickId: string, k: unknown, done?: boolean) => fromFrame(win, { type: "clax:keys", pickId, keys: k, ...(done ? { done } : {}) });
+    const settle = () => new Promise(r => setTimeout(r, 30));
+    gestureIn(frame);
+    fromFrame(win, startOf(pick("p1", "Goals")));
+    // A key typed in the page before the composer has rendered.
+    keys("p1", ["V"]);
+    const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the composer");
+    expect(root.querySelector(".composer")!.textContent).toContain("Taking the screenshot…");
+    expect(buttonNamed(root, "Post comment").disabled).toBe(true);
+    expect(comment.getAttribute("aria-pressed")).toBe("false");
+    await waitFor(() => document.activeElement === textarea, "the textarea focused");
+    keys("p1", ["i", "x", "Backspace", "a"]);
+    // Another pick's keys are not taken.
+    keys("p0", ["!"]);
+    await waitFor(() => textarea.value === "Via", "the page's keys");
+    keys("p1", [" "], true);
+    await waitFor(() => textarea.value === "Via ", "the last key");
+    // None after the bridge said no more follow.
+    keys("p1", ["n", "o"]);
+    await settle();
+    expect(textarea.value).toBe("Via ");
+    // The screenshot arrives: the composer keeps its anchor and text; Post is enabled.
+    fromFrame(win, pick("p1", "Ignored anchor"));
+    await waitFor(() => !root.querySelector(".composer")!.textContent!.includes("Taking the screenshot…"), "the screenshot");
+    expect(root.querySelector(".composer-quote")!.textContent).toContain("Goals");
+    expect(textarea.value).toBe("Via ");
+    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    // Cancel: comment mode comes back.
+    buttonNamed(root, "Cancel").click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back");
+    // A malformed batch ends the keys for that pick.
+    gestureIn(frame);
+    fromFrame(win, startOf(pick("p2", "Goals")));
+    const t2 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the second composer");
+    keys("p2", ["ok"]);
+    keys("p2", ["a"]);
+    await settle();
+    expect(t2.value).toBe("");
+    buttonNamed(root, "Cancel").click();
+    await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back again");
+    // Keys are taken only for a while after the pick.
+    gestureIn(frame);
+    fromFrame(win, startOf(pick("p3", "Goals")));
+    const t3 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the third composer");
+    await new Promise(r => setTimeout(r, 1_100));
+    keys("p3", ["l", "a", "t", "e"]);
+    await settle();
+    expect(t3.value).toBe("");
   });
 
   it("tells a custom-anchors page areas are off while a send is in flight, and a page area's composer waits for its screenshot with Post disabled, then says it never came", async () => {
@@ -768,7 +836,7 @@ describe("ArtifactView", () => {
     await waitFor(() => posts === 2 && !root.querySelector(".banner.notice"), "the notice cleared");
   });
 
-  it("uses up a pick's start even when the pick is dropped, and forgets starts when comment mode ends or a page greets, so the viewer's next pick works", async () => {
+  it("takes a pick's screenshot only for the composer its start opened, once, and forgets a pending pick when comment mode comes back on or a page greets, so the viewer's next pick works", async () => {
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
@@ -776,42 +844,43 @@ describe("ArtifactView", () => {
     hello();
     const comment = buttonNamed(root, "Comment");
     const on = async () => { if (comment.getAttribute("aria-pressed") !== "true") comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode on"); };
-    const off = async () => { comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off"); };
     const settle = () => new Promise(r => setTimeout(r, 30));
-    const start = (id: string) => { gestureIn(frame); fromFrame(win, { type: "clax:pick-start", pickId: id }); };
-    const opensWith = async (quote: string) => {
-      await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes(quote), quote);
-      buttonNamed(root, "Cancel").click();
-      await waitFor(() => !root.querySelector(".composer"), "composer closed");
-    };
-    // A pick that arrives after comment mode ended is dropped; the next one works.
+    const start = (id: string, quote: string) => { gestureIn(frame); fromFrame(win, startOf(pick(id, quote))); };
+    const capturing = () => !!root.querySelector(".composer")?.textContent?.includes("Taking the screenshot…");
+    const composerFor = (quote: string) => waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes(quote) && capturing(), quote);
+    // The start opens the composer; its pick brings the screenshot, once.
     await on();
-    start("a1");
-    await off();
-    fromFrame(win, pick("a1", "Late"));
+    start("a1", "First");
+    await composerFor("First");
+    fromFrame(win, { ...pick("a1", "First"), clipError: "blank" });
+    await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: blank"), "the pick's clip error");
+    fromFrame(win, { ...pick("a1", "First"), clipError: "again" });
     await settle();
-    expect(root.querySelector(".composer")).toBeNull();
+    expect(root.querySelector(".composer")!.textContent).toContain("No screenshot: blank");
+    // Comment mode back on while a pick is in flight: the old pick is moot,
+    // the new one works.
     await on();
-    viewerPick(frame, pick("a2", "Next after a late one"));
-    await opensWith("Next after a late one");
-    // Comment mode toggled while a pick is in flight: the old pick is dropped, the new one works.
+    start("b1", "Old");
+    await composerFor("Old");
     await on();
-    start("b1");
-    await off();
+    start("b2", "New after a toggle");
+    await composerFor("New after a toggle");
+    fromFrame(win, { ...pick("b1", "Old"), clipError: "old" });
+    await settle();
+    expect(capturing()).toBe(true);
+    fromFrame(win, { ...pick("b2", "New after a toggle"), clipError: "new" });
+    await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: new"), "the new pick's clip");
+    // A pick from before a new greeting does not count after it.
     await on();
-    start("b2");
-    fromFrame(win, pick("b1", "Old"));
-    fromFrame(win, pick("b2", "New after a toggle"));
-    await opensWith("New after a toggle");
-    // A start from the page before a new greeting does not count after it.
-    await on();
-    start("c1");
+    start("c1", "Before the greeting");
+    await composerFor("Before the greeting");
     hello();
-    fromFrame(win, pick("c1", "Before the greeting"));
+    fromFrame(win, { ...pick("c1", "Before the greeting"), clipError: "stale" });
     await settle();
-    expect(root.querySelector(".composer")).toBeNull();
-    viewerPick(frame, pick("c2", "After the greeting"));
-    await opensWith("After the greeting");
+    expect(capturing()).toBe(true);
+    await on();
+    viewerPick(frame, { ...pick("c2", "After the greeting"), clipError: "fresh" });
+    await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("After the greeting") && root.querySelector(".composer")?.textContent?.includes("No screenshot: fresh"), "after the greeting");
   });
 
   it("turns comment mode back on when a pick's composer closes by Post, by a post sent to the agent, or by Cancel or Escape, and not while a failed post keeps it open", async () => {
@@ -1123,12 +1192,17 @@ function gestureIn(frame: HTMLIFrameElement, active = true) {
   control.remove();
 }
 
-/** A pick as the bridge sends one for the viewer's click: its start while the
- * frame holds the gesture, then the pick. */
+/** A pick as the bridge sends one for the viewer's click: its start, with the
+ * anchor, while the frame holds the gesture, then the pick. */
 function viewerPick(frame: HTMLIFrameElement, m: { pickId: string; [k: string]: unknown }) {
   gestureIn(frame);
-  fromFrame(frame.contentWindow!, { type: "clax:pick-start", pickId: m.pickId });
+  fromFrame(frame.contentWindow!, startOf(m));
   fromFrame(frame.contentWindow!, m);
+}
+
+/** The start the bridge sends for the pick `m`. */
+function startOf(m: { pickId: string; [k: string]: unknown }) {
+  return { type: "clax:pick-start", pickId: m.pickId, version: m.version, anchor: m.anchor };
 }
 
 function pick(pickId: string, quote: string) {

@@ -528,12 +528,21 @@ file under `v/<digits>/` is reachable only through the versioned form):
   in progress, else the bridge answers `clax:cancel` and the shell leaves
   comment mode; Escape elsewhere leaves it at once. The bridge's comment mode
   acts only on trusted (viewer) events and has at most one pick in flight;
-  it sends `clax:pick-start {pickId}` at the viewer's click or release,
-  before rendering the clip, and the shell takes the `clax:pick` with that
-  ID only in comment mode, only when its start arrived while the frame held
-  the viewer's gesture (`frameGesture`), and once (a start is used up even
-  when its pick is dropped, and every start is forgotten when comment mode
-  ends or a page greets); two starts pending at once are both refused. The
+  it sends `clax:pick-start {pickId, version, anchor}` at the viewer's
+  click or release, before rendering the clip, and the shell takes it only
+  in comment mode and only while the frame holds the viewer's gesture
+  (`frameGesture`): it opens the composer at once, focused and taking the
+  screenshot, turns comment mode off, and takes the `clax:pick` with that
+  ID once, for its clip only (a pending pick is forgotten when comment mode
+  comes back on or a page greets); a second start with the viewer's gesture
+  while one is pending and comment mode is off means one was forged, so
+  both are refused and the composer closes. From the pick until focus leaves
+  the page (or 2 s), the bridge keeps every key and text event from the page
+  (`key-trap.ts`, listening on the window before any page script) and
+  forwards the text keys as `clax:keys {pickId, keys, done?}`; the shell
+  puts them, as text only, in the composer that pick's taken start opened,
+  until `done` or 1 s, at most 500, ahead of keys typed in the composer
+  (held until `done`). The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. Page calls and picks
   that need the viewer's gesture use one of two tiers (`caps/gesture.ts`;

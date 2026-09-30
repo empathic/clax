@@ -82,7 +82,7 @@ async function forge() {
   window.focus();
   const anchor = { kind: "element", selector: "#para", quote: "FORGED BY PAGE", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
   const pickId = "forged" + n;
-  parent.postMessage({ type: "clax:pick-start", pickId }, "*");
+  parent.postMessage({ type: "clax:pick-start", pickId, version: window.__clax.version, anchor }, "*");
   parent.postMessage({ type: "clax:pick", pickId, version: window.__clax.version, anchor, clipPng: png }, "*");
   document.getElementById("forged").textContent = String(++n);
 }
@@ -245,7 +245,7 @@ const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Atta
     const png = await (await cv.convertToBlob({ type: "image/png" })).arrayBuffer();
     window.focus();
     const a = { kind: "element", selector: "#para", quote: "FORGED BY PAGE", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
-    parent.postMessage({ type: "clax:pick-start", pickId: "forged" }, "*");
+    parent.postMessage({ type: "clax:pick-start", pickId: "forged", version: window.__clax.version, anchor: a }, "*");
     parent.postMessage({ type: "clax:pick", pickId: "forged", version: window.__clax.version, anchor: a, clipPng: png }, "*");
     return "forged";
   }

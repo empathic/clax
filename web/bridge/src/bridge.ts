@@ -10,7 +10,9 @@
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
- * rectangle, Option widening with keys the shell forwards), anchor
+ * rectangle, Option widening with keys the shell forwards, and the keys the
+ * viewer types in the page after a pick handed to the shell's composer, see
+ * `key-trap.ts`), anchor
  * resolution (an area's rectangle projected onto its element's current box),
  * the dashed outline of the focused thread's area, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
@@ -34,6 +36,7 @@ import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
+import { KeyTrap } from "./key-trap";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
@@ -122,9 +125,16 @@ import { makeUse } from "./use";
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
+  // The keys the viewer types in the page after a pick, until the shell's
+  // composer takes focus, go to that composer, not the page.
+  const keys = new KeyTrap(window, (pickId, k, done) => post({ type: "clax:keys", pickId, keys: k, ...(done ? { done } : {}) }));
+  /** Posts the pick's start with its anchor (the shell opens the composer on
+   * it), then starts its clip in the same task, from the page as it is now,
+   * and posts the pick with the clip once it is taken. */
   const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    post({ type: "clax:pick-start", pickId });
+    keys.start(pickId);
+    post({ type: "clax:pick-start", pickId, version: meta.version, anchor });
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
     try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
@@ -140,8 +150,7 @@ import { makeUse } from "./use";
     pickArea: r => {
       const el = containingElement(document, r);
       const anchor = buildAreaAnchor(document, r, meta.file, el);
-      const clip = renderAreaClip(el, areaBox(anchor.area!, boxOf(el)));
-      void pick(anchor, () => clip).finally(() => mode.captured());
+      void pick(anchor, () => renderAreaClip(el, areaBox(anchor.area!, boxOf(el)))).finally(() => mode.captured());
     },
     cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
   });

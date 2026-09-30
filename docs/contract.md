@@ -681,12 +681,27 @@ widened picks that element (a drag selection is widened at least to its
 block); Option never starts an area drag. Option, Up, Down, and Escape work
 with focus in the page or in the shell while the pointer is over the page.
 Only the viewer's own input counts: the bridge ignores events the page
-dispatched, and the shell takes a pick only while comment mode is on and only
-after its start (`clax:pick-start`, sent by the bridge at the viewer's
-click or release) arrived while the frame held the viewer's gesture (the
-check `compose` uses); each start counts once (a pick dropped because
-comment mode ended uses its start up, and ending comment mode forgets every
-start), and two starts pending at once are both refused. So a page can post
+dispatched, and the shell takes a pick only from its start
+(`clax:pick-start`, sent by the bridge at the viewer's click or release with
+the pick's anchor), only while comment mode is on and the frame holds the
+viewer's gesture (the check `compose` uses). A taken start opens the
+composer at once, its textarea focused and "Taking the screenshot…" shown
+until the pick's screenshot (`clax:pick`, taken once, for that composer
+only) arrives, and turns comment mode off; a second start arriving with the
+viewer's gesture while that screenshot is pending and comment mode is still
+off means one was forged, so both are refused (the composer closes and
+comment mode comes back), and a pending pick is forgotten when comment mode
+comes back on or a page greets. The viewer can type the moment they pick:
+until the composer's textarea has focus, the bridge keeps every key and text
+event they make in the page from the page and hands the text keys
+(characters, Enter as a newline, Backspace) to the shell (`clax:keys`),
+which puts them in that composer ahead of anything typed there, holding the
+viewer's own typing in it until the bridge says no more follow. The page can
+post such keys too, so the shell takes them only for a composer the
+viewer's own taken start opened, only until the bridge says no more follow
+or one second after the start, and at most 500 of them; they are text in the
+composer, never input to the shell, and nothing is posted without the
+viewer. So a page can post
 a pick of its own only in comment mode, while no pick of the bridge's is
 pending, and while that check (the composer tier of "The viewer's gesture"
 under the `comments` capability) passes: within the browser's
@@ -702,9 +717,10 @@ not while the pointer rests where that input left it, whatever the layout
 does around it. The page shares the bridge's window and can always act then,
 and it controls what it renders. The composer then shows the pick's quote or
 area label and its screenshot (not where it anchors), and
-nothing is posted without the viewer. A composer waiting for a page area's screenshot keeps Post disabled
+nothing is posted without the viewer. A composer waiting for its screenshot (a pick's, or a page area's) keeps Post disabled
 and, after 10 seconds without it, says "No screenshot: it was not taken in
-time".
+time"; the submit shortcut pressed meanwhile (or while keys typed in the page
+are still arriving) posts once the screenshot is in or that wait ends.
 
 Comment mode is off while the composer a pick opened is open, and comes back
 on when that composer closes (posted, `@agent` included, cancelled, or

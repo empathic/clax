@@ -314,7 +314,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const anchor = { kind: "element", selector: "#para", quote: "forged", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
       const version = (window as unknown as { __clax: { version: number } }).__clax.version;
       parent.postMessage({ type: "clax:pick", pickId: "forged1", version, anchor, clipPng: png.slice(0) }, "*");
-      parent.postMessage({ type: "clax:pick-start", pickId: "forged2" }, "*");
+      parent.postMessage({ type: "clax:pick-start", pickId: "forged2", version, anchor }, "*");
       parent.postMessage({ type: "clax:pick", pickId: "forged2", version, anchor, clipPng: png.slice(0) }, "*");
     });
     await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);

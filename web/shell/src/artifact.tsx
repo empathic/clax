@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
-import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, takePick, withClip } from "./comments";
+import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, MAX_EARLY_KEYS, Pins, captureWait, earlyKeys, nextDraft, withClip, withEarly } from "./comments";
 import type { Declared } from "./caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, registerShield, setForwardedKeys } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
@@ -24,6 +24,11 @@ type Props = { id: string; pinnedVersion: number | null; file?: string };
 /** How long a pick's start stays valid for its pick (longer than the
  * longest clip render, an area's 12 s). */
 const PICK_WAIT_MS = 20_000;
+
+/** How long after the viewer's pick opened the composer it takes keys typed
+ * in the page (`clax:keys`): the bridge ends them sooner, once the composer
+ * has focus. */
+const EARLY_KEYS_MS = 1_000;
 
 /** The notice kind for a thread the daemon kept without its screenshot. */
 const CLIP_DROPPED = "Posted without its screenshot";
@@ -126,9 +131,22 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const sendRef = useRef(send);
   sendRef.current = send;
   const focusRef = useRef<string | null>(null);
-  // Picks whose start arrived with the viewer's gesture in the frame, by pick
-  // ID, with when it arrived.
-  const startedPicks = useRef(new Map<string, number>());
+  // The pick whose start arrived with the viewer's gesture in the frame and
+  // opened the composer, while its screenshot is still to come, with when
+  // the start arrived.
+  const pendingPick = useRef<{ pickId: string; at: number } | null>(null);
+  // The pick whose composer takes the keys the viewer types in the page
+  // before it has focus (`clax:keys`), until the bridge says no more follow
+  // or `EARLY_KEYS_MS` passes; how many it took.
+  const earlyFor = useRef<{ pickId: string; count: number; timer: ReturnType<typeof setTimeout> } | null>(null);
+  const endEarly = () => {
+    const e = earlyFor.current;
+    if (!e) return;
+    earlyFor.current = null;
+    clearTimeout(e.timer);
+    setDraft(dr => withEarly(dr, e.pickId, [], true));
+  };
+  useEffect(() => () => clearTimeout(earlyFor.current?.timer), []);
   // The pick ID of the open composer when a pick made in comment mode opened
   // it: comment mode, off while that composer is open, comes back on when it
   // closes.
@@ -405,12 +423,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
 
   useEffect(loadThreads, [id]);
   useEffect(() => { resolveAll(); }, [threads.map(t => t.id).join(","), shown, origin]);
-  useEffect(() => {
-    send({ type: "clax:comment-mode", on: commenting });
-    // A pick still in flight when comment mode ends is moot: its start must
-    // not stand in the way of the viewer's next pick.
-    if (!commenting) startedPicks.current.clear();
-  }, [commenting]);
+  useEffect(() => { send({ type: "clax:comment-mode", on: commenting }); }, [commenting]);
   // The pick's composer closed (posted, cancelled, or dismissed): comment mode
   // comes back on, so the viewer can pick the next target at once. One
   // replaced by another composer, or closed after the viewer pressed Comment
@@ -451,7 +464,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // this version does not hold, gets no welcome, no anchors, and no pins.
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         helloOk.current = helloMatches(m, id, shown) && holds(greeted);
-        startedPicks.current.clear();
+        pendingPick.current = null;
+        endEarly();
         setResolved({});
         forgetAnchorIds();
         if (!helloOk.current) { setCurrentFile(null); break; }
@@ -475,7 +489,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         }
         break;
       }
-      case "clax:pick-start":
+      case "clax:pick-start": {
         // The viewer's pick itself: taken only in comment mode and while the
         // viewer's latest input went to the frame (`frameGesture`, the
         // composer tier). A refused start shows the viewer the hint only when
@@ -492,28 +506,71 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // back, it can forge a pick once the pointer moves, never while it
         // rests where that input left it. The composer then shows the pick's
         // quote or area label and screenshot, not where it anchors, and
-        // nothing is posted without the viewer. The bridge never has two
-        // picks in flight, so a start arriving while another is pending means
-        // one was forged: both are refused.
-        if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64) {
-          if (!frameGesture()) { if (pickHintAllowed()) showHint(MOVE_TO_PICK); break; }
-          const now = Date.now();
-          for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);
-          if (startedPicks.current.size) startedPicks.current.clear();
-          else startedPicks.current.set(m.pickId, now);
+        // nothing is posted without the viewer.
+        //
+        // A taken start opens the composer at once, focused, with its
+        // screenshot to come (`clax:pick`), and turns comment mode off. The
+        // bridge never has two picks in flight, so a start arriving with the
+        // viewer's gesture while comment mode is still off for a taken one
+        // whose screenshot is pending means one was forged: both are refused,
+        // the first one's composer closes, and comment mode comes back. Once
+        // the viewer turns comment mode back on, a pending pick no longer
+        // stands in the way of their next one.
+        if (!helloOk.current || typeof m.pickId !== "string" || m.pickId.length > 64) break;
+        const pending = pendingPick.current;
+        if (pending && !commentingRef.current && Date.now() - pending.at <= PICK_WAIT_MS) {
+          if (!frameGesture()) break;
+          pendingPick.current = null;
+          endEarly();
+          setDraft(dr => (dr?.pickId === pending.pickId ? null : dr));
+          if (resumeAfter.current === pending.pickId) {
+            resumeAfter.current = null;
+            if (!deleted) { commentingRef.current = true; setCommenting(true); }
+          }
+          break;
         }
-        break;
-      case "clax:pick": {
-        // A pick counts only after its gesture-checked start (each start
-        // once, used up even when the pick is dropped), while the viewer is in
-        // comment mode; a clip the daemon would not keep is dropped here, with
-        // the reason shown.
-        if (!takePick(startedPicks.current, m.pickId, commentingRef.current)) break;
+        if (!commentingRef.current) break;
+        pendingPick.current = null;
+        if (!frameGesture()) { if (pickHintAllowed()) showHint(MOVE_TO_PICK); break; }
+        if (!m.anchor || typeof m.anchor !== "object" || typeof m.version !== "number") break;
+        const pickId = m.pickId;
+        pendingPick.current = { pickId, at: Date.now() };
+        commentingRef.current = false;
         setCommenting(false);
-        resumeAfter.current = m.pickId;
+        resumeAfter.current = pickId;
+        // The keys the viewer types in the page until the composer has focus
+        // go to it (`clax:keys`).
+        endEarly();
+        earlyFor.current = { pickId, count: 0, timer: setTimeout(endEarly, EARLY_KEYS_MS) };
+        setDraft({ pickId, anchor: m.anchor, version: m.version, clip: null, capturing: true, clipToken: pickId, early: { keys: [], done: false } });
+        break;
+      }
+      case "clax:pick": {
+        // The screenshot for the composer the pick's start opened, taken once;
+        // a clip the daemon would not keep is dropped here, with the reason
+        // shown. The anchor is the start's.
+        if (typeof m.pickId !== "string" || pendingPick.current?.pickId !== m.pickId) break;
+        pendingPick.current = null;
         const png = m.clipPng instanceof ArrayBuffer && m.clipPng.byteLength > 0 ? m.clipPng : null;
         const tooBig = !!png && png.byteLength > MAX_CLIP_BYTES;
-        setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: png && !tooBig ? new Blob([png], { type: "image/png" }) : null, clipError: tooBig ? "the screenshot was too large to keep" : m.clipError });
+        const clipError = tooBig ? "the screenshot was too large to keep" : typeof m.clipError === "string" ? m.clipError : undefined;
+        setDraft(dr => withClip(dr, m.pickId, png && !tooBig ? new Blob([png], { type: "image/png" }) : null, clipError));
+        break;
+      }
+      case "clax:keys": {
+        // Keys the viewer typed in the page after their pick, before its
+        // composer took focus. The page can post these too: they are taken
+        // only as text for the composer the viewer's own taken pick opened,
+        // only until the bridge says no more follow or `EARLY_KEYS_MS`
+        // passes, at most `MAX_EARLY_KEYS`; they are never input to the shell
+        // (no gesture counts them), and nothing is posted without the viewer.
+        const taking = earlyFor.current;
+        if (!helloOk.current || !taking || m.pickId !== taking.pickId) break;
+        const keys = earlyKeys(m.keys, MAX_EARLY_KEYS - taking.count);
+        if (!keys) { endEarly(); break; }
+        taking.count += keys.length;
+        if (keys.length) setDraft(dr => withEarly(dr, taking.pickId, keys, false));
+        if (m.done === true) endEarly();
         break;
       }
       case "clax:anchors": {

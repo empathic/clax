@@ -69,10 +69,18 @@ export type BridgeToShell =
   | { type: "clax:hello"; artifact: string; version: number; file: string }
   | { type: "clax:hover"; selector: string | null; rect: Box | null }
   /** Sent at the viewer's pick itself (the click or release), before its
-   * clip is rendered: the shell takes the `clax:pick` with this `pickId`
-   * only when this arrived while the frame held the viewer's gesture. */
-  | { type: "clax:pick-start"; pickId: string }
+   * clip is rendered, with the pick's anchor: the shell opens the composer
+   * for it at once, focused and waiting for the screenshot, only when this
+   * arrived while the frame held the viewer's gesture. */
+  | { type: "clax:pick-start"; pickId: string; version: number; anchor: Anchor }
+  /** The pick's screenshot (or why there is none); the shell takes it only
+   * for the composer its accepted start opened, and ignores the anchor here. */
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
+  /** Keys the viewer typed in the page after the pick `pickId`, before the
+   * composer took focus (see `key-trap.ts`), in order: each a character,
+   * "\n", or "Backspace". `done`: focus left the page, or the wait for it
+   * ended; no more keys follow for this pick. */
+  | { type: "clax:keys"; pickId: string; keys: string[]; done?: boolean }
   | { type: "clax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "clax:cancel" }
   /** A plain click on a link to another page of this version, cancelled in the
@@ -85,4 +93,4 @@ export type BridgeToShell =
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:keys", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:use", "clax:call"]);
