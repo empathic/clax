@@ -18,7 +18,7 @@
 - Commit with `git commit --no-gpg-sign`; stage with `git add` naming explicit paths (after `git mv`, the moves are already staged; stage edits with `git add -u -- <paths>` or explicit paths, never `git add -A` or `git add .`).
 - Never touch port 7480, the real `~/.artifax`, `~/.clax`, `~/.claude` or `~/.codex`. Every command that starts a daemon sets `CLAX_HOME` (or `ARTIFAX_HOME` before the rename) to a temp directory and passes `--port 0`. Do not run `scripts/smoke-claude.sh`, `scripts/smoke-codex.sh` or `scripts/smoke-pi.sh` (they drive the real harnesses).
 - Clean break: no alias, fallback, migration or cleanup for the old name. The code never reads, writes, migrates or deletes `~/.artifax`, never reads an `ARTIFAX_*` variable, and never looks for an `artifax` binary, plugin, marketplace, cookie or storage key.
-- The checkout directory (`/Users/alex/Devel/empathic/artifax`) and the git remote are not renamed; that is the person's job.
+- The checkout directory and the git remote are not renamed by agents; that is the person's job. (After Task 2, the person moved the checkout to `/Users/alex/Devel/empathic/clax`; the steps for the person below use that path.)
 - In prose, "ID" is the short form of identifier; lowercase `id` only as a literal code symbol.
 - Doc comments and commit messages describe the contract or the change, never this conversation.
 - Version stays `0.2.0` in `Cargo.toml [workspace.package]`, both plugin manifests, both marketplace entries, `plugins/pi/package.json` and the installer's `MIN_VERSION`. No release has been published under either name, so there is no older Clax to warn about, and `scripts/test-plugins.sh` requires the five to agree.
@@ -582,7 +582,7 @@ exceptions."
 - Modify: only what a failed check below points at (expected: nothing).
 
 **Interfaces:**
-- Consumes: Task 1's commit (`HEAD`) and `BASE` (`HEAD~1`).
+- Consumes: Task 1's commit, "Rename Artifax to Clax with a clean break" (`7110b67` after the re-sign; `f06b04a` before it), and its parent `BASE`.
 - Produces: evidence; no new names.
 
 - [ ] **Step 1: The old name is only in the approved exceptions**
@@ -606,16 +606,16 @@ docs/superpowers/specs/2026-09-28-clax-design.md
 The second prints nothing. Then:
 ```bash
 awk '/<!-- name-history:begin -->/{on=1;next} /<!-- name-history:end -->/{on=0;next} !on && tolower($0) ~ /artifax/' docs/superpowers/specs/2026-09-28-clax-design.md
-git diff --stat HEAD~1 HEAD -- 'docs/superpowers/plans/2026-09-28-*.md'
+git diff --stat 7110b67~1 7110b67 -- 'docs/superpowers/plans/2026-09-28-*.md'
 ```
 Expected: both print nothing (the spec names the old name only in its note; the historical plans are byte-for-byte unchanged).
 
 - [ ] **Step 2: Every change is the rename, except the listed hand edits**
 
-Files are paired by name (`rename(old path) == new path`) from each commit's tree, not by git's rename detection: that detection pairs the three identical installer copies crosswise and misses files whose small size puts them under its similarity threshold. Rust files are run through `rustfmt` on both sides, because `cargo fmt` re-sorts imports once `clax_*` sorts after `anyhow`/`axum`, which whitespace normalization cannot hide. The plans are exceptions and are compared unswept. `NEW` is Task 1's commit (`f06b04a`).
+Files are paired by name (`rename(old path) == new path`) from each commit's tree, not by git's rename detection: that detection pairs the three identical installer copies crosswise and misses files whose small size puts them under its similarity threshold. Rust files are run through `rustfmt` on both sides, because `cargo fmt` re-sorts imports once `clax_*` sorts after `anyhow`/`axum`, which whitespace normalization cannot hide. The plans are exceptions and are compared unswept. `NEW` is Task 1's commit (`7110b67`, which was `f06b04a` before every commit was re-signed).
 
 ```bash
-NEW=f06b04a python3 - <<'PY'
+NEW=7110b67 python3 - <<'PY'
 import os, re, subprocess
 NEW = os.environ["NEW"]; OLD = NEW + "~1"
 def git(*a):
@@ -655,7 +655,7 @@ content scripts/test-ensure-clax.sh
 content scripts/test-plugins.sh
 added crates/clax-cli/tests/clean_break.rs
 ```
-Review each listed file's change by hand against the swept, formatted BASE text (for example `diff <(git show f06b04a~1:<old path> | perl -pe 's/ARTIFAX/CLAX/g; s/Artifax/Clax/g; s/artifax/clax/g') <(git show f06b04a:<path>)`): only the steps of Task 1 that name that file may appear.
+Review each listed file's change by hand against the swept, formatted BASE text (for example `diff <(git show 7110b67~1:<old path> | perl -pe 's/ARTIFAX/CLAX/g; s/Artifax/Clax/g; s/artifax/clax/g') <(git show 7110b67:<path>)`): only the steps of Task 1 that name that file may appear.
 
 - [ ] **Step 3: The workspace, binary and lockfiles carry only the new name**
 
@@ -704,7 +704,7 @@ Expected: `all gates passed` and `exit=0`. In its output, `web e2e` has run the 
 If Steps 1–6 needed a fix, stage the fixed files by name and commit:
 ```bash
 git add <each fixed path>
-git commit --no-gpg-sign -m "Finish the Clax rename: <what the check found>"
+git commit -m "Finish the Clax rename: <what the check found>"
 ```
 If nothing needed fixing, make no commit.
 
@@ -715,10 +715,11 @@ If nothing needed fixing, make no commit.
 Agents never run these; they touch `~/.claude`, `~/.codex`, the old home and the GitHub repository.
 
 1. Rename the GitHub repository `empathic/artifax` to `empathic/clax` (the installer, `Cargo.toml` and the Pi package now point there), and update the remote if you want: `git remote set-url origin git@github.com:empathic/clax.git`.
-2. Stop the old daemon if it runs: `artifax stop` (the old binary).
-3. Codex: `codex plugin remove artifax@artifax` and `codex plugin marketplace remove artifax`; delete any `[marketplaces.artifax]` or `[plugins."artifax@artifax"]` section still left in `~/.codex/config.toml`; then `codex plugin marketplace add /Users/alex/Devel/empathic/artifax` (it registers the marketplace as `clax`) and `codex plugin add clax@clax`. The installer finds this checkout through `[marketplaces.clax]`'s `source` and the `clax-cli` line in its `Cargo.toml`, so the unrenamed directory works.
-4. Claude Code: `/plugin uninstall artifax@artifax`, `/plugin marketplace remove artifax`, then `/plugin marketplace add /Users/alex/Devel/empathic/artifax` and `/plugin install clax@clax`.
-5. Pi: replace the `@empathic/artifax-pi` entry in Pi's settings with the local path `…/plugins/pi` (now `@empathic/clax-pi`).
-6. `just install` builds and installs `clax`; `cargo uninstall artifax-cli` and `rm ~/.local/bin/artifax` remove the old one.
+2. Stop the old daemon if it runs: `artifax stop` (the old binary). If no `artifax` binary is left, this prints "not found", which is fine.
+3. Rebuild after moving the checkout: debug builds hold the checkout's absolute path at compile time, and Cargo does not notice the move. Run `cargo clean -p clax-core -p clax-server -p clax-mcp -p clax-hooks -p clax-cli` (or `cargo clean`), then `just web`, then restart `just dev` from `/Users/alex/Devel/empathic/clax`. If `CLAX_SOURCE_DIR` or `CLAX_BIN` names a path under the old directory, update it.
+4. Codex: `codex plugin remove artifax@artifax` and `codex plugin marketplace remove artifax`; delete any `[marketplaces.artifax]` or `[plugins."artifax@artifax"]` section still left in `~/.codex/config.toml`; then `codex plugin marketplace add /Users/alex/Devel/empathic/clax` (it registers the marketplace as `clax`) and `codex plugin add clax@clax`. The installer finds the checkout through `[marketplaces.clax]`'s `source`. An empty `plugins/cache/artifax/` may be left behind in Codex's home; it is safe to delete.
+5. Claude Code: `/plugin uninstall artifax@artifax`, `/plugin marketplace remove artifax`, then `/plugin marketplace add /Users/alex/Devel/empathic/clax` and `/plugin install clax@clax`. A leftover `plugins/cache/artifax/` in Claude Code's home is ignored by Clax and safe to delete.
+6. Pi: Pi's settings list the extension by its local path. Run `pi install /Users/alex/Devel/empathic/clax/plugins/pi` and remove the old `…/artifax/plugins/pi` entry from Pi's settings.
+6a. `just install` builds and installs `clax`; `cargo uninstall artifax-cli` and `rm ~/.local/bin/artifax` remove the old one if present.
 7. `~/.artifax` is yours to keep or delete; Clax starts empty in `~/.clax`.
 8. Unset any `ARTIFAX_*` variables in your shell profile and set the `CLAX_*` equivalents you need.

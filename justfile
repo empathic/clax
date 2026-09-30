@@ -41,7 +41,7 @@ installer-test:
 plugin-test:
     ./scripts/test-plugins.sh
 
-# Run the Rust workspace tests
+# Run the Rust workspace tests (the shell tests need `just web` once first)
 test:
     cargo test --workspace
 
