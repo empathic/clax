@@ -859,8 +859,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       });
     }
 
-    for (const from of ["the shell", "the page"] as const) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
-      const id = await publishLive(`Other frame ${verb} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
+    for (const host of ["plain", "open", "closed"] as const) for (const from of ["the shell", "the page"] as const) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu${host === "plain" ? "" : `, in a ${host} shadow root`}), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
+      const id = await publishLive(`Other frame ${verb} ${host} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
       const f = await openArtifact(page, d.base, id, 1, mode);
       await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
       if (verb === "send") await grant(page, f);
@@ -868,12 +868,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
       const xf = { x: nb.x, y: nb.y + nb.height + 40, w: 180, h: 50 };
       const src = d.base.replace("localhost", "127.0.0.1") + "/healthz";
-      await page.evaluate(({ url, r }) => {
+      // Plain, or inside a shadow root on a custom element, as password
+      // managers inject their inline menus.
+      await page.evaluate(({ url, r, how }) => {
         const i = document.createElement("iframe");
         i.src = url;
-        Object.assign(i.style, { position: "fixed", left: `${r.x}px`, top: `${r.y}px`, width: `${r.w}px`, height: `${r.h}px`, zIndex: "9999", background: "white" });
-        document.body.appendChild(i);
-      }, { url: src, r: xf });
+        Object.assign(i.style, { display: "block", width: `${r.w}px`, height: `${r.h}px`, background: "white" });
+        const box = document.createElement(how === "plain" ? "div" : "x-menu");
+        Object.assign(box.style, { position: "fixed", left: `${r.x}px`, top: `${r.y}px`, zIndex: "9999", display: "block" });
+        if (how === "plain") box.appendChild(i); else box.attachShadow({ mode: how }).appendChild(i);
+        document.documentElement.appendChild(box);
+      }, { url: src, r: xf, how: host });
       // Focus where the viewer left it: the name field, or the page's text.
       const at = from === "the shell" ? { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 } : await (async () => { const b = (await f.locator("#p").boundingBox())!; return { x: b.x + 20, y: b.y + b.height / 2 }; })();
       await page.mouse.move(at.x, at.y, { steps: 8 });

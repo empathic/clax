@@ -115,12 +115,8 @@ describe("ArtifactView", () => {
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
     gestureIn(frame);
-    // The strict tier: past the quiet time after the shell's script started.
-    const later = performance.now() + 10_000;
-    const clock = vi.spyOn(performance, "now").mockReturnValue(later);
     fromFrame(win, { type: "artifax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
     await waitFor(() => answer, "the publish request");
-    clock.mockRestore();
     const es = await waitFor(() => FakeES.last, "event stream");
     es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
     await new Promise(r => setTimeout(r, 30));

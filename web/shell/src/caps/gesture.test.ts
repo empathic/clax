@@ -13,10 +13,13 @@ const CANCEL = { x: 450, y: 380 };
 describe("frame gestures", () => {
   let frame: HTMLIFrameElement;
   let button: HTMLButtonElement;
+  let app: HTMLDivElement;
   let stop: () => void;
   /** The page's own `window.focus()`: focus enters the frame, as the shell
    * sees it in Chromium (the shell window's blur with the frame focused). */
   const pull = () => { frame.focus(); window.dispatchEvent(new Event("blur")); };
+  /** The same, once the watcher has read where focus went (the next tick). */
+  const pulled = async () => { pull(); await nextTask(); };
   /** The viewer clicks a shell control at `at` (the pointer is on it). */
   const clickShell = (at = BUTTON) => { notePointerOver(button, at.x, at.y); notePointerAt(at.x, at.y); button.focus(); noteShellInput(); };
   /** The pointer really moves onto the frame at (x, y), from the shell. */
@@ -28,13 +31,18 @@ describe("frame gestures", () => {
     frame.className = "frame";
     frame.getBoundingClientRect = () => new DOMRect(0, 0, 500, 400);
     button = document.createElement("button");
-    document.body.append(frame, button);
+    // The shell renders into #app; anything else in the document is foreign.
+    app = document.createElement("div");
+    app.id = "app";
+    app.append(frame, button);
+    document.body.append(app);
     active(true);
   });
-  afterEach(() => {
+  afterEach(async () => {
+    // The watcher reads a blur on the next tick: let it, in this test's state.
+    await nextTask();
     stop();
-    frame.remove();
-    button.remove();
+    app.remove();
     registerShield(null);
     delete (navigator as unknown as { userActivation?: unknown }).userActivation;
   });
@@ -161,13 +169,13 @@ describe("frame gestures", () => {
     clickShell();
     button.focus();
     noteShellInput(true);
-    pull();
+    await pulled();
     expect(frameGesture()).toBe(true);
     // Shift+Tab into a cross-origin frame lands some tasks later.
     clickShell();
     noteShellInput(true);
     await nextTask();
-    pull();
+    await pulled();
     expect(frameGesture()).toBe(true);
     // A Tab press that moved focus among shell controls, then the page pulls focus.
     clickShell();
@@ -176,7 +184,7 @@ describe("frame gestures", () => {
     document.body.append(other);
     other.focus();
     other.remove();
-    pull();
+    await pulled();
     expect(frameGesture()).toBe(false);
     // A Tab press whose wait has run out, then the pull.
     vi.useFakeTimers();
@@ -184,13 +192,13 @@ describe("frame gestures", () => {
     noteShellInput(true);
     vi.advanceTimersByTime(500);
     vi.useRealTimers();
-    pull();
+    await pulled();
     expect(frameGesture()).toBe(false);
     // Another key after the Tab, then the pull.
     clickShell();
     noteShellInput(true);
     noteShellInput();
-    pull();
+    await pulled();
     expect(frameGesture()).toBe(false);
   });
 
@@ -228,7 +236,7 @@ describe("frame gestures", () => {
     expect([...SHELL_INPUT_EVENTS].sort()).toEqual(["auxclick", "beforeinput", "click", "compositionend", "compositionstart", "compositionupdate", "contextmenu", "dblclick", "dragend", "dragstart", "drop", "input", "keydown", "mousedown", "pointercancel", "pointerdown", "pointerup", "textInput", "touchend", "wheel"]);
   });
 
-  it("takes a blur of the shell window to anything but the content frame as shell input (N14)", () => {
+  it("takes a blur of the shell window to anything but the content frame as shell input, read on the next tick (N14)", async () => {
     clickShell();
     arrive();
     pull();
@@ -238,6 +246,7 @@ describe("frame gestures", () => {
     document.body.append(other);
     other.focus();
     window.dispatchEvent(new Event("blur"));
+    await nextTask();
     frame.focus();
     expect(frameGesture()).toBe(false);
     other.remove();
@@ -249,23 +258,58 @@ describe("frame gestures", () => {
     button.focus();
     button.blur();
     window.dispatchEvent(new Event("blur"));
+    await nextTask();
     frame.focus();
     expect(frameGesture()).toBe(false);
+    // Where focus went is read after the blur: at blur time the content frame
+    // may still be named when focus went into a frame in a shadow root.
+    clickShell();
+    arrive();
+    pull();
+    await nextTask();
+    expect(frameGesture()).toBe(true);
+    const host = document.createElement("x-menu");
+    document.body.append(host);
+    const inner = document.createElement("iframe");
+    host.attachShadow({ mode: "closed" }).append(inner);
+    frame.focus();
+    window.dispatchEvent(new Event("blur"));
+    inner.focus();
+    await nextTask();
+    expect(document.activeElement).toBe(host);
+    frame.focus();
+    expect(frameGesture()).toBe(false);
+    host.remove();
   });
 
-  it("takes focus sitting in a foreign frame in the shell document as shell input, however it got there (N14)", async () => {
+  for (const mode of ["none", "open", "closed"] as const) {
+    it(`takes focus sitting in a foreign frame (${mode === "none" ? "plain" : `in a ${mode} shadow root`}) as shell input, however it got there (N14)`, async () => {
+      clickShell();
+      arrive();
+      frame.focus();
+      expect(frameGesture()).toBe(true);
+      // Focus moves from the content frame to another frame: no event here.
+      const other = document.createElement("iframe");
+      const host = document.createElement(mode === "none" ? "div" : "x-menu");
+      if (mode === "none") host.append(other); else host.attachShadow({ mode }).append(other);
+      document.body.append(host);
+      other.focus();
+      await new Promise(r => setTimeout(r, 150));
+      frame.focus();
+      expect(frameGesture()).toBe(false);
+      host.remove();
+    });
+  }
+
+  it("takes nothing inside the shell's own root, body or html as foreign", async () => {
     clickShell();
     arrive();
     frame.focus();
-    expect(frameGesture()).toBe(true);
-    // Focus moves from the content frame to another frame: no event here.
-    const other = document.createElement("iframe");
-    document.body.append(other);
-    other.focus();
+    button.focus();
     await new Promise(r => setTimeout(r, 150));
     frame.focus();
-    expect(frameGesture()).toBe(false);
-    other.remove();
+    // Only the one click: the focus check saw nothing foreign.
+    expect(frameGesture()).toBe(true);
   });
 
   it("keeps counting a pointer that arrived after shell input that left focus in the frame: a wheel over the shell", () => {
@@ -383,8 +427,8 @@ describe("frame gestures", () => {
       expect(frameGestureStrict()).toBe("ok");
     });
 
-    it("counts the shell's script starting as shell input (N13)", () => {
-      // The shell's script starts now (input before it was not seen).
+    it("waits out input before the shell's script only when the shell is already active as it starts (N13)", () => {
+      // Active at the start: input came before the script, unseen.
       forgetGestures();
       stop();
       stop = watchGestures(document);
@@ -393,6 +437,16 @@ describe("frame gestures", () => {
       expect(frameGesture()).toBe(true);
       expect(frameGestureStrict()).toBe("shell_input_recent");
       t += 5_500;
+      expect(frameGestureStrict()).toBe("ok");
+      // Inactive at the start: no earlier input can make it active later, so
+      // there is nothing to wait for.
+      forgetGestures();
+      stop();
+      active(false);
+      stop = watchGestures(document);
+      active(true);
+      arrive();
+      pull();
       expect(frameGestureStrict()).toBe("ok");
     });
 

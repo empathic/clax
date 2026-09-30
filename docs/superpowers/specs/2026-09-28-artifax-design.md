@@ -536,9 +536,12 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `beforeinput`, `input`, `compositionstart`, `compositionupdate`,
   `compositionend` and `textInput`, which an input method, the emoji picker
   or dictation dispatch without a key press); the shell window losing focus
-  to anything but the content frame; focus sitting in another frame in the
-  shell's document (checked every 100 ms); and the pointer leaving such a
-  frame while the shell has activation. The keys the shell forwards to the
+  to anything but the content frame (read on the next tick); focus sitting
+  on anything in the shell's document outside the element it renders into,
+  other than the content frame, `body` and `html` (an extension's frame,
+  directly or in an open or closed shadow root, whose host then holds focus;
+  checked every 100 ms); and the pointer leaving such an element while the
+  shell has activation. The keys the shell forwards to the
   page are the exception. `frameGesture` (the composer tier: `openComposer`,
   `compose`, picks) holds only when the viewer's latest input went to the
   frame, as the shell sees it from its own trusted events: transient user
@@ -556,12 +559,16 @@ file under `v/<digits>/` is reachable only through the versioned form):
   re-hit-tests never send); a wheel over a band; or a touch press on a band.
   `frameGestureStrict` (every write as the viewer: `create`, `reply`,
   `resolve`, `delete`, `sendToClaude`; and `artifact.publish`) adds no shell
-  input of any kind for 5.5 s, the shell's script starting included (so
-  these wait 5.5 s after the shell loads): every input Chromium lets grant
-  the shell activation is one of those events, input to another frame in
-  the shell's document (seen as that frame taking focus or the pointer
-  leaving it), or input before the script ran, and the activation lasts
-  5 s, so the activation is then the frame's unless a source none of these
+  input of any kind for 5.5 s. It adds no pointer rule of its own; the
+  composer tier's check it includes uses the pointer. The shell's script
+  starting counts as such input only when the shell is already active as it
+  starts (input came before the script ran); otherwise no earlier input can
+  make it active later, so a call right after a load waits for nothing.
+  Every input Chromium lets grant the shell activation is one of those
+  events, input to a frame outside the shell's own elements (seen as focus
+  sitting there, the window's blur toward it, or the pointer leaving it),
+  or input before the script ran (covered by the start rule), and the
+  activation lasts 5 s, so the activation is then the frame's unless a source none of these
   see exists (none is known beyond script the viewer runs on the tab
   themselves); within that time it rejects `shell_input_recent`
   (uncharged). After shell input with a mouse over the frame (a key, text

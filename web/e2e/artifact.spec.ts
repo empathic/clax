@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, pastShellStart, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -27,7 +27,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     await openArtifact(pb, d.base, artifact.id, 1, mode);
     await expect(a.locator("#count")).toHaveText("0");
-    await pastShellStart(pa);
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
       const f = await contentFrame(p, artifact.id, 2);
@@ -60,7 +59,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     const b = await openArtifact(pb, d.base, artifact.id, 1, mode);
-    for (const p of [pa, pb]) await pastShellStart(p);
     const isPublish = (r: import("@playwright/test").Response) => r.url().endsWith(`/api/artifacts/${artifact.id}/versions`) && r.request().method() === "POST";
     // Both publishes are held until both are in flight, so they race at the daemon.
     let arrived = 0;
@@ -102,7 +100,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
     const a = await fileFrame(pa, artifact.id, 1, "votes/poll.html");
     await expect(a.locator("#count")).toHaveText("0");
-    await pastShellStart(pa);
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
       await expect((await fileFrame(p, artifact.id, 2, "votes/poll.html")).locator("#count")).toHaveText("1");
@@ -120,7 +117,45 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
+/** Clicks the poll's vote button in `f`, 2 s after the view showed it. */
+async function voteSoon(f: Frame) {
+  await new Promise(r => setTimeout(r, 2_000));
+  await f.locator("#vote").click();
+}
+
 for (const mode of ["subdomain", "sandbox"] as const) {
+  // A shell load is not input to the shell: a vote soon after one publishes.
+  test(`${mode}: a vote 2 s after opening the page publishes`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Vote soon ${mode}`, pageHtml("poll.html"), { artifact: {} });
+    await voteSoon(await openArtifact(page, d.base, artifact.id, 1, mode));
+    await expect((await contentFrame(page, artifact.id, 2)).locator("#count")).toHaveText("1");
+    expect(await current(artifact.id)).toBe(2);
+  });
+
+  test(`${mode}: a vote 2 s after the reload the viewer's own vote caused publishes`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Vote again ${mode}`, pageHtml("poll.html"), { artifact: {} });
+    const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await page.waitForTimeout(6_000);
+    await f.locator("#vote").click();
+    await voteSoon(await contentFrame(page, artifact.id, 2));
+    await expect((await contentFrame(page, artifact.id, 3)).locator("#count")).toHaveText("2");
+    expect(await current(artifact.id)).toBe(3);
+  });
+
+  test(`${mode}: a second viewer's vote 2 s after another viewer's vote reloaded it publishes`, async ({ browser }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Vote two ${mode}`, pageHtml("poll.html"), { artifact: {} });
+    const ctx = await browser.newContext();
+    const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
+    const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
+    await openArtifact(pb, d.base, artifact.id, 1, mode);
+    await pa.waitForTimeout(6_000);
+    await a.locator("#vote").click();
+    await voteSoon(await contentFrame(pb, artifact.id, 2));
+    await expect((await contentFrame(pb, artifact.id, 3)).locator("#count")).toHaveText("2");
+    expect(await current(artifact.id)).toBe(3);
+    await ctx.close();
+  });
+
   test(`${mode}: a click inside the frame gives the shell window sticky activation`, async ({ page }) => {
     // Playwright's evaluate runs as a user gesture, so the shell samples its own
     // activation, reports its first true sample through a binding (which is no
@@ -167,7 +202,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       addEventListener("message", e => { if (e.data?.type === "artifax:call-result") (window as unknown as { artifaxHeard(m: unknown): void }).artifaxHeard(e.data); });
     });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await pastShellStart(page);
     await f.locator("#burst").click();
     await expect.poll(() => heard.length).toBe(12);
     expect(heard.filter(m => m.ok)).toHaveLength(1);

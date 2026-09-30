@@ -809,13 +809,16 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   dictation grant activation with no key press). These are each type through
   which Chromium or the HTML spec lets input grant a document activation, or
   that marks the viewer's interaction with it. Shell input is also:
-  - the shell window losing focus to anything but the content frame
-    (another frame in the shell's document, such as a password manager's
-    menu, or another window);
-  - focus sitting in another frame embedded in the shell's document (checked
-    every 100 ms, since focus moving there from the content frame fires
-    nothing in the shell);
-  - the pointer leaving such a frame while the shell has transient
+  - the shell window losing focus to anything but the content frame, as
+    read on the next tick after the blur (another window, or something
+    outside the shell's own elements);
+  - focus sitting outside the shell's own elements: anything in the shell's
+    document outside the element it renders into, other than the content
+    frame, `body` and `html`. That is, for example, a frame a password manager
+    injects beside a field, directly or inside an open or closed shadow root
+    (focus there shows as the shadow host). It is checked every 100 ms, since
+    focus moving there from the content frame fires nothing in the shell;
+  - the pointer leaving such an element while the shell has transient
     activation.
 
   The one exception is the keys the shell hands to the page: Option,
@@ -859,16 +862,22 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
     tier: a composer the viewer sees; nothing is posted without their Post.
   - **The strict tier** (every call that acts as the viewer beyond the
     composer they see): the composer tier's check, and no shell input of any
-    kind, forwarded keys included, in the last 5.5 seconds. The shell's
-    script starting counts as such input, so these calls wait 5.5 seconds
-    after the shell loads. No pointer position is used. Chromium keeps a
+    kind, forwarded keys included, in the last 5.5 seconds. It adds no
+    pointer rule of its own, but the composer tier's check it includes does
+    use the pointer. The shell's script starting counts as such input only
+    when the shell already has transient activation as it starts, which
+    means input came before the script ran. Otherwise no earlier input can
+    make it active later, and nothing is waited for: a call right after the
+    shell loads (or reloads after a publish) can pass. Chromium keeps a
     transient activation 5 s. Every input to the shell that Chromium lets
     grant it activation is one of these:
     - one of the event types above (an assistive technology's press
       dispatches a `pointerdown` too);
-    - input to another frame in the shell's document, which is seen as that
-      frame taking focus, or the pointer leaving it;
-    - input before the shell's script runs, covered by its start.
+    - input to a frame outside the shell's own elements, which is seen as
+      focus sitting there or the pointer leaving it (or the window's blur
+      toward it);
+    - input before the shell's script runs, whose activation, if any is left
+      when the script starts, the start's quiet time covers.
 
     So after 5.5 s without shell input, the shell's activation comes from
     the viewer's input to the page. The exception would be an activation

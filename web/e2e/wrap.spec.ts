@@ -1,5 +1,5 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, pastShellStart, publish, publishWith, startDaemon } from "./fixtures";
+import { contentFrame, openArtifact, publish, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -74,7 +74,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       return h.innerHTML;
     });
     const head1 = await headOf(f);
-    await pastShellStart(page);
     await f.locator("#go").click();
     const g = await contentFrame(page, artifact.id, 2);
     await expect(g.locator("#out")).toHaveText("function");
@@ -88,7 +87,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     let prev = g;
     for (const n of [3, 4]) {
       await page.waitForTimeout(2_100); // the shell's gap between publishes
-      await pastShellStart(page); // and the view reloaded to the new version
       await prev.locator("#go").click();
       const next = await contentFrame(page, artifact.id, n);
       await expect(next.locator("#out")).toHaveText("function");

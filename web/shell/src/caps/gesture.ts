@@ -9,7 +9,8 @@
 //   beyond that composer (the comments write verbs `create`, `reply`,
 //   `resolve`, `delete` and `sendToClaude`; `artifact.publish`):
 //   `frameGesture()` and, in addition, no trusted input to the shell for
-//   `SHELL_QUIET_MS`, which uses no pointer heuristics.
+//   `SHELL_QUIET_MS`. That added rule uses no pointer position; the
+//   `frameGesture()` it includes does.
 //
 // Nothing the page or the bridge reports counts (they share a realm); every
 // rule below reads only the shell's own trusted events.
@@ -21,10 +22,14 @@
 // start and end, a cancelled pointer, a wheel, and the text events an input
 // method, the emoji picker or dictation dispatch with no key press), captured
 // on the shell window. Also shell input: the shell window losing focus to
-// anything but the content frame; focus sitting in another frame embedded in
-// the shell's document (an extension's menu; checked every `FOCUS_POLL_MS`,
-// since focus moving there from the content frame fires nothing here); and
-// the pointer leaving such a frame while the shell has activation. The keys
+// anything but the content frame (read on the next tick: at blur time
+// `activeElement` can still name the content frame); focus sitting on
+// anything foreign, that is outside the element the shell renders into
+// (`#app`) and not the content frame, `body` or `html`, such as an
+// extension's frame, directly or inside an open or closed shadow root whose
+// host then holds focus (checked every `FOCUS_POLL_MS`, since focus moving
+// there from the content frame fires nothing here); and the pointer leaving
+// something foreign while the shell has activation. The keys
 // the shell forwards to the page (Option, Option+Up/Down and Escape in
 // comment mode with the pointer over the frame, `setForwardedKeys`) are the
 // one exception: they are not shell input for `frameGesture()`, though the
@@ -107,21 +112,24 @@
 // viewer sees that composer, and nothing is posted without them.
 //
 // `frameGestureStrict()` adds: no shell input of any kind, forwarded keys
-// included, for the last `SHELL_QUIET_MS`, with the shell's script starting
-// counted as such input (input before it was not seen). Chromium keeps a
+// included, for the last `SHELL_QUIET_MS`. The shell's script starting counts
+// as such input only when the shell is already active as it starts: input
+// before the script was not seen, and its activation, if any is left, lasts
+// at most 5 s more. When the shell is inactive at the start, no earlier
+// input can make it active later, so nothing is waited for. Chromium keeps a
 // transient activation 5 s, and every input to the shell that Chromium lets
 // grant it activation is one of `SHELL_INPUT_EVENTS` (an assistive
-// technology's press dispatches a `pointerdown` too), input to another frame
-// in the shell's document (seen as that frame taking focus, or the pointer
-// leaving it), or input before the script ran. So once the quiet time has
+// technology's press dispatches a `pointerdown` too), input to a foreign
+// frame (seen as focus sitting there, the window's blur toward it, or the
+// pointer leaving it), or input before the script ran. So once the quiet time has
 // passed, an active `navigator.userActivation` comes from input to the
 // frame, unless Chromium grants the shell activation through a source none
 // of these see; Artifax knows of none beyond script the viewer runs on the
 // tab themselves (a bookmarklet). Its residual: a page can act within the
 // activation window after the viewer's own click or key in the page,
 // whatever that input was meant for. The cost: a viewer who clicks a page's
-// control within that time after using the shell, or after the shell loads,
-// is refused (`shell_input_recent`) and must click again.
+// control within that time after using the shell is refused
+// (`shell_input_recent`) and must click again.
 
 /** Chromium's transient user activation lasts 5 s from the input that
  * granted it; half a second more so a shell input's activation has surely
@@ -140,7 +148,7 @@ const HOLE_PX = 4;
  * this long (a double-click's interval), so the second click of a
  * double-click on that control within it never reaches the page. */
 const DOUBLE_CLICK_MS = 500;
-/** How often the shell checks whether focus sits in a foreign frame. */
+/** How often the shell checks whether focus sits on something foreign. */
 const FOCUS_POLL_MS = 100;
 
 /** Every event type through which Chromium or the HTML spec lets the viewer's
@@ -195,7 +203,7 @@ let holeAt: Pos | null = null;
 let raised = 0;
 /** Whether the latest `mouseover` targeted one of the shield's bands. */
 let overShield = false;
-/** Whether the latest `mouseover` targeted a foreign frame (`isForeignFrame`). */
+/** Whether the latest `mouseover` targeted something foreign (`isForeign`). */
 let overForeign = false;
 /** A touch press on a band whose release and click are still to come: they
  * are that tap's, not new input. */
@@ -204,9 +212,18 @@ let forwarded: (e: KeyboardEvent) => boolean = () => false;
 let shieldPressed: (pointerType: string) => void = () => {};
 
 const isFrame = (el: EventTarget | null) => el instanceof HTMLIFrameElement && el.classList.contains("frame");
-/** Another document embedded in the shell's (an extension's menu beside a
- * field): input to it activates the shell and reaches none of its listeners. */
-const isForeignFrame = (el: EventTarget | null) => (el instanceof HTMLIFrameElement || el instanceof HTMLObjectElement || el instanceof HTMLEmbedElement) && !isFrame(el);
+/** Whether `el` is someone else's: outside the element the shell renders
+ * into (`#app`), and not the content frame, `body` or `html`. An extension's
+ * inline menu is, often a frame inside a shadow root, open or closed, whose
+ * events and focus are retargeted to the shadow host. Input there activates
+ * the shell and reaches none of its listeners. */
+const isForeign = (el: EventTarget | null) => {
+  if (!(el instanceof Element) || isFrame(el)) return false;
+  const doc = el.ownerDocument;
+  if (el === doc.body || el === doc.documentElement) return false;
+  const root = doc.getElementById("app");
+  return !!root && !root.contains(el);
+};
 const activeNow = () => (navigator as Navigator & { userActivation?: { isActive: boolean } }).userActivation?.isActive === true;
 const isShield = (el: EventTarget | null) => !!shield && el instanceof Node && el !== shield && shield.contains(el);
 const pointerFresh = () => pointerOnFrameSince > lastShellInput;
@@ -403,7 +420,10 @@ function enterFrame(): void {
 export function watchGestures(doc: Document = document): () => void {
   const win = doc.defaultView;
   if (!win) return () => {};
-  noteQuietBreak();
+  // Input before the script ran was not seen: if the shell is already active
+  // now, that input's activation lasts at most 5 s more, so the strict tier
+  // waits it out. If not, no earlier input can make it active later.
+  if (activeNow()) noteQuietBreak();
   const onInput = (e: Event) => {
     if (!e.isTrusted) return;
     if (e.type === "keydown") {
@@ -458,27 +478,33 @@ export function watchGestures(doc: Document = document): () => void {
     noteScreen(e);
     notePointerAt(e.clientX, e.clientY, e instanceof PointerEvent ? e.pointerType : lastPointerType || "mouse", isShield(e.target), moved);
   };
-  // The pointer leaving a foreign frame while the shell is active: the
-  // viewer may have clicked or typed in it, which the shell cannot see.
+  // The pointer leaving something foreign (`isForeign`) while the shell is
+  // active: the viewer may have clicked or typed in it, which the shell
+  // cannot see.
   const leaveForeign = (to: EventTarget | null) => {
     if (overForeign && activeNow()) noteShellInput();
-    overForeign = isForeignFrame(to);
+    overForeign = isForeign(to);
   };
   const onOver = (e: MouseEvent) => { if (!e.isTrusted) return; noteScreen(e); leaveForeign(e.target); notePointerOver(e.target, e.clientX, e.clientY); };
   const onOut = (e: MouseEvent) => { if (!e.isTrusted || e.relatedTarget !== null) return; noteScreen(e); leaveForeign(null); notePointerOver(null, e.clientX, e.clientY); };
-  // Focus in a foreign frame is shell input for as long as it stays there:
+  // Focus on something foreign is shell input for as long as it stays there:
   // focus moving there from the content frame fires nothing in the shell.
-  const focusPoll = win.setInterval(() => { if (isForeignFrame(doc.activeElement)) noteShellInput(); }, FOCUS_POLL_MS);
+  const focusPoll = win.setInterval(() => { if (isForeign(doc.activeElement)) noteShellInput(); }, FOCUS_POLL_MS);
   const onFocus = (e: FocusEvent) => { if (isFrame(e.target)) enterFrame(); else tabAt = -1; };
   // Focus moving into a cross-origin frame (a click, Tab, or the page's own
   // window.focus()) fires no focus event on the iframe element in Chromium;
   // the shell window's blur, with the frame focused, marks it. A blur to
-  // anything else (another frame in the shell document, which activates the
-  // shell when clicked, or another window) is shell input.
+  // anything else (a foreign frame, which activates the shell when clicked,
+  // or another window) is shell input.
   const onBlur = () => {
-    if (isFrame(doc.activeElement)) { enterFrame(); return; }
-    noteShellInput();
-    raiseShieldIfOverFrame(doc);
+    // Read where focus went on the next tick: at blur time `activeElement`
+    // can still name the content frame when focus went into a frame inside
+    // a shadow root.
+    setTimeout(() => {
+      if (isFrame(doc.activeElement)) { enterFrame(); return; }
+      noteShellInput();
+      raiseShieldIfOverFrame(doc);
+    }, 0);
   };
   const on: [string, EventListener][] = [
     ...SHELL_INPUT_EVENTS.map(t => [t, onInput] as [string, EventListener]),
