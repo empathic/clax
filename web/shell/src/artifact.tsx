@@ -109,6 +109,10 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // Picks whose start arrived with the viewer's gesture in the frame, by pick
   // ID, with when it arrived.
   const startedPicks = useRef(new Map<string, number>());
+  // The pick ID of the open composer when a pick made in comment mode opened
+  // it: comment mode, off while that composer is open, comes back on when it
+  // closes.
+  const resumeAfter = useRef<string | null>(null);
   focusRef.current = hovered ?? selected;
   const [ask, setAsk] = useState<Ask | null>(null);
   const prompt = useMemo(() => promptQueue(setAsk), []);
@@ -387,6 +391,16 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     // not stand in the way of the viewer's next pick.
     if (!commenting) startedPicks.current.clear();
   }, [commenting]);
+  // The pick's composer closed (posted, cancelled, or dismissed): comment mode
+  // comes back on, so the viewer can pick the next target at once. One
+  // replaced by another composer, or closed after the viewer pressed Comment
+  // or the artifact was deleted, does not.
+  useEffect(() => {
+    const pick = resumeAfter.current;
+    if (pick === null || draft?.pickId === pick) return;
+    resumeAfter.current = null;
+    if (!draft && !deleted) setCommenting(true);
+  }, [draft]);
   useEffect(() => { sendFocus(); }, [hovered, selected, threads]);
   // A screenshot still being taken that never arrives: the composer says so
   // (Post stays disabled until then).
@@ -469,6 +483,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // the reason shown.
         if (!takePick(startedPicks.current, m.pickId, commentingRef.current)) break;
         setCommenting(false);
+        resumeAfter.current = m.pickId;
         const png = m.clipPng instanceof ArrayBuffer && m.clipPng.byteLength > 0 ? m.clipPng : null;
         const tooBig = !!png && png.byteLength > MAX_CLIP_BYTES;
         setDraft({ pickId: m.pickId, anchor: m.anchor, version: m.version, clip: png && !tooBig ? new Blob([png], { type: "image/png" }) : null, clipError: tooBig ? "the screenshot was too large to keep" : m.clipError });
@@ -619,7 +634,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   return (
     <Shell title={artifact.title} right={
       <>
-        <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => setCommenting(c => !c)}>Comment</button>
+        <button aria-pressed={commenting} class={commenting ? "primary" : ""} disabled={deleted} onClick={() => { resumeAfter.current = null; setCommenting(c => !c); }}>Comment</button>
         <button aria-pressed={panel} onClick={() => setPanel(v => !v)}>Threads ({threads.filter(t => t.status === "open").length})</button>
         {!narrow && <ViewerName setNotice={setNotice} onViewer={setMe} />}
         <select value={shown} disabled={deleted} onChange={e => { const n = Number((e.target as HTMLSelectElement).value); nav.assign(here(n === latest ? null : n)); }}>

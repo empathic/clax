@@ -28,6 +28,12 @@ const frameBox = async (page: Page) => (await page.locator("iframe.frame").bound
 
 async function commentMode(page: Page, frame: Frame) {
   await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await stillCommenting(page, frame);
+}
+
+/** Comment mode is on, as it comes back after a pick's composer closes. */
+async function stillCommenting(page: Page, frame: Frame) {
+  await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
   await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
 }
 
@@ -154,7 +160,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
 
     // Shift-drag over the paragraph's text draws an area too.
-    await commentMode(page, frame);
+    await stillCommenting(page, frame);
     const para = await rectOf(frame, "#para");
     const first = pick.pickId;
     await drag(page, para.x + 20, para.y + 5, para.x + 220, para.y + 40, true);
@@ -166,7 +172,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
 
     // A plain drag over the same text selects text, as before.
-    await commentMode(page, frame);
+    await stillCommenting(page, frame);
     const second = pick.pickId;
     await drag(page, para.x + 2, para.y + 12, para.x + 150, para.y + 12);
     await expect.poll(async () => (await last(page, "artifax:pick")).pickId).not.toBe(second);
@@ -208,7 +214,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toBeVisible();
     // Releasing Option returns to the line under the pointer.
     await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
-    await commentMode(page, frame);
+    await stillCommenting(page, frame);
     await page.mouse.move(fb.x + 62, fb.y + 202);
     await expect.poll(async () => { const o = await outline(); return o.shown && o.h < 40; }).toBe(true);
   });

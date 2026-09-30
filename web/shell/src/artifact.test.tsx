@@ -748,7 +748,6 @@ describe("ArtifactView", () => {
     urls.createObjectURL = () => "blob:clip";
     urls.revokeObjectURL = () => {};
     onTestFinished(() => { urls.createObjectURL = had.create; urls.revokeObjectURL = had.revoke; });
-    buttonNamed(root, "Comment").click();
     await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode again");
     viewerPick(frame, { ...pick("small", "Chart"), clipPng: new Uint8Array([137, 80, 78, 71]).buffer });
     const t2 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "second composer");
@@ -803,6 +802,174 @@ describe("ArtifactView", () => {
     expect(root.querySelector(".composer")).toBeNull();
     viewerPick(frame, pick("c2", "After the greeting"));
     await opensWith("After the greeting");
+  });
+
+  it("turns comment mode back on when a pick's composer closes by Post, by a post sent to the agent, or by Cancel or Escape, and not while a failed post keeps it open", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    let posts = 0;
+    const bodies: string[] = [];
+    let sends = 0;
+    const thread = (id: string, body: string) => ({ id, artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: body.includes("@agent"), has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body, created_at: "x" }] });
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+      async (url, init) => {
+        if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
+        if (url.endsWith("/send") && init?.method === "POST") { sends++; return new Response(JSON.stringify({ thread: { ...thread("t1", "second"), sent_to_agent: true } })); }
+        if (init?.method === "POST") {
+          const body = String((init.body as FormData).get("body"));
+          bodies.push(body);
+          if (++posts === 1) return new Response(JSON.stringify({ error: { code: "internal", message: "disk full" } }), { status: 500 });
+          return new Response(JSON.stringify({ thread: thread(`t${posts - 1}`, body) }), { status: 201 });
+        }
+        return new Response(JSON.stringify({ threads: [], next_cursor: null }));
+      });
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const toFrame: { type: string; on?: boolean }[] = [];
+    win.postMessage = ((m: (typeof toFrame)[number]) => { toFrame.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    const comment = buttonNamed(root, "Comment");
+    const pressed = () => comment.getAttribute("aria-pressed") === "true";
+    const lastMode = () => toFrame.filter(m => m.type === "artifax:comment-mode").at(-1)?.on;
+    const settle = () => new Promise(r => setTimeout(r, 30));
+    const type = async (text: string) => {
+      const t = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
+      t.value = text;
+      t.dispatchEvent(new Event("input", { bubbles: true }));
+      await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    };
+    comment.click();
+    await waitFor(pressed, "comment mode");
+    // Off while the composer is open, and still off after a failed post.
+    viewerPick(frame, pick("p1", "Goals"));
+    await type("first");
+    expect(pressed()).toBe(false);
+    expect(lastMode()).toBe(false);
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => root.querySelector(".banner.notice"), "the failed post");
+    await settle();
+    expect(root.querySelector(".composer")).not.toBeNull();
+    expect(pressed()).toBe(false);
+    expect(lastMode()).toBe(false);
+    // Cancel closes it: comment mode is back on, in the shell and the frame.
+    buttonNamed(root, "Cancel").click();
+    await waitFor(() => pressed() && lastMode() === true, "comment mode back after Cancel");
+    // The next pick needs no press of Comment; Post closes it and mode is back on.
+    viewerPick(frame, pick("p2", "Revenue"));
+    await type("second");
+    expect(pressed()).toBe(false);
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => !root.querySelector(".composer") && pressed() && lastMode() === true, "comment mode back after Post");
+    // Sending the posted thread to the agent from its card leaves it on.
+    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to agent").click();
+    await waitFor(() => sends === 1, "the send");
+    await settle();
+    expect(pressed()).toBe(true);
+    // A post that sends itself to the agent (`@agent`) closes it too.
+    viewerPick(frame, pick("p3", "Costs"));
+    await type("@agent third");
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => !root.querySelector(".composer") && pressed(), "comment mode back after a post to the agent");
+    expect(bodies).toEqual(["first", "second", "@agent third"]);
+    // Escape in the composer cancels it: back on.
+    viewerPick(frame, pick("p4", "Hiring"));
+    const t4 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
+    expect(pressed()).toBe(false);
+    t4.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await waitFor(() => !root.querySelector(".composer") && pressed(), "comment mode back after Escape in the composer");
+    // Escape with no composer open still ends comment mode, in the shell and from the page.
+    root.querySelector("header")!.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await waitFor(() => !pressed() && lastMode() === false, "comment mode off on Escape");
+    comment.click();
+    await waitFor(pressed, "comment mode on");
+    fromFrame(win, { type: "artifax:cancel" });
+    await waitFor(() => !pressed(), "comment mode off on the page's cancel");
+  });
+
+  it("leaves comment mode off when a composer closes that no pick in comment mode opened, or that the viewer turned mode on and off over", async () => {
+    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
+    const t = { id: "tR", artifact_id: ID, version_n: 1, anchor: pick("x", "Goals").anchor, status: "open", sent_to_agent: true, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
+      comments: [{ id: "c1", thread_id: "tR", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
+    let replies = 0;
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: {} } } };
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
+      async (url, init) => {
+        if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
+        if (url.includes("/comments") && init?.method === "POST") { replies++; return new Response(JSON.stringify({ thread: t }), { status: 201 }); }
+        return new Response(JSON.stringify({ threads: [t], next_cursor: null }));
+      });
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string; value?: { opened?: boolean } }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    const comment = buttonNamed(root, "Comment");
+    const pressed = () => comment.getAttribute("aria-pressed") === "true";
+    const settle = () => new Promise(r => setTimeout(r, 30));
+    const pageOpens = async (id: string) => {
+      gestureIn(frame);
+      fromFrame(win, { type: "artifax:call", id, ns: "comments", method: "openComposer", args: [{ anchor: pick("x", "Goals").anchor }] });
+      await waitFor(() => posted.find(m => m.type === "artifax:call-result" && m.id === id)?.value?.opened, `the page's composer ${id}`);
+    };
+    const cancelStaysOff = async () => {
+      buttonNamed(root, "Cancel").click();
+      await waitFor(() => !root.querySelector(".composer"), "composer closed");
+      await settle();
+      expect(pressed()).toBe(false);
+    };
+    // The page's openComposer, then Cancel: mode stays off.
+    await pageOpens("o1");
+    await cancelStaysOff();
+    // A pick's empty composer that the page's openComposer replaced: closing it leaves mode off.
+    comment.click();
+    await waitFor(pressed, "comment mode");
+    viewerPick(frame, pick("p1", "Picked"));
+    await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes("Picked"), "the pick's composer");
+    await pageOpens("o2");
+    await cancelStaysOff();
+    // The viewer turned mode on and off again over a pick's composer: it stays off.
+    comment.click();
+    await waitFor(pressed, "comment mode");
+    viewerPick(frame, pick("p2", "Picked again"));
+    await waitFor(() => root.querySelector(".composer") && !pressed(), "the pick's composer");
+    comment.click();
+    await waitFor(pressed, "on over the composer");
+    comment.click();
+    await waitFor(() => !pressed(), "off over the composer");
+    await cancelStaysOff();
+    // A reply on a thread card does not turn it on.
+    const card = await waitFor(() => root.querySelector('[data-thread="tR"]'), "the thread");
+    const input = card.querySelector<HTMLInputElement>("input[aria-label=Reply]")!;
+    input.value = "more";
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await settle();
+    buttonNamed(card, "Reply").click();
+    await waitFor(() => replies === 1, "the reply");
+    await settle();
+    expect(pressed()).toBe(false);
+  });
+
+  it("tells a custom-anchors page comment mode came back, with areas, when a pick's composer closes", async () => {
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
+    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean } }[] = [];
+    win.postMessage = ((m: (typeof posted)[number]) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
+    fromFrame(win, { type: "artifax:call", id: "r1", ns: "comments", method: "register", args: [] });
+    await waitFor(() => posted.some(m => m.type === "artifax:call-result" && m.id === "r1"), "registered");
+    const modes = () => posted.filter(m => m.type === "artifax:event" && m.topic === "mode").map(m => m.data);
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => modes().at(-1)?.on === true, "mode on");
+    viewerPick(frame, pick("p1", "Goals"));
+    await waitFor(() => modes().at(-1)?.on === false, "mode off while composing");
+    buttonNamed(root, "Cancel").click();
+    await waitFor(() => modes().at(-1)?.on === true, "mode back on");
+    expect(modes()).toEqual([{ on: false, canArea: false }, { on: true, canArea: true }, { on: false, canArea: false }, { on: true, canArea: true }]);
   });
 
   it("sends Escape to the frame while commenting with the pointer over it, and leaves comment mode only when the page answers", async () => {
