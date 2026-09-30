@@ -854,7 +854,8 @@ describe("ArtifactView", () => {
     viewerPick(frame, pick("p1", "Goals"));
     await type("first");
     expect(pressed()).toBe(false);
-    expect(lastMode()).toBe(false);
+    // The frame hears of it from an effect, which runs after the render.
+    await waitFor(() => lastMode() === false, "comment mode off in the frame");
     buttonNamed(root, "Post comment").click();
     await waitFor(() => root.querySelector(".banner.notice"), "the failed post");
     await settle();
