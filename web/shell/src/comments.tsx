@@ -25,6 +25,13 @@ export function nextDraft(open: Draft | null, typed: string, d: Omit<Draft, "pic
   return { pickId: newId(), ...d };
 }
 
+/** Whether a pick with `pickId` is taken: it had a recorded start in
+ * `started`, which it uses up whatever else holds (so a pick dropped because
+ * comment mode ended never leaves its start pending), and comment mode is on. */
+export function takePick(started: Map<string, number>, pickId: unknown, commenting: boolean): boolean {
+  return typeof pickId === "string" && started.delete(pickId) && commenting;
+}
+
 /** The draft with the clip taken for `token`, when it is still the one
  * waiting for it; else the draft unchanged. */
 export function withClip(dr: Draft | null, token: string, clip: Blob | null, clipError?: string): Draft | null {

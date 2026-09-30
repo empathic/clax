@@ -232,6 +232,12 @@ describe("area anchors", () => {
     expect(textSimilarity("Open issues: 42", "Open issues: 43")).toBeGreaterThan(0.8);
     expect(textSimilarity("Quarterly goals Grow", "News Launch Soon")).toBeLessThan(0.5);
     expect(textSimilarity("", "")).toBe(1);
+    // Case folded: letters' case alone changes nothing.
+    expect(textSimilarity("OPEN ISSUES", "open issues")).toBe(1);
+    expect(textSimilarity("Open Issues: 1", "open issues: 1")).toBe(1);
+    // Pairs count once each: "aa" shares one pair with "aaaa", not three.
+    expect(textSimilarity("aa", "aaaa")).toBe(0.5);
+    expect(textSimilarity("aaaa", "aa")).toBe(0.5);
     expect(textSimilarity("a", "b")).toBe(0);
   });
 

@@ -1,6 +1,6 @@
 import { render } from "preact";
 import { describe, expect, it, vi } from "vitest";
-import { type Draft, PIN_RIGHT_ROOM, Pins, nextDraft, withClip } from "./comments";
+import { type Draft, PIN_RIGHT_ROOM, Pins, nextDraft, takePick, withClip } from "./comments";
 import { Sidebar } from "./sidebar";
 import { type Thread, areaLabel } from "./threads";
 
@@ -96,6 +96,16 @@ describe("page-opened composers", () => {
     expect(nextDraft(open, "typed", d("a"))).toBeNull();
     // Same pickId: the composer (and its text) is kept, on the new anchor.
     expect(nextDraft(open, "typed", d("b"), { area: true })).toMatchObject({ pickId: "p1", anchor: { quote: "b" } });
+  });
+  it("take a pick only with its start, using the start up even when comment mode is off", () => {
+    const started = new Map([["p1", 1], ["p2", 2]]);
+    expect(takePick(started, "p1", false)).toBe(false);
+    expect(started.has("p1")).toBe(false);
+    expect(takePick(started, "p1", true)).toBe(false);
+    expect(takePick(started, "nope", true)).toBe(false);
+    expect(takePick(started, 5, true)).toBe(false);
+    expect(takePick(started, "p2", true)).toBe(true);
+    expect(started.size).toBe(0);
   });
   it("take a late clip only while the draft still waits for that token", () => {
     const waiting: Draft = { pickId: "p1", ...d("a"), capturing: true, clipToken: "t1" };

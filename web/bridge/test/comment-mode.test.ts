@@ -394,10 +394,16 @@ describe("Option widening", () => {
     expect(hooks.pickRange).not.toHaveBeenCalled();
     // The selection's block: the whole paragraph, as an element pick.
     expect(hooks.pickElement).toHaveBeenCalledWith(p);
-    // That pick is in flight: a click picks nothing until it is posted.
+    // That pick is in flight: the selection's own click is swallowed, and a
+    // further click (a new press ends the swallowing) picks nothing until it is posted.
+    p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    p.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0 }));
+    p.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true }));
     p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     expect(hooks.pickElement).toHaveBeenCalledTimes(1);
     mode.captured();
+    p.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    expect(hooks.pickElement).toHaveBeenCalledTimes(2);
     const down = new MouseEvent("mousedown", { bubbles: true, cancelable: true, button: 0, altKey: true, buttons: 1 });
     document.querySelector("#i")!.dispatchEvent(down);
     expect(down.defaultPrevented).toBe(true);

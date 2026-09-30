@@ -526,11 +526,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   ends or a page greets); two starts pending at once are both refused. The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. This bounds forgery, it
-  does not end it: a page can post a pick of its own only during the viewer's
-  own click or drag in the frame in comment mode (its script shares the
-  bridge's window, can act on that gesture first, and controls what gets
-  rendered); the composer then shows what the pick carries, and nothing is
-  posted without the viewer.
+  does not end it: a page can post a pick of its own only while the viewer's
+  latest input was in the frame (a click, drag, or key press there, or moving
+  focus into it, such as by Tab, within the browser's user-activation window),
+  in comment mode, and while no pick of the bridge's is pending (its script
+  shares the bridge's window, can act on such input, and controls what gets
+  rendered); the composer then shows the pick's quote or area label and its
+  screenshot (not where it anchors), and nothing is posted without the
+  viewer.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the

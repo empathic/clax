@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
-import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, withClip } from "./comments";
+import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, takePick, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
 import { frameGesture } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
@@ -443,12 +443,15 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       }
       case "artifax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
-        // frame holds the viewer's gesture, so a page can post a pick of its
-        // own only during the viewer's own click or drag in the frame (then
-        // the composer shows what the pick carries, and nothing is posted
-        // without the viewer). The bridge never has two picks in flight, so a
-        // start arriving while another is pending means one was forged: both
-        // are refused.
+        // frame holds the viewer's gesture (`frameGesture`). So a page can
+        // post a pick of its own only while the viewer's latest input was in
+        // the frame (a click, drag, or key press there, or focus moved into
+        // it, within the user-activation window) and no pick of the bridge's
+        // is pending; the composer then shows the pick's quote or area label
+        // and screenshot, not where it anchors, and nothing is posted without
+        // the viewer. The bridge never has two picks in flight, so a start
+        // arriving while another is pending means one was forged: both are
+        // refused.
         if (helloOk.current && commentingRef.current && typeof m.pickId === "string" && m.pickId.length <= 64 && frameGesture()) {
           const now = Date.now();
           for (const [pid, at] of startedPicks.current) if (now - at > PICK_WAIT_MS) startedPicks.current.delete(pid);
@@ -461,7 +464,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // once, used up even when the pick is dropped), while the viewer is in
         // comment mode; a clip the daemon would not keep is dropped here, with
         // the reason shown.
-        if (typeof m.pickId !== "string" || !startedPicks.current.delete(m.pickId) || !commentingRef.current) break;
+        if (!takePick(startedPicks.current, m.pickId, commentingRef.current)) break;
         setCommenting(false);
         const png = m.clipPng instanceof ArrayBuffer && m.clipPng.byteLength > 0 ? m.clipPng : null;
         const tooBig = !!png && png.byteLength > MAX_CLIP_BYTES;
