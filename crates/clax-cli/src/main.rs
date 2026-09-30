@@ -63,23 +63,16 @@ impl Cli {
     ///
     /// # Errors
     /// When `--port` is absent and the home's `config.toml` exists but cannot
-    /// be read or parsed; the message names the file. A missing file means
-    /// the default.
+    /// be read or parsed, or holds a `[serve] port` that is not a port; the
+    /// message names the file. A missing file or key means the default.
     pub fn port_for(&self, home: &clax_core::Home) -> anyhow::Result<u16> {
         if let Some(p) = self.port {
             return Ok(p);
         }
-        let config = clax_core::config::HomeConfig::load(home.root()).map_err(|e| match e {
-            // Already "<path>: <parse error>".
-            clax_core::CoreError::Invalid { .. } => anyhow::anyhow!("{e}"),
-            e => anyhow::anyhow!(
-                "reading {}: {e}",
-                home.root().join(clax_core::config::FILE).display()
-            ),
-        })?;
-        Ok(config
-            .serve_port()
-            .unwrap_or(clax_server::daemon::DEFAULT_PORT))
+        let port = clax_core::config::HomeConfig::load(home.root())
+            .and_then(|c| c.serve_port())
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
+        Ok(port.unwrap_or(clax_server::daemon::DEFAULT_PORT))
     }
 }
 
@@ -206,5 +199,20 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("config.toml"), "{e}");
+    }
+
+    #[test]
+    fn port_for_rejects_a_serve_port_that_is_not_a_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 74810\n").unwrap();
+        let e = cli(&["clax", "list"])
+            .port_for(&home)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            e.contains("config.toml") && e.contains("[serve] port"),
+            "{e}"
+        );
     }
 }
