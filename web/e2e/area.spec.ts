@@ -291,7 +291,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a pick the page forges by posting messages opens no composer`, async ({ page }) => {
+  test(`${mode}: a pick the page forges outside the viewer's gesture opens no composer`, async ({ page }) => {
     const { artifact } = await publish(d.base, d.token, `Forged ${mode}`, { "index.html": PAGE });
     await record(page);
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
@@ -312,6 +312,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(() => page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);
     await page.waitForTimeout(300);
     await expect(page.locator(".composer")).toHaveCount(0);
+    // A page that replaces window.parent after load cannot divert the bridge's picks.
+    await frame.evaluate(() => { (window as unknown as { parent: unknown }).parent = { postMessage() {} }; });
     // The viewer's own pick still opens the composer.
     const para = await rectOf(frame, "#para");
     const fb = await frameBox(page);
@@ -349,8 +351,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await commentMode(page, frame);
     const panel = await rectOf(frame, "#panel");
     const fb = await frameBox(page);
+    const button = page.getByRole("button", { name: "Comment", exact: true });
+    // With focus in the shell and the pointer over the page, Escape is
+    // forwarded to the page, which ends comment mode.
+    await button.focus();
+    await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
+    await page.keyboard.press("Escape");
+    await expect(button).toHaveAttribute("aria-pressed", "false");
+    const keys = await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:cancel").length);
+    expect(keys).toBeGreaterThan(0);
+    await commentMode(page, frame);
     // Focus on the shell's Comment button, as after clicking it (the press moves it into the page).
-    await page.getByRole("button", { name: "Comment", exact: true }).focus();
+    await button.focus();
     const picks = await page.evaluate(() => (window as any).artifaxMsgs.filter((m: any) => m.type === "artifax:pick").length);
     await page.mouse.move(fb.x + panel.x + 30, fb.y + panel.y + 100);
     await page.mouse.down();

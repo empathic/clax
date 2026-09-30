@@ -521,9 +521,16 @@ file under `v/<digits>/` is reachable only through the versioned form):
   it sends `artifax:pick-start {pickId}` at the viewer's click or release,
   before rendering the clip, and the shell takes the `artifax:pick` with that
   ID only in comment mode, only when its start arrived while the frame held
-  the viewer's gesture (`frameGesture`), and once; two starts pending at once
-  are both refused. The bridge keeps the shell's window as it was at load, so
-  a page replacing `window.parent` cannot read or alter what it posts.
+  the viewer's gesture (`frameGesture`), and once (a start is used up even
+  when its pick is dropped, and every start is forgotten when comment mode
+  ends or a page greets); two starts pending at once are both refused. The
+  bridge keeps the shell's window as it was at load, so a page replacing
+  `window.parent` cannot read or alter what it posts. This bounds forgery, it
+  does not end it: a page can post a pick of its own only during the viewer's
+  own click or drag in the frame in comment mode (its script shares the
+  bridge's window, can act on that gesture first, and controls what gets
+  rendered); the composer then shows what the pick carries, and nothing is
+  posted without the viewer.
   An area thread's pin sits at the area's top right; the bridge outlines the
   area dashed (from its resolved rectangle) for the thread the shell names in
   `artifax:focus`: the one hovered in the sidebar or by its pin, else the
@@ -706,12 +713,14 @@ half a percent). An area re-resolves by selector (exact with a matching
 `html_hash`, else selector alone; it has no quote to fall back on) and its
 fractions are projected onto the element's box then; otherwise it is
 detached. `area` also records a fingerprint of the element: `tag` (its local
-name), `text` (its first 32 characters of visible text, whitespace
-collapsed, control characters dropped; at most 64 characters as the daemon
-checks), and `children` (its child element count). A selector-only match is
-detached when its tag differs, when its text does not start with the
-recorded text (or, without recorded text, its child count differs), or when
-its width differs by more than 25% from its width at draw time (`rect.w /
+name, cut whole at surrogate pairs), `text` (its first 32 characters of
+text as a quote reads it: not in scripts or styles, CSS-hidden text
+included; whitespace collapsed, control characters dropped; at most 64
+characters as the daemon checks), and `children` (its child element count).
+A selector-only match is detached when its tag differs; when both its child
+element count differs and its text is unlike the recorded text (a Dice
+similarity of character pairs under 0.5), so live text or added rows alone
+keep it attached, also on the version it was drawn on; or when its width differs by more than 25% from its width at draw time (`rect.w /
 area.w`, skipped when the viewport's width changed by more than 5% since). An
 area on `html` is placed by `rect` at the same page coordinates (`x +
 scrollX`, `y + scrollY`), not by its fractions.

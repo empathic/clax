@@ -207,20 +207,46 @@ export function textPrefix(el: Element): string {
 /** An area's element fingerprint: its local name, text prefix, and child
  * element count. */
 export function fingerprint(el: Element): { tag: string; text: string; children: number } {
-  return { tag: el.localName.slice(0, 64), text: textPrefix(el), children: el.childElementCount };
+  return { tag: tagOf(el), text: textPrefix(el), children: el.childElementCount };
 }
 
-/** Whether `el` matches area anchor `a`'s fingerprint: the same tag, and the
- * same text prefix (its text now starts with the recorded prefix) when the
- * element had text at draw time, else the same
- * child count. Holds when no fingerprint was recorded. */
+/** `el`'s local name, at most 64 UTF-16 units, never ending inside a surrogate pair. */
+const tagOf = (el: Element) => cut(el.localName, 0, 64);
+
+/** How alike two texts must be (`textSimilarity`) to count as the same. */
+export const TEXT_ALIKE = 0.5;
+
+/** How alike `a` and `b` are, from 0 to 1: the Dice coefficient of their
+ * lower-cased character pairs (1 for two equal texts, empty ones included).
+ * A changed number or word keeps two texts well above `TEXT_ALIKE`. */
+export function textSimilarity(a: string, b: string): number {
+  const x = a.toLowerCase();
+  const y = b.toLowerCase();
+  if (x === y) return 1;
+  if (x.length < 2 || y.length < 2) return 0;
+  const pairs = new Map<string, number>();
+  for (let i = 0; i < x.length - 1; i++) { const p = x.slice(i, i + 2); pairs.set(p, (pairs.get(p) ?? 0) + 1); }
+  let shared = 0;
+  for (let i = 0; i < y.length - 1; i++) {
+    const p = y.slice(i, i + 2);
+    const n = pairs.get(p) ?? 0;
+    if (n > 0) { shared++; pairs.set(p, n - 1); }
+  }
+  return (2 * shared) / (x.length - 1 + y.length - 1);
+}
+
+/** Whether `el` still passes for the element area anchor `a` was drawn on:
+ * it has the same tag, and its child element count or its text (at least
+ * `TEXT_ALIKE` similar to the recorded prefix) still agrees; only an element
+ * that differs in both is another one, so live text or a changed row count
+ * alone never detaches an area. Holds when no fingerprint was recorded. */
 export function fingerprintHolds(a: Anchor, el: Element): boolean {
   const f = a.area;
   if (!f || f.tag === undefined) return true;
-  if (el.localName.slice(0, 64) !== f.tag) return false;
-  // Text added after a short recorded prefix keeps the match.
-  if (f.text) return textPrefix(el).startsWith(f.text);
-  return f.children === undefined || el.childElementCount === f.children;
+  if (tagOf(el) !== f.tag) return false;
+  const childrenAgree = f.children === undefined || el.childElementCount === f.children;
+  const textAgrees = f.text === undefined || textSimilarity(textPrefix(el), f.text) >= TEXT_ALIKE;
+  return childrenAgree || textAgrees;
 }
 
 /** How far, as a share, an area's element may have changed width since the

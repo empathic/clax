@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fingerprint, resolveAnchor } from "../src/anchor";
+import { fingerprint, resolveAnchor, textSimilarity } from "../src/anchor";
 import { AREA_MIN, Widen, placeArea, areaBox, areaFractions, boxOf, buildAreaAnchor, containingElement, dragRect, foreignRoot, isClickSized, nonTextAt, widenedTarget } from "../src/area";
 import { areaCrop, areaRenderRoot } from "../src/clip";
 
@@ -181,7 +181,7 @@ describe("area anchors", () => {
     expect(resolveAnchor(document, a)).toBeNull();
   });
   it("detach when a new section of the same size inserted before takes the anchored one's selector", () => {
-    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p></section><section id="goals"><h2>Quarterly goals</h2><p>Grow</p></section></main>`;
+    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p><p>World</p></section><section id="goals"><h2>Quarterly goals</h2><p>Grow</p></section></main>`;
     const goals = document.querySelector("#goals")!;
     goals.removeAttribute("id");
     place(goals, { left: 0, top: 300, width: 600, height: 200 });
@@ -189,17 +189,53 @@ describe("area anchors", () => {
     const a = buildAreaAnchor(document, { left: 100, top: 350, width: 200, height: 50 });
     expect(a.selector).toBe("body > main > section:nth-of-type(2)");
     expect(a.area).toMatchObject({ tag: "section", text: "Quarterly goals Grow", children: 2 });
-    // v2: a new section before it; nth-of-type(2) is now the new one, same width.
+    // v2: a new section before the first; nth-of-type(2) is now the intro,
+    // same width but other text and another child count.
     document.querySelector("main")!.insertAdjacentHTML("afterbegin", "<section><h2>News</h2><p>Launch</p></section>");
     for (const sec of Array.from(document.querySelectorAll("section"))) place(sec, { left: 0, top: 0, width: 600, height: 200 });
     expect(resolveAnchor(document, a)).toBeNull();
     // A change inside the anchored section that keeps its opening text re-anchors it.
-    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p></section><section><h2>Quarterly goals</h2><p>Grow</p><p>and more</p></section></main>`;
+    document.body.innerHTML = `<main><section><h2>Intro</h2><p>Hello</p><p>World</p></section><section><h2>Quarterly goals</h2><p>Grow</p><p>and more</p></section></main>`;
     for (const sec of Array.from(document.querySelectorAll("section"))) place(sec, { left: 0, top: 0, width: 600, height: 200 });
     expect(resolveAnchor(document, a)?.element).toBe(document.querySelectorAll("section")[1]);
   });
 
-  it("fingerprint an element by tag, text prefix, and child count, falling back to the count without text", () => {
+  it("stay attached when live text changes on the version they were drawn on, and when rows are added", () => {
+    document.body.innerHTML = `<main><div class="card"><h3>Open issues: 42</h3><p>updated now</p></div></main>`;
+    const card = document.querySelector(".card")!;
+    place(card, { left: 0, top: 0, width: 300, height: 120 });
+    d.elementsFromPoint = () => [card, document.body];
+    const a = buildAreaAnchor(document, { left: 10, top: 10, width: 100, height: 50 });
+    expect(resolveAnchor(document, a)?.method).toBe("exact");
+    card.querySelector("h3")!.textContent = "Open issues: 43";
+    expect(resolveAnchor(document, a)?.method).toBe("selector");
+    // The text changed wholly, but the rows still match: attached.
+    card.querySelector("h3")!.textContent = "Nothing to report";
+    expect(resolveAnchor(document, a)?.element).toBe(card);
+    // Same text, a row added: attached.
+    card.querySelector("h3")!.textContent = "Open issues: 44";
+    card.insertAdjacentHTML("beforeend", "<p>new row</p>");
+    expect(resolveAnchor(document, a)?.element).toBe(card);
+    // Both the rows and the text differ: another element.
+    card.querySelector("h3")!.textContent = "Quarterly revenue";
+    expect(resolveAnchor(document, a)).toBeNull();
+  });
+
+  it("keep a long custom element name whole at its surrogate pairs when cutting it", () => {
+    const el = document.createElement(`x-${"a".repeat(61)}\u{1F600}`);
+    const tag = fingerprint(el).tag;
+    expect(tag.length).toBe(63);
+    expect(/[\uD800-\uDBFF]$/.test(tag)).toBe(false);
+  });
+
+  it("measure text similarity tolerantly", () => {
+    expect(textSimilarity("Open issues: 42", "Open issues: 43")).toBeGreaterThan(0.8);
+    expect(textSimilarity("Quarterly goals Grow", "News Launch Soon")).toBeLessThan(0.5);
+    expect(textSimilarity("", "")).toBe(1);
+    expect(textSimilarity("a", "b")).toBe(0);
+  });
+
+  it("fingerprint an element by tag, text prefix, and child count", () => {
     document.body.innerHTML = `<div id="a">  lots   of\n text ${"x".repeat(100)}</div><div id="b"><img><img></div>`;
     const fa = fingerprint(document.querySelector("#a")!);
     expect(fa.tag).toBe("div");
@@ -211,8 +247,16 @@ describe("area anchors", () => {
     const a = buildAreaAnchor(document, { left: 10, top: 10, width: 100, height: 50 });
     b.setAttribute("data-v", "2");
     expect(resolveAnchor(document, a)?.element).toBe(b);
+    // Without text, the child count alone tells: another count and new text is another element.
     b.appendChild(document.createElement("img"));
+    b.appendChild(document.createTextNode("caption"));
     expect(resolveAnchor(document, a)).toBeNull();
+    // Another tag is always another element.
+    const other = buildAreaAnchor(document, { left: 10, top: 10, width: 100, height: 50 });
+    b.outerHTML = `<section id="b">${b.innerHTML}</section>`;
+    const sec = document.querySelector("#b")!;
+    place(sec, { left: 0, top: 0, width: 300, height: 100 });
+    expect(resolveAnchor(document, { ...other, selector: "#b" })).toBeNull();
   });
 
   it("detach when only the selector matched an element whose width changed by more than a quarter", () => {

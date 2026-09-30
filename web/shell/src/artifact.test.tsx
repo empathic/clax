@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { render } from "preact";
 
 class FakeES {
@@ -722,12 +722,13 @@ describe("ArtifactView", () => {
     await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
   });
 
-  it("drops a pick's clip past the daemon's cap with the reason, and says when a thread was posted without its screenshot", async () => {
+  it("drops a pick's clip past the daemon's cap with the reason, says when a thread was posted without its screenshot, and clears that on a post that kept its clip", async () => {
+    let posts = 0;
     const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
       async (url, init) => url.startsWith("/api/viewers/")
         ? new Response(JSON.stringify(viewer))
         : init?.method === "POST"
-          ? new Response(JSON.stringify({ thread: { id: "01JX", artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, clip_error: "clip is not a PNG" }), { status: 201 })
+          ? new Response(JSON.stringify({ thread: { id: `01JX${++posts}`, artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: posts > 1, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, ...(posts === 1 ? { clip_error: "clip is not a PNG" } : {}) }), { status: 201 })
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     fromFrame(frame.contentWindow!, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
@@ -741,6 +742,67 @@ describe("ArtifactView", () => {
     await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
     buttonNamed(root, "Post comment").click();
     await waitFor(() => root.querySelector(".banner.notice")?.textContent?.includes("Posted without its screenshot: clip is not a PNG"), "the notice");
+    // The next post keeps its clip: that notice goes (jsdom has no object URLs for its preview).
+    const urls = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
+    const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
+    urls.createObjectURL = () => "blob:clip";
+    urls.revokeObjectURL = () => {};
+    onTestFinished(() => { urls.createObjectURL = had.create; urls.revokeObjectURL = had.revoke; });
+    buttonNamed(root, "Comment").click();
+    await waitFor(() => buttonNamed(root, "Comment").getAttribute("aria-pressed") === "true", "comment mode again");
+    viewerPick(frame, { ...pick("small", "Chart"), clipPng: new Uint8Array([137, 80, 78, 71]).buffer });
+    const t2 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "second composer");
+    t2.value = "and this";
+    t2.dispatchEvent(new Event("input", { bubbles: true }));
+    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    buttonNamed(root, "Post comment").click();
+    await waitFor(() => posts === 2 && !root.querySelector(".banner.notice"), "the notice cleared");
+  });
+
+  it("uses up a pick's start even when the pick is dropped, and forgets starts when comment mode ends or a page greets, so the viewer's next pick works", async () => {
+    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const hello = () => fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
+    hello();
+    const comment = buttonNamed(root, "Comment");
+    const on = async () => { if (comment.getAttribute("aria-pressed") !== "true") comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode on"); };
+    const off = async () => { comment.click(); await waitFor(() => comment.getAttribute("aria-pressed") === "false", "comment mode off"); };
+    const settle = () => new Promise(r => setTimeout(r, 30));
+    const start = (id: string) => { gestureIn(frame); fromFrame(win, { type: "artifax:pick-start", pickId: id }); };
+    const opensWith = async (quote: string) => {
+      await waitFor(() => root.querySelector(".composer-quote")?.textContent?.includes(quote), quote);
+      buttonNamed(root, "Cancel").click();
+      await waitFor(() => !root.querySelector(".composer"), "composer closed");
+    };
+    // A pick that arrives after comment mode ended is dropped; the next one works.
+    await on();
+    start("a1");
+    await off();
+    fromFrame(win, pick("a1", "Late"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    await on();
+    viewerPick(frame, pick("a2", "Next after a late one"));
+    await opensWith("Next after a late one");
+    // Comment mode toggled while a pick is in flight: the old pick is dropped, the new one works.
+    await on();
+    start("b1");
+    await off();
+    await on();
+    start("b2");
+    fromFrame(win, pick("b1", "Old"));
+    fromFrame(win, pick("b2", "New after a toggle"));
+    await opensWith("New after a toggle");
+    // A start from the page before a new greeting does not count after it.
+    await on();
+    start("c1");
+    hello();
+    fromFrame(win, pick("c1", "Before the greeting"));
+    await settle();
+    expect(root.querySelector(".composer")).toBeNull();
+    viewerPick(frame, pick("c2", "After the greeting"));
+    await opensWith("After the greeting");
   });
 
   it("sends Escape to the frame while commenting with the pointer over it, and leaves comment mode only when the page answers", async () => {

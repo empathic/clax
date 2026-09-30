@@ -635,8 +635,11 @@ whole rectangle (an inline `<svg>` counts as one element, never one of its
 shapes; `html`, the whole scrollable page, when no element in the body holds
 it, as below a short page), whose `area` places the rectangle in that box as
 fractions (`{"x", "y", "w", "h"}`, each 0 to 1, 6 decimal places, with the
-element's `tag`, the first 32 characters of its text, and its child element
-`children` count as a fingerprint), and whose `rect` holds the rectangle in
+element's `tag`, the first 32 characters of its text (as a quote reads it:
+not in scripts or styles, CSS-hidden text included), and its child element
+`children` count as a fingerprint; like a quote, that text travels with the
+thread to every viewer's page and to the agent, so on a page that shows each
+viewer their own data it is the drawing viewer's), and whose `rect` holds the rectangle in
 viewport pixels with the page's scroll at draw time. The area's clip is always taken, at release, of exactly the rectangle
 as the page rendered it (its nearest HTML element rendered and cropped to
 it); the rectangle stays drawn, dashed, until the clip is taken, and no other
@@ -647,9 +650,10 @@ kept without its clip says so in the notice banner. On a later version the
 area follows its element (found by selector) and is projected onto the
 element's box then; without the element the thread is detached, and so it is
 when only the selector (not the element's content hash) matched and the
-element is another one: a different tag, text that no longer starts with the
-recorded text (or, for an element without text, another child count), or a
-width more than 25% off its width at draw time (while the viewport's width is
+element is another one: a different tag, or both another child element count
+and text unlike the recorded text (live text, such as a count that changed,
+or rows added alone never detach it), or a width more than 25% off its width
+at draw time (while the viewport's width is
 within 5% of what it was). An area on `html` is placed by its drawn rectangle
 at the same page coordinates, so a resize or a longer page does not move it.
 Area threads get their
@@ -666,9 +670,14 @@ Only the viewer's own input counts: the bridge ignores events the page
 dispatched, and the shell takes a pick only while comment mode is on and only
 after its start (`artifax:pick-start`, sent by the bridge at the viewer's
 click or release) arrived while the frame held the viewer's gesture (the
-check `compose` uses); each start counts once, and two starts pending at
-once are both refused, so a pick a page forges by posting messages opens
-nothing. A composer waiting for a page area's screenshot keeps Post disabled
+check `compose` uses); each start counts once (a pick dropped because
+comment mode ended uses its start up, and ending comment mode forgets every
+start), and two starts pending at once are both refused. So a page can post
+a pick of its own only during the viewer's own click or drag in the frame, in
+comment mode: the page shares the bridge's window and can always act on that
+gesture first, and it controls what it renders. The composer then shows what
+the pick carries (its quote or area and its screenshot), and nothing is
+posted without the viewer. A composer waiting for a page area's screenshot keeps Post disabled
 and, after 10 seconds without it, says "No screenshot: it was not taken in
 time".
 
