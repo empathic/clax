@@ -639,7 +639,7 @@ describe("ArtifactView", () => {
     let textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
     textarea.value = "first draft";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    await waitFor(() => postReady(root), "post enabled");
     buttonNamed(root, "Post comment").click();
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.textContent).toContain("Could not post: 500 disk full");
@@ -749,7 +749,7 @@ describe("ArtifactView", () => {
     expect(root.querySelector(".composer-quote")!.textContent).toContain("Goals");
     textarea.value = "Via";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    await waitFor(() => postReady(root), "post enabled");
     buttonNamed(root, "Cancel").click();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back");
   });
@@ -793,9 +793,9 @@ describe("ArtifactView", () => {
     textarea.value = "look here";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     await new Promise(r => setTimeout(r, 10));
-    expect(buttonNamed(root, "Post comment").disabled).toBe(true);
+    expect(buttonNamed(root, "Post comment").getAttribute("aria-disabled")).toBe("true");
     await waitFor(() => root.querySelector(".composer")?.textContent?.includes("No screenshot: it was not taken in time"), "the late note");
-    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    await waitFor(() => postReady(root), "post enabled");
   });
 
   it("drops a pick's clip past the daemon's cap with the reason, says when a thread was posted without its screenshot, and clears that on a post that kept its clip", async () => {
@@ -815,7 +815,7 @@ describe("ArtifactView", () => {
     const textarea = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
     textarea.value = "look";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
-    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    await waitFor(() => postReady(root), "post enabled");
     buttonNamed(root, "Post comment").click();
     await waitFor(() => root.querySelector(".banner.notice")?.textContent?.includes("Posted without its screenshot: clip is not a PNG"), "the notice");
     // The next post keeps its clip: that notice goes (jsdom has no object URLs for its preview).
@@ -829,7 +829,7 @@ describe("ArtifactView", () => {
     const t2 = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "second composer");
     t2.value = "and this";
     t2.dispatchEvent(new Event("input", { bubbles: true }));
-    await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+    await waitFor(() => postReady(root), "post enabled");
     buttonNamed(root, "Post comment").click();
     await waitFor(() => posts === 2 && !root.querySelector(".banner.notice"), "the notice cleared");
   });
@@ -913,7 +913,7 @@ describe("ArtifactView", () => {
       const t = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "composer");
       t.value = text;
       t.dispatchEvent(new Event("input", { bubbles: true }));
-      await waitFor(() => !buttonNamed(root, "Post comment").disabled, "post enabled");
+      await waitFor(() => postReady(root), "post enabled");
     };
     comment.click();
     await waitFor(pressed, "comment mode");
@@ -1162,6 +1162,12 @@ describe("ArtifactView", () => {
 
 function stubMedia(matches: Record<string, boolean>) {
   vi.stubGlobal("matchMedia", (q: string) => ({ matches: matches[q] ?? false, media: q, addEventListener() {}, removeEventListener() {} }));
+}
+
+/** Whether Post posts when pressed: enabled, and not waiting for the screenshot. */
+function postReady(root: Element): boolean {
+  const b = buttonNamed(root, "Post comment");
+  return !b.disabled && b.getAttribute("aria-disabled") !== "true";
 }
 
 function buttonNamed(root: Element, name: string | RegExp): HTMLButtonElement {

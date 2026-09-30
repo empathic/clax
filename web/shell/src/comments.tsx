@@ -1,5 +1,5 @@
 import { type Anchor, type AnchorResult, INDEX_FILE } from "../../bridge/src/protocol";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { type Thread, areaLabel } from "./threads";
 
 /** A pick being commented on; `pickId` keys the composer so each pick starts
@@ -106,7 +106,9 @@ export function Composer({ draft, onCancel, onSubmit, onText, onFocused }: { dra
   const textarea = useRef<HTMLTextAreaElement>(null);
   const onFocusedRef = useRef(onFocused);
   onFocusedRef.current = onFocused;
-  useEffect(() => { textarea.current?.focus(); onFocusedRef.current?.(); }, []);
+  // A layout effect: focus moves as the composer is first rendered, not after
+  // the next paint, so the hand-off from the page is as short as it can be.
+  useLayoutEffect(() => { textarea.current?.focus(); onFocusedRef.current?.(); }, []);
   const quote = draft.anchor.quote?.replace(/\s+/g, " ").trim();
   const canPost = !busy && !!body.trim() && !draft.capturing;
   // Set before the first await, so a second Post or shortcut in the same
@@ -120,28 +122,32 @@ export function Composer({ draft, onCancel, onSubmit, onText, onFocused }: { dra
     // the draft stays so the viewer can retry.
     try { await onSubmit(body); } catch { posting.current = false; setBusy(false); }
   };
-  // The submit shortcut while the screenshot is still being taken posts once
-  // it is in (or the wait for it ends): the composer opens at the pick, so a
-  // viewer who types at once can press it before then. It posts the text the
-  // textarea showed when it was pressed: any edit after it cancels it (the
-  // viewer presses it again when done).
+  // Post (a click, Enter on it, or the shortcut) while the screenshot is
+  // still being taken posts once it is in (or the wait for it ends): the
+  // composer opens at the pick, so a viewer who types at once can post before
+  // then. It posts the text the textarea showed when it was asked, on the
+  // anchor shown then: an edit after it, or a move of the composer to
+  // another anchor (a page's area), cancels it, and the viewer posts again.
   const [queued, setQueued] = useState(false);
-  // A composer moved to another anchor (a page's area) drops the shortcut:
-  // the viewer has not seen where it now posts.
-  const anchorAt = useRef(draft.anchor);
+  const queuedFor = useRef<Anchor | null>(null);
   useEffect(() => {
-    if (anchorAt.current === draft.anchor) return;
-    anchorAt.current = draft.anchor;
-    setQueued(false);
+    if (queued && queuedFor.current !== draft.anchor) setQueued(false);
   }, [draft.anchor]);
   useEffect(() => {
-    if (!queued || draft.capturing || anchorAt.current !== draft.anchor) return;
+    if (!queued || draft.capturing) return;
     setQueued(false);
-    // Only the text the textarea shows now.
-    if (textarea.current?.value === body) void post();
-  }, [queued, draft.capturing]);
+    // Only on the anchor, and with the text, shown when it was asked.
+    if (queuedFor.current === draft.anchor && textarea.current?.value === body) void post();
+  }, [queued, draft.capturing, draft.anchor]);
+  /** Posts now, or once the screenshot is in. */
+  const request = () => {
+    if (!draft.capturing) { void post(); return; }
+    if (busy || !body.trim()) return;
+    queuedFor.current = draft.anchor;
+    setQueued(true);
+  };
   return (
-    <form class="composer" onSubmit={e => { e.preventDefault(); void post(); }}>
+    <form class="composer" onSubmit={e => { e.preventDefault(); request(); }}>
       <p class="composer-quote">{draft.label ?? (quote ? `«${quote.length > 160 ? `${quote.slice(0, 160)}…` : quote}»` : draft.anchor.kind === "custom" ? draft.anchor.custom_name : draft.anchor.kind === "area" ? areaLabel(draft.anchor) : draft.anchor.selector)}</p>
       {draft.anchor.file !== INDEX_FILE && <p class="file-label muted small">on {draft.anchor.file}</p>}
       {clipUrl ? <img class="clip" src={clipUrl} alt="Screenshot of the selected region" /> : draft.capturing ? <p class="muted small">{queued ? "Posting once the screenshot is taken…" : "Taking the screenshot…"}</p> : <p class="muted small">No screenshot{draft.clipError ? `: ${draft.clipError}` : ""}</p>}
@@ -150,13 +156,15 @@ export function Composer({ draft, onCancel, onSubmit, onText, onFocused }: { dra
           if (e.key === "Escape") onCancel();
           else if (isSubmitKey(e)) {
             e.preventDefault();
-            if (draft.capturing && !busy && body.trim()) setQueued(true);
-            else void post();
+            request();
           }
         }} />
       <div class="actions">
         <button type="button" onClick={onCancel}>Cancel</button>
-        <button type="submit" class="primary" title={`Post comment (${submitKeysLabel()})`} disabled={!canPost}>Post comment</button>
+        {/* While the screenshot is taken, Post stays focusable (Tab order
+            does not change) and waits: pressing it queues the post. */}
+        <button type="submit" class="primary" title={draft.capturing ? "Posts once the screenshot is taken" : `Post comment (${submitKeysLabel()})`} disabled={busy || !body.trim()}
+          aria-disabled={draft.capturing ? "true" : undefined}>Post comment</button>
       </div>
     </form>
   );

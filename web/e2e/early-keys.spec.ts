@@ -74,37 +74,44 @@ const composer = (page: Page) => page.locator(".composer");
 /** Types `SENTENCE` from 60 ms after the release, one key every 30 ms, each
  * sent without waiting for the browser to handle the one before: a CDP
  * session answers one input command at a time, so each key has its own. */
-async function typeAsAHand(keys: CDPSession[]) {
+async function typeAsAHand(keys: CDPSession[], text: readonly string[] = Array.from(SENTENCE)) {
   const sent: Promise<unknown>[] = [];
   await new Promise(r => setTimeout(r, 60));
-  for (const [i, ch] of Array.from(SENTENCE).entries()) {
+  for (const [i, ch] of text.entries()) {
     const cdp = keys[i];
-    sent.push(cdp.send("Input.dispatchKeyEvent", { type: "keyDown", key: ch, text: ch, unmodifiedText: ch }).then(() => cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: ch })));
+    const k = KEYS[ch] ?? { key: ch, text: ch, unmodifiedText: ch };
+    sent.push(cdp.send("Input.dispatchKeyEvent", { type: "keyDown", ...k }).then(() => cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.windowsVirtualKeyCode })));
     await new Promise(r => setTimeout(r, 30));
   }
   await Promise.all(sent);
 }
 
+/** The keys that are not characters, by name. */
+const KEYS: Record<string, { key: string; code?: string; windowsVirtualKeyCode?: number; text?: string; unmodifiedText?: string }> = {
+  Tab: { key: "Tab", code: "Tab", windowsVirtualKeyCode: 9 },
+  Enter: { key: "Enter", code: "Enter", windowsVirtualKeyCode: 13, text: "\r", unmodifiedText: "\r" },
+};
+
 /** Releases the button and types from 60 ms later, not waiting for the
  * browser to handle the release (which a stall may hold up). */
-async function releaseAndType(page: Page, keys: CDPSession[]) {
+async function releaseAndType(page: Page, keys: CDPSession[], text?: readonly string[]) {
   const up = page.mouse.up();
-  await typeAsAHand(keys);
+  await typeAsAHand(keys, text);
   await up;
 }
 
-async function open(page: Page, mode: "subdomain" | "sandbox", title: string) {
+async function open(page: Page, mode: "subdomain" | "sandbox", title: string, heavy = true) {
   const { artifact } = await publish(d.base, d.token, title, { "index.html": PAGE });
   await instrument(page);
   const f = await openArtifact(page, d.base, artifact.id, 1, mode);
   await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
   await commentMode(page, f);
-  await f.evaluate(() => { (window as any).armed = true; });
+  if (heavy) await f.evaluate(() => { (window as any).armed = true; });
   const cdp = await Promise.all(Array.from(SENTENCE, () => page.context().newCDPSession(page)));
   return { f, cdp };
 }
 
-async function expectAllInComposer(page: Page, f: Frame) {
+async function expectAllInComposer(page: Page, f: Frame, heavy = true) {
   const textarea = composer(page).locator("textarea");
   await expect(textarea).toBeFocused();
   await expect(textarea).toHaveValue(SENTENCE);
@@ -114,10 +121,12 @@ async function expectAllInComposer(page: Page, f: Frame) {
   expect(await f.evaluate(() => (window as any).pageKeys as string[]), "keys the page heard").toEqual([]);
   expect(await f.evaluate(() => (document.getElementById("field") as HTMLInputElement).value)).toBe("");
   // The screenshot's copy of the heavy element did stall the page.
-  expect(await f.evaluate(() => (window as any).stalls as number)).toBeGreaterThan(0);
+  const stalls = await f.evaluate(() => (window as any).stalls as number);
+  if (heavy) expect(stalls).toBeGreaterThan(0);
+  else expect(stalls).toBe(0);
   const upAt = await f.evaluate(() => (window as any).upAt as number);
   const { focusAt, fullAt } = await page.evaluate(() => ({ focusAt: (window as any).focusAt as number, fullAt: (window as any).fullAt as number }));
-  test.info().annotations.push({ type: "timing", description: `focus ${focusAt - upAt} ms, last key landed ${fullAt - upAt} ms after the release` });
+  test.info().annotations.push({ type: "timing", description: `${heavy ? "heavy" : "light"}: focus ${focusAt - upAt} ms, last key landed ${fullAt - upAt} ms after the release` });
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -141,5 +150,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await releaseAndType(page, cdp);
     await expectAllInComposer(page, f);
     await expect(composer(page).locator("img.clip")).toBeVisible();
+  });
+
+  test(`${mode}: on a light page, a sentence typed from 60 ms after clicking an element lands whole in the composer`, async ({ page }) => {
+    const { f, cdp } = await open(page, mode, `Early keys light ${mode}`, false);
+    const b = (await f.locator("#p1").boundingBox())!;
+    await page.mouse.move(b.x + 40, b.y + 12, { steps: 10 });
+    await page.mouse.down();
+    await releaseAndType(page, cdp);
+    await expectAllInComposer(page, f, false);
+  });
+
+  test(`${mode}: on a heavy page, "ok", Tab, Tab, Enter typed while the screenshot is taken posts "ok" once it is in`, async ({ page }) => {
+    const { f, cdp } = await open(page, mode, `Early keys post ${mode}`);
+    const b = (await f.locator("#p1").boundingBox())!;
+    await page.mouse.move(b.x + 40, b.y + 12, { steps: 10 });
+    await page.mouse.down();
+    await releaseAndType(page, cdp, ["o", "k", "Tab", "Tab", "Enter"]);
+    await expect(page.locator(".thread-card").filter({ hasText: "ok" })).toHaveCount(1);
+    await expect(composer(page)).toHaveCount(0);
+    expect(await f.evaluate(() => (window as any).stalls as number)).toBeGreaterThan(0);
+    expect(await f.evaluate(() => (window as any).pageKeys as string[])).toEqual([]);
   });
 }

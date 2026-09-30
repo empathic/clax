@@ -325,6 +325,21 @@ fn apply_fixes(home: &Home, store: &Store) -> anyhow::Result<Vec<String>> {
     Ok(fixed)
 }
 
+/// `config`: the home's `config.toml` reads and parses, and its `[serve]
+/// port`, when present, is a port. The detail names the port daemons for
+/// this home start on, or the error.
+fn config_check(home: &Home) -> serde_json::Value {
+    match clax_core::config::HomeConfig::load(home.root()).and_then(|c| c.serve_port()) {
+        Ok(Some(p)) => check("config", true, format!("[serve] port = {p}")),
+        Ok(None) => check(
+            "config",
+            true,
+            format!("default port {}", clax_server::daemon::DEFAULT_PORT),
+        ),
+        Err(e) => check("config", false, e.to_string()),
+    }
+}
+
 pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     let mut checks = vec![];
     let mut fixed = vec![];
@@ -333,6 +348,7 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             .map(|_| std::fs::remove_file(home.root().join(".doctor")).is_ok())
             .unwrap_or(false);
     checks.push(check("home", writable, home.root().display().to_string()));
+    checks.push(config_check(home));
     // Held until the process exits, so an auto-start cannot race the repairs.
     // Taken before discovery: a daemon that is still starting holds it.
     let _lock = if args.fix && writable {

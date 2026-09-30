@@ -35,6 +35,7 @@ import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
+import { PickFlow } from "./pick";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
@@ -123,38 +124,10 @@ import { makeUse } from "./use";
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  // The timer functions as they are when the bridge loads.
-  const setTimer = window.setTimeout.bind(window);
-  const clearTimer = window.clearTimeout.bind(window);
-  // The pick whose start was posted, waiting for the shell's answer: its
-  // composer has focus (`clax:composer-ready`, true) or the start was refused
-  // (`clax:pick-refused`, false); no answer within `READY_MS` is a refusal.
-  let waiting: { pickId: string; answer(go: boolean): void; timer: number } | null = null;
-  const READY_MS = 5_000;
-  const answer = (pickId: string, go: boolean) => {
-    const w = waiting;
-    if (!w || w.pickId !== pickId) return;
-    waiting = null;
-    clearTimer(w.timer);
-    w.answer(go);
-  };
-  /** Posts the pick's start with its anchor (the shell opens the composer on
-   * it and focuses it). The clip is rendered only once the shell says the
-   * composer has focus: its work can hold the main thread the page may share
-   * with the shell, and keys typed meanwhile then wait for it and reach the
-   * focused composer. A refused start renders nothing. The pick is posted
-   * with the clip once it is taken. */
-  const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
-    const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    if (waiting) answer(waiting.pickId, false);
-    const go = new Promise<boolean>(resolve => { waiting = { pickId, answer: resolve, timer: setTimer(() => answer(pickId, false), READY_MS) }; });
-    post({ type: "clax:pick-start", pickId, version: meta.version, anchor });
-    if (!(await go)) return;
-    let clipPng: ArrayBuffer | undefined;
-    let clipError: string | undefined;
-    try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
-    post({ type: "clax:pick", pickId, version: meta.version, anchor, clipPng, clipError }, clipPng ? [clipPng] : []);
-  };
+  // A pick's clip is rendered only once the shell's composer for it has
+  // focus (see `pick.ts`).
+  const picks = new PickFlow(window, post, meta.version);
+  const pick = (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => picks.start(anchor, clip);
   const mode = new CommentMode(document, {
     hover: t => post({ type: "clax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
     pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)).finally(() => mode.captured()); },
@@ -225,8 +198,8 @@ import { makeUse } from "./use";
       }); break;
       // The focused thread's area is outlined once the page has parsed.
       case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
-      case "clax:pick-refused": if (typeof m.pickId === "string") answer(m.pickId, false); break;
-      case "clax:composer-ready": if (typeof m.pickId === "string") answer(m.pickId, true); break;
+      case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
+      case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
       case "clax:key": {
         const k = forwardedKey(m);
         if (k) mode.key(k.key, k.down);

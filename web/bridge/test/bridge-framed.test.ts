@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
 import { commentsContext } from "../src/caps/comments";
+import { dispatchTrusted } from "./trusted";
 
 // The bridge framed by a stand-in shell, loaded from <head> while the document
 // is still parsing and has no <body> yet.
@@ -7,7 +8,7 @@ const posted: { type: string; requestId?: string | null }[] = [];
 const shell = { postMessage: (m: { type: string }) => { posted.push(m); } };
 const errors: string[] = [];
 const setReadyState = (state: DocumentReadyState) => Object.defineProperty(document, "readyState", { value: state, configurable: true });
-const send = (data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
+const send = (data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: location.origin, source: shell as unknown as Window }));
 const frames = () => new Promise<void>(r => requestAnimationFrame(() => requestAnimationFrame(() => r())));
 const anchor = { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const parsed = () => {
