@@ -4,17 +4,7 @@
       "command": "bash",
       "args": ["./scripts/ensure-clax.sh", "exec", "mcp", "--agent", "codex"],
       "cwd": "./",
-      "env_vars": [
-        "CLAX_HOME",
-        "CLAX_NO_OPEN",
-        "CLAX_BIN",
-        "CLAX_SOURCE_DIR",
-        "CLAX_INSTALL_DIR",
-        "CLAX_CONFIG_DIR",
-        "CLAX_RELEASE_BASE_URL",
-        "CLAX_RELEASE_VERSION",
-        "CLAX_CODEX_BIN"
-      ]
+      "env_vars": ["CLAX_HOME", "CLAX_NO_OPEN", "CLAX_BIN", "CLAX_CODEX_BIN"]
     }
   }
 }

@@ -67,6 +67,7 @@ ok = argv[-4:] == ["exec", "mcp", "--agent", "codex"] and all("exec hook --agent
 ok = ok and server.get("cwd") == "./" and argv[1] == "./scripts/ensure-clax.sh"
 # Hooks run in a shell with PLUGIN_ROOT exported.
 ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-clax.sh"' in c for c in cmds)
+ok = ok and server.get("env_vars") == ["CLAX_HOME", "CLAX_NO_OPEN", "CLAX_BIN", "CLAX_CODEX_BIN"]
 sys.exit(0 if ok else 1)
 PY
 then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Codex MCP server and hooks must run the shim with --agent codex"; fi
@@ -102,7 +103,7 @@ for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/w
 done
 
 # One version everywhere: the workspace, both plugin manifests, the Pi package,
-# and the installer's MIN_VERSION.
+# and the wrapper's CLAX_VERSION.
 if out="$(python3 - Cargo.toml plugins/claude-code/.claude-plugin/plugin.json plugins/clax/.codex-plugin/plugin.json \
     plugins/pi/package.json scripts/ensure-clax.sh 2>&1 <<'PY'
 import json, re, sys
@@ -116,13 +117,13 @@ versions = {
     claude: json.load(open(claude)).get("version"),
     codex: json.load(open(codex)).get("version"),
     pi: json.load(open(pi)).get("version"),
-    installer + " MIN_VERSION": first(r'^MIN_VERSION="([^"]+)"', open(installer).read()),
+    installer + " CLAX_VERSION": first(r'^CLAX_VERSION="([^"]+)"', open(installer).read()),
 }
 if None in versions.values() or len(set(versions.values())) != 1:
     print(", ".join(f"{k}={v}" for k, v in versions.items()))
     sys.exit(1)
 PY
-)"; then pass "the workspace, plugin manifests, Pi package and MIN_VERSION share one version"
+)"; then pass "the workspace, plugin manifests, Pi package and CLAX_VERSION share one version"
 else fail "versions differ: $out"; fi
 
 # The Rust tools and the Pi extension carry the same twenty-two tool descriptions,
