@@ -185,21 +185,26 @@ function query(doc: Document, selector: string): Element | null {
 }
 
 /** Where `a` is in `doc`, the page published at `file`; null when it is
- * detached, or when it is on another page (its `file` differs). */
-export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE): Resolved | null {
+ * detached, or when it is on another page (its `file` differs). `index`
+ * supplies the body's text index when one is needed, so callers resolving
+ * many anchors against an unchanged page can share one walk. */
+export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE, index?: () => TextIndex): Resolved | null {
   if ((a.file || INDEX_FILE) !== file) return null;
   if (a.kind === "custom") {
     const el = a.custom_name ? custom.get(a.custom_name) : undefined;
     return el ? { method: "custom", element: el, range: null } : null;
   }
   // A parse stopped in <head> (window.stop()) leaves no <body> to anchor in.
-  if (!doc.body) return null;
-  const idx = textIndex(doc.body);
+  const body = doc.body;
+  if (!body) return null;
+  let walked: TextIndex | null = null;
+  const text = () => walked ??= index ? index() : textIndex(body);
   const el = a.selector ? query(doc, a.selector) : null;
   if (el) {
     const method: ResolveMethod = a.html_hash && htmlHash(el) === a.html_hash ? "exact" : "selector";
     let range: Range | null = null;
     if (a.kind === "range" && a.quote) {
+      const idx = text();
       const s = span(idx, el);
       const hit = s && findQuote(idx, a.quote, a.prefix ?? "", a.suffix ?? "", s);
       range = hit ? rangeAt(idx, hit[0], hit[1]) : null;
@@ -207,6 +212,7 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
     return { method, element: el, range };
   }
   if (a.quote) {
+    const idx = text();
     const hit = findQuote(idx, a.quote, a.prefix ?? "", a.suffix ?? "");
     const range = hit && rangeAt(idx, hit[0], hit[1]);
     if (range) {
@@ -218,14 +224,40 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
   return null;
 }
 
+/** How long a detached anchor that has missed `misses` times in a row waits
+ * before a change to the page retries it: the first retry is immediate, then
+ * the wait doubles up to about a second. */
+export function retryDelay(misses: number): number {
+  return misses <= 1 ? 0 : Math.min(1_000, 100 * 2 ** (misses - 2));
+}
+
+interface Entry {
+  anchor: Anchor;
+  res: Resolved | null;
+  /** Consecutive misses of a detached anchor since the last `reset`. */
+  misses: number;
+  /** When a change may next retry it (`Date.now()` milliseconds). */
+  retryAt: number;
+  /** The page changed since it last missed. */
+  changed: boolean;
+  /** Its retry is due: the next `resolve` resolves it afresh. */
+  due: boolean;
+}
+
 /** Resolutions of the shell's anchors by thread ID, kept until the DOM under
- * the resolved element changes (a detached anchor is retried after any change
- * under `body`) or `reset` is called, so scroll and resize only re-measure.
- * `retry` is called when a change evicts a detached anchor, so content a page
- * renders late can be resolved without waiting for a scroll. */
+ * the resolved element changes or `reset` is called (a new request from the
+ * shell), so scroll and resize only re-measure. A detached anchor is retried
+ * after a change under `body`, so content a page renders late is found
+ * without a scroll: `retry` is called when retries fall due. The first retry
+ * is immediate; after repeated misses retries back off ([`retryDelay`]), so a
+ * page that changes every frame does not re-resolve a detached anchor every
+ * frame. The body's text index is built at most once per unchanged page and
+ * shared by every anchor resolved against it. */
 export class AnchorCache {
-  private readonly entries = new Map<string, { anchor: Anchor; res: Resolved | null }>();
+  private readonly entries = new Map<string, Entry>();
   private readonly observer: MutationObserver;
+  private index: TextIndex | null = null;
+  private timer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly doc: Document, private readonly custom: Map<string, Element> = new Map(), private readonly file: string = INDEX_FILE, private readonly retry: () => void = () => {}) {
     const win = doc.defaultView ?? window;
@@ -235,31 +267,56 @@ export class AnchorCache {
   }
 
   resolve(id: string, anchor: Anchor): Resolved | null {
+    // Changes not yet delivered to the observer still invalidate.
+    const pending = this.observer.takeRecords();
+    if (pending.length) this.invalidate(pending);
     const hit = this.entries.get(id);
-    if (hit && hit.anchor === anchor) return hit.res;
-    const res = resolveAnchor(this.doc, anchor, this.custom, this.file);
-    this.entries.set(id, { anchor, res });
+    const same = hit?.anchor === anchor;
+    if (hit && same && !hit.due) return hit.res;
+    const res = resolveAnchor(this.doc, anchor, this.custom, this.file, () => this.index ??= textIndex(this.doc.body!));
+    const misses = res ? 0 : (same ? hit.misses : 0) + 1;
+    this.entries.set(id, { anchor, res, misses, retryAt: Date.now() + retryDelay(misses), changed: false, due: false });
     return res;
   }
 
   reset(): void {
     this.entries.clear();
+    this.index = null;
+    this.clearTimer();
   }
 
   disconnect(): void {
     this.observer.disconnect();
-    this.entries.clear();
+    this.reset();
+  }
+
+  private clearTimer(): void {
+    if (this.timer !== null) clearTimeout(this.timer);
+    this.timer = null;
   }
 
   private invalidate(records: MutationRecord[]): void {
-    let detached = false;
-    for (const [id, { res }] of this.entries) {
-      const el = res?.element;
-      if (!el || !el.isConnected || records.some(r => el.contains(r.target))) {
-        this.entries.delete(id);
-        if (!res) detached = true;
-      }
+    this.index = null;
+    for (const [id, e] of this.entries) {
+      if (!e.res) { e.changed = true; continue; }
+      const el = e.res.element;
+      if (!el.isConnected || records.some(r => el.contains(r.target))) this.entries.delete(id);
     }
-    if (detached) this.retry();
+    this.releaseDue();
+  }
+
+  /** Marks due every changed detached anchor whose wait is over, calls
+   * `retry` when any fell due, and waits for the next one still waiting. */
+  private releaseDue(): void {
+    this.clearTimer();
+    const now = Date.now();
+    let fell = false;
+    let next = Infinity;
+    for (const e of this.entries.values()) {
+      if (e.res || e.due || !e.changed) continue;
+      if (e.retryAt <= now) { e.due = true; fell = true; } else next = Math.min(next, e.retryAt);
+    }
+    if (next !== Infinity) this.timer = setTimeout(() => { this.timer = null; this.releaseDue(); }, next - now);
+    if (fell) this.retry();
   }
 }

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AnchorCache, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor, textIndex } from "../src/anchor";
+import type { Anchor } from "../src/protocol";
 
 const PAGE = `<main><section><h2>Intro</h2><p>Hello there.</p></section><section><h2>Quarterly goals</h2><ul><li>Ship it</li><li>Grow</li><li>Drop this</li></ul></section></main>`;
 const h2 = () => document.querySelectorAll("h2")[1];
@@ -167,26 +168,28 @@ describe("AnchorCache", () => {
   it("resolves each anchor once until the DOM under it changes or it is reset", async () => {
     const a = buildElementAnchor(document, h2());
     const cache = new AnchorCache(document);
-    const walks = vi.spyOn(document, "createTreeWalker");
+    // An element anchor found by its selector needs no text walk; each
+    // resolution is one selector query.
+    const queries = vi.spyOn(document, "querySelector");
     expect(cache.resolve("t1", a)).toMatchObject({ method: "exact", element: h2() });
     expect(cache.resolve("t1", a)).toMatchObject({ method: "exact", element: h2() });
-    expect(walks).toHaveBeenCalledTimes(1);
+    expect(queries).toHaveBeenCalledTimes(1);
 
-    document.querySelector("p")!.textContent = "Elsewhere";
+    document.getElementsByTagName("p")[0].textContent = "Elsewhere";
     await flush();
     cache.resolve("t1", a);
-    expect(walks).toHaveBeenCalledTimes(1);
+    expect(queries).toHaveBeenCalledTimes(1);
 
     h2().textContent = "Quarterly goals (revised)";
     await flush();
     expect(cache.resolve("t1", a)?.method).toBe("selector");
-    expect(walks).toHaveBeenCalledTimes(2);
+    expect(queries).toHaveBeenCalledTimes(2);
 
     cache.reset();
     cache.resolve("t1", a);
-    expect(walks).toHaveBeenCalledTimes(3);
+    expect(queries).toHaveBeenCalledTimes(3);
     cache.disconnect();
-    walks.mockRestore();
+    queries.mockRestore();
   });
   it("reports a change that evicts a detached anchor, so it can be retried without a scroll", async () => {
     const a = buildElementAnchor(document, h2());
@@ -212,6 +215,66 @@ describe("AnchorCache", () => {
     expect(resolveAnchor(doc, a)).toBeNull();
     cache.disconnect();
   });
+  it("walks the text once per pass and backs off retrying detached anchors on a page that keeps changing", async () => {
+    vi.useFakeTimers();
+    const walks = vi.spyOn(document, "createTreeWalker");
+    try {
+      document.body.innerHTML = `<p>nothing</p><span id="tick">0</span>`;
+      const gone = [1, 2, 3].map(i => ({ kind: "element", selector: `#gone${i}`, quote: `missing ${i}`, prefix: "", suffix: "", html_hash: null, rect: null, custom_name: null, file: "index.html" }) as Anchor);
+      let due = false;
+      const retry = vi.fn(() => { due = true; });
+      const cache = new AnchorCache(document, new Map(), "index.html", retry);
+      const pass = () => gone.forEach((a, i) => expect(cache.resolve(`t${i}`, a)).toBeNull());
+      pass();
+      expect(walks).toHaveBeenCalledTimes(1);
+      const tick = document.getElementById("tick")!;
+      // 20 frames of 16 ms, each changing the page, with a pass whenever a retry was asked for.
+      for (let frame = 1; frame <= 20; frame++) {
+        tick.textContent = String(frame);
+        await vi.advanceTimersByTimeAsync(16);
+        if (frame === 1) expect(retry).toHaveBeenCalledTimes(1);
+        if (due) { due = false; pass(); }
+      }
+      expect(retry.mock.calls.length).toBeLessThanOrEqual(3);
+      expect(walks.mock.calls.length).toBeLessThanOrEqual(1 + retry.mock.calls.length);
+      // A new request from the shell starts over: the next change retries at once.
+      cache.reset();
+      pass();
+      const before = retry.mock.calls.length;
+      tick.textContent = "again";
+      await vi.advanceTimersByTimeAsync(0);
+      expect(retry).toHaveBeenCalledTimes(before + 1);
+      cache.disconnect();
+    } finally {
+      walks.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries a backed-off anchor once its delay has passed, without another change", async () => {
+    vi.useFakeTimers();
+    try {
+      document.body.innerHTML = `<p>nothing</p>`;
+      const a = { kind: "element", selector: "#late", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } as Anchor;
+      const retry = vi.fn();
+      const cache = new AnchorCache(document, new Map(), "index.html", retry);
+      expect(cache.resolve("t", a)).toBeNull();
+      document.body.append(document.createElement("i"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(retry).toHaveBeenCalledTimes(1);
+      expect(cache.resolve("t", a)).toBeNull(); // the immediate retry misses too
+      document.body.insertAdjacentHTML("beforeend", `<div id="late">x</div>`);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(retry).toHaveBeenCalledTimes(1); // backing off
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(retry).toHaveBeenCalledTimes(2);
+      expect(cache.resolve("t", a)?.method).toBe("selector");
+      cache.disconnect();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("retries detached anchors after any change", async () => {
     const a = buildElementAnchor(document, h2());
     document.body.innerHTML = `<p>nothing</p>`;
