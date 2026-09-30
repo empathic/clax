@@ -16,14 +16,17 @@ run() {
 run "justfile"              scripts/test-justfile.sh
 run "installer"             scripts/test-ensure-clax.sh
 run "plugins"               scripts/test-plugins.sh
+# The web UI is built before the cargo gates: a debug build serves web/dist
+# from disk and a release build embeds it, so `cargo test` and the comment
+# loop need it, and a fresh checkout holds only web/dist/.gitkeep.
+run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
+run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
+run "web build"             bash -c 'cd web && npm run build'
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace
 run "cargo test"            cargo test --workspace
 run "comment loop"          scripts/smoke-comment-loop.sh
-run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
-run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
-run "web build"             bash -c 'cd web && npm run build'
 run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
 echo "all gates passed"
