@@ -247,8 +247,9 @@ In `scripts/test-plugins.sh`, insert before the `validator=` line:
 ```bash
 # The previous name appears only in the approved exceptions listed in
 # docs/superpowers/plans/2026-09-29-clax-rename.md: the plans written before
-# the rename, the two plans that carried it out, and the spec's name-history
-# note. It is assembled from two halves so this file is not an exception.
+# the rename, this rename's plan and the Svelte port plan written alongside
+# it, and the spec's name-history note. It is assembled from two halves so
+# this file is not an exception.
 OLD="arti""fax"
 name_exceptions=(
     docs/superpowers/plans/2026-09-28-phase-1-daemon-publish-viewer.md
@@ -300,12 +301,11 @@ Expected: the last command prints nothing.
 - [ ] **Step 6: Run the sweep over every tracked file outside the exceptions**
 
 ```bash
-git ls-files -z -- . \
+git grep -lIiz artifax -- . \
   ':(exclude)docs/superpowers/plans/2026-09-28-*.md' \
   ':(exclude)docs/superpowers/plans/2026-09-29-clax-rename.md' \
   ':(exclude)docs/superpowers/plans/2026-09-29-svelte-port.md' \
   ':(exclude)docs/superpowers/specs/2026-09-28-clax-design.md' \
-  | xargs -0 grep -lIiZ artifax \
   | xargs -0 perl -pi -e 's/ARTIFAX/CLAX/g; s/Artifax/Clax/g; s/artifax/clax/g'
 git grep -il artifax -- . \
   ':(exclude)docs/superpowers/plans/2026-09-28-*.md' \
@@ -313,7 +313,7 @@ git grep -il artifax -- . \
   ':(exclude)docs/superpowers/plans/2026-09-29-svelte-port.md' \
   ':(exclude)docs/superpowers/specs/2026-09-28-clax-design.md'
 ```
-Expected: the second command prints nothing. `grep -I` skips binary files; there are no tracked binaries holding the name.
+Expected: the second command prints nothing. `git grep -I` skips binary files; there are no tracked binaries holding the name. (`git grep -z` writes NUL-separated names; on macOS `grep -Z` means `--decompress`, so it is not used here.)
 
 Spot-check a few results:
 ```bash
@@ -484,10 +484,12 @@ run_copy "$SANDBOX/codex-home/plugins/cache/clax/clax/0.2.0/scripts/ensure-clax.
 unset "${OLD_UPPER}_BIN" "${OLD_UPPER}_HOME" "${OLD_UPPER}_SOURCE_DIR"
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "no binary found" \
     && [ ! -e "$HOME/.$OLD/logs" ] && [ -s "$HOME/.clax/logs/hooks.log" ] \
-    && [ "$(ls -A "$HOME/.$OLD")" = bin ] && [ "$(ls -A "$HOME/.$OLD/bin")" = "$OLD" ]; then
+    && [ "$(PATH="$ORIG_PATH" ls -A "$HOME/.$OLD")" = bin ] && [ "$(PATH="$ORIG_PATH" ls -A "$HOME/.$OLD/bin")" = "$OLD" ]; then
     pass "the previous name's variables, binary, home and marketplace are ignored and left untouched"
 else fail "the previous name's variables, binary, home and marketplace are ignored and left untouched (rc=$RC out=$OUT err=$ERR)"; fi
 ```
+
+The sandbox PATH holds only the tools the installer needs, and `ls` is not one of them, so the two `ls` calls run with the test's own `ORIG_PATH`; the installer's PATH stays as it is.
 
 Run: `bash scripts/test-ensure-clax.sh | grep -E 'previous name|FAIL|all installer'`
 Expected: `PASS: the previous name's variables, binary, home and marketplace are ignored and left untouched` and `all installer tests passed`.
@@ -610,41 +612,50 @@ Expected: both print nothing (the spec names the old name only in its note; the 
 
 - [ ] **Step 2: Every change is the rename, except the listed hand edits**
 
+Files are paired by name (`rename(old path) == new path`) from each commit's tree, not by git's rename detection: that detection pairs the three identical installer copies crosswise and misses files whose small size puts them under its similarity threshold. Rust files are run through `rustfmt` on both sides, because `cargo fmt` re-sorts imports once `clax_*` sorts after `anyhow`/`axum`, which whitespace normalization cannot hide. The plans are exceptions and are compared unswept. `NEW` is Task 1's commit (`f06b04a`).
+
 ```bash
-python3 - <<'PY'
-import re, subprocess
+NEW=f06b04a python3 - <<'PY'
+import os, re, subprocess
+NEW = os.environ["NEW"]; OLD = NEW + "~1"
 def git(*a):
     return subprocess.run(["git", *a], capture_output=True, text=True, check=True).stdout
 def rename(s):
     return s.replace("ARTIFAX", "CLAX").replace("Artifax", "Clax").replace("artifax", "clax")
+def rustfmt(s):
+    return subprocess.run(["rustfmt", "--edition", "2024", "--emit", "stdout"],
+                          input=s, capture_output=True, text=True, check=True).stdout
 norm = lambda s: re.sub(r"\s+", "", s)
+before = set(git("ls-tree", "-r", "--name-only", OLD).splitlines())
+after = set(git("ls-tree", "-r", "--name-only", NEW).splitlines())
 other = []
-for line in git("diff", "--name-status", "-M", "HEAD~1", "HEAD").splitlines():
-    parts = line.split("\t")
-    status = parts[0]
-    if status.startswith("A"):
-        other.append("added " + parts[1]); continue
-    old, new = (parts[1], parts[2]) if status.startswith("R") else (parts[1], parts[1])
-    before = git("show", f"HEAD~1:{old}")
-    after = git("show", f"HEAD:{new}")
-    if rename(old) != new:
-        other.append(f"path {old} -> {new}")
-    if norm(rename(before)) != norm(after):
+for old in sorted(before):
+    new = rename(old)
+    if new not in after:
+        other.append("deleted " + old); continue
+    a, b = git("show", f"{OLD}:{old}"), git("show", f"{NEW}:{new}")
+    if not old.startswith("docs/superpowers/plans/"):
+        a = rename(a)
+    if new.endswith(".rs"):
+        a, b = rustfmt(a), rustfmt(b)
+    if norm(a) != norm(b):
         other.append("content " + new)
-print("\n".join(sorted(other)))
+for new in sorted(after - {rename(p) for p in before}):
+    other.append("added " + new)
+print("\n".join(other))
 PY
 ```
-Expected output, exactly (the hand edits and the regenerated lockfile; whitespace-only changes from `cargo fmt`, the re-padded installer header and the rewrapped tool blocks compare equal):
+Expected output, exactly (the hand edits and the regenerated lockfile, whose package blocks are re-sorted; whitespace-only changes, the re-padded installer header, READMEs and spec diagrams, and the rewrapped tool blocks compare equal):
 ```
-added crates/clax-cli/tests/clean_break.rs
 content Cargo.lock
 content crates/clax-cli/src/commands/doctor_agent.rs
 content crates/clax-server/src/viewer.rs
 content docs/superpowers/specs/2026-09-28-clax-design.md
 content scripts/test-ensure-clax.sh
 content scripts/test-plugins.sh
+added crates/clax-cli/tests/clean_break.rs
 ```
-Review each listed file's diff by hand (`git diff -M HEAD~1 HEAD -- <path>`): only the steps of Task 1 that name that file may appear.
+Review each listed file's change by hand against the swept, formatted BASE text (for example `diff <(git show f06b04a~1:<old path> | perl -pe 's/ARTIFAX/CLAX/g; s/Artifax/Clax/g; s/artifax/clax/g') <(git show f06b04a:<path>)`): only the steps of Task 1 that name that file may appear.
 
 - [ ] **Step 3: The workspace, binary and lockfiles carry only the new name**
 
@@ -681,7 +692,7 @@ env HOME="$T/fakehome" CLAX_HOME="$T/home" target/debug/clax stop
 ls -A "$T/fakehome"
 rm -rf "$T"
 ```
-Expected: the publish prints the artifact's URL; `ls` lists `clax.db` and `daemon.json` (with `artifacts` and `logs`); `True 0.2.0`; `clax daemon stopped`; the fake HOME is empty (nothing was written outside `CLAX_HOME`).
+Expected: the publish prints the artifact's URL; `ls` lists `clax.db` and `daemon.json` (with `artifacts`, `logs`, `daemon.lock` and SQLite's `clax.db-shm` and `clax.db-wal`); `True 0.2.0`; `clax daemon stopped`; the fake HOME is empty (nothing was written outside `CLAX_HOME`).
 
 - [ ] **Step 6: Run every gate**
 

@@ -73,13 +73,13 @@ Each decision has a one-line rationale. Contested ones are also listed in
 ## 3. Architecture
 
 ```
-                 ┌─────────────────────────────────────────────────────────┐
+                 ┌──────────────────────────────────────────────────────────┐
                  │  clax serve  (one per user, auto-started, port 7480)     │
    browser ──────┤  HTTP: shell UI, gallery, content, assets, REST API      │
    (shell +      │  SSE/WS: live events (versions, comments, room)          │
     content      │  MCP over HTTP (D3)                                      │
     frame)       │  SQLite + files under ~/.clax/                           │
-                 └───────▲──────────────▲──────────────▲───────────────────┘
+                 └───────▲──────────────▲──────────────▲────────────────────┘
                          │ HTTP+token   │ HTTP+token   │ HTTP+token
         ┌────────────────┴───┐  ┌───────┴────────┐  ┌──┴──────────────────┐
         │ clax mcp           │  │ clax hook      │  │ clax <cli cmd>      │
@@ -87,9 +87,9 @@ Each decision has a one-line rationale. Contested ones are also listed in
         │  one per session)  │  │  Stop, Prompt, │  │  comments, doctor)  │
         └────────▲───────────┘  │  SessionEnd)   │  └─────────────────────┘
                  │ stdio        └───────▲────────┘
-        ┌────────┴────────────────────────┴───────┐
+        ┌────────┴────────────────────────┴────────┐
         │ harness: Claude Code | Codex | Pi        │
-        └─────────────────────────────────────────┘
+        └──────────────────────────────────────────┘
 ```
 
 Components:

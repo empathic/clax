@@ -11,7 +11,7 @@ Build the binary, then add the clone as a marketplace:
 ```
 cd /path/to/clax
 just web                                  # once: builds the web UI the binary embeds
-cargo install --path crates/clax-cli   # puts `clax` in ~/.cargo/bin
+cargo install --path crates/clax-cli      # puts `clax` in ~/.cargo/bin
 ```
 
 ```

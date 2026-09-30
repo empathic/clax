@@ -268,8 +268,9 @@ else fail "$out"; fi
 
 # The previous name appears only in the approved exceptions listed in
 # docs/superpowers/plans/2026-09-29-clax-rename.md: the plans written before
-# the rename, the two plans that carried it out, and the spec's name-history
-# note. It is assembled from two halves so this file is not an exception.
+# the rename, this rename's plan and the Svelte port plan written alongside
+# it, and the spec's name-history note. It is assembled from two halves so
+# this file is not an exception.
 OLD="arti""fax"
 name_exceptions=(
     docs/superpowers/plans/2026-09-28-phase-1-daemon-publish-viewer.md

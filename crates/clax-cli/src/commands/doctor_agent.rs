@@ -605,6 +605,38 @@ mod tests {
     }
 
     #[test]
+    fn a_claude_install_under_the_previous_name_is_not_this_plugin() {
+        const OLD: &str = concat!("arti", "fax");
+        let f = Fixture::new();
+        let listed = f.plugin(
+            &format!("elsewhere/{OLD}"),
+            ".claude-plugin/plugin.json",
+            V,
+            DoctorAgent::Claude,
+        );
+        f.write(
+            ".claude/plugins/installed_plugins.json",
+            &json!({"version": 2, "plugins": {
+                format!("{OLD}@{OLD}"): [{"scope": "user", "installPath": listed}]
+            }})
+            .to_string(),
+        );
+        f.plugin(
+            &format!(".claude/plugins/cache/{OLD}/{OLD}/0.2.0"),
+            ".claude-plugin/plugin.json",
+            V,
+            DoctorAgent::Claude,
+        );
+        assert_eq!(
+            plugin_roots(DoctorAgent::Claude, &f.dirs()),
+            Vec::<PathBuf>::new()
+        );
+        let (p, found) = plugin_check(DoctorAgent::Claude, &f.dirs(), V);
+        assert_eq!(p["ok"], false, "{p}");
+        assert_eq!(found, None);
+    }
+
+    #[test]
     fn a_codex_copy_of_another_version_is_a_stale_plugin() {
         let f = Fixture::new();
         f.plugin(
