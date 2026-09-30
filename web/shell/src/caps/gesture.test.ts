@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SHELL_QUIET_MS, forgetGestures, frameGesture, frameGestureStrict, noteQuietBreak, noteShellInput, noteShieldPress, noteShellKey, notePointerAt, notePointerOver, onShieldPress, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
+import { SHELL_INPUT_EVENTS, SHELL_QUIET_MS, forgetGestures, hintAllowed, frameGesture, frameGestureStrict, noteQuietBreak, noteShellInput, noteShieldPress, noteShellKey, notePointerAt, notePointerOver, onShieldPress, raiseShieldIfOverFrame, registerShield, setForwardedKeys, shielded, watchGestures } from "./gesture";
 
 const active = (on: boolean) => Object.defineProperty(navigator, "userActivation", { value: { isActive: on }, configurable: true });
 const nextTask = () => new Promise(r => setTimeout(r, 0));
@@ -224,6 +224,21 @@ describe("frame gestures", () => {
     expect(frameGesture()).toBe(true);
   });
 
+  it("records every activating or interaction event type as shell input", () => {
+    expect([...SHELL_INPUT_EVENTS].sort()).toEqual(["auxclick", "click", "contextmenu", "dblclick", "dragend", "dragstart", "drop", "keydown", "mousedown", "pointercancel", "pointerdown", "pointerup", "touchend", "wheel"]);
+  });
+
+  it("allows the hint at most once per trusted viewer event", () => {
+    clickShell();
+    expect(hintAllowed()).toBe(true);
+    expect(hintAllowed()).toBe(false);
+    notePointerAt(10, 10);
+    expect(hintAllowed()).toBe(true);
+    expect(hintAllowed()).toBe(false);
+    noteShellInput();
+    expect(hintAllowed()).toBe(true);
+  });
+
   it("does not count the keys the shell forwards to the page, and counts them otherwise", () => {
     clickShell();
     arrive();
@@ -354,7 +369,7 @@ describe("frame gestures", () => {
       expect(bands[2].style.width).toBe("296px");
     });
 
-    it("does nothing at a press on a band: not shell input, the shield falls, and the viewer is told", () => {
+    it("takes a press on a band as shell input that never counts as the pointer's arrival, keeps the bands up for a mouse, and tells a mouse viewer", () => {
       const hint = vi.fn();
       const off = onShieldPress(hint);
       clickShell();
@@ -362,12 +377,54 @@ describe("frame gestures", () => {
       pull();
       expect(frameGesture()).toBe(true);
       raiseShieldIfOverFrame();
-      noteShieldPress(340, 250);
+      noteShieldPress(340.4, 250.2);
       expect(hint).toHaveBeenCalledTimes(1);
+      // The bands stay until the pointer moves; no arrival counts.
+      expect(shielded()).toBe(true);
+      expect(frameGesture()).toBe(false);
+      notePointerOver(frame, 340, 250);
+      pull();
+      expect(frameGesture()).toBe(false);
+      // A real move lands on a band, lowers them, and then counts.
+      notePointerAt(360, 250);
       expect(shielded()).toBe(false);
+      notePointerOver(button, 520, 250);
+      notePointerAt(520, 250);
+      notePointerOver(frame, 480, 250);
       expect(frameGesture()).toBe(true);
-      expect(frameGestureStrict()).toBe("shell_input_recent");
+      // A touch press on a band lowers them and shows no hint.
+      raiseShieldIfOverFrame();
+      noteShieldPress(300, 250, "touch");
+      expect(shielded()).toBe(false);
+      expect(hint).toHaveBeenCalledTimes(1);
       off();
+    });
+
+    it("keeps the hole closed for a double-click's interval after a press on a shell control, then opens it", () => {
+      vi.useFakeTimers();
+      clickShell(CANCEL);
+      raiseShieldIfOverFrame(document, true);
+      expect(shielded()).toBe(true);
+      expect(bands[0].style).toMatchObject({ top: "0px", height: "100%" });
+      expect(bands[1].style.height).toBe("0px");
+      vi.advanceTimersByTime(500);
+      expect(bands[0].style.height).toBe(`${CANCEL.y - 4}px`);
+      expect(bands[2].style.width).toBe(`${CANCEL.x - 4}px`);
+      vi.useRealTimers();
+    });
+
+    it("leaves the bands as they are at a key press while the pointer is on a band (keys typed at a person's speed)", () => {
+      clickShell();
+      arrive(300, 250);
+      noteShellInput();
+      raiseShieldIfOverFrame();
+      const width = bands[2].style.width;
+      // The band appears under the pointer, which moved unseen inside the page.
+      notePointerOver(bands[1], 340, 320);
+      noteShellInput();
+      raiseShieldIfOverFrame();
+      expect(shielded()).toBe(true);
+      expect(bands[2].style.width).toBe(width);
     });
 
     it("does not rise for input outside the frame's box, or for touch", () => {

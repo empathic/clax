@@ -526,29 +526,43 @@ file under `v/<digits>/` is reachable only through the versioned form):
   ends or a page greets); two starts pending at once are both refused. The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. Page calls and picks
-  that need the viewer's gesture use one of two tiers (`caps/gesture.ts`).
-  `frameGesture` (the composer tier: `openComposer`, `compose`, picks) holds
-  only when the viewer's latest input went to the frame, as the shell sees
-  it from its own trusted events: transient user activation, focus in the
-  frame with no pointer or key press in the shell since it entered (only
-  the keys the shell forwards to the page excepted), and the viewer able to
-  have moved focus there: the pointer arrived on the frame by a real move
-  after the viewer's latest shell input (at a spot other than the boundary
-  event just before it, which a layout change under a resting pointer
-  repeats, and more than 2 px from where it was at that input; the shell
-  takes positions from every trusted pointer event, boundary events
-  included) and was on it when focus entered or is now; or a Tab or
-  Shift+Tab pressed in the shell. `frameGestureStrict` (`sendToClaude`, a
-  reply into a sent thread, `artifact.publish`) adds no trusted shell input
-  of any kind (press, release, key, wheel) for 5.5 s, so the activation can
-  only be the frame's; within that time it rejects `shell_input_recent`.
-  After shell input with a mouse over the frame, the shell covers the frame
-  with transparent bands, beneath its controls, leaving a 9 px hole under
-  the pointer: input in the hole reaches the page, the first move out of it
-  lowers the bands and counts, and a press on a band reaches nothing and
-  shows "Move the pointer, then click again"; a pick refused in comment mode
-  shows "Move the pointer to pick". A pick's composer takes focus when it
-  opens, so the viewer types at once. This bounds forgery, it does not end
+  that need the viewer's gesture use one of two tiers (`caps/gesture.ts`;
+  the verb table is in the contract, "The viewer's gesture"). Shell input is
+  recorded allow-all: every trusted event reaching the shell window of the
+  types through which input can grant a document activation or marks the
+  viewer's interaction (`keydown`, `mousedown`, `pointerdown`, `pointerup`,
+  `touchend`, `click`, `auxclick`, `dblclick`, `contextmenu`, `drop`,
+  `dragstart`, `dragend`, `pointercancel`, `wheel`), except the keys the
+  shell forwards to the page. `frameGesture` (the composer tier:
+  `openComposer`, `compose`, picks) holds only when the viewer's latest
+  input went to the frame, as the shell sees it from its own trusted
+  events: transient user activation, focus in the frame with no shell input
+  since it entered, and the viewer able to have moved focus there: the
+  pointer arrived on the frame by a real move after the viewer's latest
+  shell input (at a spot other than the boundary event just before it,
+  which a layout change under a resting pointer repeats, and more than 2 px
+  from where it was at that input; the shell takes positions from every
+  trusted pointer event, boundary events included) and was on it when focus
+  entered or is now; or a Tab or Shift+Tab pressed in the shell.
+  `frameGestureStrict` (every write as the viewer: `create`, `reply`,
+  `resolve`, `delete`, `sendToClaude`; and `artifact.publish`) adds no shell
+  input of any kind for 5.5 s: every input Chromium lets grant the shell
+  activation arrives as one of those events, and the activation lasts 5 s,
+  so the activation is then the frame's unless an activation source exists
+  that dispatches none of them (none is known); within that time it rejects
+  `shell_input_recent` (uncharged). After shell input with a mouse over the
+  frame, the shell covers the frame with transparent bands, beneath its
+  controls, leaving a 9 px hole where it last saw the pointer (closed for
+  500 ms after a press on a shell control, so a double-click's second click
+  never reaches the page): input in the hole reaches the page, the first
+  move out of it lowers the bands (at most that one move is lost) and
+  counts, and a press on a band reaches neither the page nor a shell
+  control, is shell input, does not count as the pointer's arrival, leaves
+  the bands up until the pointer moves, and shows "Move the pointer, then
+  click again" (a touch press lowers them and shows nothing);
+  a pick refused in comment mode shows "Move the pointer to pick"; the hint
+  shows at most once per trusted viewer event in the shell. A pick's
+  composer takes focus when it opens, so the viewer types at once. This bounds forgery, it does not end
   it: a page can post a pick of its own only in comment mode, while no pick
   of the bridge's is pending, and within the browser's user-activation
   window (about five seconds) after the viewer's latest input, once the
@@ -691,10 +705,11 @@ files kept in `web/contract/`:
   write verbs act only on threads it created in its current document).
   Page-written comments are stored with `via_page` and shown and forwarded
   as written by the page; an `@agent` in them is inert. Opening the
-  composer, `sendToClaude`, and a reply into a sent thread need the
-  viewer's latest input to have gone to the page: opening the composer the
-  composer tier (`frameGesture`), `sendToClaude` and the reply the strict
-  one (`frameGestureStrict`, which may reject `shell_input_recent`), §8. A
+  composer and every write as the viewer need the viewer's latest input to
+  have gone to the page: opening the composer the
+  composer tier (`frameGesture`); every write as the viewer (`create`,
+  `reply`, `resolve`, `delete`, `sendToClaude`) the strict one
+  (`frameGestureStrict`, which may reject `shell_input_recent`), §8. A
   custom-anchors page is told only the threads on its own page, as handles.
   The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,

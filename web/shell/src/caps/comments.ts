@@ -11,13 +11,15 @@
 // document (anything else is `not_found`, with no request). Every argument
 // the page supplies is checked here again (a page can post calls without the
 // bridge); an anchor always names the page the frame shows and the version the
-// view shows. Whatever speaks for the viewer beyond their consent needs the
-// viewer's own recent gesture inside the frame (gesture.ts): opening the
-// composer (`openComposer`, `compose`) the lower tier (`frameGesture`),
-// sending to the agent and a reply the agent will receive the strict one
-// (`frameGestureStrict`, which also refuses `shell_input_recent`). Refusals
-// for the lack of one are budgeted, so a page polling on a timer is soon cut
-// off. Artifax has no public links: every view
+// view shows. Whatever speaks for the viewer needs the viewer's own recent
+// gesture inside the frame (gesture.ts): opening the composer
+// (`openComposer`, `compose`) the composer tier (`frameGesture`); every write
+// as the viewer (`create`, `reply`, `resolve`, `delete`, `sendToClaude`) the
+// strict one (`frameGestureStrict`, which also refuses `shell_input_recent`,
+// uncharged). The rest (`canSendToClaude`, `register`, `release`,
+// `composeClip`, `openThread`, `placed`, `exitMode`) write nothing as the
+// viewer and need no gesture. Refusals for the lack of a gesture are
+// budgeted, so a page polling on a timer is soon cut off. Artifax has no public links: every view
 // that serves the declaration gets the namespace.
 import { AFFIX, MAX_QUOTE, MAX_SELECTOR } from "../../../bridge/src/anchor";
 import { type Anchor, type AnchorRect, type Box, INDEX_FILE } from "../../../bridge/src/protocol";
@@ -339,12 +341,6 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     created.set(handle, thread.id);
     return { handle, commentId: opaque("c_"), thread };
   }
-  /** A reply into a thread the agent will receive speaks for the viewer to
-   * the agent: it needs their recent gesture. */
-  const replyGesture = (tid: string) => {
-    const t = env.comments?.state().threads.find(x => x.id === tid);
-    if (t ? t.sent_to_agent : true) strictly("unavailable", "a reply the agent receives");
-  };
 
   return {
     async call(method, args) {
@@ -366,6 +362,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const d = (args[0] ?? {}) as { anchor?: unknown; text?: unknown };
           const anchor = pageAnchor(d.anchor, pageFile());
           const body = text(d.text);
+          strictly("unavailable", "a comment written as the viewer (nothing was posted)");
           await consent();
           writing();
           const r = await post({ anchor, text: body });
@@ -375,7 +372,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           writable();
           const tid = own(args[0]);
           const body = text(args[1]);
-          replyGesture(tid);
+          strictly("unavailable", "a reply written as the viewer (nothing was posted)");
           await consent();
           writing();
           return { commentId: (await post({ threadId: tid, text: body })).commentId };
@@ -385,6 +382,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           const tid = own(args[0]);
           if (typeof args[1] !== "boolean") throw invalid("resolved is true or false");
           const reopen = args[1] === false;
+          strictly("unavailable", "resolving or reopening a thread as the viewer");
           await consent();
           writing();
           const t = await request(() => (reopen ? reopenThread(env.aid, tid, env.token) : resolveThread(env.aid, tid)));
@@ -395,6 +393,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
           writable();
           const handle = args[0];
           const tid = own(handle);
+          strictly("unavailable", "deleting a thread as the viewer");
           await consent();
           writing();
           await request(() => deleteThread(env.aid, tid, env.token));

@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
+import { test, expect, type Frame, type Page } from "@playwright/test";
 import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
@@ -7,6 +7,34 @@ test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); 
 test.afterAll(async () => { await d?.stop(); });
 
 const BOARD = readFileSync(new URL("./pages/board.html", import.meta.url), "utf8");
+
+/** Runs the page's `window.viewerAct(comments)` (installed by `install`, with
+ * `arg`) from the viewer's own click on a button put in the page for it, as
+ * every write as the viewer needs (the strict gesture tier); resolves with
+ * its result, or throws its error code. */
+async function viewerDoes(page: Page, f: Frame, install: (arg: any) => void, arg?: unknown): Promise<unknown> {
+  await f.evaluate(() => {
+    const w = window as any;
+    w.viewerOut = undefined;
+    if (document.getElementById("act")) return;
+    const b = document.createElement("button");
+    b.id = "act";
+    b.textContent = "act";
+    b.style.cssText = "position:fixed;left:8px;top:8px;z-index:9";
+    b.onclick = async () => {
+      const c = await w.claude.use("comments");
+      w.viewerOut = await w.viewerAct(c).then((v: unknown) => ({ ok: v }), (e: { code: string }) => ({ err: e.code }));
+    };
+    document.body.append(b);
+  });
+  await f.evaluate(install, arg);
+  await reach(page, f.locator("#act"));
+  await page.mouse.down();
+  await page.mouse.up();
+  const out = await (await f.waitForFunction(() => (window as any).viewerOut)).jsonValue() as { ok?: unknown; err?: string };
+  if (out.err) throw new Error(out.err);
+  return out.ok;
+}
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page button opens the composer anchored on its element`, async ({ page }) => {
@@ -58,8 +86,14 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await f.locator(".note").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+    const allowed = Date.now();
     await expect(f.locator("#status")).toHaveText("created string");
+    // Every write as the viewer needs their click in the page 5.5 s clear of
+    // their input to the shell (the Allow click): within it, click again.
     await reach(page, f.locator(".note"));
+    await f.locator(".note").click();
+    await expect(f.locator("#status")).toHaveText("shell_input_recent");
+    await page.waitForTimeout(Math.max(0, 5_700 - (Date.now() - allowed)));
     await f.locator(".note").click();
     await expect(f.locator("#status")).toHaveText("created string");
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -74,22 +108,22 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
       (window as any).seen = [];
       addEventListener("message", e => { if (e.data?.type === "artifax:resolve-anchors") (window as any).seen.push(...e.data.anchors.map((a: { id: string }) => a.id)); });
     });
-    const tid = await f.evaluate(async () => {
-      const c = await (window as any).claude.use("comments");
-      const r = await c.create({ anchor: await c.anchorFor(document.querySelector("h2")), text: "Temporary note." });
-      await c.resolve(r.threadId, true);
-      return r.threadId as string;
-    });
+    const tid = await viewerDoes(page, f, () => {
+      (window as any).viewerAct = async (c: any) => {
+        const r = await c.create({ anchor: await c.anchorFor(document.querySelector("h2")), text: "Temporary note." });
+        await c.resolve(r.threadId, true);
+        return r.threadId as string;
+      };
+    }) as string;
     await expect(page.locator(".thread-card", { hasText: "Temporary note." })).toHaveCount(1);
     const ids = await storeIds();
     expect(ids).toHaveLength(3);
     expect(ids).not.toContain(tid);
     const seen = await f.evaluate(async () => { for (;;) { if ((window as any).seen.length) return (window as any).seen as string[]; await new Promise(r => setTimeout(r, 50)); } });
     for (const id of seen) expect(ids).not.toContain(id);
-    const codes = await f.evaluate(async cands => {
-      const c = await (window as any).claude.use("comments");
-      return Promise.all(cands.map((id: string) => c.delete(id).then(() => "deleted", (e: { code: string }) => e.code)));
-    }, [...seen, ...ids]);
+    const codes = await viewerDoes(page, f, cands => {
+      (window as any).viewerAct = (c: any) => Promise.all((cands as string[]).map(id => c.delete(id).then(() => "deleted", (e: { code: string }) => e.code)));
+    }, [...seen, ...ids]) as string[];
     expect(new Set(codes)).toEqual(new Set(["not_found"]));
     expect(await storeIds()).toHaveLength(3);
 
@@ -99,23 +133,18 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     const other = await page.context().newPage();
     const g = await openArtifact(other, d.base, artifact.id, 1, "sandbox", { lan: true });
     await expect(other.locator(".section-open .thread-card")).toHaveCount(2);
-    const refused = await g.evaluate(async () => {
-      const c = await (window as any).claude.use("comments");
-      const r = await c.create({ anchor: await c.anchorFor(document.querySelector("h2")), text: "From the LAN." });
-      return c.delete(r.threadId).then(() => "deleted", (e: { code: string }) => e.code);
+    const refused = await viewerDoes(other, g, () => {
+      (window as any).viewerAct = async (c: any) => {
+        const r = await c.create({ anchor: await c.anchorFor(document.querySelector("h2")), text: "From the LAN." });
+        return c.delete(r.threadId).then(() => "deleted", (e: { code: string }) => e.code);
+      };
     });
     expect(refused).toBe("forbidden");
     await expect(other.locator(".section-open .thread-card")).toHaveCount(3);
-    await f.evaluate(async id => {
-      const c = await (window as any).claude.use("comments");
-      await c.resolve(id, false);
-    }, tid);
+    await viewerDoes(page, f, id => { (window as any).viewerAct = (c: any) => c.resolve(id, false); }, tid);
     await expect(other.locator(".section-open .thread-card")).toHaveCount(4);
     const before = await storeIds();
-    await f.evaluate(async id => {
-      const c = await (window as any).claude.use("comments");
-      await c.delete(id);
-    }, tid);
+    await viewerDoes(page, f, id => { (window as any).viewerAct = (c: any) => c.delete(id); }, tid);
     await expect(page.locator(".thread-card", { hasText: "Temporary note." })).toHaveCount(0);
     await expect(other.locator(".section-open .thread-card")).toHaveCount(3);
     const after = await storeIds();

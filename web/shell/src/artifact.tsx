@@ -5,7 +5,7 @@ import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
 import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, takePick, withClip } from "./comments";
 import type { Declared } from "./caps/availability";
-import { frameGesture, onShieldPress, registerShield, setForwardedKeys } from "./caps/gesture";
+import { frameGesture, hintAllowed, onShieldPress, registerShield, setForwardedKeys } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
 import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
@@ -80,10 +80,13 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   const [notice, setNotice] = useState<string | null>(null);
   // A brief hint when the viewer's press did not count as their gesture in
   // the page (a refused pick in comment mode, a press on the shield): the
-  // shell could not see the pointer move there since their input to it.
+  // shell could not see the pointer move there since their input to it. At
+  // most once per trusted viewer event in the shell (`hintAllowed`), so a
+  // page posting pick starts on a timer cannot keep it on screen.
   const [hint, setHint] = useState<string | null>(null);
   const hintTimer = useRef(0);
   const showHint = (text: string) => {
+    if (!hintAllowed()) return;
     setHint(text);
     clearTimeout(hintTimer.current);
     hintTimer.current = window.setTimeout(() => setHint(null), HINT_MS);
@@ -479,7 +482,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
       case "artifax:pick-start":
         // The viewer's pick itself: taken only in comment mode and while the
         // viewer's latest input went to the frame (`frameGesture`, the
-        // composer tier); a refused start shows the viewer the hint. So a
+        // composer tier); a refused start shows the viewer the hint (at most
+        // once per trusted viewer event in the shell). So a
         // page can post a pick of its own only while no pick of the bridge's
         // is pending and within the user-activation window (about five
         // seconds) after the viewer's latest input, once the viewer has

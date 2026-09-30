@@ -225,7 +225,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 // so each attack runs at a known moment: "open" pulls focus and calls
 // openComposer, "send" pulls focus and calls sendToClaude, "forge" pulls focus
 // and posts a pick of its own (start and pick, with a magenta screenshot).
-// The result goes into #result; `create` at load (with `?ask`) raises the
+// The result goes into #result; `permissions.request` at load (`askAtLoad`) raises the
 // consent dialog without any gesture. The page is tall, with #target 600 px
 // down, so a scroll-to moves it.
 const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Attacker</title>
@@ -254,10 +254,13 @@ const ATTACKER = (askAtLoad: boolean) => `<!doctype html><html><head><title>Atta
   window.go = (kind, delay = 0) => setTimeout(async () => { out.textContent = await act(kind).then(show, e => e.code); }, delay);
   document.getElementById("b").addEventListener("click", async () => { out.textContent = await act("open").then(show, e => e.code); });
   document.getElementById("send").addEventListener("click", async () => { out.textContent = await act("send").then(show, e => e.code); });
-  // The page raises its own consent dialog (create needs no gesture), and scrolls itself.
-  window.ask = () => c.create({ anchor, text: "Asked by the page." }).then(() => { document.getElementById("t").dataset.asked = "yes"; }, e => { document.getElementById("t").dataset.asked = e.code; });
+  // The page raises its own consent dialog (permissions.request needs no
+  // gesture), and scrolls itself.
+  const perm = await claude.use("permissions");
+  const asked = r => { document.getElementById("t").dataset.asked = r.comments === "granted" ? "yes" : r.comments; };
+  window.ask = () => perm.request(["comments"]).then(asked, e => { document.getElementById("t").dataset.asked = e.code; });
   window.scrollPage = dy => scrollBy(0, dy);
-  ${askAtLoad ? `c.create({ anchor, text: "Asked at load." }).then(() => { document.getElementById("t").dataset.asked = "yes"; }, e => { document.getElementById("t").dataset.asked = e.code; });` : ""}
+  ${askAtLoad ? `window.ask();` : ""}
   document.getElementById("t").dataset.ready = "yes";
 })().catch(e => { document.getElementById("result").textContent = "setup " + (e.code || e.message); });</script></body></html>`;
 
@@ -546,4 +549,183 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await expect(page.locator(".composer")).toHaveCount(0);
     });
   }
+}
+
+// A page that, once armed (`arm(verb)`), starts on its own timer at its first
+// `mousemove`: every 250 ms for 6 s it pulls focus into itself and calls
+// sendToClaude ("send") or artifact.publish ("publish"), recording each
+// outcome in `window.res`. `ask()` raises its consent dialog.
+const TIMER_PAGE = `<!doctype html><html><head><title>Timer</title>
+<style>body{margin:0;font:16px/24px sans-serif}main{padding:16px}</style></head>
+<body><main><h1 id="t">A page with a timer</h1><p id="p">Some text to pick.</p></main><div style="height:1500px"></div>
+<script>(async () => {
+  const c = await claude.use("comments");
+  const a = await claude.use("artifact");
+  const perm = await claude.use("permissions");
+  const anchor = await c.anchorFor(document.getElementById("t"));
+  window.res = [];
+  window.ask = () => perm.request(["comments"]);
+  window.arm = verb => addEventListener("mousemove", () => {
+    const end = Date.now() + 6000;
+    const tick = () => {
+      if (Date.now() > end) return;
+      window.focus();
+      const call = verb === "send" ? c.sendToClaude({ anchor, text: "From the page's timer." }) : a.publish("<!doctype html><html><body><p>republished by the page</p></body></html>");
+      call.then(() => window.res.push("ok"), e => window.res.push(e.code));
+      setTimeout(tick, 250);
+    };
+    tick();
+  }, { once: true });
+  document.body.dataset.ready = "yes";
+})();</script></body></html>`;
+
+/** Drops `text` at (x, y) of the shell's viewport, as a drag from another
+ * application does (no pointer or key event reaches the shell). */
+async function dropText(page: Page, x: number, y: number, text: string) {
+  const cdp = await page.context().newCDPSession(page);
+  const data = { items: [{ mimeType: "text/plain", data: text }], dragOperationsMask: 1 };
+  for (const type of ["dragEnter", "dragOver", "drop"] as const) await cdp.send("Input.dispatchDragEvent", { type, x, y, data });
+  await cdp.detach();
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const verb of ["send", "publish"] as const) {
+    for (const target of ["composer", "name field"] as const) {
+      test(`${mode}: text dropped into the ${target}, then a move onto the page, gives the page no strict gesture for ${verb === "send" ? "sendToClaude" : "artifact.publish"} (N4)`, async ({ page }) => {
+        const id = await publishLive(`Drop ${verb} ${target} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
+        const f = await openArtifact(page, d.base, id, 1, mode);
+        await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
+        if (verb === "send") {
+          // A grant stored once.
+          await f.evaluate(() => { void (window as unknown as { ask(): Promise<unknown> }).ask(); });
+          const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+          await expect(allow).toBeEnabled();
+          await allow.click();
+          await expect(page.getByRole("dialog")).toHaveCount(0);
+        }
+        let at: { x: number; y: number };
+        if (target === "composer") {
+          await page.getByRole("button", { name: "Comment", exact: true }).click();
+          const pb = (await f.locator("#p").boundingBox())!;
+          await page.mouse.move(pb.x + 20, pb.y + pb.height / 2, { steps: 8 });
+          await page.mouse.down();
+          await page.mouse.up();
+          const tb = (await page.locator(".composer textarea").boundingBox())!;
+          at = { x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 };
+        } else {
+          const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+          at = { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 };
+        }
+        const fb = await frameBox(page);
+        await page.mouse.move(at.x, at.y, { steps: 8 });
+        // Quiet: more than 5.5 s with no input to the shell before the drop.
+        await page.waitForTimeout(6_000);
+        await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
+        await dropText(page, at.x, at.y, "quoted text");
+        // The viewer moves over the page; the page's timer starts.
+        await page.mouse.move(fb.x + 150, fb.y + 300, { steps: 10 });
+        await page.waitForTimeout(6_500);
+        if (verb === "send") {
+          const threads = await threadsOf(id);
+          expect(threads.filter(t => t.sent_to_agent)).toHaveLength(0);
+          const res = await f.evaluate(() => (window as unknown as { res: string[] }).res);
+          expect(res).not.toContain("ok");
+          expect(res).toContain("shell_input_recent");
+        } else {
+          const cur = ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
+          expect(cur).toBe(1);
+        }
+      });
+    }
+  }
+
+  test(`${mode}: after a click on Cancel over the page, at most one pointer move is lost to the page (N8)`, async ({ page }) => {
+    const id = await publishLive(`Moves ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id, mode);
+    await f.evaluate(() => { const w = window as unknown as { moves: number[] }; w.moves = []; addEventListener("mousemove", e => w.moves.push(e.clientX), true); });
+    const bb = (await f.locator("#b").boundingBox())!;
+    await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 6 });
+    await page.mouse.down();
+    await page.mouse.up();
+    const cancel = page.locator(".composer").getByRole("button", { name: "Cancel" });
+    const cb = (await cancel.boundingBox())!;
+    const at = { x: Math.round(cb.x + cb.width / 2), y: Math.round(cb.y + cb.height / 2) };
+    await page.mouse.move(at.x, at.y, { steps: 8 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.locator(".composer")).toHaveCount(0);
+    // After the double-click interval, 1 px moves to the left.
+    await page.waitForTimeout(700);
+    await f.evaluate(() => { (window as unknown as { moves: number[] }).moves.length = 0; });
+    for (let dx = 1; dx <= 12; dx++) {
+      await page.mouse.move(at.x - dx, at.y);
+      await page.waitForTimeout(30);
+    }
+    const fb = await frameBox(page);
+    const got = new Set(await f.evaluate(() => (window as unknown as { moves: number[] }).moves));
+    const lost = [];
+    for (let dx = 1; dx <= 12; dx++) if (!got.has(Math.floor(at.x - dx - fb.x))) lost.push(dx);
+    expect(lost).toHaveLength(1);
+  });
+
+  test(`${mode}: the second click of a double-click on Cancel over the page does not reach the page (N9)`, async ({ page }) => {
+    const id = await publishLive(`Double ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id, mode);
+    await f.evaluate(() => { const w = window as unknown as { presses: number }; w.presses = 0; addEventListener("pointerdown", () => { w.presses++; }, true); });
+    const bb = (await f.locator("#b").boundingBox())!;
+    await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 6 });
+    await page.mouse.down();
+    await page.mouse.up();
+    await expect(page.locator(".composer")).toHaveCount(1);
+    const presses = () => f.evaluate(() => (window as unknown as { presses: number }).presses);
+    const before = await presses();
+    const cb = (await page.locator(".composer").getByRole("button", { name: "Cancel" }).boundingBox())!;
+    await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 8 });
+    await page.mouse.dblclick(cb.x + cb.width / 2, cb.y + cb.height / 2);
+    await expect(page.locator(".composer")).toHaveCount(0);
+    await page.waitForTimeout(300);
+    expect(await presses()).toBe(before);
+  });
+
+  test(`${mode}: a page posting pick starts on a timer cannot keep the hint on screen (N10)`, async ({ page }) => {
+    const id = await publishLive(`Hint ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const f = await openReady(page, id, mode);
+    // On comment mode, the page posts a pick start of its own every 100 ms.
+    await f.evaluate(() => {
+      let n = 0;
+      addEventListener("message", e => {
+        if (e.data?.type === "artifax:comment-mode" && e.data.on) setInterval(() => parent.postMessage({ type: "artifax:pick-start", pickId: `spam${n++}` }, "*"), 100);
+      });
+    });
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    const hint = page.locator(".gesture-hint");
+    await expect(hint).toHaveText("Move the pointer to pick");
+    await expect(hint).toHaveCount(0, { timeout: 4_000 });
+    // The viewer is idle: it does not come back.
+    for (let i = 0; i < 15; i++) {
+      expect(await hint.count()).toBe(0);
+      await page.waitForTimeout(100);
+    }
+  });
+
+  test(`${mode}: a touch tap that lands on a band shows no hint (N6)`, async ({ browser }) => {
+    const id = await publishLive(`Touch band ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    const ctx = await browser.newContext({ hasTouch: true });
+    const page = await ctx.newPage();
+    const f = await openReady(page, id, mode);
+    const name = page.getByRole("textbox", { name: "Your name" });
+    const nb = (await name.boundingBox())!;
+    await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 4 });
+    await page.mouse.down();
+    await page.mouse.up();
+    // The mouse comes to rest on the page, and a key raises the bands.
+    const bb = (await f.locator("#b").boundingBox())!;
+    await page.mouse.move(bb.x + bb.width / 2 + 40, bb.y + 60, { steps: 6 });
+    await page.keyboard.press("S");
+    await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
+    await page.touchscreen.tap(bb.x + bb.width / 2, bb.y + bb.height / 2);
+    await page.waitForTimeout(600);
+    await expect(page.locator(".gesture-hint")).toHaveCount(0);
+    await ctx.close();
+  });
 }

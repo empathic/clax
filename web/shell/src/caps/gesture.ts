@@ -2,23 +2,33 @@
 // calls that may act only on the viewer's own recent gesture in the page. Two
 // tiers:
 //
-// - `frameGesture()`, for calls whose worst case is a composer the viewer
-//   sees (`openComposer`, `compose`, a pick's start): the page can prefill
-//   what it shows, and nothing is posted without the viewer.
-// - `frameGestureStrict()`, for calls that act beyond the composer
-//   (`sendToClaude`, a reply into a thread sent to the agent,
-//   `artifact.publish`): `frameGesture()` and, in addition, no trusted input
-//   to the shell for `SHELL_QUIET_MS`, which uses no pointer heuristics.
+// - `frameGesture()`, the composer tier, for calls whose worst case is a
+//   composer the viewer sees (`openComposer`, `compose`, a pick's start): the
+//   page can prefill what it shows, and nothing is posted without the viewer.
+// - `frameGestureStrict()`, the strict tier, for calls that act as the viewer
+//   beyond that composer (the comments write verbs `create`, `reply`,
+//   `resolve`, `delete` and `sendToClaude`; `artifact.publish`):
+//   `frameGesture()` and, in addition, no trusted input to the shell for
+//   `SHELL_QUIET_MS`, which uses no pointer heuristics.
 //
 // Nothing the page or the bridge reports counts (they share a realm); every
 // rule below reads only the shell's own trusted events.
 //
+// Shell input is recorded allow-all: every trusted event of the types in
+// `SHELL_INPUT_EVENTS` (each type through which Chromium or the HTML spec
+// lets input grant a document activation, or that marks the viewer's
+// interaction with it: presses, releases, clicks, keys, a drop, a drag's
+// start and end, a cancelled pointer, a wheel), captured on the shell window.
+// The keys the shell forwards to the page (Option, Option+Up/Down and Escape
+// in comment mode with the pointer over the frame, `setForwardedKeys`) are
+// the one exception: they are not shell input for `frameGesture()`, though
+// the strict tier still waits them out.
+//
 // `frameGesture()` holds when all of these hold:
 //
 // 1. the shell window has transient user activation;
-// 2. focus is in the content frame (`iframe.frame`), and no trusted pointer
-//    press or counted key press has reached the shell document since it
-//    entered;
+// 2. focus is in the content frame (`iframe.frame`), and no shell input has
+//    reached the shell window since it entered;
 // 3. the viewer, not the page, can have moved focus there: either
 //    - the pointer arrived on the frame by a real move after the viewer's
 //      latest input to the shell, and was on it when focus entered (a click
@@ -50,36 +60,43 @@
 // Allow, a pin or Dismiss over the page, or keys typed with the pointer on the
 // page) would have to leave the frame and come back before a click in the page
 // counted. So at such input the shell covers the frame with transparent bands
-// (`registerShield`) that leave a 9 px hole under the pointer, beneath every
-// shell control. A press or wheel in the hole reaches the page. The viewer's
-// first move out of the hole lands on a band: that trusted `mousemove` lowers
-// the bands, and the pointer's arrival on the frame then counts. A press on a
-// band (possible only after a move the shell could not see, inside the page)
-// does nothing at all: it is not shell input, it does not reach the page, the
-// bands come down, and the shell shows its hint (`onShieldPress`). Touch input
-// raises no bands: a tap's arrival always comes at the tap's own coordinates.
-//
-// Keys the shell forwards to the page (Option, Option+Up/Down and Escape in
-// comment mode with the pointer over the frame, `setForwardedKeys`) are not
-// input to the shell for `frameGesture()`; every other key press is.
+// (`registerShield`), beneath every shell control, that leave a 9 px hole
+// where the pointer was last seen. After a press on a shell control the hole
+// stays closed for `DOUBLE_CLICK_MS`, so the second click of a double-click
+// on that control lands on a band, not in the page. A press, drag or wheel in
+// the hole reaches the page. The viewer's first move out of the hole lands on
+// a band: that trusted `mousemove` lowers the bands (so at most one move is
+// lost to the page), and the pointer's arrival on the frame then counts. A
+// press on a band (the second click of a double-click, a re-press before the
+// hole opens, or a press after a move the shell could not see) reaches
+// neither the page nor any shell control: it is shell input, it never counts
+// as the pointer's arrival, the bands stay until the pointer moves, and a
+// mouse press shows the hint (`onShieldPress`); a touch press lowers them and
+// shows none. Touch input raises no bands: a tap's arrival
+// always comes at the tap's own coordinates. A key press while the pointer is
+// on a band leaves the bands as they are. The hint shows at most once per
+// trusted viewer event in the shell (`hintAllowed`).
 //
 // Residual of `frameGesture()` (what a hostile page can still do): within the
 // activation window (about five seconds) after the viewer's latest input to
 // the shell, once the viewer moves the pointer onto or over the frame by more
 // than 2 px, or Tabs into it, the page can pull focus into itself and have a
-// low-tier call counted without a click or key in the page: it can open the
-// composer, prefilled, or forge a pick. The viewer sees that composer, and
+// composer-tier call counted without a click or key in the page: it can open
+// the composer, prefilled, or forge a pick. The viewer sees that composer, and
 // nothing is posted without them.
 //
-// `frameGestureStrict()` adds: no trusted pointer press or release, key press
-// or release (forwarded keys included), or wheel in the shell for the last
-// `SHELL_QUIET_MS`. The shell's own transient activation from such input has
-// then expired, so an active `navigator.userActivation` can only come from
-// input to the frame. Its residual: a page can act within the activation
-// window after the viewer's own click or key in the page, whatever that input
-// was meant for. The cost: a viewer who clicks a page's control within that
-// time after using the shell is refused (`shell_input_recent`) and must click
-// again.
+// `frameGestureStrict()` adds: no shell input of any kind, forwarded keys
+// included, for the last `SHELL_QUIET_MS`. Every input to the shell that
+// Chromium lets grant it activation arrives as one of `SHELL_INPUT_EVENTS`
+// (an assistive technology's press dispatches a `pointerdown` too), and
+// Chromium keeps that activation 5 s; so once the quiet time has passed, an
+// active `navigator.userActivation` comes from input to the frame, unless
+// Chromium grants the shell activation through an input that dispatches none
+// of those events, which Artifax knows of none. Its residual: a page can act
+// within the activation window after the viewer's own click or key in the
+// page, whatever that input was meant for. The cost: a viewer who clicks a
+// page's control within that time after using the shell is refused
+// (`shell_input_recent`) and must click again.
 
 /** Chromium's transient user activation lasts 5 s from the input that
  * granted it; half a second more so a shell input's activation has surely
@@ -92,6 +109,22 @@ const TAB_MS = 500;
 const MOVE_PX = 2;
 /** The shield's hole reaches this far from the pointer, in CSS pixels. */
 const HOLE_PX = 4;
+/** After a press on a shell control over the frame, the hole stays closed
+ * this long (a double-click's interval), so the second click of a
+ * double-click aimed at the shell never reaches the page. */
+const DOUBLE_CLICK_MS = 500;
+
+/** Every event type through which Chromium or the HTML spec lets the viewer's
+ * input to a document grant it user activation, or that marks their
+ * interaction with it (a drag's start and end, a cancelled pointer): each
+ * trusted one reaching the shell window is shell input, for both tiers,
+ * except a key the shell forwards to the page (`setForwardedKeys`). The rule
+ * is allow-all: an input type left out of this list is the exception that
+ * needs a reason, not the default. */
+export const SHELL_INPUT_EVENTS = [
+  "keydown", "mousedown", "pointerdown", "pointerup", "touchend", "click", "auxclick", "dblclick",
+  "contextmenu", "drop", "dragstart", "dragend", "pointercancel", "wheel",
+] as const;
 
 // Event order, not time: a counter bumped by each recorded event.
 let seq = 0;
@@ -122,6 +155,15 @@ let inputPos: Pos | null = null;
 let shield: HTMLElement | null = null;
 /** The shield's hole, while it is up. */
 let holeAt: Pos | null = null;
+/** Bumped each time the shield is raised, so a pending hole opening knows
+ * whether it still applies. */
+let raised = 0;
+/** Whether the latest `mouseover` targeted one of the shield's bands. */
+let overShield = false;
+/** Trusted viewer events in the shell (moves, presses, keys), and the count
+ * the hint was last shown at: the hint shows at most once per such event. */
+let viewerEvents = 0;
+let hintAt = -1;
 let forwarded: (e: KeyboardEvent) => boolean = () => false;
 let shieldPressed: () => void = () => {};
 
@@ -135,6 +177,7 @@ const now = () => performance.now();
  * `tab`: a Tab or Shift+Tab key press, whose default action may move focus
  * into the frame. */
 export function noteShellInput(tab = false): void {
+  viewerEvents++;
   const at = ++seq;
   lastShellInput = at;
   lastShellInputAt = now();
@@ -144,8 +187,7 @@ export function noteShellInput(tab = false): void {
 }
 
 /** Records trusted shell input that `frameGesture` does not count (a key the
- * shell forwards to the page, a key release, a wheel): only
- * `frameGestureStrict` waits for it. */
+ * shell forwards to the page): only `frameGestureStrict` waits for it. */
 export function noteQuietBreak(): void {
   lastShellInputAt = now();
 }
@@ -153,6 +195,7 @@ export function noteQuietBreak(): void {
 /** Records a trusted pointer move or press at (x, y) in the shell (the watcher
  * does this; tests call it). A move lowers the shield. */
 export function notePointerAt(x: number, y: number, pointerType = "mouse"): void {
+  viewerEvents++;
   lastPos = { x, y };
   lastWasBoundary = false;
   lastPointerType = pointerType;
@@ -166,9 +209,12 @@ export function notePointerAt(x: number, y: number, pointerType = "mouse"): void
  * real move (see the header). */
 export function notePointerOver(target: EventTarget | null, x = NaN, y = NaN): void {
   const known = Number.isFinite(x) && Number.isFinite(y);
-  const layout = known && lastWasBoundary && !!lastPos && lastPos.x === x && lastPos.y === y;
+  // Within a pixel: a press's pointer coordinates are fractional, a
+  // boundary event's whole.
+  const layout = known && lastWasBoundary && !!lastPos && Math.abs(lastPos.x - x) < 1 && Math.abs(lastPos.y - y) < 1;
   if (known) { lastPos = { x, y }; lastWasBoundary = true; }
   overFrame = isFrame(target);
+  overShield = isShield(target);
   if (!overFrame) { pointerOnFrameSince = -1; return; }
   if (pointerOnFrameSince >= 0 || !known) return;
   const moved = lastShellInput < 0 || (!layout && (inputPos ? far(inputPos, x, y) : lastMoveAt > lastShellInput));
@@ -201,8 +247,13 @@ function lowerShield(): void {
 }
 
 /** Raises the shield, with its hole under the pointer, when a mouse rests
- * over the frame's box at shell input (the watcher calls it at that input). */
-export function raiseShieldIfOverFrame(doc: Document = document): void {
+ * over the frame's box at shell input (the watcher calls it at that input).
+ * `press`: the input was a press on a shell control, so the hole stays
+ * closed for `DOUBLE_CLICK_MS`. A key press while the pointer is on a band
+ * leaves the shield as it is: the band's own `mouseover` does not move the
+ * hole under a pointer the shell never saw move. */
+export function raiseShieldIfOverFrame(doc: Document = document, press = false): void {
+  if (!press && holeAt && overShield) return;
   lowerShield();
   if (lastPointerType === "touch" || !lastPos) return;
   const frame = doc.querySelector("iframe.frame");
@@ -215,17 +266,39 @@ export function raiseShieldIfOverFrame(doc: Document = document): void {
   const { x, y } = lastPos;
   if (!overFrame && (x < r.left || x >= r.right || y < r.top || y >= r.bottom)) return;
   holeAt = { x, y };
+  const token = ++raised;
+  layBands(r, press ? null : holeAt);
+  if (press) setTimeout(() => { if (raised === token && holeAt) layBands(frame.getBoundingClientRect(), holeAt); }, DOUBLE_CLICK_MS);
+}
+
+/** Lays the bands over the frame's box `r`, leaving a hole at `hole` (none:
+ * one band covers the whole frame). */
+function layBands(r: DOMRect, hole: Pos | null): void {
   if (!shield) return;
-  // The shield covers the frame's box exactly (both fill the stage).
-  const hx = x - r.left;
-  const hy = y - r.top;
   const [top, bottom, left, right] = Array.from(shield.children) as HTMLElement[];
   const band = (el: HTMLElement | undefined, l: string, t: string, w: string, h: string) => { if (el) Object.assign(el.style, { left: l, top: t, width: w, height: h }); };
-  band(top, "0", "0", "100%", `${Math.max(0, hy - HOLE_PX)}px`);
-  band(bottom, "0", `${hy + HOLE_PX + 1}px`, "100%", `calc(100% - ${hy + HOLE_PX + 1}px)`);
-  band(left, "0", `${hy - HOLE_PX}px`, `${Math.max(0, hx - HOLE_PX)}px`, `${2 * HOLE_PX + 1}px`);
-  band(right, `${hx + HOLE_PX + 1}px`, `${hy - HOLE_PX}px`, `calc(100% - ${hx + HOLE_PX + 1}px)`, `${2 * HOLE_PX + 1}px`);
+  if (!hole) {
+    band(top, "0", "0", "100%", "100%");
+    for (const el of [bottom, left, right]) band(el, "0", "0", "0", "0");
+  } else {
+    // The shield covers the frame's box exactly (both fill the stage).
+    const hx = hole.x - r.left;
+    const hy = hole.y - r.top;
+    band(top, "0", "0", "100%", `${Math.max(0, hy - HOLE_PX)}px`);
+    band(bottom, "0", `${hy + HOLE_PX + 1}px`, "100%", `calc(100% - ${hy + HOLE_PX + 1}px)`);
+    band(left, "0", `${hy - HOLE_PX}px`, `${Math.max(0, hx - HOLE_PX)}px`, `${2 * HOLE_PX + 1}px`);
+    band(right, `${hx + HOLE_PX + 1}px`, `${hy - HOLE_PX}px`, `calc(100% - ${hx + HOLE_PX + 1}px)`, `${2 * HOLE_PX + 1}px`);
+  }
   shield.style.display = "block";
+}
+
+/** Whether the shell may show its gesture hint now: at most once per trusted
+ * viewer event in the shell, so a page posting pick starts on a timer cannot
+ * keep it on screen. Records the showing. */
+export function hintAllowed(): boolean {
+  if (viewerEvents === hintAt) return false;
+  hintAt = viewerEvents;
+  return true;
 }
 
 /** Sets which key events the shell forwards to the page (not input to the
@@ -243,15 +316,22 @@ export function noteShellKey(e: KeyboardEvent): boolean {
   return true;
 }
 
-/** Records a trusted press on the shield's band at (x, y) (the watcher does
- * this; tests call it). It reaches neither the page nor any shell control, is
- * not shell input for `frameGesture`, lowers the shield, and the viewer is
- * told why (`onShieldPress`). It still grants the shell activation, so the
- * strict tier waits it out. */
+/** Records a trusted press on one of the shield's bands at (x, y) (the
+ * watcher does this; tests call it). The press reaches neither the page nor
+ * any shell control, and is shell input like any other (both tiers). It
+ * never counts as the pointer arriving on the page: it is recorded as a
+ * boundary position (so the frame's `mouseover` at that spot does not count),
+ * and a mouse press leaves the bands up, so the viewer's next move lands on
+ * a band, lowers them, and is seen. A mouse press tells the viewer why
+ * (`onShieldPress`). A touch press lowers the bands (a finger cannot move
+ * them away) and shows no hint. */
 export function noteShieldPress(x: number, y: number, pointerType = "mouse"): void {
-  notePointerAt(x, y, pointerType);
-  noteQuietBreak();
-  shieldPressed();
+  if (pointerType === "touch") lowerShield();
+  lastPos = { x, y };
+  lastWasBoundary = true;
+  lastPointerType = pointerType;
+  noteShellInput();
+  if (pointerType !== "touch") shieldPressed();
 }
 
 function enterFrame(): void {
@@ -261,55 +341,61 @@ function enterFrame(): void {
 
 /** Watches `doc` (the shell document) for trusted input, for the pointer
  * moving onto and off the content frame, and for focus moving into the frame;
- * returns the unwatcher. */
+ * returns the unwatcher. Input is captured on the shell window, before any
+ * shell handler can stop it. */
 export function watchGestures(doc: Document = document): () => void {
-  // The shield sits beneath every shell control, so raising it at the press
-  // leaves the press's click to its control.
-  const onPress = (e: PointerEvent) => {
+  const win = doc.defaultView;
+  if (!win) return () => {};
+  const onInput = (e: Event) => {
     if (!e.isTrusted) return;
-    if (isShield(e.target)) { noteShieldPress(e.clientX, e.clientY, e.pointerType); return; }
-    notePointerAt(e.clientX, e.clientY, e.pointerType);
+    if (e.type === "keydown") {
+      const k = e as KeyboardEvent;
+      if (!noteShellKey(k)) return;
+      raiseShieldIfOverFrame(doc);
+      // A Tab from outside the document (the browser's own controls) can land
+      // in the frame with no blur here; the entry shows as focus in the frame.
+      const at = lastShellInput;
+      if (k.key === "Tab") setTimeout(() => { if (tabAt === at && frameEnteredAt < at && isFrame(doc.activeElement)) enterFrame(); }, 0);
+      return;
+    }
+    if (isShield(e.target)) {
+      // Nor does a press on a band move focus.
+      if (e.type === "mousedown") e.preventDefault();
+      if (e.type === "pointerdown") { const p = e as PointerEvent; noteShieldPress(p.clientX, p.clientY, p.pointerType); return; }
+      if (e.type === "wheel") lowerShield();
+      noteShellInput();
+      return;
+    }
+    if (e.type === "pointerdown") {
+      // The shield sits beneath every shell control, so raising it at the
+      // press leaves the press's click to its control.
+      const p = e as PointerEvent;
+      notePointerAt(p.clientX, p.clientY, p.pointerType);
+      noteShellInput();
+      raiseShieldIfOverFrame(doc, true);
+      return;
+    }
     noteShellInput();
-    raiseShieldIfOverFrame(doc);
   };
-  const onRelease = (e: PointerEvent) => { if (e.isTrusted) noteQuietBreak(); };
-  // Nor does a press on a band move focus.
-  const onMouseDown = (e: MouseEvent) => { if (e.isTrusted && isShield(e.target)) e.preventDefault(); };
   const onMove = (e: MouseEvent) => { if (e.isTrusted) notePointerAt(e.clientX, e.clientY, e instanceof PointerEvent ? e.pointerType : lastPointerType || "mouse"); };
-  const onKey = (e: KeyboardEvent) => {
-    if (!e.isTrusted || !noteShellKey(e)) return;
-    raiseShieldIfOverFrame(doc);
-    // A Tab from outside the document (the browser's own controls) can land
-    // in the frame with no blur here; the entry shows as focus in the frame.
-    const at = lastShellInput;
-    if (e.key === "Tab") setTimeout(() => { if (tabAt === at && frameEnteredAt < at && isFrame(doc.activeElement)) enterFrame(); }, 0);
-  };
-  const onKeyUp = (e: KeyboardEvent) => { if (e.isTrusted) noteQuietBreak(); };
   const onOver = (e: MouseEvent) => { if (e.isTrusted) notePointerOver(e.target, e.clientX, e.clientY); };
   const onOut = (e: MouseEvent) => { if (e.isTrusted && e.relatedTarget === null) notePointerOver(null, e.clientX, e.clientY); };
-  const onWheel = (e: WheelEvent) => {
-    if (!e.isTrusted) return;
-    noteQuietBreak();
-    if (isShield(e.target)) lowerShield();
-  };
   const onFocus = (e: FocusEvent) => { if (isFrame(e.target)) enterFrame(); else tabAt = -1; };
   // Focus moving into a cross-origin frame (a click, Tab, or the page's own
   // window.focus()) fires no focus event on the iframe element in Chromium;
   // the shell window's blur, with the frame focused, marks it.
   const onBlur = () => { if (isFrame(doc.activeElement)) enterFrame(); };
-  const win = doc.defaultView;
   const on: [string, EventListener][] = [
-    ["pointerdown", onPress as EventListener], ["pointerup", onRelease as EventListener], ["mousedown", onMouseDown as EventListener],
+    ...SHELL_INPUT_EVENTS.map(t => [t, onInput] as [string, EventListener]),
     ["pointermove", onMove as EventListener], ["mousemove", onMove as EventListener],
-    ["keydown", onKey as EventListener], ["keyup", onKeyUp as EventListener],
     ["mouseover", onOver as EventListener], ["mouseout", onOut as EventListener],
-    ["wheel", onWheel as EventListener], ["focusin", onFocus as EventListener],
+    ["focusin", onFocus as EventListener],
   ];
-  for (const [t, f] of on) doc.addEventListener(t, f, true);
-  win?.addEventListener("blur", onBlur);
+  for (const [t, f] of on) win.addEventListener(t, f, true);
+  win.addEventListener("blur", onBlur);
   return () => {
-    for (const [t, f] of on) doc.removeEventListener(t, f, true);
-    win?.removeEventListener("blur", onBlur);
+    for (const [t, f] of on) win.removeEventListener(t, f, true);
+    win.removeEventListener("blur", onBlur);
   };
 }
 
@@ -347,6 +433,9 @@ export function forgetGestures(): void {
   inputPos = null;
   forwarded = () => false;
   shieldPressed = () => {};
+  overShield = false;
+  viewerEvents = 0;
+  hintAt = -1;
   lowerShield();
 }
 

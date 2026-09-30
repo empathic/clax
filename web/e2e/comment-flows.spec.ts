@@ -120,7 +120,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer(page)).toHaveCount(0);
     // The pointer rests where Post was, over the page's empty area: a drag
     // from there, without a move first (a moment later, as a hand would).
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(100);
     await page.mouse.down();
     await page.mouse.move(at.x - 120, at.y - 80, { steps: 6 });
     await page.mouse.up();
@@ -140,7 +140,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await clickShell(page, composer(page).getByRole("button", { name: "Cancel" }));
     await expect(composer(page)).toHaveCount(0);
     // The same spot, a moment later, as a hand would click again.
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(100);
     await page.mouse.down();
     await page.mouse.up();
     await expect(hint(page)).toHaveText("Move the pointer to pick");
@@ -189,24 +189,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(((await api(d.base, d.token, `/api/artifacts/${id}/threads`)) as { threads: { sent_to_agent: boolean }[] }).threads.map(t => t.sent_to_agent)).toEqual([true]);
   });
 
-  test(`${mode}: flow 6 variant, typing in the name field with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {
-    const f = await open(page, await publishLive(`Flow 6b ${mode}`), mode);
-    const name = page.getByRole("textbox", { name: "Your name" });
-    await clickShell(page, name);
-    const c = await centre(f, "#open");
-    await page.mouse.move(c.x, c.y, { steps: 10 });
-    await page.keyboard.type("Sam");
-    // The pointer moved inside the page, where the shell cannot see it, so
-    // the shield raised at the keys covers it: the press does nothing, and
-    // the viewer is told.
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect(hint(page)).toHaveText("Move the pointer, then click again");
-    await expect(f.locator("#result")).toHaveText("-");
-    await expect(composer(page)).toHaveCount(0);
-    await page.mouse.move(c.x + 12, c.y, { steps: 3 });
-    await page.mouse.down();
-    await page.mouse.up();
-    await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
-  });
+  for (const delay of [30, 120]) {
+    test(`${mode}: flow 6 variant, typing in the name field at ${delay} ms a key with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {
+      const f = await open(page, await publishLive(`Flow 6b ${delay} ${mode}`), mode);
+      const name = page.getByRole("textbox", { name: "Your name" });
+      await clickShell(page, name);
+      const c = await centre(f, "#open");
+      await page.mouse.move(c.x, c.y, { steps: 10 });
+      await page.keyboard.type("Sam", { delay });
+      // The pointer moved inside the page, where the shell cannot see it, so
+      // the bands raised at the keys cover it: the press reaches nothing, and
+      // the viewer is told.
+      await page.mouse.down();
+      await page.mouse.up();
+      await expect(hint(page)).toHaveText("Move the pointer, then click again");
+      await expect(f.locator("#result")).toHaveText("-");
+      await expect(composer(page)).toHaveCount(0);
+      await page.mouse.move(c.x + 12, c.y, { steps: 3 });
+      await page.mouse.down();
+      await page.mouse.up();
+      await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
+    });
+  }
 }

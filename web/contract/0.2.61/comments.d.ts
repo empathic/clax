@@ -100,6 +100,13 @@ declare namespace Claude {
      * - `not_found` — the thread does not exist (deleted, on another
      *   artifact, or never visible to this viewer — not distinguishable).
      * - `rate_limited` — writing too often; slow down.
+     * - `shell_input_recent` — (Artifax extension, not a claude.ai code)
+     *   from {@link Comments.create}, {@link Comments.reply},
+     *   {@link Comments.resolve}, {@link Comments.delete} and
+     *   {@link Comments.sendToClaude}: the call came from the viewer's
+     *   click in the page, but within 5.5 s of their input to the Artifax
+     *   window around it, so nothing was written. Keep the draft and tell
+     *   the viewer to click again. Not charged to any budget.
      * - `unavailable` — comments cannot be used from this view right now
      *   (the service is briefly degraded, commenting is switched off for
      *   this artifact, or the consent prompt could not be shown). One
@@ -143,6 +150,8 @@ declare namespace Claude {
       | "invalid"
       | "not_found"
       | "rate_limited"
+      // Artifax extension: not a claude.ai code.
+      | "shell_input_recent"
       | "unavailable"
       | "upstream_error"
       | "claude_unavailable"

@@ -155,19 +155,29 @@ describe("comments in the shell", () => {
     expect(f.mock.calls).toHaveLength(calls);
   });
 
-  it("a reply the agent receives needs the viewer's gesture", async () => {
+  it("every write as the viewer needs the strict gesture: create, reply, resolve and delete", async () => {
     const f = daemon(T("01J9C", {}, { sent_to_agent: true }));
     const { h, state } = setup({ comments: {} });
     const { threadId } = (await h.call("create", [{ anchor: T("x").anchor, text: "hi" }])) as { threadId: string };
     state.threads = [T("01J9C", {}, { sent_to_agent: true })];
     gesture(false);
     const calls = f.mock.calls.length;
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "again" }])).rejects.toMatchObject({ code: "unavailable" });
     await expect(h.call("reply", [threadId, "more"])).rejects.toMatchObject({ code: "unavailable" });
-    expect(f.mock.calls).toHaveLength(calls);
+    await expect(h.call("resolve", [threadId, true])).rejects.toMatchObject({ code: "unavailable" });
+    await expect(h.call("delete", [threadId])).rejects.toMatchObject({ code: "unavailable" });
     state.threads = [T("01J9C")];
+    await expect(h.call("reply", [threadId, "plain"])).rejects.toMatchObject({ code: "unavailable" });
+    expect(f.mock.calls).toHaveLength(calls);
+    gesture(true, false);
+    await expect(h.call("create", [{ anchor: T("x").anchor, text: "soon" }])).rejects.toMatchObject({ code: "shell_input_recent" });
+    await expect(h.call("resolve", [threadId, true])).rejects.toMatchObject({ code: "shell_input_recent" });
+    expect(f.mock.calls).toHaveLength(calls);
+    gesture(true);
     expect(await h.call("reply", [threadId, "plain"])).toMatchObject({ commentId: expect.any(String) });
     state.threads = [T("01J9C", {}, { sent_to_agent: true })];
-    // Within the quiet time after the shell input: the viewer can click again.
+    // Within the quiet time after shell input: the viewer can click again.
+    gesture(false);
     gesture(true, false);
     await expect(h.call("reply", [threadId, "soon"])).rejects.toMatchObject({ code: "shell_input_recent" });
     gesture(true);

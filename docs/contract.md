@@ -789,17 +789,29 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   agent.
 - **The viewer's gesture.** Two tiers, both judged by the shell from its own
   trusted events, never from anything the page or the bridge reports.
-  - **The composer tier** (`openComposer`, `compose`, and the shell's own
-    picks): `openComposer` and `compose` resolve `{opened: false}` unless the
-    shell judges that the viewer's latest input went to the page. All of
-    these must hold:
+
+  | Verb | Tier | Refusal without the gesture |
+  |---|---|---|
+  | `openComposer`, `compose` | composer | `{opened: false}` |
+  | the shell's own picks | composer | the pick is dropped, with the hint |
+  | `create`, `reply`, `resolve`, `delete` | strict | `unavailable` |
+  | `sendToClaude` | strict | `claude_unavailable` |
+  | `artifact.publish` | strict | `rate_limited` |
+  | `canSendToClaude`, `register`, `release`, `composeClip`, `openThread`, `placed`, `exitMode` | none: they write nothing as the viewer | |
+
+  Shell input is every trusted event of these types reaching the shell
+  window: `keydown`, `mousedown`, `pointerdown`, `pointerup`, `touchend`,
+  `click`, `auxclick`, `dblclick`, `contextmenu`, `drop`, `dragstart`,
+  `dragend`, `pointercancel` and `wheel` (each type through which Chromium or
+  the HTML spec lets input grant a document activation, or that marks the
+  viewer's interaction with it). The one exception is the keys the shell
+  hands to the page: Option, Option+Up or Down, and Escape, in comment mode,
+  with the pointer over the page and focus outside a text field.
+  - **The composer tier.** All of these must hold:
     - the shell window has transient user activation (about five seconds
       after the viewer's latest input);
-    - focus is in the content frame, and no pointer press or key press has
-      reached the shell since focus entered it (only the keys the shell hands
-      to the page do not count: Option, Option+Up or Down, and Escape, in
-      comment mode, with the pointer over the page and focus outside a text
-      field);
+    - focus is in the content frame, and no shell input has reached the
+      shell since focus entered it;
     - the viewer, not the page, can have moved focus there: either the
       pointer arrived on the page by a real move after the viewer's latest
       input to the shell, and was on it when focus entered or is on it now;
@@ -818,35 +830,53 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
     (`window.focus()`) can open the composer, prefilled with its own anchor,
     or forge a pick. That is the worst case of this tier: a composer the
     viewer sees; nothing is posted without their Post.
-  - **The strict tier** (`sendToClaude`, a `reply` into a thread sent to the
-    agent, and `artifact.publish`: every page call that acts beyond the
-    composer): the composer tier's check, and no trusted input to the shell
-    (a pointer press or release, a key press or release, forwarded keys
-    included, or a wheel) in the last 5.5 seconds. The shell's own
-    activation from such input has then expired (Chromium keeps it for 5 s),
-    so the activation can only come from the viewer's input to the page; no
-    pointer position is used. Without the composer tier's check,
-    `sendToClaude` rejects `claude_unavailable`, a reply `unavailable`, and
-    `artifact.publish` `rate_limited`, as before. With it but within the
-    5.5 seconds, each rejects `shell_input_recent`, with nothing written:
-    the page should ask the viewer to click again. What remains: within the
+  - **The strict tier** (every call that acts as the viewer beyond the
+    composer they see): the composer tier's check, and no shell input of any
+    kind, forwarded keys included, in the last 5.5 seconds. No pointer
+    position is used. Every input to the shell that Chromium lets grant it
+    activation arrives as one of the event types above (an assistive
+    technology's press dispatches a `pointerdown` too), and Chromium keeps
+    that activation 5 s; so after 5.5 s without shell input the shell's
+    activation comes from the viewer's input to the page, unless Chromium
+    grants activation through an input that dispatches none of those types,
+    which Artifax knows of none. Without the composer tier's check each call
+    rejects with the code in the table. With it but within the 5.5 seconds,
+    each rejects `shell_input_recent` (an Artifax extension to the
+    contract's codes, in the shipped typings), with nothing written: the page
+    should ask the viewer to click again. What remains: within the
     activation window after the viewer's own click or key in the page, the
     page can make such a call, whatever that input was meant for.
 
   So a page calling on a timer or at load cannot ride input the viewer gives
   the shell (a shell button, the name field, a reply, the composer, the
-  consent dialog, a pin, a banner): the strict tier never while that input's
-  activation lasts, the composer tier never while the pointer has not moved
-  since. After shell input with a mouse over the page, the shell covers the
-  page with transparent bands, beneath its own controls, leaving a 9 px hole
-  under the pointer: a click, drag or wheel in the hole reaches the page, and
-  the first move out of it lands on a band, which proves the move, lowers
-  the bands, and lets the next click in the page count. A press on a band
-  (possible only after a move inside the page, which the shell cannot see)
-  reaches nothing and shows the hint "Move the pointer, then click again"; a
-  pick refused in comment mode shows "Move the pointer to pick". The
-  gesture refusals count against a budget of 20 per minute per artifact in a
-  tab; past it such calls reject `rate_limited`.
+  consent dialog, a pin, a banner, a drop): the strict tier never while that
+  input's activation lasts, the composer tier never while the pointer has
+  not moved since.
+
+  After shell input with a mouse over the page, the shell covers the page
+  with transparent bands, beneath its own controls, leaving a 9 px hole
+  where it last saw the pointer. After a press on a shell control the hole
+  stays closed for 500 ms, so the second click of a double-click on that
+  control never reaches the page. A click, drag or wheel in the hole reaches
+  the page. The first move out of it lands on a band, which proves the move
+  and lowers the bands (the page loses at most that one move), and lets the
+  next click in the page count. A press on a band (the second click of a
+  double-click, a re-press before the hole opens, or a press after a move
+  inside the page, which the shell cannot see) reaches neither the page nor
+  any shell control: it is shell input, it never counts as the pointer
+  arriving on the page, the bands stay until the pointer moves, and it shows
+  the hint "Move the pointer, then click again" (or "Move the pointer to
+  pick" in comment mode). A touch press on a band lowers the bands and shows
+  no hint. A pick refused in comment mode shows "Move the
+  pointer to pick". The shell shows its hint at most once per trusted
+  viewer event in the shell, so a page cannot keep it on screen.
+
+  Refusals for the lack of the gesture from the comments verbs count against
+  a budget of 20 per minute per artifact in a tab; past it such calls reject
+  `rate_limited`. `shell_input_recent` is not charged (the viewer did act in
+  the page, and it is returned only while that input's activation lasts).
+  `artifact.publish`'s refusals are not budgeted (its publishes have their
+  own budget), and neither are refused picks.
 - **Anchors.** Anchors from the page always name the page the frame shows and
   the version the view shows. Text follows the contract's rule (non-blank, at
   most 4096 bytes of UTF-8, no control characters but newline and tab).
