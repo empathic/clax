@@ -642,7 +642,7 @@ document skeleton, a full document as written plus the bridge tag; a page that
 already carries a bridge tag keeps exactly one). The bridge tag is placed so
 `window.claude` exists before any page script, `<head>` scripts included:
 first in the skeleton's `<head>` for a fragment, and immediately after the
-doctype (and any whitespace after it) in a full document, whatever
+doctype (and any ASCII whitespace after it) in a full document, whatever
 follows. The browser then builds
 `<html>` and `<head>` around the bridge; the attributes of a later `<html>`
 tag (such as `lang`) still apply, but the attributes of a later `<head>` tag
