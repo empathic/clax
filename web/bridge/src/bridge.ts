@@ -20,6 +20,10 @@
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
  * on every `hashchange` it reports the page's fragment (`artifax:hash`).
+ * The daemon serves it right after the doctype (first in the skeleton's
+ * `<head>` for a fragment), and only the document's first bridge tag runs, so
+ * `window.claude` exists before any page script; shell
+ * orders that read the page's content wait until the document has parsed.
  * While the page holds a `comments.customAnchors` registration, the bridge's
  * own comment mode, anchor resolution, and scroll-to stand down: the page
  * places the pins, and its placements are re-sent on scroll and resize.
@@ -30,14 +34,19 @@ import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
-import { hashFor, helloFor, readMeta } from "./meta";
+import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
+import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
 
 (() => {
-  const meta = readMeta(document.currentScript as HTMLScriptElement | null);
+  // One bridge per document: any bridge tag after the document's first one
+  // (a copy the page carried in, or a second injection) stands down.
+  const script = document.currentScript as HTMLScriptElement | null;
+  if (!isFirstBridge(script)) return;
+  const meta = readMeta(script);
   (window as any).__artifax = meta;
   commentsContext.version = meta.version;
   commentsContext.file = meta.file;
@@ -80,6 +89,7 @@ import { makeUse } from "./use";
   // Anchors are resolved once per shell request; scroll and resize only
   // re-measure, unless the DOM under a resolved element changed since.
   let anchors: { id: string; anchor: Anchor }[] = [];
+  let latestResolve: unknown = null;
   let resolutions: AnchorCache | null = null;
   // The thread the shell focuses (hovered in its list, or selected); its
   // area, if it is one, is outlined dashed.
@@ -90,7 +100,9 @@ import { makeUse } from "./use";
     mode.showFocus(f && r ? placeOf(f.anchor, r) : null, flash);
   };
   const resolveAll = (requestId: string | null) => {
-    const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file);
+    // A detached thread is retried when the page changes (content rendered
+    // late), not only on scroll or resize.
+    const resolved = resolutions ??= new AnchorCache(document, undefined, meta.file, () => reflow());
     const results: AnchorResult[] = anchors.map(({ id, anchor }) => {
       const r = resolved.resolve(id, anchor);
       return r ? { id, found: true, method: r.method, rect: placeOf(anchor, r) } : { id, found: false, method: null, rect: null };
@@ -160,11 +172,21 @@ import { makeUse } from "./use";
       case "artifax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
       case "artifax:use-result": case "artifax:call-result": case "artifax:event": rpc.accept(m); break;
       case "artifax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
-      case "artifax:resolve-anchors": if (commentsContext.live) break; anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId); break;
-      case "artifax:scroll-to": {
+      case "artifax:resolve-anchors": {
         if (commentsContext.live) break;
+        // The anchors take effect (for reflows too) once the page has parsed,
+        // and only the latest request's.
+        latestResolve = m;
+        whenParsed(document, () => {
+          if (latestResolve !== m || commentsContext.live) return;
+          anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId);
+        });
+        break;
+      }
+      case "artifax:scroll-to": whenParsed(document, () => {
+        if (commentsContext.live) return;
         const r = resolveAnchor(document, m.anchor, undefined, meta.file);
-        if (!r) break;
+        if (!r) return;
         if (m.anchor.kind === "area" && m.anchor.area) {
           // The drawn area is centred, not its element (often far taller).
           const a = placeOf(m.anchor, r);
@@ -174,9 +196,9 @@ import { makeUse } from "./use";
           r.element.scrollIntoView({ block: "center", behavior: "smooth" });
           setTimeout(() => mode.flash(r.range ?? r.element), 350);
         }
-        break;
-      }
-      case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; updateFocus(); break;
+      }); break;
+      // The focused thread's area is outlined once the page has parsed.
+      case "artifax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
       case "artifax:key": {
         const k = forwardedKey(m);
         if (k) mode.key(k.key, k.down);

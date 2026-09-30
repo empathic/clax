@@ -98,6 +98,7 @@ export class CommentMode {
       else this.doc.removeEventListener(type, fn, true);
     }
     this.doc.documentElement.style.cursor = on ? "crosshair" : "";
+    if (on) this.ensureLast();
     this.suppressClick = false;
     if (on) {
       const sel = this.doc.getSelection();
@@ -151,6 +152,7 @@ export class CommentMode {
   showFocus(box: Box | null, flash = false): void {
     const b = box && outlineBox({ left: box.x, top: box.y, right: box.x + box.w, bottom: box.y + box.h, width: box.w, height: box.h }, viewportOf(this.doc));
     if (!b) { this.focusBox.style.display = "none"; return; }
+    this.ensureLast();
     Object.assign(this.focusBox.style, { display: "block", left: `${b.left}px`, top: `${b.top}px`, width: `${b.width}px`, height: `${b.height}px` });
     if (flash) {
       this.focusBox.classList.add("flash");
@@ -207,6 +209,14 @@ export class CommentMode {
     this.hooks.hover(t);
   }
 
+  /** Created from `<head>`, the overlay precedes `<body>`; before it shows
+   * anything it moves last, so it stacks above page content at the same
+   * z-index. */
+  private ensureLast(): void {
+    const root = this.doc.documentElement;
+    if (root.lastElementChild !== this.host) root.appendChild(this.host);
+  }
+
   /** Sets the overlay's colours for the background behind `el`. */
   private colour(el: Element | null): void {
     const c = outlineColors(el ? backgroundBehind(el) : "#ffffff");
@@ -219,6 +229,7 @@ export class CommentMode {
 
   /** Outlines `t`, in colours that stand out on the background behind it. */
   private place(t: Element | Range): void {
+    this.ensureLast();
     this.colour(t instanceof Element ? t : t.commonAncestorContainer.nodeType === Node.ELEMENT_NODE ? (t.commonAncestorContainer as Element) : t.commonAncestorContainer.parentElement);
     const b = outlineBox(rectOf(t), viewportOf(this.doc));
     if (!b) { this.outline.style.display = "none"; return; }
@@ -251,6 +262,7 @@ export class CommentMode {
 
   private onMove = (e: MouseEvent) => {
     if (!this.real(e)) return;
+    this.ensureLast();
     Object.assign(this.pin.style, { display: "block", left: `${e.clientX}px`, top: `${e.clientY}px` });
     if (this.drag) {
       // The button came up outside the frame: the drag is dropped.

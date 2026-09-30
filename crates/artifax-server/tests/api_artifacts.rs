@@ -203,7 +203,7 @@ async fn patch_rejects_unknown_fields() {
         .authed(
             ts.client
                 .patch(format!("{}/api/artifacts/{id}", ts.base))
-                .json(&json!({"capabilities": {}})),
+                .json(&json!({"current_version": 7})),
         )
         .send()
         .await
@@ -319,4 +319,134 @@ async fn a_page_publish_is_announced_by_page() {
         json!({"type": "version", "artifact_id": aid, "n": 3}),
         "by_page is omitted when false"
     );
+}
+
+async fn patch(ts: &TestServer, aid: &str, body: serde_json::Value) -> reqwest::Response {
+    ts.authed(ts.client.patch(format!("{}/api/artifacts/{aid}", ts.base)))
+        .json(&body)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn patch_replaces_the_capabilities_declaration() {
+    let ts = TestServer::spawn().await;
+    let res = ts
+        .post_json("/api/artifacts", json!({"title": "T", "capabilities": {"db": {}, "user": {}}, "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}}))
+        .await;
+    let aid = res.json::<serde_json::Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let v: serde_json::Value = patch(&ts, &aid, json!({"capabilities": {"artifact": {}}}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        v["artifact"]["capabilities"],
+        json!({"artifact": {}}),
+        "a full set, not a merge"
+    );
+    let v: serde_json::Value = patch(&ts, &aid, json!({"title": "Renamed"}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        v["artifact"]["capabilities"],
+        json!({"artifact": {}}),
+        "omitted keeps"
+    );
+    let v: serde_json::Value = patch(&ts, &aid, json!({"capabilities": {}}))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["artifact"]["capabilities"], json!({}), "{{}} clears");
+    let res = patch(
+        &ts,
+        &aid,
+        json!({"capabilities": {"db": {"rules": [{"path": "a/{self}/b"}]}}}),
+    )
+    .await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+        "invalid_capabilities"
+    );
+    let res = ts
+        .client
+        .patch(format!("{}/api/artifacts/{aid}", ts.base))
+        .json(&json!({"capabilities": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn publish_capabilities_are_a_full_set_and_validated() {
+    let ts = TestServer::spawn().await;
+    let page = |caps: Option<serde_json::Value>, v: Option<u32>| {
+        let mut b =
+            json!({"title": "T", "files": {"index.html": {"content": "<p>", "encoding": "utf8"}}});
+        if let Some(c) = caps {
+            b["capabilities"] = c;
+        }
+        if let Some(n) = v {
+            b["if_version"] = json!(n);
+        }
+        b
+    };
+    let res = ts
+        .post_json(
+            "/api/artifacts",
+            page(Some(json!({"db": {}, "user": {}})), None),
+        )
+        .await;
+    let aid = res.json::<serde_json::Value>().await.unwrap()["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let url = format!("/api/artifacts/{aid}/versions");
+    let caps = |r: serde_json::Value| r["artifact"]["capabilities"].clone();
+    assert_eq!(
+        caps(
+            ts.post_json(&url, page(Some(json!({"artifact": {}})), Some(1)))
+                .await
+                .json()
+                .await
+                .unwrap()
+        ),
+        json!({"artifact": {}})
+    );
+    assert_eq!(
+        caps(
+            ts.post_json(&url, page(None, Some(2)))
+                .await
+                .json()
+                .await
+                .unwrap()
+        ),
+        json!({"artifact": {}})
+    );
+    assert_eq!(
+        caps(
+            ts.post_json(&url, page(Some(json!({})), Some(3)))
+                .await
+                .json()
+                .await
+                .unwrap()
+        ),
+        json!({})
+    );
+    let bad = ts
+        .post_json(
+            &url,
+            page(Some(json!({"comments": {"composer_only": "yes"}})), Some(4)),
+        )
+        .await;
+    assert_eq!(bad.status(), 400);
 }

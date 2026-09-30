@@ -135,10 +135,22 @@ Arguments:
 | `description` | string | no | One-line description. |
 | `icon` | string | no | One generic word, such as `chart` or `map`. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
-| `capabilities` | object | no | Stored with the artifact; no effect until phase 4. |
+| `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
-keeps the artifact's current value.
+keeps the artifact's current value, and so does `capabilities: null`. A
+given `capabilities` object is the full declaration: it replaces the stored
+one rather than merging with it, and `{}` clears it.
+
+The declaration can also be changed without publishing a version:
+`PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
+replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
+`{"artifact": ...}`; a declaration that does not validate is 400
+`invalid_capabilities` (checked before the artifact is looked up). The daemon
+reads the declaration on every call, so a change applies to `db` rules from
+the next call, and to what `use()` resolves in views loaded afterwards. A view
+already open keeps the declaration it loaded, including for other pages of the
+artifact reached inside it, until it is reloaded.
 
 Title on create: a new artifact needs a title. When `title` is omitted, the
 tool uses the text of the page's first `<title>` element: the tag name in any
@@ -687,7 +699,15 @@ time".
 Every HTML page of a version is commentable: `index.html` and every supporting
 file stored as `text/html` are served with the bridge (a fragment inside the
 document skeleton, a full document as written plus the bridge tag; a page that
-already carries a bridge tag keeps exactly one). The raw bytes stay available
+already carries a bridge tag keeps exactly one). The bridge tag is placed so
+`window.claude` exists before any page script, `<head>` scripts included:
+first in the skeleton's `<head>` for a fragment, and immediately after the
+doctype (and any ASCII whitespace after it) in a full document, whatever
+follows. The browser then builds
+`<html>` and `<head>` around the bridge; the attributes of a later `<html>`
+tag (such as `lang`) still apply, but the attributes of a later `<head>` tag
+are dropped. Only the first bridge tag in a document runs; any other copy
+stands down. The raw bytes stay available
 at `/api/artifacts/<id>/versions/<n>/files/<path>`. An anchor names its page
 in `file`: the published path (`index.html` for the index; an anchor without
 `file` is on the index). A thread's `file` must be a published path of its

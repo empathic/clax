@@ -1,6 +1,9 @@
 //! Serve-time wrapping of a published HTML page (the index or any supporting
 //! `text/html` file) into the document skeleton, and the recognition rule that
-//! keeps a full document from being wrapped twice.
+//! keeps a full document from being wrapped twice. Every served page carries
+//! exactly one bridge tag, right after the doctype of a full document or first
+//! in the skeleton's `<head>`, so `window.claude` exists before any page
+//! script runs.
 
 pub const RESET_CSS: &str = "*,*::before,*::after{box-sizing:border-box}html,body{margin:0;padding:0;min-height:100%}img,video,svg{max-width:100%;display:block}";
 
@@ -115,93 +118,26 @@ pub fn is_full_document(page: &str) -> bool {
     doctype_start(page).is_some()
 }
 
-/// Byte offset just past the first real `<body ...>` tag, skipping HTML comments
-/// and raw-text elements (`<script>` and `<style>`).
+/// Where a full document's ([`is_full_document`]) bridge tag goes: just past
+/// its leading doctype declaration and any ASCII whitespace after it (never
+/// before the doctype, which would put the page in quirks mode). Whitespace
+/// left before the tag is dropped by the parser, so a page republished from
+/// its served DOM does not gain a text node in `<head>` on every round trip.
 ///
-/// A comment runs from `<!--` to the next `-->`; a `<script>` or `<style>`
-/// element runs to its literal `</script>` or `</style>` end tag, and comment
-/// markers inside it have no effect. An unterminated comment or raw-text element
-/// extends to the end of the page, so no `<body>` after its start is found.
-///
-/// Limitations: a `>` inside a quoted attribute value truncates tag detection,
-/// `<title>`/`<textarea>` contents are not skipped, and end tags with
-/// whitespace before the `>` (`</script >`) are not recognized.
-fn body_tag_end(doc: &str) -> Option<usize> {
-    let bytes = doc.as_bytes();
-    let mut i = 0;
-
-    while i < bytes.len() {
-        // Skip HTML comments: <!--
-        if i + 4 <= bytes.len() && &bytes[i..i + 4] == b"<!--" {
-            i += 4;
-            i = find_from(bytes, i, b"-->", false).map_or(bytes.len(), |p| p + 3);
-            continue;
-        }
-
-        // Skip <script> elements
-        if i + 7 <= bytes.len()
-            && bytes[i..i + 7].eq_ignore_ascii_case(b"<script")
-            && i + 7 < bytes.len()
-        {
-            match bytes[i + 7] {
-                b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
-                    i = find_from(bytes, i + 7, b"</script>", true).map_or(bytes.len(), |p| p + 9);
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // Skip <style> elements
-        if i + 6 <= bytes.len()
-            && bytes[i..i + 6].eq_ignore_ascii_case(b"<style")
-            && i + 6 < bytes.len()
-        {
-            match bytes[i + 6] {
-                b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
-                    i = find_from(bytes, i + 6, b"</style>", true).map_or(bytes.len(), |p| p + 8);
-                    continue;
-                }
-                _ => {}
-            }
-        }
-
-        // Check for <body tag
-        if i + 5 <= bytes.len() && bytes[i..i + 5].eq_ignore_ascii_case(b"<body") {
-            let after = i + 5;
-            if after < bytes.len() {
-                match bytes[after] {
-                    b'>' | b' ' | b'\t' | b'\n' | b'\r' => {
-                        // Find the closing >
-                        if let Some(pos) = bytes[after..].iter().position(|&b| b == b'>') {
-                            return Some(after + pos + 1);
-                        }
-                        return None;
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        i += 1;
-    }
-    None
-}
-
-/// Offset of the first occurrence of `needle` in `bytes` at or after `from`,
-/// optionally ignoring ASCII case.
-fn find_from(bytes: &[u8], from: usize, needle: &[u8], ignore_case: bool) -> Option<usize> {
-    bytes
-        .get(from..)?
-        .windows(needle.len())
-        .position(|w| {
-            if ignore_case {
-                w.eq_ignore_ascii_case(needle)
-            } else {
-                w == needle
-            }
-        })
-        .map(|p| from + p)
+/// A script right after the doctype runs before anything else in the page:
+/// the parser creates `<html>` and `<head>` around it, a later `<html ...>`
+/// tag's attributes are merged onto the root, and a later `<head ...>` tag is
+/// ignored, attributes included.
+fn bridge_insertion_point(page: &str) -> usize {
+    let start = doctype_start(page).expect("a full document has a doctype");
+    let end = page[start..]
+        .find('>')
+        .map_or(page.len(), |p| start + p + 1);
+    let rest = &page[end..];
+    end + rest.len()
+        - rest
+            .trim_start_matches(['\t', '\n', '\x0C', '\r', ' '])
+            .len()
 }
 
 /// [`wrap_page`] for the version's index page.
@@ -223,12 +159,12 @@ pub fn wrap_document(
 }
 
 /// Returns the page published at `file` as served, with exactly one bridge
-/// tag (see [`bridge_tag_for`]); bridge tags already in the page are removed
-/// first. A fragment (not [`is_full_document`]) is placed in
-/// the document skeleton with the bridge script first in `<body>`. A full
-/// document is served unchanged except for the bridge script, inserted just after
-/// the first real `<body ...>` tag (see `body_tag_end`); as a fallback, when
-/// there is no such tag, it is inserted just after the doctype declaration.
+/// tag (see [`bridge_tag_for`]), placed so it runs before any page script;
+/// bridge tags already in the page are removed first. A full document
+/// ([`is_full_document`]) is served unchanged except for the bridge script,
+/// inserted just after its doctype declaration (see `bridge_insertion_point`).
+/// A fragment is placed in the document skeleton with the bridge script
+/// first in `<head>`.
 pub fn wrap_page(
     page: &str,
     artifact_id: &str,
@@ -242,18 +178,11 @@ pub fn wrap_page(
     let tag = bridge_tag_for(artifact_id, version, contract, file, bridge);
 
     if is_full_document(page) {
-        if let Some(pos) = body_tag_end(page) {
-            return format!("{}{}{}", &page[..pos], tag, &page[pos..]);
-        }
-        let start = doctype_start(page).expect("full document has a doctype");
-        let doctype_end = match page.as_bytes()[start..].iter().position(|&b| b == b'>') {
-            Some(off) => start + off + 1,
-            None => page.len(),
-        };
-        return format!("{}{}{}", &page[..doctype_end], tag, &page[doctype_end..]);
+        let at = bridge_insertion_point(page);
+        return format!("{}{}{}", &page[..at], tag, &page[at..]);
     }
     format!(
-        "<!doctype html><html><head><meta charset=utf8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><style>{RESET_CSS}</style></head><body>{tag}{page}</body></html>"
+        "<!doctype html><html><head>{tag}<meta charset=utf8><meta name=viewport content=\"width=device-width,initial-scale=1,viewport-fit=cover\"><style>{RESET_CSS}</style></head><body>{page}</body></html>"
     )
 }
 
@@ -265,7 +194,9 @@ mod tests {
     const V: &str = "0123456789ab";
 
     #[test]
-    fn fragment_is_wrapped_with_skeleton_and_bridge_first_in_body() {
+    // The bridge moved from first in `<body>` to first in `<head>`, so it runs
+    // before any `<head>` script.
+    fn fragment_is_wrapped_with_skeleton_and_bridge_first_in_head() {
         let out = wrap_document(
             "<title>T</title><style>p{}</style><p>hi</p>",
             "7q3k9mzx2b4t",
@@ -273,12 +204,10 @@ mod tests {
             "0.2.61",
             V,
         );
-        assert!(
-            out.starts_with("<!doctype html><html><head><meta charset=utf8><meta name=viewport")
-        );
-        let body = out.find("<body>").unwrap();
+        assert!(out.starts_with("<!doctype html><html><head><script src=\"/_artifax/bridge.js"));
         let tag = out.find("<script src=\"/_artifax/bridge.js").unwrap();
-        assert!(tag > body && tag < out.find("<title>").unwrap());
+        assert!(tag < out.find("<meta charset=utf8>").unwrap());
+        assert!(tag < out.find("<body>").unwrap() && tag < out.find("<title>").unwrap());
         assert!(out.contains(
             "data-artifact=\"7q3k9mzx2b4t\" data-version=\"2\" data-contract=\"0.2.61\""
         ));
@@ -286,23 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn full_document_is_recognised_case_insensitively_and_bridge_goes_after_body_tag() {
-        let page = "\n  <!DOCTYPE HTML><html><head><title>x</title></head><body class=\"x\" data-a=\"1\"><p>hi</p></body></html>";
-        assert!(is_full_document(page));
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
-        assert!(out.starts_with("\n  <!DOCTYPE HTML>"), "served as-is");
-        let body_end = out.find("<body class=\"x\" data-a=\"1\">").unwrap()
-            + "<body class=\"x\" data-a=\"1\">".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
-        assert_eq!(
-            out.matches("<!DOCTYPE").count() + out.matches("<!doctype").count(),
-            1,
-            "not double wrapped"
-        );
-    }
-
-    #[test]
-    fn full_document_without_body_tag_gets_bridge_after_doctype() {
+    fn full_document_without_head_or_body_tags_gets_bridge_after_doctype() {
         let out = wrap_document(
             "<!doctype html><p>no body tag</p>",
             "7q3k9mzx2b4t",
@@ -314,17 +227,6 @@ mod tests {
             "<!doctype html>{}",
             bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
         )));
-    }
-
-    #[test]
-    fn xhtml_doctype_with_body_gets_bridge_after_body_and_is_not_double_wrapped() {
-        let page = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html><head><title>x</title></head><body><p>hi</p></body></html>";
-        assert!(is_full_document(page));
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
-        let body_end = out.find("<body>").unwrap() + "<body>".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
-        assert!(out.starts_with("<!DOCTYPE html PUBLIC"));
-        assert_eq!(out.to_lowercase().matches("<!doctype").count(), 1);
     }
 
     #[test]
@@ -348,26 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn body_inside_a_comment_is_not_the_body_tag() {
-        let page = "<!doctype html><html><head><!-- <body> --></head><body><p></p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
-        let real = out
-            .find("<body><script")
-            .expect("bridge after real body tag");
-        assert!(real > out.find("-->").unwrap());
-    }
-
-    #[test]
-    fn non_ascii_before_body_tag_does_not_panic() {
-        let page =
-            "<!doctype html><html><head><title>é — ü</title></head><body><p>x</p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
-        let body_end = out.find("<body>").unwrap() + "<body>".len();
-        assert!(out[body_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
-    }
-
-    #[test]
-    fn non_ascii_before_missing_body_tag_does_not_panic() {
+    fn non_ascii_in_a_tagless_document_does_not_panic() {
         let page = "<!doctype html><title>é — ü</title><p>x</p>";
         let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
         assert!(out.starts_with(&format!(
@@ -377,21 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn body_inside_script_is_not_the_body_tag() {
-        let page = "<!doctype html><html><head><script>var a=\"<body>\";</script></head><body><p>x</p></body></html>";
-        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
-        // The real <body> tag should have the bridge after it
-        let body_end =
-            out.find("<body><script src=\"/_artifax/bridge.js").unwrap() + "<body>".len();
-        assert!(
-            out[body_end..].starts_with("<script src=\"/_artifax/bridge.js"),
-            "bridge should be directly after real body tag"
-        );
-        assert!(out.contains("<script>var a=\"<body>\";"));
-    }
-
-    #[test]
-    fn unterminated_comment_or_raw_text_hides_the_rest_of_the_page() {
+    fn unterminated_comment_or_raw_text_leaves_the_bridge_after_the_doctype() {
         let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V);
         for page in [
             "<!doctype html><!-- x<body>",
@@ -468,17 +337,172 @@ mod tests {
         assert!(out.contains("<p>keep</p>"));
     }
 
+    // Placement no longer looks for `<head>` or `<body>`: a full document gets
+    // the bridge right after its doctype, whatever follows.
     #[test]
-    fn bodyx_is_not_body_and_body_with_newline_is() {
-        let page1 = "<!doctype html><bodyx><p>x</p>";
-        let out1 = wrap_document(page1, "id1", 1, "0.2.61", V);
-        assert!(out1.contains("<bodyx><p>x</p>"));
-
-        let page2 = "<!doctype html><body\n class=\"a\"><p>x</p></body></html>";
-        let out2 = wrap_document(page2, "id2", 1, "0.2.61", V);
-        let body_end = out2.find("<body\n class=\"a\">").unwrap() + "<body\n class=\"a\">".len();
-        assert!(out2[body_end..].starts_with(&bridge_tag("id2", 1, "0.2.61", V)));
+    fn full_document_is_recognised_case_insensitively_and_bridge_goes_after_the_doctype() {
+        let page = "\n  <!DOCTYPE HTML><html><HEAD class=\"h\"><title>x</title></HEAD><body class=\"x\" data-a=\"1\"><p>hi</p></body></html>";
+        assert!(is_full_document(page));
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert_eq!(
+            out,
+            format!(
+                "\n  <!DOCTYPE HTML>{}{}",
+                bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V),
+                &page["\n  <!DOCTYPE HTML>".len()..]
+            ),
+            "served as-is apart from the tag"
+        );
     }
+
+    #[test]
+    fn xhtml_doctype_gets_bridge_after_its_closing_bracket_and_is_not_double_wrapped() {
+        let page = "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\"><html><head><title>x</title></head><body><p>hi</p></body></html>";
+        assert!(is_full_document(page));
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
+        let doctype_end = page.find('>').unwrap() + 1;
+        assert!(out[doctype_end..].starts_with(&bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)));
+        assert_eq!(out.to_lowercase().matches("<!doctype").count(), 1);
+    }
+
+    #[test]
+    fn the_bridge_runs_before_every_page_script() {
+        let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V);
+        for page in [
+            // A <head> script.
+            "<!doctype html><html><head lang=\"en\"><script>window.early = 1;</script><title>x</title></head><body><p>x</p></body></html>",
+            // No <head> tag: the head is implied, with a script before <body>.
+            "<!doctype html><html lang=en><meta charset=utf-8><title>T</title><script>window.early = 1;</script><body><p>x</p></body></html>",
+            // A script before the <head> tag.
+            "<!doctype html><html><script>window.early = 1;</script><head><title>x</title></head><body></body></html>",
+            // No <html>, <head> or <body> tags at all.
+            "<!doctype html><script>window.early = 1;</script><p>x</p>",
+        ] {
+            let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
+            assert!(out.starts_with(&format!("<!doctype html>{tag}")), "{out}");
+            assert_eq!(out.matches("/_artifax/bridge.js").count(), 1, "{out}");
+            assert!(out.find("/_artifax/bridge.js").unwrap() < out.find("window.early").unwrap());
+        }
+        let sub = wrap_page(
+            "<!doctype html><head><script>1</script></head>",
+            "7q3k9mzx2b4t",
+            1,
+            "0.2.61",
+            "about.html",
+            V,
+        );
+        assert!(sub.starts_with(&format!(
+            "<!doctype html>{}<head>",
+            bridge_tag_for("7q3k9mzx2b4t", 1, "0.2.61", "about.html", V)
+        )));
+    }
+
+    #[test]
+    fn head_or_body_in_text_does_not_move_the_bridge() {
+        let tag = bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V);
+        for page in [
+            "<!doctype html><title>The <head> element</title><body><p>x</p></body>",
+            "<!doctype html><textarea><head></textarea><p>x</p>",
+            "<!doctype html><meta content=\"<head>\"><p>x</p>",
+            "<!doctype html><!-- <head> --><script>var h=\"<body>\";</script><header>x</header>",
+        ] {
+            let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
+            assert_eq!(
+                out,
+                format!("<!doctype html>{tag}{}", &page["<!doctype html>".len()..]),
+                "{page}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_after_the_doctype_does_not_panic() {
+        let page =
+            "<!doctype html><html><head><title>é — ü</title></head><body><p>x</p></body></html>";
+        let out = wrap_document(page, "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert!(out.starts_with(&format!(
+            "<!doctype html>{}<html>",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
+        )));
+    }
+
+    #[test]
+    fn the_insertion_point_is_after_the_doctype_and_its_trailing_whitespace() {
+        assert_eq!(bridge_insertion_point("<!doctype html><p>"), 15);
+        assert_eq!(
+            bridge_insertion_point("\u{FEFF} \n<!DOCTYPE html >x"),
+            "\u{FEFF} \n<!DOCTYPE html >".len()
+        );
+        assert_eq!(
+            bridge_insertion_point("<!doctype html>\n \t\r\x0C<html>"),
+            "<!doctype html>\n \t\r\x0C".len()
+        );
+        // Only ASCII whitespace: a no-break space is text.
+        assert_eq!(bridge_insertion_point("<!doctype html>\u{A0}<p>"), 15);
+        assert_eq!(
+            bridge_insertion_point("<!doctype html"),
+            "<!doctype html".len()
+        );
+        assert_eq!(
+            bridge_insertion_point("<!doctype html>\n"),
+            "<!doctype html>\n".len()
+        );
+    }
+
+    #[test]
+    fn repeated_republishes_of_the_served_dom_leave_the_head_unchanged() {
+        // What the browser builds from a served page and `"<!doctype html>\n" +
+        // outerHTML` sends back: whitespace before the bridge (before <html>)
+        // is dropped, the bridge sits first in <head>. Serving the result again
+        // must keep the whitespace out of <head>.
+        let browser_round_trip = |served: &str| {
+            let at = served.find("<script src=\"/_artifax/bridge.js").unwrap();
+            let end = at + served[at..].find("</script>").unwrap() + "</script>".len();
+            let (tag, after) = (&served[at..end], &served[end..]);
+            assert!(served[..at].trim_end() == "<!doctype html>", "{served}");
+            let rest = after.strip_prefix("<html lang=\"en\"><head>").expect(after);
+            format!("<!doctype html>\n<html lang=\"en\"><head>{tag}{rest}")
+        };
+        let mut page = "<!doctype html>\n<html lang=\"en\"><head><title>P</title></head><body><p>x</p></body></html>".to_string();
+        for v in 1..=4 {
+            let served = wrap_document(&page, "7q3k9mzx2b4t", v, "0.2.61", V);
+            assert!(served.starts_with("<!doctype html>\n<script"), "{served}");
+            page = browser_round_trip(&served);
+            assert!(
+                page.contains("<head><script src=\"/_artifax/bridge.js")
+                    && page.contains("</script><title>P</title></head>"),
+                "round trip {v}: {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_browser_serialized_served_page_republishes_with_one_bridge() {
+        // What `"<!doctype html>\n" + document.documentElement.outerHTML` gives for a
+        // served page: the parser moved the bridge into the implied `<head>`.
+        let served = format!(
+            "<!doctype html>\n<html lang=\"en\"><head>{}<title>P</title><script>early()</script></head><body><p>x</p></body></html>",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", "ffffffffffff")
+        );
+        let out = wrap_document(&served, "7q3k9mzx2b4t", 2, "0.2.61", V);
+        assert_eq!(
+            out,
+            format!(
+                "<!doctype html>\n{}<html lang=\"en\"><head><title>P</title><script>early()</script></head><body><p>x</p></body></html>",
+                bridge_tag("7q3k9mzx2b4t", 2, "0.2.61", V)
+            )
+        );
+    }
+
+    #[test]
+    fn a_fragment_carries_the_bridge_first_in_its_head() {
+        let out = wrap_document("<p>hi</p>", "7q3k9mzx2b4t", 1, "0.2.61", V);
+        assert!(out.starts_with(&format!(
+            "<!doctype html><html><head>{}",
+            bridge_tag("7q3k9mzx2b4t", 1, "0.2.61", V)
+        )));
+    }
+
     #[test]
     fn the_bridge_url_carries_the_bridge_version() {
         assert!(
