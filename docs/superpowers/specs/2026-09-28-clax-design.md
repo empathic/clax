@@ -552,11 +552,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   comes back on or a page greets); a second start with the viewer's gesture
   while one is pending and comment mode is off means one was forged, so
   both are refused and the composer closes (it stays when the viewer has
-  typed in it). From the pick until focus leaves the page, the shell answers
-  `clax:pick-refused {pickId}`, or 2 s pass, the bridge keeps every key and
-  text event from the page and drops it (`key-trap.ts`, listening on the
-  window before any page script); nothing typed in the page is handed on,
-  and no page text ever enters a composer. The
+  typed in it). The bridge renders the clip only after the shell's
+  `clax:composer-ready {pickId}`, sent once the composer's textarea has
+  focus, and none after `clax:pick-refused {pickId}` (sent for every start
+  the shell refuses) or when no answer comes within 5 s. The clip's work,
+  which can hold a main thread the frame shares with the shell, so never
+  delays that focus; keys typed during it wait in the browser's input queue
+  and reach the focused textarea. A key typed in the page before that focus
+  (about 30 ms) goes to the page; no page text ever enters a composer. The
   bridge keeps the shell's window as it was at load, so a page replacing
   `window.parent` cannot read or alter what it posts. Page calls and picks
   that need the viewer's gesture use one of two tiers (`caps/gesture.ts`;

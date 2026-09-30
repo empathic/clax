@@ -26,7 +26,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const frame = await contentFrame(page, artifact.id, 1);
     expect((await last(page, "clax:hello")).version).toBe(1);
 
-    await toFrame(page, { type: "clax:comment-mode", on: true });
+    // Comment mode on in the shell: a pick's clip is rendered once the
+    // composer its start opened has focus.
+    const toggle = page.getByRole("button", { name: "Comment", exact: true });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
     await frame.locator("h2").hover();
     await expect(frame.locator("clax-overlay .o")).toBeVisible();
     expect((await last(page, "clax:hover")).selector).toBe("body > main > h2");
@@ -37,6 +41,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(pick.clipError).toBeUndefined();
     expect(pick.clipBytes).toBeGreaterThan(0);
     await expectVisibleClip(page, pick.pickId);
+    await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
 
     const box = (await frame.locator("p").boundingBox())!;
     await page.mouse.move(box.x + 3, box.y + box.height / 2);
@@ -55,7 +61,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(res.requestId).toBe("r1");
     expect(res.results[0]).toMatchObject({ id: "t1", found: true, method: "exact" });
 
-    await toFrame(page, { type: "clax:comment-mode", on: false });
+    await page.locator(".composer").getByRole("button", { name: "Cancel" }).click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-pressed", "false");
     await frame.locator("h2").hover();
     await expect(frame.locator("clax-overlay .o")).toBeHidden();
   });

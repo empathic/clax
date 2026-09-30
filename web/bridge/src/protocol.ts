@@ -62,9 +62,13 @@ export type ShellToBridge =
    * mode (the bridge answers `clax:cancel`). */
   | { type: "clax:key"; key: "Alt" | "ArrowUp" | "ArrowDown" | "Escape"; down: boolean }
   /** The shell did not take the pick `pickId` (its start came without the
-   * viewer's gesture, outside comment mode, or beside another pick): the
-   * page's keys are no longer kept from it (`key-trap.ts`). */
+   * viewer's gesture, outside comment mode, or beside another pick): no clip
+   * is rendered for it. */
   | { type: "clax:pick-refused"; pickId: string }
+  /** The composer the pick `pickId`'s start opened has focus: the bridge
+   * renders its clip now, never before, so that work (which can hold the main
+   * thread the page may share with the shell) never delays that focus. */
+  | { type: "clax:composer-ready"; pickId: string }
   | UseResult
   | CallResult
   | CapEvent;
@@ -91,5 +95,5 @@ export type BridgeToShell =
   | UseRequest
   | CallRequest;
 
-export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:use-result", "clax:call-result", "clax:event"]);
+export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
 export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:use", "clax:call"]);

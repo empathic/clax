@@ -501,7 +501,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
         // stands in the way of their next one.
         //
         // Every start refused is answered `clax:pick-refused`, so the bridge
-        // stops keeping the page's keys from it (`key-trap.ts`).
+        // renders no clip for it; a taken one's composer, once its textarea
+        // has focus, sends `clax:composer-ready`, and only then does the
+        // bridge render the clip, so its work never delays that focus.
         if (!helloOk.current || typeof m.pickId !== "string" || m.pickId.length > 64) break;
         const refuse = () => send({ type: "clax:pick-refused", pickId: m.pickId });
         const pending = pendingPick.current;
@@ -510,6 +512,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           if (!frameGesture()) break;
           if (draftRef.current?.pickId === pending.pickId && composerText.current.trim()) break;
           pendingPick.current = null;
+          send({ type: "clax:pick-refused", pickId: pending.pickId });
           setDraft(dr => (dr?.pickId === pending.pickId ? null : dr));
           if (resumeAfter.current === pending.pickId) {
             resumeAfter.current = null;
@@ -712,7 +715,8 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           {!deleted && !missing && <div class="frame-shield" aria-hidden="true" ref={registerShield}><div /><div /><div /><div /></div>}
           {hint && <p class="gesture-hint" role="status">{hint}</p>}
           {!deleted && !missing && <Pins threads={threads} resolved={resolved} file={file} onSelect={t => { setPanel(true); scrollTo(t); }} onHover={t => setHovered(t?.id ?? null)} />}
-          {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }} onCancel={() => setDraft(null)} onSubmit={async body => {
+          {draft && <Composer key={draft.pickId} draft={draft} onText={v => { composerText.current = v; }}
+            onFocused={() => { const pid = draft.pickId; if (pendingPick.current?.pickId === pid) send({ type: "clax:composer-ready", pickId: pid }); }} onCancel={() => setDraft(null)} onSubmit={async body => {
             try {
               const { thread, clip_error: clipError } = await whileBusy(createThread(id, { anchor: draft.anchor, body, version: draft.version, clip: draft.clip }));
               noticeFor(POST_FAILED)(null);

@@ -692,12 +692,17 @@ viewer's gesture while that screenshot is pending and comment mode is still
 off means one was forged, so both are refused (the composer closes and
 comment mode comes back, unless the viewer has typed in it: then it stays),
 and a pending pick is forgotten when comment mode comes back on or a page
-greets. The textarea has focus about 30 ms after the click or release, so
-the viewer's typing lands in it. Until then, the bridge keeps every key and
-text event the viewer makes in the page from the page, and drops them: none
-reaches the page or the composer, and no text from the page ever enters a
-composer. That hold ends when focus leaves the page, when the shell answers
-a start it refused (`clax:pick-refused`), or 2 seconds after the pick. So a page can post
+greets. The bridge renders the pick's screenshot only once the shell says
+the composer's textarea has focus (`clax:composer-ready`), and renders none
+for a start the shell refused (`clax:pick-refused`) or that gets no answer
+within 5 seconds. So the screenshot's work, which can hold the main thread
+a same-process frame shares with the shell, never delays that focus: in
+Chromium the textarea had focus 31–34 ms after the click or release, on a
+light page and on one whose screenshot held the main thread for 1.5
+seconds, and every key typed from 60 ms on landed in it, those typed during
+that hold once it ended. A key or input method composition begun in the
+page before the textarea has focus goes to the page, as any key there
+does. No text from the page ever enters a composer. So a page can post
 a pick of its own only in comment mode, while no pick of the bridge's is
 pending, and while that check (the composer tier of "The viewer's gesture"
 under the `comments` capability) passes: within the browser's

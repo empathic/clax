@@ -221,6 +221,23 @@ describe("the submit shortcut", () => {
     m.done();
   });
 
+  it("drops a queued shortcut when the composer moves to another anchor", () => {
+    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
+    const d = draft({ capturing: true, clipToken: "t" });
+    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const ta = m.root.querySelector("textarea")!;
+    act(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    key(ta, { metaKey: true });
+    expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
+    const moved = { ...d, anchor: { ...d.anchor, selector: "body > p" }, clipToken: "t2" };
+    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    expect(m.root.textContent).toContain("Taking the screenshot…");
+    act(() => { render(<Composer draft={{ ...moved, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(ta.value).toBe("Here");
+    m.done();
+  });
+
   it("ignores the shortcut during an IME composition", () => {
     const { ta, typeText, onSubmit, done } = composer();
     typeText("変換中");

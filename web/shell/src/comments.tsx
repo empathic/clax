@@ -87,8 +87,8 @@ export function submitKeysLabel(platform = typeof navigator === "undefined" ? ""
   return /Mac|iPhone|iPad|iPod/.test(platform) ? "⌘↵" : "Ctrl+Enter";
 }
 
-/** The composer for `draft`; `onText` hears the typed text on every input, and "" when it closes. */
-export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void }) {
+/** The composer for `draft`; `onText` hears the typed text on every input, and "" when it closes; `onFocused` hears that its textarea took focus as it opened. */
+export function Composer({ draft, onCancel, onSubmit, onText, onFocused }: { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void }) {
   const [body, setBody] = useState("");
   const onTextRef = useRef(onText);
   onTextRef.current = onText;
@@ -104,7 +104,9 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
   // The viewer types at once: focus moves from the page to the textarea when
   // the composer opens (a script focus, not the viewer's input to the shell).
   const textarea = useRef<HTMLTextAreaElement>(null);
-  useEffect(() => { textarea.current?.focus(); }, []);
+  const onFocusedRef = useRef(onFocused);
+  onFocusedRef.current = onFocused;
+  useEffect(() => { textarea.current?.focus(); onFocusedRef.current?.(); }, []);
   const quote = draft.anchor.quote?.replace(/\s+/g, " ").trim();
   const canPost = !busy && !!body.trim() && !draft.capturing;
   // Set before the first await, so a second Post or shortcut in the same
@@ -124,8 +126,16 @@ export function Composer({ draft, onCancel, onSubmit, onText }: { draft: Draft; 
   // textarea showed when it was pressed: any edit after it cancels it (the
   // viewer presses it again when done).
   const [queued, setQueued] = useState(false);
+  // A composer moved to another anchor (a page's area) drops the shortcut:
+  // the viewer has not seen where it now posts.
+  const anchorAt = useRef(draft.anchor);
   useEffect(() => {
-    if (!queued || draft.capturing) return;
+    if (anchorAt.current === draft.anchor) return;
+    anchorAt.current = draft.anchor;
+    setQueued(false);
+  }, [draft.anchor]);
+  useEffect(() => {
+    if (!queued || draft.capturing || anchorAt.current !== draft.anchor) return;
     setQueued(false);
     // Only the text the textarea shows now.
     if (textarea.current?.value === body) void post();

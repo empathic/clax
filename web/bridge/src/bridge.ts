@@ -10,9 +10,8 @@
  * an origin in `shellOrigins(location.href)` and replies to that origin only:
  * comment mode (hover outline, element and range picks with anchors and PNG
  * clips within the budget in `clip.ts`, drawn areas clipped to exactly the
- * rectangle, Option widening with keys the shell forwards, and the keys the
- * viewer types in the page after a pick kept from the page until the shell's
- * composer has focus, see `key-trap.ts`), anchor
+ * rectangle, rendered only once the shell's composer for the pick has focus,
+ * Option widening with keys the shell forwards), anchor
  * resolution (an area's rectangle projected onto its element's current box),
  * the dashed outline of the focused thread's area, and scroll-to (see `protocol.ts`). Every HTML
  * page of a version carries the bridge; anchors it builds name this page's
@@ -36,7 +35,6 @@ import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./caps/comments";
 import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
 import { CommentMode } from "./comment-mode";
-import { KeyTrap } from "./key-trap";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
@@ -125,16 +123,33 @@ import { makeUse } from "./use";
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  // The keys the viewer types in the page after a pick, until the shell's
-  // composer takes focus, are kept from the page (and dropped).
-  const keys = new KeyTrap(window);
+  // The timer functions as they are when the bridge loads.
+  const setTimer = window.setTimeout.bind(window);
+  const clearTimer = window.clearTimeout.bind(window);
+  // The pick whose start was posted, waiting for the shell's answer: its
+  // composer has focus (`clax:composer-ready`, true) or the start was refused
+  // (`clax:pick-refused`, false); no answer within `READY_MS` is a refusal.
+  let waiting: { pickId: string; answer(go: boolean): void; timer: number } | null = null;
+  const READY_MS = 5_000;
+  const answer = (pickId: string, go: boolean) => {
+    const w = waiting;
+    if (!w || w.pickId !== pickId) return;
+    waiting = null;
+    clearTimer(w.timer);
+    w.answer(go);
+  };
   /** Posts the pick's start with its anchor (the shell opens the composer on
-   * it), then starts its clip in the same task, from the page as it is now,
-   * and posts the pick with the clip once it is taken. */
+   * it and focuses it). The clip is rendered only once the shell says the
+   * composer has focus: its work can hold the main thread the page may share
+   * with the shell, and keys typed meanwhile then wait for it and reach the
+   * focused composer. A refused start renders nothing. The pick is posted
+   * with the clip once it is taken. */
   const pick = async (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => {
     const pickId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`;
-    keys.start(pickId);
+    if (waiting) answer(waiting.pickId, false);
+    const go = new Promise<boolean>(resolve => { waiting = { pickId, answer: resolve, timer: setTimer(() => answer(pickId, false), READY_MS) }; });
     post({ type: "clax:pick-start", pickId, version: meta.version, anchor });
+    if (!(await go)) return;
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
     try { clipPng = await clip(); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
@@ -144,13 +159,14 @@ import { makeUse } from "./use";
     hover: t => post({ type: "clax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
     pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)).finally(() => mode.captured()); },
     pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)).finally(() => mode.captured()); },
-    // The clip starts at once, from the page as it is at release: the drawn
-    // rectangle cropped out of a render of its element. The rectangle stays
-    // drawn (as capturing) until the pick is posted.
+    // The clip is the drawn rectangle, placed on its element at release,
+    // cropped out of a render of that element. The rectangle stays drawn (as
+    // capturing) until the pick is posted.
     pickArea: r => {
       const el = containingElement(document, r);
       const anchor = buildAreaAnchor(document, r, meta.file, el);
-      void pick(anchor, () => renderAreaClip(el, areaBox(anchor.area!, boxOf(el)))).finally(() => mode.captured());
+      const at = areaBox(anchor.area!, boxOf(el));
+      void pick(anchor, () => renderAreaClip(el, at)).finally(() => mode.captured());
     },
     cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
   });
@@ -209,7 +225,8 @@ import { makeUse } from "./use";
       }); break;
       // The focused thread's area is outlined once the page has parsed.
       case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
-      case "clax:pick-refused": if (typeof m.pickId === "string") keys.end(m.pickId); break;
+      case "clax:pick-refused": if (typeof m.pickId === "string") answer(m.pickId, false); break;
+      case "clax:composer-ready": if (typeof m.pickId === "string") answer(m.pickId, true); break;
       case "clax:key": {
         const k = forwardedKey(m);
         if (k) mode.key(k.key, k.down);

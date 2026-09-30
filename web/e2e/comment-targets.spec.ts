@@ -230,7 +230,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await frame.evaluate(() => scrollTo(0, 900));
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
-    // Lines 50 to 250 (about 4,000 px), selected as a drag would, then released.
+    // The viewer's press in the page (the shell takes the pick only with
+    // their gesture there), then lines 50 to 250 (about 4,000 px) selected as
+    // a drag would, then the release.
+    const fb = (await page.locator("iframe.frame").boundingBox())!;
+    await page.mouse.move(fb.x + 200, fb.y + 200, { steps: 5 });
+    await page.mouse.down();
     const blockW = await frame.evaluate(() => {
       const pre = document.getElementById("src")!;
       const texts = [pre.firstChild as Text, pre.lastChild as Text];
@@ -243,8 +248,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       return pre.getBoundingClientRect().width;
     });
     // Released with the real mouse: comment mode acts on the viewer's own input only.
-    const fb = (await page.locator("iframe.frame").boundingBox())!;
-    await page.mouse.move(fb.x + 200, fb.y + 200);
     await page.mouse.up();
     await expect.poll(async () => (await last(page, "clax:pick")).anchor.kind).toBe("range");
     const pick = await last(page, "clax:pick");

@@ -691,11 +691,15 @@ describe("ArtifactView", () => {
     await settle();
     expect(root.querySelector(".composer")).toBeNull();
     await waitFor(() => comment.getAttribute("aria-pressed") === "true", "comment mode back");
-    expect(refused()).toEqual(["f2", "f3", "forged"]);
+    expect(refused()).toEqual(["f2", "f3", "forged", "real"]);
+    expect(posted.some(m => m.type === "clax:composer-ready")).toBe(false);
     // Beside a composer the viewer has typed in: that composer and its text stay.
     gestureIn(frame);
     fromFrame(win, startOf(pick("mine", "Mine")));
     const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the composer");
+    // Its textarea has focus: the bridge may render the clip now.
+    await waitFor(() => posted.some(m => m.type === "clax:composer-ready" && m.pickId === "mine"), "composer ready");
+    expect(document.activeElement).toBe(textarea);
     textarea.value = "my words";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
     gestureIn(frame);

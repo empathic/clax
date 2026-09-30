@@ -125,6 +125,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: flow 2, Post with the keyboard, pointer resting on the page, then click a different element: works`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 2 ${mode}`), mode);
     await firstPick(page, f);
+    // Post is enabled once the screenshot is in (it is taken after the
+    // composer has focus); Tab skips it while disabled.
+    await expect(composer(page).getByRole("button", { name: "Post comment" })).toBeEnabled();
     await page.keyboard.press("Tab");
     await page.keyboard.press("Tab");
     await expect(composer(page).getByRole("button", { name: "Post comment" })).toBeFocused();
