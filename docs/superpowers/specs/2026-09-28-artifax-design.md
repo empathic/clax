@@ -516,7 +516,8 @@ data-version="<n>" data-contract="0.2.61" data-file="<path>">` as the first elem
 `<head>`, then the page content. Recognition rule: if the file, after
 whitespace and an optional BOM, begins with a `<!doctype` declaration
 (case-insensitive), it is a complete document and is served as-is with the
-bridge script inserted immediately after the doctype (never before it, which
+bridge script inserted immediately after the doctype and any ASCII whitespace
+that follows it (never before the doctype, which
 would switch the page into quirks mode), so `window.claude` exists before any
 page script, as `claude.d.ts` promises, whether or not the page writes a
 `<head>` tag and wherever its scripts sit; otherwise it is a fragment and is

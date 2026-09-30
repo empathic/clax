@@ -39,8 +39,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(stored).not.toContain("/_artifax/bridge.js");
     const served = await (await fetch(`${d.base}/c/${artifact.id}/v/2/`)).text();
     expect(served.match(/\/_artifax\/bridge\.js/g)?.length).toBe(1);
-    // The bridge goes right after the doctype; the page follows as stored.
-    expect(served, "served as the full document, not wrapped again").toMatch(/^<!doctype html><script src="\/_artifax\/bridge\.js[^>]*><\/script>\n<html/);
+    // The bridge goes right after the doctype and its whitespace; the page
+    // follows as stored.
+    expect(served, "served as the full document, not wrapped again").toMatch(/^<!doctype html>\n<script src="\/_artifax\/bridge\.js[^>]*><\/script><html/);
     await ctx.close();
   });
 

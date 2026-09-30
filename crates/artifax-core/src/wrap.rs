@@ -118,41 +118,26 @@ pub fn is_full_document(page: &str) -> bool {
     doctype_start(page).is_some()
 }
 
-/// Where a full document's bridge tag goes: just past a doctype declaration
-/// that is the document's first real token (after an optional UTF-8 BOM,
-/// whitespace, and comments); without one, at the very start, after any BOM.
-/// Never before a doctype, which would put the page in quirks mode.
+/// Where a full document's ([`is_full_document`]) bridge tag goes: just past
+/// its leading doctype declaration and any ASCII whitespace after it (never
+/// before the doctype, which would put the page in quirks mode). Whitespace
+/// left before the tag is dropped by the parser, so a page republished from
+/// its served DOM does not gain a text node in `<head>` on every round trip.
 ///
 /// A script right after the doctype runs before anything else in the page:
 /// the parser creates `<html>` and `<head>` around it, a later `<html ...>`
 /// tag's attributes are merged onto the root, and a later `<head ...>` tag is
 /// ignored, attributes included.
 fn bridge_insertion_point(page: &str) -> usize {
-    let bom = if page.starts_with('\u{FEFF}') {
-        '\u{FEFF}'.len_utf8()
-    } else {
-        0
-    };
-    let mut i = bom;
-    loop {
-        let rest = &page[i..];
-        let trimmed = rest.trim_start_matches(|c: char| c.is_whitespace() || c == '\u{FEFF}');
-        i += rest.len() - trimmed.len();
-        let b = trimmed.as_bytes();
-        if b.starts_with(b"<!--") {
-            match trimmed[4..].find("-->") {
-                Some(j) => i += 4 + j + 3,
-                None => return bom,
-            }
-        } else if b.len() >= 9 && b[..9].eq_ignore_ascii_case(b"<!doctype") {
-            return b
-                .iter()
-                .position(|&c| c == b'>')
-                .map_or(page.len(), |p| i + p + 1);
-        } else {
-            return bom;
-        }
-    }
+    let start = doctype_start(page).expect("a full document has a doctype");
+    let end = page[start..]
+        .find('>')
+        .map_or(page.len(), |p| start + p + 1);
+    let rest = &page[end..];
+    end + rest.len()
+        - rest
+            .trim_start_matches(['\t', '\n', '\x0C', '\r', ' '])
+            .len()
 }
 
 /// [`wrap_page`] for the version's index page.
@@ -442,25 +427,53 @@ mod tests {
     }
 
     #[test]
-    fn the_insertion_point_is_after_a_doctype_that_is_the_first_real_token() {
+    fn the_insertion_point_is_after_the_doctype_and_its_trailing_whitespace() {
         assert_eq!(bridge_insertion_point("<!doctype html><p>"), 15);
         assert_eq!(
             bridge_insertion_point("\u{FEFF} \n<!DOCTYPE html >x"),
             "\u{FEFF} \n<!DOCTYPE html >".len()
         );
         assert_eq!(
-            bridge_insertion_point("<!-- a --> <!-- b --><!doctype html><p>"),
-            "<!-- a --> <!-- b --><!doctype html>".len(),
-            "leading comments are skipped"
+            bridge_insertion_point("<!doctype html>\n \t\r\x0C<html>"),
+            "<!doctype html>\n \t\r\x0C".len()
         );
+        // Only ASCII whitespace: a no-break space is text.
+        assert_eq!(bridge_insertion_point("<!doctype html>\u{A0}<p>"), 15);
         assert_eq!(
             bridge_insertion_point("<!doctype html"),
             "<!doctype html".len()
         );
-        // No doctype first: the very start, after any BOM, never before a doctype.
-        assert_eq!(bridge_insertion_point("<p>x</p><!doctype html>"), 0);
-        assert_eq!(bridge_insertion_point("\u{FEFF}<p>x</p>"), "\u{FEFF}".len());
-        assert_eq!(bridge_insertion_point("<!-- open <!doctype html>"), 0);
+        assert_eq!(
+            bridge_insertion_point("<!doctype html>\n"),
+            "<!doctype html>\n".len()
+        );
+    }
+
+    #[test]
+    fn repeated_republishes_of_the_served_dom_leave_the_head_unchanged() {
+        // What the browser builds from a served page and `"<!doctype html>\n" +
+        // outerHTML` sends back: whitespace before the bridge (before <html>)
+        // is dropped, the bridge sits first in <head>. Serving the result again
+        // must keep the whitespace out of <head>.
+        let browser_round_trip = |served: &str| {
+            let at = served.find("<script src=\"/_artifax/bridge.js").unwrap();
+            let end = at + served[at..].find("</script>").unwrap() + "</script>".len();
+            let (tag, after) = (&served[at..end], &served[end..]);
+            assert!(served[..at].trim_end() == "<!doctype html>", "{served}");
+            let rest = after.strip_prefix("<html lang=\"en\"><head>").expect(after);
+            format!("<!doctype html>\n<html lang=\"en\"><head>{tag}{rest}")
+        };
+        let mut page = "<!doctype html>\n<html lang=\"en\"><head><title>P</title></head><body><p>x</p></body></html>".to_string();
+        for v in 1..=4 {
+            let served = wrap_document(&page, "7q3k9mzx2b4t", v, "0.2.61", V);
+            assert!(served.starts_with("<!doctype html>\n<script"), "{served}");
+            page = browser_round_trip(&served);
+            assert!(
+                page.contains("<head><script src=\"/_artifax/bridge.js")
+                    && page.contains("</script><title>P</title></head>"),
+                "round trip {v}: {page}"
+            );
+        }
     }
 
     #[test]
@@ -475,7 +488,7 @@ mod tests {
         assert_eq!(
             out,
             format!(
-                "<!doctype html>{}\n<html lang=\"en\"><head><title>P</title><script>early()</script></head><body><p>x</p></body></html>",
+                "<!doctype html>\n{}<html lang=\"en\"><head><title>P</title><script>early()</script></head><body><p>x</p></body></html>",
                 bridge_tag("7q3k9mzx2b4t", 2, "0.2.61", V)
             )
         );
