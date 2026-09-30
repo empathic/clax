@@ -16,6 +16,7 @@ fn daemon_info_roundtrips_with_0600() {
         started_at: "now".into(),
         bind: "127.0.0.1".into(),
         version: "v".into(),
+        exe: None,
     };
     write_daemon_info(&home, &info).unwrap();
     assert_eq!(read_daemon_info(&home), Some(info));
@@ -309,4 +310,13 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         .await
         .unwrap();
     handle.await.unwrap().unwrap();
+}
+
+#[test]
+fn a_record_without_exe_still_parses() {
+    let v: clax_server::daemon::DaemonInfo = serde_json::from_str(
+        r#"{"port":1,"pid":2,"token":"t","started_at":"s","bind":"127.0.0.1","version":"0.2.0"}"#,
+    )
+    .unwrap();
+    assert_eq!(v.exe, None);
 }

@@ -34,6 +34,11 @@ pub struct DaemonInfo {
     pub bind: String,
     /// Version of the daemon binary.
     pub version: String,
+    /// Canonical path of the daemon's executable, so a client can tell which
+    /// build serves (a `just dev` build and an installed one can share a
+    /// version). Absent in records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exe: Option<String>,
 }
 
 /// Reads `daemon.json`; `None` when it is missing, unreadable, or not valid JSON.
@@ -203,6 +208,10 @@ pub async fn serve(
         started_at: started_at.clone(),
         bind: cfg.bind.to_string(),
         version: cfg.version.to_string(),
+        exe: std::env::current_exe()
+            .and_then(|p| p.canonicalize())
+            .ok()
+            .map(|p| p.display().to_string()),
     };
     write_daemon_info(&cfg.home, &info)?;
 

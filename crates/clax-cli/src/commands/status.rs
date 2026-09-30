@@ -10,7 +10,7 @@ pub struct Args {
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let c = if a.start {
-        Some(Client::connect(home, cli.port_for(home))?)
+        Some(Client::connect(home, cli.port_for(home)?)?)
     } else {
         Client::discover(home)
     };

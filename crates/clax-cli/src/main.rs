@@ -60,14 +60,26 @@ pub enum Cmd {
 
 impl Cli {
     /// `--port` when given, else the home's `[serve] port`, else 7480.
-    pub fn port_for(&self, home: &clax_core::Home) -> u16 {
-        self.port
-            .or_else(|| {
-                clax_core::config::HomeConfig::load(home.root())
-                    .ok()
-                    .and_then(|c| c.serve_port())
-            })
-            .unwrap_or(clax_server::daemon::DEFAULT_PORT)
+    ///
+    /// # Errors
+    /// When `--port` is absent and the home's `config.toml` exists but cannot
+    /// be read or parsed; the message names the file. A missing file means
+    /// the default.
+    pub fn port_for(&self, home: &clax_core::Home) -> anyhow::Result<u16> {
+        if let Some(p) = self.port {
+            return Ok(p);
+        }
+        let config = clax_core::config::HomeConfig::load(home.root()).map_err(|e| match e {
+            // Already "<path>: <parse error>".
+            clax_core::CoreError::Invalid { .. } => anyhow::anyhow!("{e}"),
+            e => anyhow::anyhow!(
+                "reading {}: {e}",
+                home.root().join(clax_core::config::FILE).display()
+            ),
+        })?;
+        Ok(config
+            .serve_port()
+            .unwrap_or(clax_server::daemon::DEFAULT_PORT))
     }
 }
 
@@ -142,5 +154,57 @@ fn main() {
     if let Err(e) = result {
         eprintln!("error: {e:#}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cli(args: &[&str]) -> Cli {
+        Cli::try_parse_from(args).unwrap()
+    }
+
+    #[test]
+    fn port_for_uses_the_flag_then_the_config_then_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        assert_eq!(
+            cli(&["clax", "list"]).port_for(&home).unwrap(),
+            clax_server::daemon::DEFAULT_PORT
+        );
+        std::fs::write(dir.path().join("config.toml"), "[serve]\nport = 7481\n").unwrap();
+        assert_eq!(cli(&["clax", "list"]).port_for(&home).unwrap(), 7481);
+        assert_eq!(
+            cli(&["clax", "--port", "0", "list"])
+                .port_for(&home)
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn port_for_rejects_a_config_that_does_not_parse() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        std::fs::write(dir.path().join("config.toml"), "[serve\nport = 7481\n").unwrap();
+        let e = cli(&["clax", "list"])
+            .port_for(&home)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("config.toml"), "{e}");
+    }
+
+    #[test]
+    fn port_for_rejects_a_config_that_cannot_be_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = clax_core::Home::at(dir.path().to_path_buf());
+        // A directory where the file should be: present, but unreadable as text.
+        std::fs::create_dir(dir.path().join("config.toml")).unwrap();
+        let e = cli(&["clax", "list"])
+            .port_for(&home)
+            .unwrap_err()
+            .to_string();
+        assert!(e.contains("config.toml"), "{e}");
     }
 }

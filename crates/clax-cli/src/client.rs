@@ -100,6 +100,19 @@ impl Client {
         if let Some(c) = Client::discover_with(home, &probe) {
             return Ok(c);
         }
+        Client::spawn_locked(home, &std::env::current_exe()?, port, bind)
+    }
+
+    /// Starts `exe serve --foreground` for `home` on `port` and `bind` and
+    /// waits up to 5 s for it to answer `/healthz`. The caller holds the
+    /// start lock ([`DaemonLock`]).
+    pub fn spawn_locked(
+        home: &Home,
+        exe: &std::path::Path,
+        port: u16,
+        bind: IpAddr,
+    ) -> anyhow::Result<Client> {
+        let probe = probe_client().context("building probe client")?;
         let log = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -109,7 +122,6 @@ impl Client {
         // another thread was creating when this fork happened, on platforms
         // without `pipe2`), so `serve --foreground` closes every inherited
         // descriptor above stdio at startup.
-        let exe = std::env::current_exe()?;
         let mut cmd = Command::new(exe);
         cmd.args([
             "serve",
@@ -165,9 +177,9 @@ impl Client {
     }
 
     /// As [`Client::connect`], but a running daemon older than this binary is
-    /// stopped (waiting up to 5 s for it to exit) and replaced by one started
-    /// from this binary on the old daemon's bind address (logged at info). A
-    /// newer daemon is kept, with a warning logged once per process.
+    /// replaced through [`Client::replace`] on its own port and bind address;
+    /// a newer or equal daemon is kept, with a warning logged once per process
+    /// when the versions differ.
     pub fn connect_matching_version(home: &Home, port: u16) -> anyhow::Result<Client> {
         let ours = env!("CARGO_PKG_VERSION");
         let c = Client::connect(home, port)?;
@@ -183,23 +195,60 @@ impl Client {
             }
             return Ok(c);
         }
-        let bind: IpAddr = c
+        tracing::info!(
+            "replacing clax daemon v{} (pid {}) with v{ours} on port {}",
+            c.info.version,
+            c.info.pid,
+            c.info.port
+        );
+        let exe = std::env::current_exe().context("finding this executable")?;
+        Client::replace(home, &c, &exe, |info| !needs_replacing(info, ours))
+    }
+
+    /// Replaces the daemon `old` names with one started from `exe` on the
+    /// same port and bind address. Holds the start lock throughout, so no
+    /// other client starts a daemon in the gap. Under the lock it re-reads
+    /// `daemon.json`: a different live daemon that `accept`s is used as it
+    /// is (another client already replaced `old`). Otherwise it asks the
+    /// daemon to shut down (SSE streams and long polls end; in-flight
+    /// requests get the daemon's 5 s drain), waits up to 7 s for its PID to
+    /// exit, and starts `exe`.
+    pub fn replace(
+        home: &Home,
+        old: &Client,
+        exe: &std::path::Path,
+        accept: impl Fn(&DaemonInfo) -> bool,
+    ) -> anyhow::Result<Client> {
+        let bind: IpAddr = old
             .info
             .bind
             .parse()
             .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST));
-        tracing::info!(
-            "replacing clax daemon v{} (pid {}) with v{ours} bound to {bind}",
-            c.info.version,
-            c.info.pid
-        );
-        c.shutdown()
-            .with_context(|| format!("stopping clax daemon v{}", c.info.version))?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline && pid_alive(c.info.pid) {
+        home.ensure_dirs()?;
+        let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
+        let current = Client::discover(home);
+        if let Some(c) = &current
+            && c.info.pid != old.info.pid
+            && accept(&c.info)
+        {
+            return Ok(Client::from_info(c.info.clone()));
+        }
+        let target = current.unwrap_or_else(|| Client::from_info(old.info.clone()));
+        if let Err(e) = target.shutdown() {
+            tracing::info!(error = %e, "the old daemon did not take the shutdown request; waiting for it to exit");
+        }
+        let deadline = Instant::now() + Duration::from_secs(7);
+        while Instant::now() < deadline && pid_alive(target.info.pid) {
             std::thread::sleep(Duration::from_millis(50));
         }
-        Client::connect_with_bind(home, port, bind)
+        if pid_alive(target.info.pid) {
+            bail!(
+                "clax daemon v{} (pid {}) did not exit within 7 s; stop it with `clax stop` and try again",
+                target.info.version,
+                target.info.pid
+            );
+        }
+        Client::spawn_locked(home, exe, target.info.port, bind)
     }
 
     /// Errors when the running daemon is bound to a different address than `requested`.
@@ -318,6 +367,7 @@ mod tests {
             started_at: "2026-09-28T00:00:00Z".into(),
             bind: "127.0.0.1".into(),
             version: version.into(),
+            exe: None,
         }
     }
 

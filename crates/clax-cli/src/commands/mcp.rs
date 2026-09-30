@@ -36,7 +36,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         Agent::Claude => Harness::Claude,
         Agent::Codex => Harness::Codex,
     };
-    let (refresh_home, port) = (home.clone(), cli.port_for(home));
+    let (refresh_home, port) = (home.clone(), cli.port_for(home)?);
     let refresh: shim::Refresh = Arc::new(move || {
         let c = Client::connect_matching_version(&refresh_home, port)?;
         Ok(Endpoint {
