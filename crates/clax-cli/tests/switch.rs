@@ -14,6 +14,34 @@ struct Fake {
     shutdown_seen: Arc<AtomicBool>,
 }
 
+/// A test's scratch home. Dropping it (when the test ends, passing or
+/// panicking) runs `clax stop` there, so a daemon a failing test started is
+/// not left running.
+struct Scratch(tempfile::TempDir);
+
+impl Scratch {
+    fn new() -> Scratch {
+        Scratch(tempfile::tempdir().unwrap())
+    }
+    fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = clax(self.path()).arg("stop").output();
+    }
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        let mut c = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
 /// A stand-in daemon of `version`: its PID is a `sleep` child, it answers
 /// `/healthz`, and on `POST /api/admin/shutdown` it closes its listener and
 /// kills the child, as a real daemon exits.
@@ -79,7 +107,7 @@ fn daemon_json(dir: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn serve_replaces_an_older_daemon_on_its_port() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let fake = fake_daemon(&dir.path().join("ax"), "0.0.1");
     let out = clax(dir.path())
         .args(["serve", "--json", "--port", "0"])
@@ -108,7 +136,7 @@ fn serve_replaces_an_older_daemon_on_its_port() {
 
 #[test]
 fn serve_keeps_a_newer_daemon() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let fake = fake_daemon(&dir.path().join("ax"), "999.0.0");
     let out = clax(dir.path())
         .args(["serve", "--json", "--port", "0"])
@@ -121,9 +149,7 @@ fn serve_keeps_a_newer_daemon() {
     );
     assert!(!fake.shutdown_seen.load(Ordering::SeqCst));
     assert_eq!(daemon_json(dir.path())["version"], "999.0.0");
-    let mut c = fake.child.lock().unwrap();
-    let _ = c.kill();
-    let _ = c.wait();
+    drop(fake);
 }
 
 /// `clax serve` as a child process, for tests that act while it runs.
@@ -179,7 +205,7 @@ fn finish(child: Child) -> serde_json::Value {
 
 #[test]
 fn serve_replaces_an_older_daemon_another_client_started_while_it_waited() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let held = lock(dir.path());
     // No daemon yet: serve finds none and waits for the start lock.
     let mut child = serve_child(dir.path());
@@ -199,7 +225,7 @@ fn serve_replaces_an_older_daemon_another_client_started_while_it_waited() {
 
 #[test]
 fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_place() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let old = fake_daemon(&dir.path().join("ax"), "0.0.1");
     let held = lock(dir.path());
     // serve finds the older daemon and waits for the lock to replace it.
@@ -219,17 +245,12 @@ fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_pla
     );
     assert!(!old.shutdown_seen.load(Ordering::SeqCst));
     assert!(!newer.shutdown_seen.load(Ordering::SeqCst));
-    for f in [old, newer] {
-        let mut c = f.child.lock().unwrap();
-        let _ = c.kill();
-        let _ = c.wait();
-    }
 }
 
 #[test]
 fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     use std::time::{Duration, Instant};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let home = dir.path().join("ax");
     let mut old = std::process::Command::new(env!("CARGO_BIN_EXE_clax"))
         .args([

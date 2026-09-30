@@ -131,9 +131,27 @@ fn stop_for_replacement(home: &Home, target: &DaemonInfo, answered: bool) -> any
     )
 }
 
-/// The error for a replacement whose new daemon (`exe`) failed to start with
-/// `err`, after trying to start the previous daemon's executable again on
-/// its port and bind address.
+/// A replacement whose new daemon failed to start; the message says what
+/// became of the previous daemon.
+#[derive(Debug)]
+pub struct UpgradeFailed(String);
+
+impl std::fmt::Display for UpgradeFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for UpgradeFailed {}
+
+/// `path` resolved through symlinks, or as given when it cannot be.
+fn canonical(path: &std::path::Path) -> std::path::PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// The error for a replacement whose new daemon (`exe`, canonical) failed to
+/// start with `err`, after trying to start the previous daemon's executable
+/// again on its port and bind address. Always an [`UpgradeFailed`].
 fn roll_back(
     home: &Home,
     target: &DaemonInfo,
@@ -148,30 +166,35 @@ fn roll_back(
         target.port
     );
     log_line(home, &head);
-    let previous = target
-        .exe
-        .as_deref()
-        .map(std::path::Path::new)
-        .filter(|p| p.exists() && *p != exe);
-    let Some(previous) = previous else {
-        let msg = format!(
-            "{head}. The previous daemon v{} was stopped, and its executable is unknown, gone, or the one that failed, so no clax daemon is running. See {}",
-            target.version,
-            log.display()
-        );
-        log_line(home, "no clax daemon is running");
-        return anyhow!(msg);
+    let recover = format!(
+        "To recover: run `clax stop`, install a build that starts (see {} for why this one did not), then run the command again",
+        log.display()
+    );
+    let none_running = |why: String| {
+        log_line(home, &format!("{why}; no clax daemon is running"));
+        anyhow::Error::new(UpgradeFailed(format!(
+            "{head}. The previous daemon v{} was stopped, and {why}, so no clax daemon is running. {recover}",
+            target.version
+        )))
     };
-    match Client::spawn(home, previous, target.port, bind, true) {
+    let previous = match target.exe.as_deref() {
+        None => return none_running("its executable was not recorded".into()),
+        Some(p) => std::path::Path::new(p),
+    };
+    if !previous.exists() {
+        return none_running(format!(
+            "its executable {} no longer exists",
+            previous.display()
+        ));
+    }
+    if canonical(previous) == exe {
+        return none_running(format!(
+            "its executable {} was overwritten in place by the build that failed (as `cargo install` or `just install` do), so it cannot be restarted",
+            previous.display()
+        ));
+    }
+    let msg = match Client::spawn(home, previous, target.port, bind, true) {
         Ok(c) => {
-            let msg = format!(
-                "{head}. The previous daemon v{} ({}) is running again on port {} (pid {}). See {} for why the new one failed",
-                c.info.version,
-                previous.display(),
-                c.info.port,
-                c.info.pid,
-                log.display()
-            );
             log_line(
                 home,
                 &format!(
@@ -181,7 +204,14 @@ fn roll_back(
                     c.info.port
                 ),
             );
-            anyhow!(msg)
+            format!(
+                "{head}. The previous daemon v{} ({}) is running again on port {} (pid {}). See {} for why the new one failed",
+                c.info.version,
+                previous.display(),
+                c.info.port,
+                c.info.pid,
+                log.display()
+            )
         }
         Err(e2) => {
             log_line(
@@ -191,13 +221,71 @@ fn roll_back(
                     previous.display()
                 ),
             );
-            anyhow!(
-                "{head}. Restarting the previous daemon ({}) failed too: {e2:#}. No clax daemon is running. See {}",
+            format!(
+                "{head}. Restarting the previous daemon ({}) failed too: {e2:#}. No clax daemon is running. {recover}",
                 previous.display(),
-                log.display()
             )
         }
+    };
+    anyhow::Error::new(UpgradeFailed(msg))
+}
+
+/// How long a failed upgrade to one build is not retried.
+const FAILED_UPGRADE_HOLD: Duration = Duration::from_secs(600);
+
+/// Where the last failed upgrade is recorded.
+fn failed_upgrade_path(home: &Home) -> std::path::PathBuf {
+    home.root().join("logs").join("failed-upgrade.json")
+}
+
+/// The key a failed upgrade is recorded under: the version, the canonical
+/// executable and its modification time (nanoseconds since the epoch), so
+/// a rebuilt or reinstalled executable is tried again at once.
+fn upgrade_key(version: &str, exe: &std::path::Path) -> Option<serde_json::Value> {
+    let mtime = std::fs::metadata(exe)
+        .and_then(|m| m.modified())
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(serde_json::json!({
+        "version": version,
+        "exe": exe.display().to_string(),
+        "mtime_ns": mtime.to_string(),
+    }))
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Records that upgrading to `version` from `exe` failed and was rolled back.
+fn record_failed_upgrade(home: &Home, version: &str, exe: &std::path::Path) {
+    if let Some(mut key) = upgrade_key(version, exe) {
+        key["at"] = unix_now().into();
+        let _ = std::fs::write(failed_upgrade_path(home), key.to_string());
     }
+}
+
+/// True when upgrading to `version` from `exe`, unchanged since, failed
+/// less than [`FAILED_UPGRADE_HOLD`] ago.
+fn upgrade_recently_failed(home: &Home, version: &str, exe: &std::path::Path) -> bool {
+    let Some(key) = upgrade_key(version, exe) else {
+        return false;
+    };
+    let Some(rec) = std::fs::read_to_string(failed_upgrade_path(home))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+    else {
+        return false;
+    };
+    let at = rec["at"].as_u64().unwrap_or(0);
+    ["version", "exe", "mtime_ns"]
+        .iter()
+        .all(|k| rec[*k] == key[*k])
+        && unix_now().saturating_sub(at) < FAILED_UPGRADE_HOLD.as_secs()
 }
 
 impl Client {
@@ -375,7 +463,21 @@ impl Client {
         port: u16,
         bind: IpAddr,
     ) -> anyhow::Result<Client> {
-        let ours = env!("CARGO_PKG_VERSION");
+        let exe = std::env::current_exe().context("finding this executable")?;
+        Client::connect_matching(home, port, bind, env!("CARGO_PKG_VERSION"), &exe)
+    }
+
+    /// [`Client::connect_matching_version_with_bind`] for a binary of version
+    /// `ours` at `exe`. An upgrade to `ours` from `exe` that failed and was
+    /// rolled back less than 10 minutes ago, with `exe` unchanged since, is
+    /// not tried again: the running daemon is kept, with a warning.
+    fn connect_matching(
+        home: &Home,
+        port: u16,
+        bind: IpAddr,
+        ours: &str,
+        exe: &std::path::Path,
+    ) -> anyhow::Result<Client> {
         let c = Client::connect_with_bind(home, port, bind)?;
         if !needs_replacing(&c.info, ours) {
             if c.info.version != ours {
@@ -389,9 +491,26 @@ impl Client {
             }
             return Ok(c);
         }
-        let exe = std::env::current_exe().context("finding this executable")?;
-        Client::replace(home, &c, &exe, |info| !needs_replacing(info, ours))
-            .with_context(|| format!("upgrading the clax daemon to v{ours}"))
+        let exe = canonical(exe);
+        if upgrade_recently_failed(home, ours, &exe) {
+            static HELD: std::sync::Once = std::sync::Once::new();
+            HELD.call_once(|| {
+                tracing::warn!(
+                    "keeping clax daemon v{}: upgrading it to v{ours} ({}) failed recently; see {}",
+                    c.info.version,
+                    exe.display(),
+                    home.log_path().display()
+                )
+            });
+            return Ok(c);
+        }
+        match Client::replace(home, &c, &exe, |info| !needs_replacing(info, ours)) {
+            Err(e) if e.downcast_ref::<UpgradeFailed>().is_some() => {
+                record_failed_upgrade(home, ours, &exe);
+                Err(e.context(format!("upgrading the clax daemon to v{ours}")))
+            }
+            r => r.with_context(|| format!("upgrading the clax daemon to v{ours}")),
+        }
     }
 
     /// Replaces the daemon `old` names with one started from `exe` on the
@@ -404,15 +523,18 @@ impl Client {
     /// and bind address. Each replacement is recorded in the daemon log.
     ///
     /// When `exe` fails to start, the previous daemon's recorded executable,
-    /// if it still exists and is not `exe`, is started again on the same port
-    /// and bind address. The error then says whether it is running again or
-    /// no daemon is running, and names the log.
+    /// if it still exists and is not the same file as `exe` (compared after
+    /// resolving symlinks), is started again on the same port and bind
+    /// address. The error, an [`UpgradeFailed`], then says whether it is
+    /// running again or no daemon is running and how to recover, and names
+    /// the log.
     pub fn replace(
         home: &Home,
         old: &Client,
         exe: &std::path::Path,
         accept: impl Fn(&DaemonInfo) -> bool,
     ) -> anyhow::Result<Client> {
+        let exe = &canonical(exe);
         home.ensure_dirs()?;
         let _lock = DaemonLock::acquire(home).context("acquiring daemon lock")?;
         let current = Client::discover(home);
@@ -609,6 +731,12 @@ bind = a[a.index("--bind") + 1]
 listen = {listen}
 home = os.environ["CLAX_HOME"]
 me = os.path.realpath(__file__)
+# Recorded for the test's guard, which kills every fake when the test ends;
+# and a cap, should the test process itself be killed.
+pids = os.path.join(os.path.dirname(home), "pids")
+os.makedirs(pids, exist_ok=True)
+open(os.path.join(pids, str(os.getpid())), "w").close()
+threading.Timer(120, lambda: os._exit(0)).start()
 class H(BaseHTTPRequestHandler):
     def log_message(self, *args): pass
     def reply(self, body):
@@ -646,6 +774,45 @@ srv.serve_forever()
         std::fs::write(&path, script).unwrap();
         make_executable(&path);
         path
+    }
+
+    /// A test's scratch directory. Every fake daemon started under it
+    /// records its PID in `pids/`, and dropping this (when the test ends,
+    /// passing or panicking) kills each one still alive, so a failing test
+    /// leaves no daemon behind.
+    struct Scratch(tempfile::TempDir);
+
+    impl Scratch {
+        fn new() -> Scratch {
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::create_dir(dir.path().join("pids")).unwrap();
+            Scratch(dir)
+        }
+        fn path(&self) -> &std::path::Path {
+            self.0.path()
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let Ok(entries) = std::fs::read_dir(self.path().join("pids")) else {
+                return;
+            };
+            for pid in entries.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()) {
+                // SAFETY: kill(2) on a fake this test started (its PID file).
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
+        }
+    }
+
+    /// A child process killed when dropped.
+    struct KillOnDrop(std::process::Child);
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 
     fn make_executable(path: &std::path::Path) {
@@ -686,7 +853,7 @@ srv.serve_forever()
 
     #[test]
     fn a_new_daemon_that_fails_to_start_rolls_back_to_the_old_one() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let bad = script(dir.path(), "bad", "exit 1");
@@ -709,7 +876,7 @@ srv.serve_forever()
 
     #[test]
     fn a_failed_rollback_says_no_daemon_is_running() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         // The old executable now fails too, as the new one does.
@@ -728,7 +895,7 @@ srv.serve_forever()
 
     #[test]
     fn a_rollback_without_the_old_executable_says_no_daemon_is_running() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         std::fs::remove_file(&old_exe).unwrap();
@@ -745,14 +912,18 @@ srv.serve_forever()
 
     #[test]
     fn a_new_daemon_that_never_answers_is_stopped_before_the_rollback() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let pid_file = dir.path().join("slow.pid");
         let slow = script(
             dir.path(),
             "slow",
-            &format!("echo $$ > {}\nexec sleep 60", pid_file.display()),
+            &format!(
+                "echo $$ > {}\ntouch {}/$$\nexec sleep 60",
+                pid_file.display(),
+                dir.path().join("pids").display()
+            ),
         );
         let e = format!(
             "{:#}",
@@ -772,7 +943,7 @@ srv.serve_forever()
 
     #[test]
     fn an_old_daemon_that_ignores_shutdown_is_terminated_promptly() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", true, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
@@ -791,7 +962,7 @@ srv.serve_forever()
 
     #[test]
     fn the_replacement_takes_the_bind_of_the_daemon_it_replaces_and_is_logged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         // Recorded as bound to every address; the fake listens on loopback.
         let (home, current) = running(dir.path(), &old_exe, "0.0.0.0");
@@ -810,7 +981,7 @@ srv.serve_forever()
 
     #[test]
     fn a_replacement_on_another_port_is_logged() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, Some(0));
@@ -823,19 +994,19 @@ srv.serve_forever()
 
     #[test]
     fn a_vanished_daemon_whose_pid_was_reused_is_not_waited_on_or_signalled() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = Scratch::new();
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         // An unrelated live process holds the old daemon's PID, and nothing
         // listens on its port any more.
-        let mut other = Command::new("sleep").arg("60").spawn().unwrap();
+        let mut other = KillOnDrop(Command::new("sleep").arg("60").spawn().unwrap());
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
             .local_addr()
             .unwrap()
             .port();
         let mut gone = info("0.0.1");
-        gone.pid = other.id();
+        gone.pid = other.0.id();
         gone.port = port;
         let old = Client::from_info(gone);
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
@@ -848,11 +1019,90 @@ srv.serve_forever()
         );
         assert_eq!(c.info.version, "0.0.2");
         assert!(
-            other.try_wait().unwrap().is_none(),
+            other.0.try_wait().unwrap().is_none(),
             "the unrelated process is untouched"
         );
-        let _ = other.kill();
-        let _ = other.wait();
+        stop(&home);
+    }
+
+    #[test]
+    fn an_executable_overwritten_in_place_is_not_restarted_even_through_a_symlink() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
+        // An in-place reinstall writes a build that fails over the old path,
+        // and this client runs it through a symlink.
+        let starts = dir.path().join("starts");
+        std::fs::write(
+            &old_exe,
+            format!("#!/bin/sh\necho start >> {}\nexit 1\n", starts.display()),
+        )
+        .unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&old_exe, &link).unwrap();
+        let e = format!(
+            "{:#}",
+            Client::replace(&home, &old, &link, |_| false)
+                .err()
+                .expect("replace fails")
+        );
+        assert!(e.contains("overwritten in place"), "{e}");
+        assert!(e.contains("no clax daemon is running"), "{e}");
+        assert!(e.contains("`clax stop`"), "{e}");
+        assert!(!e.contains("failed too"), "{e}");
+        assert_eq!(
+            std::fs::read_to_string(&starts).unwrap().lines().count(),
+            1,
+            "the failing build ran once"
+        );
+        assert!(Client::discover(&home).is_none());
+    }
+
+    fn replacements(home: &Home) -> usize {
+        log(home).matches("replacing clax daemon").count()
+    }
+
+    #[test]
+    fn a_failed_upgrade_is_not_retried_for_ten_minutes_unless_its_executable_changes() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, _old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let bad = script(dir.path(), "bad", "exit 1");
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        let e = format!(
+            "{:#}",
+            Client::connect_matching(&home, 0, lo, "0.0.2", &bad)
+                .err()
+                .expect("the upgrade fails")
+        );
+        assert!(e.contains("running again"), "{e}");
+        assert_eq!(replacements(&home), 1);
+        let rolled_back = Client::discover(&home).unwrap().info;
+
+        // The same build again: the rolled-back daemon is kept, untouched.
+        let c = Client::connect_matching(&home, 0, lo, "0.0.2", &bad).unwrap();
+        assert_eq!(c.info.pid, rolled_back.pid);
+        assert_eq!(c.info.version, "0.0.1");
+        assert_eq!(replacements(&home), 1, "not retried");
+
+        // A rebuilt executable is tried at once.
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n").unwrap();
+        assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
+        assert_eq!(
+            replacements(&home),
+            2,
+            "retried after the executable changed"
+        );
+
+        // So is the same build once ten minutes have passed.
+        let path = failed_upgrade_path(&home);
+        let mut rec: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        rec["at"] = (unix_now() - 601).into();
+        std::fs::write(&path, rec.to_string()).unwrap();
+        assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
+        assert_eq!(replacements(&home), 3, "retried after ten minutes");
         stop(&home);
     }
 }

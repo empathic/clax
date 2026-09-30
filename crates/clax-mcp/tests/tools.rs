@@ -834,3 +834,34 @@ async fn status_reports_the_plugin_version_and_skew_when_known() {
     assert_eq!(s["plugin_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(s["skew"], false);
 }
+
+#[tokio::test]
+async fn a_failed_reconnect_reaches_the_caller_with_its_reason() {
+    let ts = TestServer::spawn().await;
+    let endpoint = clax_mcp::client::Endpoint {
+        base: ts.base.clone(),
+        browser_base: format!("http://localhost:{}", ts.addr.port()),
+        token: ts.token.clone(),
+    };
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let c2 = calls.clone();
+    // The first refresh finds the daemon; later ones fail as a rolled-back
+    // upgrade does.
+    let find: clax_mcp::client::Refresh = std::sync::Arc::new(move || {
+        if c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Ok(endpoint.clone())
+        } else {
+            Err(anyhow::anyhow!(
+                "upgrading the clax daemon to v9: rolled back"
+            ))
+        }
+    });
+    let client = DaemonClient::managed(find.clone(), find, claude_registration());
+    let t = ClaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    ok(t.publish(Parameters(html("one", "<p>1"))).await);
+    end_session(&ts, &client.session().unwrap().id).await;
+    // The session is gone, so the request is refused and refreshed; the
+    // refresh fails, and its reason reaches the caller.
+    let e = err(t.publish(Parameters(html("two", "<p>2"))).await);
+    assert!(e.to_string().contains("rolled back"), "{e}");
+}
