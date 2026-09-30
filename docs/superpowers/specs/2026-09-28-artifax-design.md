@@ -728,10 +728,14 @@ name, cut whole at surrogate pairs), `text` (its first 32 characters of
 text as a quote reads it: not in scripts or styles, CSS-hidden text
 included; whitespace collapsed, control characters dropped; at most 64
 characters as the daemon checks), and `children` (its child element count).
-A selector-only match is detached when its tag differs; when both its child
-element count differs and its text is unlike the recorded text (a Dice
-similarity of character pairs under 0.5), so live text or added rows alone
-keep it attached, also on the version it was drawn on; or when its width differs by more than 25% from its width at draw time (`rect.w /
+A selector-only match on a version other than the thread's (the shell sends
+`sameVersion` with each anchor in `artifax:resolve-anchors` and
+`artifax:scroll-to`) is detached when its tag differs, or when both its child
+element count differs and its text (read from the shared text index) is
+unlike the recorded text (a Dice similarity of character pairs under 0.5), so
+live text or added rows alone keep it attached; on the thread's own version,
+whose content may be live, the fingerprint is not checked. Any selector-only
+match is detached when its width differs by more than 25% from its width at draw time (`rect.w /
 area.w`, skipped when the viewport's width changed by more than 5% since). An
 area on `html` is placed by `rect` at the same page coordinates (`x +
 scrollX`, `y + scrollY`), not by its fractions.

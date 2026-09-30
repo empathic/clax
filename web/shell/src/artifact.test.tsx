@@ -849,7 +849,10 @@ describe("ArtifactView", () => {
     fromFrame(win, { type: "artifax:hello", artifact: ID, version: 1, file: "index.html" });
     await waitFor(() => posted.some(m => m.type === "artifax:welcome"), "welcome");
     // The frame knows the thread only by the opaque handle it was sent.
-    const handle = (await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "the resolve request")).id;
+    const first = await waitFor(() => posted.filter(m => m.type === "artifax:resolve-anchors").at(-1)?.anchors?.[0], "the resolve request");
+    // Made on the version shown: the frame skips the area's fingerprint.
+    expect((first as { sameVersion?: boolean }).sameVersion).toBe(true);
+    const handle = first.id;
     expect(handle).not.toBe("tZ");
     const lastFocus = () => posted.filter(m => m.type === "artifax:focus").at(-1);
     expect(lastFocus()).toEqual({ type: "artifax:focus", id: null });

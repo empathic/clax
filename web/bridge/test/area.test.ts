@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { fingerprint, resolveAnchor, textSimilarity } from "../src/anchor";
+import { AnchorCache, fingerprint, resolveAnchor, textIndex, textPrefix, textSimilarity } from "../src/anchor";
 import { AREA_MIN, Widen, placeArea, areaBox, areaFractions, boxOf, buildAreaAnchor, containingElement, dragRect, foreignRoot, isClickSized, nonTextAt, widenedTarget } from "../src/area";
 import { areaCrop, areaRenderRoot } from "../src/clip";
 
@@ -200,6 +200,24 @@ describe("area anchors", () => {
     expect(resolveAnchor(document, a)?.element).toBe(document.querySelectorAll("section")[1]);
   });
 
+  it("skip the fingerprint on the version they were drawn on: a list whose items are prepended stays attached there, and detaches on another version", () => {
+    document.body.innerHTML = `<main><ul id="feed"><li>Alice: shipped the release</li><li>Bob: fixed tests</li></ul></main>`;
+    const feed = document.querySelector("#feed")!;
+    place(feed, { left: 0, top: 0, width: 400, height: 200 });
+    d.elementsFromPoint = () => [feed, document.body];
+    const a = buildAreaAnchor(document, { left: 10, top: 10, width: 100, height: 50 });
+    feed.insertAdjacentHTML("afterbegin", "<li>Carol: reviewed PR 12</li><li>Dan: wrote docs</li>");
+    // Another child count and unlike text: another element on a later version...
+    expect(resolveAnchor(document, a)).toBeNull();
+    // ...but live content on the version it was drawn on.
+    expect(resolveAnchor(document, a, undefined, undefined, undefined, true)?.element).toBe(feed);
+    // The bridge's cache passes the flag through.
+    const cache = new AnchorCache(document);
+    expect(cache.resolve("t1", a, true)?.element).toBe(feed);
+    expect(cache.resolve("t2", a)).toBeNull();
+    cache.disconnect();
+  });
+
   it("stay attached when live text changes on the version they were drawn on, and when rows are added", () => {
     document.body.innerHTML = `<main><div class="card"><h3>Open issues: 42</h3><p>updated now</p></div></main>`;
     const card = document.querySelector(".card")!;
@@ -226,6 +244,15 @@ describe("area anchors", () => {
     const tag = fingerprint(el).tag;
     expect(tag.length).toBe(63);
     expect(/[\uD800-\uDBFF]$/.test(tag)).toBe(false);
+  });
+
+  it("read an element's text prefix the same from the shared index as by walking it", () => {
+    document.body.innerHTML = `<main><section id="s"><h2>Quarterly  goals</h2>\n<p>Grow <b>revenue</b> fast, then more and more</p><script>ignored()</script></section><p>after</p></main>`;
+    const s = document.querySelector("#s")!;
+    const idx = textIndex(document.body);
+    expect(textPrefix(s, idx)).toBe(textPrefix(s));
+    expect(textPrefix(s)).toBe("Quarterly goals Grow revenue fas");
+    expect(textPrefix(document.querySelector("h2")!, idx)).toBe("Quarterly goals");
   });
 
   it("measure text similarity tolerantly", () => {

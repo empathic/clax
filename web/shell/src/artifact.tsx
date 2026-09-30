@@ -292,7 +292,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   useEffect(() => () => host?.dispose(), [host]);
   const resolveAll = () => {
     if (customLive.current) return;
-    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: anchorHandle(t.id), anchor: t.anchor })) });
+    send({ type: "artifax:resolve-anchors", requestId: `r${Date.now()}`, anchors: threadsRef.current.filter(t => t.anchor.file === fileRef.current).map(t => ({ id: anchorHandle(t.id), anchor: t.anchor, sameVersion: t.version_n === shown })) });
   };
   const loadThreads = () => {
     const load: { n: number; since: ((ts: Thread[]) => Thread[])[] | null } = { n: threadLoad.current.n + 1, since: [] };
@@ -352,7 +352,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
     if (t.anchor.file === fileRef.current) {
       // A custom-anchors page brings its own threads into view; the shell
       // never scrolls it.
-      if (!hostRef.current?.reveal(t.id)) send({ type: "artifax:scroll-to", anchor: t.anchor });
+      if (!hostRef.current?.reveal(t.id)) send({ type: "artifax:scroll-to", anchor: t.anchor, sameVersion: t.version_n === shown });
       return;
     }
     // A thread on a page this version does not hold is detached: nothing to open.
@@ -437,7 +437,7 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
           // The jump's page greeted: scroll there. Another page greeted: the
           // viewer moved on, so the jump is dropped without a notice.
           clearPending();
-          if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor });
+          if (p.thread.anchor.file === greeted) send({ type: "artifax:scroll-to", anchor: p.thread.anchor, sameVersion: p.thread.version_n === shown });
         }
         break;
       }

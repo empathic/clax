@@ -48,8 +48,10 @@ export type CapEvent = { type: "artifax:event"; ns: string; topic: string; data:
 export type ShellToBridge =
   | { type: "artifax:welcome"; mode: "comment" | "view" }
   | { type: "artifax:comment-mode"; on: boolean }
-  | { type: "artifax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor }[] }
-  | { type: "artifax:scroll-to"; anchor: Anchor }
+  /** `sameVersion`: the thread was made on the version the frame shows (an
+   * area's element fingerprint is then not checked: its content may be live). */
+  | { type: "artifax:resolve-anchors"; requestId: string; anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] }
+  | { type: "artifax:scroll-to"; anchor: Anchor; sameVersion?: boolean }
   /** The thread whose drawn area the page outlines dashed (hovered in the
    * sidebar or selected), by its ID in the latest `resolve-anchors`; null
    * for none. Threads that are not area anchors show nothing. */

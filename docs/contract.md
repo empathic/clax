@@ -662,9 +662,11 @@ kept without its clip says so in the notice banner. On a later version the
 area follows its element (found by selector) and is projected onto the
 element's box then; without the element the thread is detached, and so it is
 when only the selector (not the element's content hash) matched and the
-element is another one: a different tag, or both another child element count
-and text unlike the recorded text (live text, such as a count that changed,
-or rows added alone never detach it), or a width more than 25% off its width
+element is another one: on a version other than the one the area was drawn
+on, a different tag, or both another child element count and text unlike the
+recorded text (live text, such as a count that changed, or rows added alone
+never detach it; on the area's own version, whose content may be live, this
+is not checked), or a width more than 25% off its width
 at draw time (while the viewport's width is
 within 5% of what it was). An area on `html` is placed by its drawn rectangle
 at the same page coordinates, so a resize or a longer page does not move it.

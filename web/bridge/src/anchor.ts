@@ -188,18 +188,28 @@ function query(doc: Document, selector: string): Element | null {
 /** Characters of an element's text an area fingerprint keeps. */
 export const FINGERPRINT_TEXT = 32;
 
-/** The first `FINGERPRINT_TEXT` characters of the text a reader sees in `el`,
- * whitespace collapsed and trimmed; only as much text is read as that needs. */
-export function textPrefix(el: Element): string {
-  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
-    acceptNode: n => {
-      const p = n.parentElement;
-      return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-    },
-  });
+/** The first `FINGERPRINT_TEXT` characters of the text a reader sees in `el`
+ * (as quotes read it), its text nodes joined by spaces, whitespace collapsed
+ * and trimmed. Read from `idx`, the page's shared text index, when given
+ * (re-anchoring many threads), else by walking only as much of `el` as that
+ * needs (drawing one area); both give the same text. */
+export function textPrefix(el: Element, idx?: TextIndex): string {
   let out = "";
-  for (let n = walker.nextNode(); n && out.length < FINGERPRINT_TEXT + 1; n = walker.nextNode()) {
-    out = `${out} ${(n as Text).data.slice(0, 4000)}`.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trimStart();
+  const add = (t: Text) => { out = `${out} ${t.data.slice(0, 4000)}`.replace(/\p{Cc}/gu, " ").replace(/\s+/g, " ").trimStart(); };
+  if (idx) {
+    // The pieces inside `el` are consecutive in document order.
+    let inside = false;
+    for (const p of idx.pieces) {
+      if (el.contains(p.node)) { inside = true; add(p.node); if (out.length > FINGERPRINT_TEXT) break; } else if (inside) break;
+    }
+  } else {
+    const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT, {
+      acceptNode: n => {
+        const p = n.parentElement;
+        return p && !SKIP.has(p.tagName) && !p.closest(OVERLAY_TAG) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+      },
+    });
+    for (let n = walker.nextNode(); n && out.length < FINGERPRINT_TEXT + 1; n = walker.nextNode()) add(n as Text);
   }
   return cut(out.trim(), 0, FINGERPRINT_TEXT);
 }
@@ -240,12 +250,14 @@ export function textSimilarity(a: string, b: string): number {
  * `TEXT_ALIKE` similar to the recorded prefix) still agrees; only an element
  * that differs in both is another one, so live text or a changed row count
  * alone never detaches an area. Holds when no fingerprint was recorded. */
-export function fingerprintHolds(a: Anchor, el: Element): boolean {
+export function fingerprintHolds(a: Anchor, el: Element, index?: () => TextIndex): boolean {
   const f = a.area;
   if (!f || f.tag === undefined) return true;
   if (tagOf(el) !== f.tag) return false;
   const childrenAgree = f.children === undefined || el.childElementCount === f.children;
-  const textAgrees = f.text === undefined || textSimilarity(textPrefix(el), f.text) >= TEXT_ALIKE;
+  // The text is read only when the child count alone does not settle it.
+  if (childrenAgree) return true;
+  const textAgrees = f.text === undefined || textSimilarity(textPrefix(el, index?.()), f.text) >= TEXT_ALIKE;
   return childrenAgree || textAgrees;
 }
 
@@ -271,7 +283,7 @@ export function areaWidthHolds(a: Anchor, el: Element, doc: Document): boolean {
  * detached, or when it is on another page (its `file` differs). `index`
  * supplies the body's text index when one is needed, so callers resolving
  * many anchors against an unchanged page can share one walk. */
-export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE, index?: () => TextIndex): Resolved | null {
+export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Element> = new Map(), file: string = INDEX_FILE, index?: () => TextIndex, sameVersion = false): Resolved | null {
   if ((a.file || INDEX_FILE) !== file) return null;
   if (a.kind === "custom") {
     const el = a.custom_name ? custom.get(a.custom_name) : undefined;
@@ -287,7 +299,9 @@ export function resolveAnchor(doc: Document, a: Anchor, custom: Map<string, Elem
     const method: ResolveMethod = a.html_hash && htmlHash(el) === a.html_hash ? "exact" : "selector";
     // An area has no text to confirm a selector-only match: one on an element
     // whose width moved away from its width at draw time is on other content.
-    if (method === "selector" && a.kind === "area" && el !== doc.documentElement && (!areaWidthHolds(a, el, doc) || !fingerprintHolds(a, el))) return null;
+    // The fingerprint only on another version than the area was drawn on:
+    // on its own version the element's content may be live.
+    if (method === "selector" && a.kind === "area" && el !== doc.documentElement && (!areaWidthHolds(a, el, doc) || (!sameVersion && !fingerprintHolds(a, el, text)))) return null;
     let range: Range | null = null;
     if (a.kind === "range" && a.quote) {
       const idx = text();
@@ -352,14 +366,15 @@ export class AnchorCache {
     if (root) this.observer.observe(root, { subtree: true, childList: true, characterData: true, attributes: true });
   }
 
-  resolve(id: string, anchor: Anchor): Resolved | null {
+  /** `sameVersion`: the anchor's thread was made on the version shown. */
+  resolve(id: string, anchor: Anchor, sameVersion = false): Resolved | null {
     // Changes not yet delivered to the observer still invalidate.
     const pending = this.observer.takeRecords();
     if (pending.length) this.invalidate(pending);
     const hit = this.entries.get(id);
     const same = hit?.anchor === anchor;
     if (hit && same && !hit.due) return hit.res;
-    const res = resolveAnchor(this.doc, anchor, this.custom, this.file, () => this.index ??= textIndex(this.doc.body!));
+    const res = resolveAnchor(this.doc, anchor, this.custom, this.file, () => this.index ??= textIndex(this.doc.body!), sameVersion);
     const misses = res ? 0 : (same ? hit.misses : 0) + 1;
     this.entries.set(id, { anchor, res, misses, retryAt: Date.now() + retryDelay(misses), changed: false, due: false });
     return res;
