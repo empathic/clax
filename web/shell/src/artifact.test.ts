@@ -795,7 +795,7 @@ describe("ArtifactView", () => {
           ? new Promise<Response>(r => { answerSend = r; })
           : new Response(JSON.stringify({ threads: [thread], next_cursor: null })));
     const root = view.root;
-    (await import("./comments")).captureWait.ms = 50;
+    (await import("./view/composer-model")).captureWait.ms = 50;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean }; ok?: boolean; value?: { opened?: boolean } }[] = [];
