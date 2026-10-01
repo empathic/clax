@@ -3557,16 +3557,21 @@ marketplace directory. Neither touches Clax's data.
 The Claude Code and Codex plugins start `clax` through
 `scripts/ensure-clax.sh`, which runs `CLAX_BIN`, else the first `clax` on
 `PATH` whose `--version` names clax. It never downloads, builds, or looks
-anywhere else. A `clax` of another version than the plugin's runs with a
-warning. When there is none:
+anywhere else. A `clax` of another version than the plugin's runs; the MCP
+server and other commands warn about it, hooks stay silent. Before it starts
+the MCP server, the wrapper runs `clax mcp --preflight`, which reads the home,
+its `config.toml` and the port without starting a daemon, and then replaces
+itself with `clax mcp`, so the harness is its parent. When there is no usable
+`clax`, or the preflight fails:
 
 - The MCP server answers the MCP client itself. `initialize` succeeds, with
   `instructions` that start `Clax is unavailable:`. `tools/list` offers one
   tool, `status`, whose call returns the reason and the fix
-  (`isError: true`), or says to reconnect once a `clax` has appeared. `ping`
+  (`isError: true`), or says to reconnect once the cause is gone. `ping`
   answers `{}`. Any other request gets JSON-RPC error -32601 with the same
-  reason.
-- A hook prints one line to stderr and exits 0.
+  reason. A `clax mcp` that exits later in a session is not relayed: the
+  client sees the connection close.
+- A hook (no usable `clax` only) prints one line to stderr and exits 0.
 - Other commands print the reason and exit 1.
 
 Every MCP start adds a `launch mode=mcp agent=<harness> bin="<path>"
@@ -3677,6 +3682,12 @@ git diff --stat -- docs/superpowers/specs/2026-09-28-clax-design.md   # shows on
 git checkout -- docs/superpowers/specs/2026-09-28-clax-design.md
 ```
 
+### A2. Check `clax init` against the real harness CLIs, in scratch directories
+
+The agents ran `clax init` and `clax uninit` only against fake `claude`, `codex` and `pi` commands. Before B, build Clax (`cargo build -p clax-cli`), then run `scripts/verify-harnesses.sh` and paste its table to the agents.
+
+The script runs everything inside its own scratch root and deletes it on exit. It sets `HOME`, `CLAX_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` there, and refuses to run (exit 2) if any would fall inside your real home. It reads and copies no auth file, runs only commands that need no login, gives the scratch home its own daemon port (never 7480 or 7481), and stops that daemon on exit. It covers `init`, `init` again, `uninit --agent pi` while Claude Code and Codex still use the copy, `uninit`, registrations under the previous name (including a deleted checkout's Pi entry), and `doctor --agent` for each harness. A harness whose CLI is not on `PATH` is SKIPPED. The Pi session check needs a model, so it is SKIPPED unless you export `VERIFY_PI_SESSION=1` and your provider's API key yourself.
+
 ### B. Move this machine to the new install
 
 ```bash
@@ -3686,7 +3697,7 @@ just install
 which -a clax        # ~/.cargo/bin/clax must come first
 ```
 
-`just install` runs `clax init`. That re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. Its output lists each harness as `registered` or `skipped`. Then:
+`just install` runs `clax init`. That re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. Its output lists each harness as `registered` or `skipped`. A Pi package whose directory no longer exists (the old checkout's `plugins/pi`) is left registered, and Pi's line names it with the `pi remove …` command; run that command. Then:
 
 - Remove stale binaries that `which -a clax` shows ahead of or beside `~/.cargo/bin/clax`: an old `~/.local/bin/clax` or `~/.clax/bin/clax`. Unset `CLAX_SOURCE_DIR` and `CLAX_INSTALL_DIR` in your shell profile.
 - Start a new session in each harness. Run `clax doctor --agent claude`, then `codex`, then `pi`: `binary` must say the plugins run `~/.cargo/bin/clax`, and `plugin` must pass. Ask the agent to call `status`; `binary.path` must be `~/.cargo/bin/clax`.

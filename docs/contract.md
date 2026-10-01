@@ -24,7 +24,15 @@ Twenty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 
 - the stdio shim `clax mcp --agent <claude|codex>`, which a harness
   starts once per session and which attributes publishes to that session
-  (Pi does not use it; `--agent pi` is a usage error);
+  (Pi does not use it; `--agent pi` is a usage error). The plugins start it
+  through `scripts/ensure-clax.sh`, which first runs `clax mcp --preflight`
+  (it reads the home, its `config.toml` and the port, starts no daemon, and
+  exits 1 with a one-line `error:` when the shim could not start), then
+  execs the shim, so the harness is the shim's parent process. When no
+  usable `clax` is found or the preflight fails, the wrapper serves a
+  minimal MCP server whose one tool, `status`, returns the reason with
+  `isError: true`. A shim that exits later in a session is not relayed:
+  the client sees the connection close;
 - the daemon's `/mcp` endpoint (MCP streamable HTTP, bearer token required),
   which attributes publishes to no session.
 

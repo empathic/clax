@@ -111,16 +111,16 @@ describe("CommentMode", () => {
     }
   });
 
-  it("colours the outline for the background behind the target", async () => {
+  it("tints the outline for the background behind the target", async () => {
     document.body.innerHTML = `<div style="background-color: rgb(20, 22, 24)"><h3>Dark</h3></div><h3 id="l">Light</h3>`;
     mode.set(true);
     fire(document.querySelector("h3")!, "mousemove");
     await nextFrame();
     const host = document.querySelector<HTMLElement>("clax-overlay")!;
-    expect(host.style.getPropertyValue("--ax-border")).toBe("#fdba74");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.24)");
     fire(document.getElementById("l")!, "mousemove");
     await nextFrame();
-    expect(host.style.getPropertyValue("--ax-border")).toBe("#c2410c");
+    expect(host.style.getPropertyValue("--ax-tint")).toBe("rgba(237, 84, 57, 0.16)");
   });
 
   it("keeps the outline of an oversized element inside the viewport", async () => {

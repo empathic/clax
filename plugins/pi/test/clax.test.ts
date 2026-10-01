@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, textPrefix } from "../src/clax.ts";
-import { discover, endpointOf, ensure } from "../src/daemon.ts";
+import { binaryVersion, discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 
@@ -298,6 +298,8 @@ describe("clax Pi extension", () => {
     const s = json(await pi.callTool("clax_status", {}, ctx));
     expect(s.version).toBe(JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version);
     expect(s).not.toHaveProperty("daemon_version");
+    // The tests run with CLAX_BIN set, so the binary is the test daemon's.
+    expect(s.binary).toMatchObject({ path: claxBin, version: s.version });
   });
 
   it("refuses a relative path when the session has no working directory", async () => {
@@ -846,6 +848,18 @@ describe("ensure", () => {
   }, 30_000);
 
   it("names the install command when no clax binary is found", async () => {
-    await expect(ensure(join(scratch, "nobin"), { env: { PATH: "" } })).rejects.toThrow(/cargo install --path crates\/clax-cli/);
+    const e = ensure(join(scratch, "nobin"), { env: { PATH: "" } });
+    await expect(e).rejects.toThrow(/`just install` in a Clax checkout/);
+    await expect(e).rejects.toThrow(/release installer/);
+  });
+
+  it("reads a binary's version only when it reports itself as clax", async () => {
+    const other = join(scratch, "other-clax");
+    writeFileSync(other, "#!/bin/sh\necho 'other 1.0'\n");
+    chmodSync(other, 0o755);
+    expect(await binaryVersion(other)).toBeNull();
+    expect(await binaryVersion(join(scratch, "no-such-clax"))).toBeNull();
+    const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
+    expect(await binaryVersion(claxBin)).toBe(version);
   });
 });

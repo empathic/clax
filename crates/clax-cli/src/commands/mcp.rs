@@ -20,9 +20,21 @@ pub struct Args {
     /// Milliseconds between session heartbeats.
     #[arg(long, hide = true, default_value_t = shim::DEFAULT_HEARTBEAT.as_millis() as u64)]
     pub heartbeat_interval_ms: u64,
+    /// Check that the server could start, then exit: resolve the home, its
+    /// `config.toml` and the port, print nothing, and exit 0; on failure print
+    /// a one-line `error: <reason>` and exit 1. Starts and contacts no daemon.
+    /// The plugins' wrapper runs it before it execs `clax mcp`.
+    #[arg(long, hide = true)]
+    pub preflight: bool,
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
+    if a.preflight {
+        return cli
+            .port_for(home)
+            .map(|_| ())
+            .map_err(|e| anyhow::anyhow!("{}", one_line(&format!("{e:#}"))));
+    }
     // Stdout is the MCP channel: diagnostics go to stderr only.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -55,6 +67,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             token: c.token,
         })
     });
+    let hold_home = home.clone();
+    let upgrade_hold: clax_mcp::tools::UpgradeHoldProbe = Arc::new(move |daemon_version: &str| {
+        crate::client::upgrade_hold_for(&hold_home, daemon_version).map(|h| h.to_json(&hold_home))
+    });
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(shim::run(
         harness,
@@ -62,8 +78,18 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         refresh,
         discover,
         Duration::from_millis(a.heartbeat_interval_ms.max(1)),
+        Some(upgrade_hold),
     ));
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
     rt.shutdown_timeout(Duration::from_millis(100));
     result
+}
+
+/// `text` on one line: its lines trimmed, blank ones dropped, joined by spaces.
+fn one_line(text: &str) -> String {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }

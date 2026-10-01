@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 mod hooklog;
+mod plugins;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -56,6 +57,24 @@ pub enum Cmd {
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
     Hook(commands::hook::Args),
+    /// Register the Clax plugins built into this binary with each harness
+    /// whose CLI is on PATH, replacing stale registrations.
+    ///
+    /// Re-running reinstalls the plugin, which enables it again where it was
+    /// disabled. A Pi package is removed only when `init` recorded it or its
+    /// package.json names Clax's Pi package; one whose directory is missing
+    /// is left and named, with the command that removes it. Known miss: Pi
+    /// entries are matched as Pi resolves them, except that a `~user/` path
+    /// is not expanded, so such an entry is left registered.
+    Init(commands::init::Args),
+    /// Remove the Clax plugin registrations from each harness whose CLI is
+    /// on PATH, and the plugins' copy once no harness refers to it.
+    ///
+    /// The copy is kept while any harness's registry still names it or
+    /// cannot be read. The same known miss as `init` applies to Pi entries.
+    Uninit(commands::init::Args),
+    /// Print a haiku about Clax, one of ten, chosen at random.
+    Haiku,
 }
 
 impl Cli {
@@ -102,13 +121,21 @@ fn agent_arg() -> String {
         .unwrap_or_else(|| "-".into())
 }
 
+/// The Clax home, as an absolute path, so commands that run elsewhere (the
+/// daemon, the harness CLIs `init` runs in HOME) see the same directory.
+fn home_from_env() -> Result<clax_core::Home, String> {
+    let home = clax_core::Home::from_env().map_err(|e| e.to_string())?;
+    let root = std::path::absolute(home.root()).map_err(|e| format!("CLAX_HOME: {e}"))?;
+    Ok(clax_core::Home::at(root))
+}
+
 fn main() {
     let started = std::time::Instant::now();
     let hook = is_hook_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            if hook && let Ok(home) = clax_core::Home::from_env() {
+            if hook && let Ok(home) = home_from_env() {
                 let text = e.to_string();
                 commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()));
             }
@@ -121,7 +148,7 @@ fn main() {
             std::process::exit(code);
         }
     };
-    let home = match clax_core::Home::from_env() {
+    let home = match home_from_env() {
         Ok(home) => home,
         Err(e) => {
             eprintln!("error: {e}");
@@ -143,6 +170,9 @@ fn main() {
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
+        Cmd::Init(a) => commands::init::init(&cli, &home, a),
+        Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
+        Cmd::Haiku => commands::haiku::run(&cli),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

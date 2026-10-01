@@ -6,10 +6,10 @@ import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
 import { probe, type Endpoint } from "./client.ts";
 
-/** The command that installs the Clax CLI, named when no binary is found. */
+/** How to get a binary when none is found. Pi never downloads. */
 export const INSTALL_HINT =
-  "install it with `cargo install --path crates/clax-cli` from a clone of https://github.com/empathic/clax " +
-  "(or download a release from https://github.com/empathic/clax/releases), or set CLAX_BIN to its path";
+  "install clax with `just install` in a Clax checkout (it puts clax in ~/.cargo/bin), or with the release installer " +
+  "(~/.local/bin), and start Pi from a shell whose PATH includes that directory; or set CLAX_BIN to a clax binary";
 
 /** How long `clax serve --json` may take; it gives up on its own after
  * about 5 s when the daemon does not become ready. */
@@ -121,6 +121,17 @@ export function findBinary(env: NodeJS.ProcessEnv = process.env): string {
     if (executable(candidate)) return candidate;
   }
   throw new Error(`the clax CLI was not found on PATH; ${INSTALL_HINT}`);
+}
+
+/** The version `bin --version` reports (`clax 0.3.0` gives `0.3.0`), or
+ * null when it does not run, does not answer within 3 s, or is not clax. */
+export function binaryVersion(bin: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(bin, ["--version"], { env, timeout: 3_000 }, (err, stdout) => {
+      const m = /^clax (\S+)/.exec(String(stdout).split("\n")[0] ?? "");
+      resolve(!err && m ? m[1] : null);
+    });
+  });
 }
 
 /** The running daemon for `home`, starting one with `clax serve --json`

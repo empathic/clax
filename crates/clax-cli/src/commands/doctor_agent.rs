@@ -1,7 +1,9 @@
 //! `clax doctor --agent <harness>`: one check per layer between a harness
 //! and the daemon, so a partly working plugin says which layer failed.
 //!
-//! - `binary`: this `clax` and its version.
+//! - `binary`: this `clax`, the one the plugins run (`$CLAX_BIN`, else the
+//!   first on `PATH`), and every `clax` on `PATH`.
+//! - `upgrade`: a failed upgrade that keeps the daemon at an older version.
 //! - `plugin`: the harness's installed copy of the plugin, and whether its
 //!   manifest version and launcher match this binary.
 //! - `skill`: the installed skill's stated version and tool count, and whether
@@ -85,10 +87,23 @@ pub struct Dirs {
 
 impl Dirs {
     /// The directories from the environment lookup `env`; `None` without `HOME`.
-    /// Empty variables count as unset.
+    /// Empty variables count as unset. Each directory is absolute: a leading
+    /// `~` or `~/` is expanded against `HOME`, and a relative value is taken
+    /// relative to `HOME`, where `clax init` runs the harness CLIs.
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Option<Dirs> {
-        let var = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-        let home = var("HOME")?;
+        let raw = |k: &str| env(k).filter(|v| !v.is_empty());
+        let home = PathBuf::from(raw("HOME")?);
+        let var = |k: &str| {
+            raw(k).map(|v| {
+                if v == "~" {
+                    home.clone()
+                } else if let Some(rest) = v.strip_prefix("~/") {
+                    home.join(rest)
+                } else {
+                    home.join(v)
+                }
+            })
+        };
         Some(Dirs {
             codex_home: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
@@ -207,13 +222,118 @@ fn where_installed(agent: DoctorAgent, dirs: &Dirs) -> String {
     }
 }
 
-/// `binary`: this executable and its version.
-pub fn binary_check(exe: &Path, version: &str) -> Value {
-    check(
-        "binary",
-        true,
-        format!("{} (clax {version})", exe.display()),
-    )
+/// How long a `clax --version` on `PATH` may take.
+const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Every file named `clax` in the `PATH` value `path`, in order, with the
+/// first line of its `--version` when that names clax (and it answers
+/// within [`VERSION_TIMEOUT`]).
+pub fn clax_on_path(path: &std::ffi::OsStr) -> Vec<(PathBuf, Option<String>)> {
+    std::env::split_paths(path)
+        .map(|d| d.join("clax"))
+        .filter(|p| p.is_file())
+        .map(|p| {
+            let v = version_line(&p).filter(|l| l.starts_with("clax "));
+            (p, v)
+        })
+        .collect()
+}
+
+/// The first line `exe --version` prints, or None when it cannot run or
+/// takes longer than [`VERSION_TIMEOUT`] (it is then killed).
+fn version_line(exe: &Path) -> Option<String> {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+    let mut child = Command::new(exe)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + VERSION_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(std::time::Duration::from_millis(10))
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+    let mut out = String::new();
+    child.stdout.take()?.read_to_string(&mut out).ok()?;
+    out.lines().next().map(str::to_string)
+}
+
+/// `binary`: this executable and its version, the binary the plugins'
+/// wrapper runs (`$CLAX_BIN`, else the first clax on `PATH`), and every
+/// clax on `PATH`; failed when the wrapper runs none, or another one.
+pub fn binary_check(
+    exe: &Path,
+    version: &str,
+    clax_bin: Option<&str>,
+    on_path: &[(PathBuf, Option<String>)],
+) -> Value {
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let runs: Option<(PathBuf, String)> = match clax_bin.filter(|b| !b.is_empty()) {
+        Some(b) => Some((PathBuf::from(b), "from CLAX_BIN".into())),
+        None => on_path
+            .iter()
+            .find_map(|(p, v)| v.as_ref().map(|v| (p.clone(), v.clone()))),
+    };
+    let mut lines = vec![format!("this clax: {} (clax {version})", exe.display())];
+    let ok = match &runs {
+        Some((p, v)) => {
+            lines.push(format!("the plugins run: {} ({v})", p.display()));
+            canon(p) == canon(exe)
+        }
+        None => {
+            lines.push("the plugins run: nothing (no clax on PATH)".into());
+            false
+        }
+    };
+    let listed: Vec<String> = on_path
+        .iter()
+        .map(|(p, v)| format!("{} ({})", p.display(), v.as_deref().unwrap_or("not clax")))
+        .collect();
+    lines.push(format!(
+        "on PATH, in order: {}",
+        if listed.is_empty() {
+            "none".to_string()
+        } else {
+            listed.join("; ")
+        }
+    ));
+    if !ok {
+        lines.push(
+            "the plugins run another clax than this one, or none: run `just install` in your Clax checkout (or install.sh), and put its directory first on the PATH your harness starts with".into(),
+        );
+    }
+    check("binary", ok, lines.join("\n"))
+}
+
+/// `upgrade`: no failed upgrade keeps the running daemon (of version
+/// `daemon_version`, when one runs) at an older version; failed, with the
+/// failure, its reason, when the hold ends and what to do, when one does.
+pub fn upgrade_check(home: &Home, daemon_version: Option<&str>) -> Value {
+    let hold = daemon_version.and_then(|v| Some((v, crate::client::upgrade_hold_for(home, v)?)));
+    match hold {
+        None => check(
+            "upgrade",
+            true,
+            "no failed upgrade is held back from the daemon",
+        ),
+        Some((kept, h)) => check(
+            "upgrade",
+            false,
+            format!("{}\nwhy: {}", h.line(home, kept), h.reason),
+        ),
+    }
 }
 
 /// `plugin`: the newest installed copy of the harness's plugin; failed when
@@ -476,7 +596,10 @@ pub fn feedback_check(sessions: &Result<Vec<SessionFeedback>, String>) -> Value 
 pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<Value> {
     let version = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().unwrap_or_default();
-    let mut out = vec![binary_check(&exe, version)];
+    let on_path = clax_on_path(&std::env::var_os("PATH").unwrap_or_default());
+    let clax_bin = std::env::var("CLAX_BIN").ok();
+    let mut out = vec![binary_check(&exe, version, clax_bin.as_deref(), &on_path)];
+    out.push(upgrade_check(home, client.map(|c| c.info.version.as_str())));
     match Dirs::from_env(|k| std::env::var(k).ok()) {
         Some(dirs) => {
             let (plugin, root) = plugin_check(agent, &dirs, version);
@@ -567,6 +690,21 @@ mod tests {
         assert_eq!(d.claude_dir, PathBuf::from("/h/.claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
         assert!(Dirs::from_env(|_| None).is_none());
+    }
+
+    #[test]
+    fn dirs_expand_a_tilde_and_resolve_relative_values_against_home() {
+        let d = Dirs::from_env(|k| match k {
+            "HOME" => Some("/h".into()),
+            "CODEX_HOME" => Some("~".into()),
+            "CLAUDE_CONFIG_DIR" => Some("cfg/claude".into()),
+            "PI_CODING_AGENT_DIR" => Some("~/.pi/agent".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(d.codex_home, PathBuf::from("/h"));
+        assert_eq!(d.claude_dir, PathBuf::from("/h/cfg/claude"));
+        assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
     }
 
     #[test]
@@ -901,5 +1039,137 @@ mod tests {
             push: None,
         }]));
         assert_eq!(broken["ok"], false);
+    }
+
+    /// A script named clax in `dir` whose --version prints `line`.
+    fn fake_clax(dir: &Path, line: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).unwrap();
+        let p = dir.join("clax");
+        std::fs::write(&p, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        p.canonicalize().unwrap()
+    }
+
+    #[test]
+    fn clax_on_path_lists_every_clax_in_order() {
+        let t = tempfile::tempdir().unwrap();
+        let a = fake_clax(&t.path().join("a"), "other 1.0");
+        let b = fake_clax(&t.path().join("b"), "clax 0.3.0");
+        let path = std::env::join_paths([
+            t.path().join("a"),
+            t.path().join("none"),
+            t.path().join("b"),
+        ])
+        .unwrap();
+        let found = clax_on_path(&path);
+        assert_eq!(found.len(), 2);
+        assert_eq!(
+            (found[0].0.canonicalize().unwrap(), found[0].1.clone()),
+            (a, None)
+        );
+        assert_eq!(
+            (found[1].0.canonicalize().unwrap(), found[1].1.clone()),
+            (b, Some("clax 0.3.0".into()))
+        );
+    }
+
+    #[test]
+    fn a_clax_on_path_that_hangs_is_listed_without_a_version() {
+        use std::os::unix::fs::PermissionsExt;
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("clax");
+        std::fs::write(&p, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let started = std::time::Instant::now();
+        let found = clax_on_path(t.path().as_os_str());
+        assert!(started.elapsed() < VERSION_TIMEOUT + std::time::Duration::from_secs(2));
+        assert_eq!(found, vec![(p, None)]);
+    }
+
+    #[test]
+    fn binary_passes_when_the_plugins_run_this_clax() {
+        let t = tempfile::tempdir().unwrap();
+        let me = fake_clax(&t.path().join("me"), "clax 0.3.0");
+        let other = fake_clax(&t.path().join("other"), "clax 0.2.0");
+        let v = binary_check(
+            &me,
+            "0.3.0",
+            None,
+            &[
+                (me.clone(), Some("clax 0.3.0".into())),
+                (other.clone(), Some("clax 0.2.0".into())),
+            ],
+        );
+        assert_eq!(v["ok"], true, "{v}");
+        let d = v["detail"].as_str().unwrap();
+        assert!(
+            d.contains(&format!("the plugins run: {} (clax 0.3.0)", me.display())),
+            "{d}"
+        );
+        assert!(
+            d.contains(&format!("{} (clax 0.2.0)", other.display())),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn binary_fails_when_another_clax_comes_first_or_none_is_on_path() {
+        let t = tempfile::tempdir().unwrap();
+        let me = fake_clax(&t.path().join("me"), "clax 0.3.0");
+        let first = fake_clax(&t.path().join("first"), "clax 0.2.0");
+        let v = binary_check(
+            &me,
+            "0.3.0",
+            None,
+            &[
+                (first.clone(), Some("clax 0.2.0".into())),
+                (me.clone(), Some("clax 0.3.0".into())),
+            ],
+        );
+        assert_eq!(v["ok"], false);
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("the plugins run another clax than this one"),
+            "{v}"
+        );
+        let v = binary_check(&me, "0.3.0", None, &[]);
+        assert_eq!(v["ok"], false);
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("the plugins run: nothing (no clax on PATH)"),
+            "{v}"
+        );
+        let v = binary_check(&me, "0.3.0", Some(me.to_str().unwrap()), &[]);
+        assert_eq!(v["ok"], true, "CLAX_BIN names this binary: {v}");
+    }
+
+    #[test]
+    fn upgrade_fails_while_a_failed_upgrade_holds_the_running_daemon_back() {
+        let t = tempfile::tempdir().unwrap();
+        let home = Home::at(t.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let exe = fake_clax(&t.path().join("new"), "clax 0.3.0");
+        crate::client::tests::write_hold(&home, "0.3.0", &exe, "it crashed");
+        let v = upgrade_check(&home, Some("0.2.0"));
+        assert_eq!(v["ok"], false, "{v}");
+        let d = v["detail"].as_str().unwrap();
+        for s in [
+            "keeping clax daemon v0.2.0",
+            "to v0.3.0",
+            &exe.display().to_string(),
+            "not tried again until",
+            "why: it crashed",
+            "`clax stop`",
+        ] {
+            assert!(d.contains(s), "{s} in {d}");
+        }
+        // No daemon, or one that is not older, is not held back.
+        assert_eq!(upgrade_check(&home, None)["ok"], true);
+        assert_eq!(upgrade_check(&home, Some("0.3.0"))["ok"], true);
     }
 }
