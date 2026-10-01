@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mount } from "./test/preact";
+import { mount } from "./test/svelte";
 import { forgetViewer } from "./threads";
-import { ViewerName } from "./viewer-name";
+import ViewerName from "./ui/ViewerName.svelte";
 
 describe("ViewerName", () => {
   beforeEach(() => { forgetViewer(); });

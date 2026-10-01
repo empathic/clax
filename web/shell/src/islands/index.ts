@@ -3,9 +3,10 @@
 // while the shell is ported.
 import type { ArtifactController } from "../view/artifact-controller";
 import { preactIslands } from "./preact";
+import { svelteIslands } from "./svelte";
 
 /** Renders an island into `target`; the result unmounts it. */
 export type MountIsland = (target: HTMLElement, ctl: ArtifactController) => () => void;
 export type Islands = { topbar: MountIsland; stage: MountIsland; sidebar: MountIsland };
 
-export const ISLANDS: Islands = { topbar: preactIslands.topbar, stage: preactIslands.stage, sidebar: preactIslands.sidebar };
+export const ISLANDS: Islands = { topbar: preactIslands.topbar, stage: preactIslands.stage, sidebar: svelteIslands.sidebar! };

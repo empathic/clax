@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { Sidebar } from "./sidebar";
-import { mount } from "./test/preact";
+import Sidebar from "./ui/Sidebar.svelte";
+import { flush, mount } from "./test/svelte";
 import type { Thread } from "./threads";
 
 const base = { artifact_id: "7q3k9mzx2b4t", version_n: 1, has_clip: false, clip_url: null, created_at: "2026-09-29T10:00:00.000Z", resolved_at: null, resolved_by: null, feedback_state: null };
@@ -89,7 +89,7 @@ describe("Sidebar", () => {
     ];
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads, resolved: {}, file: "index.html", holds: f => f !== "gone.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const view = mount(Sidebar, { threads, resolved: {}, file: "index.html", holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".section-detached .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["g"]);
     expect(Array.from(root.querySelectorAll(".section-open .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["b"]);
     view.unmount();
@@ -109,5 +109,46 @@ describe("Sidebar", () => {
     expect(onSelect).toHaveBeenCalledWith(t);
     view.unmount();
     root.remove();
+  });
+
+  it("posts a reply on Cmd+Enter or Ctrl+Enter, once, without selecting the thread", () => {
+    const onReply = vi.fn();
+    const onSelect = vi.fn();
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const view = mount(Sidebar, { threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect, onSend: vi.fn(), onResolve: vi.fn(), onReply });
+    const input = view.root.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    const key = (init: KeyboardEventInit) => flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init })));
+    flush(() => input.click());
+    flush(() => { input.value = "  "; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    key({ metaKey: true });
+    expect(onReply).not.toHaveBeenCalled();
+    flush(() => { input.value = "looks good"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    key({});
+    expect(onReply).not.toHaveBeenCalled();
+    key({ metaKey: true });
+    expect(onReply).toHaveBeenCalledExactlyOnceWith(t, "looks good");
+    expect(input.value).toBe("");
+    flush(() => { input.value = "again"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    key({ ctrlKey: true });
+    expect(onReply).toHaveBeenLastCalledWith(t, "again");
+    expect(onSelect).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("ticks the elapsed time of a thread waiting for the agent each second", () => {
+    vi.useFakeTimers({ now: new Date(base.created_at) });
+    try {
+      const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "note")],
+        feedback_state: { thread_id: "a", state: "sent", tier: "stop_hook", since: base.created_at, resends: 0, exhausted: false } };
+      const view = mount(Sidebar, { threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+      const waiting = () => view.root.querySelector(".waiting")!.textContent;
+      expect(waiting()).toContain("· 0 s ·");
+      flush(() => vi.advanceTimersByTime(2000));
+      expect(waiting()).toContain("· 2 s ·");
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
