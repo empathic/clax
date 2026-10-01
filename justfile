@@ -7,9 +7,15 @@ default: help
 help:
     @just --list --unsorted
 
-# Run a dev server that reloads on Rust and web changes, on its own home (~/.clax-dev) and port 7481; --shared serves the real home on 7480
+# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex uses the installed one); with no harness, `just watch`
+[positional-arguments]
 dev *ARGS:
-    ./scripts/dev.sh {{ARGS}}
+    ./scripts/dev.sh "$@"
+
+# Run the auto-reloading daemon and web UI (~/.clax-dev on 7481, or $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
+[positional-arguments]
+watch *ARGS:
+    ./scripts/watch.sh "$@"
 
 # Build the Rust workspace
 build:
@@ -63,26 +69,28 @@ check *GATES:
 ci *GATES:
     ./scripts/quality_gates.sh {{GATES}}
 
-# Build the frontend and install the clax binary
+# Install clax from this checkout into ~/.cargo/bin and register its plugins with each harness found
 install: web
-    cargo install --path crates/clax-cli
+    cargo install --locked --path crates/clax-cli
+    "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
+    @b="${CARGO_HOME:-$HOME/.cargo}/bin/clax"; f="$(command -v clax || true)"; if [ "$f" != "$b" ]; then echo "warning: the first clax on PATH is ${f:-none}, not $b; the plugins run the first one, so put ${b%/clax} first on PATH" >&2; fi
 
-# Remove the installed clax binary
+# Remove the plugin registrations and the clax installed by `just install`
 uninstall:
+    -"${CARGO_HOME:-$HOME/.cargo}/bin/clax" uninit
     -cargo uninstall clax-cli
-    -rm ~/.local/bin/clax
 
-# Run the daemon in the foreground (extra args go to `clax serve`)
+# Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
 serve *ARGS:
-    cargo run -p clax-cli -- serve --foreground {{ARGS}}
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -p clax-cli -- serve --foreground --port 7481 {{ARGS}}
 
-# Stop the running daemon
+# Stop the dev daemon (~/.clax-dev)
 stop:
-    cargo run -q -p clax-cli -- stop
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- stop
 
-# Check the local setup and daemon health
+# Check the dev home and its daemon (~/.clax-dev)
 doctor:
-    cargo run -q -p clax-cli -- doctor
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
 
 # Remove build output and web dependencies
 clean:
