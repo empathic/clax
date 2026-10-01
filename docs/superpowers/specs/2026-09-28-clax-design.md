@@ -30,9 +30,10 @@ of toolpath and clash.
 - An agent in any of the three harnesses can publish, read, list, and update
   artifacts, and gets a stable local URL that outlives the session.
 - A person can comment on an element or a text selection in a published page,
-  hit "Send to agent", and the publishing agent receives the selector, the
-  quoted text, the comment, and a PNG clip of the region, then replies and
-  resolves the thread from inside its session.
+  hit **Send to <agent>** (the button names the agent it sends to, for
+  example **Send to claude**), and the publishing agent receives the
+  selector, the quoted text, the comment, and a PNG clip of the region, then
+  replies and resolves the thread from inside its session.
 - Pages using `artifact` (self-publish), `db`, `downloads`, `permissions`,
   `user`, and `comments` capabilities behave as they do on claude.ai.
 - Everything works with no network access and no account.
@@ -70,6 +71,7 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D14 | Pi adapter is specified against the published extension API and clash-pi, and verified against Pi 0.73.1 in phase 2 (§13) | Pi was not installed when this was designed. |
 | D15 | The product is Clax: binary `clax`, crates `clax-*`, home `~/.clax`, variables `CLAX_*`, message prefix `clax:`, routes `/_clax/`, plugin and skill `clax`; renamed from its first name with a clean break (no aliases, no migration; see the name-history note); `clax init` and `clax uninit` do remove the harnesses' registrations of the first name's plugin and marketplace, which are harness settings, not Clax data | One name everywhere; nothing was released under the first name, so there is nothing to carry over. |
 | D16 | The plugins run the `clax` on `PATH` (or `$CLAX_BIN`) through a thin wrapper and never download or build; `just install` installs `clax` from the checkout and `clax init` registers the plugins embedded in the binary with each harness; `just dev <harness>` runs a fresh build from a temporary directory on `PATH`, on `~/.clax-dev` and port 7481, with the plugin loaded from the checkout for Claude Code and Pi (Codex runs its installed plugin; `just install` updates it); releases and `install.sh` serve people without a checkout | Local use never depends on a public repository or a release; a registered plugin always matches the installed binary; a moved checkout breaks nothing. |
+| D-Echo | Decided by the owner on 2026-10-01 (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`, every recommended answer accepted): gallery cards without thumbnails (Q1); the theme switch's return to the system (Q2); @mention matching (Q3); what counts as looking, and the Addressed group holding still until the view is decided again (Q4); presence built now, with location from the selected thread (Q5); keys only while focus is in the shell (Q6); others' last seen version public, their per-thread marks private (Q7); agents named by harness, no "publishing" state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the returning-viewer summary in the top bar (Q11); the version bands moved into the top bar (Q12). | Settled before the Echo build so no task waits on a design question. |
 
 ## 3. Architecture
 
@@ -194,11 +196,16 @@ SQLite tables (abridged; columns beyond keys are illustrative):
 - `artifacts(id, title, description, icon, created_at, updated_at,
   current_version, owner_session_id, pinned, capabilities_json,
   contract_version, deleted_at)`
-- `versions(artifact_id, n, label, created_at, session_id, files_json)`
-  where `files_json` maps published path to content type and size.
+- `versions(artifact_id, n, label, created_at, session_id, files_json, note)`
+  where `files_json` maps published path to content type and size; `note` is
+  the agent's short change note for the version (at most 280 characters, null
+  when none).
 - `assets(id, artifact_id, content_type, ext, size, created_at)`
-- `sessions(id, harness, harness_session_id, cwd, pid, parent_pid,
-  started_at, last_seen_at, ended_at)`
+- `sessions(id, agent_handle, harness, harness_session_id, cwd, pid,
+  parent_pid, started_at, last_seen_at, ended_at)`; `agent_handle` (`a_` and
+  22 lowercase hex digits from 11 random bytes, unique, assigned at
+  registration, never derived from the ID) names the session's agent to the
+  shell, which never sees a session ID.
 - `watches(session_id, artifact_id, replies_armed, created_at)`
 - `threads(id, artifact_id, version_n, anchor_json, status, sent_to_agent,
   has_clip, created_at, resolved_at, resolved_by)`; `has_clip` records
@@ -206,13 +213,16 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   `viewer:<public_id>`, `viewer:anonymous` (no cookie), or
   `agent:<harness>`; it never holds a viewer cookie or a session ID, since
   thread views and events are unauthenticated.
-- `comments(id, thread_id, author_kind, author_name, via_session_id, body,
-  created_at)` with `author_kind` in `viewer | agent`. `via_session_id` is
-  stored and never served: comment views carry `via_harness` (the replying
-  session's harness, `null` on viewer comments) instead.
-- `feedback(id, thread_id, comment_id, target_session_id, created_at,
-  delivered_at, delivery_tier, acknowledged_at, resend_count, last_sent_at,
-  untargeted_at, push_failed_at)`; one row per (comment, target session).
+- `comments(id, thread_id, author_kind, author_name, author_public_id,
+  via_session_id, body, created_at)` with `author_kind` in `viewer | agent`.
+  `via_session_id` is stored and never served: comment views carry
+  `via_harness` (the replying session's harness, `null` on viewer comments)
+  instead; `author_public_id` is the writing viewer's `public_id` (null for
+  agents, viewers without a cookie, and comments written before it existed).
+- `feedback(id, thread_id, comment_id, target_session_id, batch_id,
+  created_at, delivered_at, delivery_tier, acknowledged_at, resend_count,
+  last_sent_at, untargeted_at, push_failed_at)`; one row per (comment, target
+  session); `batch_id` names the batch send that created the row, if any.
   `target_session_id` is null when no live session was found at send time
   or the target ended before the row was delivered (`untargeted_at` records
   when). `last_sent_at` and `resend_count` drive resends (§10).
@@ -237,6 +247,25 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   `codex_home` is the `CODEX_HOME` the Codex `session_start` hook reported;
   `push_error` and `push_error_at` hold the latest `codex queue` failure
   (cleared by a success).
+- `version_threads(artifact_id, version_n, thread_id, source, created_at)`:
+  the threads a version addressed (§10, "Version changelog"); `source`
+  is `working`, `explicit` or `resolve`. Deleting a thread deletes its links.
+  Linking never changes a thread's status.
+- `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`: the latest
+  version this viewer (the `clax_viewer` cookie's row) has viewed unpinned.
+  It only moves forward; at most 200 rows per viewer (the least recently
+  updated are pruned on write); deleting an artifact deletes its rows.
+- `send_batches(id, artifact_id, note, sent_by, size, created_at)` and
+  `batch_threads(batch_id, thread_id)`: batch sends to the agent (§10,
+  "Batch send"); `sent_by` is the sender's display name as a comment author
+  gets it, never a cookie. Deleting a thread or its artifact deletes its rows.
+- `viewer_threads(viewer_id, thread_id, looked_at)`: when this viewer last
+  looked at the thread (§10, "Participants and attention"). Served only to
+  that viewer. Deleting a thread deletes its rows.
+- `mentions(comment_id, public_id)`: the viewers a comment @mentions.
+
+Working records (§10, "Working") and presence (§10, "Presence") are not
+stored: the daemon keeps them in memory, so a restart starts with none.
 
 Content addressing: every version keeps its own files; files omitted from a
 later publish are copied forward as on claude.ai, `null` removes one. A
@@ -310,6 +339,11 @@ Browser caching (every route above):
   artifact is deleted, with the artifact's ID in its data. `resync`, with
   `data: {"dropped": n}`, is sent when a subscriber fell behind and `n` events
   were dropped; the client should refetch the state it displays.
+- The event stream also carries `working` (`{artifact_id, working: [view]}`,
+  the artifact's whole list after any change, §10 "Working"). An optional
+  `types=<name>,<name>` narrows the stream to those event names (`ready` and
+  `resync` are always sent); the gallery opens `?types=working` with no
+  `artifact` filter.
 
 Agent- and shell-facing JSON API under `/api`:
 
@@ -344,7 +378,14 @@ Agent- and shell-facing JSON API under `/api`:
   above; agent: W,
   `author_kind=agent`, and `X-Clax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
-  rows), `POST .../threads/<tid>/resolve` (viewer, or agent with W and
+  rows). `POST .../threads:send` (no token; foreign `Origin` refused, as the
+  single send) takes `{thread_ids, note?, to?}` and sends 1 to 20 threads as
+  one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`,
+  or 400 `invalid_args` / `note_too_long` / `unknown_agent` /
+  `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes
+  nothing on any error. Thread views carry `sends`, the batches that sent
+  them. The single send takes an optional JSON body `{to}` (an agent handle;
+  400 `unknown_agent` when it names no live agent on the artifact). `POST .../threads/<tid>/resolve` (viewer, or agent with W and
   `X-Clax-Session`), `POST .../threads/<tid>/reopen` and `DELETE
   .../threads/<tid>` (viewer at `interact` or above, that is a named viewer
   or the owner shell with the token, else 403 `forbidden`; or the agent with
@@ -366,6 +407,39 @@ Agent- and shell-facing JSON API under `/api`:
   (W; `{thread_ids?, comment_ids?}`: acknowledges every row on the named
   threads, and only the named comments' rows, so a comment the caller has not
   seen stays pending).
+- Working (§10, "Working"): `GET /api/artifacts/<aid>/working` (no token;
+  `{working: [view]}`), `GET /api/sessions/<sid>/working` (token; views plus
+  `session_id`, `artifact_id`, `expires_at`), `PUT
+  /api/sessions/<sid>/working/<aid>` (W; `{thread_ids?, message?}`; `{working,
+  message_truncated}`), `DELETE /api/sessions/<sid>/working/<aid>` (W;
+  optional `?thread_ids=<id>,<id>`; `{cleared, working}`), `POST
+  /api/sessions/<sid>/working/renew` (W; `{renewed}`), `POST
+  /api/sessions/<sid>/working/end` (W, turn end; `{cleared}`). A view is
+  `{key, harness, message, thread_ids, started_at, last_heartbeat}`; `key` is
+  a ULID minted for the record, never a session ID. `GET /api/artifacts` and
+  `GET /api/artifacts/<aid>` carry each artifact's `working` list.
+- Changelog (§10, "Version changelog"): version views carry `note` and
+  `addresses` (thread IDs); thread views carry `addressed_in` (version
+  numbers). `GET /api/viewers/me/seen?artifact=<aid>` (`{seen}`) and `PUT
+  /api/viewers/me/seen` (`{artifact_id, version}`, monotonic; `{seen}`) are
+  viewer routes (no token, foreign `Origin` refused; PUT without a viewer
+  cookie is 400 `no_viewer`).
+- Participants and attention (§10, "Participants and attention"): `GET
+  /api/artifacts/<aid>` and the bootstrap block carry `participants`
+  (`{people: [{public_id, display_name}], agents: [{handle, harness, live}]}`)
+  and, when the request's viewer cookie names a viewer, `attention`
+  (`{addressed, addressed_v, new_replies, open_in, seen, looked}`); `GET /api/artifacts`
+  carries `participants` per artifact. `GET /api/viewers/me/attention`
+  answers `{artifacts: {<aid>: {addressed, addressed_v, new_replies, open_in, seen}}}`
+  for every artifact (`{artifacts: {}}` without a cookie). `PUT
+  /api/viewers/me/looked` takes `{artifact_id, thread_ids}` (at most 50) and
+  answers `{looked: {<thread ID>: <time>}}`. Both are viewer routes; every
+  response carrying `attention` is `private, no-cache` with `Vary: Cookie`.
+- Presence (§10, "Presence"): `PUT /api/viewers/me/presence` takes
+  `{artifact_id, state: "here" | "away", where?}` (viewer route; a cookie is
+  required) and answers `{people}`; `GET /api/artifacts/<aid>/presence`
+  answers `{people: [{public_id, display_name, state, where, since}]}`; the
+  event stream carries `presence` with the same body.
 - Docs (db capability): `GET/PUT/PATCH/DELETE /api/artifacts/<aid>/docs/<path>`,
   `GET /api/artifacts/<aid>/docs?collection=<c>&where=...&order_by=...&limit=&cursor=`,
   `POST /api/artifacts/<aid>/docs:batch` (at most 50 operations, atomic),
@@ -410,6 +484,8 @@ including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
   "title": "Quarterly Review",          // required on version 1 (the tools take it from <title> when omitted), optional after
   "description": "…", "icon": "chart",  // optional
   "label": "Draft to legal",            // optional, ≤ 60 chars
+  "note": "Two columns; third bullet dropped",  // optional, ≤ 280 chars, longer is cut
+  "addresses": ["01J9..."],                    // optional, ≤ 50 threads of this artifact
   "if_version": 3,                      // required on an existing artifact
   "capabilities": {"db": {}},           // optional; omitted keeps, {} clears
   "files": {
@@ -420,6 +496,9 @@ including `<aid>.localhost`; CLI, shim, and the D5 probe use it.
   }
 }
 ```
+
+A thread in `addresses` that is not a thread of the artifact is 400
+`unknown_thread`, and nothing is published.
 
 `index.html` is required on every publish and is never carried forward.
 Other files carry forward from the previous version unless given or
@@ -464,9 +543,16 @@ payload lines, which must stay one line); anything else is `invalid_path`.
 
 ## 8. Shell UI and viewer
 
-Gallery (`/`): cards with title, description, icon, updated time, pinned
-first; search; open, pin, delete; shows which session published each and
-whether that session is live.
+Gallery (`/`): two groups. **Needs your eyes** holds the artifacts where,
+for this viewer, a thread they are in was addressed after they last looked
+at it, a version newer than the last one they viewed exists, or a thread
+they are in has a reply from someone else they have not seen. **Everything
+else** follows, pinned first, then by the latest version or reply. Each card
+leads with its version numeral, then the title, the publishing agent and
+time, markers (`N addressed in vK`, `vK new`, `N new replies`, `<agent>
+working on N`, `N open`), and a footer with the roster (people on the left,
+agents on the right, at most 3 a side) and `seen vK`. Search, open, pin and
+delete as before. The footer holds one haiku, a new one each visit.
 
 Artifact shell (`/a/<aid>`, `/a/<aid>/v/<n>`, either followed by
 `/<path>` of a published page; after `/a/<aid>`, `v` followed by an
@@ -488,12 +574,34 @@ file under `v/<digits>/` is reachable only through the versioned form):
   load shows no pins. The URL fragment and the frame's are kept in step: the
   frame opens at the URL's fragment, and the bridge reports every fragment
   change (`clax:hash`), which the shell writes to its URL with
-  `replaceState`. The version picker, the reload banner, and copy link keep
+  `replaceState`. The version picker, the Reload button, and copy link keep
   the current page. `url` in tool results stays `/a/<aid>`.
 
-- Header: title, version picker (`v3 of 3`, older versions read-only), copy
-  link, open raw content in a new tab, comment mode toggle, thread sidebar
-  toggle, viewer display name.
+- Top bar: the Echo mark (a link to the gallery), the title over the
+  "published by" line, the roster and its two-line summary (who is working
+  on what; what is new for you; opens the people panel), Comment (red-orange
+  when on, with a 3px red-orange rule under the bar, and the C keycap),
+  Threads with the open count, the version button (`v5 of 5`, a green dot
+  while a version newer than this viewer's last view exists) opening the
+  version menu, a menu with open raw and copy link, and the theme switch. At
+  phone width: the mark, the title, the roster (one per side) and Comment; a
+  Page | Threads switch sits at the foot.
+- Version menu: a panel listing every version newest first, each with who
+  published it and when, the threads it addressed as numbered chips, what
+  this viewer did about them, and its note; each a link to that version
+  (older versions read-only). A full sheet at phone width.
+- People panel (P, or the roster): one row per person (threads they are in,
+  presence and location, the last version they viewed) and per agent (the
+  threads it is working on and whose, elapsed time with a haiku, or idle),
+  and the viewer's own name, edited here.
+- Keys: `?` opens a sheet listing them; C comment mode; Esc leaves it or
+  closes a menu; T threads; J and K next and previous thread; Enter reply;
+  S send; R resolve; X tick; Shift+S send the ticked threads; V versions;
+  P people. Keys act only when focus is in the shell and not in a text field.
+- Theme: follows the system; the switch flips light and dark, and a choice
+  equal to the system's clears back to following it.
+- Nothing Clax draws covers or moves the artifact, except pins and the
+  comment-mode outline.
 - Content frame: iframe whose `src` is the per-artifact origin when
   reachable (D5 probe: fetch `http://<aid>.localhost:<port>/healthz` with a
   1 s timeout, cached per browser). In that mode the iframe carries no
@@ -507,17 +615,46 @@ file under `v/<digits>/` is reachable only through the versioned form):
   navigation cannot reach the API same-origin. A bare sandbox stops Chrome
   rendering PDFs top-level; assets are meant for `<img>`, `<video>`,
   `<a download>`, and fonts.
-- Live updates: the shell subscribes to `/api/events`; a new version shows a
-  "v4 published, reload" banner unless the page published it itself via the
+- Live updates: the shell subscribes to `/api/events`; a new version shows
+  "v4 published" in the top bar's summary with a Reload button beside it
+  unless the page published it itself via the
   `artifact` capability, in which case it reloads immediately as on
-  claude.ai.
-- Thread sidebar: open and resolved threads, each with anchor summary,
-  clip thumbnail, comments, "Send to agent" button, resolve. Clicking a
-  thread scrolls the frame to its anchor and flashes it; a thread on
-  another page than the one in the frame is labelled "on <file>", and
-  clicking it navigates the frame to that page and then scrolls to it.
-  Pins show only for the page in the frame. Detached threads (anchor not
-  found on its own page in this version) are listed under "Detached".
+  claude.ai. Nothing is drawn over the page for a version: viewing an older
+  version shows a Latest link beside the version button, the version button
+  gets its dot, the summary line reads `v5 addressed 3` (or `3 new versions
+  · 7 addressed` for a viewer returning after several), and the Addressed
+  group fills.
+- Thread sidebar: groups **Addressed in vN** (open threads this viewer is
+  in that the newest version addressed and they had not looked at when the
+  view was decided), **Open**, **Detached** (anchor not found on its own page
+  in this version) and **Resolved**. A card shows the anchor summary, an
+  `outdated` tag when its element changed in a later version but still
+  exists (resolved by selector or quote while its `html_hash` differs), the
+  clip, the messages (people's with a red-orange rule on the left, an
+  agent's with a green rule on the right, `<agent> · addressed in vN` when
+  linked), one line of version-tagged history (`v3 alex commented · v4 Mia
+  replied · claude worked on it · v5 claude addressed it · alex resolved`),
+  and Reply, Resolve and `Send to <agent> ▾`. Anyone may resolve; the
+  history records who. Clicking a thread scrolls the frame to its anchor and
+  flashes it (a static outline under reduced motion); a thread on another
+  page is labelled "on <file>" and clicking it navigates there first. Pins
+  show only for the page in the frame: red-orange; split red-orange and
+  green while an agent works on the thread; white with a green ring and a
+  `vN` flag when addressed and not looked at; a green ring when selected;
+  dashed while being written. Open thread cards carry a checkbox
+  (Shift-click ticks a range; X ticks the selected thread). While any is
+  ticked, a hand-off bar at the sidebar's foot reads `N selected · handed
+  off together`, with Clear, `Send N to <agent> ▾` and an optional one-line
+  note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to
+  <agent>` button sits at the sidebar top whenever open threads have not
+  been sent. A sent thread's history shows the send and its note. A thread
+  that disappears leaves the selection.
+- Working: while an agent works on the artifact, the top bar's summary reads
+  `claude working on N` (or its message), the roster's agent token is solid
+  green with a breathing dot, a 2px green sweep runs under the bar, each
+  named thread shows `claude is working on it` with the elapsed time, and the
+  sidebar starts with a strip naming the threads and a haiku. The summary is
+  a polite live region that changes only when the records change.
 - Comment mode: works on every HTML page of the version (each is served
   with the bridge, which greets the shell with its `file`). Over an element
   taller or wider than the viewport, or covering more than 60% of it, the
@@ -677,6 +814,15 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `clax:focus`: the one hovered in the sidebar or by its pin, else the
   selected one. The composer opens in the shell with the
   quote and clip preview.
+
+Look: Echo. Plex Sans Condensed 600 (one self-hosted WOFF2, `swap`, never
+preloaded) sets titles, numerals, labels and buttons in sentence case;
+Plex Mono sets everything people and agents write. Red-orange is people,
+green is agents, brown is ink, pink is an accent only. Haiku appear in the
+gallery footer and under an agent's working line, never in comment mode,
+never animated. Buttons are plain verbs; playful words appear only in status
+lines, hints and empty states. The mark's halves meet when it is clicked; a
+"rally of 10" chip marks an artifact's tenth version.
 
 The shell is Svelte 5 (runes mode, no SvelteKit, no SSR) + TypeScript with
 CSS tokens on `:root`, dark mode via `prefers-color-scheme`, phone width
@@ -898,7 +1044,20 @@ files kept in `web/contract/`:
   `reply`, `resolve`, `delete`, `sendToClaude`) the strict one
   (`frameGestureStrict`, which may reject `shell_input_recent`), §8. A
   custom-anchors page is told only the threads on its own page, as handles.
-  The shell renders all threads; the page never lists them.
+  The shell renders all threads; the page never lists them. There is no
+  batch form of `sendToClaude`: a page sends threads it created one call at
+  a time, each in the strict gesture tier; batches are the viewer's, from
+  the sidebar. Clax extension, not part of claude.ai's contract, declared in
+  `web/contract/clax-extensions.d.ts` (`ClaxExtensions.Comments`; the
+  `0.2.61/` files stay claude.ai's, unchanged): `working()` resolves
+  `{working, agents: [{harness, label, message, since, threads,
+  otherThreads}]}`, and `onWorking(fn)` calls `fn` with that state now and
+  on every change and resolves an unsubscribe function. `threads` holds the
+  handles of the threads this document created that the agent names, and
+  `otherThreads` counts the rest. Both are available under either
+  declaration form (for `composer_only`, a Clax extension to that form,
+  which otherwise grants only `openComposer` and `anchorFor`), need no
+  consent or gesture, and never carry a store ID, session ID or record key.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
 - **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
@@ -1042,7 +1201,7 @@ which still lets the viewer post, as for other clips.
    comment. Shell posts the thread with anchor and clip, and comment mode
    comes back on for the next pick. Everyone with the shell open sees the
    pin via SSE.
-2. Viewer presses **Send to agent** on the thread (or writes `@agent` in a
+2. Viewer presses **Send to <agent>** on the thread (or writes `@agent` in a
    comment). The daemon sets `sent_to_agent`, then creates one `feedback`
    row per target session: the artifact's owner session and every session
    with a watch on the artifact, if that session has not ended. If no live
@@ -1190,6 +1349,80 @@ session that publishes a version of or watches the artifact.
 tier 5; tiers 1, 3 and 4 work for every target session (the artifact's owner
 session, watching or not, and every watcher).
 
+### Working
+
+A working record says that a harness session is acting on an artifact, and
+optionally on some of its threads, now. The daemon keeps records in memory
+(a restart starts with none) keyed by session and artifact; each holds a
+`key` (a ULID), the session's `harness`, an optional `message` (at most 140
+characters; longer is cut), up to 20 open thread IDs, `started_at` and
+`last_heartbeat`. A record lapses 120 s after its last heartbeat: reads stop
+showing it at once, and a sweep every 5 s removes it and sends `working`.
+
+- Marked (created, or renewed with the threads added) whenever the daemon
+  hands feedback to the session by tier `piggyback`, `stop_hook`,
+  `prompt_hook`, `wait` or `inject`, and when `codex queue` exits 0.
+- Set explicitly by the `working` tool.
+- Renewed by every feedback take of tier `piggyback`, `stop_hook` or
+  `prompt_hook`, by `POST .../working/renew` (the `PostToolUse` hooks and
+  Pi's `tool_call`), by the `working` tool, and by the session's agent replies
+  and resolves. The shim's session heartbeat, `wait` and `inject` polls and
+  `codex queue` never renew.
+- Cleared by: the session's agent reply or resolve on the last thread a
+  record names; a publish of the artifact by the session; `done: true`; the
+  turn ending (the Stop hook allowing the stop, Pi's `agent_end`); the
+  session ending; the artifact's deletion. A viewer resolve or a delete takes
+  the thread out of every record, with the same last-thread rule.
+
+What cannot be automatic, per harness, is listed in `docs/contract.md`
+("Working").
+
+### Version changelog
+
+Each version may carry a `note` and a set of threads it addressed. A
+publish by a session links the threads of that session's working record on
+the artifact (then clears the record); `addresses` names more; an agent
+resolve links the thread to the current version when it has no link yet.
+Linking never resolves: a person does, from the Addressed group.
+
+### Batch send
+
+The viewer can send several threads at once (`POST .../threads:send`). One
+transaction checks every thread and writes every feedback row, marked with
+the batch; one fan-out follows, so every tier hands the batch over together.
+The payload leads the batch's comments with `[clax] N comments on "<title>",
+sent together by <name>.` and ` Note: "<note>"` when there is one. Each
+thread keeps its own rows, sent state, working marker and changelog link.
+
+### Participants and attention
+
+A viewer is in a thread when they wrote a comment in it (`author_public_id`),
+a comment in it @mentions them (`@` and their display name, any case, at a
+word boundary; `@agent` names no viewer), or they resolved it. For each
+artifact the daemon computes, per viewer: `addressed` (open threads they are
+in linked to a version after they last looked at the thread), `new_replies`
+(threads they are in with someone else's comment newer than their last
+look), `open_in`, and `seen` (`viewer_seen`). Looking at a thread is its card
+being at least half visible for a second, or selecting it; it writes
+`viewer_threads`. Viewing a version unpinned writes `viewer_seen`. Resolving
+is never needed to clear anything.
+
+The agents on an artifact are its live owner session, the live sessions
+watching it, and the sessions that published its versions, named by
+`agent_handle`. Send, single or batch, takes an optional `to` (an agent
+handle): only that agent's session gets rows. Without `to`, rows go to the
+owner and the watchers, as before. The shell defaults `to` to the agent this
+viewer last sent to on the artifact, else the latest publisher's agent.
+
+### Presence
+
+A viewer with the artifact open reports `here` (tab visible) or `away`
+(hidden, or 5 minutes without input) every 30 s, and optionally `where` (the
+anchor label of the thread they have selected or are writing on, at most 80
+characters; a per-person switch stops it). The daemon keeps reports in
+memory; one lapses 90 s after the last, shows as "last here" for 10 minutes,
+then goes. Changes go out as `presence`.
+
 ## 11. Sessions and identity
 
 The shim registers a session on start:
@@ -1223,7 +1456,9 @@ from `/proc/<ppid>/cwd` on Linux and `lsof` on macOS, or an empty `cwd` when
 that fails; the `session-start` hook then fills an empty one.
 
 Heartbeats: the shim `PATCH`es `last_seen_at` every 60 s; a session with no
-heartbeat for 5 minutes and a dead PID is marked ended.
+heartbeat for 5 minutes and a dead PID is marked ended. The session
+heartbeat keeps the session row alive only; it never renews working records
+(§10, "Working"). Registration assigns `agent_handle`.
 
 ## 12. MCP tool surface
 
@@ -1235,7 +1470,8 @@ as `mcp__clax__<name>`, and the Pi extension registers them as
 `clax_<name>`.
 
 Artifacts: `publish` (file_path or html, files map, title, description,
-icon, capabilities, url to update, if_version, label; creating an artifact
+icon, capabilities, url to update, if_version, label; note (the version's
+change note), addresses (thread IDs this version addresses); creating an artifact
 needs a title, which the tool takes from the page's first `<title>` when
 `title` is omitted and refuses with `invalid_args` when there is neither),
 `read` (url or id, optional path), `list` (limit, scope mine|all, files
@@ -1245,7 +1481,9 @@ and reports `opened` from the opener's exit status within 1.5 s), `pin`,
 
 Comments: `comments_read` (url_or_id, thread_id, cursor, include_resolved),
 `comments_reply` (url_or_id, thread_id, text), `comments_resolve`
-(url_or_id, thread_id), `watch` (url_or_id, on, replies), `wait_for_feedback`
+(url_or_id, thread_id; an agent resolve links the thread to the current
+version when it has no link yet), `working` (url_or_id, thread_ids, message,
+done), `watch` (url_or_id, on, replies), `wait_for_feedback`
 (url_or_id optional, timeout_s default 50, raised to at least 1 and capped
 at 600). The artifact argument keeps the phase 2 name `url_or_id`.
 
@@ -1276,7 +1514,11 @@ object. The other commands print their own JSON shape.
 - `hooks/hooks.json`: `SessionStart` → `hook --agent claude session-start`
   (registers, prints the daemon URL and any pending feedback as context);
   `UserPromptSubmit` → `hook --agent claude prompt` (tier 3); `Stop` →
-  `hook --agent claude stop` (tier 2, timeout 10 s); `SessionEnd` →
+  `hook --agent claude stop` (tier 2, timeout 10 s; when it allows the stop it
+  ends the turn's working records); `PostToolUse` → `scripts/tool-hook.sh claude`
+  (renews working records at most once a minute per session: a shell check
+  of a stamp file under `~/.clax/run/tool-hook/` skips starting `clax` when
+  the last renewal is under 60 s old; always exits 0; timeout 5 s); `SessionEnd` →
   `hook --agent claude session-end`.
 - `skills/clax/SKILL.md`: when to publish, the page contract (title,
   tokens, dark mode, phone width, storage in try/catch, CDN guidance),
@@ -1325,7 +1567,10 @@ must point at `./plugins/<plugin-name>`.
   session-start` (joins the session, records `CODEX_HOME`, and prints the
   daemon URL and any pending `prompt_hook` feedback as context; Codex has no
   `UserPromptSubmit` hook wired), `Stop` → the same with `stop` (tier 2, timeout 10 s; the
-  hook gives up after 8 s), `SessionEnd` → the same with `session-end` (Codex
+  hook gives up after 8 s; it also ends the turn's working records when it
+  allows the stop), `PostToolUse` → `bash "${PLUGIN_ROOT}/scripts/tool-hook.sh"
+  codex` (the same once-a-minute renewal; not yet measured on Codex, see
+  `docs/contract.md`), `SessionEnd` → the same with `session-end` (Codex
   caps `SessionEnd` at 3 s, so `session-end` gives up after 2.5 s). Hooks run
   in a shell with `PLUGIN_ROOT` exported.
 - `skills/clax/SKILL.md`: same content as the Claude skill, with Codex
@@ -1361,7 +1606,7 @@ plugin:
 - The extension runs `$CLAX_BIN`, else `clax` on `PATH`, and never
   downloads. `just dev pi` loads the checkout's extension and skill with
   `-e` and `--skill` (and `-ne`, so an installed copy does not load twice).
-- `src/clax.ts` registers `clax_<tool>` for the fourteen tools through
+- `src/clax.ts` registers `clax_<tool>` for the twenty-three tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
   identical to the MCP tools. The package carries the Clax version, so
   `status` compares the daemon's version with the Clax version and
@@ -1385,6 +1630,8 @@ plugin:
   second; it finds a running daemon but never starts one) from registration
   to `session_shutdown`, and hands each payload to
   `pi.sendUserMessage(text, {deliverAs: "followUp"})`.
+- Working: `tool_call` renews the session's working records (at most once
+  every 15 s), and `agent_end` ends them.
 - The `/clax open [id] | list | status` command.
 - `skills/clax/SKILL.md`: the same skill as the other plugins, with
   `clax_<tool>` names, relative file paths resolved against the Pi session's
@@ -1475,6 +1722,16 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   download anything. `install.sh`, which a person runs by hand, downloads
   a release and checks it against the release's `SHA256SUMS`, which comes
   from the same place, so the check protects integrity, not authenticity.
+- Working views and events carry the record's `key`, `harness`, `message`,
+  thread IDs and times, and are readable without the token, like threads:
+  LAN viewers see which harness is working and its message. They never
+  carry a session ID, working directory or PID. Messages and version notes
+  are agent text, rendered by the shell as text only.
+- Participants carry viewers' public IDs and display names (already public
+  through comments) and agents' handles and harnesses. Attention and
+  looked-at marks are served only to the viewer whose cookie the request
+  carries. Presence carries public IDs, display names, here or away, and the
+  optional location the person chose to share.
 - The shell HTML for `/a/…` embeds only what `GET /api/artifacts/<id>`,
   `GET /api/artifacts/<id>/threads` (without the token) and
   `GET /api/viewers/me` (for the cookie's own viewer, never creating one)
@@ -1492,8 +1749,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - Clip failure: thread saved without a clip; the payload says so.
 - Hook timeouts: every hook exits 0, silently, when its budget runs out:
   SessionStart 4 s, SessionEnd 2.5 s (Codex kills it at 3 s), Stop 8 s
-  (inside the plugins' 10 s hook timeout), prompt submit 4 s. Each daemon
-  call inside uses a 3 s timeout (2 s in SessionEnd).
+  (inside the plugins' 10 s hook timeout), prompt submit 4 s, tool 2 s (1 s per
+  daemon request). Each daemon call inside the others uses a 3 s timeout (2 s
+  in SessionEnd).
 - `wait_for_feedback` past the harness's limit: returns early with a
   "call again" result rather than erroring.
 - `codex queue` failure: handled per §10; never retried in a loop, never
@@ -1516,7 +1774,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - **clax-server**: integration tests with a temp `CLAX_HOME`, real
   SQLite, `axum` test client: publish, versions, files, assets, threads,
   send-to-agent → feedback rows, long-poll delivery, `db` rules by level,
-  token enforcement per route.
+  token enforcement per route, working records (set, mark, renew, clear,
+  expiry by an injected clock), the changelog links and seen marks,
+  attention and looked-at marks, agent handles, the send target, and
+  presence (expiry by an injected clock).
 - **clax-mcp**: spawn the shim against a test daemon, drive it with an
   MCP client over stdio, assert tool schemas and tier 1 piggyback. The
   `db_*` tools are tested in-process against a test daemon
@@ -1525,11 +1786,15 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 - **clax-hooks**: fixture-driven tests with captured stdin JSON for each
   harness event and golden stdout, including `stop_hook_active` and the
   Codex `stop` shape.
-- **Browser**: Playwright against a real daemon: gallery, shell, version
-  banner, comment mode on element and range, clip produced, send to agent,
+- **Browser**: Playwright against a real daemon: gallery, shell, the version
+  moment (the version button's dot and the Reload button), comment mode on element and range, clip produced, send to agent,
   agent reply visible via SSE, `window.claude.use` for each capability in
   both origin modes (`*.localhost` and opaque sandbox), db `onSnapshot`,
-  self-publish reload. `web/e2e/contract.spec.ts` runs the sample pages in
+  self-publish reload, Echo (fonts, theme switch, keys, the mark), the
+  working summary, roster, card chips, thread marker, pins and capability,
+  the Addressed group, version menu and history line, needs your eyes, batch
+  send with the agent picker, and presence; every UI change is checked in
+  screenshots, light and dark, desktop and phone. `web/e2e/contract.spec.ts` runs the sample pages in
   `web/e2e/pages/`, written for claude.ai's contract 0.2.61, unchanged in
   both frame modes; `scripts/smoke-capabilities.sh` checks the capabilities
   end to end against a scratch daemon (not a quality gate).

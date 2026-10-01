@@ -143,12 +143,18 @@ Arguments:
 | `description` | string | no | One-line description. |
 | `icon` | string | no | One generic word, such as `chart` or `map`. |
 | `label` | string | no | Short name for this version, at most 60 characters. |
+| `note` | string | no | This version's change note for the person, at most 280 characters (longer is cut, with `note_truncated: true`). |
+| `addresses` | array of thread IDs | no | Threads of this artifact this version addresses (at most 50). Linking does not resolve them. |
 | `capabilities` | object | no | The page's runtime capabilities declaration, as a full set (below). |
 
 On an update, an omitted `title`, `description`, `icon` or `capabilities`
 keeps the artifact's current value, and so does `capabilities: null`. A
 given `capabilities` object is the full declaration: it replaces the stored
 one rather than merging with it, and `{}` clears it.
+
+The result also carries `note` and `addressed` (every thread linked to the
+new version: those named, plus those this session was marked working on for
+the artifact).
 
 The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
@@ -717,6 +723,17 @@ hook that gives up, or finds no daemon, exits 0 with no output. The `stop` and
 `prompt` hooks find the live row by the harness session ID in their input and
 do nothing when there is none.
 
+The hooks also keep working records current: the `stop` hook, when it allows
+the stop, ends the turn (`POST /api/sessions/<id>/working/end`), and the
+`PostToolUse` hook renews them (`POST /api/sessions/<id>/working/renew`) at
+most once a minute per session. The hook command is `scripts/tool-hook.sh`,
+a POSIX shell gate. It reads the hook input, takes the `session_id`, and
+exits 0 without starting `clax` when the stamp file
+`$CLAX_HOME/run/tool-hook/<harness>-<session ID>` (default home `~/.clax`)
+was modified less than 60 s ago. Otherwise it touches the stamp and runs
+`clax hook --agent <harness> tool` (2 s, 1 s per request). It always exits 0
+and prints nothing. The `session-end` hook removes the session's stamp.
+
 ### Claude Code
 
 Claude Code passes `CLAUDE_CODE_SESSION_ID`, `CLAUDE_PID` and
@@ -811,7 +828,8 @@ picked text marked in the outline's tint (from 120 px above the start of a
 range taller than that); for an element larger than that, the whole element
 scaled down when it is wholly in view, else its part in the viewport, grown
 within it to that size. Clips are stored at `<CLAX_HOME>/artifacts/<aid>/clips/<thread ID>.png`. A
-thread is plain until the person presses **Send to agent** or writes `@agent`
+thread is plain until the person presses **Send to <agent>** (the button
+names the agent it sends to, for example **Send to claude**) or writes `@agent`
 (as a word, not inside an address) in a comment; from then on, every later
 viewer comment on it is sent too. A viewer comment on a resolved thread
 reopens it.
@@ -1179,6 +1197,18 @@ so `resolve(id, false)` and `delete(id)` follow the level rule above.
   screenshot was too large". Otherwise `opts.area` is ignored. `openComposer` takes no area
   form in 0.2.61. Pins cannot be dragged, so `move` is never called.
 
+Clax extension (not in claude.ai's contract; declared in
+`clax-extensions.d.ts`, `ClaxExtensions.Comments`, served at
+`<daemon_url>/_clax/contract/clax-extensions.d.ts`): `working()` and
+`onWorking(fn)` report which agents are working on this artifact:
+`{working: boolean, agents: [{harness, label, message, since, threads,
+otherThreads}]}`. `threads` are handles of threads this document created;
+`otherThreads` counts the rest. Available under either declaration form,
+without consent or gesture.
+
+Clax adds no batch `sendToClaude`; the batch send is the viewer's, from the
+sidebar.
+
 ### Shell URLs
 
 `/a/<id>` shows the latest version and `/a/<id>/v/<n>` version `n`; either may
@@ -1220,6 +1250,7 @@ entry of the shell's own; copy link includes it.
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
+| `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 
 `comments_read` returns the open threads (and resolved ones with
 `include_resolved`) oldest first, 50 per page, with `next_cursor` naming the
@@ -1263,6 +1294,29 @@ sent). Through a session, replies and resolves on a thread that was not sent
 to the agent are not errors: the result carries `guidance` and nothing
 changes.
 
+### Working
+
+`working` tells the person you are acting on an artifact. The top bar
+shows `claude working on N` (or `claude: <message>`), its gallery card a
+chip, and each thread named in `thread_ids` `claude is working on it`. Comments sent to you
+mark you working automatically; call `working` for work that did not start
+from a comment, or to add a message. `thread_ids` and `message` replace the
+stored ones when given; `done: true` clears the record, or with `thread_ids`
+only those threads. Errors: `invalid_id`, `invalid_args` (a thread ID that is
+not a ULID, more than 20), `not_found` (no such artifact), `unknown_thread`
+(not a thread of the artifact), `thread_not_open`, `no_session` (the
+daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
+
+It clears when you reply to or resolve the last thread it names, publish the
+artifact, end your turn, or go 120 s without renewing it, and when your
+session ends. Renewal is automatic:
+
+| Harness | Renewed by | Not automatic |
+|---|---|---|
+| Claude Code | tool calls, at most once a minute (`PostToolUse` hook), every hook, clax tool calls | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
+| Codex | clax tool calls, the Stop hook; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
+| Pi | tool calls (at most every 15 s) | terminal requests; a Pi process killed without `session_shutdown` |
+
 ### Payload
 
 Each forwarded comment is rendered as:
@@ -1299,6 +1353,12 @@ it without `---`. The structured form is each result's `feedback` array:
 version, anchor, clip_path, author, via_page, body, resent, created_at}`;
 `via_page` is true for a comment the page wrote through the `comments`
 capability.
+
+Comments the person sent together arrive together. After the counted
+header, a line `[clax] N comments on "<title>", sent together by <name>.`
+(and ` Note: "<note>"`, the note JSON-quoted like a comment body) leads the
+batch's items. The note is the person's words for the whole batch, and like
+comment text it is a request to weigh.
 
 ### Delivery tiers per harness
 
@@ -1384,6 +1444,16 @@ viewer cookie or a session ID. The card reads "Resolved by" and the viewer's
 own name when it resolved the thread and has one, "Viewer" for any other
 viewer, or "Agent · via <harness>". An agent comment carries `via_harness`
 (the replying session's harness, e.g. `claude`; `null` on viewer comments).
+
+An open thread a working record names shows "claude is working on it"
+instead of its waiting indicator. A new version puts nothing over the page:
+the version button gets a dot, the top bar's summary reads "v5 addressed 3",
+the sidebar's "Addressed in v5" group lists the threads it addressed that
+the viewer is in, with your reply shown as "claude · addressed in v5", and
+the version menu lists every version's note. Each thread's history line
+shows what happened on which version. When the person sends several
+threads, or several agents work on one artifact, the person picks the agent;
+the payload is the same.
 
 ## Page contract
 
