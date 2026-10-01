@@ -181,6 +181,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .merge(api_slow)
         .route("/", get(shell::gallery_page))
         .route("/a/{aid}", get(shell::artifact_page))
+        .route("/a/{aid}/", get(shell::artifact_page))
         .route("/a/{aid}/v/{n}", get(shell::artifact_page))
         // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
         .route("/a/{aid}/{*rest}", get(shell::artifact_page))
