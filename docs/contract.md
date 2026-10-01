@@ -502,8 +502,9 @@ under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
 Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
 
-Version skew: newer wins. A shim or CLI command that finds a daemon older
-than itself replaces it on the old daemon's port and bind address, holding
+Version skew: newer wins. The MCP shim (`clax mcp`) and `clax serve`, when
+either finds a daemon older than itself, replace it on the old daemon's port
+and bind address, holding
 the daemon's start lock (`daemon.lock`) throughout, so no other client
 starts one in the gap. Under the lock it reads `daemon.json` again and uses
 the daemon there if another client has already replaced it. It asks the
@@ -516,6 +517,11 @@ same version, or one whose version does not parse, is kept, with one warning.
 `daemon.json` records the daemon's `version` and `exe` (the canonical path of
 its executable). Every replacement is a line in `logs/daemon.log`. If the old
 port is taken during the swap, the new daemon binds one of the next 20 ports.
+Other CLI commands, and the Pi extension (which runs `clax serve` only when
+no daemon answers), use whatever daemon answers. A daemon of the same
+version is never replaced, even when its executable has been rebuilt:
+`just install` stops the agents' daemon itself when it runs the installed
+`clax` (see "Installation and the wrapper").
 
 Rollback: when the new daemon fails to start, the previous daemon's recorded
 executable is started again on the same port and bind address, and the error
@@ -1342,11 +1348,17 @@ expanded, so a Pi entry written that way is left registered, and a
 `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR` written that way
 is taken relative to `HOME`.
 
-`just install` builds the web UI, runs `cargo install --locked --path
-crates/clax-cli` (into `~/.cargo/bin`) and then that binary's `clax init`,
-and warns when the first `clax` on `PATH` is another one. `just uninstall`
-runs `clax uninit`, then `cargo uninstall clax-cli`; it leaves
-`~/.local/bin/clax`, which comes from `install.sh`. `install.sh [version]`
+`just install` builds the web UI, runs `cargo install --locked --root
+"$CARGO_HOME" --path crates/clax-cli` (into `$CARGO_HOME/bin`, by default
+`~/.cargo/bin`), then stops the agents' daemon (`CLAX_HOME`, else `~/.clax`)
+with `clax stop` when `daemon.json` records that `clax` as its `exe`, then
+runs that binary's `clax init`, which warns when the first `clax` on `PATH`
+is another one. The stop is what puts a same-version rebuild in front of
+the agents: their next call starts the daemon again from the new build. A
+daemon of another executable is left running, and named. `just uninstall`
+runs `clax uninit`, stops the agents' daemon by the same rule, then runs
+`cargo uninstall clax-cli`; it leaves `~/.local/bin/clax`, which comes from
+`install.sh`. `install.sh [version]`
 installs a release into `~/.local/bin` (or `CLAX_INSTALL_DIR`) after checking
 it against the release's `SHA256SUMS`, and refuses to run as root. It needs
 the GitHub repository to be public.
@@ -1404,8 +1416,11 @@ does not parse, or a port that is not an integer in 1..=65535, is an error
 naming the file (`bad_config`), never a silent fall back to 7480; the
 wrapper's preflight turns it into the fallback server's reason. Other keys
 in `[serve]` are logged and ignored. `just watch` and `just dev` write
-`port = 7481` into `~/.clax-dev/config.toml`, so every daemon for that home,
-whoever starts it, listens there.
+`port = 7481` (or `CLAX_DEV_PORT`'s value) into `~/.clax-dev/config.toml`
+when it has no `[serve]` table, so every daemon for that home, whoever
+starts it, listens there. Outside `--shared`, both first stop a daemon of
+the dev home whose recorded `exe` no longer exists (one an earlier `just
+dev` left behind); they never stop one in `~/.clax`.
 
 ### `clax doctor --agent`
 
@@ -1581,6 +1596,13 @@ harness and the daemon, each `ok` or failed with the fix:
   repository's release files only to authenticated requests.
 - Codex cannot load a plugin from a directory, so `just dev codex` runs the
   installed Clax plugin; plugin changes reach Codex through `just install`.
+- Only the MCP shim and `clax serve` replace an older daemon. A machine that
+  uses only Pi or the CLI keeps an older daemon after an upgrade from
+  `install.sh` until `clax stop`; Pi's `status` shows it as
+  `daemon_version`. `just install` stops the agents' daemon itself.
+
+Open follow-ups, and the checks that still need a real harness or GitHub,
+are listed in [`docs/follow-ups.md`](follow-ups.md).
 
 ## What is not yet available
 

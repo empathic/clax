@@ -3,7 +3,10 @@
 # default it serves its own home ($CLAX_HOME, else ~/.clax-dev) on port
 # $CLAX_DEV_PORT, else 7481, so rebuilding never takes the agents' daemon
 # down; `--shared` serves the agents' home (~/.clax) on 7480 (stop the
-# installed daemon first). Other arguments go to `clax serve`.
+# installed daemon first). Other arguments go to `clax serve`. Outside
+# --shared, a daemon an earlier `just dev` left in the dev home, whose
+# temporary binary is gone, is stopped first; ~/.clax and port 7480 are never
+# touched that way.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 . scripts/dev-home.sh
@@ -15,6 +18,7 @@ if [ "$PORT" = 7480 ]; then
     echo "Clax watch: --shared: serving CLAX_HOME=$CLAX_HOME on port $PORT, the home your agents use. While a Rust change rebuilds, an agent may start its own daemon here."
 else
     ensure_dev_home "$CLAX_HOME" "$PORT"
+    stop_orphan_daemon "$CLAX_HOME"
     echo "Clax watch: serving CLAX_HOME=$CLAX_HOME on port $PORT (agents keep their own daemon; \`just watch --shared\` serves theirs)"
 fi
 

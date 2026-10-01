@@ -31,7 +31,7 @@ run() {
     fi
 }
 run "justfile"              scripts/test-justfile.sh
-run "installer"             scripts/test-ensure-clax.sh
+run "plugin wrapper"        scripts/test-ensure-clax.sh
 run "release scripts"       scripts/test-release.sh
 run "release installer"     scripts/test-install.sh
 run "dev scripts"           scripts/test-dev.sh

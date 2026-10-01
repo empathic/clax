@@ -7,7 +7,7 @@
 #
 # Modes:
 #   --plugin-dir  (default when `claude` supports the flag) loads plugins/claude-code
-#                 as a plugin, so the installer script, MCP shim, and both hooks run.
+#                 as a plugin, so the plugin wrapper, MCP shim, and both hooks run.
 #                 Also asserts the session carries a harness session ID and is
 #                 ended (SessionEnd) after the run.
 #   --mcp-config  points --mcp-config at target/debug/clax mcp --agent claude.

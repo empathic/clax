@@ -328,7 +328,7 @@ pub fn upgrade_check(home: &Home, daemon_version: Option<&str>) -> Value {
         None => check(
             "upgrade",
             true,
-            "no failed upgrade is held back from the daemon",
+            "no failed upgrade is holding the daemon back",
         ),
         Some((kept, h)) => check(
             "upgrade",

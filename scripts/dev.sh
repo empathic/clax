@@ -2,8 +2,8 @@
 # `just dev [claude|codex|pi] [harness arguments...]`: builds clax, puts the
 # build first on PATH from a temporary directory (removed on exit), and starts
 # the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
-# listens on 7481). The agents' own home, daemon and installed binary are
-# untouched.
+# listens on $CLAX_DEV_PORT, else 7481). The agents' own home, daemon and
+# installed binary are untouched.
 #   claude  loads the Clax plugin from this checkout for this run:
 #           claude --plugin-dir plugins/claude-code, with an installed
 #           clax@clax disabled for the session (--settings)
@@ -51,7 +51,7 @@ trap 'rm -rf "$tmp"' EXIT
 cp "$bin" "$tmp/clax"
 export PATH="$tmp:$PATH"
 export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
-ensure_dev_home "$CLAX_HOME" 7481
+ensure_dev_home "$CLAX_HOME" "${CLAX_DEV_PORT:-7481}"
 stop_orphan_daemon "$CLAX_HOME"
 echo "clax dev: $("$tmp/clax" --version) at $tmp/clax, CLAX_HOME=$CLAX_HOME"
 

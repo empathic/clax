@@ -163,13 +163,13 @@ sys.exit(0 if ok else 1)
 PY
 then pass "plugins/clax/.codex-plugin/plugin.json has the pinned fields"; else fail "plugins/clax/.codex-plugin/plugin.json is missing pinned fields"; fi
 
-for installer in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
-    if cmp -s scripts/ensure-clax.sh "$installer"; then
-        pass "$installer matches scripts/ensure-clax.sh"
+for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
+    if cmp -s scripts/ensure-clax.sh "$wrapper"; then
+        pass "$wrapper matches scripts/ensure-clax.sh"
     else
-        fail "$installer differs from scripts/ensure-clax.sh (or is missing)"
+        fail "$wrapper differs from scripts/ensure-clax.sh (or is missing)"
     fi
-    [ -x "$installer" ] || fail "$installer is not executable"
+    [ -x "$wrapper" ] || fail "$wrapper is not executable"
 done
 
 commands=(plugins/claude-code/commands/*.md)
