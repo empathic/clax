@@ -25,11 +25,9 @@
 - The approved mockup: `.superpowers/sdd/2026-09-30-redesign/concept-3-echo/index.html` and its `shots/`, with `concepts.md` §7 "Echo v2" and `marks/1-echo.svg`.
 - The feature decisions: `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, read with the brief. The brief removes the changelog banner ("Don't get in my way": no band over the page). The returning-viewer summary moves to the top bar's summary line and the version button's dot.
 
-**Provisional answers:** `.superpowers/sdd/2026-09-30-redesign/open-questions.md` lists design questions the brief does not settle, each with a recommended answer. This plan is written around those recommended answers. Every step that depends on one is marked **(provisional: Qn)**. Before starting such a task, the controller checks the file for the owner's answer. If the answer differs, the controller amends that task first.
+**Decisions Q1–Q12:** `.superpowers/sdd/2026-09-30-redesign/open-questions.md` lists twelve design questions the brief did not settle. The owner accepted every recommended answer on 2026-10-01, so they are decisions. Each step that rests on one is marked **(decided: Qn)**, to show where the decision lands.
 
-**Confirmed 2026-10-01:** the owner accepted every recommended answer (Q1–Q12). The "provisional: Qn" markers now only show where each decision lands.
-
-**Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`, on branch `worktree-agent-aee2e6203ca3d81ca`) are both merged to main. Check before Task 1:
+**Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`) are both merged to main (the port merged before this plan runs). Check before Task 1:
 
 ```bash
 test -f web/shell/src/view/artifact-controller.ts && test -f web/shell/src/ui/TopbarIsland.svelte \
@@ -43,14 +41,15 @@ Expected: `ok`. Anything else means the port is not merged: stop.
 
 - **Ports and homes.** Never bind or connect to port 7480 or 7481. Tests, smokes and browser checks start daemons with `--port 0` and a temporary `CLAX_HOME` (`mktemp -d`). Never read, write or delete the real `~/.clax`, `~/.clax-dev`, `~/.claude` or `~/.codex`, nor the home directory Clax used before its rename (spec D15). `scripts/smoke-codex.sh` reads `~/.codex/auth.json`, so no task runs it; Task 11 only edits it, for the person to run.
 - **Agents stage; the controller commits.** An implementing agent never runs `git commit`, `git push`, `git rebase` or `git reset`. It stages with `git add` and explicit paths only, and ends the task with `git status --short`. Each task's last step gives the commit message the controller uses. The controller commits signed, with plain `git commit` (never `--no-gpg-sign`), and checks `git cat-file commit HEAD | grep -q '^gpgsig '`.
-- **UI is verified in a browser.** Every task that changes what the shell shows ends with a browser step. It runs a scratch daemon (`--port 0`, temporary home), opens the changed routes in Playwright's Chromium, and saves screenshots in light and in dark, at 1440×900 and at 390×844, to `.superpowers/sdd/2026-09-30-redesign/build-shots/task-NN/` (`NN` is the task number). The agent looks at every screenshot and writes in its task report what it saw: the change is visible, it is styled like the rest of Echo, and nothing scrolls sideways at phone width. A passing test run is not verification for frontend work. `web/e2e/shots.ts` (Task 2) is the one script that takes them.
+- **UI is verified in a browser.** Every task that changes what the shell shows ends with a browser step. It runs a scratch daemon (`--port 0`, temporary home), opens the changed routes in Playwright's Chromium, and saves screenshots in light and in dark, at 1440×900 and at 390×844, to `.superpowers/sdd/2026-09-30-redesign/build-shots/task-NN/` (`NN` is the task number). The agent looks at every screenshot and writes in its task report what it saw: the change is visible, it is styled like the rest of Echo, and nothing scrolls sideways at phone width. A passing test run is not verification for frontend work. `web/e2e/shots.spec.ts` (Task 2), with its scenes in `web/e2e/scenes.ts`, is the one script that takes them.
 - **Words.**
   - In prose, comments, doc comments and commit messages, write "ID", never "id", except as a literal symbol in code.
   - Doc comments and commit messages describe the contract or the change. They never mention this plan, the conversation, the mockup's history, or the history of names.
-- **The thread model.** The interaction model is comment threads, like PR comments or Google Docs comments. Product copy uses comment, thread, reply, resolve, addressed and outdated. There are no turns, no "whose move", no rounds, no "asks" and no "facts" about the artifact. History is shown as version-tagged annotations on threads. This gate prints nothing after every web task:
+- **The thread model.** The interaction model is comment threads, like PR comments or Google Docs comments. Product copy uses comment, thread, reply, resolve, addressed and outdated. There are no turns, no "whose move", no rounds, no "asks" and no "facts" about the artifact. History is shown as version-tagged annotations on threads. The rule covers product copy: what the shell shows people (`web/shell/src`, including the haiku). "Turn" in its harness-protocol sense (the Stop hook, "turn end", "end your turn") stays in technical text only: the spec, the contract, agent-facing tool descriptions, skills, hooks and doc comments. This gate, scoped to product copy, prints nothing after every web task:
 
   ```bash
   grep -rniE "your move|whose move|agents' move|'s move|\bround [0-9]|(your|their|whose|next) turn|nothing waits on you|settled\." web/shell/src --include=*.svelte --include=*.ts --include=*.json | grep -v '\.test\.ts:'
+  grep -niE "\bturns?\b" web/shell/src/view/haiku.json
   ```
 
 - **Voice.**
@@ -59,7 +58,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
   - Labels are sentence case in Plex Sans Condensed, never tracked capitals. `grep -rn "text-transform: *uppercase" web/shell/src` prints nothing after Task 2.
   - Haiku appear in the gallery footer and on the line while an agent works. Never in comment mode, never animated.
 - **Time to usable does not regress.**
-  - The port's gates hold unchanged: `npm run perf` (budgets in `web/perf/budget.json`) and `node scripts/bundle-size.mjs` (`web/perf/bundle-budget.json`). Task 2 adds a `fonts` budget to the second.
+  - The port's gates hold unchanged: `npm run perf` (budgets in `web/perf/budget.json` for five measures: first paint, comment ready, frame paint, ready latency and cold ready latency; `enforceTargets` is on) and `node scripts/bundle-size.mjs` (`web/perf/bundle-budget.json`). Task 2 adds a `fonts` budget to the second.
   - A budget is never raised. If a gate fails, first lazy-load what first paint does not need. If it still fails, stop and report the numbers to the controller. Raising a budget is the owner's call.
   - Nothing new is fetched before the shell's first paint. Working state, changelog notes, participants and this viewer's attention ride on the artifact response and the bootstrap block.
   - Fonts use `font-display: swap`, are never preloaded, and are never render-blocking. There are at most three WOFF2 files: Plex Mono 400, Plex Mono 600, and Plex Sans Condensed 600.
@@ -71,7 +70,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
 - **Gates.** Every task ends with `bash scripts/quality_gates.sh; echo "exit=$?"` printing `exit=0`. Check the status itself, not only the last line of output.
 - **Skills and tools.** The three skill copies stay word for word identical in their shared sections (`scripts/test-plugins.sh`). Tool blocks are regenerated with `python3 scripts/sync-skill-tools.py`, never edited by hand. A tool description is one string that appears verbatim in `plugins/pi/test/fixtures/contract.json`, `crates/clax-mcp/src/tools.rs` and `plugins/pi/src/clax.ts`.
 - **What views may carry.**
-  - No working view, participant view, presence view, thread, comment, event or page ever carries a session ID, a working directory or a PID. The one exception is the token-only `GET /api/sessions/<id>/working`.
+  - No working view, participant view, presence view, thread, comment, event or page ever carries a session ID, a working directory or a PID. The exceptions are token-only: `GET /api/sessions/<id>/working`, and `GET /api/artifacts` and `GET /api/artifacts/<aid>` with the token. Until Task 15 those two also name sessions without the token (a known follow-up, fixed there).
   - Agents are named to the shell by `agent_handle` (`a_` and 22 lowercase hex digits), never by session ID.
   - Viewers are named by `public_id`, never by cookie.
   - A viewer's per-thread looked-at marks are served only to that viewer.
@@ -96,7 +95,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
 6. **Attention is per viewer and private.**
    - A viewer's looked-at marks and attention are read only with that viewer's cookie, and are never in an event or in another viewer's response.
    - Seeing a thread clears "addressed, not looked at" and "new replies" for it, and nothing else.
-   - The Addressed group does not empty itself under the viewer's eyes (provisional: Q4).
+   - The Addressed group does not empty itself under the viewer's eyes (decided: Q4).
 
    Tests: `api_attention.rs` and the e2e "attention across viewers".
 7. **Echo's first paint.**
@@ -112,7 +111,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
     - Tests: `api_batch.rs`, `api_push.rs` "a batch reaches codex as one queued message", and the hook, MCP and Pi goldens.
 11. **Selection and keyboard state.**
     - Selection lives only in the controller and is pruned whenever threads change.
-    - Shortcut keys never fire while focus is in a text field, and never reach into the frame (provisional: Q6).
+    - Shortcut keys never fire while focus is in a text field, and never reach into the frame (decided: Q6).
 12. **No turn language anywhere.** The grep gate in Global Constraints, and the owner's model: comment threads with version-tagged history.
 
 ---
@@ -149,7 +148,7 @@ Web (the Svelte port's layout):
 | `web/shell/src/theme.css` | Echo tokens, the two type voices, base and component styles (Tasks 2–6, then each UI task appends its section) |
 | `web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2` | The display face (Task 2) |
 | `web/scripts/bundle-size.mjs`, `web/perf/bundle-budget.json` | The `fonts` budget (Task 2) |
-| `web/e2e/shots.ts` | The screenshot script every UI task runs (Task 2) |
+| `web/e2e/shots.spec.ts`, `web/e2e/scenes.ts` | The screenshot script every UI task runs, and its scenes (Task 2) |
 | `web/shell/src/ui/Mark.svelte`, `web/shell/public/_clax/mark.svg` | The Echo symbol and favicon; the halves meet on click (Task 3) |
 | `web/shell/src/view/theme-model.ts`, `web/shell/src/ui/ThemeSwitch.svelte` | Follow the system, plus a light/dark switch (Task 3) |
 | `web/shell/src/view/keys.ts`, `web/shell/src/ui/KeysSheet.svelte` (lazy) | The keyboard layer and the `?` sheet (Task 3) |
@@ -159,8 +158,8 @@ Web (the Svelte port's layout):
 | `web/shell/src/ui/ThreadCard.svelte`, `Sidebar.svelte`, `Pins.svelte` | Mirrored messages, history line, outdated tag, pin states (Tasks 5, 16, 18) |
 | `web/shell/src/ui/Gallery.svelte`, `GalleryCard.svelte`, `HaikuLine.svelte` (lazy), `web/shell/src/view/haiku.json` | The gallery in Echo (Tasks 6, 19) |
 | `web/shell/src/view/working-model.ts`, `web/shell/src/ui/Roster.svelte`, `WorkingSummary.svelte`, `working-feed.svelte.ts` | Working in the top bar, cards and threads (Task 16) |
-| `web/shell/src/caps/comments.ts`, `caps/host.ts`, `web/bridge/src/caps/comments.ts`, `web/contract/0.2.61/comments.d.ts` | `working()` and `onWorking(fn)` (Task 17) |
-| `web/shell/src/view/changelog-model.ts`, `web/shell/src/ui/AddressedGroup.svelte` (lazy), `VersionMenu.svelte` | Changelog in Echo (Task 18) |
+| `web/shell/src/caps/comments.ts`, `caps/host.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/src/capabilities.ts`, `web/contract/clax-extensions.d.ts` | `working()` and `onWorking(fn)` (Task 17) |
+| `web/shell/src/view/changelog-model.ts`, `version-rows.ts` (lazy, with the panel), `web/shell/src/ui/AddressedGroup.svelte` (lazy), `VersionMenu.svelte`, `VersionPanel.svelte` (lazy) | Changelog in Echo (Task 18) |
 | `web/shell/src/view/attention-model.ts` | Needs your eyes and card markers (Task 19) |
 | `web/shell/src/view/batch-model.ts`, `web/shell/src/ui/HandoffBar.svelte` (lazy), `SendButton.svelte` | Batch send and the agent picker (Task 23) |
 | `web/shell/src/view/presence-model.ts`, `web/shell/src/ui/PeoplePanel.svelte` (lazy) | Presence and the people panel (Task 24) |
@@ -253,7 +252,7 @@ Plugins and scripts:
   - The bar is 60px: the mark, `Clax` in 22px Title, `local artifacts · seen as <name>`, search, and the theme switch.
   - **Needs your eyes** comes first, then **Everything else**, with pinned cards first and then the most recent activity. Group heads are 26px Title over a 2px ink rule.
   - Each card leads with its version numeral in 68 Display. Under it are the title, `<agent> · <time>`, the markers (Task 19), and a footer with the roster and `seen vK`.
-  - There are no thumbnails (provisional: Q1).
+  - There are no thumbnails (decided: Q1).
   - The footer holds one haiku, a new one each visit.
 - **Empty states.** The gallery with no artifacts shows the mark large with its halves apart: "When an agent publishes a page, it lands here." A sidebar with no open threads reads "Nothing open. Press C and click anything to comment on it."
 - **Motion.**
@@ -271,9 +270,9 @@ Plugins and scripts:
   - V: versions;
   - P: people.
 
-  Keys act only when focus is in the shell and not in a text field (provisional: Q6).
+  Keys act only when focus is in the shell and not in a text field (decided: Q6).
 - **Easter eggs.**
-  - "rally of 10": a muted chip on the gallery card of an artifact at v10, and once per viewer in the top bar summary when they first view v10 (provisional: Q9).
+  - "rally of 10": a muted chip on the gallery card of an artifact at v10, and once per viewer in the top bar summary when they first view v10 (decided: Q9).
   - Click the mark and its halves meet; click again and they part.
 
 ### Haiku
@@ -293,7 +292,7 @@ A viewer is **in** a thread when any of these holds:
 - a comment in it @mentions them;
 - they resolved it.
 
-Comments written before migration 11 have no author ID and count for nobody. An @mention is `@` followed by a viewer's display name, matched case-insensitively at a word boundary. A name with spaces matches only when written in full (provisional: Q3). `@agent` keeps its existing meaning (send to the agent) and names no viewer.
+Comments written before migration 11 have no author ID and count for nobody. An @mention is `@` followed by a viewer's display name, matched case-insensitively at a word boundary. A name with spaces matches only when written in full (decided: Q3). `@agent` keeps its existing meaning (send to the agent) and names no viewer.
 
 ### Attention, per viewer, per artifact
 
@@ -306,9 +305,9 @@ Comments written before migration 11 have no author ID and count for nobody. An 
 | `looked` | `{thread ID: looked_at}` for this artifact's threads (served only on the artifact view) |
 
 - An artifact **needs your eyes** when any of these holds: `addressed` is non-empty, `seen` is non-null and less than `current_version`, or `new_replies` is non-empty. A never-viewed artifact (`seen` null) does not need your eyes for its version alone.
-- **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card, its pin, or J and K) (provisional: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
+- **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card, its pin, or J and K) (decided: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
 - **Viewing** a version unpinned writes `viewer_seen`. Resolving is a separate act, and it is never needed to clear anything.
-- The Addressed in vN group is decided when the view loads, and again when a new version arrives. Looking at a thread writes the mark at once, so the gallery clears, but the thread stays in the group until the view is decided again (provisional: Q4).
+- The Addressed in vN group is decided when the view loads, and again when a new version arrives. Looking at a thread writes the mark at once, so the gallery clears, but the thread stays in the group until the view is decided again (decided: Q4).
 
 ### Agents
 
@@ -320,12 +319,12 @@ A session gets `agent_handle` (`a_` and 22 lowercase hex digits from 11 random b
 - The `▾` caret lists the other live agents on the artifact. With one live agent there is no caret.
 - The routes take an optional `to` (an agent handle). Without `to`, they fan out as they do today, to the owner and the watchers.
 
-### Presence (provisional: Q5)
+### Presence (decided: Q5)
 
 - A viewer with the artifact open reports `here` while its tab is visible, and `away` when the tab is hidden or there has been no input for 5 minutes. A 30-second heartbeat keeps the report fresh. It may also report `where`: the anchor label of the thread it has selected, or of the composer it is writing in, at most 80 characters.
 - The daemon keeps presence in memory, keyed by (artifact, viewer public ID). An entry lapses 90 s after its last report: it becomes "last here <time>" and is dropped after 10 minutes. Changes go out as the `presence` event, `{artifact_id, people: [{public_id, display_name, state, where, since}]}`.
 - The roster shows here and away. The people panel shows the location. A per-person switch in the panel, "Share where I'm looking", stops sending `where`.
-- Another viewer's last seen version (`seen vK`) is shown in the panel. Their per-thread marks are never shown (provisional: Q7).
+- Another viewer's last seen version (`seen vK`) is shown in the panel. Their per-thread marks are never shown (decided: Q7).
 
 ## Design: the working record
 
@@ -380,7 +379,7 @@ Not renewals: the shim's 60 s `PATCH /api/sessions/<S>` heartbeat, `wait` and `i
 
 ### What the person sees when several sessions work at once
 
-Echo shows working agents rather than records. The words use the agent's name (`claude`, `codex`, `pi`; provisional: Q8):
+Echo shows working agents rather than records. The words use the agent's name (`claude`, `codex`, `pi`; decided: Q8):
 - **Top bar, line 1:** `claude working on N` for one working agent. For several, they are listed: `claude, codex working on 5`. N counts the distinct threads the records name, by any author. With no named threads it reads `claude working`. A record's `message` replaces the count: `claude: Rebuilding the chart`.
 - **Line 2** is about you:
   - `all yours` or `N yours` (how many of the worked-on threads you are in), then the elapsed time since the newest record's `started_at`;
@@ -423,7 +422,7 @@ The brief rules out a band over the page. A new version shows in four quiet plac
 - **The version button's dot.** A green dot on `v5` while the latest version is newer than this viewer's `seen` (the mark from before this load).
 - **Top bar line 1.** One of these, when nothing is working:
   - `v5 addressed 3` when the newest version addressed threads you are in that you have not looked at;
-  - `3 new versions · 7 addressed` for a viewer returning after several versions (provisional: Q11).
+  - `3 new versions · 7 addressed` for a viewer returning after several versions (decided: Q11).
 
   Line 2 then reads `yours, not looked at yet`.
 - **The Addressed in vN group** at the top of the sidebar. It holds the open threads you are in that the newest version addressed and that you had not looked at when the view was decided. Each card shows the agent's reply as `<agent> · addressed in vN`, with Reply and Resolve. Under the head, a muted line reads `claude addressed these. Have a look, then resolve each one or reply.`
@@ -490,10 +489,10 @@ The viewer's batch is the sidebar's. The spec and the contract say so in Task 1.
 
 ### Task 1: Spec, contract and design amendments
 
-Docs only. This task writes down everything the later tasks build: Echo, the working signal, the changelog without a banner, participants and attention, presence, the send target, and batch send. Where this plan extends the spec, the amendment is here. Provisional answers (open-questions.md) are written into the spec as decided, and each one is listed in §18 so the owner can see which are provisional. The tool-count lists (`Twenty-two tools:` in `docs/contract.md` and the READMEs) are not touched here: `scripts/sync-skill-tools.py --check` compares them with the fixture, which gains `working` only in Task 10.
+Docs only. This task writes down everything the later tasks build: Echo, the working signal, the changelog without a banner, participants and attention, presence, the send target, and batch send. Where this plan extends the spec, the amendment is here. The owner's decisions Q1–Q12 (open-questions.md) are written into the spec, and listed together as one row of §2 Decisions. The tool-count lists (`Twenty-two tools:` in `docs/contract.md` and the READMEs) are not touched here: `scripts/sync-skill-tools.py --check` compares them with the fixture, which gains `working` only in Task 10.
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-09-28-clax-design.md` (§5, §6, §8, §9, §10, §11, §12, §13, §14, §15, §16, §18)
+- Modify: `docs/superpowers/specs/2026-09-28-clax-design.md` (§2, §5, §6, §8, §9, §10, §11, §12, §13, §14, §15, §16)
 - Modify: `docs/contract.md` (`### publish`, `## Sessions`, `### The comments capability`, `### Tools` under "Comments and feedback", `### Payload`, `### What the person sees`)
 
 **Interfaces:** none (the documentation of Tasks 2–25).
@@ -562,9 +561,9 @@ After the `Feedback:` bullet, add:
   /api/artifacts/<aid>` and the bootstrap block carry `participants`
   (`{people: [{public_id, display_name}], agents: [{handle, harness, live}]}`)
   and, when the request's viewer cookie names a viewer, `attention`
-  (`{addressed, new_replies, open_in, seen, looked}`); `GET /api/artifacts`
+  (`{addressed, addressed_v, new_replies, open_in, seen, looked}`); `GET /api/artifacts`
   carries `participants` per artifact. `GET /api/viewers/me/attention`
-  answers `{artifacts: {<aid>: {addressed, new_replies, open_in, seen}}}`
+  answers `{artifacts: {<aid>: {addressed, addressed_v, new_replies, open_in, seen}}}`
   for every artifact (`{artifacts: {}}` without a cookie). `PUT
   /api/viewers/me/looked` takes `{artifact_id, thread_ids}` (at most 50) and
   answers `{looked: {<thread ID>: <time>}}`. Both are viewer routes; every
@@ -670,6 +669,8 @@ dot, the summary line reads `v5 addressed 3` (or `3 new versions · 7
 addressed` for a viewer returning after several), and the Addressed group
 fills.``
 
+Bring the spec's other version-band mentions up to date: in §8's URL paragraph, "the reload banner" becomes "the Reload button"; in §16's **Browser** bullet, "version banner" becomes "the version moment (the version button's dot and the Reload button)". §7's phase list (Phase 1's "version banner") and §17 describe what was built then; leave them as history.
+
 Everywhere else the spec and the contract name the button **Send to agent**
 (spec §1, §10 "Data flow"; the contract's comments section), write
 **Send to <agent>** (the button names the agent it sends to, for example
@@ -690,7 +691,7 @@ lines, hints and empty states. The mark's halves meet when it is clicked; a
 
 - [ ] **Step 4: §9 comments capability**
 
-Append to the **comments** bullet: ``Clax extension, not part of claude.ai's contract: `working()` resolves `{working, agents: [{harness, label, message, since, threads, otherThreads}]}`, and `onWorking(fn)` calls `fn` with that state now and on every change and resolves an unsubscribe function. `threads` holds the handles of the threads this document created that the agent names, and `otherThreads` counts the rest. Both are available under either declaration form, need no consent or gesture, and never carry a store ID, session ID or record key.``
+Append to the **comments** bullet: ``Clax extension, not part of claude.ai's contract, declared in `web/contract/clax-extensions.d.ts` (`ClaxExtensions.Comments`; the `0.2.61/` files stay claude.ai's, unchanged): `working()` resolves `{working, agents: [{harness, label, message, since, threads, otherThreads}]}`, and `onWorking(fn)` calls `fn` with that state now and on every change and resolves an unsubscribe function. `threads` holds the handles of the threads this document created that the agent names, and `otherThreads` counts the rest. Both are available under either declaration form, need no consent or gesture, and never carry a store ID, session ID or record key.``
 
 - [ ] **Step 5: §10 Comments and the feedback loop**
 
@@ -853,7 +854,9 @@ session ends. Renewal is automatic:
 In `### The comments capability`, add at its end:
 
 ```markdown
-Clax extension (not in claude.ai's contract): `working()` and
+Clax extension (not in claude.ai's contract; declared in
+`clax-extensions.d.ts`, `ClaxExtensions.Comments`, served at
+`<daemon_url>/_clax/contract/clax-extensions.d.ts`): `working()` and
 `onWorking(fn)` report which agents are working on this artifact:
 `{working: boolean, agents: [{harness, label, message, since, threads,
 otherThreads}]}`. `threads` are handles of threads this document created;
@@ -917,13 +920,12 @@ comment text it is a request to weigh.
 
 and in `### The comments capability`, add: ``Clax adds no batch `sendToClaude`; the batch send is the viewer's, from the sidebar.``
 
-- [ ] **Step 12: §18 Open questions**
+- [ ] **Step 12: §2 Decisions**
 
-Append to §18:
+Append to the §2 Decisions table, as one row:
 
 ```markdown
-- Provisional, pending the owner (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`):
-  gallery cards without thumbnails (Q1); the theme switch's return to the
+| D-Echo | Decided by the owner on 2026-10-01 (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`, every recommended answer accepted): gallery cards without thumbnails (Q1); the theme switch's return to the
   system (Q2); @mention matching (Q3); what counts as looking, and the
   Addressed group holding still until the view is decided again (Q4);
   presence built now, with location from the selected thread (Q5); keys only
@@ -931,8 +933,10 @@ Append to §18:
   per-thread marks private (Q7); agents named by harness, no "publishing"
   state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the
   returning-viewer summary in the top bar (Q11); the version bands moved
-  into the top bar (Q12).
+  into the top bar (Q12). | Settled before the Echo build so no task waits on a design question. |
 ```
+
+Write the row on one line, as the table's other rows are. If the table's columns differ, keep its column count and put the second sentence in its last column.
 
 - [ ] **Step 13: Check and stage**
 
@@ -1149,7 +1153,6 @@ In `web/scripts/bundle-size.mjs`, after the `markers` loop, add:
 ```js
 // Fonts: at most three WOFF2 files, every @font-face swap, none preloaded;
 // their bytes (already compressed) are budgeted as `fonts`.
-import { readdirSync, statSync } from "node:fs";
 const fontDir = new URL("_clax/fonts/", dist);
 const woffs = readdirSync(fontDir).filter(f => f.endsWith(".woff2"));
 if (woffs.length > 3) throw new Error(`dist/_clax/fonts holds ${woffs.length} WOFF2 files; at most 3`);
@@ -1163,16 +1166,16 @@ for (const html of ["index.html", "artifact.html"]) {
 const fontBytes = woffs.reduce((n, f) => n + statSync(new URL(f, fontDir)).size, 0);
 ```
 
-Move the `import` to the top of the file with the others. Then:
-- add `fonts: fontBytes` to `sizes`;
+Add `readdirSync` and `statSync` to the file's existing `node:fs` import (`import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";`). Then:
+- add `fonts: fontBytes` to `sizes`, after the part sizes are filled in;
 - print it in the `console.log` line (`fonts ${sizes.fonts}`);
-- add `"fonts"` to `KEYS`, and to both lists that check and record budgets (`["gallery", "artifact", "bridge"]` becomes `["gallery", "artifact", "bridge", "fonts"]`).
+- add `"fonts"` to `MEASURED` (`["gallery", "artifact", "bridge", ...Object.values(partKeys), "fonts"]`). `KEYS` is built from `MEASURED`, and the check and record loops already walk `MEASURED`, so nothing else changes.
 
 `--record` never raises a budget, as before.
 
 `web/perf/bundle-budget.json`: add `"fonts": 50144`. This is 14,708 + 15,620 + 19,816 bytes: the three files exactly. Any further font byte is the owner's call.
 
-In `web/scripts/bundle-size.test.ts`, add a case in the file's existing style:
+In `web/scripts/bundle-size.test.ts`, first make the existing fixture pass the new checks: in `run()`, write three small files (`a.woff2`, `b.woff2`, `c.woff2`, a few bytes each) under `dist/_clax/fonts`, and add `fonts` (larger than their total) to the `full` budget. Every existing case then passes as before. Add cases in the file's existing style:
 - a fixture `dist` with a fourth WOFF2 fails with `at most 3`;
 - an `index.html` with `<link rel="preload" href="/_clax/fonts/x.woff2">` fails with `preloads a font`;
 - a budget file without `fonts` fails with `lacks a numeric budget for: fonts`.
@@ -1295,6 +1298,10 @@ Open all twelve. Write in the task report what you saw:
 
 Run the voice gate from Global Constraints: no output.
 
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
+
 - [ ] **Step 7: Gates and staging**
 
 ```bash
@@ -1313,8 +1320,8 @@ Do not stage the screenshots. They are evidence for the report, not source.
 
 This task adds:
 - the Echo symbol, as a favicon, as a component and as markup the skeleton can carry;
-- a theme switch that follows the system until the viewer flips it, with no flash before first paint (provisional: Q2);
-- the shell's keys, with a `?` sheet that loads only when asked for. Keys act only while focus is in the shell (provisional: Q6).
+- a theme switch that follows the system until the viewer flips it, with no flash before first paint (decided: Q2);
+- the shell's keys, with a `?` sheet that loads only when asked for. Keys act only while focus is in the shell (decided: Q6).
 
 Each later task that adds a key also adds its row to the sheet.
 
@@ -1324,7 +1331,7 @@ Each later task that adds a key also adds its row to the sheet.
 
 **Interfaces:**
 - `view/mark.ts`: `export const MARK_SVG: string` (30×24, `class="mk"`, `aria-hidden="true"`).
-- `ui/Mark.svelte`: `{ size?: "bar" | "hero"; apart?: boolean; playful?: boolean }`. Only the gallery's mark is playful. The top bar's mark stays a plain link to the gallery, so a click there navigates (provisional: Q9). With `playful`, it is a button whose click makes the halves meet, and a second click parts them (`aria-pressed`). Without it, the mark is decoration.
+- `ui/Mark.svelte`: `{ size?: "bar" | "hero"; apart?: boolean; playful?: boolean }`. Only the gallery's mark is playful. The top bar's mark stays a plain link to the gallery, so a click there navigates (decided: Q9). With `playful`, it is a button whose click makes the halves meet, and a second click parts them (`aria-pressed`). Without it, the mark is decoration.
 - `view/theme-model.ts`: `type Scheme = "light" | "dark"`, `type Choice = Scheme | null`, `THEME_KEY = "clax.theme"`, `readChoice(): Choice`, `systemScheme(): Scheme`, `shownScheme(choice: Choice, system: Scheme): Scheme`, `flip(choice: Choice, system: Scheme): Choice`, `applyChoice(c: Choice, root?: HTMLElement): void`.
 - `view/keys.ts`: `type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" }`, `export const KEY_ROWS: KeyRow[]`.
 - `ArtifactController`: `ViewState.sheet: "keys" | null` (initially `null`) and `ViewState.replyFocus: number` (initially `0`). New methods: `shortcut(a: KeyAction): void`, `closeSheet(): void`, and `private order(s?: ViewState): Thread[]`, which returns the sidebar's order (`open`, then `detached`).
@@ -1563,6 +1570,7 @@ import { describe, expect, it, vi } from "vitest";
 import { flush, mount } from "./test/svelte";
 import KeysSheet from "./ui/KeysSheet.svelte";
 import Mark from "./ui/Mark.svelte";
+import { KEY_ROWS } from "./view/keys";
 import ThemeSwitch from "./ui/ThemeSwitch.svelte";
 
 describe("Echo chrome", () => {
@@ -1596,7 +1604,7 @@ describe("Echo chrome", () => {
     const m = mount(KeysSheet, { onClose });
     const d = m.root.querySelector("[role=dialog]")!;
     expect(d.getAttribute("aria-label")).toBe("Keyboard shortcuts");
-    expect(d.querySelectorAll("dt")).toHaveLength(7);
+    expect(d.querySelectorAll("dt")).toHaveLength(KEY_ROWS.length);
     flush(() => d.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
     flush(() => (d.querySelector(".foot button") as HTMLButtonElement).click());
     expect(onClose).toHaveBeenCalledTimes(2);
@@ -1653,11 +1661,36 @@ describe("Echo chrome", () => {
 </div>
 ```
 
-Add to `view/artifact-controller.test.ts`. It uses the file's harness: two open threads `t1` and `t2` from the `/threads` stub, as in the existing thread tests.
+In `view/artifact-controller.test.ts`, give the harness a seed, so this test and later ones (Tasks 18 and 23) can supply threads, artifact fields, versions, attention and extra routes. Replace `started()` with:
+
+```ts
+type Seed = { threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
+const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
+  id, artifact_id: ID, version_n: 1, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "2026-09-30T10:00:00.000Z",
+  resolved_at: null, resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "alex", via_harness: null, body: "x", created_at: "2026-09-30T10:00:00.000Z" }],
+  anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }, ...over,
+});
+
+async function started(seed: Seed = {}) {
+  vi.stubGlobal("EventSource", FakeES);
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    const own = seed.routes?.(url, init);
+    if (own !== undefined) return new Response(JSON.stringify(own));
+    return new Response(JSON.stringify(
+      url.includes("/threads") ? { threads: seed.threads ?? [], next_cursor: null }
+      : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } }
+      : url === "/api/token" ? { token: "tk" }
+      : { ...loaded, artifact: { ...loaded.artifact, ...seed.artifact }, versions: seed.versions ?? loaded.versions, ...(seed.attention ? { attention: seed.attention } : {}) }));
+  }));
+  // …the rest of the body as before.
+}
+```
+
+Import `type Thread` from `../threads`. Existing calls (`started()`) keep their behaviour. Then add:
 
 ```ts
   it("acts on shell keys: C, T, J and K, ?, and Escape closes the sheet before leaving comment mode", async () => {
-    const { ctl } = await started();
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
     const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
     key("c");
@@ -1780,6 +1813,10 @@ Then do these by hand in a headed Chromium against the same scratch daemon (`npx
 - the switch flips the theme, survives a reload, and flipping back to the system's scheme clears `localStorage["clax.theme"]`;
 - with the system in dark and no choice stored, reloading shows no light flash.
 
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
+
 - [ ] **Step 6: Gates and staging**
 
 ```bash
@@ -1808,11 +1845,11 @@ At phone width a Page | Threads switch sits at the foot. The roster and summary 
 
 **Files:**
 - Create: `web/shell/src/ui/MoreMenu.svelte`, `web/shell/src/ui/PhoneTabs.svelte`, `web/shell/src/topbar.test.ts`, `web/e2e/echo.spec.ts`
-- Modify: `web/shell/src/view/skeleton.ts`, `web/shell/src/view/skeleton.test.ts`, `web/shell/artifact.html`, `web/shell/src/artifact.ts`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/topbar-style.test.ts`, `web/shell/src/theme.css`, `web/e2e/viewer.spec.ts` (selectors only)
+- Modify: `web/shell/src/view/skeleton.ts`, `web/shell/src/view/skeleton.test.ts`, `web/shell/artifact.html`, `web/shell/src/artifact.ts`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/view/gallery-model.test.ts`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/gallery.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/topbar-style.test.ts`, `web/shell/src/theme.css`, `web/e2e/viewer.spec.ts` (selectors only)
 
 **Interfaces:**
 - `SKELETON_HTML` becomes `<header class="topbar"><a href="/" class="home" aria-label="Gallery">${MARK_SVG}</a><div class="ttl"><h1>Clax</h1><span class="by"></span></div><div class="island"></div></header><div class="viewer"><div class="stage"><!--clax:frame--><div class="island"></div></div><div class="island"></div></div>`. `Skeleton` gains `topbar: HTMLElement` and `by: HTMLElement`, and `title` is found with `.topbar h1`. The daemon's `<h1>Clax</h1>` marker (`boot.rs` `TITLE_MARK`) is unchanged.
-- `gallery-model.ts`: `publisherText(a)` reads `published by <harness>`, or `published from the command line` (previously null for the command line). The gallery's own check of null moves to `a.owner_session_id`.
+- `gallery-model.ts`: `publisherText(a)` reads `published by <harness>` when `a.owner_harness` is set, else `published from the command line` (previously null for the command line). It keys on `owner_harness`, which `with_owner` sets and the bootstrap keeps; `owner_session_id` is stripped from the bootstrap (and, from Task 15, from every token-less artifact view). The gallery's own check moves to `a.owner_harness` too.
 - `pageFollows` also sets `sk.by` and toggles `commenting` on `sk.topbar`.
 - `MoreMenu.svelte`: `{ rawHref: string | null; canCopy: boolean; onCopy(): void }`. `PhoneTabs.svelte`: `{ panel: boolean; open: number; onPage(): void; onThreads(): void }`.
 
@@ -1906,7 +1943,18 @@ In `skeleton()`, return `topbar: q(".topbar")`, `title: q(".topbar h1")` and `by
   if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
 ```
 
-Import `publisherText` from `./view/gallery-model`. Change `publisherText` to answer `published from the command line` when there is no owner session, and `published by ${a.owner_harness ?? "an agent"}` otherwise. In `Gallery.svelte`, the `{#if by}` test becomes `{#if a.owner_session_id}`.
+Import `publisherText` from `./view/gallery-model`. Change it to:
+
+```ts
+/** Who published the artifact: its owner session's harness, else the command line. */
+export function publisherText(a: Artifact): string {
+  return a.owner_harness ? `published by ${a.owner_harness}` : "published from the command line";
+}
+```
+
+In `Gallery.svelte`, the `{#if by}` test becomes `{#if a.owner_harness}`. Update the tests that pinned the old wording:
+- `view/gallery-model.test.ts`: `{ owner_session_id: "s", owner_harness: "codex" }` now reads `published by codex`, `{ owner_harness: null }` reads `published from the command line`, and an artifact with neither reads the same;
+- `gallery.test.ts` (the two `.publisher` assertions): `published by claude-code`.
 
 - [ ] **Step 3: The components and the island**
 
@@ -1988,6 +2036,13 @@ Import `publisherText` from `./view/gallery-model`. Change `publisherText` to an
 The keycap carries `aria-hidden`, so the button's accessible name stays "Comment" and existing e2e locators `getByRole("button", { name: "Comment" })` keep working. In `web/e2e/viewer.spec.ts` and elsewhere, change only locators that named `open raw` or `copy link` as top bar items: they now open the ⋯ menu first (`getByRole("button", { name: "Open raw or copy link" })`), then `getByRole("menuitem", { name: "Copy link" })`.
 
 - [ ] **Step 4: Styles**
+
+The gallery's header still uses `class="topbar"`, and the rules below are for the artifact view only. So that the gallery is not left unstyled until Task 6, change `Gallery.svelte`'s `<header class="topbar">` to `<header class="gbar">` now, and add the gallery bar's first rules (Task 6 replaces them with its full set):
+
+```css
+.gbar { height: 60px; display: flex; align-items: center; gap: 12px; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
+.gbar h1 { margin: 0; font-size: 22px; }
+```
 
 In `web/shell/src/theme.css`, delete the old top bar rules: every rule whose selector starts with `.topbar` (`.topbar`, `.topbar h1`, the `:first-child` rules, `.topbar select`, `.topbar button`, the island action rules, the pressed-button rules) and the `max-width: 480px` `.topbar` lines. Add:
 
@@ -2076,7 +2131,7 @@ Also run the Rust side that embeds `artifact.html`: `cargo test -p clax-server b
 - [ ] **Step 6: Time to usable, screenshots, and a look**
 
 Run: `cd web && npm run perf; echo "exit=$?"`
-Expected: `exit=0`, with every measure within `web/perf/budget.json`. If first paint or comment ready fails, stop and report the numbers. Do not move work earlier or later to chase them.
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget. Do not move work earlier or later to chase the numbers.
 
 Run: `cd web && CLAX_SHOTS=task-04 npx playwright test e2e/shots.spec.ts`
 Expected: PASS.
@@ -2097,6 +2152,7 @@ Report what the `view` and `comment` shots show in both themes and both sizes, a
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add web/shell/src/ui/MoreMenu.svelte web/shell/src/ui/PhoneTabs.svelte web/shell/src/topbar.test.ts web/e2e/echo.spec.ts web/shell/src/view/skeleton.ts \
   web/shell/src/view/skeleton.test.ts web/shell/artifact.html web/shell/src/artifact.ts web/shell/src/view/gallery-model.ts web/shell/src/ui/Gallery.svelte \
+  web/shell/src/view/gallery-model.test.ts web/shell/src/gallery.test.ts \
   web/shell/src/ui/TopbarIsland.svelte web/shell/src/topbar-style.test.ts web/shell/src/theme.css web/e2e/viewer.spec.ts
 git add -u web/e2e
 git status --short   # staged; the controller commits ("Lay out the artifact top bar in Echo: the mark, the title over its by-line, a red-orange Comment with its rule, and a phone tab bar")
@@ -2118,7 +2174,7 @@ Later tasks add events to the history line: working (Task 16), addressed (Task 1
 
 **Files:**
 - Create: `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`
-- Modify: `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/view/sidebar-model.ts`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`, and the e2e specs whose locators name `Send to agent`, or click a card in Resolved or Detached (`grep -rln "Send to agent\|section-resolved\|section-detached" web/e2e`)
+- Modify: `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/view/sidebar-model.ts`, `web/shell/src/sidebar.test.ts`, `web/shell/src/artifact.test.ts`, `web/e2e/comments.spec.ts`, `web/e2e/comment-loop.spec.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`, and the e2e specs whose locators name `Send to agent`, or click a card in Resolved or Detached (`grep -rln "Send to agent\|section-resolved\|section-detached" web/e2e`)
 
 **Interfaces:**
 - `view/history-model.ts` (no `svelte` import):
@@ -2366,9 +2422,15 @@ Delete the port's older `@media (max-width: 700px) { .sidebar { … } }` line, w
 
 - [ ] **Step 4: Tests, e2e locators, screenshots**
 
-In the e2e specs listed under Files:
-- `Send to agent` becomes `/^Send to /`;
-- a step that clicks a card under Resolved or Detached first clicks that group's `summary`.
+Update every test that pins the old card. Each is listed with its replacement:
+- `web/shell/src/sidebar.test.ts:25`: `.comment.agent .author` reading `Agent · via claude` becomes `.msg.agent .author` reading `claude`; the `Send to agent` filter (about line 28) becomes `Send to claude`.
+- `web/shell/src/artifact.test.ts:846` and `:1009`: `buttonNamed(…, "Send to agent")` becomes `buttonNamed(…, "Send to claude")`, or the test fixture's owner harness when it is not `claude`.
+- `web/e2e/comments.spec.ts:44` and `web/e2e/comment-loop.spec.ts:55`: `toContainText("Agent · via claude")` becomes `toContainText("claude")` on `.msg.agent .author`.
+- `web/e2e/comments.spec.ts:48` (`Resolved by Viewer`) and `:116`: assert the history instead, `card.locator(".hist")` containing `Viewer resolved` (the name the viewer has there).
+- `web/e2e/comment-loop.spec.ts:60` (`Resolved by Agent · via claude`): `done.locator(".hist")` containing `claude resolved`.
+- `web/e2e/comments.spec.ts:188-192`, the Tab-order test: Resolve now comes before Send. The order becomes header, `// Resolve`, `// Send to the agent`, `// Reply input`, `// Reply button`, next card. The comment no longer says `Send to agent`, so Task 25's gate stays quiet.
+- Any other locator naming `Send to agent` becomes `/^Send to /`: `grep -rn "Send to agent" web/shell/src web/e2e` prints nothing afterwards.
+- A step that clicks a card under Resolved or Detached first clicks that group's `summary`.
 
 Count assertions (`toHaveCount`) need no change, because closed `<details>` content stays in the DOM.
 
@@ -2396,6 +2458,10 @@ Report what the `threads` shots show against `concept-3-echo/shots/*-view.png`:
 - the empty Open message, when it shows;
 - at phone width, the sidebar above the tabs.
 
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
+
 - [ ] **Step 5: Gates and staging**
 
 ```bash
@@ -2421,16 +2487,18 @@ Grouping by "needs your eyes" and the markers wait for attention (Task 19). The 
 
 **Files:**
 - Create: `web/shell/src/view/haiku.json`, `web/shell/src/view/haiku.ts`, `web/shell/src/view/haiku.test.ts`, `web/shell/src/ui/HaikuLine.svelte`, `web/shell/src/ui/GalleryCard.svelte`
-- Modify: `web/shell/src/ui/Gallery.svelte`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/view/gallery-model.test.ts`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`, `crates/clax-cli/src/commands/haiku.rs`
+- Modify: `web/shell/src/ui/Gallery.svelte`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/view/gallery-model.test.ts`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`, `crates/clax-cli/src/commands/haiku.rs`, `web/e2e/shots.spec.ts` (the empty-gallery run)
 
 **Interfaces:**
 - `view/haiku.ts`: `pickHaiku(list: string[], seed?: string): string`. Without a seed the pick is random. With one, it is stable: an FNV-1a hash of the seed, modulo the length.
-- `view/gallery-model.ts`: `orderArtifacts(list: Artifact[]): Artifact[]` puts pinned first, then sorts by `updated_at`, newest first. `rally(a: Artifact): boolean` is true when `a.current_version === 10` (provisional: Q9).
+- `view/gallery-model.ts`: `orderArtifacts(list: Artifact[]): Artifact[]` puts pinned first, then sorts by `updated_at`, newest first. `rally(a: Artifact): boolean` is true when `a.current_version === 10` (decided: Q9).
 - `GalleryCard.svelte`: `{ a: Artifact; token: string | null; onPin(): void; onDelete(): void; markers?: Snippet; footer?: Snippet }`.
 
 - [ ] **Step 1: Haiku, with a parity test across Rust and the shell**
 
-`web/shell/src/view/haiku.json`: the ten haiku from `crates/clax-cli/src/commands/haiku.rs` `HAIKU`, in order, as a JSON array of strings, each with its `\n` line breaks.
+First replace the ninth haiku in `crates/clax-cli/src/commands/haiku.rs` `HAIKU`, which speaks of a turn. Change `"Stop hook, end of turn\none more comment slipped in late\nthe work carries on"` to `"Stop hook at the end\none more comment slipped in late\nthe work carries on"` (still five, seven, five).
+
+`web/shell/src/view/haiku.json`: the ten haiku from `HAIKU`, in order, as a JSON array of strings, each with its `\n` line breaks.
 
 Append to the tests in `crates/clax-cli/src/commands/haiku.rs`:
 
@@ -2520,6 +2588,7 @@ Add to `web/shell/src/view/gallery-model.test.ts`:
 
 In `gallery.test.ts`:
 - the test that reads card text expects `.card .v` to read `v3`, and the card to be no longer `p` description;
+- the two `.publisher` assertions become `.card .by` containing `claude-code`;
 - a new test stubs `/api/artifacts` with `[]` and expects `.empty-gallery .mark.apart` and the text `When an agent publishes a page, it lands here.`;
 - a new test expects the pinned artifact's card first even when listed second.
 
@@ -2549,7 +2618,7 @@ export const rally = (a: Artifact): boolean => a.current_version === 10;
   import { rally } from "../view/gallery-model";
 
   let { a, token, onPin, onDelete, markers, footer }: { a: Artifact; token: string | null; onPin(): void; onDelete(): void; markers?: Snippet; footer?: Snippet } = $props();
-  const by = $derived(a.owner_session_id ? agentName(a.owner_harness) : "command line");
+  const by = $derived(a.owner_harness ? agentName(a.owner_harness) : "command line");
 </script>
 
 <div class="card-wrap">
@@ -2608,7 +2677,7 @@ export const rally = (a: Artifact): boolean => a.current_version === 10;
 
 - [ ] **Step 3: Styles**
 
-In `web/shell/src/theme.css`, replace `.wrap`, `.grid`, `.card` and its children, `.empty` and `.empty code`, `.search`, `.card-wrap`, `.card-tools` and its children with:
+In `web/shell/src/theme.css`, replace `.wrap`, `.grid`, `.card` and its children, `.empty` and `.empty code`, `.search`, `.card-wrap`, `.card-tools` and its children, and Task 4's two `.gbar` rules, with:
 
 ```css
 /* The gallery (spec §8, "Gallery"). */
@@ -2681,6 +2750,10 @@ Report, against `concept-3-echo/shots/*-gallery.png`:
 - the phone layout is one column with no sideways scroll.
 
 In a headed browser, click the gallery's mark and see the halves meet, then part.
+
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 5: Gates and staging**
 
@@ -4304,9 +4377,11 @@ and register it after `watch`:
 ```ts
     define("working", "Clax working",
       "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
-      "Show the person you are working on an Clax artifact, or clear it",
+      "Show the person you are working on a Clax artifact, or clear it",
       WorkingArgs, (ctx, a) => tools.working(ctx, a));
 ```
+
+While in `plugins/pi/src/clax.ts`, correct the article in the existing one-line snippets: every `an Clax` becomes `a Clax` (`grep -n "an Clax" plugins/pi/src/clax.ts`). Do the same in `plugins/pi/src/daemon.ts:1` and in `docs/contract.md` (`an Clax extension` becomes `a Clax extension`). Update any test or fixture that pins those snippets (`grep -rn "an Clax" plugins docs`), so the grep prints nothing afterwards.
 
 In `plugins/pi/test/clax.test.ts`, rename the test to `registers the twenty-three tools with one-line prompt snippets, and the clax command`, and add to `describe("comments", ...)`:
 
@@ -4373,7 +4448,7 @@ bash scripts/quality_gates.sh; echo "exit=$?"
 git add plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs crates/clax-mcp/src/client.rs crates/clax-mcp/tests/comments.rs \
   crates/clax-mcp/tests/shim.rs plugins/pi/src/clax.ts plugins/pi/src/client.ts plugins/pi/test/clax.test.ts scripts/test-plugins.sh \
   docs/contract.md README.md plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md \
-  plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md
+  plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/pi/src/daemon.ts
 git status --short   # staged; this task continues below
 ```
 
@@ -4736,7 +4811,7 @@ if [ -n "$sid" ]; then
   fi
   { mkdir -p "$dir" && : > "$stamp"; } 2>/dev/null
 fi
-printf '%s' "$input" | "${0%/*}/ensure-clax.sh" exec hook --agent "$agent" tool >/dev/null 2>&1
+printf '%s' "$input" | bash "${0%/*}/ensure-clax.sh" exec hook --agent "$agent" tool >/dev/null 2>&1
 exit 0
 ```
 
@@ -4751,7 +4826,7 @@ scripts/test-tool-hook.sh
 
 Expected: every line `PASS`, and the last line `tool hook gate checks passed`.
 
-In `scripts/quality_gates.sh`, after the `installer` line, add `run "tool hook gate"          scripts/test-tool-hook.sh`.
+In `scripts/quality_gates.sh`, after the `run "release installer"` line, add `run "tool hook gate"          scripts/test-tool-hook.sh`.
 
 The stamp is touched before `clax` runs. Concurrent tool calls within the minute then start at most one `clax`, and a failed renewal is retried a minute later. The record's 120 s lifetime covers that gap.
 
@@ -5684,11 +5759,12 @@ It all rides on the responses the shell already loads and on the bootstrap block
 
 **Files:**
 - Create: `crates/clax-core/src/mentions.rs`, `crates/clax-core/src/store/attention.rs`, `crates/clax-server/tests/api_attention.rs`
-- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/ids.rs`, `crates/clax-core/src/store/mod.rs`, `crates/clax-core/src/store/migrations.rs` (migration 11), `crates/clax-core/src/store/threads.rs` (`NewThread`, `NewComment`, the comment row, `delete_thread_touched`), `crates/clax-core/src/store/sessions.rs` (`register_session`), `crates/clax-core/src/store/artifacts.rs` (`delete_artifact`, the version row), `crates/clax-core/src/model.rs` (`Comment`, `Session`, `Version`), `crates/clax-server/src/viewer.rs` (`author`), `crates/clax-server/src/routes/threads.rs` (create, comment), `crates/clax-server/src/routes/artifacts.rs` (`get`, `list`, `with_owner`), `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/boot.rs`, `crates/clax-server/src/testing.rs`, `web/shell/src/api.ts`, `web/shell/src/threads.ts`, `web/shell/src/view/boot.ts`
+- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/ids.rs`, `crates/clax-core/src/store/mod.rs`, `crates/clax-core/src/store/migrations.rs` (migration 11), `crates/clax-core/src/store/threads.rs` (`NewThread`, `NewComment`, the comment row, `delete_thread_touched`), `crates/clax-core/src/store/sessions.rs` (`register_session`), `crates/clax-core/src/store/artifacts.rs` (`delete_artifact`, the version row), `crates/clax-core/src/model.rs` (`Comment`, `Session`, `Version`), `crates/clax-server/src/viewer.rs` (`author`), `crates/clax-server/src/routes/threads.rs` (create, comment), `crates/clax-server/src/routes/artifacts.rs` (`get`, `list`, `with_owner`), `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/boot.rs`, `crates/clax-server/src/testing.rs`, `crates/clax-server/tests/api_sessions.rs`, `crates/clax-server/tests/shell_boot.rs`, `crates/clax-core/src/store/changelog.rs` (test literals), `docs/follow-ups.md`, `web/shell/src/api.ts`, `web/shell/src/threads.ts`, `web/shell/src/view/boot.ts`
 
 **Interfaces:**
+- Token-less artifact views name no session. `GET /api/artifacts` and `GET /api/artifacts/<aid>` without the bearer token leave out `artifact.owner_session_id` and every `versions[].session_id`, as the `/a/…` bootstrap already does. With the token they are unchanged; the MCP server, the CLI and the Pi extension always send the token (`crates/clax-mcp/src/client.rs` `bearer_auth`, `plugins/pi/src/client.ts` `authorization`), so `scope: "mine"` and `clax publish` keep reading them. `crate::routes::artifacts::strip_sessions(v: &mut Value)` does the stripping, and `boot::without_sessions` calls it.
 - `clax_core::ids::new_agent_handle() -> String`: `a_` and 22 lowercase hex digits. `is_agent_handle(&str) -> bool`.
-- `clax_core::mentions::mentioned(body: &str, names: &[(String, String)]) -> Vec<String>` (provisional: Q3) takes `(public_id, display_name)` pairs and returns the public IDs whose `@<display name>` appears in `body`. The match ignores case and needs a boundary after the name (end, whitespace, or one of `.,;:!?)]}'"`). `@agent` is never a viewer.
+- `clax_core::mentions::mentioned(body: &str, names: &[(String, String)]) -> Vec<String>` (decided: Q3) takes `(public_id, display_name)` pairs and returns the public IDs whose `@<display name>` appears in `body`. The match ignores case and needs a boundary after the name (end, whitespace, or one of `.,;:!?)]}'"`). `@agent` is never a viewer.
 - `NewThread` and `NewComment` gain `author_public_id: Option<String>`. Comment views gain `author_public_id` (null for agents and anonymous viewers).
 - `Session` gains `agent_handle: String`. Version views gain `agent: Option<String>` (the publishing session's handle) and `agent_harness: Option<String>`.
 - The `Store` gains:
@@ -5726,7 +5802,7 @@ In `crates/clax-server/src/testing.rs`, add:
     pub async fn reply_as(&self, aid: &str, tid: &str, cookie: &str, body: &str) -> serde_json::Value {
         let res = self.client.post(format!("{}/api/artifacts/{aid}/threads/{tid}/comments", self.base))
             .header("cookie", format!("clax_viewer={cookie}")).json(&serde_json::json!({"body": body})).send().await.unwrap();
-        assert_eq!(res.status(), 200);
+        assert_eq!(res.status(), 201);
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
     }
 ```
@@ -5835,6 +5911,22 @@ async fn participants_name_agents_by_handle_only() {
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["participants"]["agents"][0]["handle"], handle);
     assert!(!list.to_string().contains(&sid));
+}
+
+#[tokio::test]
+async fn no_session_id_reaches_a_tokenless_caller() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = artifact(&ts).await;
+    for path in [format!("/api/artifacts/{aid}"), "/api/artifacts".to_string()] {
+        let anon: Value = ts.get(&path).await.json().await.unwrap();
+        assert!(!anon.to_string().contains(&sid), "{path} without the token: {anon}");
+        let authed: Value = ts.get_authed(&path).await.json().await.unwrap();
+        assert!(authed.to_string().contains(&sid), "{path} with the token keeps the owner session");
+    }
+    let one: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    assert!(one["artifact"].get("owner_session_id").is_none());
+    assert!(one["versions"][0].get("session_id").is_none());
+    assert_eq!(one["artifact"]["owner_harness"], "claude", "the harness stays: the by-line needs it");
 }
 ```
 
@@ -6072,9 +6164,9 @@ fn summary(c: &rusqlite::Connection, viewer_id: &str, public_id: &str, aid: &str
         let since = looked.get(&tid).map(String::as_str).unwrap_or("");
         let open = status == "open";
         if open { s.open_in.push(tid.clone()); }
-        let addressed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1 AND created_at > ?2)", params![tid, since], |r| r.get(0))?;
+        let addressed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1 AND created_at >= ?2)", params![tid, since], |r| r.get(0))?;
         if open && addressed {
-            let v: Option<u32> = c.query_row("SELECT MAX(version_n) FROM version_threads WHERE thread_id = ?1 AND created_at > ?2", params![tid, since], |r| r.get(0))?;
+            let v: Option<u32> = c.query_row("SELECT MAX(version_n) FROM version_threads WHERE thread_id = ?1 AND created_at >= ?2", params![tid, since], |r| r.get(0))?;
             s.addressed_v = s.addressed_v.max(v);
             s.addressed.push(tid.clone());
         }
@@ -6109,7 +6201,7 @@ pub fn author(st: &Store, cookie: Option<&str>) -> clax_core::Result<(String, Op
 In `routes/threads.rs`, the thread create and viewer comment handlers call `author` in place of `author_name`, and fill `author_public_id`. Agent comments pass `None`.
 
 `routes/artifacts.rs`:
-- `with_owner` adds `v["participants"] = json!(st.participants(&a.id)?)`. It now takes the store and returns `Result<Value>`. Update its callers: `get`, `list` and `boot.rs`.
+- `with_owner` adds `v["participants"] = json!(st.participants(&a.id)?)`. It now also takes the store and returns `Result<Value>`; it keeps Task 8's `working` parameter. Update its callers: `get`, `list` and `boot.rs`.
 - `get` reads the viewer cookie (`crate::viewer::read(&headers)`). With a viewer, it adds `"attention": st.attention(&vid, &id)?` to the body, and answers with `Cache-Control: private, no-cache` and `Vary: Cookie` (the headers `routes/shell.rs` already sets for its viewer-dependent page).
 
 `routes/viewers.rs`:
@@ -6180,11 +6272,45 @@ export async function putLooked(aid: string, ids: string[]): Promise<Record<stri
 
 `view/boot.ts`: `Boot` gains `attention?: Attention | null`. `readBoot` drops `attention` for `back_forward`, as it drops the viewer.
 
+Token-less artifact views (the B4 ruling):
+- In `routes/artifacts.rs`, add:
+
+```rust
+/// Leaves out the session IDs a token-less caller must not see (spec §14):
+/// the artifact's `owner_session_id` and each version's `session_id`.
+pub(crate) fn strip_sessions(v: &mut Value) {
+    if let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut) {
+        a.remove("owner_session_id");
+    }
+    for x in v.get_mut("versions").and_then(Value::as_array_mut).into_iter().flatten() {
+        if let Some(x) = x.as_object_mut() { x.remove("session_id"); }
+    }
+    for x in v.get_mut("artifacts").and_then(Value::as_array_mut).into_iter().flatten() {
+        if let Some(x) = x.as_object_mut() { x.remove("owner_session_id"); }
+    }
+}
+```
+
+- `get` and `list` take `headers: HeaderMap` and call `strip_sessions` on the body unless `has_token(&headers, &s.token)`.
+- `boot::without_sessions` builds its `{artifact, versions}` and calls `strip_sessions` on it, so the two share one rule.
+- `tests/api_sessions.rs` (the `owner_session_id == sid` assertions after `ts.get`, about line 207) and `tests/shell_boot.rs` ("the API names the owner session", about line 125): read with `ts.get_authed` instead, and keep their assertions.
+- `docs/follow-ups.md`: remove the bullet **"`GET /api/artifacts/<ID>` names sessions to unauthenticated callers"**, which this fixes.
+
+Test literals (F11): add `author_public_id: None` to every `NewThread { … }` and `NewComment { … }` literal in the workspace, Task 12's `store/changelog.rs` tests included (`grep -rn "NewThread {\|NewComment {" crates`).
+
+The doctor's hard delete of broken artifact rows (`store/artifacts.rs`, the list it deletes before `threads`) also deletes `mentions` (by the thread's comments), `viewer_threads` and `version_threads` (by thread), since those hold foreign keys to the rows it removes.
+
 Run: `cargo test --workspace && cd web && npm run typecheck && npx vitest run`
 Expected: PASS. Exact JSON assertions elsewhere gain the following, and nothing else changes:
 - comments: `"author_public_id": null`;
 - versions: `"agent"` and `"agent_harness"`;
-- artifacts: `"participants"`.
+- artifacts: `"participants"`;
+- token-less artifact views: no `owner_session_id` or `session_id`.
+
+The bootstrap now runs `participants` and `attention` before the HTML's first byte. Measure it:
+
+Run: `cd web && npm run build && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. The first remedy is one aggregate query per artifact in `summary()` in place of the per-thread queries.
 
 - [ ] **Step 5: Gates and staging**
 
@@ -6194,9 +6320,10 @@ git add crates/clax-core/src/mentions.rs crates/clax-core/src/store/attention.rs
   crates/clax-core/src/store/mod.rs crates/clax-core/src/store/migrations.rs crates/clax-core/src/store/threads.rs crates/clax-core/src/store/sessions.rs \
   crates/clax-core/src/store/artifacts.rs crates/clax-core/src/model.rs crates/clax-server/src/viewer.rs crates/clax-server/src/routes/threads.rs \
   crates/clax-server/src/routes/artifacts.rs crates/clax-server/src/routes/viewers.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/boot.rs \
-  crates/clax-server/src/testing.rs crates/clax-server/tests/shell_boot.rs web/shell/src/api.ts web/shell/src/threads.ts web/shell/src/view/boot.ts
+  crates/clax-server/src/testing.rs crates/clax-server/tests/shell_boot.rs crates/clax-server/tests/api_sessions.rs docs/follow-ups.md \
+  web/shell/src/api.ts web/shell/src/threads.ts web/shell/src/view/boot.ts
 git add -u crates web/shell/src
-git status --short   # staged; the controller commits ("Record comment authors and mentions, give agents opaque handles, and compute each viewer's attention")
+git status --short   # staged; the controller commits ("Record comment authors and mentions, give agents opaque handles, compute each viewer's attention, and keep session IDs out of token-less artifact views")
 ```
 
 ---
@@ -6221,12 +6348,12 @@ The daemon's working views gain the agent's handle, so two sessions of one harne
 - Rust:
   - `clax_core::working::Actor` gains `pub agent: String`, the session's `agent_handle` from Task 15.
   - `WorkingView` gains `pub agent: String`, so working views name the agent by handle and never by session.
-  - The two server constructions (`routes/working.rs::set` and `working.rs::mark_items`) pass `agent: sess.agent_handle`. Test literals add `agent: format!("a_{sid}")`, or a fixed string.
+  - The two server constructions (`routes/working.rs::put`, Task 8's PUT handler, and `working.rs::mark_items`) pass `agent: sess.agent_handle`. Test literals add `agent: format!("a_{sid}")`, or a fixed string.
 - `view/working-model.ts` (no `svelte` import):
   - `type Working = { key: string; agent: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string }`.
   - `harnessLabel(h)` gives the product name, for the capability.
   - `newestFirst(list)`.
-  - `agentNames(list: Working[], agents: AgentView[]): Map<string, string>` maps a handle to a name: the harness, plus the handle's first 4 hex digits when two agents share a harness (provisional: Q8).
+  - `agentNames(list: Working[], agents: AgentView[]): Map<string, string>` maps a handle to a name: the harness, plus the handle's first 4 hex digits when two agents share a harness (decided: Q8).
   - `clock(since: string, now: Date): string` gives `m:ss`, or `h:mm:ss` past an hour.
   - `summary(i: SummaryInput): Summary`, where `SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; now: Date }` and `Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null }`.
   - `threadMarker(list, threadId, names): { text: string; since: string } | null`, and `threadAgent(list, threadId, names): string | null` (the name alone).
@@ -6240,7 +6367,7 @@ The daemon's working views gain the agent's handle, so two sessions of one harne
   - `Roster` `{ people; agents; working: Working[]; me: string | null; max: number; small?: boolean }`.
   - `WorkingSummary` `{ s: Summary }`.
   - `WorkingStrip` `{ w: Working; text: string; commenting: boolean }`.
-  - `ThreadCard` gains `marker?: { text: string; since: string } | null` and `now: Date`.
+  - `ThreadCard` gains `marker?: { text: string; since: string } | null` (it already takes `now`).
   - `Pins` gains `onit?: Set<string>`.
 
 - [ ] **Step 1: The daemon names the agent in working views**
@@ -6401,7 +6528,7 @@ Expected: PASS.
   - `onEvent` handles `working` with `this.set({ working: e.working })`;
   - the resync refetch sets it too;
   - `working` is not part of `react()`: a working change never re-resolves anchors or refocuses the frame.
-- `view/artifact-controller.test.ts`: make `FakeES` dispatchable (`emit(name, data)`), and add a test. The artifact's `working` seeds the state, and a `working` event replaces it without changing `data`.
+- `view/artifact-controller.test.ts`: using `FakeES.emit(name, data)` (the harness already has it), add a test. The artifact's `working` seeds the state, and a `working` event replaces it without changing `data`.
 - `view/history-model.ts`: `historyOf(t, versions, names, more: { working?: string | null } = {})` appends `{ v: null, who: more.working, agent: true, verb: "working on it" }` when `more.working` is set and the thread is open.
 - `artifact.ts` `pageFollows` toggles `working` on `sk.topbar` when `s.working.length > 0`.
 
@@ -6710,7 +6837,7 @@ test("at phone width in dark mode with reduced motion the roster shrinks and not
 ```
 
 Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/working.spec.ts; echo "exit=$?"`
-Expected: `exit=0`. `WorkingStrip` is outside `artifact.html`'s closure.
+Expected: `exit=0`. `WorkingStrip` is outside `artifact.html`'s closure. If the `artifact` or `gallery` budget fails, first move what first paint does not need behind a dynamic `import()` (the strip's text, the roster's overflow, `working-model`'s clock), then stop and report the sizes. Never raise the budget.
 
 - [ ] **Step 8: Screenshots and a look**
 
@@ -6729,7 +6856,8 @@ Report, against `concept-3-echo/shots/*-working.png`:
 - the gallery chip;
 - the phone bar with one token per side.
 
-Run `npm run perf` and report its result.
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 9: Gates and staging**
 
@@ -6746,61 +6874,57 @@ git status --short   # staged; the controller commits ("Show who is working in E
 
 ### Task 17: The page capability: `working()` and `onWorking(fn)`
 
-The page reads who is working through the `comments` capability (a Clax extension, marked as such). This needs no UI change: the page's own display is the page's business.
+The page reads who is working through the `comments` capability (a Clax extension, marked as such). This needs no UI change: the page's own display is the page's business. The files under `web/contract/0.2.61/` are claude.ai's type definitions, byte for byte, and stay untouched. Clax's additions are declared in `web/contract/clax-extensions.d.ts` (`namespace ClaxExtensions`), which the daemon serves beside them.
 
 **Files:**
-- Modify: `web/contract/0.2.61/comments.d.ts`, `web/shell/src/caps/host.ts` (`CapEnv.working`), `web/shell/src/caps/comments.ts`, `web/shell/src/caps/comments.test.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/test/comments.test.ts`, `web/shell/src/view/artifact-controller.ts` (passes `working` into the host env)
+- Modify: `web/contract/clax-extensions.d.ts`, `web/bridge/src/capabilities.ts` (`CAPABILITY_METHODS.comments`), `web/bridge/test/capabilities.test.ts`, `web/shell/src/caps/host.ts` (`CapEnv.working`), `web/shell/src/caps/comments.ts`, `web/shell/src/caps/comments.test.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/test/comments.test.ts`, `web/shell/src/view/artifact-controller.ts` (passes `working` into the host env), `web/e2e/working.spec.ts`
 
 **Interfaces:**
-- Produces (contract, in `namespace comments`):
+- Produces, in `web/contract/clax-extensions.d.ts` inside `declare namespace ClaxExtensions`, after `CommentsErrorCode`:
 
 ```ts
-    /** Clax extension: not part of claude.ai's comments capability. One
-     * agent session working on this artifact now. */
-    interface WorkingAgent {
-      /** `"claude"`, `"codex"`, `"pi"`, or another harness name. */
-      harness: string;
-      /** The harness as people read it ("Claude Code"). */
-      label: string;
-      /** The agent's own words, at most 140 characters; treat as untrusted text. */
-      message: string | null;
-      /** When it started (ISO 8601). */
-      since: string;
-      /** Handles of threads THIS document created that the agent is acting on. */
-      threads: string[];
-      /** How many other threads it is acting on. */
-      otherThreads: number;
-    }
-    /** Clax extension: not part of claude.ai's comments capability. */
-    interface WorkingState {
-      working: boolean;
-      /** Newest first. */
-      agents: WorkingAgent[];
-    }
-```
+  /** One agent session working on this artifact now (`comments.working()`). */
+  interface WorkingAgent {
+    /** `"claude"`, `"codex"`, `"pi"`, or another harness name. */
+    harness: string;
+    /** The harness as people read it ("Claude Code"). */
+    label: string;
+    /** The agent's own words, at most 140 characters; treat as untrusted text. */
+    message: string | null;
+    /** When it started (ISO 8601). */
+    since: string;
+    /** Handles of threads THIS document created that the agent is acting on. */
+    threads: string[];
+    /** How many other threads it is acting on. */
+    otherThreads: number;
+  }
 
-and in `interface Comments`:
+  /** What `working()` resolves and `onWorking` reports. */
+  interface WorkingState {
+    working: boolean;
+    /** Newest first. */
+    agents: WorkingAgent[];
+  }
 
-```ts
-    /**
-     * Clax extension, not part of claude.ai's comments capability: which
-     * agents are working on this artifact now. Read-only. Clax grants it
-     * under either declaration form, including `composer_only` (a Clax
-     * extension to that form, which otherwise grants only openComposer and
-     * anchorFor), with no consent prompt and no gesture. Never names a
-     * session or a thread's store ID.
-     */
+  /**
+   * Members Clax adds to the `comments` namespace (`comments.d.ts`
+   * `interface Comments`). Granted under either declaration form, including
+   * `composer_only` (which otherwise grants only openComposer and
+   * anchorFor), with no consent prompt and no gesture. They never name a
+   * session or a thread's store ID.
+   */
+  interface Comments {
+    /** Which agents are working on this artifact now. Read-only. */
     working(): Promise<WorkingState>;
-    /**
-     * Clax extension, not part of claude.ai's comments capability: calls `fn`
-     * with the current state, then on every change. Resolves a function
-     * that stops the calls.
-     */
+    /** Calls `fn` with the current state, then on every change. Resolves a function that stops the calls. */
     onWorking(fn: (state: WorkingState) => void): Promise<() => void>;
+  }
 ```
 
+- `web/bridge/src/capabilities.ts`: `CAPABILITY_METHODS.comments` gains `"working", "onWorking"`. `buildNamespace` exposes only listed members, so without this the page's `c.working` is undefined. It is the eager bridge; the two strings cost a few bytes.
+- `web/bridge/test/capabilities.test.ts`: the `comments` row expects the `0.2.61` members plus the members of `interface Comments` in `clax-extensions.d.ts`. Read that file as the test reads the contract files, and take `members(ext, "interface Comments {")`. The expected list is the sorted union.
 - Shell handler methods: `working` → `WorkingState`; `watchWorking` → `null` (starts pushes on topic `working`); `unwatchWorking` → `null`.
-- `CapEnv` gains `working(): Working[]`.
+- `CapEnv` gains an optional `working?(): Working[]`, so a `CapEnv` built outside the controller still type-checks. The handler reads `env.working?.() ?? []`.
 - Pure helper in `caps/comments.ts`: `pageWorking(list: Working[], handleOf: (id: string) => string | undefined): WorkingState`.
 
 - [ ] **Step 1: Failing shell handler tests**
@@ -6849,7 +6973,7 @@ Expected: FAIL (`comments.working is not part of this runtime`).
 
 - [ ] **Step 2: Implement the shell side**
 
-In `caps/host.ts`, add to `CapEnv`: `/** Who is working on the artifact now (the view's latest working list). */ working(): Working[];`. In `view/artifact-controller.ts` `viewChanged()`, add `working: () => this.s.working,` to the env object passed to `new CapabilityHost(...)`. It reads the controller's current state at each call. `onEvent` already forwards every event to `this.host`, so `working` events reach the handler.
+In `caps/host.ts`, add to `CapEnv`: `/** Who is working on the artifact now (the view's latest working list). */ working?(): Working[];`. In `view/artifact-controller.ts` `viewChanged()`, add `working: () => this.s.working,` to the env object passed to `new CapabilityHost(...)`. It reads the controller's current state at each call. `onEvent` already forwards every event to `this.host`, so `working` events reach the handler.
 
 In `caps/comments.ts`:
 
@@ -6868,11 +6992,11 @@ export function pageWorking(list: Working[], handleOf: (id: string) => string | 
 }
 ```
 
-In `commentsHandler`, add `let watchingWorking = false;`, a `const ownHandle = (id: string) => [...created].find(([, v]) => v === id)?.[0];`, and a `const pushWorking = () => { if (watchingWorking && !disposed) env.post(event("working", pageWorking(env.working(), ownHandle))); };`. Add cases before `default`. These run before any consent or gesture check in the handler, and are allowed under `composer_only`:
+In `commentsHandler`, add `let watchingWorking = false;`, a `const ownHandle = (id: string) => [...created].find(([, v]) => v === id)?.[0];`, and a `const pushWorking = () => { if (watchingWorking && !disposed) env.post(event("working", pageWorking(env.working?.() ?? [], ownHandle))); };`. Add cases before `default`. These run before any consent or gesture check in the handler, and are allowed under `composer_only`:
 
 ```ts
         case "working":
-          return pageWorking(env.working(), ownHandle);
+          return pageWorking(env.working?.() ?? [], ownHandle);
         case "watchWorking":
           watchingWorking = true;
           pushWorking();
@@ -6968,6 +7092,10 @@ Until Task 24 moves the name field into the people panel, `getByLabel("Your name
 Run: `cd web && npx playwright test e2e/working.spec.ts`
 Expected: PASS.
 
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
+
 - [ ] **Step 5: Run, gates and staging**
 
 Run: `cd web && npm run lint && npm run typecheck && npx vitest run`
@@ -6975,8 +7103,8 @@ Expected: PASS.
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/contract/0.2.61/comments.d.ts web/shell/src/caps/host.ts web/shell/src/caps/comments.ts web/shell/src/caps/comments.test.ts \
-  web/bridge/src/caps/comments.ts web/shell/src/view/artifact-controller.ts
+git add web/contract/clax-extensions.d.ts web/bridge/src/capabilities.ts web/bridge/test/capabilities.test.ts web/shell/src/caps/host.ts \
+  web/shell/src/caps/comments.ts web/shell/src/caps/comments.test.ts web/bridge/src/caps/comments.ts web/shell/src/view/artifact-controller.ts
 git add web/bridge/test/comments.test.ts web/e2e/working.spec.ts
 git status --short   # staged; the controller commits ("Let pages read who is working through the comments capability (Clax extension)")
 ```
@@ -6996,16 +7124,18 @@ The version changelog with no band over the page:
 This task also writes the viewer's marks: the version seen, and each thread looked at.
 
 **Files:**
-- Create: `web/shell/src/view/changelog-model.ts`, `web/shell/src/view/changelog-model.test.ts`, `web/shell/src/ui/AddressedGroup.svelte`, `web/shell/src/ui/VersionMenu.svelte`, `web/shell/src/ui/VersionPanel.svelte`, `web/shell/src/changelog-ui.test.ts`, `web/e2e/changelog.spec.ts`
-- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, `web/e2e/viewer.spec.ts`
+- Create: `web/shell/src/view/changelog-model.ts`, `web/shell/src/view/version-rows.ts`, `web/shell/src/view/changelog-model.test.ts`, `web/shell/src/ui/AddressedGroup.svelte`, `web/shell/src/ui/VersionMenu.svelte`, `web/shell/src/ui/VersionPanel.svelte`, `web/e2e/changelog.spec.ts`
+- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`, `web/shell/src/view/working-model.ts` and `working-model.test.ts` (`summary` gains `published`), `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, `web/e2e/viewer.spec.ts`
 
 **Interfaces:**
 - `api.ts`: `Version` gains `note?: string | null` and `addresses?: string[]`. `putSeen(aid: string, n: number): Promise<void>` sends `PUT /api/viewers/me/seen`, and ignores failures.
 - `threads.ts`: `Thread` gains `addressed_in?: number[]`.
 - `view/changelog-model.ts` (no `svelte` import):
   - `type Decided = { n: number; ids: string[]; dot: boolean; line: string | null }`;
-  - `decide(versions: Version[], latest: number, attention: Attention | null, pinned: boolean): Decided`. Its `line` is the returning-viewer summary (provisional: Q11);
-  - `type Row = { n: number; current: boolean; latest: boolean; who: string; when: string; chips: Chip[]; did: string | null; note: string | null; label: string | null }` and `type Chip = { id: string; n: number | null; open: boolean }`;
+  - `decide(versions: Version[], latest: number, attention: Attention | null, pinned: boolean): Decided`. Its `line` is the returning-viewer summary (decided: Q11);
+  - nothing else: the button needs only `decide`.
+- `view/version-rows.ts` (no `svelte` import), imported only by the lazy `VersionPanel.svelte`, so it stays out of the artifact entry:
+  - `type Row = { n: number; current: boolean; latest: boolean; who: string; when: string; chips: Chip[]; did: string | null; note: string | null; label: string | null }`, `type Chip = { id: string; n: number | null; open: boolean }` and `type RowInput`;
   - `versionRows(i: RowInput): Row[]`;
   - `excerpt(t: Thread): string`.
 - `history-model.ts`: `historyOf` also emits `{ v: n, who: <agent of vN>, agent: true, verb: "addressed it" }` for each `n` in `t.addressed_in`. Events are ordered by time: comments by `created_at`, an address by its version's `created_at`, the resolve by `resolved_at`, and working last. `addressedNote(t: Thread, c: Comment): number | null` gives the version an agent reply is labelled with: the first version in `addressed_in` created at or after that reply, else null.
@@ -7014,11 +7144,11 @@ This task also writes the viewer's marks: the version seen, and each thread look
   - `ViewState` gains `decided: Decided | null`, `menu: "versions" | "people" | null`, and `looked: Record<string, string>` (this viewer's marks, seeded from `attention.looked`).
   - New methods: `look(t: Thread): void`, which queues a mark and flushes at most once a second through `putLooked`; `openMenu(m)`; `closeMenu()`.
   - `shortcut("versions")` opens the menu.
-  - A private `decideChangelog()` runs once the view is ready, and again when a new latest version is loaded. It writes `seen` (unpinned latest only) after deciding.
+  - A private `decideChangelog()` runs once the view is ready, and again when a new latest version is loaded. A separate private `writeSeen()` writes `seen` (unpinned latest only) once `me` is known, so a first visit, whose viewer arrives after the decision, still writes it.
 - Components:
-  - `AddressedGroup` `{ n: number; agent: string; children: Snippet }`, lazy.
-  - `VersionMenu` `{ shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; rows: () => Row[]; hrefFor(n: number): string; onChoose(n: number): void }`. It is eager. Its panel, `VersionPanel`, is lazy.
-  - `ThreadCard` gains `onSeen?(t: Thread): void`, which fires when the card has been at least half visible for 1 s (provisional: Q4).
+  - `AddressedGroup` `{ n: number; agent: string; count: number; children: Snippet }`, lazy.
+  - `VersionMenu` `{ shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; input: () => RowInput; hrefFor(n: number): string; onChoose(n: number): void }`. It is eager and imports only types. Its panel, `VersionPanel` `{ input: RowInput; … }`, is lazy and computes the rows itself with `versionRows`.
+  - `ThreadCard` gains `onSeen?(t: Thread): void`, which fires when the card has been at least half visible for 1 s (decided: Q4).
   - `Pins` gains `addressed?: Map<string, number>` (thread ID → version).
 
 - [ ] **Step 1: The model, test first**
@@ -7029,7 +7159,8 @@ This task also writes the viewer's marks: the version seen, and each thread look
 import { describe, expect, it } from "vitest";
 import type { Attention, Version } from "../api";
 import type { Thread } from "../threads";
-import { decide, excerpt, versionRows } from "./changelog-model";
+import { decide } from "./changelog-model";
+import { excerpt, versionRows } from "./version-rows";
 
 const V = (n: number, addresses: string[] = [], note: string | null = null): Version =>
   ({ artifact_id: "a", n, label: null, created_at: `2026-09-30T1${n}:00:00.000Z`, files: {}, note, addresses, agent: "a_1", agent_harness: "claude" });
@@ -7072,6 +7203,8 @@ describe("versionRows and excerpt", () => {
 
 Run: `cd web && npx vitest run shell/src/view/changelog-model.test.ts`
 Expected: FAIL.
+
+The code below is one listing for reading; split it into two files. `changelog-model.ts` keeps its header comment, `Decided` and `decide`, and imports only `type Attention, Version` from `../api`. `version-rows.ts` takes `Chip`, `Row`, `RowInput`, `versionRows` and `excerpt`, with the imports they use (`relativeTime`, `Thread`, `Version`, `agentName`) and the header comment `// The version menu's rows (spec §8): who published each version and when, the threads it addressed, what this viewer did about them, and its note. Loaded with the menu's panel.`
 
 `web/shell/src/view/changelog-model.ts`:
 
@@ -7151,12 +7284,12 @@ Expected: PASS.
 
 - [ ] **Step 2: The controller, test first**
 
-Add to `view/artifact-controller.test.ts`. The `loaded` fixture is at v2. Give it `versions` with v2 `addresses: ["t1"]`, `note: "Two columns"`, and `attention: { addressed: ["t1"], addressed_v: 2, new_replies: [], open_in: ["t1"], seen: 1, looked: {} }` on the artifact response. Record `PUT` bodies in the `fetch` stub.
+Add to `view/artifact-controller.test.ts`, using Task 3's seeded `started()`. The `loaded` fixture is at v2. Declare `const seed: Seed = { … }` above the test, giving `threads: [thread("t1")]`, `versions` with v1 and v2 (v2 `addresses: ["t1"]`, `note: "Two columns"`), `attention: { addressed: ["t1"], addressed_v: 2, new_replies: [], open_in: ["t1"], seen: 1, looked: {} }`, and `routes` answering `/api/viewers/me/seen` with `{ seen: 2 }` and `/api/viewers/me/looked` with `{ looked: { t1: "x" } }`. The `fetch` mock records every call, so the test reads the `PUT` bodies from it.
 
 ```ts
   it("decides the changelog once ready, writes seen for the unpinned latest, and batches looked-at marks", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
-    const { ctl } = await started();
+    const { ctl } = await started(seed);
     await vi.waitFor(() => expect(ctl.state.get().decided).toEqual({ n: 2, ids: ["t1"], dot: true, line: "v2 addressed 1" }));
     const puts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "PUT");
     expect(puts().some(([u, i]) => String(u) === "/api/viewers/me/seen" && JSON.parse((i as RequestInit).body as string).version === 2)).toBe(true);
@@ -7173,16 +7306,16 @@ Add to `view/artifact-controller.test.ts`. The `loaded` fixture is at v2. Give i
   });
 ```
 
-The last assertion holds because the group stays decided until the next decision (provisional: Q4).
+The last assertion holds because the group stays decided until the next decision (decided: Q4).
 
 Implement in `view/artifact-controller.ts`:
 - `ViewState` fields: `decided: null`, `menu: null` and `looked: {}`. `looked` is seeded from `attention?.looked ?? {}` whenever attention is set.
-- `private decideFor = 0;` and:
+- `private decideFor = 0;`, `private seenFor = 0;` and:
 
 ```ts
   /** The changelog for this load (spec §8): decided once the view is ready,
    * and again when a newer latest version loads; never on the path to first
-   * paint. Writes the version seen for an unpinned view of the latest. */
+   * paint. The decision stays frozen until then (decided: Q4). */
   private decideChangelog(): void {
     const s = this.s;
     if (!viewReady(s)) return;
@@ -7191,7 +7324,18 @@ Implement in `view/artifact-controller.ts`:
     this.decideFor = latest;
     const pinned = this.pinnedVersion !== null || this.shown(s) !== latest;
     this.set({ decided: decide(s.data.versions, latest, s.attention, pinned) });
-    if (!pinned && s.me) void putSeen(this.id, latest);
+  }
+
+  /** Writes the version seen once this viewer is known and views the
+   * unpinned latest. Separate from the decision: on a first visit there is
+   * no cookie yet, so `me` arrives after the decision, from `getViewer()`. */
+  private writeSeen(): void {
+    const s = this.s;
+    if (!viewReady(s) || !s.me || s.deleted) return;
+    const latest = s.data.artifact.current_version;
+    if (this.pinnedVersion !== null || this.shown(s) !== latest || this.seenFor === latest) return;
+    this.seenFor = latest;
+    void putSeen(this.id, latest);
   }
 
   private pendingLook = new Set<string>();
@@ -7212,7 +7356,7 @@ Implement in `view/artifact-controller.ts`:
   closeMenu(): void { this.set({ menu: null }); }
 ```
 
-- Call `decideChangelog()` at the end of `loaded(d)`, after the bootstrap seed, and in the `react()` pass when `prev.data !== s.data`.
+- Call `decideChangelog()` at the end of `loaded(d)`, after the bootstrap seed, and in the `react()` pass when `prev.data !== s.data`. Call `writeSeen()` in the `react()` pass whenever `prev.me !== s.me` or `prev.data !== s.data`, and at the end of `loaded(d)`.
 - `selectThread(t)` also calls `this.look(t)`.
 - `dispose` clears `lookTimer`.
 - The Escape branch closes `menu` before `sheet` and comment mode.
@@ -7242,10 +7386,10 @@ Implement in `view/artifact-controller.ts`:
 <script lang="ts">
   // The version button (spec §8): `v5 of 5`, a green dot while a version
   // newer than this viewer's last view exists. Its panel loads on first open.
-  import type { Row } from "../view/changelog-model";
+  import type { RowInput } from "../view/version-rows";
 
-  let { shown, latest, dot, open, onToggle, rows, hrefFor, onChoose }: {
-    shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; rows: () => Row[]; hrefFor(n: number): string; onChoose(n: number): void;
+  let { shown, latest, dot, open, onToggle, input, hrefFor, onChoose }: {
+    shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; input: () => RowInput; hrefFor(n: number): string; onChoose(n: number): void;
   } = $props();
   let button: HTMLButtonElement | undefined = $state();
 </script>
@@ -7256,7 +7400,7 @@ Implement in `view/artifact-controller.ts`:
   </button>
   {#if open}
     {#await import("./VersionPanel.svelte") then { default: VersionPanel }}
-      <VersionPanel rows={rows()} {hrefFor} {onChoose} onClose={() => { onToggle(); button?.focus(); }} />
+      <VersionPanel input={input()} {hrefFor} {onChoose} onClose={() => { onToggle(); button?.focus(); }} />
     {/await}
   {/if}
 </div>
@@ -7266,9 +7410,10 @@ Implement in `view/artifact-controller.ts`:
 
 ```svelte
 <script lang="ts">
-  import type { Row } from "../view/changelog-model";
+  import { type RowInput, versionRows } from "../view/version-rows";
 
-  let { rows, hrefFor, onChoose, onClose }: { rows: Row[]; hrefFor(n: number): string; onChoose(n: number): void; onClose(): void } = $props();
+  let { input, hrefFor, onChoose, onClose }: { input: RowInput; hrefFor(n: number): string; onChoose(n: number): void; onClose(): void } = $props();
+  const rows = $derived(versionRows(input));
   let panel: HTMLDivElement | undefined = $state();
   $effect(() => { panel?.querySelector<HTMLElement>("a[aria-current=page]")?.focus(); });
   function choose(e: MouseEvent, n: number) {
@@ -7345,7 +7490,7 @@ Implement in `view/artifact-controller.ts`:
 
 ```svelte
   <VersionMenu {shown} {latest} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
-    rows={() => versionRows({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null })}
+    input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
 ```
 
@@ -7361,7 +7506,7 @@ In `web/e2e/viewer.spec.ts`, replace `await page.selectOption("select", "1");` w
   await page.getByRole("dialog", { name: "Versions" }).getByRole("link", { name: /^v1\b/ }).click();
 ```
 
-- [ ] **Step 4: The version banners move off the page (provisional: Q12)**
+- [ ] **Step 4: The version banners move off the page (decided: Q12)**
 
 The port shows two bands over the stage: `vN published` with Reload, and `viewing vN; latest is vM` with a link. Echo puts nothing over the page, so both move into the top bar.
 - In `ui/StageIsland.svelte`, delete the two `<div class="banner">` blocks for `s.newer` and for `shown < latest`. The `s.notice` alert stays: it reports a failure the person dismisses.
@@ -7379,9 +7524,7 @@ Add to the CSS in Step 6: `.topbar a.latest { font: 600 14px var(--grot); color:
 
 - [ ] **Step 5: Reduced-motion highlight in the bridge**
 
-In `web/bridge/src/comment-mode.ts`:
-- append to `CSS`: `@media (prefers-reduced-motion: reduce){.o.flash,.f.flash{animation:none}}`;
-- in `flash`, use a 1200 ms timeout instead of 1800 when `matchMedia("(prefers-reduced-motion: reduce)").matches`.
+In `web/bridge/src/comment-mode.ts` (the lazy comment part), in `flash`, use a 1200 ms timeout instead of 1800 when `matchMedia("(prefers-reduced-motion: reduce)").matches`. Its `CSS` already holds the reduced-motion rule with a static tint, which is the static outline the spec promises; add nothing to it.
 
 In `web/bridge/src/bridge.ts`, in the `clax:scroll-to` case, compute `const behavior: ScrollBehavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";` and pass it to both `scrollBy` and `scrollIntoView`.
 
@@ -7492,9 +7635,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await openArtifact(page, d.base, artifact.id, 1, mode);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid] });
+    // Below 900px the sidebar starts closed, so no card is on screen long
+    // enough to count as looked at while the pinned view waits.
+    const size = page.viewportSize()!;
+    await page.setViewportSize({ width: 800, height: size.height });
     await page.goto(`${d.base}/a/${artifact.id}/v/1`);
     await page.waitForTimeout(1500);
     expect(await seenOf(page, artifact.id)).toBe(1);
+    await page.setViewportSize(size);
     const frame = await openArtifact(page, d.base, artifact.id, 2, mode);
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     const card = page.locator(`.section-addressed .thread-card[data-thread="${tid}"]`);
@@ -7508,7 +7656,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 ```
 
 Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/changelog.spec.ts e2e/viewer.spec.ts; echo "exit=$?"`
-Expected: `exit=0`. `AddressedGroup` and `VersionPanel` are outside `artifact.html`'s closure.
+Expected: `exit=0`. `AddressedGroup`, `VersionPanel` and `version-rows.ts` are outside `artifact.html`'s closure. If the `artifact` budget fails, first move what first paint does not need behind a dynamic `import()` (the history line's addressed events, the menu's panel parts), then stop and report the sizes. Never raise the budget.
 
 - [ ] **Step 8: Screenshots and a look**
 
@@ -7530,13 +7678,14 @@ Report, against `concept-3-echo/shots/*-changelog.png` and `*-versions.png`:
 - the menu rows (numeral, who, when, chips, what you did, the note);
 - the phone sheet.
 
-Run `npm run perf` and report it.
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 9: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/shell/src/view/changelog-model.ts web/shell/src/view/changelog-model.test.ts web/shell/src/ui/AddressedGroup.svelte web/shell/src/ui/VersionMenu.svelte \
+git add web/shell/src/view/changelog-model.ts web/shell/src/view/version-rows.ts web/shell/src/view/changelog-model.test.ts web/shell/src/ui/AddressedGroup.svelte web/shell/src/ui/VersionMenu.svelte \
   web/shell/src/ui/VersionPanel.svelte web/e2e/changelog.spec.ts web/bridge/src/comment-mode.ts web/bridge/src/bridge.ts web/e2e/fixtures.ts web/e2e/scenes.ts web/e2e/viewer.spec.ts
 git add -u web/shell/src
 git status --short   # staged; the controller commits ("Show each version's changelog without covering the page: the Addressed group, the version menu and its dot, and history")
@@ -7652,7 +7801,7 @@ Expected: PASS.
 
 `ui/Gallery.svelte`:
 - `let att = $state<Record<string, AttentionSummary>>({});`.
-- `refresh` loads both at once: `Promise.all([listArtifacts(), getAttention()]).then(([a, t]) => { error = null; artifacts = a; att = t; feed.seed(a); feed.start(refresh, refreshSoon); }, …)`.
+- `refresh` starts both requests at once, but never waits for attention before showing cards: `listArtifacts().then(a => { error = null; artifacts = a; feed.seed(a); feed.start(refresh, refreshSoon); }, e => { error = describe(e); })` and, beside it, `getAttention().then(t => { att = t; })`. Until attention arrives, `att` is `{}`, so `groups` puts every artifact under Everything else, ordered as before; the cards then regroup once. `getAttention` never rejects (it answers `{}` on failure).
 - `refreshSoon` debounces `refresh` to at most once a second.
 - With a query, the gallery shows one flat list, as before (`orderArtifacts(filterArtifacts(…))`). Without one, it shows `groups(shown, att)`:
 
@@ -7782,6 +7931,10 @@ Report, against `concept-3-echo/shots/*-gallery.png`:
 - each footer holds the roster and `seen v1`;
 - at phone width there is one column and no sideways scroll.
 
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
+
 - [ ] **Step 6: Gates and staging**
 
 ```bash
@@ -7820,7 +7973,7 @@ mod tests {
     use crate::{NewThread, Store, TakeFeedback, Tier};
 
     fn thread(st: &Store, id: &ArtifactId, body: &str) -> String {
-        st.create_thread(id, NewThread { version_n: 1, anchor: anchor(), author_name: "Alex".into(), body: body.into(), clip: None, via_page: false })
+        st.create_thread(id, NewThread { version_n: 1, anchor: anchor(), author_name: "Alex".into(), author_public_id: None, body: body.into(), clip: None, via_page: false })
             .unwrap()
             .id
     }
@@ -8115,7 +8268,7 @@ impl Store {
 
 The `send_batches` row is inserted after the feedback rows in the same transaction. SQLite checks the `batch_threads` foreign key at insert time, and `feedback.batch_id` has no foreign key, so this order is valid. The whole transaction commits or rolls back as one.
 
-`store/threads.rs::delete_thread_touched`: add `tx.execute("DELETE FROM batch_threads WHERE thread_id = ?1", params![thread_id])?;` before the thread row is deleted. `store/artifacts.rs::delete_artifact`: in its transaction, delete `batch_threads` rows whose batch is on the artifact, then its `send_batches` rows.
+`store/threads.rs::delete_thread_touched`: add `tx.execute("DELETE FROM batch_threads WHERE thread_id = ?1", params![thread_id])?;` before the thread row is deleted. `store/artifacts.rs::delete_artifact`: in its transaction, delete `batch_threads` rows whose batch is on the artifact, then its `send_batches` rows. The doctor's hard delete of broken artifact rows (the same file, the list it deletes before `threads`) also deletes those `batch_threads` and `send_batches` rows, since `batch_threads` holds a foreign key to the threads it removes.
 
 Register `pub mod batches;` in `store/mod.rs`, and re-export `FeedbackBatch` from `lib.rs` next to `FeedbackItem`.
 
@@ -8536,7 +8689,8 @@ if sent["sent"] != batch or sent["batch"]["note"] != "Do these before the demo":
     fail(f"batch send: {sent}")
 listed, trailing = shim.call("list", {})
 lead = f'[clax] 3 comments on "Quarterly Review", sent together by Viewer. Note: "Do these before the demo"'
-if [f["thread_id"] for f in listed["feedback"]] != batch or not trailing or trailing.split("\n")[2] != lead:
+# Compare only the batch's rows: an unacknowledged earlier thread may be resent alongside.
+if [f["thread_id"] for f in listed["feedback"] if f["thread_id"] in batch] != batch or not trailing or lead not in trailing.split("\n"):
     fail("batch delivery:\n" + str(trailing))
 ok(f"batch: three threads arrived in one delivery led by the note ({lead})")
 w = working(aid)
@@ -8595,7 +8749,7 @@ Send goes to the agent you last sent to on this artifact, falling back to the la
   - `liveAgents(agents: AgentView[]): AgentView[]`;
   - `defaultTarget(aid: string, agents: AgentView[], versions: Version[]): string | null`, which picks the remembered handle if it is live, else the latest version's `agent` if it is live, else the first live agent, else null;
   - `rememberTarget(aid, handle)`, kept in `localStorage` `clax.sendTo.<aid>` with every access guarded.
-- `history-model.ts`: each send in `t.sends` adds `{ v: versionAt(sent_at), who: sent_by, agent: false, verb: "sent it" + (size > 1 ? " with N others" : "") + (note ? ` · “${note}”` : "") }`.
+- `history-model.ts`: each send in `t.sends` adds `{ v: versionAt(sent_at), who: sent_by, agent: false, verb: "sent it" + (size > 1 ? ` with ${size - 1} other${size - 1 === 1 ? "" : "s"}` : "") + (note ? ` · “${note}”` : "") }`, so a batch of three reads "sent it with 2 others".
 - `keys.ts`: `x` maps to `tick`. `S` (Shift+S) has mapped to `sendTicked` since Task 3. Rows `{ keys: ["X"], what: "Tick the selected thread", action: "tick" }` and `{ keys: ["⇧", "S"], what: "Send every ticked thread together", action: "sendTicked" }` go after `R`.
 - `ArtifactController`:
   - `ViewState` gains `selection: Selection`, `batchNote: string`, `batchBusy: boolean` and `sendTo: string | null`;
@@ -8739,16 +8893,16 @@ Expected: PASS.
 
 - [ ] **Step 2: The controller, test first**
 
-Extend the harness in `view/artifact-controller.test.ts`:
-- `/threads` answers two open threads, `t1` and `t2`;
-- the artifact has `participants.agents` with one live claude agent `a_cl`;
-- a `POST` to `…/threads:send` records its body and answers both threads with `sent_to_agent: true`.
+Use Task 3's seeded `started()` in `view/artifact-controller.test.ts`, with this seed, declared once above both tests as `const seed: Seed = { … }`:
+- `threads: [thread("t1"), thread("t2")]`;
+- `artifact: { participants: { people: [], agents: [{ handle: "a_cl", harness: "claude", live: true }] } }`;
+- `routes`: a `POST` to a URL ending `/threads:send` answers `{ threads: [thread("t1", { sent_to_agent: true }), thread("t2", { sent_to_agent: true })], sent: ["t1", "t2"], unchanged: [] }`.
 
 Then add:
 
 ```ts
   it("ticks a range, sends it as one batch to the default agent with the note, then clears", async () => {
-    const { ctl } = await started();
+    const { ctl } = await started(seed);
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
     const [t1, t2] = ctl.state.get().threads;
     expect(ctl.state.get().sendTo).toBe("a_cl");
@@ -8763,7 +8917,7 @@ Then add:
   });
 
   it("drops a thread from the selection when it disappears", async () => {
-    const { ctl } = await started();
+    const { ctl } = await started(seed);
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
     const [t1, t2] = ctl.state.get().threads;
     ctl.toggleSelect(t1, false);
@@ -8861,13 +9015,14 @@ Expected: PASS.
 `ui/Sidebar.svelte`:
 - Add `selection`, `batchNote`, `batchBusy`, `sendTo`, `onToggle`, `onClear`, `onNote`, `onSendSelection`, `onSendUnsent` and `onChoose` to `Props`.
 - Every open card gets `checked`, `onToggle` and a `send` snippet rendering `SendButton` with `label={`Send to ${names.get(p.sendTo ?? "") ?? p.agent}`}` and `onSend={() => p.onSend(t)}`.
-- At the top of the aside, after the strip: `{#if unsent(p.threads).length}<button class="send-unsent" onclick={p.onSendUnsent}>{unsentLabel(unsent(p.threads).length, agent)}</button>{/if}`.
+- In the script, name the target once: `const target = $derived(names.get(p.sendTo ?? "") ?? p.agent);` (the same expression the card's Send uses), and pass it to every label below.
+- At the top of the aside, after the strip: `{#if unsent(p.threads).length}<button class="send-unsent" onclick={p.onSendUnsent}>{unsentLabel(unsent(p.threads).length, target)}</button>{/if}`.
 - At the end of the aside, when `p.selection.ids.length`, the lazy bar:
 
 ```svelte
     {#await import("./HandoffBar.svelte") then { default: HandoffBar }}
       <HandoffBar count={p.selection.ids.length} note={p.batchNote} busy={p.batchBusy} onNote={p.onNote} onClear={p.onClear} onSend={p.onSendSelection}>
-        {#snippet send()}<SendButton label={sendLabel(p.selection.ids.length, agent)} agents={p.agents ?? []} {names} target={p.sendTo} disabled={p.batchBusy} onSend={p.onSendSelection} onChoose={p.onChoose} />{/snippet}
+        {#snippet send()}<SendButton label={sendLabel(p.selection.ids.length, target)} agents={p.agents ?? []} {names} target={p.sendTo} disabled={p.batchBusy} onSend={p.onSendSelection} onChoose={p.onChoose} />{/snippet}
       </HandoffBar>
     {/await}
 ```
@@ -9000,6 +9155,8 @@ Append a `bulk` scene to `web/e2e/scenes.ts`: open the panel, tick the first and
 Run: `cd web && CLAX_SHOTS=task-23 CLAX_SCENES=bulk,threads npx playwright test e2e/shots.spec.ts`
 Expected: PASS.
 
+The hand-off bar sits at the sidebar's foot, as the Echo mockup has it; `decisions.md` had put the bulk bar at the top. The brief wins under this plan's rule. Say so in the task report.
+
 Report, against `concept-3-echo/shots/*-bulk.png`:
 - the checkboxes beside each card head;
 - the hand-off bar at the foot with its dots, `2 selected` over `handed off together`, Clear, and `Send 2 to claude`;
@@ -9010,6 +9167,10 @@ Report, against `concept-3-echo/shots/*-bulk.png`:
 With VoiceOver (Cmd+F5) in a headed browser:
 - check that the count is announced as it changes;
 - check that each checkbox reads its label.
+
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 7: Gates and staging**
 
@@ -9023,7 +9184,7 @@ git status --short   # staged; the controller commits ("Send several threads at 
 
 ---
 
-### Task 24: Presence and the people panel (provisional: Q5, Q7)
+### Task 24: Presence and the people panel (decided: Q5, Q7)
 
 This task adds:
 - here or away in the roster;
@@ -9041,10 +9202,10 @@ Presence lives in memory in the daemon, like working: a restart starts with none
   - `PRESENCE_TTL_SECS: i64 = 90`, `GONE_KEEP_SECS: i64 = 600`, `MAX_WHERE_CHARS: usize = 80`;
   - `enum State { Here, Away, Gone }`;
   - `PresenceView { public_id, display_name, state, r#where: Option<String>, since: String }`;
-  - `Presence::new(clock: Arc<dyn Clock>)`, `report(aid, public_id, display_name, state, where_) -> Changed`, `sweep() -> Vec<String>` (the artifacts that changed), and `for_artifact(aid) -> Vec<PresenceView>`.
+  - `Presence::new(clock: Arc<dyn Clock>)`, `report(aid, public_id, display_name, state, where_) -> bool` (whether the visible view changed), `sweep() -> Vec<String>` (the artifacts that changed), and `for_artifact(aid) -> Vec<PresenceView>`.
   - `Gone` means a report has lapsed: `since` is the last report, and the shell shows "last here <time>".
 - `Event::Presence { artifact_id: String, people: Vec<PresenceView> }`, with the SSE name `presence`.
-- `Person` gains `seen: Option<u32>`, the person's `viewer_seen` on this artifact (provisional: Q7).
+- `Person` gains `seen: Option<u32>`, the person's `viewer_seen` on this artifact (decided: Q7).
 - HTTP:
   - `PUT /api/viewers/me/presence` (`SameOrigin`, a cookie is required) takes `{artifact_id, state: "here" | "away", where?}` and answers `{people}`;
   - `GET /api/artifacts/<aid>/presence` answers `{people}`;
@@ -9245,6 +9406,8 @@ Expected: PASS.
 
 `ui/Roster.svelte` gains `presence` (public ID → `"here" | "away" | "gone"`). The `here` and `away` classes come from it, and `gone` renders as `away`.
 
+The top bar's roster shows everyone present, not only comment authors. In `TopbarIsland.svelte`, pass `people` as the union of `parts.people` and the non-gone entries of `s.presence`, keyed by `public_id` (presence supplies `display_name` for viewers who have not commented), the same union the people panel lists. Put it in the model as `presence-model.ts` `roster(people, presence): Participants["people"]`, with a test: two viewers present who never commented give two people, and a gone entry adds no one.
+
 `ui/TopbarIsland.svelte`:
 - the `.who` `div` becomes `<button type="button" class="who" aria-haspopup="dialog" aria-expanded={s.menu === "people"} aria-label="People and agents" onclick={() => ctl.openMenu("people")}>`;
 - its `Roster` gets the presence map;
@@ -9297,7 +9460,24 @@ export async function setName(page: Page, name: string) {
 }
 ```
 
-In every spec from `grep -rln "Your name" web/e2e`, replace the two-line `getByLabel("Your name").fill(…)` and `.press("Enter")` with `await setName(page, …)`. That includes Task 17's capability test.
+Every use of the field moves with it. Add a second helper, and a Close button at the panel's foot (`<button type="button" class="ghost">Close</button>`, which closes it and returns focus to `.who`):
+
+```ts
+/** The name field, in the open people panel: the shell text control the gesture tests click. */
+export async function nameField(page: Page) {
+  if (!(await page.getByRole("dialog", { name: "People and agents" }).isVisible())) await page.getByRole("button", { name: "People and agents" }).click();
+  return page.getByRole("dialog", { name: "People and agents" }).getByRole("textbox", { name: "Your name" });
+}
+```
+
+Then, use by use:
+- `comments-capability.spec.ts:76`, `contract.spec.ts:209`, `db.spec.ts:60`, `user-assets.spec.ts:20` and `:46`, `comment-flows.spec.ts:225` and `:348` (each `const name = page.getByRole("textbox", { name: "Your name" })` followed by a fill and Enter): `await setName(page, …)` in place of the pair; where the test keeps using `name` (to read it back), `const name = await nameField(page)`.
+- `db.spec.ts:146-147` (the fill and press pair): `await setName(page, "Ada")`.
+- `contract.spec.ts:130` (a click on the field): `await (await nameField(page)).click()`, then close the panel with its Close button.
+- `comment-flows.spec.ts:282`, `:298` and `:325`, the gesture tests that use the field as the shell input (`clickShell(page, textbox)`): `await clickShell(page, await nameField(page))`, then `await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }))`. The last shell input is still a click in the shell, as each test needs, and the panel no longer covers the page.
+- Task 17's capability test in `working.spec.ts`: `await setName(page, "Alex")`.
+
+Afterwards `grep -rn '"Your name"' web/e2e` prints only `fixtures.ts`. Run the whole suite, as Step 6 does.
 
 - [ ] **Step 6: Browser tests**
 
@@ -9358,7 +9538,8 @@ Report, against `concept-3-echo/shots/*-multiplayer.png`:
 - the name row and the share switch;
 - the phone sheet.
 
-Run `npm run perf` and report it.
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 8: Gates and staging**
 
@@ -9378,10 +9559,10 @@ This task finishes Echo's last easter egg, then checks the whole redesign agains
 
 **Files:**
 - Create: `web/shell/src/view/rally.ts`, `web/shell/src/view/rally.test.ts`
-- Modify: `web/shell/src/view/working-model.ts` (`summary` takes `rally`), `web/shell/src/view/working-model.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/e2e/echo.spec.ts`, `web/e2e/scenes.ts`, plus whatever styling slips the sweep finds in `web/shell/src/theme.css` and the components
+- Modify: `web/shell/src/view/working-model.ts` (`summary` takes `rally`), `web/shell/src/view/working-model.test.ts`, `web/shell/src/view/artifact-controller.ts` (`ViewState.rally`), `web/shell/src/ui/TopbarIsland.svelte`, `web/e2e/echo.spec.ts`, `web/e2e/scenes.ts`, plus whatever styling slips the sweep finds in `web/shell/src/theme.css` and the components
 
 **Interfaces:**
-- `view/rally.ts`: `rallyOnce(aid: string, version: number): boolean`. It is true once per browser per artifact, the first time the viewer views v10 (provisional: Q9). It keeps `clax.rally.<aid>` in `localStorage`, guarded.
+- `view/rally.ts`: `rallyOnce(aid: string, version: number): boolean`. It is true once per browser per artifact, the first time the viewer views v10 (decided: Q9). It keeps `clax.rally.<aid>` in `localStorage`, guarded.
 - `summary(...)` takes `rally: boolean`. With nobody working and nothing addressed, it appends ` · rally of 10` to `line2`.
 
 - [ ] **Step 1: Rally of 10, test first**
@@ -9420,7 +9601,7 @@ export function rallyOnce(aid: string, version: number): boolean {
 }
 ```
 
-In `TopbarIsland.svelte`, compute `const rally = rallyOnce(ctl.id, shown)` once, in the script, when the view first becomes ready. Pass it to `summary`. In `working-model.ts`, the `Nobody working` branch appends ` · rally of 10` when `rally`. Add that case to `working-model.test.ts`, and pass `rally: false` in the others.
+The controller computes it, not the island: `ViewState` gains `rally: boolean` (initially `false`), and `decideChangelog()` sets `rally: rallyOnce(this.id, this.shown(s))` when it first decides. `TopbarIsland.svelte` passes `s.rally` to `summary`. In `working-model.ts`, the `Nobody working` branch appends ` · rally of 10` when `rally`. Add that case to `working-model.test.ts`, and pass `rally: false` in the others.
 
 Run: `cd web && npx vitest run shell/src/view/rally.test.ts shell/src/view/working-model.test.ts`
 Expected: PASS.
@@ -9440,7 +9621,7 @@ Put each against its counterpart in `.superpowers/sdd/2026-09-30-redesign/concep
 - nothing over the page;
 - the phone layout.
 
-Fix every styling slip in `theme.css` or the component, and shoot that scene again. Report every design difference, such as a missing thumbnail or a different word, as a question for the controller, and do not change the design. Thumbnails are expected to be missing (provisional: Q1).
+Fix every styling slip in `theme.css` or the component, and shoot that scene again. Report every design difference, such as a missing thumbnail or a different word, as a question for the controller, and do not change the design. Thumbnails are expected to be missing (decided: Q1).
 
 Then check by hand in a headed browser:
 - in comment mode, no haiku shows anywhere: the sidebar strip hides its haiku, and the gallery is not in view;
@@ -9453,12 +9634,13 @@ Then check by hand in a headed browser:
 
 ```bash
 grep -rniE "your move|whose move|agents' move|'s move|\bround [0-9]|(your|their|whose|next) turn|nothing waits on you|settled\." web/shell/src --include=*.svelte --include=*.ts --include=*.json | grep -v '\.test\.ts:'
+grep -niE "\bturns?\b" web/shell/src/view/haiku.json
 grep -rn "text-transform: *uppercase" web/shell/src
 grep -rlE "from \"svelte" web/bridge web/shell/src/caps web/shell/src/view
 grep -rn "Send to agent\|changelog-banner\|Show changes" web/shell/src web/e2e
 ```
 
-Expected: no output from any of the four.
+Expected: no output from any of the five.
 
 ```bash
 cd web && npm run lint && npm run typecheck && npx vitest run && npm run build && node scripts/bundle-size.mjs && npx playwright test && npm run perf; echo "exit=$?"
@@ -9472,6 +9654,10 @@ bash scripts/quality_gates.sh; echo "exit=$?"
 ```
 
 Expected: every command passes, ending with `exit=0`.
+
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
 - [ ] **Step 4: Staging**
 
