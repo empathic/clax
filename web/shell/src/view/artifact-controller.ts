@@ -1,6 +1,6 @@
-// The artifact view's state and behaviour, framework-free: what artifact.tsx
-// held in hooks. Components render `state` and call the intent methods; the
-// frame is a FrameHost the mount gives it.
+// The artifact view's state and behaviour, framework-free. Components render
+// `state` and call the intent methods; the frame is a FrameHost the mount
+// gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "../api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
@@ -288,11 +288,10 @@ export class ArtifactController {
     }
   }
 
-  /** The end of a turn's changes, where Preact rendered them. As Preact does
-   * with a component's effects, the reactions to the previous render still
-   * pending run first, and this render's run after the next paint: with the
-   * pass already scheduled, if any (Preact schedules one when its queue of
-   * effects stops being empty, and keeps it until it ran). */
+  /** The end of a turn's changes: a render. The reactions to the previous
+   * render still pending run first, and this render's run after the next
+   * paint, with the pass already scheduled, if any (one is scheduled when the
+   * queue of reactions stops being empty, and kept until it ran). */
   private rendered(): void {
     const from = this.turnFrom;
     this.turnFrom = null;
@@ -325,10 +324,9 @@ export class ArtifactController {
     }
   }
 
-  /** What Preact ran as effects after the render that went from `prev` to
-   * `next`: values the effects took from that render come from `next`, those
-   * they read through refs from the current state, and `host` is the one
-   * that render made or kept. */
+  /** The reactions after the render that went from `prev` to `next`: values
+   * taken from that render come from `next`, others from the current state,
+   * and `host` is the one that render made or kept. */
   private react(prev: ViewState, next: ViewState, host: CapabilityHost | null): void {
     if (threadIds(prev.threads) !== threadIds(next.threads) || this.shown(prev) !== this.shown(next) || prev.origin !== next.origin) this.resolveAll();
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });

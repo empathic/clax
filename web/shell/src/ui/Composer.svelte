@@ -4,8 +4,7 @@
   // it opened.
   import { onDestroy, untrack } from "svelte";
   import { type Anchor, INDEX_FILE } from "../../../bridge/src/protocol";
-  import { isSubmitKey, submitKeysLabel } from "../comments";
-  import { type Draft, composerQuote } from "../view/composer-model";
+  import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
 
   type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void };
   let { draft, onCancel, onSubmit, onText, onFocused }: Props = $props();
