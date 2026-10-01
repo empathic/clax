@@ -2,7 +2,7 @@
 // query builders; terminal calls go to the shell, which reaches the daemon as
 // this viewer. Snapshots arrive as `db/snapshot` pushes; this module keeps the
 // previous delivery so unchanged documents stay the same frozen objects.
-import { CapabilityError, type Rpc } from "../rpc";
+import { CapabilityError, type Rpc, isCapabilityError } from "../rpc";
 
 export type WireDoc = { path: string; id: string; data: Record<string, unknown>; version: number };
 type Where = [string, string, unknown];
@@ -171,7 +171,7 @@ export function makeDb(rpc: Pick<Rpc, "call" | "on">) {
       if (dead) return;
       dead = true;
       stop();
-      report(e instanceof CapabilityError ? e : new CapabilityError("unavailable", String(e)));
+      report(isCapabilityError(e) ? e : new CapabilityError("unavailable", String(e)));
     }
     try {
       if (spec.kind === "query") checkQuery({ ...spec, orders: spec.orderBy ? 1 : 0 });

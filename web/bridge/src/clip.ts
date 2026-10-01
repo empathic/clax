@@ -18,8 +18,11 @@
 // over the budget that is not wholly in view.
 
 import { createContext, destroyContext, domToPng } from "modern-screenshot";
+import { blockAncestor } from "./block";
 import { backgroundBehind, outlineColors } from "./target";
 import { type TextPoint, type TextWindow, charsBetween, nextText, pointAt, pointInto, prevText, windowAround } from "./text-walk";
+
+export { blockAncestor } from "./block";
 
 export const MAX_SIDE = 1600;
 export const CLIP_TIMEOUT_MS = 4000;
@@ -119,20 +122,6 @@ export function clipBackground(el: Element, win: Window): string {
 export function clipScale(w: number, h: number, dpr: number): number {
   const side = Math.max(w, h);
   return side > 0 ? Math.min(dpr, MAX_SIDE / side) : dpr;
-}
-
-/** Whether `el` generates no block-level box of its own (inline, `contents`,
- * or no computed display, which is how jsdom reports inline elements). */
-function inlineLike(el: Element, win: Window): boolean {
-  const d = win.getComputedStyle(el).display;
-  return d === "" || d === "contents" || d.startsWith("inline");
-}
-
-/** `node`'s element, or its nearest ancestor that is not inline. */
-export function blockAncestor(node: Node, win: Window): Element {
-  let el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement!;
-  while (el.parentElement && el !== el.ownerDocument.body && inlineLike(el, win)) el = el.parentElement;
-  return el;
 }
 
 export function crossOriginImage(n: Node, pageOrigin: string): boolean {

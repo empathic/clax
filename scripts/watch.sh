@@ -50,7 +50,12 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' INT TERM HUP
 
-for cfg in bridge shell; do
+# The bridge's lazy parts keep stable names while watched (CLAX_DEV), and are
+# built once first: the bridge build reads their names from that build's
+# manifest when it starts.
+export CLAX_DEV=1
+(cd web && npx vite build -c vite.bridge-parts.config.ts)
+for cfg in bridge-parts bridge shell; do
     (cd web && npx vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
 done
 

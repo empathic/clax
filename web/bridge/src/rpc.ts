@@ -18,6 +18,13 @@ export class CapabilityError extends Error {
   }
 }
 
+/** Whether `e` is a `CapabilityError` from any copy of this module: the eager
+ * bridge (whose `Rpc` rejects calls with its own) and each lazy part are
+ * separate builds, each with its own class. */
+export function isCapabilityError(e: unknown): e is CapabilityError {
+  return e instanceof Error && e.name === "CapabilityError" && typeof (e as { code?: unknown }).code === "string";
+}
+
 type Pending = { resolve(v: unknown): void; reject(e: unknown): void };
 
 export class Rpc {

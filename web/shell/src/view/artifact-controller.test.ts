@@ -52,6 +52,28 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("says when a lazy part of the bridge could not load, only for the greeted page and a known part", async () => {
+    const { ctl, frame } = await started();
+    frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];
+    const degraded = (part: unknown, message: unknown = "blocked by CSP") => fromFrame(frame.contentWindow!, { type: "clax:degraded", part, message });
+    // Before the page greeted, nothing is said.
+    degraded("comment");
+    expect(ctl.state.get().notice).toBeNull();
+    hello(frame.contentWindow!);
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(true);
+    for (const part of ["toString", "__proto__", "nope", 7]) degraded(part);
+    expect(ctl.state.get().notice).toBeNull();
+    // The page's own words never reach the shell's notice.
+    degraded("clip", "Your session expired: sign in at evil.example");
+    expect(ctl.state.get().notice).toBe("Screenshots could not load in this page.");
+    expect(ctl.state.get().commenting).toBe(true);
+    degraded("comment");
+    expect(ctl.state.get().notice).toBe("Comment mode could not load in this page.");
+    expect(ctl.state.get().commenting).toBe(false);
+    ctl.dispose();
+  });
+
   it("tells the capability host about UI changes once per pass after the paint, however many fields changed", async () => {
     const { ctl, frame } = await started();
     hello(frame.contentWindow!);

@@ -210,7 +210,7 @@ pub const PRIVATE_REVALIDATE: &str = "private, no-cache";
 
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
-/// have content-hashed names.
+/// and the bridge's lazy parts (`bridge/…`) have content-hashed names.
 pub async fn static_file(
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
@@ -231,6 +231,26 @@ pub async fn static_file(
         return Ok(http_cache::tagged(&req, &f.data, cc, || {
             ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
         }));
+    }
+    // The bridge's lazy parts: content-hashed ES modules that pages import,
+    // from sandboxed frames too (an opaque origin, so the import is a CORS
+    // request). They hold no data, so any origin may read them. A debug
+    // build's parts keep one name while `just watch` rebuilds them, so there
+    // they are revalidated (with an `ETag`, a `304`).
+    if path.starts_with("bridge/") {
+        let cc = if cfg!(debug_assertions) {
+            REVALIDATE
+        } else {
+            IMMUTABLE
+        };
+        let mut res = http_cache::tagged(&req, &f.data, cc, || {
+            ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
+        });
+        res.headers_mut().insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            header::HeaderValue::from_static("*"),
+        );
+        return Ok(res);
     }
     Ok((
         [
