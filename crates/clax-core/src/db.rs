@@ -291,37 +291,49 @@ impl Rules {
         out
     }
 
+    /// The self prefixes holding `path`, deepest first: for each, the
+    /// segment under it (the viewer it names) and whether a rule declared
+    /// at the prefix opens its subtrees.
+    fn self_matches<'p>(&self, path: &'p str) -> Vec<(usize, &'p str, bool)> {
+        let segs: Vec<&str> = path.split('/').collect();
+        let mut out: Vec<(usize, &str, bool)> = self
+            .self_prefixes()
+            .into_iter()
+            .filter(|p| segs.len() > p.len() && segs.iter().zip(p).all(|(a, b)| a == b))
+            .map(|p| {
+                let opened = self.rules.iter().any(|r| r.path == p);
+                (p.len(), segs[p.len()], opened)
+            })
+            .collect();
+        out.sort_by_key(|m| std::cmp::Reverse(m.0));
+        out
+    }
+
     /// The viewer public ID owning the private subtree that holds `path`
     /// (`<prefix>/<viewer>/...` under a private prefix), or `None` when the
-    /// path is shared or a rule declared at that prefix opens the subtrees.
-    /// `path` is not checked here: callers validate it with [`doc_path`] or
-    /// [`collection_path`] first.
+    /// path is shared. Every self prefix holding the path counts, whatever
+    /// the declaration order: the path is private when any of them is not
+    /// opened by a rule declared at it, and it belongs to the viewer named
+    /// under the deepest such prefix. `path` is not checked here: callers
+    /// validate it with [`doc_path`] or [`collection_path`] first.
     pub fn private_to(&self, path: &str) -> Option<String> {
-        let segs: Vec<&str> = path.split('/').collect();
-        for p in self.self_prefixes() {
-            if segs.len() > p.len() && segs.iter().zip(&p).all(|(a, b)| a == b) {
-                if self.rules.iter().any(|r| r.path == p) {
-                    return None;
-                }
-                return Some(segs[p.len()].to_string());
-            }
-        }
-        None
+        self.self_matches(path)
+            .into_iter()
+            .find(|m| !m.2)
+            .map(|m| m.1.to_string())
     }
 
     /// The viewer public ID owning the subtree that holds `path` under the
-    /// prefix of a `{self}` rule whose subtrees a rule at that prefix opens
-    /// (`<prefix>/<viewer>/...`), or `None` when the path is under no such
-    /// prefix. That viewer may read it at a lower level than others
-    /// ([`Rules::read_level`] with that viewer). `path` is not checked here.
+    /// deepest prefix of a `{self}` rule whose subtrees a rule at that prefix
+    /// opens, or `None` when the path is under no such prefix. That viewer
+    /// may read it at a lower level than others ([`Rules::read_level`] with
+    /// that viewer). It matters only while [`Rules::private_to`] is `None`.
+    /// `path` is not checked here.
     pub fn opened_self_owner(&self, path: &str) -> Option<String> {
-        let segs: Vec<&str> = path.split('/').collect();
-        self.self_prefixes().into_iter().find_map(|p| {
-            (segs.len() > p.len()
-                && segs.iter().zip(&p).all(|(a, b)| a == b)
-                && self.rules.iter().any(|r| r.path == p))
-            .then(|| segs[p.len()].to_string())
-        })
+        self.self_matches(path)
+            .into_iter()
+            .find(|m| m.2)
+            .map(|m| m.1.to_string())
     }
 
     /// The minimum (read, write) levels at `segs`: for each, the deepest rule
@@ -713,6 +725,65 @@ mod tests {
         let path = format!("notes/{me}");
         assert_eq!(closed.private_to(&path).as_deref(), Some(me));
         assert_eq!(closed.opened_self_owner(&path), None);
+    }
+
+    #[test]
+    fn a_nested_self_subtree_stays_private_in_either_declaration_order() {
+        let me = "u_00000000000000000000aa";
+        let other = "u_00000000000000000000bb";
+        let outer = json!({"path": "a", "read": "view", "write": "interact"});
+        let outer_self = json!({"path": "a/{self}"});
+        let inner_self = json!({"path": "a/b/{self}"});
+        let path = format!("a/b/{me}/d");
+        for rules in [
+            vec![outer.clone(), outer_self.clone(), inner_self.clone()],
+            vec![inner_self.clone(), outer_self.clone(), outer.clone()],
+            vec![outer_self.clone(), inner_self.clone(), outer.clone()],
+        ] {
+            let r = Rules::from_capabilities(&json!({"db": {"rules": rules}})).unwrap();
+            assert_eq!(r.private_to(&path).as_deref(), Some(me), "{rules:?}");
+            assert!(
+                !r.allows(&path, Op::Read, &caller(Level::Interact, Some(other))),
+                "{rules:?}"
+            );
+            assert!(
+                r.allows(&path, Op::Read, &caller(Level::Interact, Some(me))),
+                "{rules:?}"
+            );
+        }
+        // An outer prefix that stays closed keeps the path private to the
+        // viewer it names, even when the inner prefix is opened.
+        let r = Rules::from_capabilities(&json!({"db": {"rules": [
+            {"path": "a/b", "read": "view", "write": "interact"},
+            {"path": "a/b/{self}"},
+            {"path": "a/{self}"}
+        ]}}))
+        .unwrap();
+        assert_eq!(r.private_to(&path).as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn the_deepest_opened_self_prefix_names_the_owner() {
+        let me = "u_00000000000000000000aa";
+        for rules in [
+            json!([
+                {"path": "a", "read": "admin", "write": "admin"},
+                {"path": "a/{self}"},
+                {"path": "a/b", "read": "admin", "write": "admin"},
+                {"path": "a/b/{self}", "write": "interact"}
+            ]),
+            json!([
+                {"path": "a/b/{self}", "write": "interact"},
+                {"path": "a/b", "read": "admin", "write": "admin"},
+                {"path": "a/{self}"},
+                {"path": "a", "read": "admin", "write": "admin"}
+            ]),
+        ] {
+            let r = Rules::from_capabilities(&json!({"db": {"rules": rules}})).unwrap();
+            let path = format!("a/b/{me}");
+            assert_eq!(r.private_to(&path), None, "{rules}");
+            assert_eq!(r.opened_self_owner(&path).as_deref(), Some(me), "{rules}");
+        }
     }
 
     #[test]

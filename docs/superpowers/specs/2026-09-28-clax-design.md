@@ -366,8 +366,10 @@ Agent- and shell-facing JSON API under `/api`:
   (private `data/users/<id>/` subtrees reach their owner alone). Access
   rules from the artifact's declared `db.rules` are evaluated per caller
   level (§9). A caller without the token is refused 403 `not_declared`
-  when the artifact's current version does not declare `db`. An ordered
-  query without `limit` returns every match. Threads also gain the reopen and delete routes above
+  when the artifact's current declaration does not include `db` (a publish
+  or a metadata edit can drop it). An ordered query without `limit` returns
+  every match, or fails `resource_exhausted` past 32 MiB of document
+  bodies. Threads also gain the reopen and delete routes above
   (`thread_deleted` SSE event) for the `comments` capability, and
   `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
   created by a page's `artifact.publish` carries `by_page: true`.
@@ -750,9 +752,9 @@ files kept in `web/contract/`:
 - **db**: `doc(path)`/`collection(path)` with get, set, update, delete,
   where, orderBy, limit, onSnapshot (over the SSE `doc` event). Rules from
   the declaration raise per-path minimums; caller level is `owner` for a
-  caller holding the bearer token without a viewer cookie (the agent, the
-  CLI, the `db_*` tools), `admin` for the owner shell on localhost (token
-  with a cookie; on a stream the token travels as `?token=`, see section 6),
+  caller holding the bearer token without a viewer (the agent, the CLI, the
+  `db_*` tools; a cookie naming no viewer is no viewer), `admin` for the
+  owner shell on localhost (token with a viewer's cookie; on a stream the token travels as `?token=`, see section 6),
   `interact` for a named viewer, `view` for an
   unnamed one; a viewer's level is fixed when its event stream opens. Token
   callers must pin `if_version` on existing documents; page writes are

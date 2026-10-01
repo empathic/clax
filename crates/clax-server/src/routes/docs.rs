@@ -1,7 +1,8 @@
 //! The `db` capability's routes (spec §6 "Docs"). Every route refuses a
 //! foreign `Origin` ([`SameOrigin`]) and acts as the [`CallerParts`] caller.
 //! A caller without the token gets 403 `not_declared` when the artifact's
-//! current version does not declare `db`.
+//! current declaration does not include `db` (a publish or a metadata edit
+//! can drop it).
 //! A document the caller may not read answers 404, like a missing one; a
 //! write the rules refuse answers 404 too. Those 404s name the document's
 //! `path` in the error; a missing artifact's 404 does not. Each change publishes the `doc`

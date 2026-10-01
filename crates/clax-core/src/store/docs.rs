@@ -34,6 +34,12 @@ pub const MAX_IN_VALUES: usize = 30;
 pub const MAX_LIMIT: usize = 1000;
 /// Page size when a query names none.
 pub const DEFAULT_LIMIT: usize = 100;
+/// Most bytes of document bodies (as stored JSON) that an ordered query
+/// without a limit may return. 32 MiB is 128 documents at the 256 KiB cap,
+/// or thousands of typical ones: far above a collection a page renders,
+/// while keeping one response's memory and build time well inside the
+/// request timeout. Over it the query fails `resource_exhausted`.
+pub const MAX_UNLIMITED_QUERY_BYTES: usize = 32 * 1024 * 1024;
 /// Most writes in one batch.
 pub const MAX_BATCH: usize = 50;
 /// Lease length when none (or 0) is asked for.
@@ -713,7 +719,8 @@ impl Store {
     /// for an unordered query with more results, the cursor for the next page.
     /// An unordered query without a limit returns [`DEFAULT_LIMIT`] documents a
     /// page; an ordered one without a limit returns every match (at most
-    /// [`MAX_DOCS`], the artifact's quota).
+    /// [`MAX_DOCS`], the artifact's quota), or fails `resource_exhausted`
+    /// when their bodies pass [`MAX_UNLIMITED_QUERY_BYTES`].
     pub fn doc_query(
         &self,
         id: &ArtifactId,
@@ -748,14 +755,25 @@ impl Store {
                 .query_map(params![id.as_str(), collection, after], row_parts)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut docs = Vec::new();
+            let mut bytes = 0;
             for parts in rows {
                 if !rules.allows(&parts.0, Op::Read, caller) {
                     continue;
                 }
+                let size = parts.2.len();
                 let d = to_doc(id, parts)?;
                 if q.filters.iter().all(|f| f.matches(&d.data)) {
+                    bytes += size;
                     docs.push(d);
                 }
+            }
+            if q.order_by.is_some() && q.limit.is_none() && bytes > MAX_UNLIMITED_QUERY_BYTES {
+                return Err(CoreError::invalid(
+                    "resource_exhausted",
+                    format!(
+                        "the matching documents hold {bytes} bytes, over the {MAX_UNLIMITED_QUERY_BYTES} an ordered query without a limit may return; add a limit or narrow the query"
+                    ),
+                ));
             }
             if let Some(field) = &q.order_by {
                 docs.sort_by(|a, b| {
@@ -1264,6 +1282,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!((docs.len(), next.is_some()), (DEFAULT_LIMIT, true));
+    }
+
+    #[test]
+    fn an_ordered_query_without_a_limit_has_a_byte_budget() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        // Bodies just under the document cap; enough of them to pass the budget.
+        let big = "x".repeat(MAX_DOC_BYTES - 64);
+        let n = MAX_UNLIMITED_QUERY_BYTES / (MAX_DOC_BYTES - 64) + 1;
+        for i in 0..n {
+            st.doc_set(
+                &id,
+                &format!("big/d{i:04}"),
+                json!({"at": i, "s": big}),
+                page(),
+                &admin(),
+            )
+            .unwrap();
+        }
+        let q = DocQuery {
+            collection: "big".into(),
+            order_by: Some("at".into()),
+            ..Default::default()
+        };
+        let e = st.doc_query(&id, &q, &admin()).unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                CoreError::Invalid {
+                    code: "resource_exhausted",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        // With a limit, or narrowed below the budget, it answers.
+        let limited = DocQuery {
+            limit: Some(3),
+            ..q.clone()
+        };
+        assert_eq!(st.doc_query(&id, &limited, &admin()).unwrap().0.len(), 3);
+        let narrowed = DocQuery {
+            filters: parse_where(&json!([["at", "<", 10]])).unwrap(),
+            ..q
+        };
+        assert_eq!(st.doc_query(&id, &narrowed, &admin()).unwrap().0.len(), 10);
     }
 
     #[test]

@@ -1019,3 +1019,28 @@ async fn only_the_token_reaches_the_documents_of_an_artifact_without_db() {
     .await;
     assert_eq!(s, 200);
 }
+
+#[tokio::test]
+async fn the_token_with_a_cookie_naming_no_viewer_is_owner() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "secret", "read": "owner", "write": "owner"}]}}),
+    )
+    .await;
+    let url = format!("/api/artifacts/{aid}/docs/secret/s");
+    let put = |cookie: String| {
+        ts.client
+            .put(format!("{}{url}", ts.base))
+            .bearer_auth(&ts.token)
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .json(&json!({"data": {}, "lww": true}))
+    };
+    // A well-formed cookie with no viewer row behind it (a stray one).
+    let (s, v) = send(put("01J9Z3K4M5N6P7Q8R9S0T1V2W3".into())).await;
+    assert_eq!(s, 200, "{v}");
+    // With a real viewer's cookie the token is the owner shell: admin.
+    let shell = ts.viewer(Some("Owner")).await;
+    let (s, _) = send(put(shell.cookie.clone())).await;
+    assert_eq!(s, 404);
+}

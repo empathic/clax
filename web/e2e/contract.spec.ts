@@ -25,7 +25,7 @@ const frameUrl = (mode: FrameMode, id: string) =>
 
 /** `page`, when set, makes the published page from the file (the file as
  * is, otherwise). */
-type Case = { caps: Record<string, unknown>; page?(mode: FrameMode): Promise<string>; check(f: Frame, page: Page, id: string): Promise<void> };
+type Case = { caps: Record<string, unknown>; page?(): Promise<string>; check(f: Frame, page: Page, id: string): Promise<void> };
 
 /** Writes a document with the token, as an agent or script would. */
 async function seed(id: string, path: string, data: Record<string, unknown>) {
@@ -35,6 +35,9 @@ async function seed(id: string, path: string, data: Record<string, unknown>) {
   });
   return res.status;
 }
+
+/** The name of the viewer the `who.html` case made for its current run. */
+let wren = "";
 
 const CASES: Record<string, Case> = {
   "permissions.html": {
@@ -87,18 +90,18 @@ const CASES: Record<string, Case> = {
   },
   "who.html": {
     caps: { user: { scopes: ["profile"] } },
-    // Another viewer, named, whom the owner's search finds by name.
-    async page(mode) {
-      const name = `Wren ${mode}`;
-      const other = await namedViewer(d.base, name);
-      return html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`).replace('data-find=""', `data-find="${name}"`);
+    // Another viewer, named, whom the owner's search finds by name. The name
+    // is new on every run, so a repeated run on the same daemon finds one.
+    async page() {
+      wren = `Wren ${Math.random().toString(36).slice(2, 10)}`;
+      const other = await namedViewer(d.base, wren);
+      return html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`).replace('data-find=""', `data-find="${wren}"`);
     },
     async check(f) {
       await expect(f.locator("#facts")).not.toHaveText("waiting");
-      const mode = f.url().includes("/c/") ? "sandbox" : "subdomain";
       expect(JSON.parse((await f.locator("#facts").textContent())!)).toEqual({
         isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true,
-        name: "", meResolved: "", isMe: true, stranger: "", other: `Wren ${mode}`, search: 1,
+        name: "", meResolved: "", isMe: true, stranger: "", other: wren, search: 1,
       });
     },
   },
@@ -177,7 +180,7 @@ test("every sample page is a plain claude.ai page with a case here", () => {
 for (const mode of ["subdomain", "sandbox"] as const) {
   for (const [file, c] of Object.entries(CASES)) {
     test(`${mode}: ${file} runs unchanged`, async ({ page }) => {
-      const src = c.page ? await c.page(mode) : html(file);
+      const src = c.page ? await c.page() : html(file);
       const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, src, c.caps);
       if (file === "tracker.html") {
         expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);

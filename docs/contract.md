@@ -1547,19 +1547,22 @@ plan for:
 - `artifact`: version identifiers are integers as strings. A page that is
   not HTML in its version rejects `invalid_content`, and an artifact that
   stopped declaring the capability rejects `not_declared`.
-- `db`: `revoked` is returned only on another machine, once a republish
-  has dropped `db` from the declaration: the daemon then refuses every
-  caller without the token. While the event stream is down, every
-  subscription is refetched every 30 seconds, and a refetch the daemon could
-  not answer, or answered with a timeout, is retried. `resource_exhausted`
-  is returned for a view's 65th subscription, for a lease beyond 100 in
-  force, and when the daemon answers 429. An ordered query without `limit`
-  returns every match. A field value of exactly `{"__delete__": true}` is
-  the `db_update` tool's delete marker, and page writes honour it too: in
-  `update` it removes the field instead of storing that value, and `set`
-  rejects it `invalid_argument`. Who a viewer is for live updates is fixed
-  when the viewer's event stream opens; the shell reopens it after the
-  viewer enters a name.
+- `db`: `revoked` is returned only on another machine, once the artifact's
+  current declaration no longer includes `db` (a publish or a metadata edit
+  can drop it, and a pinned older version is judged by it too): the daemon
+  then refuses every caller without the token. While the event stream is
+  down, every subscription is refetched every 30 seconds, and a refetch the
+  daemon could not answer, or answered with a timeout, is retried.
+  `resource_exhausted` is returned for a view's 65th subscription, for a
+  lease beyond 100 in force, and when the daemon answers 429. An ordered
+  query without `limit` returns every match, up to 32 MiB of document
+  bodies; past that it rejects `resource_exhausted` (a subscription ends
+  with it, unretried), so add a limit or narrow the query. A field value of
+  exactly `{"__delete__": true}` is the `db_update` tool's delete marker,
+  and page writes honour it too: in `update` it removes the field instead of
+  storing that value, and `set` rejects it `invalid_argument`. Who a viewer
+  is for live updates is fixed when the viewer's event stream opens; the
+  shell reopens it after the viewer enters a name.
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
 - `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded

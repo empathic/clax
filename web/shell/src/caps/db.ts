@@ -34,7 +34,7 @@ const OPS = new Set(["==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-co
 
 /** A daemon error as the page sees it (db.d.ts `DbErrorCode`). A refused
  * write reads as not found in the daemon; the page gets `invalid_argument`.
- * An artifact that no longer declares `db` (a republish dropped it) is
+ * An artifact whose current declaration no longer includes `db` is
  * `revoked`; a daemon timeout is transient (`unavailable`). */
 export function dbError(status: number, err: { code?: string; message?: string }, write: boolean): CapError {
   const message = err.message ?? `HTTP ${status}`;
