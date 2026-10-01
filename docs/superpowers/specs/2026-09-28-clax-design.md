@@ -687,10 +687,14 @@ must not be stubbed into phase 1.
 Opening a shell link must be fast. *Link → first paint* runs from the shell
 document's navigation start to the artifact frame's first contentful paint.
 *Link → comment ready* runs to the moment the bridge turns comment mode on in
-the frame, for a viewer who presses **Comment** as soon as they can. Both are
-measured in Chromium for a warm browser (the shell's files cached, cookies set,
-a fresh tab), in both frame modes, by `web/perf/usable.perf.ts`, a quality gate
-with budgets in `web/perf/budget.json`.
+the frame, for a viewer who presses **Comment** as soon as they can. Two more
+measures isolate what the shell and the bridge control: *frame paint* is link →
+first paint in a tab where nothing else happens (a press on **Comment** moves
+when the frame gets to paint), and *ready latency* runs from the click on
+**Comment** (the event's own timestamp) to comment mode on in the frame. All
+four are measured in Chromium for a warm browser (the shell's files cached,
+cookies set, a fresh tab), in both frame modes, by `web/perf/usable.perf.ts`,
+a quality gate with budgets in `web/perf/budget.json`.
 
 What makes it fast:
 
