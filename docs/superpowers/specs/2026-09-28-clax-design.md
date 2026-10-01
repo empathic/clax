@@ -432,10 +432,13 @@ payload lines, which must stay one line); anything else is `invalid_path`.
    and exits when `daemon.json` is missing on two consecutive checks, so a
    stale process cannot shadow a new one.
 5. Version skew: `daemon.json` records the daemon's `version` and `exe`
-   (its executable's canonical path). A client that finds a daemon older
-   than itself replaces it; a newer daemon, or one of the same version, is
-   kept (a newer daemon serves older clients, and two plugins at different
-   versions must not restart each other's daemon). A replacement holds
+   (its executable's canonical path). The MCP shim and `clax serve`, when
+   either finds a daemon older than itself, replace it; other CLI commands
+   and the Pi extension use whatever daemon answers. A newer daemon, or one
+   of the same version, is kept (a newer daemon serves older clients, and
+   two plugins at different versions must not restart each other's daemon),
+   so `just install` stops the agents' daemon itself when it runs the
+   binary just replaced. A replacement holds
    `daemon.lock` throughout: it re-reads `daemon.json`, asks the daemon to
    shut down (SSE streams and long polls end, in-flight requests get 5 s),
    waits up to 7 s for its PID to exit, starts the new executable on the old

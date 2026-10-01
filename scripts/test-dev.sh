@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Tests scripts/dev-home.sh, scripts/dev.sh and the hand-off from a bare
-# `just dev` to scripts/watch.sh, with a scratch HOME, fake `claude`, `codex`,
-# `pi` and `cargo` commands and a fake clax. No cargo build, no real harness,
-# no daemon, nothing on 7480 or 7481.
+# `just dev` to scripts/watch.sh, and the install and uninstall recipes, with a
+# scratch HOME and CARGO_HOME, fake `claude`, `codex`, `pi` and `cargo`
+# commands, a fake clax, and `sleep` processes standing in for daemons. No
+# cargo build, no real harness, no real daemon, nothing on 7480 or 7481.
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd -P)"
@@ -59,9 +60,53 @@ sleep 0.3
 if ! kill -0 "$orphan" 2>/dev/null && kill -0 "$kept" 2>/dev/null; then
     pass "only a dev daemon whose binary is gone is stopped"
 else fail "only a dev daemon whose binary is gone is stopped"; fi
-kill "$orphan" "$kept" 2>/dev/null
+sleep 60 &
+agents=$!
+mkdir -p "$HOME/.clax"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agents" "$T/gone/clax" > "$HOME/.clax/daemon.json"
+stop_orphan_daemon "$HOME/.clax" >/dev/null
+sleep 0.3
+if kill -0 "$agents" 2>/dev/null; then pass "stop_orphan_daemon never stops the daemon of ~/.clax"
+else fail "stop_orphan_daemon stopped the daemon of ~/.clax"; fi
+
+# stop_installed_daemon stops a home's daemon through `<clax> stop` only when
+# the daemon runs that clax; the fake clax records the call and ends the PID.
+mkdir -p "$T/cargo/bin" "$T/inst"
+cat > "$T/cargo/bin/clax" <<SH
+#!/bin/sh
+echo "clax \$* home=\${CLAX_HOME:-}" >> "$T/inst/calls"
+if [ "\$1" = stop ]; then
+    kill "\$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "\$CLAX_HOME/daemon.json")"
+fi
+SH
+chmod +x "$T/cargo/bin/clax"
+sleep 60 &
+same=$!
+mkdir -p "$T/i1"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$same" "$T/cargo/bin/clax" > "$T/i1/daemon.json"
+: > "$T/inst/calls"
+stop_installed_daemon "$T/i1" "$T/cargo/bin/clax" > "$T/inst/out"
+sleep 0.3
+if ! kill -0 "$same" 2>/dev/null && [ "$(cat "$T/inst/calls")" = "clax stop home=$T/i1" ] \
+    && grep -q "stopping the daemon of $T/i1 (pid $same)" "$T/inst/out"; then
+    pass "stop_installed_daemon stops a daemon that runs the installed clax, with clax stop"
+else fail "stop_installed_daemon, same exe ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
+: > "$T/inst/calls"
+stop_installed_daemon "$T/o2" "$T/cargo/bin/clax" > "$T/inst/out"
+sleep 0.3
+if kill -0 "$kept" 2>/dev/null && [ ! -s "$T/inst/calls" ] && grep -q "runs $HERE/dev.sh, not $T/cargo/bin/clax; left running" "$T/inst/out"; then
+    pass "stop_installed_daemon leaves a daemon of another executable running and names it"
+else fail "stop_installed_daemon, other exe ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$same" "$T/cargo/bin/clax" > "$T/i1/daemon.json"
+stop_installed_daemon "$T/i1" "$T/cargo/bin/clax" > "$T/inst/out"
+stop_installed_daemon "$T/none" "$T/cargo/bin/clax" >> "$T/inst/out"
+if [ ! -s "$T/inst/calls" ] && [ ! -s "$T/inst/out" ]; then
+    pass "stop_installed_daemon does nothing without a running daemon"
+else fail "stop_installed_daemon, no daemon ($(cat "$T/inst/calls" "$T/inst/out"))"; fi
+kill "$orphan" "$kept" "$agents" "$same" 2>/dev/null
 wait 2>/dev/null
 exec 2>&3 3>&-
+rm -rf "$HOME/.clax"
 
 # Fake harnesses record what they were run with, and what `clax` was on PATH.
 # The fake cargo fails, so a hand-off to watch.sh stops at its cargo-watch
@@ -132,6 +177,12 @@ if [ "$rc" = 3 ] && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ]; then
     pass "a harness's exit status comes back and the tmpdir is still removed"
 else fail "harness failure (rc=$rc tmpdir=$tmpdir)"; fi
 
+: > "$T/calls"
+rm -rf "$HOME/.clax-dev"
+CLAX_DEV_PORT=7599 devrun pi
+if grep -qx 'port = 7599' "$HOME/.clax-dev/config.toml"; then pass "just dev records CLAX_DEV_PORT in a new dev home"
+else fail "just dev and CLAX_DEV_PORT ($(cat "$HOME/.clax-dev/config.toml"))"; fi
+
 devrun bogus
 if [ -z "$(cat "$T/calls")" ] && grep -q "usage: just dev" "$T/err"; then pass "an unknown harness prints usage"
 else fail "an unknown harness prints usage ($(cat "$T/err"))"; fi
@@ -148,11 +199,31 @@ if grep -q "running \`just watch\`" "$T/err" && grep -q "cargo-watch is required
     && grep -q "serving CLAX_HOME=$HOME/.clax-dev on port 1 " "$T/out" && ! grep -qv '^cargo ' "$T/calls"; then
     pass "a bare just dev runs just watch on ~/.clax-dev"
 else fail "a bare just dev ($(cat "$T/out" "$T/err"))"; fi
+# just watch stops a dev daemon an earlier `just dev` left behind, before it
+# checks the port; with --shared it leaves ~/.clax's daemon alone.
+exec 3>&2 2>/dev/null
+sleep 60 &
+left=$!
+sleep 60 &
+agents=$!
+mkdir -p "$HOME/.clax"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$left" "$T/gone/clax" > "$HOME/.clax-dev/daemon.json"
+printf '{\n  "port": 7480,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agents" "$T/gone/clax" > "$HOME/.clax/daemon.json"
+CLAX_DEV_PORT=1 devrun
+sleep 0.3
+if ! kill -0 "$left" 2>/dev/null && grep -q "stopping the daemon of $HOME/.clax-dev (pid $left)" "$T/out" \
+    && grep -q "cargo-watch is required" "$T/err"; then
+    pass "just watch stops an orphaned just dev daemon in its dev home, and says so"
+else fail "just watch and an orphaned dev daemon ($(cat "$T/out" "$T/err"))"; fi
 devrun --shared
-if grep -q "cargo-watch is required" "$T/err" && grep -q "serving CLAX_HOME=$HOME/.clax on port 7480," "$T/out" \
-    && [ ! -e "$HOME/.clax/config.toml" ]; then
-    pass "just dev --shared runs just watch --shared"
+if kill -0 "$agents" 2>/dev/null && grep -q "cargo-watch is required" "$T/err" \
+    && grep -q "serving CLAX_HOME=$HOME/.clax on port 7480," "$T/out" && [ ! -e "$HOME/.clax/config.toml" ]; then
+    pass "just dev --shared runs just watch --shared, and leaves ~/.clax's daemon alone"
 else fail "just dev --shared ($(cat "$T/out" "$T/err"))"; fi
+kill "$left" "$agents" 2>/dev/null
+wait 2>/dev/null
+exec 2>&3 3>&-
+rm -rf "$HOME/.clax"
 
 # The justfile recipes, through `just`, with the same fakes.
 if command -v just >/dev/null 2>&1; then
@@ -171,19 +242,47 @@ if command -v just >/dev/null 2>&1; then
     if grep -q "serving CLAX_HOME=$HOME/.clax-dev on port 1 " "$T/out" && grep -q "cargo-watch is required" "$T/err"; then
         pass "just watch runs watch.sh on ~/.clax-dev"
     else fail "just watch ($(cat "$T/out" "$T/err"))"; fi
-    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^(cd web && npm|cargo install|"\$\{CARGO_HOME)')"
-    # shellcheck disable=SC2016 # the recipe's text, not an expansion
-    want='cd web && npm ci
-cd web && npm run build
-cargo install --locked --path crates/clax-cli
-"${CARGO_HOME:-$HOME/.cargo}/bin/clax" init'
-    if [ "$plan" = "$want" ]; then pass "just install builds the web UI, installs from the checkout, then runs clax init"
+    plan="$("${J[@]}" --dry-run install 2>&1 | grep -E '^cd web && npm')"
+    if [ "$plan" = "cd web && npm ci
+cd web && npm run build" ]; then pass "just install builds the web UI first"
     else fail "just install plan ($plan)"; fi
-    plan="$("${J[@]}" --dry-run uninstall 2>&1)"
-    if [ "$(printf '%s\n' "$plan" | grep -n . | sed 's/:.*//' | tr '\n' ' ')" = "1 2 " ] \
-        && printf '%s\n' "$plan" | head -1 | grep -q 'bin/clax" uninit$' && printf '%s\n' "$plan" | tail -1 | grep -q 'cargo uninstall clax-cli$'; then
-        pass "just uninstall runs clax uninit, then cargo uninstall"
-    else fail "just uninstall plan ($plan)"; fi
+    # The install and uninstall recipes themselves, with a fake cargo, a fake
+    # installed clax in a scratch CARGO_HOME, and a fake agents' daemon (a
+    # sleep) in the scratch ~/.clax that records that clax as its executable.
+    mkdir -p "$T/fake-cargo"
+    printf '#!/bin/sh\necho "cargo $*" >> "%s/inst/calls"\n' "$T" > "$T/fake-cargo/cargo"
+    chmod +x "$T/fake-cargo/cargo"
+    if [ "$(PATH="$T/fake-cargo:$PATH" command -v cargo)" != "$T/fake-cargo/cargo" ]; then
+        echo "FAIL: the fake cargo is not first on PATH; not running the recipes"; exit 1
+    fi
+    recipe() {
+        exec 3>&2 2>/dev/null
+        sleep 60 &
+        agent_pid=$!
+        mkdir -p "$HOME/.clax"
+        printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$agent_pid" "$T/cargo/bin/clax" > "$HOME/.clax/daemon.json"
+        : > "$T/inst/calls"
+        CARGO_HOME="$T/cargo" PATH="$T/fake-cargo:$PATH" "${J[@]}" "$@" >"$T/out" 2>&1
+        sleep 0.3
+        agent_alive=0; kill -0 "$agent_pid" 2>/dev/null && agent_alive=1
+        kill "$agent_pid" 2>/dev/null; wait 2>/dev/null
+        exec 2>&3 3>&-
+        rm -rf "$HOME/.clax"
+    }
+    recipe --no-deps install
+    want="cargo install --locked --root $T/cargo --path crates/clax-cli
+clax stop home=$HOME/.clax
+clax init home="
+    if [ "$(cat "$T/inst/calls")" = "$want" ] && [ "$agent_alive" = 0 ] && grep -q "next agent call starts it again from the new build" "$T/out"; then
+        pass "just install installs from the checkout, stops the agents' daemon that ran the old build, then runs clax init"
+    else fail "just install ($(cat "$T/inst/calls" "$T/out"))"; fi
+    recipe uninstall
+    want="clax uninit home=
+clax stop home=$HOME/.clax
+cargo uninstall --root $T/cargo clax-cli"
+    if [ "$(cat "$T/inst/calls")" = "$want" ] && [ "$agent_alive" = 0 ]; then
+        pass "just uninstall runs clax uninit, stops the agents' daemon, then cargo uninstall"
+    else fail "just uninstall ($(cat "$T/inst/calls" "$T/out"))"; fi
 else
     echo "SKIP: just is not on PATH; the recipe cases did not run"
 fi
