@@ -3,21 +3,29 @@
 //!
 //! `init` writes the marketplace tree ([`crate::plugins`]) to
 //! `<home>/marketplace`, then for each harness removes the existing `clax`
-//! registration and any under the previous product name (found in the
-//! harness's own registry), and adds the new one. `uninit` does the
-//! removals, then deletes the marketplace directory unless a harness's
-//! registry still points into it. Clax's data is never touched, nor the
-//! previous name's home. Both hold `<home>/init.lock` throughout, and run
-//! each harness CLI in the home directory, so a project's own harness
-//! settings in the caller's working directory are never edited.
+//! registration and any under the previous product name, and adds the new
+//! one. It records what it registered in `<home>/registrations.json`.
+//! `uninit` does the removals, then deletes the marketplace directory
+//! unless a harness's registry still points into it, or cannot be read.
 //!
-//! Each harness is one entry in [`HARNESSES`]: its CLI's name, the commands
-//! that remove and add its registration, and how to tell whether its
-//! registry still refers to the marketplace.
+//! When in doubt, a registration is kept. Claude Code and Codex
+//! registrations are removed by name (`clax`, `clax@clax`, and the previous
+//! name's). A Pi package, which Pi names by its directory, is removed only
+//! when `registrations.json` records it, or its `package.json` names the
+//! Clax Pi package or the previous name's. A Pi package whose directory is
+//! missing or unreadable is left registered and named in the output, with
+//! the command that removes it.
+//!
+//! Clax's data is never touched, nor the previous name's home. Both
+//! commands hold `<home>/init.lock` throughout, and run each harness CLI in
+//! the home directory, so a project's own harness settings in the caller's
+//! working directory are never edited.
+//!
+//! Each harness is one entry in [`HARNESSES`].
 
 use super::doctor_agent::Dirs;
 use clax_core::Home;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::path::{Component, Path, PathBuf};
 
 /// The previous product name, assembled so the name gate finds no literal.
@@ -25,11 +33,13 @@ const OLD: &str = concat!("arti", "fax");
 /// The Pi package's name.
 const PI_PACKAGE: &str = "@empathic/clax-pi";
 
-/// What a harness's functions read: its configuration directories and the
-/// user's home directory.
+/// What a harness's functions read.
 struct Ctx {
     dirs: Dirs,
+    /// The user's home directory.
     home: PathBuf,
+    /// What `init` recorded per harness (`registrations.json`).
+    recorded: Map<String, Value>,
 }
 
 /// A harness Clax registers its plugin with.
@@ -37,14 +47,17 @@ struct Harness {
     /// The `--agent` value, which is also the name of the harness's CLI.
     name: &'static str,
     /// The commands that remove Clax's registration and any under the
-    /// previous name that the harness's registry shows, with notes on what
-    /// the registry could not settle.
+    /// previous name, with notes on what was left and why.
     removals: fn(&Ctx) -> Actions,
     /// The commands that register the marketplace at the given root.
     additions: fn(&Path) -> Vec<Step>,
+    /// What `init` records after registering the marketplace at the root.
+    record: fn(&Path) -> Value,
     /// Whether the harness's registry still refers to a path under the
-    /// given root.
-    uses: fn(&Ctx, &Path) -> bool,
+    /// root; an error when the registry cannot be read or parsed.
+    uses: fn(&Ctx, &Path) -> Result<bool, String>,
+    /// The commands that remove the registration of the root by hand.
+    by_hand: fn(&Path) -> String,
 }
 
 /// Every supported harness, in the order `init` and `uninit` visit them.
@@ -53,19 +66,27 @@ const HARNESSES: &[Harness] = &[
         name: "claude",
         removals: claude_removals,
         additions: claude_additions,
+        record: name_record,
         uses: claude_uses,
+        by_hand: |_| {
+            "claude plugin uninstall clax@clax; claude plugin marketplace remove clax".into()
+        },
     },
     Harness {
         name: "codex",
         removals: codex_removals,
         additions: codex_additions,
+        record: name_record,
         uses: codex_uses,
+        by_hand: |_| "codex plugin remove clax@clax; codex plugin marketplace remove clax".into(),
     },
     Harness {
         name: "pi",
         removals: pi_removals,
         additions: pi_additions,
+        record: |root| json!({"packages": [pi_package_dir(root)]}),
         uses: pi_uses,
+        by_hand: |root| format!("pi remove {}", pi_package_dir(root).display()),
     },
 ];
 
@@ -99,47 +120,34 @@ struct Actions {
     notes: Vec<String>,
 }
 
-/// A registry file's contents: `None` when it does not exist. A file that
-/// exists but cannot be read or parsed adds a note and also gives `None`.
-fn read_registry<T>(
-    p: &Path,
-    parse: impl FnOnce(&str) -> Result<T, String>,
-    notes: &mut Vec<String>,
-) -> Option<T> {
+/// A registry file's contents: `Ok(None)` when it does not exist, an error
+/// naming the file when it cannot be read or parsed.
+fn load<T>(p: &Path, parse: impl FnOnce(&str) -> Result<T, String>) -> Result<Option<T>, String> {
     let text = match std::fs::read_to_string(p) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
-        Err(e) => {
-            notes.push(format!("could not read {}: {e}", p.display()));
-            return None;
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("could not read {}: {e}", p.display())),
     };
-    match parse(&text) {
-        Ok(v) => Some(v),
-        Err(e) => {
-            notes.push(format!(
-                "could not parse {} ({e}); registrations there were not looked for",
-                p.display()
-            ));
-            None
-        }
-    }
+    parse(&text)
+        .map(Some)
+        .map_err(|e| format!("could not parse {} ({e})", p.display()))
 }
 
-fn read_json(p: &Path, notes: &mut Vec<String>) -> Option<Value> {
-    read_registry(
-        p,
-        |t| serde_json::from_str(t).map_err(|e| e.to_string()),
-        notes,
-    )
+fn load_json(p: &Path) -> Result<Option<Value>, String> {
+    load(p, |t| serde_json::from_str(t).map_err(|e| e.to_string()))
 }
 
-fn read_toml(p: &Path, notes: &mut Vec<String>) -> Option<toml::Table> {
-    read_registry(
-        p,
-        |t| t.parse().map_err(|e: toml::de::Error| e.to_string()),
-        notes,
-    )
+fn load_toml(p: &Path) -> Result<Option<toml::Table>, String> {
+    load(p, |t| t.parse().map_err(|e: toml::de::Error| e.to_string()))
+}
+
+/// [`load`] for finding removals: an unreadable file adds a note and gives
+/// `None`, so nothing in it is removed.
+fn read_for_removal<T>(r: Result<Option<T>, String>, notes: &mut Vec<String>) -> Option<T> {
+    r.unwrap_or_else(|e| {
+        notes.push(format!("{e}; registrations there were not looked for"));
+        None
+    })
 }
 
 /// Whether a JSON registry names `key`, at the top level or under `plugins`.
@@ -148,22 +156,54 @@ fn names(v: &Option<Value>, key: &str) -> bool {
         .is_some_and(|v| v.get(key).is_some() || v["plugins"].get(key).is_some())
 }
 
-/// Whether a string in `v`, at any depth, is a path under `root`.
-fn json_mentions(v: &Value, root: &Path) -> bool {
+/// `p` with `.` and `..` resolved without following symlinks, as Node's
+/// `path.resolve` does.
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// A stored path as an absolute path: `file://…`, `~` or `~/…` (against
+/// `home`), absolute, or relative to `base`; resolved lexically.
+fn stored_path(s: &str, base: &Path, home: &Path) -> PathBuf {
+    let s = s.trim();
+    let s = s.strip_prefix("file://").unwrap_or(s);
+    let p = if s == "~" {
+        home.to_path_buf()
+    } else if let Some(rest) = s.strip_prefix("~/") {
+        home.join(rest)
+    } else {
+        base.join(s)
+    };
+    lexical(&p)
+}
+
+/// Whether a string in `v`, at any depth, is a path under `root` in one of
+/// the forms [`stored_path`] reads.
+fn json_mentions(v: &Value, root: &Path, base: &Path, home: &Path) -> bool {
     match v {
-        Value::String(s) => Path::new(s).starts_with(root),
-        Value::Array(a) => a.iter().any(|v| json_mentions(v, root)),
-        Value::Object(o) => o.values().any(|v| json_mentions(v, root)),
+        Value::String(s) => !s.is_empty() && stored_path(s, base, home).starts_with(root),
+        Value::Array(a) => a.iter().any(|v| json_mentions(v, root, base, home)),
+        Value::Object(o) => o.values().any(|v| json_mentions(v, root, base, home)),
         _ => false,
     }
 }
 
-/// Whether a string in `v`, at any depth, is a path under `root`.
-fn toml_mentions(v: &toml::Value, root: &Path) -> bool {
+/// As [`json_mentions`], for TOML.
+fn toml_mentions(v: &toml::Value, root: &Path, base: &Path, home: &Path) -> bool {
     match v {
-        toml::Value::String(s) => Path::new(s).starts_with(root),
-        toml::Value::Array(a) => a.iter().any(|v| toml_mentions(v, root)),
-        toml::Value::Table(t) => t.values().any(|v| toml_mentions(v, root)),
+        toml::Value::String(s) => !s.is_empty() && stored_path(s, base, home).starts_with(root),
+        toml::Value::Array(a) => a.iter().any(|v| toml_mentions(v, root, base, home)),
+        toml::Value::Table(t) => t.values().any(|v| toml_mentions(v, root, base, home)),
         _ => false,
     }
 }
@@ -172,12 +212,23 @@ fn old_plugin() -> String {
     format!("{OLD}@{OLD}")
 }
 
+/// The record for a harness that names the marketplace and plugin `clax`.
+fn name_record(root: &Path) -> Value {
+    json!({"marketplace": "clax", "plugin": "clax@clax", "source": root})
+}
+
 fn claude_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
     let plugins = ctx.dirs.claude_dir.join("plugins");
-    let installed = read_json(&plugins.join("installed_plugins.json"), &mut a.notes);
-    let markets = read_json(&plugins.join("known_marketplaces.json"), &mut a.notes);
+    let installed = read_for_removal(
+        load_json(&plugins.join("installed_plugins.json")),
+        &mut a.notes,
+    );
+    let markets = read_for_removal(
+        load_json(&plugins.join("known_marketplaces.json")),
+        &mut a.notes,
+    );
     if names(&installed, &old_plugin) {
         a.steps
             .push(step(false, &["plugin", "uninstall", old_plugin.as_str()]));
@@ -201,22 +252,27 @@ fn claude_additions(root: &Path) -> Vec<Step> {
     ]
 }
 
-fn claude_uses(ctx: &Ctx, root: &Path) -> bool {
+fn claude_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
     let d = &ctx.dirs.claude_dir;
-    [
+    for p in [
         d.join("plugins/known_marketplaces.json"),
         d.join("plugins/installed_plugins.json"),
         d.join("settings.json"),
-    ]
-    .iter()
-    .filter_map(|p| read_json(p, &mut Vec::new()))
-    .any(|v| json_mentions(&v, root))
+    ] {
+        if load_json(&p)?.is_some_and(|v| json_mentions(&v, root, d, &ctx.home)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn codex_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let old_plugin = old_plugin();
-    let cfg = read_toml(&ctx.dirs.codex_home.join("config.toml"), &mut a.notes);
+    let cfg = read_for_removal(
+        load_toml(&ctx.dirs.codex_home.join("config.toml")),
+        &mut a.notes,
+    );
     let has = |table: &str, key: &str| {
         cfg.as_ref()
             .and_then(|c| c.get(table))
@@ -246,87 +302,87 @@ fn codex_additions(root: &Path) -> Vec<Step> {
     ]
 }
 
-fn codex_uses(ctx: &Ctx, root: &Path) -> bool {
-    read_toml(&ctx.dirs.codex_home.join("config.toml"), &mut Vec::new())
-        .is_some_and(|t| toml_mentions(&toml::Value::Table(t), root))
+fn codex_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
+    let d = &ctx.dirs.codex_home;
+    Ok(load_toml(&d.join("config.toml"))?
+        .is_some_and(|t| toml_mentions(&toml::Value::Table(t), root, d, &ctx.home)))
 }
 
-/// `p` with `.` and `..` resolved without following symlinks, as Node's
-/// `path.resolve` does.
-fn lexical(p: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for c in p.components() {
-        match c {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            c => out.push(c),
-        }
-    }
-    out
+/// The Pi package directory inside the marketplace at `root`.
+fn pi_package_dir(root: &Path) -> PathBuf {
+    lexical(&root.join("plugins/pi"))
 }
 
 /// The local Pi package sources in `<pi dir>/settings.json`, each as the
 /// absolute directory Pi resolves it to: `~` against the home directory, a
 /// relative path against the Pi directory, lexically. Sources with a scheme
 /// (`npm:`, `git:`, …) are left out.
-fn pi_local_packages(ctx: &Ctx, notes: &mut Vec<String>) -> Vec<PathBuf> {
+fn pi_local_packages(ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     let pi_dir = &ctx.dirs.pi_dir;
-    let Some(v) = read_json(&pi_dir.join("settings.json"), notes) else {
-        return Vec::new();
+    let Some(v) = load_json(&pi_dir.join("settings.json"))? else {
+        return Ok(Vec::new());
     };
-    v["packages"]
+    Ok(v["packages"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|p| p.as_str().or_else(|| p["source"].as_str()))
         .filter(|s| !s.contains(':'))
-        .map(|s| {
-            let abs = if s == "~" {
-                ctx.home.clone()
-            } else if let Some(rest) = s.strip_prefix("~/") {
-                ctx.home.join(rest)
-            } else {
-                pi_dir.join(s)
-            };
-            lexical(&abs)
-        })
-        .collect()
+        .map(|s| stored_path(s, pi_dir, &ctx.home))
+        .collect())
 }
 
-/// Whether a missing package directory looks like a Clax plugin from a
-/// checkout or marketplace: `…/plugins/pi` under a path naming Clax or the
-/// previous name.
-fn looks_like_ours(d: &Path) -> bool {
-    d.ends_with("plugins/pi")
-        && d.components().any(|c| {
-            let c = c.as_os_str().to_string_lossy().to_lowercase();
-            c.contains("clax") || c.contains(OLD)
-        })
+/// The `name` in `<d>/package.json`: `Ok(None)` for a directory without a
+/// readable Pi package name, an error when the directory itself is missing
+/// or unreadable.
+fn package_name(d: &Path) -> Result<Option<String>, String> {
+    match std::fs::metadata(d) {
+        Ok(m) if m.is_dir() => {}
+        Ok(_) => return Err("is not a directory".into()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err("is missing".into()),
+        Err(e) => return Err(format!("cannot be read ({e})")),
+    }
+    match std::fs::read_to_string(d.join("package.json")) {
+        Ok(t) => Ok(serde_json::from_str::<Value>(&t)
+            .ok()
+            .and_then(|v| v["name"].as_str().map(str::to_string))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("cannot be read ({e})")),
+    }
 }
 
 fn pi_removals(ctx: &Ctx) -> Actions {
     let mut a = Actions::default();
     let wanted = [format!("@empathic/{OLD}-pi"), PI_PACKAGE.to_string()];
-    for d in pi_local_packages(ctx, &mut a.notes) {
-        let ours = if d.is_dir() {
-            std::fs::read_to_string(d.join("package.json"))
-                .ok()
-                .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-                .and_then(|v| v["name"].as_str().map(str::to_string))
-                .is_some_and(|n| wanted.contains(&n))
-        } else if looks_like_ours(&d) {
-            a.notes.push(format!(
-                "{} is gone; removing its registration",
-                d.display()
-            ));
-            true
-        } else {
+    let recorded: Vec<PathBuf> = ctx.recorded.get("pi").map_or(Vec::new(), |r| {
+        r["packages"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(|s| lexical(Path::new(s)))
+            .collect()
+    });
+    let packages = match pi_local_packages(ctx) {
+        Ok(p) => p,
+        Err(e) => {
             a.notes
-                .push(format!("Pi package {} is missing; left alone", d.display()));
-            false
-        };
+                .push(format!("{e}; registrations there were not looked for"));
+            Vec::new()
+        }
+    };
+    for d in packages {
+        let ours = recorded.contains(&d)
+            || match package_name(&d) {
+                Ok(name) => name.is_some_and(|n| wanted.contains(&n)),
+                Err(why) => {
+                    a.notes.push(format!(
+                        "Pi package {p} {why}, so it is left registered; if it is Clax's, remove it with `pi remove {p}`",
+                        p = d.display()
+                    ));
+                    false
+                }
+            };
         if ours {
             let d = d.display().to_string();
             a.steps.push(step(false, &["remove", d.as_str()]));
@@ -336,14 +392,12 @@ fn pi_removals(ctx: &Ctx) -> Actions {
 }
 
 fn pi_additions(root: &Path) -> Vec<Step> {
-    let pi = root.join("plugins/pi").display().to_string();
+    let pi = pi_package_dir(root).display().to_string();
     vec![step(true, &["install", pi.as_str()])]
 }
 
-fn pi_uses(ctx: &Ctx, root: &Path) -> bool {
-    pi_local_packages(ctx, &mut Vec::new())
-        .iter()
-        .any(|d| d.starts_with(root))
+fn pi_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
+    Ok(pi_local_packages(ctx)?.iter().any(|d| d.starts_with(root)))
 }
 
 /// `name` in a directory of `PATH`, if any.
@@ -428,9 +482,37 @@ impl InitLock {
     }
 }
 
+fn registrations_path(home: &Home) -> PathBuf {
+    home.root().join("registrations.json")
+}
+
+/// `registrations.json`'s per-harness records; empty when it is missing or
+/// unreadable (nothing is then removed on its account).
+fn load_recorded(home: &Home) -> Map<String, Value> {
+    load_json(&registrations_path(home))
+        .ok()
+        .flatten()
+        .and_then(|v| v.get("harnesses").and_then(Value::as_object).cloned())
+        .unwrap_or_default()
+}
+
+/// Writes `registrations.json` atomically: a sibling temporary file renamed
+/// into place.
+fn save_recorded(home: &Home, recorded: &Map<String, Value>) -> std::io::Result<()> {
+    let path = registrations_path(home);
+    let tmp = home
+        .root()
+        .join(format!(".registrations.{}.tmp", std::process::id()));
+    let text = serde_json::to_string_pretty(&json!({"version": 1, "harnesses": recorded}))?;
+    std::fs::write(&tmp, text + "\n")?;
+    std::fs::rename(&tmp, &path).inspect_err(|_| {
+        let _ = std::fs::remove_file(&tmp);
+    })
+}
+
 /// After `uninit`: removes the marketplace unless a harness's registry,
-/// whether or not this run covered it, still refers to it. Returns what
-/// happened, for the output.
+/// whether or not this run covered it, still refers to it or cannot be
+/// read. Returns what happened, for the output.
 fn remove_marketplace_unless_used(ctx: &Ctx, root: &Path) -> anyhow::Result<String> {
     if !root.exists() {
         return Ok(String::new());
@@ -441,19 +523,32 @@ fn remove_marketplace_unless_used(ctx: &Ctx, root: &Path) -> anyhow::Result<Stri
     {
         roots.push(c);
     }
-    let users: Vec<&str> = HARNESSES
-        .iter()
-        .filter(|h| roots.iter().any(|r| (h.uses)(ctx, r)))
-        .map(|h| h.name)
-        .collect();
-    if users.is_empty() {
+    let mut reasons = Vec::new();
+    for h in HARNESSES {
+        let mut used = Ok(false);
+        for r in &roots {
+            used = (h.uses)(ctx, r);
+            if used != Ok(false) {
+                break;
+            }
+        }
+        match used {
+            Ok(false) => {}
+            Ok(true) => reasons.push(format!(
+                "{} still registers it (with {} on PATH, run `clax uninit --agent {}`; otherwise run `{}`)",
+                h.name,
+                h.name,
+                h.name,
+                (h.by_hand)(root)
+            )),
+            Err(e) => reasons.push(format!("{}: {e}", h.name)),
+        }
+    }
+    if reasons.is_empty() {
         std::fs::remove_dir_all(root)?;
         Ok("removed".into())
     } else {
-        Ok(format!(
-            "kept: still registered with {}; run `clax uninit --agent <name>` for each",
-            users.join(", ")
-        ))
+        Ok(format!("kept: {}", reasons.join("; ")))
     }
 }
 
@@ -465,11 +560,18 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
     let dirs = Dirs::from_env(|k| std::env::var(k).ok())
         .ok_or_else(|| anyhow::anyhow!("HOME is not set"))?;
-    let ctx = Ctx {
+    // `uninit` on a machine with no Clax home creates none.
+    let has_home = install || home.root().is_dir();
+    let _lock = if has_home {
+        Some(InitLock::acquire(home)?)
+    } else {
+        None
+    };
+    let mut ctx = Ctx {
         dirs,
         home: user_home,
+        recorded: load_recorded(home),
     };
-    let _lock = InitLock::acquire(home)?;
     let root = home.root().join("marketplace");
     if install {
         crate::plugins::materialize(&root)?;
@@ -478,6 +580,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         .iter()
         .filter(|h| a.agents.is_empty() || a.agents.iter().any(|n| n == h.name));
     let mut results = Vec::new();
+    let mut recorded = ctx.recorded.clone();
     for h in chosen {
         if on_path(h.name).is_none() {
             results.push(json!({"agent": h.name, "status": "skipped", "detail": format!("{} is not on PATH", h.name), "commands": []}));
@@ -487,13 +590,27 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         if install {
             actions.steps.extend((h.additions)(&root));
         }
-        results.push(run_steps(
+        let r = run_steps(
             h,
             &ctx,
             actions,
             if install { "registered" } else { "removed" },
-        ));
+        );
+        match r["status"].as_str() {
+            Some("registered") => {
+                recorded.insert(h.name.into(), (h.record)(&root));
+            }
+            Some("removed") => {
+                recorded.remove(h.name);
+            }
+            _ => {}
+        }
+        results.push(r);
     }
+    if has_home && recorded != ctx.recorded {
+        save_recorded(home, &recorded)?;
+    }
+    ctx.recorded = recorded;
     let marketplace_detail = if install {
         "written".to_string()
     } else {
@@ -561,10 +678,17 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_package_is_ours_only_under_a_clax_or_previous_name_path() {
-        assert!(looks_like_ours(Path::new("/x/clax/plugins/pi")));
-        assert!(looks_like_ours(Path::new(&format!("/x/{OLD}/plugins/pi"))));
-        assert!(!looks_like_ours(Path::new("/x/other/plugins/pi")));
-        assert!(!looks_like_ours(Path::new("/x/clax/plugins/other")));
+    fn stored_paths_are_read_in_every_form_the_tools_may_write() {
+        let (base, home) = (Path::new("/cfg"), Path::new("/home/u"));
+        let root = Path::new("/home/u/.clax/marketplace");
+        for s in [
+            "/home/u/.clax/marketplace",
+            "~/.clax/marketplace/plugins/pi",
+            "file:///home/u/.clax/marketplace",
+            "../home/u/.clax/marketplace",
+        ] {
+            assert!(stored_path(s, base, home).starts_with(root), "{s}");
+        }
+        assert!(!stored_path("clax@clax", base, home).starts_with(root));
     }
 }
