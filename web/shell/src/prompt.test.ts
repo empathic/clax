@@ -30,10 +30,25 @@ function arm() {
   wait(ALLOW_DELAY_MS);
 }
 
-const click = (el: Element, detail: number) => flush(() => { el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, detail })); });
-const press = (el: Element) => flush(() => { el.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true, cancelable: true })); });
-const key = (el: Element, type: "keydown" | "keyup", k: string, repeat = false) =>
-  flush(() => { el.dispatchEvent(new KeyboardEvent(type, { key: k, repeat, bubbles: true, cancelable: true })); });
+/** A MouseEvent standing in for a PointerEvent: `pointerId` (absent when
+ * undefined, as on a browser whose click is a plain MouseEvent) and, when
+ * given, the `timeStamp` the browser stamped it with. */
+function pointerish(type: string, init: { detail?: number; pointerId?: number; timeStamp?: number }) {
+  const e = new MouseEvent(type, { bubbles: true, cancelable: true, detail: init.detail ?? 0 });
+  if (init.pointerId !== undefined) Object.defineProperty(e, "pointerId", { value: init.pointerId });
+  if (init.timeStamp !== undefined) Object.defineProperty(e, "timeStamp", { value: init.timeStamp });
+  return e;
+}
+/** A pointer's click (`detail` 1) by `pointerId` (the mouse is 1). */
+const click = (el: Element, pointerId: number | undefined = 1) => flush(() => { el.dispatchEvent(pointerish("click", { detail: 1, pointerId })); });
+/** A key's or an assistive technology's click: no pointer (`pointerId` -1, `detail` 0). */
+const keyClick = (el: Element) => flush(() => { el.dispatchEvent(pointerish("click", { pointerId: -1 })); });
+const press = (el: Element, pointerId: number | undefined = 1, timeStamp?: number) => flush(() => { el.dispatchEvent(pointerish("pointerdown", { pointerId, timeStamp })); });
+const key = (el: Element, type: "keydown" | "keyup", k: string, repeat = false, timeStamp?: number) => flush(() => {
+  const e = new KeyboardEvent(type, { key: k, repeat, bubbles: true, cancelable: true });
+  if (timeStamp !== undefined) Object.defineProperty(e, "timeStamp", { value: timeStamp });
+  el.dispatchEvent(e);
+});
 
 describe("PromptDialog", () => {
   beforeEach(() => {
@@ -95,14 +110,82 @@ describe("PromptDialog", () => {
     wait(ALLOW_DELAY_MS);
     expect(allow.disabled).toBe(false);
     // The release of the early press clicks the now enabled button.
-    click(allow, 1);
+    click(allow);
     expect(answer).not.toHaveBeenCalled();
     // A click with no press of its own after arming does not count either.
-    click(allow, 1);
+    click(allow);
     expect(answer).not.toHaveBeenCalled();
     press(allow);
+    click(allow);
+    expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("judges each pointer by its own press: a touch after arming does not make the mouse's early press count", () => {
+    const { root, answer } = mountDialog();
+    const allow = button(root, "Allow");
+    frame();
+    frame();
+    press(allow, 1);
+    wait(ALLOW_DELAY_MS);
+    // A finger goes down anywhere after arming, then the held mouse is released on Allow.
+    press(document.body, 7);
+    click(allow, 1);
+    expect(answer).not.toHaveBeenCalled();
+    // The finger's own press counts for its own click.
+    click(allow, 7);
+    expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("judges a pointer that reports no ID by the latest press", () => {
+    const { root, answer } = mountDialog();
+    const allow = button(root, "Allow");
+    frame();
+    frame();
+    press(allow, undefined);
+    wait(ALLOW_DELAY_MS);
+    click(allow, undefined);
+    expect(answer).not.toHaveBeenCalled();
+    press(allow, undefined);
+    click(allow, undefined);
+    expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("counts no press the browser stamped before arming, though it handles it after (a busy main thread)", () => {
+    const { root, answer } = mountDialog();
+    const allow = button(root, "Allow");
+    arm();
+    press(allow, 1, 0);
+    click(allow, 1);
+    key(allow, "keydown", "Enter", false, 0);
+    keyClick(allow);
+    expect(answer).not.toHaveBeenCalled();
+    press(allow, 1);
     click(allow, 1);
     expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("grants on a click with no pointer and no key (an assistive technology's) once armed", () => {
+    const { root, answer } = mountDialog();
+    const allow = button(root, "Allow");
+    frame();
+    frame();
+    keyClick(allow);
+    expect(answer).not.toHaveBeenCalled();
+    wait(ALLOW_DELAY_MS);
+    keyClick(allow);
+    expect(answer).toHaveBeenCalledWith("allow");
+  });
+
+  it("forgets the last ask's presses: one fresh on its Allow does not count on the next ask's", () => {
+    const { root, answer, update } = mountDialog();
+    arm();
+    press(button(root, "Allow"), 1);
+    const next = askFor();
+    update({ ask: next });
+    arm();
+    click(button(root, "Allow"), 1);
+    expect(next.answer).not.toHaveBeenCalled();
+    expect(answer).not.toHaveBeenCalled();
   });
 
   for (const k of ["Enter", " "]) {
@@ -117,12 +200,12 @@ describe("PromptDialog", () => {
       // keydown, Space on its keyup).
       key(allow, "keydown", k, true);
       if (k === " ") key(allow, "keyup", k);
-      click(allow, 0);
+      keyClick(allow);
       expect(answer).not.toHaveBeenCalled();
       wait(0);
       key(allow, "keydown", k);
       if (k === " ") key(allow, "keyup", k);
-      click(allow, 0);
+      keyClick(allow);
       expect(answer).toHaveBeenCalledWith("allow");
     });
   }

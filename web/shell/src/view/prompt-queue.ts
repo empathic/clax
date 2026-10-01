@@ -2,7 +2,7 @@ import type { Prompt, PromptAnswer } from "../caps/grants";
 
 export type Ask = { prompt: Prompt; answer(a: PromptAnswer): void };
 
-/** How long "Allow" stays disabled after the dialog opens. */
+/** How long "Allow" stays disabled, counted from the dialog's first paint. */
 export const ALLOW_DELAY_MS = 500;
 
 /** A prompt function that shows one dialog at a time through `setAsk`. */
