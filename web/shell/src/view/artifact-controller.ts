@@ -8,7 +8,7 @@ import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { type ArtifactEvent, subscribe } from "../events";
-import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "../failure";
+import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
@@ -832,6 +832,17 @@ export class ArtifactController {
         this.clearPending();
         if (this.isPage(m.file)) this.openPage(m.file, hash);
         else this.navigateFrame(m.file, false, hash);
+        break;
+      }
+      case "clax:degraded": {
+        // A lazy part of the bridge did not load in the greeted page (its
+        // CSP, say): the viewer is told, and comment mode goes off if it was
+        // the comment part. The page could post this itself, so the notice
+        // is the shell's own words only, never the message's text.
+        if (!this.gate.open || typeof m.part !== "string" || !Object.hasOwn(PART_FAILED, m.part)) break;
+        const text = PART_FAILED[m.part];
+        this.noticeFor(text)(`${text}.`);
+        if (m.part === "comment") this.set({ commenting: false });
         break;
       }
       case "clax:hover": break;

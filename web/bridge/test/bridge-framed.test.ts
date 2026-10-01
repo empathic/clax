@@ -1,5 +1,6 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { commentsContext } from "../src/caps/comments";
+import { commentsContext } from "../src/comments-context";
+import { settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
 
 // The bridge framed by a stand-in shell, loaded from <head> while the document
@@ -43,12 +44,14 @@ describe("bridge orders that arrive before <body>", () => {
     expect(errors).toEqual([]);
     expect(posted.filter(m => m.type === "clax:anchors")).toEqual([]);
     parsed();
+    await settle();
     expect(anchorsFor("r1")).toHaveLength(1);
   });
 
   it("a thread not found re-resolves when the page renders its content later, without a scroll", async () => {
     const late = { ...anchor, selector: "#late" };
     send({ type: "clax:resolve-anchors", requestId: "r3", anchors: [{ id: "b", anchor: late }] });
+    await settle();
     expect(anchorsFor("r3")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
     const before = anchorsFor(null).length;
     document.body.insertAdjacentHTML("beforeend", "<div id=\"late\">Rendered late</div>");
@@ -57,22 +60,24 @@ describe("bridge orders that arrive before <body>", () => {
     expect(after).toEqual([expect.objectContaining({ results: [expect.objectContaining({ id: "b", found: true })] })]);
   });
 
-  it("a parse stopped in <head> (no <body>) resolves nothing and does not throw", () => {
+  it("a parse stopped in <head> (no <body>) resolves nothing and does not throw", async () => {
     setReadyState("loading");
     document.body.remove();
     send({ type: "clax:resolve-anchors", requestId: "r4", anchors: [{ id: "a", anchor }] });
     setReadyState("interactive");
     document.dispatchEvent(new Event("readystatechange"));
+    await settle();
     expect(errors).toEqual([]);
     expect(anchorsFor("r4")).toEqual([expect.objectContaining({ results: [expect.objectContaining({ found: false })] })]);
   });
 
-  it("a resolution deferred for the parse is dropped when custom anchors went live meanwhile", () => {
+  it("a resolution deferred for the parse is dropped when custom anchors went live meanwhile", async () => {
     setReadyState("loading");
     send({ type: "clax:resolve-anchors", requestId: "r2", anchors: [{ id: "a", anchor }] });
     commentsContext.live = true;
     try {
       parsed();
+      await settle();
       expect(anchorsFor("r2")).toEqual([]);
     } finally {
       commentsContext.live = false;

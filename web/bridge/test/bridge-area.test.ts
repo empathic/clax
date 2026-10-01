@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { settle } from "../src/parts-static";
 import { dispatchTrusted } from "./trusted";
 
 // The bridge framed by a stand-in shell, on a parsed page: how it passes
@@ -36,19 +37,23 @@ beforeAll(async () => {
 afterAll(() => { send({ type: "clax:resolve-anchors", requestId: "end", anchors: [] }); });
 
 describe("sameVersion from the shell", () => {
-  it("skips the fingerprint when resolving threads of the version shown, and checks it for others", () => {
+  it("skips the fingerprint when resolving threads of the version shown, and checks it for others", async () => {
     send({ type: "clax:resolve-anchors", requestId: "r1", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }, { id: "unsaid", anchor: area }] });
+    await settle();
     const res = posted.filter(m => m.type === "clax:anchors" && m.requestId === "r1").at(-1)!.results!;
     expect(res.map(r => [r.id, r.found])).toEqual([["same", true], ["other", false], ["unsaid", false]]);
   });
 
-  it("outlines the focused area by the same rule", () => {
+  it("outlines the focused area by the same rule", async () => {
     send({ type: "clax:resolve-anchors", requestId: "r2", anchors: [{ id: "same", anchor: area, sameVersion: true }, { id: "other", anchor: area, sameVersion: false }] });
     send({ type: "clax:focus", id: "other" });
+    await settle();
     expect(focusBox().style.display).not.toBe("block");
     send({ type: "clax:focus", id: "same" });
+    await settle();
     expect(focusBox().style.display).toBe("block");
     send({ type: "clax:focus", id: null });
+    await settle();
     expect(focusBox().style.display).toBe("none");
   });
 

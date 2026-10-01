@@ -7,24 +7,17 @@
 // shell calls; the shell checks every argument again.
 import { buildElementAnchor, buildRangeAnchor, cssPath } from "../anchor";
 import type { Local } from "../capabilities";
-import { renderTargetClip } from "../clip";
-import { type Anchor, INDEX_FILE } from "../protocol";
+import type { CommentsContext } from "../comments-context";
+import type { ClipPart } from "../parts/types";
+import type { Anchor } from "../protocol";
 import { CapabilityError, type Rpc } from "../rpc";
 import { nameProblem, textProblem } from "../text-rule";
 
 export { MAX_TEXT_BYTES, textProblem } from "../text-rule";
 
-/** State bridge.ts shares with this module: the frame's version and file,
- * whether a custom-anchors registration is live (the bridge's own comment
- * mode then stands down), the hook bridge.ts calls on scroll and resize, and
- * the one it gives to hear `live` change. */
-export const commentsContext: {
-  version: number;
-  file: string;
-  live: boolean;
-  reflow: (() => void) | null;
-  liveChanged: (() => void) | null;
-} = { version: 0, file: INDEX_FILE, live: false, reflow: null, liveChanged: null };
+/** What the eager bridge hands the page-side members: its shared state, and
+ * the clip part, loaded on first use. */
+export type CapsEnv = { ctx: CommentsContext; clip: () => Promise<ClipPart> };
 
 /** Longest `label` or `detail`, in UTF-16 code units (comments.d.ts). */
 export const MAX_LABEL = 1024;
@@ -44,14 +37,14 @@ const center = (el: Element): DocPoint => {
 
 /** A thread anchor for a `comments.Anchor` (`{path, x, y}`): the element's
  * full anchor when the path still finds it, else the path alone. */
-function toAnchor(a: { path: string }): Anchor {
+function toAnchor(ctx: CommentsContext, a: { path: string }): Anchor {
   let el: Element | null = null;
   try { el = document.querySelector(a.path); } catch { el = null; }
-  if (el) return buildElementAnchor(document, el, commentsContext.file);
-  return { kind: "element", selector: a.path, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: commentsContext.file };
+  if (el) return buildElementAnchor(document, el, ctx.file);
+  return { kind: "element", selector: a.path, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: ctx.file };
 }
 
-export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): Local {
+export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, env: CapsEnv): Local {
   const cfg = (config ?? {}) as { composer_only?: unknown; customAnchors?: unknown };
   const text = (t: unknown) => { const p = textProblem(t); if (p) throw invalid(p); return t as string; };
 
@@ -61,19 +54,19 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     let of: Element | Range;
     if (t && t.element instanceof Element && t.element.isConnected) {
       if (uncommentable(t.element)) return { opened: false };
-      anchor = buildElementAnchor(document, t.element, commentsContext.file);
+      anchor = buildElementAnchor(document, t.element, env.ctx.file);
       of = t.element;
     } else if (t && t.range instanceof Range && t.range.startContainer.isConnected && t.range.endContainer.isConnected) {
       if (uncommentable(t.range.commonAncestorContainer)) return { opened: false };
-      anchor = buildRangeAnchor(document, t.range, commentsContext.file);
+      anchor = buildRangeAnchor(document, t.range, env.ctx.file);
       of = t.range;
     } else {
       throw invalid("openComposer takes {element} or {range}, attached to the document");
     }
     let clipPng: ArrayBuffer | undefined;
     let clipError: string | undefined;
-    try { clipPng = await renderTargetClip(of); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
-    return rpc.call("comments", "openComposer", [{ anchor, version: commentsContext.version, clipPng, clipError }]);
+    try { clipPng = await (await env.clip()).renderTargetClip(of); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
+    return rpc.call("comments", "openComposer", [{ anchor, version: env.ctx.version, clipPng, clipError }]);
   };
 
   const anchorFor = async (el: unknown) => {
@@ -127,21 +120,21 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
       for (const [id, p] of Object.entries(lastPlaced)) viewport[id] = { x: p.x - scrollX, y: p.y - scrollY };
       void rpc.call("comments", "placed", [viewport]).catch(() => {});
     };
-    commentsContext.live = true;
-    commentsContext.reflow = () => {
+    env.ctx.live = true;
+    env.ctx.reflow = () => {
       if (!placedOnce || frame) return;
       frame = requestAnimationFrame(() => { frame = 0; if (!released) sendPlaced(); });
     };
-    commentsContext.liveChanged?.();
+    env.ctx.liveChanged?.();
     const release = () => {
       if (released) return;
       released = true;
       registered = false;
       for (const off of offs) off();
       if (frame) cancelAnimationFrame(frame);
-      commentsContext.live = false;
-      commentsContext.reflow = null;
-      commentsContext.liveChanged?.();
+      env.ctx.live = false;
+      env.ctx.reflow = null;
+      env.ctx.liveChanged?.();
       void rpc.call("comments", "release", []).catch(() => {});
     };
     try {
@@ -170,7 +163,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         for (const k of ["label", "detail"] as const) {
           if (o[k] !== undefined && (typeof o[k] !== "string" || (o[k] as string).length > MAX_LABEL)) return Promise.reject(invalid(`${k} is text of at most ${MAX_LABEL} characters`));
         }
-        const base = { anchor, dom, label: o.label as string | undefined, detail: o.detail as string | undefined, version: commentsContext.version };
+        const base = { anchor, dom, label: o.label as string | undefined, detail: o.detail as string | undefined, version: env.ctx.version };
         // `area` is honoured only while it could be (comments.d.ts: `areas`).
         if (o.area !== true || !canArea) return rpc.call("comments", "compose", [base]);
         // An area on a domAnchor path: the shell checks the viewer's gesture
@@ -187,7 +180,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
             void (async () => {
               let clipPng: ArrayBuffer | undefined;
               let clipError: string | undefined;
-              try { clipPng = await renderTargetClip(el); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
+              try { clipPng = await (await env.clip()).renderTargetClip(el); } catch (e) { clipError = e instanceof Error ? e.message : String(e); }
               await rpc.call("comments", "composeClip", [{ nonce, clipPng, clipError }]).catch(() => {});
             })();
           }
@@ -228,7 +221,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
     create: async (opts: unknown) => {
       const o = (opts ?? {}) as { anchor?: unknown; text?: unknown };
       const a = checkAnchor(o.anchor);
-      return rpc.call("comments", "create", [{ anchor: toAnchor(a), text: text(o.text), version: commentsContext.version }]);
+      return rpc.call("comments", "create", [{ anchor: toAnchor(env.ctx, a), text: text(o.text), version: env.ctx.version }]);
     },
     reply: async (threadId: unknown, t: unknown) => {
       if (typeof threadId !== "string" || !threadId) throw invalid("threadId is a string");
@@ -242,7 +235,7 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown): 
         if (typeof t.threadId !== "string" || !t.threadId) throw invalid("threadId is a string");
         return rpc.call("comments", "sendToClaude", [{ threadId: t.threadId, text: body }]);
       }
-      return rpc.call("comments", "sendToClaude", [{ anchor: toAnchor(checkAnchor(t.anchor)), text: body, version: commentsContext.version }]);
+      return rpc.call("comments", "sendToClaude", [{ anchor: toAnchor(env.ctx, checkAnchor(t.anchor)), text: body, version: env.ctx.version }]);
     },
     customAnchors,
   };

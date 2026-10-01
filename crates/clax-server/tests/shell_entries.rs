@@ -11,6 +11,12 @@ async fn each_route_gets_its_own_entry() {
     let dist = tempfile::tempdir().unwrap();
     std::fs::write(dist.path().join("index.html"), "<p>gallery</p>").unwrap();
     std::fs::write(dist.path().join("artifact.html"), "<p>artifact</p>").unwrap();
+    std::fs::create_dir_all(dist.path().join("_clax/bridge")).unwrap();
+    std::fs::write(
+        dist.path().join("_clax/bridge/comment-abc.js"),
+        "export {};",
+    )
+    .unwrap();
     set_web_dist(dist.path().to_path_buf());
     let ts = TestServer::spawn().await;
     let body = |p: &'static str| {
@@ -29,4 +35,28 @@ async fn each_route_gets_its_own_entry() {
     let res = ts.get("/a/7q3k9mzx2b4t").await;
     assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert!(res.headers().contains_key("etag"));
+
+    // A lazy part of the bridge: readable from an opaque-origin sandbox, and
+    // immutable at its content-hashed name outside a debug build.
+    let res = ts.get("/_clax/bridge/comment-abc.js").await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["access-control-allow-origin"], "*");
+    assert_eq!(res.headers()["content-type"], "text/javascript");
+    let cc = if cfg!(debug_assertions) {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+    assert_eq!(res.headers()["cache-control"], cc);
+    let etag = res.headers()["etag"].to_str().unwrap().to_string();
+    assert_eq!(res.text().await.unwrap(), "export {};");
+    let again = ts
+        .client
+        .get(format!("{}/_clax/bridge/comment-abc.js", ts.base))
+        .header("if-none-match", etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(again.status(), 304);
+    assert_eq!(again.headers()["access-control-allow-origin"], "*");
 }

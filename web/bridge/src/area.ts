@@ -9,7 +9,7 @@
 // enclosing element of the hovered target, one ancestor more per Up press.
 
 import { OVERLAY_TAG, cssPath, fingerprint, htmlHash } from "./anchor";
-import { blockAncestor } from "./clip";
+import { blockAncestor } from "./block";
 import { type Anchor, type AnchorArea, type Box, INDEX_FILE } from "./protocol";
 import { caretAt } from "./target";
 import { readable } from "./text-walk";

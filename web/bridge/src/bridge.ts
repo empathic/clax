@@ -28,20 +28,34 @@
  * While the page holds a `comments.customAnchors` registration, the bridge's
  * own comment mode, anchor resolution, and scroll-to stand down: the page
  * places the pins, and its placements are re-sent on scroll and resize.
+ *
+ * Comment mode with anchoring and areas, clip rendering, and the
+ * capabilities' page-side members are lazy parts (parts/*.ts) imported from
+ * beside this script, never before the page has parsed: comment mode on the
+ * first shell order that needs it (in practice right after the welcome),
+ * clips when comment mode turns on, capability members on the first
+ * claude.use() the shell grants. A part that cannot load is reported to the
+ * shell once (clax:degraded). Waiting for the parse keeps the parts' module
+ * loads from ever coming before the page's own import maps.
  */
-import { AnchorCache, type Resolved, buildElementAnchor, buildRangeAnchor, cssPath, resolveAnchor } from "./anchor";
-import { areaBox, boxOf, buildAreaAnchor, containingElement, placeArea } from "./area";
+import { loadParts } from "clax-bridge-parts";
+import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
-import { commentsContext } from "./caps/comments";
-import { blockAncestor, renderAreaClip, renderTargetClip } from "./clip";
-import { CommentMode } from "./comment-mode";
-import { PickFlow } from "./pick";
+import { commentsContext } from "./comments-context";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
+import type { CommentPart, Parts } from "./parts/types";
+import { PickFlow } from "./pick";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
 import { whenParsed } from "./parsed";
 import { makeUse } from "./use";
+
+type Mode = InstanceType<CommentPart["CommentMode"]>;
+type Cache = InstanceType<CommentPart["AnchorCache"]>;
+/** Comment mode once its part has loaded. */
+type Live = { part: CommentPart; mode: Mode; cache(): Cache; reset(): void };
+type PartName = keyof Parts;
 
 (() => {
   // One bridge per document: any bridge tag after the document's first one
@@ -52,6 +66,17 @@ import { makeUse } from "./use";
   (window as any).__clax = meta;
   commentsContext.version = meta.version;
   commentsContext.file = meta.file;
+  // The parts' URLs are fixed now, before any page script could change the
+  // tag. No part is requested before the page has parsed; the listener for
+  // that goes on now, ahead of the page's own.
+  const loaders = loadParts(script?.src || location.href);
+  let parsed = document.readyState !== "loading";
+  const whenDone = new Promise<void>(resolve => whenParsed(document, () => { parsed = true; resolve(); }));
+  const parts: Parts = {
+    comment: () => parsed ? loaders.comment() : whenDone.then(loaders.comment),
+    clip: () => parsed ? loaders.clip() : whenDone.then(loaders.clip),
+    caps: () => parsed ? loaders.caps() : whenDone.then(loaders.caps),
+  };
 
   // The shell's window as it is when the bridge loads: a page script that
   // later replaces `window.parent` can neither read nor alter what the
@@ -61,8 +86,25 @@ import { makeUse } from "./use";
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
     shellWin.postMessage(m, shellOrigin ?? "*", transfer);
+  const reported = new Set<PartName>();
+  /** Reports, once per part, that it could not load: to the shell once it
+   * has welcomed this page (every part is first asked for after that). */
+  const failed = (part: PartName) => (e: unknown) => {
+    if (reported.has(part)) return;
+    reported.add(part);
+    console.warn(`clax: the ${part} part of the bridge could not load`, e);
+    if (framed && shellOrigin !== null) post({ type: "clax:degraded", part, message: e instanceof Error ? e.message : String(e) });
+  };
+  const clips = () => parts.clip().catch(e => { failed("clip")(e); throw e; });
   const rpc = new Rpc(m => post(m));
-  const use = makeUse({ framed, rpc });
+  const use = makeUse({
+    framed,
+    rpc,
+    locals: (name, r, config) => parts.caps().then(
+      c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips }),
+      e => { failed("caps")(e); throw e; },
+    ),
+  });
 
   try {
     Object.defineProperty(window, "claude", {
@@ -83,8 +125,8 @@ import { makeUse } from "./use";
 
   /** Where a resolved anchor is now: an area's rectangle projected onto its
    * element, else the range or element. */
-  const placeOf = (anchor: Anchor, r: Resolved): Box => {
-    if (anchor.kind === "area" && anchor.area) return placeArea(anchor, r.element);
+  const placeOf = (l: Live, anchor: Anchor, r: Resolved): Box => {
+    if (anchor.kind === "area" && anchor.area) return l.part.placeArea(anchor, r.element);
     return box(r.range ?? r.element);
   };
 
@@ -92,26 +134,66 @@ import { makeUse } from "./use";
   // re-measure, unless the DOM under a resolved element changed since.
   let anchors: { id: string; anchor: Anchor; sameVersion?: boolean }[] = [];
   let latestResolve: unknown = null;
-  let resolutions: AnchorCache | null = null;
   // The thread the shell focuses (hovered in its list, or selected); its
   // area, if it is one, is outlined dashed.
   let focusId: string | null = null;
-  // One cache for resolving and focusing. A detached thread is retried when
-  // the page changes (content rendered late), not only on scroll or resize.
-  const cache = () => resolutions ??= new AnchorCache(document, undefined, meta.file, () => reflow());
-  const updateFocus = (flash = false) => {
-    const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
-    const r = f?.anchor.kind === "area" ? cache().resolve(f.id, f.anchor, f.sameVersion === true) : null;
-    mode.showFocus(f && r ? placeOf(f.anchor, r) : null, flash);
+  // The shell's comment mode; the bridge's own hit testing follows it unless
+  // a custom-anchors registration is live.
+  let shellMode = false;
+  let welcomed = false;
+
+  // A pick's clip is rendered only once the shell's composer for it has
+  // focus (see `pick.ts`).
+  const picks = new PickFlow(window, post, meta.version);
+  const pick = (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => picks.start(anchor, clip);
+
+  let live: Promise<Live> | null = null;
+  /** Runs `f` with comment mode once its part has loaded; calls run in the
+   * order they were made. */
+  const withComment = (f: (l: Live) => void) => {
+    live ??= parts.comment().then(part => {
+      // One cache for resolving and focusing. A detached thread is retried
+      // when the page changes (content rendered late), not only on scroll or resize.
+      let resolutions: Cache | null = null;
+      const mode: Mode = new part.CommentMode(document, {
+        hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
+        pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+        pickRange: r => { void pick(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
+        // The clip is the drawn rectangle, placed on its element at release,
+        // cropped out of a render of that element. The rectangle stays drawn
+        // (as capturing) until the pick is posted.
+        pickArea: r => {
+          const el = part.containingElement(document, r);
+          const anchor = part.buildAreaAnchor(document, r, meta.file, el);
+          const at = part.areaBox(anchor.area!, part.boxOf(el));
+          void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
+        },
+        cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
+      });
+      commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
+      return {
+        part,
+        mode,
+        cache: () => resolutions ??= new part.AnchorCache(document, undefined, meta.file, () => reflow()),
+        reset: () => resolutions?.reset(),
+      };
+    });
+    live.then(f, failed("comment"));
   };
-  const resolveAll = (requestId: string | null) => {
-    const resolved = cache();
+
+  const updateFocus = (l: Live, flash = false) => {
+    const f = focusId === null || commentsContext.live ? undefined : anchors.find(a => a.id === focusId);
+    const r = f?.anchor.kind === "area" ? l.cache().resolve(f.id, f.anchor, f.sameVersion === true) : null;
+    l.mode.showFocus(f && r ? placeOf(l, f.anchor, r) : null, flash);
+  };
+  const resolveAll = (l: Live, requestId: string | null) => {
+    const resolved = l.cache();
     const results: AnchorResult[] = anchors.map(({ id, anchor, sameVersion }) => {
       const r = resolved.resolve(id, anchor, sameVersion === true);
-      return r ? { id, found: true, method: r.method, rect: placeOf(anchor, r) } : { id, found: false, method: null, rect: null };
+      return r ? { id, found: true, method: r.method, rect: placeOf(l, anchor, r) } : { id, found: false, method: null, rect: null };
     });
     post({ type: "clax:anchors", requestId, results });
-    updateFocus();
+    updateFocus(l);
   };
   let raf = 0;
   const reflow = () => {
@@ -119,37 +201,30 @@ import { makeUse } from "./use";
     // re-reports its placements, and the shell's anchors are not resolved.
     commentsContext.reflow?.();
     if (commentsContext.live || !anchors.length || raf) return;
-    raf = requestAnimationFrame(() => { raf = 0; resolveAll(null); });
+    raf = requestAnimationFrame(() => { raf = 0; withComment(l => resolveAll(l, null)); });
   };
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  // A pick's clip is rendered only once the shell's composer for it has
-  // focus (see `pick.ts`).
-  const picks = new PickFlow(window, post, meta.version);
-  const pick = (anchor: Anchor, clip: () => Promise<ArrayBuffer>) => picks.start(anchor, clip);
-  const mode = new CommentMode(document, {
-    hover: t => post({ type: "clax:hover", selector: t ? cssPath(t instanceof Element ? t : blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-    pickElement: el => { void pick(buildElementAnchor(document, el, meta.file), () => renderTargetClip(el)).finally(() => mode.captured()); },
-    pickRange: r => { void pick(buildRangeAnchor(document, r, meta.file), () => renderTargetClip(r)).finally(() => mode.captured()); },
-    // The clip is the drawn rectangle, placed on its element at release,
-    // cropped out of a render of that element. The rectangle stays drawn (as
-    // capturing) until the pick is posted.
-    pickArea: r => {
-      const el = containingElement(document, r);
-      const anchor = buildAreaAnchor(document, r, meta.file, el);
-      const at = areaBox(anchor.area!, boxOf(el));
-      void pick(anchor, () => renderAreaClip(el, at)).finally(() => mode.captured());
-    },
-    cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
-  });
+  /** Turns the bridge's comment mode to follow the shell's; the clip part
+   * starts loading as it turns on, so a pick's screenshot does not wait for
+   * it. Comment mode that never loaded is off already. */
+  const followMode = () => {
+    if (shellMode) void clips().catch(() => {});
+    if (shellMode || live) withComment(l => l.mode.set(shellMode && !commentsContext.live));
+  };
 
-  // The shell's comment mode; the bridge's own hit testing follows it unless
-  // a custom-anchors registration is live.
-  let shellMode = false;
-  commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
+  /** Once the page has parsed after the shell's welcome, comment mode loads
+   * and is set up (still off), in a task of its own, so it is ready when the
+   * viewer turns it on. A part that cannot load is reported then, not only
+   * when the viewer presses Comment. */
+  let prefetched = false;
+  const prefetch = () => {
+    if (prefetched) return;
+    prefetched = true;
+    whenParsed(document, () => setTimeout(() => withComment(() => {})));
+  };
 
-  let welcomed = false;
   // Bubble phase on the window: the page's own handlers run first, and comment
   // mode's capture-phase handler stops a click before it gets here.
   addEventListener("click", e => {
@@ -168,45 +243,59 @@ import { makeUse } from "./use";
     if (!m) return;
     shellOrigin = e.origin;
     switch (m.type) {
-      case "clax:welcome": welcomed = true; shellMode = m.mode === "comment"; mode.set(shellMode && !commentsContext.live); rpc.connect(); post(hashFor(location.hash)); break;
+      case "clax:welcome":
+        welcomed = true; shellMode = m.mode === "comment"; followMode(); rpc.connect(); post(hashFor(location.hash));
+        prefetch();
+        break;
       case "clax:use-result": case "clax:call-result": case "clax:event": rpc.accept(m); break;
-      case "clax:comment-mode": shellMode = m.on; mode.set(shellMode && !commentsContext.live); break;
+      case "clax:comment-mode": shellMode = m.on; followMode(); break;
       case "clax:resolve-anchors": {
         if (commentsContext.live) break;
         // The anchors take effect (for reflows too) once the page has parsed,
         // and only the latest request's.
         latestResolve = m;
         whenParsed(document, () => {
-          if (latestResolve !== m || commentsContext.live) return;
-          anchors = m.anchors; resolutions?.reset(); resolveAll(m.requestId);
+          // No threads, and none resolved before: answered without loading
+          // comment mode (nothing is focused or outlined either).
+          if (!m.anchors.length && !live) {
+            if (latestResolve !== m || commentsContext.live) return;
+            anchors = [];
+            post({ type: "clax:anchors", requestId: m.requestId, results: [] });
+            return;
+          }
+          withComment(l => {
+            if (latestResolve !== m || commentsContext.live) return;
+            anchors = m.anchors; l.reset(); resolveAll(l, m.requestId);
+          });
         });
         break;
       }
-      case "clax:scroll-to": whenParsed(document, () => {
+      case "clax:scroll-to": whenParsed(document, () => withComment(l => {
         if (commentsContext.live) return;
-        const r = resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
+        const r = l.part.resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
         if (!r) return;
         if (m.anchor.kind === "area" && m.anchor.area) {
           // The drawn area is centred, not its element (often far taller).
-          const a = placeOf(m.anchor, r);
+          const a = placeOf(l, m.anchor, r);
           scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior: "smooth" });
-          setTimeout(() => mode.showFocus(placeOf(m.anchor, r), true), 350);
+          setTimeout(() => l.mode.showFocus(placeOf(l, m.anchor, r), true), 350);
         } else {
           r.element.scrollIntoView({ block: "center", behavior: "smooth" });
-          setTimeout(() => mode.flash(r.range ?? r.element), 350);
+          setTimeout(() => l.mode.flash(r.range ?? r.element), 350);
         }
-      }); break;
+      })); break;
       // The focused thread's area is outlined once the page has parsed.
-      case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => updateFocus()); break;
+      // Only a resolved thread can be outlined, so comment mode not yet loaded has none to show.
+      case "clax:focus": focusId = typeof m.id === "string" ? m.id : null; whenParsed(document, () => { if (live) withComment(l => updateFocus(l)); }); break;
       case "clax:pick-refused": if (typeof m.pickId === "string") picks.answer(m.pickId, false); break;
       case "clax:composer-ready": if (typeof m.pickId === "string") picks.answer(m.pickId, true); break;
       case "clax:key": {
         const k = forwardedKey(m);
-        if (k) mode.key(k.key, k.down);
+        // Keys count only in comment mode, which loads as it turns on.
+        if (k && live) withComment(l => l.mode.key(k.key, k.down));
         break;
       }
     }
   });
   post(helloFor(meta));
 })();
-

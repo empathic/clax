@@ -92,8 +92,13 @@ export type BridgeToShell =
   | { type: "clax:navigate"; file: string; hash?: string }
   /** The page's fragment (`#…`, or "" for none), after the welcome and on every change. */
   | { type: "clax:hash"; hash: string }
+  /** A lazy part of the bridge could not load (the page's own CSP forbids it,
+   * say); sent once per part, after the welcome. `message` is the browser's
+   * error, for debugging: the page can post this too, so the shell shows only
+   * its own words for `part`. */
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps"; message: string }
   | UseRequest
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);

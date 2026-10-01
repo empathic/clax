@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { commentsContext, commentsLocals } from "../src/caps/comments";
+import { commentsLocals } from "../src/caps/comments";
+import { commentsContext } from "../src/comments-context";
 
 type Listener = (d: unknown) => void;
 function fakeRpc(answer: (method: string, args: unknown[]) => unknown = () => ({ opened: true })) {
@@ -23,7 +24,7 @@ describe("comments (page side)", () => {
 
   it("openComposer builds the anchor in the page and never sends a detached target", async () => {
     const f = fakeRpc();
-    const c = commentsLocals(f.rpc as never, {}) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as Record<string, (...a: unknown[]) => Promise<unknown>>;
     await expect(c.openComposer({ element: document.querySelector("section")! })).resolves.toEqual({ opened: true });
     const sent = (f.rpc.call.mock.calls[0][2] as [{ anchor: { kind: string; selector: string; quote: string }; version: number }])[0];
     expect(sent.anchor).toMatchObject({ kind: "element", selector: "body > main > section" });
@@ -37,7 +38,7 @@ describe("comments (page side)", () => {
 
   it("anchorFor and create validate before the shell", async () => {
     const f = fakeRpc(() => ({ threadId: "t", commentId: "c" }));
-    const c = commentsLocals(f.rpc as never, {}) as Record<string, (...a: unknown[]) => Promise<unknown>>;
+    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as Record<string, (...a: unknown[]) => Promise<unknown>>;
     const anchor = (await c.anchorFor(document.querySelector("h2")!)) as { path: string; x: number; y: number };
     expect(anchor.path).toBe("body > main > section > h2");
     await expect(c.create({ anchor, text: "  " })).rejects.toMatchObject({ code: "invalid" });
@@ -53,9 +54,9 @@ describe("comments (page side)", () => {
   it("customAnchors needs the declaration, all three callbacks, and one registration at a time", async () => {
     const f = fakeRpc(() => null);
     const cb = { mode: vi.fn(), threads: vi.fn(), reveal: vi.fn() };
-    const off = commentsLocals(f.rpc as never, {}) as { customAnchors(x: unknown): Promise<unknown> };
+    const off = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as { customAnchors(x: unknown): Promise<unknown> };
     await expect(off.customAnchors(cb)).rejects.toMatchObject({ code: "not_granted" });
-    const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, unknown>> };
+    const on = commentsLocals(f.rpc as never, { customAnchors: true }, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as { customAnchors(x: unknown): Promise<Record<string, unknown>> };
     await expect(on.customAnchors({ mode: vi.fn() })).rejects.toMatchObject({ code: "invalid" });
     const ctl = await on.customAnchors(cb);
     expect(commentsContext.live).toBe(true);
@@ -88,7 +89,7 @@ describe("comments (page side)", () => {
   it("compose sends the area flag only while areas are possible, asks the shell before rendering, and sends the clip after under the nonce", async () => {
     const order: string[] = [];
     const f = fakeRpc(method => { order.push(method); return method === "compose" ? { opened: true, clipNonce: "n1" } : null; });
-    const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
+    const on = commentsLocals(f.rpc as never, { customAnchors: true }, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
     const ctl = await on.customAnchors({ mode() {}, threads() {}, reveal() {} });
     const sent = () => (f.rpc.call.mock.calls.filter(c => c[1] === "compose").at(-1)![2] as Record<string, unknown>[])[0];
     await ctl.compose("shape-1", { x: 1, y: 1 }, { area: true });
@@ -120,7 +121,7 @@ describe("comments (page side)", () => {
 
   it("calls the page's mode callback only when comment mode starts or ends, not when areas turn on or off", async () => {
     const f = fakeRpc(() => ({ opened: true }));
-    const on = commentsLocals(f.rpc as never, { customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, unknown>> };
+    const on = commentsLocals(f.rpc as never, { customAnchors: true }, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as { customAnchors(x: unknown): Promise<Record<string, unknown>> };
     const mode = vi.fn();
     const ctl = await on.customAnchors({ mode, threads() {}, reveal() {} });
     f.emit("mode", { on: true, canArea: true });
@@ -136,7 +137,7 @@ describe("comments (page side)", () => {
 
   it("composer_only keeps only DOM anchor paths", async () => {
     const f = fakeRpc(() => ({ opened: true }));
-    const on = commentsLocals(f.rpc as never, { composer_only: true, customAnchors: true }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
+    const on = commentsLocals(f.rpc as never, { composer_only: true, customAnchors: true }, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as { customAnchors(x: unknown): Promise<Record<string, (...a: unknown[]) => unknown>> };
     const ctl = await on.customAnchors({ mode() {}, threads() {}, reveal() {} });
     await expect(ctl.compose("shape-1", { x: 0, y: 0 }) as Promise<unknown>).rejects.toMatchObject({ code: "invalid" });
     const [path, at] = ctl.domAnchor(document.querySelector("h2")!) as [string, unknown];
