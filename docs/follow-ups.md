@@ -110,6 +110,9 @@ on rerun; each is parked for a fix:
   history entry": failed about 1 run in 120 under load; passed 10 of 10 alone.
 - `clax-hooks` golden `no_daemon_prints_nothing_and_starts_none`:
   timing under load.
+- `web/e2e/artifact.spec.ts`, "sandbox: a second viewer's vote 2 s after
+  another viewer's vote reloaded it publishes": the reloaded frame did not
+  appear within 30 s once in a full gates run; passed 10 of 10 alone.
 
 `scripts/quality_gates.sh` takes a lock per checkout and is read whole before
 it runs, so concurrent runs and mid-run edits no longer break it.
