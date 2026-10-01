@@ -90,6 +90,8 @@ impl Dirs {
     /// Empty variables count as unset. Each directory is absolute: a leading
     /// `~` or `~/` is expanded against `HOME`, and a relative value is taken
     /// relative to `HOME`, where `clax init` runs the harness CLIs.
+    /// `~user/` is not supported: a value starting with it is taken relative
+    /// to `HOME`.
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Option<Dirs> {
         let raw = |k: &str| env(k).filter(|v| !v.is_empty());
         let home = PathBuf::from(raw("HOME")?);

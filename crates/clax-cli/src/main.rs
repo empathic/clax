@@ -63,15 +63,16 @@ pub enum Cmd {
     /// Re-running reinstalls the plugin, which enables it again where it was
     /// disabled. A Pi package is removed only when `init` recorded it or its
     /// package.json names Clax's Pi package; one whose directory is missing
-    /// is left and named, with the command that removes it. Known miss: Pi
-    /// entries are matched as Pi resolves them, except that a `~user/` path
-    /// is not expanded, so such an entry is left registered.
+    /// is left and named, with the command that removes it. Known miss:
+    /// `~user/` paths are not expanded. A Pi entry written that way is left
+    /// registered, and a CODEX_HOME, CLAUDE_CONFIG_DIR or PI_CODING_AGENT_DIR
+    /// written that way is taken relative to HOME.
     Init(commands::init::Args),
     /// Remove the Clax plugin registrations from each harness whose CLI is
     /// on PATH, and the plugins' copy once no harness refers to it.
     ///
     /// The copy is kept while any harness's registry still names it or
-    /// cannot be read. The same known miss as `init` applies to Pi entries.
+    /// cannot be read. The same known miss as `init` applies.
     Uninit(commands::init::Args),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
