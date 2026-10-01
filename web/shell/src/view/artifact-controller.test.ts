@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchTrusted } from "../../../bridge/test/trusted";
 
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
@@ -29,7 +30,7 @@ async function started() {
   return { ctl, frame: stage.querySelector("iframe")! };
 }
 
-const fromFrame = (win: Window, data: unknown) => window.dispatchEvent(new MessageEvent("message", { data, origin: "null", source: win }));
+const fromFrame = (win: Window, data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
 const hello = (win: Window, version = 2) => fromFrame(win, { type: "clax:hello", artifact: ID, version, file: "index.html" });
 
 describe("ArtifactController", () => {
@@ -156,6 +157,30 @@ describe("ArtifactController", () => {
     ctl.toggleComment();
     expect(posted).toEqual([]);
     expect(ctl.state.get()).toBe(before);
+  });
+
+  it("in sandbox mode, posts nothing to a document that has not greeted, and sends it all again at its hello", async () => {
+    const { ctl, frame } = await started();
+    const win = frame.contentWindow!;
+    const posted: { type: string; anchors?: { id: string }[] }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    hello(win);
+    frame.dispatchEvent(new Event("load"));
+    expect(posted.map(m => m.type)).toContain("clax:welcome");
+    // The frame moves to a document without the bridge (a foreign site): its
+    // load, with no hello since the previous one, closes the gate.
+    frame.dispatchEvent(new Event("load"));
+    posted.length = 0;
+    const thread = { id: "t1", status: "open", version_n: 2, anchor: { file: "index.html", kind: "text", quote: "q" } };
+    const { upsert } = await import("../threads");
+    ctl.commentsUi.upsert(thread as Parameters<typeof upsert>[1]);
+    ctl.toggleComment();
+    await new Promise(r => setTimeout(r, 50));
+    expect(posted).toEqual([]);
+    hello(win);
+    expect(posted.map(m => m.type)).toEqual(expect.arrayContaining(["clax:welcome", "clax:resolve-anchors", "clax:focus"]));
+    expect(posted.find(m => m.type === "clax:resolve-anchors")!.anchors).toHaveLength(1);
+    ctl.dispose();
   });
 
   it("maps anchor results through the handles of the page greeted when they arrive", async () => {

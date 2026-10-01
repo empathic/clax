@@ -413,7 +413,13 @@ export class ArtifactController {
     return this.frame?.el?.contentWindow ?? null;
   }
 
+  /** Posts `m` to the frame, except to a frame still held for the probe
+   * (`held`), and, in sandbox mode, where the post cannot name its receiver's
+   * origin, to a frame whose document has not greeted (`gate`). Nothing is
+   * lost: the hello that opens the gate sends the welcome, the anchors and
+   * the focus again. */
   private send(m: ShellToBridge): void {
+    if (this.held || (!this.s.origin && !this.gate.open)) return;
     sendToFrame(this.frameWin(), this.s.origin ?? null, m);
   }
 

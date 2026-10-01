@@ -1,12 +1,14 @@
 # Known issues and follow-ups
 
 Open items from the stable-install work (plan
-`docs/superpowers/plans/2026-09-30-stable-install.md`), with where each was
+`docs/superpowers/plans/2026-09-30-stable-install.md`) and the Svelte port
+(plan `docs/superpowers/plans/2026-09-29-svelte-port.md`), with where each was
 found. Remove an entry when it is fixed or decided.
 
 ## Checks only the repository owner can run
 
-These touch a real harness, a real home or GitHub, so no agent runs them.
+These touch a real harness, a real home or GitHub, or need a person at the
+machine, so no agent runs them.
 
 - **`just dev claude`, `just dev pi` and `just dev codex` against the real
   CLIs.** Only fake harness commands have run these loops. Run each once and
@@ -34,6 +36,13 @@ These touch a real harness, a real home or GitHub, so no agent runs them.
   `actionlint` was not run either (not installed). After a real release, and
   only once the repository is public, `install.sh` from GitHub is still
   untested (plan, C).
+- **Allow in the consent dialog with a real screen reader** (Svelte port,
+  Task 8). Activating Allow with VoiceOver, once the button is armed (500 ms
+  after the dialog's first paint), must grant once. The shell lets a click
+  with no tracked press through on the assumption that assistive technology
+  activates with `pointerId` -1 and no `pointerdown`; only synthetic events
+  have checked that. Check that VoiceOver in Safari and Chrome grants, and
+  that it does not grant before the button is armed.
 - **Unsigned commits.** The commits from 2e08cad through the end of the
   stable-install work were made unsigned, for one batch re-sign later.
 
@@ -93,6 +102,30 @@ These touch a real harness, a real home or GitHub, so no agent runs them.
     header.
   - N4-N5: a second Ctrl-C during cleanup can leave the scratch root behind;
     ignore signals at the top of `cleanup`.
+
+- **`GET /api/artifacts/<ID>` names sessions to unauthenticated callers**
+  (Svelte port, Task 12; predates the port). The answer carries the
+  artifact's `owner_session_id` and each version's `session_id` to any caller
+  the host rule admits, token or not, LAN viewers included. Session IDs are
+  the agent's, not the viewer's, so the answer should leave them out without
+  the token, as the `/a/…` bootstrap already does.
+- **The daemon compresses no response** (Svelte port, Task 12). The shell's
+  JavaScript, the bridge and its parts, and wrapped pages go out
+  uncompressed. On loopback this costs little; on a LAN view it lengthens
+  link to first paint and to comment ready. Compress text responses
+  (`gzip`, or `br` where accepted) and measure time to usable on a LAN link
+  before and after.
+- **The bridge says nothing while it waits, or when a part recovers**
+  (Svelte port, Task 13 review, M4). Both need protocol additions:
+  - While a page's own scripts hold up the parse, comment mode and `use()`
+    wait for it with no sign to the viewer. The shell should show a hint
+    ("waiting for the page") when the bridge reports it is waiting.
+  - After a lazy part failed to load (`clax:degraded`), the shell holds it
+    failed for that page until the page's next hello: Comment stays off and
+    says so, even once the bridge's own retry could load the part, and
+    threads whose anchors went unanswered while it failed stay unplaced. The
+    bridge should report a part that loads after failing, and the shell then
+    clear the failure and its notice and resolve the anchors again.
 
 ## Tests
 

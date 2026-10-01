@@ -27,7 +27,12 @@ run() {
     local name="$1"; shift
     printf '%-28s' "$name"
     if [ "$VERBOSE" = "--verbose" ]; then echo; "$@"; else
-        if out="$("$@" 2>&1)"; then echo ok; else echo FAIL; echo "$out"; exit 1; fi
+        if out="$("$@" 2>&1)"; then
+            echo ok
+            # A gate that passed without judging (no budgets on this
+            # platform, say) still says so.
+            grep -E '^WARNING: ' <<<"$out" || true
+        else echo FAIL; echo "$out"; exit 1; fi
     fi
 }
 run "justfile"              scripts/test-justfile.sh

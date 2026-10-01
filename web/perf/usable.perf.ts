@@ -252,7 +252,8 @@ const floored = (control: number) => Math.max(control, NOISE_FLOOR_MS);
 
 function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void {
   const round = (x: number) => Math.ceil(x);
-  const b = loadAll()[PLATFORM] ?? null;
+  const all = loadAll();
+  const b = all[PLATFORM] ?? null;
   const shellBaseline = Object.fromEntries(SHELL_KEYS.map(k => [k, round(m[k])])) as Shell;
   const shellBudget = Object.fromEntries(SHELL_KEYS.map(k => [k, budgetFor(m[k])])) as Shell;
   if (RECORD === "baseline") {
@@ -275,7 +276,8 @@ function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void 
   const measured = `first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, frame paint ${m.framePaint.toFixed(0)} ms, ready latency ${m.readyLatency.toFixed(0)} ms, cold ready latency ${m.coldLatency.toFixed(0)} ms, control ${m.control.toFixed(0)} ms`;
   if (!b) {
     // No baseline for this platform (a CI runner, say): report, never fail.
-    console.log(`${mode}: NOT GATED: web/perf/budget.json has no baseline for ${PLATFORM}, so this run only reports: ${measured}. Record one on this platform with CLAX_PERF_RECORD=baseline.`);
+    const recorded = Object.keys(all).join(", ") || "none";
+    console.warn(`WARNING: time to usable is NOT GATED on ${PLATFORM}: web/perf/budget.json has budgets only for ${recorded}. This run only reports (${mode}): ${measured}. Record a baseline on this platform with CLAX_PERF_RECORD=baseline.`);
     if (RECORD === "budget") throw new Error(`no ${PLATFORM} baseline to lower budgets from; record one with CLAX_PERF_RECORD=baseline`);
     return;
   }

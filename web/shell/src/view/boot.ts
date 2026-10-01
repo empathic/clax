@@ -31,8 +31,10 @@ export function readBoot(doc: Document = document, navType: string = navigationT
 }
 
 /** What `artifact.html`'s inline listener kept before the shell mounted,
- * oldest first: every `message` to the shell and every `load` of an
- * `<iframe>`. The listener stops. Past 256 events it keeps nothing at all
+ * oldest first: every `message` from the served frame's window (another
+ * window's messages are never kept, so they cannot crowd out the frame's
+ * hello) and every `load` of an `<iframe>`. The listener stops. Past 256
+ * events it keeps nothing at all
  * (a flooding page loses its early hello, and is heard from its next one):
  * a gap in the middle could hide a load that must close the gate. */
 export function takeEarly(win: Window = window): Event[] {

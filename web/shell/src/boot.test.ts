@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dispatchTrusted } from "../../bridge/test/trusted";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FRAME_SANDBOX } from "./view/frame-host";
@@ -26,7 +27,7 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
   }
 }
 
-const fromFrame = (win: Window, data: unknown, origin = "null") => window.dispatchEvent(new MessageEvent("message", { data, origin, source: win }));
+const fromFrame = (win: Window, data: unknown, origin = "null") => dispatchTrusted(window, new MessageEvent("message", { data, origin, source: win }));
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 
 /** The page as the daemon sends it, with `frame` in the stage. */
@@ -122,7 +123,7 @@ describe("the first load from the daemon's HTML", () => {
     await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "still-too-soon", name: "permissions" });
     await sleep(30);
-    expect(answered(posted)).toEqual([]);
+    expect(posted).toEqual([]);
     fromFrame(frame.contentWindow!, HELLO);
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
     expect(posted.some(m => m.type === "clax:use-result")).toBe(false);
@@ -251,7 +252,8 @@ describe("the first load from the daemon's HTML", () => {
     expect(root.querySelector("iframe")).toBe(frame);
     fromFrame(frame.contentWindow!, { type: "clax:use", id: "u1", name: "permissions" }, origin);
     await sleep(30);
-    expect(answered(posted)).toEqual([]);
+    // Nothing goes to the unconfirmed frame either: no anchors, focus or mode.
+    expect(posted).toEqual([]);
     await waitFor(() => answer, "the probe");
     answer(new Response("{}"));
     await waitFor(() => posted.some(m => m.type === "clax:use-result" && m.id === "u1"), "the held request's answer");
@@ -273,15 +275,44 @@ describe("the first load from the daemon's HTML", () => {
     fail(new TypeError("blocked"));
     await waitFor(() => root.querySelector("iframe") !== guess, "the replacement");
     await sleep(30);
-    expect(answered(posted)).toEqual([]);
+    expect(posted).toEqual([]);
     expect(root.querySelector("iframe")!.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
   });
 
-  it("keeps nothing early once a page floods it, so no load in between is lost", async () => {
+  it("keeps nothing early once the frame floods it, so no load in between is lost", async () => {
     new Function(EARLY)();
-    for (let i = 0; i < 300; i++) window.dispatchEvent(new MessageEvent("message", { data: i }));
+    const frame = served(SANDBOXED).querySelector("iframe")!;
+    for (let i = 0; i < 300; i++) fromFrame(frame.contentWindow!, i);
     const { takeEarly } = await import("./view/boot");
     expect(takeEarly()).toEqual([]);
+  });
+
+  it("keeps only the frame's messages early, so another window's flood cannot push out its hello", async () => {
+    stubFetch(async () => new Response("{}"));
+    sessionStorage.setItem("clax.origin-ok", "0");
+    new Function(EARLY)();
+    const root = served(SANDBOXED);
+    const frame = root.querySelector("iframe")!;
+    const posted = posts(frame);
+    const other = document.createElement("iframe");
+    document.body.append(other);
+    for (let i = 0; i < 300; i++) fromFrame(other.contentWindow!, HELLO);
+    fromFrame(frame.contentWindow!, HELLO);
+    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "the welcome");
+  });
+
+  it("does not replay a frame message that a script made rather than the browser delivered", async () => {
+    stubFetch(async () => new Response("{}"));
+    sessionStorage.setItem("clax.origin-ok", "0");
+    new Function(EARLY)();
+    const root = served(SANDBOXED);
+    const frame = root.querySelector("iframe")!;
+    const posted = posts(frame);
+    window.dispatchEvent(new MessageEvent("message", { data: HELLO, origin: "null", source: frame.contentWindow }));
+    await mountServed(root, boot({ mode: "sandbox", src: `/c/${ID}/v/2/` }));
+    await sleep(30);
+    expect(answered(posted)).toEqual([]);
   });
 
   it("opens the served frame at the URL's fragment and keeps it in the address bar", async () => {

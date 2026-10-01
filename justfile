@@ -24,7 +24,6 @@ build:
 # Install web dependencies and build the frontend bundles
 web:
     cd web && npm ci
-    cd web && node scripts/clean-dist.mjs
     cd web && npm run build
 
 # Run the web lint, typecheck, and unit tests
