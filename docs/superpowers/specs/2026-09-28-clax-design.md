@@ -365,7 +365,9 @@ Agent- and shell-facing JSON API under `/api`:
   only, and reach a subscriber only when its level may read that path
   (private `data/users/<id>/` subtrees reach their owner alone). Access
   rules from the artifact's declared `db.rules` are evaluated per caller
-  level (§9). Threads also gain the reopen and delete routes above
+  level (§9). A caller without the token is refused 403 `not_declared`
+  when the artifact's current version does not declare `db`. An ordered
+  query without `limit` returns every match. Threads also gain the reopen and delete routes above
   (`thread_deleted` SSE event) for the `comments` capability, and
   `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
   created by a page's `artifact.publish` carries `by_page: true`.

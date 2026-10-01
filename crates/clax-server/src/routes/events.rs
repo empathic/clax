@@ -27,7 +27,8 @@ pub struct EventsQuery {
 /// `thread_deleted`, `feedback_state`, and `doc` events whose data is the JSON-serialised
 /// [`clax_core::Event`]. A `doc` event carries the path and version only;
 /// one for a private `data/users/<id>/` path reaches only that viewer, and
-/// any other reaches only subscribers whose level may read the path. The
+/// any other reaches only subscribers whose level may read the path (for a
+/// path in an opened `{self}` subtree, the level its own viewer needs). The
 /// subscriber's level and viewer ([`crate::db_caller::Subscriber`]: the token
 /// from `Authorization` or `?token=`, and the viewer cookie) are fixed when
 /// the stream opens.
@@ -72,12 +73,18 @@ pub async fn events(
         if let Event::Doc {
             private_to,
             read_level,
+            self_read,
             ..
         } = &ev
         {
             let visible = match private_to {
                 Some(owner) => me.viewer.as_deref() == Some(owner.as_str()),
-                None => me.level >= *read_level,
+                None => {
+                    me.level >= *read_level
+                        || self_read.as_ref().is_some_and(|(owner, level)| {
+                            me.viewer.as_deref() == Some(owner.as_str()) && me.level >= *level
+                        })
+                }
             };
             if !visible {
                 return None;

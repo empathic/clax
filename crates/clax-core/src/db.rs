@@ -309,6 +309,21 @@ impl Rules {
         None
     }
 
+    /// The viewer public ID owning the subtree that holds `path` under the
+    /// prefix of a `{self}` rule whose subtrees a rule at that prefix opens
+    /// (`<prefix>/<viewer>/...`), or `None` when the path is under no such
+    /// prefix. That viewer may read it at a lower level than others
+    /// ([`Rules::read_level`] with that viewer). `path` is not checked here.
+    pub fn opened_self_owner(&self, path: &str) -> Option<String> {
+        let segs: Vec<&str> = path.split('/').collect();
+        self.self_prefixes().into_iter().find_map(|p| {
+            (segs.len() > p.len()
+                && segs.iter().zip(&p).all(|(a, b)| a == b)
+                && self.rules.iter().any(|r| r.path == p))
+            .then(|| segs[p.len()].to_string())
+        })
+    }
+
     /// The minimum (read, write) levels at `segs`: for each, the deepest rule
     /// whose path is a prefix of `segs` and sets it (`{self}` matches only
     /// `viewer`; at equal depth a literal rule wins over a `{self}` rule),
@@ -674,6 +689,30 @@ mod tests {
         assert_eq!(r.read_level(&path, Some(me)), Level::Admin);
         assert_eq!(r.read_level(&path, Some(other)), Level::View);
         assert_eq!(r.read_level(&path, None), Level::View);
+    }
+
+    #[test]
+    fn an_opened_self_subtree_names_its_owner() {
+        let r = Rules::from_capabilities(&json!({"db": {"rules": [
+            {"path": "votes", "read": "admin", "write": "admin"},
+            {"path": "votes/{self}", "write": "interact"}
+        ]}}))
+        .unwrap();
+        let me = "u_00000000000000000000aa";
+        let path = format!("votes/{me}");
+        assert_eq!(r.private_to(&path), None);
+        assert_eq!(r.opened_self_owner(&path).as_deref(), Some(me));
+        assert_eq!(r.read_level(&path, None), Level::Admin);
+        assert_eq!(r.read_level(&path, Some(me)), Level::Interact);
+        assert_eq!(r.opened_self_owner("tasks/t1"), None);
+        // A subtree that stays private is named by `private_to` instead.
+        let closed = Rules::from_capabilities(&json!({"db": {"rules": [
+            {"path": "notes/{self}", "write": "interact"}
+        ]}}))
+        .unwrap();
+        let path = format!("notes/{me}");
+        assert_eq!(closed.private_to(&path).as_deref(), Some(me));
+        assert_eq!(closed.opened_self_owner(&path), None);
     }
 
     #[test]

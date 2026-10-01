@@ -1,5 +1,7 @@
 //! The `db` capability's routes (spec §6 "Docs"). Every route refuses a
 //! foreign `Origin` ([`SameOrigin`]) and acts as the [`CallerParts`] caller.
+//! A caller without the token gets 403 `not_declared` when the artifact's
+//! current version does not declare `db`.
 //! A document the caller may not read answers 404, like a missing one; a
 //! write the rules refuse answers 404 too. Those 404s name the document's
 //! `path` in the error; a missing artifact's 404 does not. Each change publishes the `doc`
@@ -33,6 +35,7 @@ fn announce(events: &EventBus, aid: &str, changes: impl IntoIterator<Item = DocC
             version: c.version,
             private_to: c.private_to,
             read_level: c.read_level,
+            self_read: c.self_read,
         });
     }
 }
@@ -62,7 +65,7 @@ pub async fn get(
     let d = s
         .store_call({
             let doc = doc.clone();
-            move |st| st.doc_get(&id, &doc, &who.resolve(st)?)
+            move |st| st.doc_get(&id, &doc, &who.resolve_for(st, &id)?)
         })
         .await?;
     d.map(|d| Json(json!({"doc": d})))
@@ -91,7 +94,7 @@ pub async fn put(
                     if_version: b.if_version,
                     lww: b.lww,
                 },
-                &who.resolve(st)?,
+                &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
             Ok(w)
@@ -122,7 +125,7 @@ pub async fn patch(
                     if_version: b.if_version,
                     lww: b.lww,
                 },
-                &who.resolve(st)?,
+                &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
             Ok(w)
@@ -159,7 +162,7 @@ pub async fn delete(
                     if_version: q.if_version,
                     lww: q.lww,
                 },
-                &who.resolve(st)?,
+                &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
             Ok(w)
@@ -215,7 +218,7 @@ pub async fn list(
         cursor: q.cursor,
     };
     let (docs, next) = s
-        .store_call(move |st| st.doc_query(&id, &query, &who.resolve(st)?))
+        .store_call(move |st| st.doc_query(&id, &query, &who.resolve_for(st, &id)?))
         .await?;
     Ok(Json(json!({"docs": docs, "next_cursor": next})))
 }
@@ -275,7 +278,7 @@ pub async fn batch(
     let events = s.events.clone();
     let written = s
         .store_call(move |st| {
-            let ws = st.doc_batch(&id, writes, b.lww, &who.resolve(st)?)?;
+            let ws = st.doc_batch(&id, writes, b.lww, &who.resolve_for(st, &id)?)?;
             announce(
                 &events,
                 id.as_str(),
@@ -336,7 +339,7 @@ pub async fn str_replace(
                     if_version: b.if_version,
                     lww: b.lww,
                 },
-                &who.resolve(st)?,
+                &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), w.change.clone());
             Ok(w)
@@ -377,7 +380,7 @@ pub async fn acquire(
                     ttl_ms: b.ttl_ms,
                     data: b.data,
                 },
-                &who.resolve(st)?,
+                &who.resolve_for(st, &id)?,
             )?;
             announce(&events, id.as_str(), change);
             Ok(a)

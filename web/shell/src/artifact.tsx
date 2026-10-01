@@ -227,6 +227,9 @@ export default function ArtifactView({ id, pinnedVersion, file: startFile = INDE
   // without a reload: a reload to the latest, or the banner when pinned.
   const ownPublish = useRef<{ active: number; settled?(): void }>({ active: 0 });
   const deferredPublish = useRef<number | null>(null);
+  // A deferred publish belongs to this artifact: dropped before the host is
+  // disposed on leaving it, so the dispose's `settled` applies nothing.
+  useEffect(() => () => { deferredPublish.current = null; }, [id]);
   ownPublish.current.settled = () => {
     const n = deferredPublish.current;
     deferredPublish.current = null;

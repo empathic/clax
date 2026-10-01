@@ -570,7 +570,17 @@ async fn the_runtime_contract_type_definitions_are_served_as_text() {
     assert_eq!(res.headers()["content-type"], "text/plain; charset=utf-8");
     let text = res.text().await.unwrap();
     assert_eq!(text, include_str!("../../../web/contract/0.2.61/db.d.ts"));
+    // Clax's additions sit beside the unchanged files.
+    let res = ts.get("/_clax/contract/clax-extensions.d.ts").await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(
+        res.text().await.unwrap(),
+        include_str!("../../../web/contract/clax-extensions.d.ts")
+    );
     for missing in [
+        "/_clax/contract/0.2.61/clax-extensions.d.ts",
+        "/_clax/contract/clax-extensions",
         "/_clax/contract/0.2.61/nope.d.ts",
         "/_clax/contract/0.2.61/",
         "/_clax/contract/0.2.60/db.d.ts",

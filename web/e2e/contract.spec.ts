@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, publishWith, reach, startDaemon, type FrameMode } from "./fixtures";
+import { contentFrame, namedViewer, openArtifact, publishWith, reach, startDaemon, type FrameMode } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -23,7 +23,9 @@ const MISUSE = ["publish-burst.html", "publish-on-load.html"];
 const frameUrl = (mode: FrameMode, id: string) =>
   mode === "subdomain" ? new RegExp(`^http://${id}\\.localhost:\\d+/v/1/$`) : new RegExp(`^http://localhost:\\d+/c/${id}/v/1/$`);
 
-type Case = { caps: Record<string, unknown>; check(f: Frame, page: Page, id: string): Promise<void> };
+/** `page`, when set, makes the published page from the file (the file as
+ * is, otherwise). */
+type Case = { caps: Record<string, unknown>; page?(mode: FrameMode): Promise<string>; check(f: Frame, page: Page, id: string): Promise<void> };
 
 /** Writes a document with the token, as an agent or script would. */
 async function seed(id: string, path: string, data: Record<string, unknown>) {
@@ -85,11 +87,18 @@ const CASES: Record<string, Case> = {
   },
   "who.html": {
     caps: { user: { scopes: ["profile"] } },
+    // Another viewer, named, whom the owner's search finds by name.
+    async page(mode) {
+      const name = `Wren ${mode}`;
+      const other = await namedViewer(d.base, name);
+      return html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`).replace('data-find=""', `data-find="${name}"`);
+    },
     async check(f) {
       await expect(f.locator("#facts")).not.toHaveText("waiting");
+      const mode = f.url().includes("/c/") ? "sandbox" : "subdomain";
       expect(JSON.parse((await f.locator("#facts").textContent())!)).toEqual({
         isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true,
-        name: "", meResolved: "", isMe: true, stranger: "", other: null, search: 0,
+        name: "", meResolved: "", isMe: true, stranger: "", other: `Wren ${mode}`, search: 1,
       });
     },
   },
@@ -111,8 +120,11 @@ const CASES: Record<string, Case> = {
       await f.locator(".note").click();
       await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
       await expect(f.locator("#status")).toHaveText("created string");
-      // The strict tier: a write within 5.5 s of input to the shell (the
-      // Allow click) is refused, with nothing written.
+      // The strict tier: a write within 5.5 s of input to the shell is
+      // refused, with nothing written. The shell input is a click in the name
+      // field just before, so the refusal does not depend on how long the
+      // steps since Allow took.
+      await page.getByRole("textbox", { name: "Your name" }).click();
       await reach(page, f.locator(".note"));
       await f.locator(".note").click();
       await expect(f.locator("#status")).toHaveText("shell_input_recent");
@@ -165,7 +177,8 @@ test("every sample page is a plain claude.ai page with a case here", () => {
 for (const mode of ["subdomain", "sandbox"] as const) {
   for (const [file, c] of Object.entries(CASES)) {
     test(`${mode}: ${file} runs unchanged`, async ({ page }) => {
-      const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, html(file), c.caps);
+      const src = c.page ? await c.page(mode) : html(file);
+      const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, src, c.caps);
       if (file === "tracker.html") {
         expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
         expect(await seed(artifact.id, "tasks/b", { title: "Seeded two", created: 2 })).toBe(200);

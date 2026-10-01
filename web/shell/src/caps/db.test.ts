@@ -43,6 +43,44 @@ describe("db handler", () => {
     expect(dbError(400, { code: "invalid_argument" }, false).code).toBe("invalid_argument");
     expect(dbError(500, {}, false).code).toBe("unavailable");
     expect(dbError(400, { code: "resource_exhausted" }, true).code).toBe("resource_exhausted");
+    expect(dbError(429, {}, false).code).toBe("resource_exhausted");
+    // A daemon timeout is transient: subscriptions retry it.
+    expect(dbError(408, {}, false).code).toBe("unavailable");
+    // A republish that dropped db withdraws it from this view.
+    expect(dbError(403, { code: "not_declared" }, false).code).toBe("revoked");
+    expect(dbError(403, { code: "not_declared" }, true).code).toBe("revoked");
+  });
+
+  it("rejects revoked, not null, when a read finds the artifact no longer declares db", async () => {
+    const { h } = setup(null, () => json({ error: { code: "not_declared", message: "this artifact does not declare the db capability" } }, 403));
+    await expect(h.call("get", ["tasks/t1"])).rejects.toMatchObject({ code: "revoked" });
+  });
+
+  it("keeps a subscription through a daemon timeout and retries it", async () => {
+    vi.useFakeTimers();
+    let timeout = true;
+    const { h, posted } = setup(null, () => (timeout ? json({ error: { code: "request_timeout", message: "timed out" } }, 408) : json({ doc: doc("tasks/a", 1) })));
+    await h.call("subscribe", ["s1", { kind: "doc", path: "tasks/a" }]);
+    expect(posted).toEqual([]);
+    timeout = false;
+    await vi.advanceTimersByTimeAsync(RETRY_MS[0] + 1);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]).toMatchObject({ topic: "snapshot", data: { sub: "s1", docs: [{ path: "tasks/a" }] } });
+  });
+
+  it("asks for every match of an ordered query without a limit, and the limit when there is one", async () => {
+    const { h, requests } = setup(null, () => json({ docs: [doc("log/a", 1)], next_cursor: null }));
+    await h.call("query", [{ kind: "query", collection: "log", where: [], orderBy: "at", desc: false, limit: null }]);
+    await h.call("query", [{ kind: "query", collection: "log", where: [], orderBy: "at", desc: true, limit: 5 }]);
+    const params = requests.map(r => new URLSearchParams(r.url.split("?")[1]));
+    expect(params.map(p => [p.get("order_by"), p.get("direction"), p.get("limit")])).toEqual([["at", null, null], ["at", "desc", "5"]]);
+  });
+
+  it("counts a lease holder's length in characters, as the daemon does", async () => {
+    const { h, requests } = setup(null, () => json({ acquired: true, version: 1, expires_at: "x", holder: "h" }));
+    await h.call("acquire", ["locks/l", { holder: "\u{1F600}".repeat(200) }]);
+    expect(requests).toHaveLength(1);
+    await expect(h.call("acquire", ["locks/l", { holder: "\u{1F600}".repeat(201) }])).rejects.toMatchObject({ code: "invalid_argument" });
   });
 
   it("refuses paths and specs that break the grammar before any request", async () => {

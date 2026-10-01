@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
-import { openArtifact, publishWith, startDaemon } from "./fixtures";
+import { namedViewer, openArtifact, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -37,15 +37,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-/** A viewer named `name`, made through the daemon's API; its public ID. */
-async function namedViewer(name: string): Promise<string> {
-  const res = await fetch(`${d.base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-  return ((await res.json()) as { viewer: { public_id: string } }).viewer.public_id;
-}
-
 test("LAN: user is not the owner, resolves other viewers by name, and can write data from the next document once named; assets resolves null", async ({ page }) => {
-  const other = await namedViewer("Ärger Ölund");
+  const other = await namedViewer(d.base, "Ärger Ölund");
   const who = html("who.html").replace('data-other="u_ffffffffffffffffffffff"', `data-other="${other}"`);
   const { artifact } = await publishWith(d.base, d.token, "Who LAN", who, { user: { scopes: ["profile"] }, db: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });

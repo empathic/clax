@@ -869,16 +869,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const xf = { x: nb.x, y: nb.y + nb.height + 40, w: 180, h: 50 };
       const src = d.base.replace("localhost", "127.0.0.1") + "/healthz";
       // Plain, or inside a shadow root on a custom element, as password
-      // managers inject their inline menus.
-      await page.evaluate(({ url, r, how }) => {
+      // managers inject their inline menus. Clicked only once its document
+      // has loaded: input sent at a frame of another site while its process
+      // is still starting can wait for that frame indefinitely, and nothing
+      // can find a frame in a closed shadow root to wait on it later.
+      await page.evaluate(({ url, r, how }) => new Promise<void>((resolve, reject) => {
         const i = document.createElement("iframe");
+        i.addEventListener("load", () => resolve(), { once: true });
+        setTimeout(() => reject(new Error("the injected frame did not load in 20 s")), 20_000);
         i.src = url;
         Object.assign(i.style, { display: "block", width: `${r.w}px`, height: `${r.h}px`, background: "white" });
         const box = document.createElement(how === "plain" ? "div" : "x-menu");
         Object.assign(box.style, { position: "fixed", left: `${r.x}px`, top: `${r.y}px`, zIndex: "9999", display: "block" });
         if (how === "plain") box.appendChild(i); else box.attachShadow({ mode: how }).appendChild(i);
         document.documentElement.appendChild(box);
-      }, { url: src, r: xf, how: host });
+      }), { url: src, r: xf, how: host });
       // Focus where the viewer left it: the name field, or the page's text.
       const at = from === "the shell" ? { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 } : await (async () => { const b = (await f.locator("#p").boundingBox())!; return { x: b.x + 20, y: b.y + b.height / 2 }; })();
       await page.mouse.move(at.x, at.y, { steps: 8 });
