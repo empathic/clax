@@ -290,9 +290,9 @@ call returns within `timeout_s` because harnesses cap a single tool call
 A page reaches runtime capabilities with `await window.claude.use(name)`,
 exactly as on claude.ai. The type definitions of contract 0.2.61 are the
 contract: before writing a page, fetch the one you use from your daemon,
-`http://127.0.0.1:<port>/_clax/contract/0.2.61/<name>.d.ts` (`claude`,
-`permissions`, `artifact`, `db`, `downloads`, `user`, `comments`, `assets`;
-the `status` tool's `daemon_url` names the port).
+`<daemon_url>/_clax/contract/0.2.61/<name>.d.ts`, where `daemon_url`
+comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
+`db`, `downloads`, `user`, `comments`, `assets`).
 
 Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
@@ -355,7 +355,7 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   `isOwner()` is true there: a rule at `owner` shuts out every browser,
   theirs included, so use `admin` for "only the person". The only quota is
   5000 documents per artifact.
-- `user`: `can()` is fixed when the page loads: after a viewer on another
+- `user`: `can()` is fixed at its first call: after a viewer on another
   machine enters a name, it keeps its old answer until the page reloads,
   though their writes already succeed, so reload or try the write.
   `profiles()` caches names for the life of the page and never refreshes
