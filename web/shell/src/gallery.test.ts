@@ -42,11 +42,10 @@ function stubApi(tokenStatus: number = 200) {
 }
 
 async function mountGallery() {
-  const { default: Gallery } = await import("./gallery");
+  const { default: Gallery } = await import("./ui/Gallery.svelte");
   // From the same module registry as the gallery (each test resets it), so
-  // both use one Preact: tests resolve Preact's browser build, which Vitest
-  // loads through that registry.
-  const { mount } = await import("./test/preact");
+  // both use one Svelte runtime.
+  const { mount } = await import("./test/svelte");
   const { root } = mount(Gallery, {});
   await waitFor(() => root.querySelector("a.card, .empty"), "gallery to render");
   return root;
