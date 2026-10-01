@@ -70,6 +70,24 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("tells a capability host made by an update of the UI only in the pass after the paint", async () => {
+    const { ctl } = await started();
+    await new Promise(r => setTimeout(r, 150));
+    const { CapabilityHost } = await import("../caps/host");
+    const told: unknown[] = [];
+    vi.spyOn(CapabilityHost.prototype, "uiChanged").mockImplementation(function (this: unknown) { told.push(this); });
+    ctl.update({ id: ID, pinnedVersion: 1 });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(told).toEqual([]);
+    await vi.waitFor(() => expect(told).toHaveLength(1));
+    await new Promise(r => setTimeout(r, 150));
+    expect(told).toHaveLength(1);
+    // The host the update made, not the one it replaced.
+    expect((told[0] as { dead: boolean }).dead).toBe(false);
+    ctl.dispose();
+  });
+
   it("after dispose, answers no hello and changes no state", async () => {
     const { ctl, frame } = await started();
     const posted: unknown[] = [];
@@ -111,10 +129,12 @@ describe("ArtifactController", () => {
     expect(posted.map(m => m.type)).toContain("clax:welcome");
     const deadline = Date.now() + 2000;
     while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
-    posted.length = 0;
     FakeES.last!.emit("artifact_deleted", { type: "artifact_deleted", artifact_id: ID });
     await Promise.resolve();
     expect(frame.isConnected).toBe(false);
+    // The reactions still pending from the render before the deletion ran
+    // first and may have posted to the page; only what follows matters.
+    posted.length = 0;
     fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
     fromFrame(win, { type: "clax:pick-start", pickId: "p1", anchor: { kind: "element", selector: "p", file: "index.html" }, version: 2 });
     await new Promise(r => setTimeout(r, 50));
