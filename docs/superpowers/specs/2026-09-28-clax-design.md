@@ -69,7 +69,7 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D13 | Five phases, each shippable; phase 1 has no comments, no capabilities | Per the standing instruction; comments and capabilities are the churn-prone parts. |
 | D14 | Pi adapter is specified against the published extension API and clash-pi, and verified against Pi 0.73.1 in phase 2 (§13) | Pi was not installed when this was designed. |
 | D15 | The product is Clax: binary `clax`, crates `clax-*`, home `~/.clax`, variables `CLAX_*`, message prefix `clax:`, routes `/_clax/`, plugin and skill `clax`; renamed from its first name with a clean break (no aliases, no migration; see the name-history note); `clax init` and `clax uninit` do remove the harnesses' registrations of the first name's plugin and marketplace, which are harness settings, not Clax data | One name everywhere; nothing was released under the first name, so there is nothing to carry over. |
-| D16 | The plugins run the `clax` on `PATH` (or `$CLAX_BIN`) through a thin wrapper and never download or build; `just install` installs `clax` from the checkout and `clax init` registers the plugins embedded in the binary with each harness; `just dev <harness>` runs a fresh build from a temporary directory on `PATH` with the plugin loaded from the checkout, on `~/.clax-dev` and port 7481; releases and `install.sh` serve people without a checkout | Local use never depends on a public repository or a release; a registered plugin always matches the installed binary; a moved checkout breaks nothing. |
+| D16 | The plugins run the `clax` on `PATH` (or `$CLAX_BIN`) through a thin wrapper and never download or build; `just install` installs `clax` from the checkout and `clax init` registers the plugins embedded in the binary with each harness; `just dev <harness>` runs a fresh build from a temporary directory on `PATH`, on `~/.clax-dev` and port 7481, with the plugin loaded from the checkout for Claude Code and Pi (Codex runs its installed plugin; `just install` updates it); releases and `install.sh` serve people without a checkout | Local use never depends on a public repository or a release; a registered plugin always matches the installed binary; a moved checkout breaks nothing. |
 
 ## 3. Architecture
 
@@ -1236,13 +1236,12 @@ plugin:
 
 - npm package `@empathic/clax-pi` with `pi.extensions: ["src/clax.ts"]`
   and `pi.skills: ["skills"]` (Pi reads only the resources a `pi` manifest
-  lists once one exists). Installed from a clone with
-  `pi install /absolute/path/to/clax/plugins/pi`, or loaded for one run
-  with `pi -e <path>`. It needs the `clax` CLI on `PATH` or `CLAX_BIN`.
+  lists once one exists). Installed by `clax init`, which runs
+  `pi install ~/.clax/marketplace/plugins/pi` on the copy embedded in the
+  binary. It needs the `clax` CLI on `PATH` or `CLAX_BIN`.
 - The extension runs `$CLAX_BIN`, else `clax` on `PATH`, and never
-  downloads. `clax init` runs `pi install ~/.clax/marketplace/plugins/pi`;
-  `just dev pi` loads the checkout's extension and skill with `-e` and
-  `--skill` (and `-ne`, so an installed copy does not load twice).
+  downloads. `just dev pi` loads the checkout's extension and skill with
+  `-e` and `--skill` (and `-ne`, so an installed copy does not load twice).
 - `src/clax.ts` registers `clax_<tool>` for the fourteen tools through
   `registerTool`, with TypeBox schemas mirroring `tools.rs` and results
   identical to the MCP tools. The package carries the Clax version, so

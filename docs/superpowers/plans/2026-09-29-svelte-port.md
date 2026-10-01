@@ -18,7 +18,7 @@
 - `oxlint --deny-warnings` passes over `shell bridge e2e perf` and the config files. It lints the `<script>` blocks of `.svelte` files (verified with oxlint 1.86.0: a `debugger` in a `.svelte` script is reported, and names used only in the template are not reported as unused). Template expressions are checked by `svelte-check --fail-on-warnings`, which also fails on Svelte compiler warnings (a11y included).
 - Every e2e and perf spec that opens an artifact runs in both frame modes, `subdomain` and `sandbox`.
 - Commit with `git commit --no-gpg-sign`, staging with `git add` and explicit paths only.
-- Never bind or connect to port 7480. Tests start daemons with `--port 0` and a temporary `CLAX_HOME`. Never read, write or delete the real `~/.artifax`, `~/.clax`, `~/.claude` or `~/.codex`.
+- Never bind or connect to port 7480 or 7481 (the agents' daemon and the dev daemon). Tests start daemons with `--port 0` and a temporary `CLAX_HOME`. Never read, write or delete the real `~/.artifax`, `~/.clax`, `~/.claude` or `~/.codex`.
 - In prose, comments and commit messages, write "ID", never "id", except as a literal symbol in code.
 - Svelte runs in runes mode only (`compilerOptions.runes: true`): no SvelteKit, no SSR, no `hydrate`, no `svelte/legacy`, no `export let`.
 - `web/bridge/**` stays framework-free TypeScript. `web/shell/src/caps/**` and `web/shell/src/view/**` import neither `preact` nor `svelte`. Check with `grep -rlE "from \"(preact|svelte)" web/bridge web/shell/src/caps web/shell/src/view`, which must print nothing.
@@ -3240,7 +3240,7 @@ Expected: `exit=0` and `e2e-unchanged=0`.
 
 - [ ] **Step 5: Look at it in a browser, next to the base commit**
 
-Serve this tree and the base commit side by side. Use scratch homes and ports the kernel picks; never `just dev`, which binds 7480:
+Serve this tree and the base commit side by side. Use scratch homes and ports the kernel picks; never `just watch` or `just dev`, which bind 7481 and serve `~/.clax-dev`:
 
 ```bash
 git worktree add /tmp/clax-base "$(cat .svelte-port-base)"
@@ -3716,11 +3716,11 @@ export default defineConfig({
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,
     rollupOptions: { input: { index: "shell/index.html", artifact: "shell/artifact.html" } },
   },
-  server: { proxy: { "/api": "http://127.0.0.1:7480", "/c": "http://127.0.0.1:7480", "/_blob": "http://127.0.0.1:7480", "/healthz": "http://127.0.0.1:7480" } },
+  server: { proxy: { "/api": "http://127.0.0.1:7481", "/c": "http://127.0.0.1:7481", "/_blob": "http://127.0.0.1:7481", "/healthz": "http://127.0.0.1:7481" } },
 });
 ```
 
-(The `server.proxy` block is the dev server's existing configuration and is unchanged. It is never started by any gate.)
+(The `server.proxy` block is the dev server's existing configuration (as the stable-install plan left it) and is unchanged. It is never started by any gate.)
 
 In the `justfile`, change the `web` recipe's `rm -rf …` line to `cd web && node scripts/clean-dist.mjs`. Change the `clean` recipe's `rm -rf web/dist/_clax web/dist/index.html web/node_modules` to `rm -rf web/dist/_clax web/dist/.vite web/dist/index.html web/dist/artifact.html web/node_modules`.
 
@@ -5161,7 +5161,7 @@ export default defineConfig({
   build: {
     outDir: "dist/_clax/bridge", emptyOutDir: true, manifest: true, minify: true, sourcemap: false, target: "es2022",
     lib: { entry: { comment: "bridge/src/parts/comment.ts", clip: "bridge/src/parts/clip.ts", caps: "bridge/src/parts/caps.ts" }, formats: ["es"] },
-    // `just dev` (CLAX_DEV=1) keeps stable names, so the watching bridge build,
+    // `just watch` (CLAX_DEV=1) keeps stable names, so the watching bridge build,
     // which reads the names once, never points at a deleted file.
     rollupOptions: { output: process.env.CLAX_DEV ? { entryFileNames: "[name].js", chunkFileNames: "shared-[name].js" } : { entryFileNames: "[name]-[hash].js", chunkFileNames: "shared-[hash].js" } },
   },
@@ -5210,7 +5210,7 @@ In `crates/clax-server/src/routes/shell.rs` `static_file`, before the generic re
         return Ok((
             [
                 (header::CONTENT_TYPE, ct),
-                // A debug build's parts keep one name while `just dev` rebuilds them.
+                // A debug build's parts keep one name while `just watch` rebuilds them.
                 (header::CACHE_CONTROL, if cfg!(debug_assertions) { REVALIDATE } else { IMMUTABLE }.to_string()),
                 (header::ACCESS_CONTROL_ALLOW_ORIGIN, "*".to_string()),
             ],
