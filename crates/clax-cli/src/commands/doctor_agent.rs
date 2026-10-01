@@ -90,6 +90,8 @@ impl Dirs {
     /// Empty variables count as unset. Each directory is absolute: a leading
     /// `~` or `~/` is expanded against `HOME`, and a relative value is taken
     /// relative to `HOME`, where `clax init` runs the harness CLIs.
+    /// `~user/` is not supported: a value starting with it is taken relative
+    /// to `HOME`.
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Option<Dirs> {
         let raw = |k: &str| env(k).filter(|v| !v.is_empty());
         let home = PathBuf::from(raw("HOME")?);
@@ -326,7 +328,7 @@ pub fn upgrade_check(home: &Home, daemon_version: Option<&str>) -> Value {
         None => check(
             "upgrade",
             true,
-            "no failed upgrade is held back from the daemon",
+            "no failed upgrade is holding the daemon back",
         ),
         Some((kept, h)) => check(
             "upgrade",
@@ -711,7 +713,7 @@ mod tests {
     fn a_current_codex_cache_copy_passes_plugin_and_skill() {
         let f = Fixture::new();
         let root = f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,
@@ -797,13 +799,13 @@ mod tests {
     fn a_copy_with_an_old_launcher_is_a_stale_plugin() {
         let f = Fixture::new();
         f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,
         );
         f.write(
-            ".codex/plugins/cache/clax/clax/0.2.0/scripts/ensure-clax.sh",
+            &format!(".codex/plugins/cache/clax/clax/{V}/scripts/ensure-clax.sh"),
             "#!/bin/sh\n",
         );
         let (p, _) = plugin_check(DoctorAgent::Codex, &f.dirs(), V);
@@ -827,7 +829,7 @@ mod tests {
             DoctorAgent::Codex,
         );
         let new = f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,

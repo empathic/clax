@@ -11,9 +11,21 @@ export const INSTALL_HINT =
   "install clax with `just install` in a Clax checkout (it puts clax in ~/.cargo/bin), or with the release installer " +
   "(~/.local/bin), and start Pi from a shell whose PATH includes that directory; or set CLAX_BIN to a clax binary";
 
-/** How long `clax serve --json` may take; it gives up on its own after
- * about 5 s when the daemon does not become ready. */
-const SERVE_TIMEOUT_MS = 10_000;
+/** The longest one daemon replacement can hold the start lock, as
+ * `crates/clax-cli/src/client.rs` bounds it: stopping the old daemon (a 2 s
+ * shutdown request, 7 s for it to exit, then SIGTERM and 3 s more), starting
+ * the new one (5 s for `/healthz`, then SIGTERM, 3 s, SIGKILL and 2 s more
+ * when it is late) and the same again to roll back to the old executable;
+ * 32 s, rounded up for the `/healthz` probes in between. */
+const REPLACEMENT_MAX_MS = 35_000;
+
+/** How long `clax serve --json` may take. It runs only when no daemon
+ * answers, and it waits on the start lock (`daemon.lock`) as every Clax
+ * client does. That lock may be held by another client's replacement of the
+ * daemon, after which this binary may find an older daemon and replace it in
+ * turn: two replacements, plus 5 s to spare. Killing it sooner would report a
+ * failure while a daemon is about to answer. */
+export const SERVE_TIMEOUT_MS = 2 * REPLACEMENT_MAX_MS + 5_000;
 
 /** The contents of `<home>/daemon.json`. */
 export interface DaemonInfo {
@@ -134,6 +146,24 @@ export function binaryVersion(bin: string, env: NodeJS.ProcessEnv = process.env)
   });
 }
 
+/** The failed upgrade that keeps the daemon in `home` at an older version,
+ * as `bin status --json` reports it (`upgrade_held`), or null when there is
+ * none, or `bin` does not answer within 3 s. `clax status` never starts a
+ * daemon. */
+export function upgradeHeld(bin: string, home: string, env: NodeJS.ProcessEnv = process.env): Promise<Record<string, unknown> | null> {
+  return new Promise((resolve) => {
+    execFile(bin, ["status", "--json"], { env: { ...env, CLAX_HOME: home }, timeout: 3_000 }, (err, stdout) => {
+      if (err) return resolve(null);
+      try {
+        const held = JSON.parse(String(stdout))?.upgrade_held;
+        resolve(held && typeof held === "object" ? held : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
 /** The running daemon for `home`, starting one with `clax serve --json`
  * (which returns once the daemon answers) when discovery finds none. */
 export async function ensure(home: string, opts: DaemonOptions = {}): Promise<DaemonInfo> {
@@ -145,7 +175,8 @@ export async function ensure(home: string, opts: DaemonOptions = {}): Promise<Da
   await new Promise<void>((resolve, reject) => {
     execFile(bin, args, { env: { ...env, CLAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
       if (!err) return resolve();
-      const detail = String(stderr).trim() || err.message;
+      const late = err.killed ? `it did not finish within ${SERVE_TIMEOUT_MS / 1000} s and was stopped` : "";
+      const detail = [String(stderr).trim(), late].filter(Boolean).join("; ") || err.message;
       reject(new Error(`\`${bin} serve\` failed: ${detail}; see ${logPath(home)}`));
     });
   });

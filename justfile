@@ -7,9 +7,15 @@ default: help
 help:
     @just --list --unsorted
 
-# Run a server that reloads on Rust and web changes
+# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex uses the installed one); with no harness, `just watch`
+[positional-arguments]
 dev *ARGS:
-    ./scripts/dev.sh {{ARGS}}
+    ./scripts/dev.sh "$@"
+
+# Run the auto-reloading daemon and web UI (~/.clax-dev on 7481, or $CLAX_DEV_PORT; --shared: ~/.clax on 7480)
+[positional-arguments]
+watch *ARGS:
+    ./scripts/watch.sh "$@"
 
 # Build the Rust workspace
 build:
@@ -33,9 +39,13 @@ web-e2e: web
 pi-test:
     cd plugins/pi && npm ci && npm run typecheck && npm test
 
-# Run the installer script tests
-installer-test:
+# Run the plugin wrapper tests (scripts/ensure-clax.sh)
+wrapper-test:
     ./scripts/test-ensure-clax.sh
+
+# Run the release installer tests (install.sh)
+install-test:
+    ./scripts/test-install.sh
 
 # Check the plugin manifests, commands, and skill
 plugin-test:
@@ -63,26 +73,29 @@ check *GATES:
 ci *GATES:
     ./scripts/quality_gates.sh {{GATES}}
 
-# Build the frontend and install the clax binary
+# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), and register the plugins with each harness found
 install: web
-    cargo install --path crates/clax-cli
+    cargo install --locked --root "${CARGO_HOME:-$HOME/.cargo}" --path crates/clax-cli
+    . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
+    "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
 
-# Remove the installed clax binary
+# Remove the plugin registrations, stop the agents' daemon if it runs the installed clax, and remove that clax
 uninstall:
-    -cargo uninstall clax-cli
-    -rm ~/.local/bin/clax
+    -"${CARGO_HOME:-$HOME/.cargo}/bin/clax" uninit
+    -. scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
+    -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli
 
-# Run the daemon in the foreground (extra args go to `clax serve`)
+# Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
 serve *ARGS:
-    cargo run -p clax-cli -- serve --foreground {{ARGS}}
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -p clax-cli -- serve --foreground --port 7481 {{ARGS}}
 
-# Stop the running daemon
+# Stop the dev daemon (~/.clax-dev)
 stop:
-    cargo run -q -p clax-cli -- stop
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- stop
 
-# Check the local setup and daemon health
+# Check the dev home and its daemon (~/.clax-dev)
 doctor:
-    cargo run -q -p clax-cli -- doctor
+    CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
 
 # Remove build output and web dependencies
 clean:

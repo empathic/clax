@@ -1177,11 +1177,14 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     let e = Env::new();
     // A Codex cache copy whose manifest version matches this binary but whose
     // skill has no generated tools block: plugin passes, skill is stale.
-    let root = ".codex/plugins/cache/clax/clax/0.2.0";
+    let root = &format!(
+        ".codex/plugins/cache/clax/clax/{}",
+        env!("CARGO_PKG_VERSION")
+    );
     write(
         e.dir.path(),
         &format!("{root}/.codex-plugin/plugin.json"),
-        r#"{"name": "clax", "version": "0.2.0"}"#,
+        &serde_json::json!({"name": "clax", "version": env!("CARGO_PKG_VERSION")}).to_string(),
     );
     write(
         e.dir.path(),

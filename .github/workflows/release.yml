@@ -1,82 +1,148 @@
 name: Release
 
+# A v* tag builds, checks and publishes a release. A manual run, or a pull
+# request that touches the release path, runs the same jobs without
+# publishing; its result is the workflow artifact `release-dist`.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch: {}
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "scripts/package-release.sh"
+      - "scripts/check-version.sh"
+      - "scripts/smoke-release-binary.sh"
+      - "install.sh"
+      - "rust-toolchain.toml"
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  version:
+    name: Check versions
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      publish: ${{ steps.v.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: v
+        shell: bash
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            scripts/check-version.sh "$GITHUB_REF_NAME"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            scripts/check-version.sh
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+          echo "version=$(scripts/check-version.sh --print)" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build ${{ matrix.target }}
+    needs: version
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - target: aarch64-apple-darwin
-            os: macos-latest
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          # Linux builds are static musl binaries, so they run on any glibc.
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-24.04-arm
-
+          # Every target builds natively; no cross toolchain.
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-24.04 }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with: { toolchain: 1.94.0, targets: "${{ matrix.target }}" }
-
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
-
       - name: Install musl-tools
         if: endsWith(matrix.target, '-linux-musl')
         run: sudo apt-get update && sudo apt-get install -y musl-tools
-
       - uses: extractions/setup-just@v2
-
-      # The web bundle in web/dist is embedded into the binary at build time.
+      # A release build embeds web/dist, so the web UI is built first.
       - name: Build web bundle
         run: just web
-
       - name: Build
         # cc looks for aarch64-linux-musl-gcc, which musl-tools does not
         # install; on the arm64 runner the native musl-gcc targets it.
         env:
           CC_aarch64_unknown_linux_musl: musl-gcc
-        run: cargo build --release --target ${{ matrix.target }} -p clax-cli --bin clax
-
+        run: cargo build --release --locked --target ${{ matrix.target }} -p clax-cli --bin clax
+      - name: Smoke-test the binary
+        shell: bash
+        run: scripts/smoke-release-binary.sh "target/${{ matrix.target }}/release/clax" "$VERSION"
       - name: Package
         shell: bash
-        run: |
-          tar czf clax-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release clax
-          sha256sum clax-${{ matrix.target }}.tar.gz > clax-${{ matrix.target }}.tar.gz.sha256 2>/dev/null || \
-            shasum -a 256 clax-${{ matrix.target }}.tar.gz > clax-${{ matrix.target }}.tar.gz.sha256
-
+        run: scripts/package-release.sh archive "$VERSION" ${{ matrix.target }} "target/${{ matrix.target }}/release/clax" dist
       - uses: actions/upload-artifact@v4
         with:
           name: clax-${{ matrix.target }}
-          path: |
-            clax-${{ matrix.target }}.tar.gz
-            clax-${{ matrix.target }}.tar.gz.sha256
+          path: dist/clax-${{ env.VERSION }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
 
-  release:
-    name: Create Release
-    needs: build
-    runs-on: ubuntu-latest
+  assemble:
+    name: Assemble and install through install.sh
+    needs: [version, build]
+    runs-on: ubuntu-24.04
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { path: dist, pattern: "clax-*", merge-multiple: true }
+      - name: Add install.sh and checksums
+        shell: bash
+        run: |
+          cp install.sh dist/install.sh
+          scripts/package-release.sh sums dist
+          cat dist/SHA256SUMS
+          test "$(ls dist | wc -l)" = 6
+      - name: Install through install.sh from a local copy of the release
+        shell: bash
+        run: |
+          serve="$RUNNER_TEMP/serve"
+          mkdir -p "$serve/v$VERSION"
+          cp dist/* "$serve/v$VERSION/"
+          (cd "$serve" && exec python3 -u -m http.server 0 --bind 127.0.0.1 > "$RUNNER_TEMP/http.log" 2>&1) &
+          for _ in $(seq 50); do
+            port="$(sed -n 's#.*http://127.0.0.1:\([0-9]*\)/.*#\1#p' "$RUNNER_TEMP/http.log" | head -1)"
+            [ -n "$port" ] && break
+            sleep 0.2
+          done
+          export HOME="$RUNNER_TEMP/home" CLAX_RELEASE_BASE_URL="http://127.0.0.1:$port"
+          bash dist/install.sh "$VERSION"
+          test "$("$HOME/.local/bin/clax" --version)" = "clax $VERSION"
+      - uses: actions/upload-artifact@v4
+        with: { name: release-dist, path: dist/, if-no-files-found: error }
+
+  publish:
+    name: Publish ${{ github.ref_name }}
+    needs: [version, assemble]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
     steps:
       - uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          generate_release_notes: true
+        with: { name: release-dist, path: dist }
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "Clax ${{ needs.version.outputs.version }}" \
+            --generate-notes --verify-tag

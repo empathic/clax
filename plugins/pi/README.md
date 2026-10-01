@@ -10,23 +10,20 @@ the same arguments and return the same JSON as the Clax MCP tools.
 
 ## Install
 
-From a clone of this repository:
-
-```
-pi install /absolute/path/to/clax/plugins/pi
-```
-
-or, for one run, `pi -e /absolute/path/to/clax/plugins/pi`. The extension
+From a clone of the Clax repository, run `just install`: it installs `clax`
+into `~/.cargo/bin` and runs `clax init`, which `pi install`s this package
+from the copy built into the binary (`~/.clax/marketplace/plugins/pi`).
+Without a clone, the release installer (`install.sh`, see the top-level
+README) puts `clax` in `~/.local/bin`; then run `clax init`. The extension
 has no runtime dependencies beyond the modules Pi provides to extensions
 (`@mariozechner/pi-coding-agent`, `typebox`), so it needs no `npm install`.
 
-The extension needs the `clax` CLI: it uses `$CLAX_BIN` when set, else
-`clax` on `PATH`. Install the CLI with `cargo install --path crates/clax-cli`
-from the clone (after `just web`, which builds the web UI the binary embeds),
-or set `CLAX_BIN` to the clone's `target/debug/clax` after
-`cargo build -p clax-cli`. No release has been published yet.
-`clax doctor --agent pi` checks the installed package, its skill, and the
-daemon's Pi sessions.
+The extension runs `CLAX_BIN`, else the `clax` on `PATH`, and never
+downloads. `just dev pi` loads it from the checkout instead, with `-ne` so an
+installed copy does not load twice (which turns off your other Pi extensions
+for that session too). `status` reports `binary`: the path it runs and that
+binary's version. `clax doctor --agent pi` checks the binary, the installed
+package, its skill, and the daemon's Pi sessions.
 
 ## What it adds
 
@@ -92,6 +89,11 @@ be reached the code is `daemon_unreachable` and `log` names
 - `CLAX_NO_OPEN`: when set, `open` returns the URL without starting a browser.
 
 ## Developing
+
+`just dev pi` starts Pi on a fresh build with this extension and its skill
+loaded from the checkout, on a separate home and port; "Developing Clax" in
+the top-level README has the details. `just install` updates your everyday
+install.
 
 `just pi-test` installs the dev dependencies and runs the typecheck and the
 tests, which start a real daemon with `cargo run`. `scripts/smoke-pi.sh`

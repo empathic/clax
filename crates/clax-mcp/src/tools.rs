@@ -1059,7 +1059,7 @@ impl ClaxTools {
             out["plugin_version"] = json!(v);
             out["skew"] = json!(v != env!("CARGO_PKG_VERSION"));
         }
-        // Which binary answers: the plugins run the clax on PATH.
+        // Which binary answers: this process's executable.
         out["binary"] = json!({
             "path": std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
             "version": env!("CARGO_PKG_VERSION"),
