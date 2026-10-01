@@ -4,28 +4,36 @@
       "subdomain": {
         "firstPaint": 51,
         "commentReady": 56,
-        "control": 44
+        "control": 44,
+        "framePaint": 46,
+        "readyLatency": 33
       },
       "sandbox": {
         "firstPaint": 50,
         "commentReady": 56,
-        "control": 44
+        "control": 44,
+        "framePaint": 45,
+        "readyLatency": 32
       }
     },
     "budget": {
       "subdomain": {
         "firstPaint": 81,
-        "commentReady": 86
+        "commentReady": 86,
+        "framePaint": 76,
+        "readyLatency": 63
       },
       "sandbox": {
         "firstPaint": 75,
-        "commentReady": 86
+        "commentReady": 86,
+        "framePaint": 75,
+        "readyLatency": 62
       }
     },
     "control": {
       "subdomain": 44,
       "sandbox": 44
     },
-    "enforceTargets": false
+    "enforceTargets": true
   }
 }
