@@ -1,5 +1,5 @@
-import { render } from "preact";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mount } from "./test/preact";
 import { forgetViewer } from "./threads";
 import { ViewerName } from "./viewer-name";
 
@@ -17,9 +17,8 @@ describe("ViewerName", () => {
       if (method === "GET") return new Promise<Response>(r => { answerGet = () => r(res(null)); });
       return Promise.resolve(res("Alex"));
     }));
-    const root = document.createElement("div");
-    document.body.appendChild(root);
-    render(<ViewerName setNotice={vi.fn()} />, root);
+    const view = mount(ViewerName, { setNotice: vi.fn() });
+    const root = view.root;
     await new Promise(r => setTimeout(r, 0));
     const input = root.querySelector<HTMLInputElement>('input[aria-label="Your name"]')!;
     input.value = "Alex";
@@ -31,6 +30,6 @@ describe("ViewerName", () => {
     answerGet();
     await vi.waitFor(() => expect(calls).toEqual(["GET", "PUT"]));
     expect(input.value).toBe("Alex");
-    render(null, root);
+    view.unmount();
   });
 });

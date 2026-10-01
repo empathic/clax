@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render } from "preact";
 import { relativeTime } from "./format";
+import { mount } from "./test/preact";
 
 describe("relativeTime", () => {
   const now = new Date("2026-09-28T12:00:00Z");
@@ -42,11 +42,9 @@ function stubApi(tokenStatus: number = 200) {
   return calls;
 }
 
-async function mount() {
+async function mountGallery() {
   const { default: Gallery } = await import("./gallery");
-  const root = document.createElement("div");
-  document.body.appendChild(root);
-  render(<Gallery />, root);
+  const { root } = mount(Gallery, {});
   await waitFor(() => root.querySelector("a.card, .empty"), "gallery to render");
   return root;
 }
@@ -57,7 +55,7 @@ describe("Gallery", () => {
 
   it("renders cards with title, version, and link in API order", async () => {
     stubApi();
-    const root = await mount();
+    const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
     expect(cards.length).toBe(2);
     expect(cards[0].getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
@@ -73,7 +71,7 @@ describe("Gallery", () => {
       if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [owned("live00000000", true), owned("gone00000000", false), ARTIFACTS[1]] }));
       return new Response("{}", { status: 404 });
     }));
-    const root = await mount();
+    const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
     expect(cards[0].querySelector(".publisher")?.textContent).toContain("published by claude-code session");
     expect(cards[0].querySelector(".live-dot")).not.toBeNull();
@@ -85,14 +83,14 @@ describe("Gallery", () => {
 
   it("shows an empty state", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ artifacts: [] }))));
-    const root = await mount();
+    const root = await mountGallery();
     expect(root.textContent).toContain("No artifacts yet");
     expect(root.textContent).toContain("clax publish");
   });
 
   it("search narrows cards by title and description", async () => {
     stubApi();
-    const root = await mount();
+    const root = await mountGallery();
     const input = root.querySelector("input[type=search]") as HTMLInputElement;
     expect(input.placeholder).toBe("Search artifacts");
     expect(input.getAttribute("aria-label")).toBe("Search artifacts");
@@ -109,7 +107,7 @@ describe("Gallery", () => {
 
   it("without a token renders no buttons", async () => {
     const calls = stubApi(403);
-    const root = await mount();
+    const root = await mountGallery();
     await waitFor(() => calls.some(c => c.url.endsWith("/api/token")), "token request");
     await new Promise(r => setTimeout(r, 0));
     expect(root.querySelectorAll(".card-wrap").length).toBe(2);
@@ -118,7 +116,7 @@ describe("Gallery", () => {
 
   it("pin button sends PATCH with pinned true and refetches", async () => {
     const calls = stubApi();
-    const root = await mount();
+    const root = await mountGallery();
     const pin = await waitFor(() => root.querySelectorAll(".card-wrap")[1]?.querySelector('button[title="Pin"]') as HTMLButtonElement | null, "pin button");
     const wrap = root.querySelectorAll(".card-wrap")[1];
     expect(wrap.querySelector("a button")).toBeNull();
@@ -134,7 +132,7 @@ describe("Gallery", () => {
     const calls = stubApi();
     const confirmSpy = vi.fn(() => false);
     vi.stubGlobal("confirm", confirmSpy);
-    const root = await mount();
+    const root = await mountGallery();
     const del = await waitFor(() => root.querySelector('button[title="Delete"]') as HTMLButtonElement | null, "delete button");
     del.click();
     expect(confirmSpy).toHaveBeenCalledWith('Delete "Pinned one"? This removes every version.');

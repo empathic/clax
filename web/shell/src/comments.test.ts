@@ -1,8 +1,8 @@
-import { render } from "preact";
-import { act } from "preact/test-utils";
+import type { ComponentType } from "preact";
 import { describe, expect, it, vi } from "vitest";
 import { Composer, type Draft, PIN_RIGHT_ROOM, Pins, isSubmitKey, nextDraft, submitKeysLabel, withClip } from "./comments";
 import { Sidebar } from "./sidebar";
+import { flush, mount } from "./test/preact";
 import { type Thread, areaLabel } from "./threads";
 
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
@@ -13,22 +13,20 @@ const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
 });
 const at = (id: string, y: number) => ({ id, found: true, method: "exact" as const, rect: { x: 10, y, w: 100, h: 20 } });
 
-function mount(node: preact.ComponentChild) {
-  const root = document.createElement("div");
-  document.body.appendChild(root);
-  render(node, root);
-  return { root, done: () => { render(null, root); root.remove(); } };
+function mountIt<P extends object>(C: ComponentType<P>, props: P) {
+  const view = mount(C, props);
+  const { root } = view;
+  return { root, update: view.update, done: () => { view.unmount(); root.remove(); } };
 }
 
 describe("Pins", () => {
   it("numbers pins like the sidebar's Open section and skips detached, resolved, unmeasured, and scrolled-away threads", () => {
     const threads = [thread("a"), thread("b"), thread("c"), thread("d"), thread("e", "resolved"), thread("f")];
     const resolved = { a: at("a", 40), b: { id: "b", found: false, method: null, rect: null }, c: at("c", -50), e: at("e", 40), f: at("f", 200) };
-    const { root, done } = mount(<Pins threads={threads} resolved={resolved} onSelect={vi.fn()} />);
+    const { root, done } = mountIt(Pins, { threads, resolved, onSelect: vi.fn() });
     // Open and not detached: a (1), c (2), d (3, not measured yet), f (4).
     expect(Array.from(root.querySelectorAll("button.thread-pin")).map(b => b.textContent)).toEqual(["1", "4"]);
-    const { root: side, done: doneSide } = mount(<Sidebar threads={threads} resolved={resolved} now={new Date()} selected={null}
-      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />);
+    const { root: side, done: doneSide } = mountIt(Sidebar, { threads, resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
     expect(Array.from(side.querySelectorAll(".section-open .thread-num")).map(n => n.textContent)).toEqual(["1", "2", "3", "4"]);
     // A viewer comment must not carry the page-level `.viewer` layout class.
     expect(side.querySelector(".comment.viewer")).toBeNull();
@@ -42,15 +40,14 @@ describe("Pins", () => {
     const threads = [thread("a"), onAbout("b"), onAbout("c")];
     const resolved = { a: at("a", 40), b: at("b", 80), c: at("c", 120) };
     const pins = (file: string) => {
-      const { root, done } = mount(<Pins threads={threads} resolved={resolved} file={file} onSelect={vi.fn()} width={800} />);
+      const { root, done } = mountIt(Pins, { threads, resolved, file, onSelect: vi.fn(), width: 800 });
       const out = Array.from(root.querySelectorAll<HTMLElement>("button.thread-pin")).map(b => `${b.textContent}@${b.style.top}`);
       done();
       return out;
     };
     expect(pins("index.html")).toEqual(["1@28px"]);
     expect(pins("about.html")).toEqual(["1@68px", "2@108px"]);
-    const { root: side, done } = mount(<Sidebar threads={threads} resolved={resolved} file="about.html" now={new Date()} selected={null}
-      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} />);
+    const { root: side, done } = mountIt(Sidebar, { threads, resolved, file: "about.html", now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
     expect(Array.from(side.querySelectorAll(".section-open .thread-num")).map(n => n.textContent)).toEqual(["1", "2"]);
     done();
   });
@@ -59,7 +56,7 @@ describe("Pins", () => {
     const area: Thread = { ...thread("a"), anchor: { ...anchor, kind: "area", selector: "main > section", quote: null, area: { x: 0.1, y: 0.2, w: 0.4213, h: 0.18 } } };
     const resolved = { a: { id: "a", found: true, method: "selector" as const, rect: { x: 100, y: 300, w: 200, h: 80 } } };
     const onHover = vi.fn();
-    const { root, done } = mount(<Pins threads={[area]} resolved={resolved} onSelect={vi.fn()} onHover={onHover} width={800} />);
+    const { root, done } = mountIt(Pins, { threads: [area], resolved, onSelect: vi.fn(), onHover, width: 800 });
     const pin = root.querySelector<HTMLElement>("button.thread-pin")!;
     expect([pin.style.left, pin.style.top]).toEqual(["288px", "288px"]);
     pin.dispatchEvent(new MouseEvent("mouseenter"));
@@ -67,8 +64,7 @@ describe("Pins", () => {
     pin.dispatchEvent(new MouseEvent("mouseleave"));
     expect(onHover).toHaveBeenLastCalledWith(null);
     done();
-    const { root: side, done: doneSide } = mount(<Sidebar threads={[area]} resolved={resolved} now={new Date()} selected={null}
-      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={vi.fn()} onHover={onHover} />);
+    const { root: side, done: doneSide } = mountIt(Sidebar, { threads: [area], resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), onHover });
     expect(side.querySelector(".anchor-label")!.textContent).toBe("Area in main > section (42% × 18%)");
     expect(areaLabel({ ...area.anchor, area: { x: 0, y: 0, w: 1, h: 0.004 } })).toBe("Area in main > section (100% × <1%)");
     const card = side.querySelector(".thread-card")!;
@@ -82,7 +78,7 @@ describe("Pins", () => {
 
   it("keeps a full-width region's pin inside the stage and clear of the frame's scrollbar", () => {
     const wide = { a: { id: "a", found: true, method: "exact" as const, rect: { x: 0, y: 40, w: 400, h: 20 } } };
-    const { root, done } = mount(<Pins threads={[thread("a")]} resolved={wide} onSelect={vi.fn()} width={400} />);
+    const { root, done } = mountIt(Pins, { threads: [thread("a")], resolved: wide, onSelect: vi.fn(), width: 400 });
     expect(root.querySelector<HTMLElement>("button.thread-pin")!.style.left).toBe(`${400 - PIN_RIGHT_ROOM}px`);
     done();
   });
@@ -108,7 +104,7 @@ describe("page-opened composers", () => {
     expect(withClip(moved, "t1", png)).toBe(moved);
   });
   it("say a screenshot is being taken", () => {
-    const { root, done } = mount(<Composer draft={{ pickId: "p", ...d("a"), capturing: true }} onCancel={vi.fn()} onSubmit={vi.fn(async () => {})} />);
+    const { root, done } = mountIt(Composer, { draft: { pickId: "p", ...d("a"), capturing: true }, onCancel: vi.fn(), onSubmit: vi.fn(async () => {}) });
     expect(root.textContent).toContain("Taking the screenshot…");
     done();
   });
@@ -118,13 +114,13 @@ describe("the submit shortcut", () => {
   const draft = (extra: Partial<Draft> = {}): Draft => ({ pickId: "p", anchor, version: 1, clip: null, ...extra });
   const key = (el: Element, init: KeyboardEventInit) => {
     const e = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init });
-    act(() => { el.dispatchEvent(e); });
+    flush(() => { el.dispatchEvent(e); });
     return e;
   };
   function composer(extra: Partial<Draft> = {}, onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {})) {
-    const m = mount(<Composer draft={draft(extra)} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: draft(extra), onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
-    const typeText = (v: string) => act(() => { ta.value = v; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    const typeText = (v: string) => flush(() => { ta.value = v; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     return { ...m, ta, typeText, onSubmit };
   }
 
@@ -182,7 +178,7 @@ describe("the submit shortcut", () => {
     key(slow.ta, { metaKey: true });
     expect(slow.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(true);
     key(slow.ta, { metaKey: true });
-    act(() => { slow.root.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
+    flush(() => { slow.root.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
     expect(slow.onSubmit).toHaveBeenCalledTimes(1);
     finish();
     slow.done();
@@ -191,14 +187,14 @@ describe("the submit shortcut", () => {
   it("posts on the shortcut pressed while the screenshot is taken once it is in, exactly the text shown then", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
-    act(() => { ta.value = "Why flat?"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Why flat?"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(key(ta, { metaKey: true }).defaultPrevented).toBe(true);
     expect(onSubmit).not.toHaveBeenCalled();
     expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.getAttribute("aria-disabled")).toBe("true");
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
-    act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).toHaveBeenCalledTimes(1);
     expect(onSubmit).toHaveBeenCalledWith("Why flat?");
     expect(ta.value).toBe("Why flat?");
@@ -208,14 +204,14 @@ describe("the submit shortcut", () => {
   it("drops a queued shortcut when the text is edited after it, so a half-finished edit is never posted", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
-    act(() => { ta.value = "Why flat"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Why flat"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     key(ta, { ctrlKey: true });
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
-    act(() => { ta.value = "Why flat, and why"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Why flat, and why"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(m.root.textContent).toContain("Taking the screenshot…");
-    act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(m.root.querySelector<HTMLButtonElement>("button[type=submit]")!.disabled).toBe(false);
     m.done();
@@ -224,15 +220,15 @@ describe("the submit shortcut", () => {
   it("drops a queued shortcut when the composer moves to another anchor", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
-    act(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     key(ta, { metaKey: true });
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
     const moved = { ...d, anchor: { ...d.anchor, selector: "body > p" }, clipToken: "t2" };
-    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: moved, onCancel: vi.fn(), onSubmit });
     expect(m.root.textContent).toContain("Taking the screenshot…");
-    act(() => { render(<Composer draft={{ ...moved, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: { ...moved, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(ta.value).toBe("Here");
     m.done();
@@ -241,13 +237,13 @@ describe("the submit shortcut", () => {
   it("drops a queued shortcut when the composer moves to another anchor with its screenshot already settled", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
-    act(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Here"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     key(ta, { metaKey: true });
     const moved = { ...d, anchor: { ...d.anchor, selector: "body > p" }, capturing: undefined, clipToken: undefined, clipError: "anchored by the page" };
-    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
-    act(() => { render(<Composer draft={moved} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: moved, onCancel: vi.fn(), onSubmit });
+    m.update({ draft: moved, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(ta.value).toBe("Here");
     m.done();
@@ -256,19 +252,19 @@ describe("the submit shortcut", () => {
   it("keeps Post focusable while the screenshot is taken, and a click or Enter on it queues the post like the shortcut", () => {
     const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
     const d = draft({ capturing: true, clipToken: "t" });
-    const m = mount(<Composer draft={d} onCancel={vi.fn()} onSubmit={onSubmit} />);
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
     const ta = m.root.querySelector("textarea")!;
     const postButton = m.root.querySelector<HTMLButtonElement>("button[type=submit]")!;
-    act(() => { ta.value = "Ship it"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { ta.value = "Ship it"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(postButton.disabled).toBe(false);
     expect(postButton.getAttribute("aria-disabled")).toBe("true");
     postButton.focus();
     expect(document.activeElement).toBe(postButton);
     // A click (Enter on a focused button clicks it) submits the form.
-    act(() => { postButton.click(); });
+    flush(() => { postButton.click(); });
     expect(onSubmit).not.toHaveBeenCalled();
     expect(m.root.textContent).toContain("Posting once the screenshot is taken…");
-    act(() => { render(<Composer draft={{ ...d, capturing: false, clipToken: undefined, clipError: "blank" }} onCancel={vi.fn()} onSubmit={onSubmit} />, m.root); });
+    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).toHaveBeenCalledWith("Ship it");
     expect(postButton.getAttribute("aria-disabled")).toBeNull();
     m.done();
@@ -290,10 +286,9 @@ describe("the submit shortcut", () => {
 
   it("sends a sidebar reply on Cmd+Enter or Ctrl+Enter, never an empty one or mid-composition", () => {
     const onReply = vi.fn();
-    const { root, done } = mount(<Sidebar threads={[thread("a")]} resolved={{}} now={new Date()} selected={null}
-      onSelect={vi.fn()} onSend={vi.fn()} onResolve={vi.fn()} onReply={onReply} />);
+    const { root, done } = mountIt(Sidebar, { threads: [thread("a")], resolved: {}, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply });
     const input = root.querySelector<HTMLInputElement>("input[aria-label=Reply]")!;
-    const typeText = (v: string) => act(() => { input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    const typeText = (v: string) => flush(() => { input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); });
     key(input, { metaKey: true });
     typeText("First reply.");
     key(input, { metaKey: true, isComposing: true });

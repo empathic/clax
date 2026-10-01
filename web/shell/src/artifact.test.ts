@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
-import { render } from "preact";
+import { mount } from "./test/preact";
 
 class FakeES {
   static last: FakeES | undefined;
@@ -34,7 +34,7 @@ const gestureModules = new Set<typeof import("./caps/gesture")>();
 afterEach(() => { for (const g of gestureModules) g.unwatchShell(); gestureModules.clear(); });
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
-async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
+async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
   vi.stubGlobal("EventSource", FakeES);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
@@ -48,10 +48,7 @@ async function mount(fetchImpl: (url: string, init?: RequestInit) => Promise<Res
   const { default: ArtifactView } = await import("./artifact");
   gesture = await import("./caps/gesture");
   gestureModules.add(gesture);
-  const root = document.createElement("div");
-  document.body.appendChild(root);
-  render(<ArtifactView id={ID} pinnedVersion={pinned} file={file} />, root);
-  return root;
+  return mount(ArtifactView, { id: ID, pinnedVersion: pinned, file });
 }
 
 describe("ArtifactView", () => {
@@ -62,21 +59,22 @@ describe("ArtifactView", () => {
   afterEach(() => { vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); history.replaceState(null, "", "/"); });
 
   it("disposes the capability host when it is replaced and on unmount", async () => {
-    const root = await mount(async () => new Response(JSON.stringify({ artifact: artifact(2).artifact, versions: [...artifact(1).versions, ...artifact(2).versions] })));
+    const view = await mountView(async () => new Response(JSON.stringify({ artifact: artifact(2).artifact, versions: [...artifact(1).versions, ...artifact(2).versions] })));
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     const { CapabilityHost } = await import("./caps/host");
     const dispose = vi.spyOn(CapabilityHost.prototype, "dispose");
-    const { default: ArtifactView } = await import("./artifact");
-    render(<ArtifactView id={ID} pinnedVersion={1} />, root);
+    view.update({ id: ID, pinnedVersion: 1, file: undefined });
     await waitFor(() => dispose.mock.calls.length === 1, "the replaced host's dispose");
-    render(null, root);
+    view.unmount();
     await waitFor(() => dispose.mock.calls.length === 2, "dispose on unmount");
     expect(new Set(dispose.mock.instances).size).toBe(2);
   });
 
   it("follows a page publish at once on the page it shows, unless pinned", async () => {
     const assign = vi.fn();
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const root = view.root;
     (await import("./nav")).nav.assign = assign;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "about.html" });
@@ -95,7 +93,8 @@ describe("ArtifactView", () => {
   it("a pinned view shows the banner for a page publish and does not reload", async () => {
     const assign = vi.fn();
     history.replaceState(null, "", `/a/${ID}/v/1`);
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))), undefined, undefined, 1);
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))), undefined, undefined, 1);
+    const root = view.root;
     (await import("./nav")).nav.assign = assign;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     (await waitFor(() => FakeES.last, "event stream")).emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
@@ -107,11 +106,12 @@ describe("ArtifactView", () => {
     const assign = vi.fn();
     let answer!: (r: Response) => void;
     const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
-    const root = await mount(async (url, init) => {
+    const view = await mountView(async (url, init) => {
       if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
       if (init?.method === "POST") return new Promise<Response>(r => { answer = r; });
       return new Response(JSON.stringify(declared));
     });
+    const root = view.root;
     (await import("./nav")).nav.assign = assign;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
@@ -133,19 +133,22 @@ describe("ArtifactView", () => {
   });
 
   it("says not found only for a 404 status", async () => {
-    const root = await mount(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
+    const root = view.root;
     await waitFor(() => root.textContent?.includes("Artifact not found"), "not-found message");
   });
 
   it("shows the raw error for other failures, even when the text contains 404", async () => {
-    const root = await mount(async () => new Response(JSON.stringify({ error: { message: "port 4040 or 404 busy" } }), { status: 500 }));
+    const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "port 4040 or 404 busy" } }), { status: 500 }));
+    const root = view.root;
     await waitFor(() => root.textContent?.includes("port 4040"), "error message");
     expect(root.textContent).not.toContain("Artifact not found");
   });
 
   it("refetches on resync and shows the banner when a newer version exists", async () => {
     let current = 1;
-    const root = await mount(async () => new Response(JSON.stringify(artifact(current))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(current))));
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelector(".banner")).toBeNull();
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
@@ -161,10 +164,11 @@ describe("ArtifactView", () => {
     const t = { id: "01JA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: "c1", thread_id: "01JA", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "made while the daemon restarted", created_at: "x" }] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async url => url.includes("/threads")
         ? new Response(JSON.stringify({ threads: listed++ === 0 ? [] : [t], next_cursor: null }))
         : new Response(JSON.stringify(viewer)));
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     await waitFor(() => listed === 1, "initial thread load");
     expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (0)");
@@ -174,10 +178,11 @@ describe("ArtifactView", () => {
 
   it("opens the event stream only after the viewer lookup answered, with the owner shell's token", async () => {
     let answerViewer!: () => void;
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))),
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))),
       url => url.includes("/threads")
         ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
         : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     await new Promise(r => setTimeout(r, 30));
     expect(FakeES.last).toBeUndefined();
@@ -190,10 +195,11 @@ describe("ArtifactView", () => {
     let answerList!: () => void;
     const t = { id: "01JB", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       url => url.includes("/threads")
         ? new Promise<Response>(r => { answerList = () => r(new Response(JSON.stringify({ threads: [], next_cursor: null }))); })
         : Promise.resolve(new Response(JSON.stringify(viewer))));
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     (await waitFor(() => FakeES.last, "event stream")).emit("thread", { type: "thread", artifact_id: ID, thread: t });
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the event");
@@ -203,36 +209,40 @@ describe("ArtifactView", () => {
   });
 
   it("shows a failed thread load in the notice banner", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async url => url.includes("/threads")
         ? new Response(JSON.stringify({ error: { code: "internal", message: "db locked" } }), { status: 500 })
         : new Response(JSON.stringify(viewer)));
+    const root = view.root;
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.getAttribute("role")).toBe("alert");
     expect(banner.textContent).toContain("Could not load comments: 500 db locked");
   });
 
   it("says a failed name lookup could not load the name", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async url => url.includes("/threads")
         ? new Response(JSON.stringify({ threads: [], next_cursor: null }))
         : new Response(JSON.stringify({ error: { code: "forbidden_origin", message: "nope" } }), { status: 403 }));
+    const root = view.root;
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.textContent).toContain("Could not load your name: 403 nope");
   });
 
   it("puts \"Your name\" in the header when wide and in the Threads panel when narrow", async () => {
     stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
-    let root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    let view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    let root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelectorAll('input[aria-label="Your name"]')).toHaveLength(1);
     expect(root.querySelector('.topbar input[aria-label="Your name"]')).not.toBeNull();
-    render(null, root);
+    view.unmount();
     document.body.replaceChildren();
     vi.resetModules();
 
     stubMedia({ "(min-width: 900px)": false, "(max-width: 480px)": true });
-    root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelector('input[aria-label="Your name"]')).toBeNull();
     buttonNamed(root, /^Threads/).click();
@@ -241,7 +251,8 @@ describe("ArtifactView", () => {
   });
 
   it("ignores a hello from another artifact or version, and welcomes the shown one", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(2))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(2))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: unknown[] = [];
@@ -267,13 +278,14 @@ describe("ArtifactView", () => {
       fromFrame(win, { type: "clax:use", id: "early", name: "permissions" });
     });
     seen.observe(document.body, { subtree: true, childList: true });
-    await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
     await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
     await waitFor(() => posted.some(m => m.type === "clax:use-result" && m.id === "early"), "the answer to the early request");
   });
 
   it("answers capability requests only after a hello for the shown artifact and version", async () => {
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
@@ -300,8 +312,9 @@ describe("ArtifactView", () => {
     const t = (id: string, file: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: `Goals ${id}`, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "x" }] });
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tI", "index.html"), t("tA", "about.html")], next_cursor: null } : viewer)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const posted: { type: string; anchors?: { id: string; anchor: { quote: string } }[]; anchor?: { file: string } }[] = [];
     // jsdom gives the frame a new window when it navigates; a browser keeps one WindowProxy.
@@ -332,13 +345,15 @@ describe("ArtifactView", () => {
   });
 
   it("opens the frame on the URL's page, and says so when the version does not hold it", async () => {
-    let root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "docs/about.html": page }))), undefined, "docs/about.html");
+    let view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "docs/about.html": page }))), undefined, "docs/about.html");
+    let root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/docs/about.html`);
-    render(null, root);
+    view.unmount();
     document.body.replaceChildren();
     vi.resetModules();
-    root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))), undefined, "gone.html");
+    view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))), undefined, "gone.html");
+    root = view.root;
     const msg = await waitFor(() => root.querySelector(".stage .empty"), "not-found message");
     expect(msg.textContent).toContain("v1 has no page gone.html");
     expect(msg.querySelector("a")!.getAttribute("href")).toBe(`/a/${ID}`);
@@ -347,7 +362,8 @@ describe("ArtifactView", () => {
 
   it("opens the frame at the URL's fragment, and keeps the address bar's fragment in step with the frame's", async () => {
     history.replaceState(null, "", `/a/${ID}/about.html#docs%2Fcontract.md`);
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))), undefined, "about.html");
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))), undefined, "about.html");
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/1/about.html#docs%2Fcontract.md`);
     const win = frame.contentWindow!;
@@ -370,7 +386,8 @@ describe("ArtifactView", () => {
   });
 
   it("copies a burst of frame fragments into the address bar once per animation frame, the latest one", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     win.postMessage = (() => {}) as typeof win.postMessage;
@@ -387,7 +404,8 @@ describe("ArtifactView", () => {
   });
 
   it("survives a browser that refuses history calls, and still moves the frame to a handed-over page", async () => {
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string }[] = [];
@@ -417,7 +435,8 @@ describe("ArtifactView", () => {
   });
 
   it("puts the page the frame greets from in the address bar, and ignores a page the version does not hold", async () => {
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page }))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
@@ -440,8 +459,9 @@ describe("ArtifactView", () => {
   it("drops the pins when the frame loads a document that never greets", async () => {
     const t = { id: "tI", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const sent: { type: string; anchors?: { id: string }[] }[] = [];
@@ -475,8 +495,9 @@ describe("ArtifactView", () => {
     stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
     const t = { id: "tG", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Gone", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "gone.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const card = await waitFor(() => root.querySelector('.section-detached [data-thread="tG"]'), "the detached card");
     card.querySelector<HTMLButtonElement>("button.card-head")!.click();
@@ -486,7 +507,8 @@ describe("ArtifactView", () => {
   });
 
   it("follows a link the page handed over as one history entry per greeting page, with its fragment", async () => {
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page, "doc.pdf": { content_type: "application/pdf", size: 1 } }))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1, { "index.html": page, "about.html": page, "doc.pdf": { content_type: "application/pdf", size: 1 } }))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const posted: { type: string; id?: string }[] = [];
     // jsdom gives the frame a new window when its src changes; a browser keeps one WindowProxy.
@@ -534,8 +556,9 @@ describe("ArtifactView", () => {
     stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
     const t = { id: "tA", artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Team", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "about.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1, { "index.html": page, "about.html": page }))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const root = view.root;
     const wait = (await import("./artifact")).pageWait;
     const before = wait.ms;
     wait.ms = 50;
@@ -569,7 +592,8 @@ describe("ArtifactView", () => {
   });
 
   it("closes the capability gate on a frame load that no hello preceded", async () => {
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(2))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string }[] = [];
@@ -592,13 +616,14 @@ describe("ArtifactView", () => {
     let failNext = false;
     const t = (id: string) => ({ id, artifact_id: ID, version_n: 1, anchor: { kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] });
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async url => {
         if (!url.includes("/threads")) return new Response(JSON.stringify(viewer));
         lists++;
         if (failNext) return new Response(JSON.stringify({ error: { code: "internal", message: "db locked" } }), { status: 500 });
         return new Response(JSON.stringify({ threads: [], next_cursor: null }));
       });
+    const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     const es = await waitFor(() => FakeES.last, "event stream");
     await waitFor(() => lists >= 1, "initial list");
@@ -620,12 +645,13 @@ describe("ArtifactView", () => {
   });
 
   it("starts each pick with an empty composer and shows a failed post only in the banner", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async (url, init) => url.startsWith("/api/viewers/")
         ? new Response(JSON.stringify(viewer))
         : init?.method === "POST"
           ? new Response(JSON.stringify({ error: { code: "internal", message: "disk full" } }), { status: 500 })
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
@@ -654,7 +680,8 @@ describe("ArtifactView", () => {
   });
 
   it("opens no composer for a pick the page forged: without a start, with a start outside the viewer's gesture or without an anchor, or beside another pending start; and tells the bridge each start it refused", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; pickId?: string }[] = [];
@@ -724,7 +751,8 @@ describe("ArtifactView", () => {
   });
 
   it("opens the composer at the viewer's pick start, focused and taking the screenshot, and takes no text from the page", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
@@ -760,12 +788,13 @@ describe("ArtifactView", () => {
       comments: [{ id: "c1", thread_id: "tS", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
     let answerSend!: (r: Response) => void;
     const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
       async (url, init) => url.startsWith("/api/viewers/")
         ? new Response(JSON.stringify(viewer))
         : url.endsWith("/send") && init?.method === "POST"
           ? new Promise<Response>(r => { answerSend = r; })
           : new Response(JSON.stringify({ threads: [thread], next_cursor: null })));
+    const root = view.root;
     (await import("./comments")).captureWait.ms = 50;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
@@ -800,12 +829,13 @@ describe("ArtifactView", () => {
 
   it("drops a pick's clip past the daemon's cap with the reason, says when a thread was posted without its screenshot, and clears that on a post that kept its clip", async () => {
     let posts = 0;
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async (url, init) => url.startsWith("/api/viewers/")
         ? new Response(JSON.stringify(viewer))
         : init?.method === "POST"
           ? new Response(JSON.stringify({ thread: { id: `01JX${++posts}`, artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: false, has_clip: posts > 1, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null, comments: [] }, ...(posts === 1 ? { clip_error: "clip is not a PNG" } : {}) }), { status: 201 })
           : new Response(JSON.stringify({ threads: [], next_cursor: null })));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     fromFrame(frame.contentWindow!, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     buttonNamed(root, "Comment").click();
@@ -835,7 +865,8 @@ describe("ArtifactView", () => {
   });
 
   it("takes a pick's screenshot only for the composer its start opened, once, and forgets a pending pick when comment mode comes back on or a page greets, so the viewer's next pick works", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const hello = () => fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
@@ -888,7 +919,7 @@ describe("ArtifactView", () => {
     let sends = 0;
     const thread = (id: string, body: string) => ({ id, artifact_id: ID, version_n: 1, anchor: pick("x", "q").anchor, status: "open", sent_to_agent: body.includes("@agent"), has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body, created_at: "x" }] });
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async (url, init) => {
         if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
         if (url.endsWith("/send") && init?.method === "POST") { sends++; return new Response(JSON.stringify({ thread: { ...thread("t1", "second"), sent_to_agent: true } })); }
@@ -900,6 +931,7 @@ describe("ArtifactView", () => {
         }
         return new Response(JSON.stringify({ threads: [], next_cursor: null }));
       });
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const toFrame: { type: string; on?: boolean }[] = [];
@@ -971,12 +1003,13 @@ describe("ArtifactView", () => {
       comments: [{ id: "c1", thread_id: "tR", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "note", created_at: "x" }] };
     let replies = 0;
     const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: {} } } };
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)),
       async (url, init) => {
         if (url.startsWith("/api/viewers/")) return new Response(JSON.stringify(viewer));
         if (url.includes("/comments") && init?.method === "POST") { replies++; return new Response(JSON.stringify({ thread: t }), { status: 201 }); }
         return new Response(JSON.stringify({ threads: [t], next_cursor: null }));
       });
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; value?: { opened?: boolean } }[] = [];
@@ -1031,7 +1064,8 @@ describe("ArtifactView", () => {
 
   it("tells a custom-anchors page comment mode came back, with areas, when a pick's composer closes", async () => {
     const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { comments: { customAnchors: true } } } };
-    const root = await mount(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)));
+    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : declared)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string; topic?: string; data?: { on?: boolean; canArea?: boolean } }[] = [];
@@ -1051,7 +1085,8 @@ describe("ArtifactView", () => {
   });
 
   it("sends Escape to the frame while commenting with the pointer over it, and leaves comment mode only when the page answers", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; key?: string; down?: boolean }[] = [];
@@ -1084,8 +1119,9 @@ describe("ArtifactView", () => {
     const t = { id: "tZ", artifact_id: ID, version_n: 1, anchor: { kind: "area", selector: "main", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, area: { x: 0, y: 0, w: 0.5, h: 0.5 }, file: "index.html" },
       status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: "c1", thread_id: "tZ", author_kind: "viewer", author_name: "Viewer", via_harness: null, body: "gap", created_at: "x" }] };
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))),
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t], next_cursor: null } : viewer)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; id?: string | null; anchors?: { id: string }[] }[] = [];
@@ -1115,8 +1151,9 @@ describe("ArtifactView", () => {
     const t = (id: string, n: number) => ({ id, artifact_id: ID, version_n: n, anchor: { ...pick("x", `Goals ${id}`).anchor }, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "x", resolved_at: null, resolved_by: null, feedback_state: null,
       comments: [{ id: `c${id}`, thread_id: id, author_kind: "viewer", author_name: "Viewer", via_harness: null, body: `note ${id}`, created_at: "x" }] });
     const two = { artifact: artifact(2).artifact, versions: [...artifact(1).versions, ...artifact(2).versions] };
-    const root = await mount(async () => new Response(JSON.stringify(two)),
+    const view = await mountView(async () => new Response(JSON.stringify(two)),
       async url => new Response(JSON.stringify(url.includes("/threads") ? { threads: [t("tOld", 1), t("tNew", 2)], next_cursor: null } : viewer)));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; anchors?: { id: string; sameVersion?: boolean }[]; anchor?: { quote: string | null }; sameVersion?: boolean }[] = [];
@@ -1133,7 +1170,8 @@ describe("ArtifactView", () => {
   });
 
   it("forwards Option and, with it, Up and Down to the frame while commenting with the pointer over it", async () => {
-    const root = await mount(async () => new Response(JSON.stringify(artifact(1))));
+    const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+    const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
     const posted: { type: string; key?: string; down?: boolean }[] = [];
