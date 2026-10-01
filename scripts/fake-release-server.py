@@ -32,6 +32,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with LOG_LOCK, open(LOG, "a") as f:
             f.write(self.path + "\n")
         mode, _, rest = self.path.lstrip("/").partition("/")
+        if mode == "none":
+            # A private repository: even /latest is a 404, not a redirect.
+            self.send_error(404)
+            return
         if rest == "latest":
             self.send_response(302)
             self.send_header("Location", f"/{mode}/tag/v{os.environ.get('FAKE_LATEST', '0.0.0')}")
@@ -48,7 +52,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = os.path.join(ROOT, tree, rest)
         if mode == "slow":
             time.sleep(60)
-        if mode == "none" or ".." in rest or not os.path.isfile(path):
+        if ".." in rest or not os.path.isfile(path):
             self.send_error(404)
             return
         with open(path, "rb") as f:
