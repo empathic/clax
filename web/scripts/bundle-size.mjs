@@ -22,10 +22,10 @@ const entry = html => {
   return gz(html) + files.reduce((n, f) => n + gz(f), 0);
 };
 
-for (const [html, markers] of [["index.html", []], ["artifact.html", ["<!--clax:boot-->", "<!--clax:frame-->"]]]) {
+for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script id=\"clax-early\">", "<!--clax:boot-->", "<!--clax:frame-->", "<h1>Clax</h1>"]]]) {
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
-  for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost the ${m} marker the daemon injects at`);
+  for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
 }
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };

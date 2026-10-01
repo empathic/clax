@@ -6,14 +6,15 @@ export function artifactOrigin(id: string, loc: Location = location): string | n
   return `${loc.protocol}//${id}.localhost${port}`;
 }
 
-function readCache(): boolean | null {
+/** This tab's cached probe result: true or false once probed, null before (or without storage). */
+export function cachedOriginOk(): boolean | null {
   try { const v = sessionStorage.getItem(CACHE_KEY); return v === null ? null : v === "1"; } catch { return null; }
 }
 function writeCache(ok: boolean) { try { sessionStorage.setItem(CACHE_KEY, ok ? "1" : "0"); } catch { /* storage unavailable */ } }
 
 /** Whether the browser resolves `<id>.localhost`; probed once per session. */
 export async function probeOrigin(origin: string, fetchImpl: typeof fetch = fetch, timeoutMs = 1000): Promise<boolean> {
-  const cached = readCache();
+  const cached = cachedOriginOk();
   if (cached !== null) return cached;
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), timeoutMs);

@@ -141,13 +141,29 @@ pub async fn gallery_page(req: HeaderMap) -> Result<Response, ApiError> {
     entry(&req, "index.html")
 }
 
-/// `/a/…`: the artifact view, or the gallery for a path that names no artifact
-/// (the shell shows the gallery for it too).
-pub async fn artifact_page(uri: axum::http::Uri, req: HeaderMap) -> Result<Response, ApiError> {
-    match crate::shell_route::parse_shell_path(uri.path()) {
-        crate::shell_route::ShellRoute::Artifact { .. } => entry(&req, "artifact.html"),
-        crate::shell_route::ShellRoute::Gallery => entry(&req, "index.html"),
+/// `/a/…`: `artifact.html` with the first-load data ([`crate::boot`]), or the
+/// gallery for a path that names no artifact (the shell shows the gallery for
+/// it too). The page differs by viewer and frame mode, both read from
+/// cookies, so it carries `Vary: Cookie`, and its `ETag` is over the exact
+/// bytes sent: a revalidation answers `304` only for the same bytes.
+pub async fn artifact_page(
+    axum::extract::State(s): axum::extract::State<crate::state::AppState>,
+    uri: axum::http::Uri,
+    req: HeaderMap,
+) -> Result<Response, ApiError> {
+    let route = crate::shell_route::parse_shell_path(uri.path());
+    if matches!(route, crate::shell_route::ShellRoute::Gallery) {
+        return entry(&req, "index.html");
     }
+    let Some(f) = asset("artifact.html") else {
+        return entry(&req, "artifact.html");
+    };
+    let template = String::from_utf8_lossy(&f.data).into_owned();
+    let injected = crate::boot::assemble(&s, route, &req).await?;
+    let mut res = http_cache::html(&req, &crate::boot::inject(&template, injected.as_ref()));
+    res.headers_mut()
+        .insert(header::VARY, axum::http::HeaderValue::from_static("Cookie"));
+    Ok(res)
 }
 
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and

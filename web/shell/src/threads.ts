@@ -93,6 +93,14 @@ export function getViewer(): Promise<Viewer> {
   return viewerMemo;
 }
 
+/** The viewer the daemon found for the page's cookie (its bootstrap): the
+ * lookup is answered without a request. No-op for null or once looked up. */
+export function seedViewer(v: Viewer | null): void {
+  if (!v || viewerMemo) return;
+  viewerMemo = Promise.resolve(v);
+  announceViewer(v);
+}
+
 export async function setViewerName(name: string): Promise<Viewer> {
   const v = (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) }))).viewer;
   viewerMemo = Promise.resolve(v);

@@ -6,6 +6,6 @@
     "suspicious": "warn"
   },
   "rules": {
-    "no-underscore-dangle": ["warn", { "allow": ["__clax"] }]
+    "no-underscore-dangle": ["warn", { "allow": ["__clax", "__claxEarly"] }]
   }
 }

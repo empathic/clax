@@ -18,7 +18,7 @@ function run(budget: Record<string, unknown>) {
   copyFileSync(join(__dirname, "bundle-size.mjs"), join(web, "scripts/bundle-size.mjs"));
   const dist = (p: string, s: string) => writeFileSync(join(web, "dist", p), s);
   dist("index.html", "<p>gallery</p>");
-  dist("artifact.html", "<!--clax:boot--><!--clax:frame-->");
+  dist("artifact.html", "<script id=\"clax-early\"></script><!--clax:boot--><!--clax:frame--><h1>Clax</h1>");
   dist("_clax/bridge.js", "bridge");
   dist("_clax/shell/a.js", "a");
   dist(".vite/manifest.json", JSON.stringify({ "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" } }));

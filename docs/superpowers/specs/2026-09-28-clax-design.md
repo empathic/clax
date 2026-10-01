@@ -699,14 +699,20 @@ What makes it fast:
 - For `/a/…` the daemon injects a bootstrap block into `artifact.html`:
   `<script type="application/json" id="clax-boot">`, holding the artifact with
   its versions, every thread, and the viewer when the request's viewer cookie
-  names one. The shell reads it instead of making its first API calls.
+  names one: what an unauthenticated browser reads from the API, less the
+  session IDs (no token, no viewer cookie, no clip path, and no viewer is
+  created). The shell reads it instead of making its first API calls.
 - When the request carries a `clax_frame` cookie (`subdomain` or `sandbox`,
   set by the shell once it has decided the frame mode), or comes from a
   non-loopback host (always `sandbox`), the daemon also injects the content
   `<iframe>` itself. The artifact then loads in parallel with the shell's
   JavaScript. The shell adopts that frame when its own decision agrees, and
-  replaces it otherwise. Messages the frame posts before the shell has mounted
-  are buffered by an inline listener and replayed in order.
+  replaces it otherwise. Messages the frame posts before the shell has mounted,
+  and the frame's loads, are buffered by an inline listener and replayed in
+  order, through the same checks as later ones. The same listener removes a
+  served frame without a sandbox while the page is parsed when this tab has
+  already found that artifact origins do not work, so a wrong cookie never
+  runs the artifact less isolated than the tab would.
 - The bridge loads eagerly only what every page needs (`window.claude`, the
   hello, the channel, link handover). Comment mode with anchors and areas,
   clip rendering, and the page-side capability members are separate parts

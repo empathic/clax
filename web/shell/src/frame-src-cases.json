@@ -1,0 +1,7 @@
+[
+  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "index.html", "src": "/c/7q3k9mzx2b4t/v/1/" },
+  { "id": "7q3k9mzx2b4t", "n": 12, "origin": "http://7q3k9mzx2b4t.localhost:7481", "file": "index.html", "src": "http://7q3k9mzx2b4t.localhost:7481/v/12/" },
+  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "docs/a b.html", "src": "/c/7q3k9mzx2b4t/v/1/docs/a%20b.html" },
+  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "✓/é (1)!*~'.html", "src": "/c/7q3k9mzx2b4t/v/1/%E2%9C%93/%C3%A9%20(1)!*~'.html" },
+  { "id": "7q3k9mzx2b4t", "n": 1, "origin": null, "file": "a#b?c&d.html", "src": "/c/7q3k9mzx2b4t/v/1/a%23b%3Fc%26d.html" }
+]

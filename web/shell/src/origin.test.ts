@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { artifactOrigin, probeOrigin, contentSrc, pageSrc } from "./origin";
+import srcCases from "./frame-src-cases.json";
 
 const loc = (hostname: string, port = "7480") => ({ hostname, port, protocol: "http:" } as unknown as Location);
 
@@ -57,5 +58,11 @@ describe("contentSrc", () => {
   it("picks the origin or the same-origin path", () => {
     expect(contentSrc("7q3k9mzx2b4t", 2, "http://7q3k9mzx2b4t.localhost:7480")).toBe("http://7q3k9mzx2b4t.localhost:7480/v/2/");
     expect(contentSrc("7q3k9mzx2b4t", 2, null)).toBe("/c/7q3k9mzx2b4t/v/2/");
+  });
+});
+
+describe("pageSrc and the daemon agree", () => {
+  it.each(srcCases)("$file", ({ id, n, origin, file, src }) => {
+    expect(pageSrc(id, n, origin, file)).toBe(src);
   });
 });
