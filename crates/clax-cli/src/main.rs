@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 mod hooklog;
+mod plugins;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -56,6 +57,11 @@ pub enum Cmd {
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
     Hook(commands::hook::Args),
+    /// Register the Clax plugins built into this binary with Claude Code,
+    /// Codex and Pi (each one whose CLI is on PATH), replacing stale ones.
+    Init(commands::init::Args),
+    /// Remove the Clax plugin registrations from Claude Code, Codex and Pi.
+    Uninit(commands::init::Args),
 }
 
 impl Cli {
@@ -143,6 +149,8 @@ fn main() {
         Cmd::Doctor(a) => commands::doctor::run(&cli, &home, a),
         Cmd::Mcp(a) => commands::mcp::run(&cli, &home, a),
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
+        Cmd::Init(a) => commands::init::init(&cli, &home, a),
+        Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

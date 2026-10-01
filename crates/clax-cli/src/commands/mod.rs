@@ -3,6 +3,7 @@ pub mod delete;
 pub mod doctor;
 pub mod doctor_agent;
 pub mod hook;
+pub mod init;
 pub mod list;
 pub mod mcp;
 pub mod open;
