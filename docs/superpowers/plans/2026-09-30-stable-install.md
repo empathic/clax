@@ -3684,6 +3684,8 @@ The script runs everything inside its own scratch root and deletes it on exit. I
 
 ```bash
 cd /Users/alex/Devel/empathic/clax
+clax status          # note which binary runs the agents' daemon now
+clax stop            # stop it: just install only stops a daemon running the binary it installs
 git pull
 just install
 which -a clax        # ~/.cargo/bin/clax must come first
@@ -3694,7 +3696,7 @@ which -a clax        # ~/.cargo/bin/clax must come first
 - Remove stale binaries that `which -a clax` shows ahead of or beside `~/.cargo/bin/clax`: an old `~/.local/bin/clax` or `~/.clax/bin/clax`. Unset `CLAX_SOURCE_DIR` and `CLAX_INSTALL_DIR` in your shell profile.
 - Start a new session in each harness. Run `clax doctor --agent claude`, then `codex`, then `pi`: `binary` must say the plugins run `~/.cargo/bin/clax`, and `plugin` must pass. Ask the agent to call `status`; `binary.path` must be `~/.cargo/bin/clax`.
 - Pi: check that the extension loads from `~/.clax/marketplace/plugins/pi`, which has no `node_modules` (`pi list`, then a session in which the `clax_*` tools appear). If it cannot resolve `typebox` there, tell the agents; the fix is to register the checkout's `plugins/pi` for Pi instead.
-- The fallback: start `env PATH=/usr/bin:/bin claude` (a PATH without `clax`), open `/mcp`, and check that the `clax` server is connected with the single tool `status`, which says `clax` is not on `PATH`. Exit.
+- The fallback: start `env PATH=/usr/bin:/bin "$(command -v claude)"` (a PATH without `clax`; `claude` is given by its full path), open `/mcp`, and check that the `clax` server is connected with the single tool `status`, which says `clax` is not on `PATH`. Exit.
 
 ### C. The everyday loops
 
@@ -3708,7 +3710,18 @@ All of these run from the checkout. Your agents' home is `~/.clax` (daemon on 74
 - **`just uninstall`**: runs `clax uninit`, stops the agents' daemon if it runs the installed `clax`, then removes `~/.cargo/bin/clax`. It leaves `~/.local/bin/clax` and your data in `~/.clax`.
 - **`scripts/verify-harnesses.sh`**: rerun it after a harness CLI updates, or after a change to `clax init`/`uninit` (see A).
 
-### D. Cut the first release, v0.3.0, if and when you choose
+### D. Re-sign the unsigned commits, when you choose (before tagging)
+
+The commits since the last re-sign were made unsigned, for one batch re-sign. Ask the agent to re-sign them: it rebuilds each unsigned commit with your SSH signature, keeping every tree, message, author and date, after backing up `main` to `refs/backup/pre-resign`. Then check and push:
+
+```bash
+for c in $(git rev-list main); do git cat-file commit $c | grep -q '^gpgsig ' || echo "unsigned: $c"; done   # prints nothing
+git push --force-with-lease origin main
+```
+
+Re-signing changes every rebuilt commit's hash, so hashes quoted in docs and notes from before it no longer resolve on `main`.
+
+### E. Cut the first release, v0.3.0, if and when you choose
 
 Releases are only for people without a checkout, and nothing on this machine depends on them. Tag v0.3.0 only after A and B pass and `just ci` passes on `main`, and only when you decide to. Making the repository public is a separate decision, also yours: a release can be published while it is private, but `install.sh` gets 404 until it is public.
 
@@ -3736,6 +3749,3 @@ codesign -dv "$T/clax" 2>&1 | grep -i adhoc
 rm -rf "$T"
 ```
 
-### E. Re-sign the unsigned commits, when you choose
-
-The commits from 2e08cad on were made unsigned, for one batch re-sign. Do it before tagging, if you want the tag's history signed.

@@ -47,7 +47,10 @@ rm -rf "$HOME/.clax"
 # A daemon whose recorded executable is gone is stopped; one whose executable
 # exists is left alone.
 exec 3>&2 2>/dev/null # keep the shell's "Terminated" job notice out of the output
-sleep 60 &
+# A stand-in daemon whose command line names its recorded binary, as a real
+# daemon's does (stop_orphan_daemon checks it, so a reused PID is never hit).
+fake_daemon() { (exec -a "$1 serve --foreground" sleep 60) & }
+fake_daemon "$T/gone/clax"
 orphan=$!
 sleep 60 &
 kept=$!
@@ -60,6 +63,16 @@ sleep 0.3
 if ! kill -0 "$orphan" 2>/dev/null && kill -0 "$kept" 2>/dev/null; then
     pass "only a dev daemon whose binary is gone is stopped"
 else fail "only a dev daemon whose binary is gone is stopped"; fi
+# A recorded PID now held by an unrelated process (PID reuse) is left alone.
+sleep 60 &
+reused=$!
+mkdir -p "$T/o3"
+printf '{\n  "port": 1,\n  "pid": %s,\n  "exe": "%s"\n}\n' "$reused" "$T/gone/clax" > "$T/o3/daemon.json"
+stop_orphan_daemon "$T/o3" >/dev/null
+sleep 0.3
+if kill -0 "$reused" 2>/dev/null; then pass "stop_orphan_daemon leaves a reused PID alone"
+else fail "stop_orphan_daemon signalled a process that is not the recorded daemon"; fi
+kill "$reused" 2>/dev/null
 sleep 60 &
 agents=$!
 mkdir -p "$HOME/.clax"
@@ -202,7 +215,7 @@ else fail "a bare just dev ($(cat "$T/out" "$T/err"))"; fi
 # just watch stops a dev daemon an earlier `just dev` left behind, before it
 # checks the port; with --shared it leaves ~/.clax's daemon alone.
 exec 3>&2 2>/dev/null
-sleep 60 &
+fake_daemon "$T/gone/clax"
 left=$!
 sleep 60 &
 agents=$!
