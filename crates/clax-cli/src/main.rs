@@ -73,6 +73,8 @@ pub enum Cmd {
     /// The copy is kept while any harness's registry still names it or
     /// cannot be read. The same known miss as `init` applies to Pi entries.
     Uninit(commands::init::Args),
+    /// Print a haiku about Clax, one of ten, chosen at random.
+    Haiku,
 }
 
 impl Cli {
@@ -170,6 +172,7 @@ fn main() {
         Cmd::Hook(a) => commands::hook::run(&cli, &home, a),
         Cmd::Init(a) => commands::init::init(&cli, &home, a),
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
+        Cmd::Haiku => commands::haiku::run(&cli),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");
