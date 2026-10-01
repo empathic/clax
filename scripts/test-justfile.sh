@@ -14,10 +14,10 @@ while IFS= read -r line; do
     fi
 done < <(just --list --unsorted)
 recipes="$(just --summary)"
-for r in dev watch install uninstall serve stop doctor; do
+for r in dev watch install uninstall serve stop doctor wrapper-test install-test; do
     case " $recipes " in *" $r "*) ;; *) echo "missing recipe: $r" >&2; missing=1 ;; esac
 done
-for r in dev-install dev-uninstall; do
+for r in dev-install dev-uninstall installer-test; do
     case " $recipes " in *" $r "*) echo "recipe $r should not exist" >&2; missing=1 ;; esac
 done
 exit "$missing"

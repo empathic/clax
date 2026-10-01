@@ -4,12 +4,12 @@
 #
 # Installs this repository's Codex marketplace and the clax plugin into a
 # scratch CODEX_HOME, has Codex publish a page through the plugin's MCP server,
-# then verifies the page and the registered session. The plugin's installer
-# script resolves the working tree's target/debug/clax (CLAX_BIN), and the
-# shim starts the daemon itself in a scratch CLAX_HOME; this script starts
-# nothing. The person's own ~/.codex is never read or written, except that
-# ~/.codex/auth.json is copied into the scratch home for the run (Codex needs
-# credentials) and that copy is deleted on exit.
+# then verifies the page and the registered session. The plugin's wrapper
+# (scripts/ensure-clax.sh) resolves the working tree's target/debug/clax
+# (CLAX_BIN), and the shim starts the daemon itself in a scratch CLAX_HOME;
+# this script starts nothing. The person's own ~/.codex is never read or
+# written, except that ~/.codex/auth.json is copied into the scratch home for
+# the run (Codex needs credentials) and that copy is deleted on exit.
 #
 # Modes:
 #   (default)  features.hooks is unset, so only the MCP server runs; the

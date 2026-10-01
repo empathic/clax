@@ -39,9 +39,13 @@ web-e2e: web
 pi-test:
     cd plugins/pi && npm ci && npm run typecheck && npm test
 
-# Run the installer script tests
-installer-test:
+# Run the plugin wrapper tests (scripts/ensure-clax.sh)
+wrapper-test:
     ./scripts/test-ensure-clax.sh
+
+# Run the release installer tests (install.sh)
+install-test:
+    ./scripts/test-install.sh
 
 # Check the plugin manifests, commands, and skill
 plugin-test:
@@ -69,16 +73,17 @@ check *GATES:
 ci *GATES:
     ./scripts/quality_gates.sh {{GATES}}
 
-# Install clax from this checkout into ~/.cargo/bin and register its plugins with each harness found
+# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), and register the plugins with each harness found
 install: web
-    cargo install --locked --path crates/clax-cli
+    cargo install --locked --root "${CARGO_HOME:-$HOME/.cargo}" --path crates/clax-cli
+    . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
     "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
-    @b="${CARGO_HOME:-$HOME/.cargo}/bin/clax"; f="$(command -v clax || true)"; if [ "$f" != "$b" ]; then echo "warning: the first clax on PATH is ${f:-none}, not $b; the plugins run the first one, so put ${b%/clax} first on PATH" >&2; fi
 
-# Remove the plugin registrations and the clax installed by `just install`
+# Remove the plugin registrations, stop the agents' daemon if it runs the installed clax, and remove that clax
 uninstall:
     -"${CARGO_HOME:-$HOME/.cargo}/bin/clax" uninit
-    -cargo uninstall clax-cli
+    -. scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
+    -cargo uninstall --root "${CARGO_HOME:-$HOME/.cargo}" clax-cli
 
 # Run the dev daemon in the foreground on ~/.clax-dev, port 7481 (extra args go to `clax serve`)
 serve *ARGS:

@@ -14,20 +14,27 @@ From a clone of this repository (see Prerequisites):
 just install
 ```
 
-It builds the web UI and `clax`, installs `clax` into `~/.cargo/bin`
-(`cargo install --locked --path crates/clax-cli`), and runs `clax init`.
+It builds the web UI and `clax`, installs `clax` into `$CARGO_HOME/bin`
+(`~/.cargo/bin` by default; `cargo install --locked --root "$CARGO_HOME"
+--path crates/clax-cli`), and runs `clax init`. When your agents' daemon (the
+one for `~/.clax`) runs that `clax`, `just install` stops it with `clax
+stop`, so the next agent call starts it again from the new build. Without
+that, a reinstall at the same version would leave the old build running,
+since clients keep a daemon of their own version. A daemon of any other
+executable, such as `just watch --shared`'s, is left running and named.
 `clax init` writes the Clax plugins built into that binary to
 `~/.clax/marketplace/` and registers them with each harness whose CLI is on
 your `PATH`: Claude Code, Codex and Pi. The registration replaces any older
 one, including registrations under Clax's previous name. Start a new session
 in each harness afterwards. The plugins run the `clax` on the `PATH` the
-harness starts with, so `~/.cargo/bin` must be on it; `just install` warns
+harness starts with, so `~/.cargo/bin` must be on it; `clax init` warns
 when the first `clax` on your `PATH` is another one. Nothing is downloaded,
 and moving or deleting the clone afterwards changes nothing.
 
 `just uninstall` reverses it: `clax uninit` removes the registrations (and
-`~/.clax/marketplace/` once no harness refers to it), then `cargo uninstall
-clax-cli` removes `~/.cargo/bin/clax`. It leaves `~/.local/bin/clax` alone,
+`~/.clax/marketplace/` once no harness refers to it), the agents' daemon is
+stopped when it runs the installed `clax`, then `cargo uninstall clax-cli`
+removes `~/.cargo/bin/clax`. It leaves `~/.local/bin/clax` alone,
 since that one comes from `install.sh`, and never touches your data in
 `~/.clax`.
 
@@ -107,13 +114,18 @@ check `which -a clax`, and delete an old `~/.local/bin/clax` or
 wherever you set it. Check with `clax doctor --agent <claude|codex|pi>`.
 
 A newer daemon is never replaced by an older `clax`. After installing an
-older version, run `clax stop` once.
+older version, run `clax stop` once. An older daemon is replaced by the
+Claude Code and Codex plugins' MCP server and by `clax serve`, not by Pi or
+the other CLI commands, so after an upgrade that came from `install.sh`, a
+machine that uses only Pi or the CLI keeps the older daemon until `clax
+stop`. `just install` stops it itself.
 
 ## Developing Clax
 
 Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
-port 7481 (its `config.toml` says `[serve] port = 7481`, written on first
-use). Your agents' home, `~/.clax`, their daemon on 7480, and the `clax`
+port 7481 (its `config.toml` says `[serve] port = 7481`, or the port in
+`CLAX_DEV_PORT`, written by whichever of `just watch` and `just dev` runs
+first). Your agents' home, `~/.clax`, their daemon on 7480, and the `clax`
 they have installed are never touched.
 
 **The daemon and the web UI: `just watch`.** An auto-reloading server at
@@ -153,15 +165,17 @@ just dev claude --resume  # extra arguments go to the harness
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary
-binary is gone, is stopped at the next start; a `just watch` daemon is left
-alone. `just install` puts the working tree in front of your everyday agents,
-and `just uninstall` takes it away again.
+binary is gone, is stopped at the next `just dev` or `just watch`, which says
+so; a `just watch` daemon is left alone, and `~/.clax` and port 7480 are never
+touched. `just install` puts the working tree in front of your everyday agents
+(their daemon restarts on the new build at their next call), and `just
+uninstall` takes it away again.
 
 - `just help` (or bare `just`) lists every recipe with a description.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh`, `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 One run of the gates at a time per checkout: a run holds
 `quality-gates.lock` in the checkout's git directory, a second run in the
