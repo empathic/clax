@@ -685,8 +685,9 @@ describe("ArtifactView", () => {
     const root = view.root;
     const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
     const win = frame.contentWindow!;
-    const posted: { type: string; pickId?: string }[] = [];
-    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    // Each message keeps what had focus when it was posted.
+    const posted: { type: string; pickId?: string; focused?: Element | null }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push({ ...m, focused: document.activeElement }); }) as typeof win.postMessage;
     const refused = () => posted.filter(m => m.type === "clax:pick-refused").map(m => m.pickId);
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     const comment = buttonNamed(root, "Comment");
@@ -727,6 +728,8 @@ describe("ArtifactView", () => {
     const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the composer");
     // Its textarea has focus: the bridge may render the clip now.
     await waitFor(() => posted.some(m => m.type === "clax:composer-ready" && m.pickId === "mine"), "composer ready");
+    // It had focus before the message went.
+    expect(posted.find(m => m.type === "clax:composer-ready")!.focused).toBe(textarea);
     expect(document.activeElement).toBe(textarea);
     textarea.value = "my words";
     textarea.dispatchEvent(new Event("input", { bubbles: true }));
@@ -764,7 +767,7 @@ describe("ArtifactView", () => {
     gestureIn(frame);
     fromFrame(win, startOf(pick("p1", "Goals")));
     const textarea = await waitFor(() => root.querySelector<HTMLTextAreaElement>(".composer textarea"), "the composer");
-    expect(root.querySelector(".composer")!.textContent).toContain("Taking the screenshot…");
+    await waitFor(() => root.querySelector(".composer")!.textContent!.includes("Taking the screenshot…"), "the status line");
     expect(buttonNamed(root, "Post comment").disabled).toBe(true);
     expect(comment.getAttribute("aria-pressed")).toBe("false");
     await waitFor(() => document.activeElement === textarea, "the textarea focused");
