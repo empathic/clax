@@ -31,7 +31,14 @@ for (const [html, markers] of [["index.html", []], ["artifact.html", ["<!--clax:
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
 console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}`);
 
+const KEYS = ["gallery", "artifact", "bridge", "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
+// A missing or non-numeric budget would turn its check off; refuse it instead.
+const bad = budget ? KEYS.filter(k => !Number.isFinite(budget[k])) : [];
+if (bad.length) {
+  console.error(`web/perf/bundle-budget.json lacks a numeric budget for: ${bad.join(", ")}`);
+  process.exit(1);
+}
 if (process.argv.includes("--record")) {
   const up = n => Math.floor(n * 1.1);
   const next = { ...(budget ?? { bridgeBaseline: sizes.bridge }) };

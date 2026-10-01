@@ -19,6 +19,7 @@ async fn each_route_gets_its_own_entry() {
     };
     assert_eq!(body("/").await, "<p>gallery</p>");
     assert_eq!(body("/a/7q3k9mzx2b4t").await, "<p>artifact</p>");
+    assert_eq!(body("/a/7q3k9mzx2b4t/").await, "<p>artifact</p>");
     assert_eq!(
         body("/a/7q3k9mzx2b4t/v/2/docs/x.html").await,
         "<p>artifact</p>"

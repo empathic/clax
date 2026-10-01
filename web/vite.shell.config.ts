@@ -35,7 +35,7 @@ function inlineCss(): Plugin {
         let html = String(f.source);
         for (const css of sheets) {
           const text = String(css.source);
-          if (text.includes("</style")) throw new Error(`${css.fileName} contains "</style" and cannot be inlined`);
+          if (/<\/style/i.test(text)) throw new Error(`${css.fileName} contains "</style" and cannot be inlined`);
           html = html.replace(new RegExp(`<link rel="stylesheet"[^>]*href="/${escape(css.fileName)}"[^>]*>`), () => `<style>${text}</style>`);
         }
         if (html.includes(`<link rel="stylesheet"`)) throw new Error(`${f.fileName} still links a stylesheet`);
