@@ -217,6 +217,15 @@ fn init_removes_stale_registrations_including_the_previous_names_and_nothing_els
     // filesystem differs from the lexical one Pi stores and matches.
     std::fs::create_dir_all(e.p("store/pi")).unwrap();
     std::os::unix::fs::symlink(e.p("store/pi"), e.p("pi")).unwrap();
+    // Through the symlink, `pi/../oldpkg` is `store/oldpkg`, which exists
+    // too, so resolving through the filesystem finds a package there rather
+    // than failing over to the lexical path.
+    std::fs::create_dir_all(e.p("store/oldpkg")).unwrap();
+    std::fs::write(
+        e.p("store/oldpkg/package.json"),
+        format!(r#"{{"name":"@empathic/{OLD}-pi"}}"#),
+    )
+    .unwrap();
     let w = |rel: &str, text: String| {
         std::fs::create_dir_all(e.p(rel).parent().unwrap()).unwrap();
         std::fs::write(e.p(rel), text).unwrap();
@@ -260,7 +269,7 @@ fn init_removes_stale_registrations_including_the_previous_names_and_nothing_els
     w(
         "pi/settings.json",
         format!(
-            r#"{{"packages":["../oldpkg",{{"source":"../claxpkg"}},"{abs}","~/homepkg","../otherpkg","npm:@x/y"]}}"#,
+            r#"{{"packages":["../oldpkg","./../oldpkg",{{"source":"../claxpkg"}},"{abs}","~/homepkg","../otherpkg","npm:@x/y"]}}"#,
             abs = e.p("abspkg").display()
         ),
     );
@@ -286,6 +295,19 @@ fn init_removes_stale_registrations_including_the_previous_names_and_nothing_els
         assert!(calls.contains(&want), "missing {want:?} in {calls:#?}");
     }
     assert!(!calls.iter().any(|c| c.contains("other")), "{calls:#?}");
+    assert!(!calls.iter().any(|c| c.contains("/store/")), "{calls:#?}");
+    // Each package once, although `../oldpkg` is listed twice.
+    let removes = |p: &str| {
+        calls
+            .iter()
+            .filter(|c| **c == format!("pi remove {p}"))
+            .count()
+    };
+    assert_eq!(
+        removes(&e.p("oldpkg").display().to_string()),
+        1,
+        "{calls:#?}"
+    );
     assert_eq!(
         std::fs::read_to_string(e.p(&format!(".{OLD}/marker"))).unwrap(),
         "keep"

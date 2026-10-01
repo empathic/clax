@@ -87,10 +87,23 @@ pub struct Dirs {
 
 impl Dirs {
     /// The directories from the environment lookup `env`; `None` without `HOME`.
-    /// Empty variables count as unset.
+    /// Empty variables count as unset. Each directory is absolute: a leading
+    /// `~` or `~/` is expanded against `HOME`, and a relative value is taken
+    /// relative to `HOME`, where `clax init` runs the harness CLIs.
     pub fn from_env(env: impl Fn(&str) -> Option<String>) -> Option<Dirs> {
-        let var = |k: &str| env(k).filter(|v| !v.is_empty()).map(PathBuf::from);
-        let home = var("HOME")?;
+        let raw = |k: &str| env(k).filter(|v| !v.is_empty());
+        let home = PathBuf::from(raw("HOME")?);
+        let var = |k: &str| {
+            raw(k).map(|v| {
+                if v == "~" {
+                    home.clone()
+                } else if let Some(rest) = v.strip_prefix("~/") {
+                    home.join(rest)
+                } else {
+                    home.join(v)
+                }
+            })
+        };
         Some(Dirs {
             codex_home: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
@@ -677,6 +690,21 @@ mod tests {
         assert_eq!(d.claude_dir, PathBuf::from("/h/.claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
         assert!(Dirs::from_env(|_| None).is_none());
+    }
+
+    #[test]
+    fn dirs_expand_a_tilde_and_resolve_relative_values_against_home() {
+        let d = Dirs::from_env(|k| match k {
+            "HOME" => Some("/h".into()),
+            "CODEX_HOME" => Some("~".into()),
+            "CLAUDE_CONFIG_DIR" => Some("cfg/claude".into()),
+            "PI_CODING_AGENT_DIR" => Some("~/.pi/agent".into()),
+            _ => None,
+        })
+        .unwrap();
+        assert_eq!(d.codex_home, PathBuf::from("/h"));
+        assert_eq!(d.claude_dir, PathBuf::from("/h/cfg/claude"));
+        assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
     }
 
     #[test]
