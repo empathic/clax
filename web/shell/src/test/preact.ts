@@ -3,7 +3,14 @@
 import { type ComponentType, h, render } from "preact";
 import { act } from "preact/test-utils";
 
-export type Mounted<P> = { root: HTMLElement; update(props: P): void; unmount(): void };
+export type Mounted<P> = {
+  root: HTMLElement;
+  /** Re-renders the same instance, keeping its local state, with `props` as
+   * its whole props (a key absent from them is undefined), and runs its effects. */
+  update(props: P): void;
+  /** Removes the component and runs its cleanups. */
+  unmount(): void;
+};
 
 function attach(): HTMLElement {
   const root = document.createElement("div");
