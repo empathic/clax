@@ -5,59 +5,28 @@ browser, and get the comments people leave on them back into the session.
 
 ## Install
 
-No release has been published yet: install from a clone of this repository.
-Build the binary, then add the clone as a marketplace:
+From a clone of the Clax repository, run `just install`: it installs `clax`
+into `~/.cargo/bin` and runs `clax init`, which registers this plugin (the
+copy built into that binary, written to `~/.clax/marketplace/`). Then start a
+new session. Without a clone, the release installer (`install.sh`, see the
+top-level README) puts `clax` in `~/.local/bin`; then run `clax init`.
 
-```
-cd /path/to/clax
-just web                                  # once: builds the web UI the binary embeds
-cargo install --path crates/clax-cli      # puts `clax` in ~/.cargo/bin
-```
-
-```
-/plugin marketplace add /path/to/clax
-/plugin install clax@clax
-```
-
-The plugin runs `clax` through a small launcher, `scripts/ensure-clax.sh`,
-which uses the first of:
-
-1. `CLAX_BIN`, an absolute path to a build;
-2. `clax` on `PATH`;
-3. `~/.local/bin/clax` (or `$CLAX_INSTALL_DIR/clax`), then
-   `~/.clax/bin/clax`;
-4. a source checkout's `target/release/clax` or `target/debug/clax`,
-   whichever is newer (see "Working from a source checkout");
-5. a download of the latest release, checked against its `.sha256` file
-   (which comes from the same place as the tarball, so it protects integrity,
-   not authenticity). This is not available until the first release is
-   published; until then it fails with a message naming the remedies.
-
-Hooks never download anything: when no binary is found they print one line,
-log it to `~/.clax/logs/hooks.log`, and exit 0, so a missing binary never
-fails a Claude Code turn.
+The plugin runs `clax` from the `PATH` the harness starts with (or
+`CLAX_BIN`), through a small wrapper, `scripts/ensure-clax.sh`. The wrapper
+never downloads or builds anything. A `clax` whose version differs from the
+plugin's runs with a warning in `~/.clax/logs/hooks.log`. Without any `clax`,
+the MCP server still starts, with a single tool, `status`, that says why and
+how to fix it. Hooks print one line, log it, and exit 0, so a missing binary
+never fails a turn.
 
 ## Working from a source checkout
 
-- `cargo install --path crates/clax-cli` (above) is the simplest: with
-  `~/.cargo/bin` on the `PATH` Claude Code starts with, the launcher finds
-  `clax` there. Run it again after changing the Rust code.
-- A plugin installed from a marketplace (`/plugin install`) runs from Claude
-  Code's own copy under `~/.claude/plugins/cache`, not from the checkout, so
-  the launcher cannot find the checkout's build by itself: install with
-  `cargo install` (above), or set `CLAX_SOURCE_DIR=/path/to/clax` in the
-  environment Claude Code starts with.
-- Only when Claude Code loads the plugin straight from the checkout
-  (`claude --plugin-dir /path/to/clax/plugins/claude-code`) does
-  `cargo build -p clax-cli` suffice: the launcher looks above the plugin
-  directory and uses the checkout's `target/debug/clax` (or
-  `target/release/clax` when newer).
-- Or set `CLAX_BIN` to a binary.
-
-Claude Code installs the plugin when you run `/plugin install`; after changing
-the checkout (the skill, the hooks, the launcher), update the marketplace
-(`/plugin marketplace update clax`) and reinstall the plugin, then start a
-new session. `/clax:doctor` reports a stale copy.
+`just dev claude` starts a session on a fresh build with this plugin loaded
+from the checkout (`claude --plugin-dir`), on a separate home and port;
+"Developing Clax" in the top-level README has the details. `just install`
+updates your everyday install: the installed plugin is the copy built into
+the installed binary, so a change to the skill, the hooks or the wrapper
+reaches it only through `just install`. `/clax:doctor` reports a stale copy.
 
 ## When something is missing
 
@@ -65,12 +34,14 @@ If the tools are missing, a hook reports an error, or comments do not arrive,
 run `/clax:doctor`, or from a shell
 
 ```
-clax doctor --agent claude       # or /path/to/clax/target/debug/clax doctor --agent claude
+clax doctor --agent claude
 ```
 
-It checks each layer and names the fix for each failure: `binary` (which
-`clax` and its version), `plugin` (the installed plugin and whether its
-version and launcher match the binary), `skill` (whether the installed skill
+It checks each layer and names the fix for each failure: `binary` (this
+`clax`, the one the plugins run, and every `clax` on `PATH`), `upgrade`
+(whether a failed upgrade keeps the daemon at an older version, until
+when, and why), `plugin` (the installed plugin and whether its version and
+wrapper match the binary), `skill` (whether the installed skill
 states the binary's tool count and is the skill the binary was built with),
 `mcp` (whether the daemon has a live Claude Code session, which the MCP server
 registers), `hooks` (the latest Claude Code lines in
@@ -79,9 +50,12 @@ push state).
 
 `~/.clax/logs/hooks.log` (under `$CLAX_HOME` when set) has one line per
 hook run (agent, event, binary, duration, exit code, and the start of any
-error) and one per launcher run that found no binary. It rotates to
-`hooks.log.1` past 1 MiB. The `status` tool reports `plugin_version` and
-`skew: true` when the plugin and the binary differ.
+error), one `launch` line per MCP server start (the binary, its version, and
+any version warning), and one `launcher` line per wrapper run that could not
+run `clax` (the reason and the binaries it tried). It rotates to
+`hooks.log.1` past 1 MiB. The `status` tool reports `binary` (the `clax`
+answering), `plugin_version`, and `skew: true` when the plugin and the
+binary differ.
 
 ## What it adds
 

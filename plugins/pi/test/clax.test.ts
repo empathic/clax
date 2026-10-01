@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
@@ -8,7 +8,7 @@ import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, textPrefix } from "../src/clax.ts";
-import { binaryVersion, discover, endpointOf, ensure } from "../src/daemon.ts";
+import { binaryVersion, discover, endpointOf, ensure, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 
@@ -300,6 +300,29 @@ describe("clax Pi extension", () => {
     expect(s).not.toHaveProperty("daemon_version");
     // The tests run with CLAX_BIN set, so the binary is the test daemon's.
     expect(s.binary).toMatchObject({ path: claxBin, version: s.version });
+    expect(s).not.toHaveProperty("upgrade_held");
+  });
+
+  it("status reports upgrade_held while a failed upgrade keeps the daemon at an older version", async () => {
+    // A failed upgrade to a newer build, recorded as the Rust client records it.
+    const exe = join(scratch, "held-clax");
+    writeFileSync(exe, "#!/bin/sh\nexit 1\n");
+    chmodSync(exe, 0o755);
+    const record = join(daemon.home, "logs", "failed-upgrade.json");
+    mkdirSync(join(daemon.home, "logs"), { recursive: true });
+    writeFileSync(record, JSON.stringify({
+      version: "99.0.0", exe, mtime_ns: statSync(exe, { bigint: true }).mtimeNs.toString(),
+      at: Math.floor(Date.now() / 1000), from_version: "0.1.0", reason: "it crashed",
+    }));
+    try {
+      const { pi, ctx } = load(daemon.home, "pi-held");
+      const s = json(await pi.callTool("clax_status", {}, ctx));
+      expect(s.upgrade_held).toMatchObject({ version: "99.0.0", exe, from_version: "0.1.0", reason: "it crashed" });
+      expect(s.upgrade_held.until).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+      expect(s.upgrade_held.advice).toContain("clax stop");
+    } finally {
+      rmSync(record, { force: true });
+    }
   });
 
   it("refuses a relative path when the session has no working directory", async () => {
@@ -846,6 +869,30 @@ describe("ensure", () => {
       execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
     }
   }, 30_000);
+
+  it("waits for `clax serve` while another client's daemon replacement holds the start lock", async () => {
+    // A replacement holds daemon.lock for up to about 32 s; this one holds it
+    // 12 s, longer than the 10 s ensure used to allow.
+    expect(SERVE_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 32_000);
+    const home = join(scratch, "locked");
+    mkdirSync(home, { recursive: true });
+    const holder = spawn("python3", ["-c",
+      "import fcntl, sys, time; f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(12)",
+      join(home, "daemon.lock")], { stdio: ["ignore", "pipe", "inherit"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout!.once("data", () => resolve());
+        holder.once("exit", code => reject(new Error(`the lock holder exited with ${code}`)));
+      });
+      const t0 = Date.now();
+      const info = await ensure(home, { env: withBin(claxBin), port: 0 });
+      expect(Date.now() - t0).toBeGreaterThan(10_000);
+      expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
+    } finally {
+      holder.kill();
+      execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
+    }
+  }, 60_000);
 
   it("names the install command when no clax binary is found", async () => {
     const e = ensure(join(scratch, "nobin"), { env: { PATH: "" } });

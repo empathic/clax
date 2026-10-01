@@ -10,7 +10,7 @@ import { extname, isAbsolute, join, basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { Type, type Static, type TSchema } from "typebox";
 import { ClientError, DaemonClient, type Registration } from "./client.ts";
-import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath } from "./daemon.ts";
+import { binaryVersion, claxHome, discover, endpointOf, ensure, findBinary, logPath, upgradeHeld } from "./daemon.ts";
 
 /** Default cap on the bytes `read` returns. */
 export const DEFAULT_READ_MAX_BYTES = 200_000;
@@ -808,11 +808,17 @@ class Tools {
     // Version skew between these tools and the daemon they call.
     if (h.version !== VERSION) out.daemon_version = h.version ?? null;
     // Which binary the extension runs: CLAX_BIN, else the clax on PATH.
+    let path: string | null = null;
     try {
-      const path = findBinary(this.env);
-      out.binary = { path, version: await binaryVersion(path, this.env) };
+      path = findBinary(this.env);
     } catch (e) {
       out.binary = { path: null, version: null, error: (e as Error).message };
+    }
+    if (path) {
+      const [version, held] = await Promise.all([binaryVersion(path, this.env), upgradeHeld(path, this.home, this.env)]);
+      out.binary = { path, version };
+      // A failed upgrade that keeps the daemon at an older version.
+      if (held) out.upgrade_held = held;
     }
     return out;
   }

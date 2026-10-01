@@ -27,7 +27,7 @@
 set -uo pipefail
 
 # This plugin's Clax version; a clax of another version runs with a warning.
-CLAX_VERSION="0.2.0"
+CLAX_VERSION="0.3.0"
 LOG_MAX_BYTES=1048576
 ARGV="$*"
 

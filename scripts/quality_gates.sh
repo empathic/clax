@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Runs every check CI runs. Pass --verbose to stream each gate's output.
+# The whole script is one function, so bash reads all of it before running
+# any of it: editing this file during a run cannot break that run.
+main() {
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # One run at a time per checkout: parallel runs corrupt each other (each
@@ -28,7 +31,10 @@ run() {
     fi
 }
 run "justfile"              scripts/test-justfile.sh
-run "installer"             scripts/test-ensure-clax.sh
+run "plugin wrapper"        scripts/test-ensure-clax.sh
+run "release scripts"       scripts/test-release.sh
+run "release installer"     scripts/test-install.sh
+run "dev scripts"           scripts/test-dev.sh
 run "plugins"               scripts/test-plugins.sh
 # The web UI is built before the cargo gates: a debug build serves web/dist
 # from disk and a release build embeds it, so `cargo test` and the comment
@@ -45,3 +51,5 @@ run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
 run "time to usable"        bash -c 'cd web && npm run perf'
 echo "all gates passed"
+}
+main "$@"; exit

@@ -1,67 +1,70 @@
 #!/usr/bin/env bash
-# Runs the daemon and the web bundlers with auto-reload. Extra args go to `clax serve`.
+# `just dev [claude|codex|pi] [harness arguments...]`: builds clax, puts the
+# build first on PATH from a temporary directory (removed on exit), and starts
+# the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
+# listens on $CLAX_DEV_PORT, else 7481). The agents' own home, daemon and
+# installed binary are untouched.
+#   claude  loads the Clax plugin from this checkout for this run:
+#           claude --plugin-dir plugins/claude-code, with an installed
+#           clax@clax disabled for the session (--settings)
+#   pi      loads the Clax extension and skill from this checkout for this
+#           run: pi -ne -e plugins/pi/src/clax.ts --skill plugins/pi/skills/clax
+#           (-ne: no extension is discovered, so an installed Clax package
+#           does not load twice; other installed extensions are off too)
+#   codex   runs the installed Clax plugin with the fresh build. Codex's own
+#           home and config are used as they are; to try plugin changes in
+#           Codex, run `just install`.
+# Without a harness, or when the first argument is an option (`just dev`,
+# `just dev --shared`), it runs `just watch` with those arguments instead.
+# CLAX_DEV_BIN=<binary> uses that binary instead of building (tests).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$(pwd -P)"
 
-PORT=7480
-ARGS="$*"
+case "${1:-}" in
+    "" | -*)
+        echo "clax dev: no harness given, so running \`just watch\` (\`just dev claude|codex|pi\` starts a harness)" >&2
+        exec scripts/watch.sh "$@"
+        ;;
+esac
 
-if [ -n "${CLAX_HOME:-}" ]; then
-    echo "Clax dev: serving CLAX_HOME=$CLAX_HOME"
+. scripts/dev-home.sh
+harness="$1"
+shift
+case "$harness" in
+    claude | codex | pi) ;;
+    # grok: not built yet. When it is, it runs like codex: the fresh build on
+    # PATH and the dev home, with the installed plugin.
+    *) echo "usage: just dev [claude|codex|pi] [harness arguments...]" >&2; exit 2 ;;
+esac
+command -v "$harness" >/dev/null 2>&1 || { echo "clax dev: $harness is not on PATH" >&2; exit 1; }
+
+if [ -n "${CLAX_DEV_BIN:-}" ]; then
+    bin="$CLAX_DEV_BIN"
 else
-    echo "Clax dev: serving CLAX_HOME=$HOME/.clax (the default home; CLAX_HOME=<scratch dir> just dev keeps it untouched)"
+    [ -f web/dist/index.html ] || (cd web && npm ci --silent && npm run build)
+    cargo build -q -p clax-cli --bin clax
+    bin=target/debug/clax
 fi
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+cp "$bin" "$tmp/clax"
+export PATH="$tmp:$PATH"
+export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
+ensure_dev_home "$CLAX_HOME" "${CLAX_DEV_PORT:-7481}"
+stop_orphan_daemon "$CLAX_HOME"
+echo "clax dev: $("$tmp/clax" --version) at $tmp/clax, CLAX_HOME=$CLAX_HOME"
 
-if ! cargo watch --version >/dev/null 2>&1; then
-    echo "cargo-watch is required: cargo install cargo-watch" >&2
-    exit 1
-fi
-command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
-if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-    echo "a daemon is already listening on $PORT; run \`just stop\` first" >&2
-    exit 1
-fi
-if [ ! -d web/node_modules ]; then
-    (cd web && npm ci)
-fi
-
-cleanup() {
-    trap - EXIT
-    trap '' INT TERM HUP
-    local pid
-    for pid in $(jobs -p); do
-        pkill -P "$pid" 2>/dev/null || true
-        kill "$pid" 2>/dev/null || true
-    done
-    if [ -x target/debug/clax ]; then
-        target/debug/clax stop >/dev/null 2>&1 || true
-    fi
-}
-trap cleanup EXIT
-trap 'exit 130' INT TERM HUP
-
-for cfg in bridge shell; do
-    (cd web && npx vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
-done
-
-(
-    for _ in $(seq 1 600); do
-        if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-            echo "Clax dev: http://localhost:$PORT (backend restarts on Rust changes; reload the browser for frontend changes)"
-            exit 0
-        fi
-        sleep 1
-    done
-) &
-
-# ARGS is deliberately unquoted so it splits into separate serve flags.
-# Run in the background and wait so signals interrupt the wait and fire the trap.
-cargo watch -q -w crates -w Cargo.toml -w Cargo.lock \
-    -x "run -q -p clax-cli -- serve --foreground --port $PORT $ARGS" &
-watch_pid=$!
-while :; do
-    rc=0
-    wait "$watch_pid" || rc=$?
-    [ "$rc" -gt 128 ] || break
-done
-exit "$rc"
+# Not exec: the EXIT trap removes the temporary directory after the harness.
+case "$harness" in
+    claude)
+        claude --plugin-dir "$ROOT/plugins/claude-code" --settings '{"enabledPlugins":{"clax@clax":false}}' "$@"
+        ;;
+    pi)
+        pi -ne -e "$ROOT/plugins/pi/src/clax.ts" --skill "$ROOT/plugins/pi/skills/clax" "$@"
+        ;;
+    codex)
+        echo "clax dev: Codex runs its installed Clax plugin; run \`just install\` to try plugin changes"
+        codex "$@"
+        ;;
+esac

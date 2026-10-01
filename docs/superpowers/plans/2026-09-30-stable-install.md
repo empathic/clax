@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-28-clax-design.md`. Task 1 amends §2 (D15 note and new D16), §3, §4, §5, §7, §13, §14 and §16. The person's decisions are in `.superpowers/sdd/2026-09-30-stable-install/decisions.md`. Its last section, "REDESIGN", supersedes the earlier ones wherever they conflict, and it is binding.
 
-**Precondition:** `git status --short -- docs/contract.md docs/superpowers/specs README.md plugins scripts justfile install.sh .github crates web/vite.shell.config.ts` prints nothing. A Task 1 run of the superseded plan may have left uncommitted D16 edits in the spec; if so, the person discards them first (see "Steps for the person", A). If anything else shows up, someone else has uncommitted work in files this plan edits: stop and ask. Do not stash, discard or commit another person's changes.
+**Precondition:** `git status --short -- docs/contract.md docs/superpowers/specs README.md plugins scripts justfile install.sh .github crates web/vite.shell.config.ts` prints nothing. A Task 1 run of the superseded plan may have left uncommitted D16 edits in the spec; if so, the person discards them first. If anything else shows up, someone else has uncommitted work in files this plan edits: stop and ask. Do not stash, discard or commit another person's changes.
 
 ## Global Constraints
 
@@ -52,7 +52,7 @@ These settle the open questions. Each is binding for the tasks below.
 | Harness | `clax init` | `clax uninit` | Load from a directory for `just dev` |
 |---|---|---|---|
 | Claude Code | `claude plugin uninstall clax@clax`, `claude plugin marketplace remove clax` (failures ignored), then `claude plugin marketplace add <root>`, `claude plugin install clax@clax` | the first two | `claude --plugin-dir <checkout>/plugins/claude-code`, with `--settings '{"enabledPlugins":{"clax@clax":false}}'` so an installed `clax@clax` does not load beside it |
-| Codex | `codex plugin remove clax@clax`, `codex plugin marketplace remove clax` (failures ignored), then `codex plugin marketplace add <root>`, `codex plugin add clax@clax` | the first two | **Not supported.** Codex has no plugin-directory flag: `codex plugin add` copies the plugin into `$CODEX_HOME/plugins/cache/`. `just dev codex` therefore runs Codex on a dev `CODEX_HOME` (`~/.clax-dev/codex-home`). There it removes and re-adds the checkout as the `clax` marketplace and reinstalls the plugin before every start, so each start sees the checkout as it is. The real `~/.codex` is never touched, and the person logs in once in the dev `CODEX_HOME`. |
+| Codex | `codex plugin remove clax@clax`, `codex plugin marketplace remove clax` (failures ignored), then `codex plugin marketplace add <root>`, `codex plugin add clax@clax` | the first two | **Not supported.** Codex has no plugin-directory flag: `codex plugin add` copies the plugin into `$CODEX_HOME/plugins/cache/`. `just dev codex` therefore runs Codex on a dev `CODEX_HOME` (`~/.clax-dev/codex-home`). There it removes and re-adds the checkout as the `clax` marketplace and reinstalls the plugin before every start, so each start sees the checkout as it is. The real `~/.codex` is never touched, and the person logs in once in the dev `CODEX_HOME`. **Superseded** by the decision "Skip it for Codex and Grok": `just dev codex` runs the real `~/.codex` with the installed plugin and the fresh build first on `PATH`; there is no dev `CODEX_HOME` and no login step. |
 | Pi | `pi remove <each installed package named @empathic/clax-pi>`, then `pi install <root>/plugins/pi` | the removals | `pi -ne -e <checkout>/plugins/pi/src/clax.ts --skill <checkout>/plugins/pi/skills/clax`. `-ne` turns off extension discovery for that session, so an installed Clax package does not load twice. Other installed extensions are off for that session too. |
 
 `pi install <path>` records the path in `settings.json` relative to the settings directory, and loads the package from there on every start. A Pi package that `clax init` wrote to `~/.clax/marketplace/plugins/pi` has no `node_modules`. The extension imports only Node built-ins, `typebox` and `@mariozechner/pi-coding-agent`, which Pi provides to extensions. "Steps for the person" confirms this on a real Pi.
@@ -2962,6 +2962,8 @@ git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
 ---
 ### Task 10: `just install`, `just dev [harness]`, `just watch`
 
+> **Superseded in part.** The Codex dev home below (`~/.clax-dev/codex-home`, re-adding the checkout before each start, logging in there) was replaced by the decision "Skip it for Codex and Grok": `just dev codex` runs the real `~/.codex` with the installed plugin and the fresh build first on `PATH`. A bare `just dev` runs `just watch`, not Claude Code. After the final review, `just install` also stops the agents' daemon when it runs the installed `clax`, and leaves the `PATH` warning to `clax init`; `just uninstall` stops that daemon before `cargo uninstall`; `just watch` stops an orphaned `just dev` daemon in its dev home. The README, `docs/contract.md` and "Steps for the person" describe what was built.
+
 **Files:**
 - Create: `scripts/dev-home.sh`, `scripts/dev.sh` (new content), `scripts/test-dev.sh`
 - Rename: `scripts/dev.sh` → `scripts/watch.sh` (then edit)
@@ -3670,51 +3672,60 @@ git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
 
 ## Steps for the person
 
-Agents stop at the end of Task 12. Everything below touches your real homes, harness registrations or GitHub, so only you do it.
+The tasks are done. Everything below touches your real homes, harness registrations or GitHub, so only you do it. Tagging a release and making the repository public are your decisions: no agent tags, publishes a release or changes the repository's visibility. Open items and checks still owed are listed in `docs/follow-ups.md`.
 
-### A. Before the plan runs
+### A. Check `clax init` against the real harness CLIs, in scratch directories
 
-A Task 1 run of the superseded plan left uncommitted edits in the spec (a D16 row about `~/.clax/bin/<version>` and dev links). If they are still there, discard them, so Task 1 starts from the committed spec:
+The agents ran `clax init` and `clax uninit` only against fake `claude`, `codex` and `pi` commands. Before B, run `scripts/verify-harnesses.sh` and paste its whole output to the agents (the harness versions are printed at the top, above the table). It builds Clax first (`cargo build -p clax-cli --bin clax`, honouring `CARGO_TARGET_DIR`) and tests that build; to test another binary, set `CLAX_BIN` to it.
 
-```bash
-cd /Users/alex/Devel/empathic/clax
-git diff --stat -- docs/superpowers/specs/2026-09-28-clax-design.md   # shows only that run's edits
-git checkout -- docs/superpowers/specs/2026-09-28-clax-design.md
-```
-
-### A2. Check `clax init` against the real harness CLIs, in scratch directories
-
-The agents ran `clax init` and `clax uninit` only against fake `claude`, `codex` and `pi` commands. Before B, build Clax (`cargo build -p clax-cli`), then run `scripts/verify-harnesses.sh` and paste its table to the agents.
-
-The script runs everything inside its own scratch root and deletes it on exit. It sets `HOME`, `CLAX_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` there, and refuses to run (exit 2) if any would fall inside your real home. It reads and copies no auth file, runs only commands that need no login, gives the scratch home its own daemon port (never 7480 or 7481), and stops that daemon on exit. It covers `init`, `init` again, `uninit --agent pi` while Claude Code and Codex still use the copy, `uninit`, registrations under the previous name (including a deleted checkout's Pi entry), and `doctor --agent` for each harness. A harness whose CLI is not on `PATH` is SKIPPED. The Pi session check needs a model, so it is SKIPPED unless you export `VERIFY_PI_SESSION=1` and your provider's API key yourself.
+The script runs everything inside its own scratch root and deletes it on exit. It sets `HOME`, `CLAX_HOME`, `CODEX_HOME`, `CLAUDE_CONFIG_DIR` and `PI_CODING_AGENT_DIR` there, and refuses to run (exit 2) if `HOME` is `/` or the scratch root would fall inside your real home. Each harness and Clax command runs under `env -i` with only those homes, `PATH` (the build first), a scratch `TMPDIR`, `TERM`, `LANG` and the harnesses' no-update/offline switches. Each is killed, with its process group, after `VERIFY_TIMEOUT` seconds (default 120) and then reported as FAIL. It reads and copies no auth file, runs only commands that need no login, gives the scratch home its own daemon port (never 7480 or 7481), and stops that daemon on exit. A harness whose CLI is not on `PATH` is SKIPPED. The Pi session check needs a model, so it is SKIPPED unless you export `VERIFY_PI_SESSION=1` and your provider's API key yourself.
 
 ### B. Move this machine to the new install
 
 ```bash
 cd /Users/alex/Devel/empathic/clax
+clax status          # note which binary runs the agents' daemon now
+clax stop            # stop it: just install only stops a daemon running the binary it installs
 git pull
 just install
 which -a clax        # ~/.cargo/bin/clax must come first
 ```
 
-`just install` runs `clax init`. That re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. Its output lists each harness as `registered` or `skipped`. A Pi package whose directory no longer exists (the old checkout's `plugins/pi`) is left registered, and Pi's line names it with the `pi remove …` command; run that command. Then:
+`just install` builds the web UI, installs `clax` into `~/.cargo/bin`, stops your agents' daemon if it runs that binary (their next call starts it again from the new build), and runs `clax init`. `clax init` re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. It lists each harness as `registered` or `skipped`, and warns when the first `clax` on `PATH` is not the one just installed. A Pi package whose directory no longer exists (the old checkout's `plugins/pi`) is left registered, and Pi's line names it with the `pi remove …` command; run that command. Then:
 
 - Remove stale binaries that `which -a clax` shows ahead of or beside `~/.cargo/bin/clax`: an old `~/.local/bin/clax` or `~/.clax/bin/clax`. Unset `CLAX_SOURCE_DIR` and `CLAX_INSTALL_DIR` in your shell profile.
 - Start a new session in each harness. Run `clax doctor --agent claude`, then `codex`, then `pi`: `binary` must say the plugins run `~/.cargo/bin/clax`, and `plugin` must pass. Ask the agent to call `status`; `binary.path` must be `~/.cargo/bin/clax`.
 - Pi: check that the extension loads from `~/.clax/marketplace/plugins/pi`, which has no `node_modules` (`pi list`, then a session in which the `clax_*` tools appear). If it cannot resolve `typebox` there, tell the agents; the fix is to register the checkout's `plugins/pi` for Pi instead.
-- The fallback: start `env PATH=/usr/bin:/bin claude` (a PATH without `clax`), open `/mcp`, and check that the `clax` server is connected with the single tool `status`, which says `clax` is not on `PATH`. Exit.
+- The fallback: start `env PATH=/usr/bin:/bin "$(command -v claude)"` (a PATH without `clax`; `claude` is given by its full path), open `/mcp`, and check that the `clax` server is connected with the single tool `status`, which says `clax` is not on `PATH`. Exit.
 
-Try the dev loops:
-- `just watch` serves http://localhost:7481 from `~/.clax-dev`. Your agents keep working on 7480.
-- `just dev` (Claude Code): check in `/plugin` that only the checkout's Clax plugin is active. If an installed `clax@clax` still loads beside it, disable it for dev sessions with `claude plugin disable clax@clax`, and tell the agents.
-- `just dev codex`: log in once when Codex asks. The login lives in `~/.clax-dev/codex-home` and never in `~/.codex`. To reuse your normal login, copy `~/.codex/auth.json` there yourself.
-- `just dev pi`.
+### C. The everyday loops
 
-### C. Cut the first release, v0.3.0, when you choose to make the repository public
+All of these run from the checkout. Your agents' home is `~/.clax` (daemon on 7480); the dev loops use `~/.clax-dev` (daemon on 7481, or `CLAX_DEV_PORT`).
 
-Releases are only for people without a checkout, and nothing local depends on them.
+- **`just install`**: after you edit anything (daemon, server, CLI, plugin, skill, hooks), this puts the working tree in front of every harness. It stops the agents' daemon when it runs the installed `clax`, so the next agent call runs the new build even when the version has not changed. Start a new harness session to pick up plugin, skill or hook changes.
+- **`just dev claude`**: Claude Code with this checkout's plugin (`--plugin-dir`) and the fresh build first on `PATH`, on `~/.clax-dev`. An installed `clax@clax` is disabled for that session by `--settings`; check in `/plugin` that only the checkout's copy is active. Extra arguments go to `claude` (`just dev claude --resume`).
+- **`just dev codex`**: your real `~/.codex`, as it is, with the installed Clax plugin and the fresh build first on `PATH`, on `~/.clax-dev`. Codex cannot load a plugin from a directory, so to try plugin, skill or hook changes in Codex, run `just install`. There is no separate Codex home and no login step.
+- **`just dev pi`**: Pi with this checkout's extension and skill (`-ne -e … --skill …`), on `~/.clax-dev`. `-ne` turns your other Pi extensions off for that session too.
+- **`just watch`**: the auto-reloading daemon and web UI at http://localhost:7481 on `~/.clax-dev`. If an earlier `just dev` left a daemon there whose temporary binary is gone, it stops that daemon first and says so; it never touches `~/.clax` or 7480. `just watch --shared` serves `~/.clax` on 7480 instead (stop the agents' daemon first with `clax stop`). A bare `just dev` runs `just watch`.
+- **`just uninstall`**: runs `clax uninit`, stops the agents' daemon if it runs the installed `clax`, then removes `~/.cargo/bin/clax`. It leaves `~/.local/bin/clax` and your data in `~/.clax`.
+- **`scripts/verify-harnesses.sh`**: rerun it after a harness CLI updates, or after a change to `clax init`/`uninit` (see A).
 
-1. Make the repository public when you decide to (Settings, General, Change visibility). Until then, a release can be published, but `install.sh` gets 404.
+### D. Re-sign the unsigned commits, when you choose (before tagging)
+
+The commits since the last re-sign were made unsigned, for one batch re-sign. Ask the agent to re-sign them: it rebuilds each unsigned commit with your SSH signature, keeping every tree, message, author and date, after backing up `main` to `refs/backup/pre-resign`. Then check and push:
+
+```bash
+for c in $(git rev-list main); do git cat-file commit $c | grep -q '^gpgsig ' || echo "unsigned: $c"; done   # prints nothing
+git push --force-with-lease origin main
+```
+
+Re-signing changes every rebuilt commit's hash, so hashes quoted in docs and notes from before it no longer resolve on `main`.
+
+### E. Cut the first release, v0.3.0, if and when you choose
+
+Releases are only for people without a checkout, and nothing on this machine depends on them. Tag v0.3.0 only after A and B pass and `just ci` passes on `main`, and only when you decide to. Making the repository public is a separate decision, also yours: a release can be published while it is private, but `install.sh` gets 404 until it is public.
+
+1. If and when you decide to make the repository public: Settings, General, Change visibility.
 2. Run the release workflow by hand on `main` (Actions, Release, Run workflow). All four builds and `assemble` must pass. If a runner label is unavailable, change that one job:
    - `x86_64-apple-darwin` builds on `macos-15` with the same `--target`. Its smoke step then runs under Rosetta (`softwareupdate --install-rosetta --agree-to-license`).
    - `aarch64-unknown-linux-musl` builds on `ubuntu-24.04` with `cargo install cargo-zigbuild`, `pip install ziglang` and `cargo zigbuild --release --locked --target aarch64-unknown-linux-musl -p clax-cli --bin clax`. Its smoke step cannot run there, so skip it for that target.
@@ -3737,3 +3748,4 @@ codesign -dv "$T/clax" 2>&1 | grep -i adhoc
 "$T/clax" --version                          # clax 0.3.0
 rm -rf "$T"
 ```
+
