@@ -68,6 +68,17 @@ describe("db handler", () => {
     expect(posted[0]).toMatchObject({ topic: "snapshot", data: { sub: "s1", docs: [{ path: "tasks/a" }] } });
   });
 
+  it("ends an ordered subscription over the daemon's byte budget once, without retrying it", async () => {
+    vi.useFakeTimers();
+    const { h, posted, requests } = setup(null, () => json({ error: { code: "resource_exhausted", message: "over the budget" } }, 400));
+    await h.call("subscribe", ["s1", { kind: "query", collection: "log", where: [], orderBy: "at", desc: false, limit: null }]);
+    expect(posted).toEqual([{ type: "clax:event", ns: "db", topic: "snapshot-error", data: { sub: "s1", code: "resource_exhausted", message: "over the budget" } }]);
+    h.onEvent!({ type: "doc", artifact_id: "7q3k9mzx2b4t", path: "log/a", version: 2 });
+    await vi.advanceTimersByTimeAsync(RETRY_MS[1] * 3);
+    expect(requests).toHaveLength(1);
+    expect(posted).toHaveLength(1);
+  });
+
   it("asks for every match of an ordered query without a limit, and the limit when there is one", async () => {
     const { h, requests } = setup(null, () => json({ docs: [doc("log/a", 1)], next_cursor: null }));
     await h.call("query", [{ kind: "query", collection: "log", where: [], orderBy: "at", desc: false, limit: null }]);

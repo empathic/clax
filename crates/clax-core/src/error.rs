@@ -30,7 +30,7 @@ pub enum CoreError {
     },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
-    /// The artifact's current version does not declare `capability`, which
+    /// The artifact's current declaration does not include `capability`, which
     /// the request needs.
     #[error("this artifact does not declare the {capability} capability")]
     NotDeclared { capability: &'static str },

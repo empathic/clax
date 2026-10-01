@@ -1,8 +1,8 @@
 //! The caller level of a `db` request (spec §9 "db", §14): the bearer token
 //! without a viewer (an agent, the CLI, a script; a cookie that names no
 //! viewer row is no viewer) is `owner`; the bearer token with a viewer (the
-//! owner shell on localhost) is `admin`; a cookie naming a viewer with a display name is `interact`;
-//! anything else is `view`. `?as_level=view|interact|admin` narrows the level
+//! owner shell on localhost) is `admin`; a cookie naming a viewer with a
+//! display name is `interact`; anything else is `view`. `?as_level=view|interact|admin` narrows the level
 //! and never raises it. The caller's viewer identity is the cookie's viewer's
 //! public ID, whatever the level.
 
@@ -132,9 +132,10 @@ impl CallerParts {
 
     /// The caller of a request on artifact `id`'s documents, as
     /// [`CallerParts::resolve`]. A caller without the token is refused
-    /// [`CoreError::NotDeclared`] when the artifact's current version does
-    /// not declare `db`; the token keeps access, so agents can seed data
-    /// before the page that reads it is published.
+    /// [`CoreError::NotDeclared`] when the artifact's current declaration
+    /// does not include `db` (a publish or a metadata edit can drop it); the
+    /// token keeps access, so agents can seed data before the page that
+    /// reads it is published.
     pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
         if !self.token && !st.doc_declared(id)? {
             return Err(CoreError::NotDeclared { capability: "db" });

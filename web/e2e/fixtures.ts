@@ -197,11 +197,6 @@ export async function colorStats(page: Page, pickId: string, rgb: [number, numbe
   }, { id: pickId, want: rgb, near: tol, from: fromRow, to: Number.isFinite(toRow) ? toRow : 1e9 });
 }
 
-/** Moves the mouse onto `loc` in steps, as a hand does. After the viewer's
- * input to the shell over the page, the shell covers the page with bands
- * until it sees the pointer move (web/shell/src/caps/gesture.ts); a hand
- * always moves before clicking, but Playwright's `click` and `hover` check
- * their target before moving, so a test reaches the element first. */
 /** A viewer named `name`, made through the daemon's API; its public ID. */
 export async function namedViewer(base: string, name: string): Promise<string> {
   const res = await fetch(`${base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
@@ -209,6 +204,11 @@ export async function namedViewer(base: string, name: string): Promise<string> {
   return ((await res.json()) as { viewer: { public_id: string } }).viewer.public_id;
 }
 
+/** Moves the mouse onto `loc` in steps, as a hand does. After the viewer's
+ * input to the shell over the page, the shell covers the page with bands
+ * until it sees the pointer move (web/shell/src/caps/gesture.ts); a hand
+ * always moves before clicking, but Playwright's `click` and `hover` check
+ * their target before moving, so a test reaches the element first. */
 export async function reach(page: Page, loc: Locator) {
   const b = (await loc.boundingBox())!;
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
