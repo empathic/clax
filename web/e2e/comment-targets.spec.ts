@@ -71,7 +71,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(clip.h).toBeGreaterThan(20);
     await expectVisibleClip(page, pick.pickId);
     // The picked line is marked with the outline's tint: one band, about a line tall, mid-clip.
-    const band = await tintStats(page, pick.pickId, [194, 65, 12], 0.18);
+    const band = await tintStats(page, pick.pickId, [237, 84, 57], 0.16);
     expect(band.count).toBeGreaterThan(500);
     expect(band.bottom - band.top).toBeLessThan(30);
     expect(band.top).toBeGreaterThan(clip.h / 4);
@@ -144,7 +144,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const clip = await clipStats(page, pick.pickId);
     expect(clip.h).toBeLessThan(400);
     await expectVisibleClip(page, pick.pickId);
-    const band = await tintStats(page, pick.pickId, [194, 65, 12], 0.18);
+    const band = await tintStats(page, pick.pickId, [237, 84, 57], 0.16);
     expect(band.count).toBeGreaterThan(300);
     expect(band.bottom - band.top).toBeLessThan(30);
   });
@@ -257,6 +257,6 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(clip.h / clip.w).toBeLessThanOrEqual(2400 / blockW + 0.05);
     expect(clip.h / clip.w).toBeGreaterThan(2000 / blockW);
     await expectVisibleClip(page, pick.pickId);
-    expect((await tintStats(page, pick.pickId, [194, 65, 12], 0.18)).count).toBeGreaterThan(1000);
+    expect((await tintStats(page, pick.pickId, [237, 84, 57], 0.16)).count).toBeGreaterThan(1000);
   });
 }

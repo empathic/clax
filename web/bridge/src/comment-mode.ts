@@ -13,7 +13,7 @@
 // widened element instead of the text, and a press never starts a native
 // drag of an image. Only the viewer's own (trusted) events count, so a page
 // cannot pick for them with synthetic events. The outline is clamped to the viewport so all four borders show,
-// in colours judged from the background behind the target. A selection that
+// with a tint judged from the background behind the target. A selection that
 // already existed when the mode was turned on is not a pick; turning the
 // mode off drops any pending hover, drag, and widening. The overlay lives in
 // a shadow root on <html>, so it never changes the page's body, selectors, or
@@ -33,14 +33,17 @@ export interface ModeHooks {
   cancel(): void;
 }
 
+// Shell tokens do not reach this shadow root, so the values repeat them:
+// #ed5439 is --pin, #2f0b04 --on-pin, #ffffff --pin-ring. The red-orange
+// border sits between a white outer and a brown inner hairline, so one of the
+// two keeps at least 3:1 against any page colour.
 const CSS = `:host{all:initial}
-.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid var(--ax-border,#c2410c);border-radius:3px;background:var(--ax-tint,rgba(194,65,12,.18));z-index:2147483647;display:none}
-.a{border-radius:0}
-.a.capturing{border-style:dashed;background:none}
-.f{border-style:dashed;border-radius:0;background:none}
+.o,.a,.f{position:fixed;box-sizing:border-box;pointer-events:none;border:2px solid #ed5439;border-radius:0;box-shadow:0 0 0 1px #fff,inset 0 0 0 1px #2f0b04;background:var(--ax-tint,rgba(237,84,57,.16));z-index:2147483647;display:none}
+.a.capturing,.f{border-style:dashed;background:none}
 .o.flash,.f.flash{animation:f .9s ease-out 2}
-.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#c2410c;box-shadow:0 1px 4px rgba(0,0,0,.3);z-index:2147483647;display:none}
-@keyframes f{50%{background:rgba(194,65,12,.4)}}`;
+.pin{position:fixed;pointer-events:none;width:18px;height:18px;margin:-20px 0 0 4px;border-radius:50% 50% 50% 0;background:#ed5439;border:1.5px solid #fff;box-sizing:border-box;box-shadow:0 1px 3px rgba(47,11,4,.45);z-index:2147483647;display:none}
+@keyframes f{50%{background:rgba(237,84,57,.4)}}
+@media (prefers-reduced-motion:reduce){.o.flash,.f.flash{animation:none;background:rgba(237,84,57,.3)}}`;
 
 /** A drag that draws an area: where it started, in page coordinates. */
 type Drag = { x: number; y: number };
@@ -59,7 +62,7 @@ export class CommentMode {
   private base: Element | Range | null = null;
   private readonly widen = new Widen();
   private drag: Drag | null = null;
-  private border = "";
+  private tint = "";
   private pointer = { x: 0, y: 0, el: null as Element | null };
   private selectionBefore: Range | null = null;
   /** A pick's clip is being taken (for an area, with its rectangle drawn):
@@ -220,9 +223,8 @@ export class CommentMode {
   /** Sets the overlay's colours for the background behind `el`. */
   private colour(el: Element | null): void {
     const c = outlineColors(el ? backgroundBehind(el) : "#ffffff");
-    if (c.border !== this.border) {
-      this.border = c.border;
-      this.host.style.setProperty("--ax-border", c.border);
+    if (c.tint !== this.tint) {
+      this.tint = c.tint;
       this.host.style.setProperty("--ax-tint", c.tint);
     }
   }
