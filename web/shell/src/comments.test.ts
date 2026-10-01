@@ -1,5 +1,5 @@
 import type { Component } from "svelte";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { isSubmitKey, submitKeysLabel } from "./comments";
 import { flush, mount } from "./test/svelte";
 import { type Thread, areaLabel } from "./threads";
@@ -17,8 +17,22 @@ const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
 });
 const at = (id: string, y: number) => ({ id, found: true, method: "exact" as const, rect: { x: 10, y, w: 100, h: 20 } });
 
+// Animation frames are held until a test runs them (the browser's paints).
+let frames = new Map<number, FrameRequestCallback>();
+let frameIds = 0;
+const runFrames = () => flush(() => { const due = [...frames.values()]; frames.clear(); for (const f of due) f(performance.now()); });
+beforeEach(() => {
+  frames = new Map();
+  vi.stubGlobal("requestAnimationFrame", (f: FrameRequestCallback) => { frames.set(++frameIds, f); return frameIds; });
+  vi.stubGlobal("cancelAnimationFrame", (n: number) => { frames.delete(n); });
+});
+afterEach(() => { vi.unstubAllGlobals(); });
+
+/** Mounts `C` and runs the frames of its first paint and the one after. */
 function mountIt<P extends Record<string, unknown>>(C: Component<P>, props: P) {
   const view = mount(C, props);
+  runFrames();
+  runFrames();
   const { root } = view;
   return { root, update: view.update, done: () => { view.unmount(); root.remove(); } };
 }
@@ -272,6 +286,19 @@ describe("the submit shortcut", () => {
     expect(onSubmit).toHaveBeenCalledWith("Ship it");
     expect(postButton.getAttribute("aria-disabled")).toBeNull();
     m.done();
+  });
+
+  it("opens its status line blank and says it once the composer has painted, so it is announced", () => {
+    const view = mount(Composer, { draft: draft({ capturing: true, clipToken: "t" }), onCancel: vi.fn(), onSubmit: vi.fn(async () => {}) });
+    const status = view.root.querySelector<HTMLElement>("[role=status]")!;
+    expect(status.textContent).toBe("\u00a0");
+    runFrames();
+    expect(status.textContent).toBe("\u00a0");
+    runFrames();
+    expect(view.root.querySelector("[role=status]")).toBe(status);
+    expect(status.textContent).toBe("Taking the screenshot…");
+    view.unmount();
+    view.root.remove();
   });
 
   it("describes the waiting Post by the status line, which says when a post is queued", () => {

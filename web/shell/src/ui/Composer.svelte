@@ -74,7 +74,17 @@
     queuedFor = draft.anchor;
     queued = true;
   }
-  const status = $derived(draft.capturing
+  // The status line is a live region: one inserted with its text already in
+  // it is not announced, so it opens blank (a no-break space keeps its line)
+  // and takes its text once the frame after the composer's first paint has
+  // run, when screen readers know the region; later changes are announced.
+  let spoken = $state(false);
+  $effect(() => {
+    let second = 0;
+    const first = requestAnimationFrame(() => { second = requestAnimationFrame(() => { spoken = true; }); });
+    return () => { cancelAnimationFrame(first); cancelAnimationFrame(second); };
+  });
+  const status = $derived(!spoken ? "\u00a0" : draft.capturing
     ? queued ? "Posting once the screenshot is taken…" : "Taking the screenshot…"
     : `No screenshot${draft.clipError ? `: ${draft.clipError}` : ""}`);
 </script>
