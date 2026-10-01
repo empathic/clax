@@ -2,7 +2,7 @@
   // The sidebar island: the comment threads, and the "Your name" field on
   // narrow screens, once the artifact is loaded and the frame mode decided.
   import { fromStore } from "svelte/store";
-  import type { ArtifactController } from "../view/artifact-controller";
+  import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import Sidebar from "./Sidebar.svelte";
   import ViewerName from "./ViewerName.svelte";
 
@@ -17,7 +17,7 @@
   <ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />
 {/snippet}
 
-{#if !s.error && s.data && s.origin !== undefined && s.panel}
+{#if viewReady(s) && s.panel}
   <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
     header={s.narrow ? nameField : undefined}
     onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}

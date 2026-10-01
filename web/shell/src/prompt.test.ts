@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PromptDialog } from "./prompt";
-import { flush, mount } from "./test/preact";
+import { flush, mount } from "./test/svelte";
+import PromptDialog from "./ui/PromptDialog.svelte";
 import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
 
 const button = (root: Element, name: string) => Array.from(root.querySelectorAll("button")).find(b => b.textContent === name)!;

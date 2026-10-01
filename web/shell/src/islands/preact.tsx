@@ -8,14 +8,11 @@ import { Composer, Pins } from "../comments";
 import { PromptDialog } from "../prompt";
 import { shellPath } from "../route";
 import { Sidebar } from "../sidebar";
-import type { ArtifactController, ViewState } from "../view/artifact-controller";
+import { type ArtifactController, type ViewState, viewReady as ready } from "../view/artifact-controller";
 import { ViewerName } from "../viewer-name";
 import type { Islands } from "./index";
 
 type IslandProps = { ctl: ArtifactController; s: ViewState };
-
-/** The artifact is loaded and the frame mode decided: the view shows. */
-const ready = (s: ViewState): s is ViewState & { data: NonNullable<ViewState["data"]> } => !s.error && !!s.data && s.origin !== undefined;
 
 function Topbar({ ctl, s }: IslandProps) {
   if (!ready(s)) return null;
