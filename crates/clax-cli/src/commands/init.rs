@@ -316,20 +316,26 @@ fn pi_package_dir(root: &Path) -> PathBuf {
 /// The local Pi package sources in `<pi dir>/settings.json`, each as the
 /// absolute directory Pi resolves it to: `~` against the home directory, a
 /// relative path against the Pi directory, lexically. Sources with a scheme
-/// (`npm:`, `git:`, …) are left out.
+/// (`npm:`, `git:`, …) are left out, and each directory is listed once.
 fn pi_local_packages(ctx: &Ctx) -> Result<Vec<PathBuf>, String> {
     let pi_dir = &ctx.dirs.pi_dir;
     let Some(v) = load_json(&pi_dir.join("settings.json"))? else {
         return Ok(Vec::new());
     };
-    Ok(v["packages"]
+    let mut out: Vec<PathBuf> = Vec::new();
+    for d in v["packages"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|p| p.as_str().or_else(|| p["source"].as_str()))
         .filter(|s| !s.contains(':'))
         .map(|s| stored_path(s, pi_dir, &ctx.home))
-        .collect())
+    {
+        if !out.contains(&d) {
+            out.push(d);
+        }
+    }
+    Ok(out)
 }
 
 /// The `name` in `<d>/package.json`: `Ok(None)` for a directory without a
