@@ -50,8 +50,17 @@ pub fn files() -> Vec<(String, Vec<u8>)> {
 ///
 /// The caller holds the init lock, so any `.marketplace.*.tmp` or `.old`
 /// sibling left by an interrupted run is stale and is removed first. On an
-/// error the temporary tree is removed too.
+/// error the temporary tree is removed too, and the previous tree is put
+/// back; if even that fails, it is kept as `.marketplace.<pid>.old` and the
+/// error says so.
 pub fn materialize(root: &Path) -> std::io::Result<()> {
+    materialize_with(root, |from, to| std::fs::rename(from, to))
+}
+
+fn materialize_with(
+    root: &Path,
+    rename: impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let parent = root.parent().expect("the marketplace root has a parent");
     std::fs::create_dir_all(parent)?;
     for e in std::fs::read_dir(parent)?.filter_map(Result::ok) {
@@ -63,15 +72,34 @@ pub fn materialize(root: &Path) -> std::io::Result<()> {
     let pid = std::process::id();
     let tmp = parent.join(format!(".marketplace.{pid}.tmp"));
     let old = parent.join(format!(".marketplace.{pid}.old"));
-    let result = write_tree(&tmp).and_then(|()| {
-        if root.exists() {
-            std::fs::rename(root, &old)?;
-        }
-        std::fs::rename(&tmp, root)
-    });
+    let result = write_tree(&tmp).and_then(|()| swap(root, &tmp, &old, &rename));
     let _ = std::fs::remove_dir_all(&tmp);
-    let _ = std::fs::remove_dir_all(&old);
     result
+}
+
+/// Moves `root` aside to `old` and `tmp` into its place. When the second
+/// rename fails, `old` goes back to `root`, or is kept where it is.
+fn swap(
+    root: &Path,
+    tmp: &Path,
+    old: &Path,
+    rename: &impl Fn(&Path, &Path) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let moved = root.exists();
+    if moved {
+        rename(root, old)?;
+    }
+    if let Err(e) = rename(tmp, root) {
+        if moved && rename(old, root).is_err() {
+            return Err(std::io::Error::new(
+                e.kind(),
+                format!("{e}; the previous marketplace is kept at {}", old.display()),
+            ));
+        }
+        return Err(e);
+    }
+    let _ = std::fs::remove_dir_all(old);
+    Ok(())
 }
 
 fn write_tree(dir: &Path) -> std::io::Result<()> {
@@ -116,6 +144,44 @@ mod tests {
             }
         }
         assert!(watched.contains(&"plugins/clax/scripts"), "{watched:?}");
+    }
+
+    /// A failed final rename puts the previous tree back; when that fails
+    /// too, the previous tree survives as `.old`.
+    #[test]
+    fn a_failed_swap_keeps_the_previous_marketplace() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("marketplace");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("previous"), "x").unwrap();
+        let fail_into = |target: &'static str| {
+            move |from: &Path, to: &Path| {
+                if to.file_name().is_some_and(|n| n == "marketplace")
+                    && from.to_string_lossy().ends_with(target)
+                {
+                    Err(std::io::Error::other("injected"))
+                } else {
+                    std::fs::rename(from, to)
+                }
+            }
+        };
+        // Only the new tree's rename fails: the previous one is put back.
+        assert!(materialize_with(&root, fail_into(".tmp")).is_err());
+        assert!(root.join("previous").is_file());
+        // Putting it back fails too: it survives as `.old`.
+        let e = materialize_with(&root, |from: &Path, to: &Path| {
+            if to.file_name().is_some_and(|n| n == "marketplace") {
+                Err(std::io::Error::other("injected"))
+            } else {
+                std::fs::rename(from, to)
+            }
+        })
+        .unwrap_err();
+        let old = dir
+            .path()
+            .join(format!(".marketplace.{}.old", std::process::id()));
+        assert!(old.join("previous").is_file(), "{e}");
+        assert!(e.to_string().contains("kept at"), "{e}");
     }
 
     /// Release builds embed the tree at compile time; the plugin manifests

@@ -213,6 +213,10 @@ fn init_only_touches_the_harnesses_asked_for() {
 #[test]
 fn init_removes_stale_registrations_including_the_previous_names_and_nothing_else() {
     let e = Env::new(&["claude", "codex", "pi"]);
+    // The Pi directory is a symlink, so a path resolved through the
+    // filesystem differs from the lexical one Pi stores and matches.
+    std::fs::create_dir_all(e.p("store/pi")).unwrap();
+    std::os::unix::fs::symlink(e.p("store/pi"), e.p("pi")).unwrap();
     let w = |rel: &str, text: String| {
         std::fs::create_dir_all(e.p(rel).parent().unwrap()).unwrap();
         std::fs::write(e.p(rel), text).unwrap();
@@ -341,26 +345,132 @@ fn init_twice_does_the_same_again_and_uninit_removes_registrations_and_the_marke
 }
 
 #[test]
-fn a_pi_registration_whose_directory_is_gone_is_still_removed() {
+fn a_missing_pi_package_is_removed_only_when_init_recorded_it() {
     let e = Env::new(&["pi"]);
+    assert!(e.json(&["init"]).0);
+    let ours = e.root().join("plugins/pi");
+    // Missing directories that merely look like Clax's, and a third party's.
+    let lookalikes = [
+        e.p("Users/claxton/src/foo/plugins/pi"),
+        e.p("Volumes/ext/claxon-tools/plugins/pi"),
+        e.p(&format!("Devel/{OLD}/plugins/pi")),
+        e.p("src/third-party-tool/plugins/pi"),
+    ];
+    let mut entries: Vec<String> = lookalikes
+        .iter()
+        .map(|p| format!("\"{}\"", p.display()))
+        .collect();
+    entries.push(format!("\"{}\"", ours.display()));
     std::fs::create_dir_all(e.p("pi")).unwrap();
-    let gone = e.p(&format!("Devel/{OLD}/plugins/pi"));
-    let elsewhere = e.p("Devel/other/plugins/pi");
     std::fs::write(
         e.p("pi/settings.json"),
-        format!(
-            r#"{{"packages":["{}","{}"]}}"#,
-            gone.display(),
-            elsewhere.display()
-        ),
+        format!(r#"{{"packages":[{}]}}"#, entries.join(",")),
+    )
+    .unwrap();
+    // The recorded package's directory is gone too.
+    std::fs::remove_dir_all(e.root()).unwrap();
+    std::fs::remove_file(e.p("calls")).unwrap();
+
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(e.calls(), vec![format!("pi remove {}", ours.display())]);
+    let detail = detail(&v, "pi");
+    for p in &lookalikes {
+        assert!(
+            detail.contains(&format!("`pi remove {}`", p.display())),
+            "{p:?} is named with its command: {detail}"
+        );
+    }
+    let recorded: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(e.p("ax/registrations.json")).unwrap())
+            .unwrap();
+    assert!(recorded["harnesses"].get("pi").is_none(), "{recorded}");
+}
+
+#[test]
+fn init_records_what_it_registered() {
+    let e = Env::new(&["claude", "pi"]);
+    assert!(e.json(&["init"]).0);
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(e.p("ax/registrations.json")).unwrap())
+            .unwrap();
+    let r = e.root().display().to_string();
+    assert_eq!(
+        v["harnesses"]["pi"]["packages"][0],
+        format!("{r}/plugins/pi")
+    );
+    assert_eq!(v["harnesses"]["claude"]["source"], r);
+    assert!(v["harnesses"].get("codex").is_none(), "{v}");
+}
+
+#[test]
+fn a_relative_clax_home_is_made_absolute_before_harness_clis_run() {
+    let e = Env::new(&["pi"]);
+    std::fs::create_dir_all(e.p("work")).unwrap();
+    let out = e
+        .cmd()
+        .env("CLAX_HOME", "rel")
+        .current_dir(e.p("work"))
+        .args(["init", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let work = e.p("work").canonicalize().unwrap();
+    assert_eq!(
+        e.calls(),
+        vec![format!(
+            "pi install {}/rel/marketplace/plugins/pi",
+            work.display()
+        )]
+    );
+}
+
+#[test]
+fn uninit_keeps_the_marketplace_when_a_registry_cannot_be_read_or_names_it_by_tilde() {
+    let e = Env::new(&[]);
+    assert!(e.json(&["init"]).0);
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(e.p("codex/config.toml"), "[marketplaces\n").unwrap();
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert!(e.root().is_dir(), "{v}");
+    assert!(
+        v["marketplace_detail"]
+            .as_str()
+            .unwrap()
+            .contains("could not parse"),
+        "{v}"
+    );
+
+    std::fs::write(
+        e.p("codex/config.toml"),
+        "[marketplaces.clax]\nsource = \"~/ax/marketplace\"\n",
     )
     .unwrap();
     let (ok, v) = e.json(&["uninit"]);
     assert!(ok, "{v}");
-    assert_eq!(e.calls(), vec![format!("pi remove {}", gone.display())]);
-    let detail = detail(&v, "pi");
-    assert!(detail.contains("is gone"), "{detail}");
-    assert!(detail.contains("left alone"), "{detail}");
+    assert!(e.root().is_dir(), "{v}");
+    let kept = v["marketplace_detail"].as_str().unwrap();
+    assert!(
+        kept.contains("codex plugin marketplace remove clax"),
+        "{kept}"
+    );
+
+    std::fs::write(e.p("codex/config.toml"), "").unwrap();
+    assert!(e.json(&["uninit"]).0);
+    assert!(!e.root().exists());
+}
+
+#[test]
+fn uninit_creates_no_clax_home() {
+    let e = Env::new(&["claude", "codex", "pi"]);
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert!(!e.p("ax").exists());
 }
 
 #[test]
