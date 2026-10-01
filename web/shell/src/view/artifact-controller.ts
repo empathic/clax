@@ -139,8 +139,9 @@ export class ArtifactController {
   private readonly offs: (() => void)[] = [];
   /** The snapshot before this turn's first change, until the turn renders. */
   private turnFrom: ViewState | null = null;
-  /** Rendered changes (from, to) whose reactions have not run yet. */
-  private readonly reactions: [ViewState, ViewState][] = [];
+  /** Rendered changes (from, to, the host at that render) whose reactions
+   * have not run yet. */
+  private readonly reactions: [ViewState, ViewState, CapabilityHost | null][] = [];
   private flushScheduled = false;
   /** The host the latest reaction pass told of the UI. */
   private toldHost: CapabilityHost | null = null;
@@ -292,25 +293,28 @@ export class ArtifactController {
     this.turnFrom = null;
     if (!from || this.disposed) return;
     const to = this.s;
+    this.runReactions(false);
     // Render-time work, as the frame unmounted in the render that showed the
     // deletion: a deleted artifact's frame goes before anything paints, so
     // its gate never stays open beside the message.
     if (from.deleted !== to.deleted) this.showFrame();
-    this.runReactions();
-    this.reactions.push([from, to]);
+    this.reactions.push([from, to, this.host]);
     this.schedulePass();
   }
 
   private schedulePass(): void {
     if (this.flushScheduled) return;
     this.flushScheduled = true;
-    this.cancelFlush = afterPaint(() => { this.flushScheduled = false; this.runReactions(); });
+    this.cancelFlush = afterPaint(() => { this.flushScheduled = false; this.runReactions(true); });
   }
 
-  private runReactions(): void {
-    for (const [prev, next] of this.reactions.splice(0)) if (!this.disposed) this.react(prev, next);
-    // A host made since the last pass hears of the UI once, in this pass.
-    if (!this.disposed && this.host && this.host !== this.toldHost) {
+  /** Runs the pending reactions; `painted` is false for the run at the
+   * start of a render, which only flushes the previous renders' reactions. */
+  private runReactions(painted: boolean): void {
+    for (const [prev, next, host] of this.reactions.splice(0)) if (!this.disposed) this.react(prev, next, host);
+    // A host made since the last pass, by no rendered change, hears of the UI
+    // once, in the pass after the paint.
+    if (painted && !this.disposed && this.host && this.host !== this.toldHost) {
       this.toldHost = this.host;
       this.host.uiChanged();
     }
@@ -318,16 +322,17 @@ export class ArtifactController {
 
   /** What Preact ran as effects after the render that went from `prev` to
    * `next`: values the effects took from that render come from `next`, those
-   * they read through refs from the current state. */
-  private react(prev: ViewState, next: ViewState): void {
+   * they read through refs from the current state, and `host` is the one
+   * that render made or kept. */
+  private react(prev: ViewState, next: ViewState, host: CapabilityHost | null): void {
     if (threadIds(prev.threads) !== threadIds(next.threads) || this.shown(prev) !== this.shown(next) || prev.origin !== next.origin) this.resolveAll();
     if (prev.commenting !== next.commenting) this.send({ type: "clax:comment-mode", on: next.commenting });
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
     if (prev.draft?.clipToken !== next.draft?.clipToken || prev.draft?.capturing !== next.draft?.capturing) this.armCapture(next.draft);
-    if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy || this.host !== this.toldHost) {
-      this.toldHost = this.host;
-      this.host?.uiChanged();
+    if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy || host !== this.toldHost) {
+      this.toldHost = host;
+      host?.uiChanged();
     }
   }
 
