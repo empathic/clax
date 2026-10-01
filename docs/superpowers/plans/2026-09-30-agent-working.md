@@ -1,59 +1,117 @@
-# Agent Working Signal and Version Changelog Implementation Plan
+# Echo redesign + agent working, changelog and batch send: Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let an agent tell the person, through Clax, that it is working on an artifact and on named comment threads, set automatically when comment feedback reaches it and explicitly through a new `working` tool. Show that state in the artifact header, on gallery cards, on sidebar thread cards and to the page (a Clax extension of the `comments` capability). Then use the same data to give every version a changelog: the threads it addressed and a short note from the agent. The changelog appears as a once-per-viewer banner, an "Addressed in vN" group in the sidebar with one-click Resolve, and a version menu that reads as a changelog across versions. Finally, let the person select several threads (checkboxes, Shift ranges, a bulk bar with an optional note, and "Send N unsent to agent") and send them as one batch. The agent receives them as one grouped delivery, led by the note, on every tier.
+**Goal:** Give Clax the Echo look the owner chose, and build three features in it.
+- **Echo.** Plex Sans Condensed for structure and Plex Mono for what people and agents write, the Echo symbol, sentence case, plain-verb buttons, a red-orange Comment button with a 3px rule under the top bar, a gallery that floats what needs your eyes, a `?` sheet with the C keycap, haiku in the gallery footer and while an agent works, and two easter eggs ("rally of 10", the mark's halves meeting).
+- **Agent working signal.** An agent says, through Clax, that it is working on an artifact and on named threads. The signal is set automatically when comment feedback reaches the agent, and explicitly through a new `working` tool. A heartbeat lapses it after 2 minutes. It shows in the top bar's roster and summary, on gallery cards, on thread cards and pins, and to the page (a Clax extension of the `comments` capability).
+- **Version changelog.** Every version records the threads it addressed and a short note from the agent. The changelog shows as an "Addressed in vN" group at the top of the sidebar, as version-tagged history on each thread ("v3 alex commented · claude worked on it · v5 claude addressed it"), as a quiet dot on the version button, and in a version menu that reads as a changelog. Nothing covers or moves the artifact. What is new is decided per viewer.
+- **Batch send.** The viewer ticks several threads, or presses "Send N unsent", and they go to one agent as one batch with an optional note. The agent receives them as one grouped delivery, led by the note, on every tier. Send goes to the agent you last sent to, falling back to the latest publisher.
 
-**Architecture:** The working state is an in-memory registry in the daemon (`clax_core::working::Working`), keyed by (session, artifact), with an injected clock and a 2 minute heartbeat expiry. The daemon marks work itself whenever it hands feedback to a session: every delivery tier already runs through `take_feedback`, so one hook point serves the Stop hook, the prompt hook, `SessionStart`, tier 1 piggyback, `wait_for_feedback`, Pi injection and Codex `codex queue`. Hooks and the Pi extension only renew (every tool call) and end the turn. Changes go out as one SSE event, `working`, carrying the artifact's whole list, and ride along on `GET /api/artifacts` and `GET /api/artifacts/<id>`, which the shell already loads. The changelog is persisted: a nullable `versions.note` column, a `version_threads` link table and a bounded `viewer_seen` table. Notes and links ride on the version and thread views the shell already loads. Only the viewer's seen mark is fetched after load. Batch send is one route and one store transaction (`send_batches`, `batch_threads`, `feedback.batch_id`). The grouping lives in the one payload renderer every tier already uses, `render_items`. The shell is the Svelte 5 shell that `docs/superpowers/plans/2026-09-29-svelte-port.md` produced. View state lives in `ArtifactController` (`web/shell/src/view/artifact-controller.ts`), the logic in framework-free `view/*-model.ts` modules, and the components in `web/shell/src/ui/*.svelte` islands, which read the controller's store with `fromStore` and `$derived`.
+**Architecture:**
+- **Shell.** The Svelte 5 shell from `docs/superpowers/plans/2026-09-29-svelte-port.md`. View state lives in `ArtifactController` (`web/shell/src/view/artifact-controller.ts`). The logic lives in framework-free `view/*-model.ts` modules, and the components are `web/shell/src/ui/*.svelte` islands that read the controller's store with `fromStore` and `$derived`. Echo is a rewrite of `web/shell/src/theme.css` (tokens, two type voices, components), a new skeleton for the artifact view's top bar, and new components.
+- **Time to usable.** Everything not needed for first paint loads by dynamic `import()`: the `?` sheet, the people panel, the version menu's panel, the Addressed group, the haiku, and the hand-off bar.
+- **Working.** An in-memory registry in the daemon (`clax_core::working::Working`), keyed by (session, artifact), with an injected clock and a 2 minute heartbeat expiry. The daemon marks work whenever it hands feedback to a session, since every delivery tier runs through `take_feedback`. Changes go out as one SSE event, `working`, and ride along on `GET /api/artifacts` and `GET /api/artifacts/<id>`, which the bootstrap block embeds.
+- **Changelog.** Persisted: a nullable `versions.note`, a `version_threads` link table, and `viewer_seen` (the latest version each viewer has viewed).
+- **Participants.** Comments record their author's viewer public ID, which drives "threads you're in". @mentions are parsed from comment text. `viewer_threads` holds per-viewer looked-at marks. Sessions gain an opaque public handle (`agent_handle`), so the shell can name and target an agent without ever seeing a session ID. A viewer's per-artifact attention (addressed and not looked at, new version, new replies, open threads you're in) is computed in the daemon. The artifact view gets it in the bootstrap block, and the gallery fetches it once, beside the artifact list.
+- **Presence.** In-memory, like working: here or away, plus an optional location, announced by the `presence` event.
+- **Batch send.** One route and one store transaction (`send_batches`, `batch_threads`, `feedback.batch_id`), with an optional agent target. The grouping lives in the one payload renderer every tier already uses, `render_items`.
 
-**Tech Stack:** Rust 2024 (axum 0.8, rusqlite, chrono, serde, rmcp), Svelte 5 (runes) + TypeScript + Vite 6, Vitest 3 + jsdom + `@testing-library/svelte` (through `web/shell/src/test/svelte.ts`), `svelte-check`, Playwright (Chromium), Python 3 (scripts), TypeBox (Pi extension, Pi 0.73.1).
+**Tech Stack:** Rust 2024 (axum 0.8, rusqlite, chrono, serde, rmcp); Svelte 5 (runes), TypeScript and Vite 6; Vitest 3 with jsdom and `@testing-library/svelte` (through `web/shell/src/test/svelte.ts`); `svelte-check`; Playwright (Chromium); Python 3 (scripts); TypeBox (Pi extension, Pi 0.73.1); IBM Plex Mono and IBM Plex Sans Condensed (SIL OFL 1.1, self-hosted WOFF2).
 
-**Spec:** `docs/superpowers/specs/2026-09-28-clax-design.md`. Task 1 amends §5 Storage, §6 HTTP API, §8 Shell UI, §9 Runtime bridge and capabilities, §10 Comments and the feedback loop, §11 Sessions, §12 MCP tool surface, §13 Plugins, §14 Security model and §16 Testing, and `docs/contract.md`.
+**Spec:**
+- The design spec: `docs/superpowers/specs/2026-09-28-clax-design.md`. On the Svelte branch and on main after the port merges it has this name. Task 1 amends it and `docs/contract.md`.
+- The redesign brief: `.superpowers/sdd/2026-09-30-redesign/brief.md`, all of it, including its corrections. Where the brief and anything older disagree, the brief wins.
+- The approved mockup: `.superpowers/sdd/2026-09-30-redesign/concept-3-echo/index.html` and its `shots/`, with `concepts.md` §7 "Echo v2" and `marks/1-echo.svg`.
+- The feature decisions: `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, read with the brief. The brief removes the changelog banner ("Don't get in my way": no band over the page). The returning-viewer summary moves to the top bar's summary line and the version button's dot.
 
-**Decisions (binding):** `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, all three sections ("Agent working signal", "Version changelog" and "Plan follow-ups").
+**Provisional answers:** `.superpowers/sdd/2026-09-30-redesign/open-questions.md` lists design questions the brief does not settle, each with a recommended answer. This plan is written around those recommended answers. Every step that depends on one is marked **(provisional: Qn)**. Before starting such a task, the controller checks the file for the owner's answer. If the answer differs, the controller amends that task first.
 
-**Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`) are both merged. The port runs before this plan. Check before Task 1:
+**Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`, on branch `worktree-agent-aee2e6203ca3d81ca`) are both merged to main. Check before Task 1:
 
 ```bash
 test -f web/shell/src/view/artifact-controller.ts && test -f web/shell/src/ui/TopbarIsland.svelte \
-  && test -f web/shell/src/view/boot.ts && test -f web/scripts/bundle-size.mjs \
-  && test ! -e web/shell/src/artifact.tsx && ! grep -q '"preact"' web/package.json && echo ok
+  && test -f web/shell/src/view/boot.ts && test -f web/scripts/bundle-size.mjs && test -f web/perf/bundle-budget.json \
+  && test -f web/shell/src/view/skeleton.ts && test ! -e web/shell/src/artifact.tsx && ! grep -q '"preact"' web/package.json && echo ok
 ```
 
-Expected: `ok`. Anything else means the port is not finished: stop.
+Expected: `ok`. Anything else means the port is not merged: stop.
 
 ## Global Constraints
 
-- This plan starts from the post-port main: the Svelte shell, its two entries (`gallery-main.ts`, `artifact-main.ts`), the daemon's bootstrap block (`crates/clax-server/src/boot.rs`, `web/shell/src/view/boot.ts`), the lazy bridge parts, and the time-to-usable and bundle-size gates. File names below are the port's.
-- Rust edition 2024. `cargo clippy --workspace --all-targets -- -D warnings` and `RUSTFLAGS=-Dwarnings cargo check --workspace` pass.
-- `oxlint --deny-warnings` passes over `shell bridge e2e perf` and the config files (`npm run lint` in `web/`). `npm run typecheck` (`tsc --noEmit && svelte-check --fail-on-warnings`, a11y warnings included) passes. Svelte runs in runes mode only: no `export let`, no `svelte/legacy`. `web/shell/src/caps/**`, `web/shell/src/view/**` and `web/bridge/**` import no `svelte`: `grep -rlE "from \"svelte" web/bridge web/shell/src/caps web/shell/src/view` prints nothing.
-- Every e2e spec that opens an artifact runs in both frame modes, `subdomain` and `sandbox` (`for (const mode of ["subdomain", "sandbox"] as const)`).
-- Commits are signed. Commit with plain `git commit` (the repository's signing configuration applies). Never pass `--no-gpg-sign`. Stage with `git add` and explicit paths only. After each commit, `git cat-file commit HEAD | grep -q '^gpgsig '` must succeed (this machine has no `allowedSignersFile`, so `--show-signature` cannot verify).
-- Never bind or connect to port 7480 or 7481. Tests and smokes start daemons with `--port 0` and a temporary `CLAX_HOME`. Never read, write or delete the real `~/.clax`, `~/.claude` or `~/.codex`, nor the home directory Clax used before its rename (spec D15). `scripts/smoke-codex.sh` reads `~/.codex/auth.json`, so no task runs it; Task 7 only edits it, for the person to run.
-- In prose, comments, doc comments and commit messages, write "ID", never "id", except as a literal symbol in code.
-- Doc comments and commit messages describe the contract or the change. They never mention this plan, the conversation, or the history of names.
-- Every task ends with `bash scripts/quality_gates.sh; echo "exit=$?"` printing `exit=0`. Check the status itself, not only the last line of output.
-- The three skill copies stay word for word identical in their shared sections (`scripts/test-plugins.sh`). Tool blocks are regenerated with `python3 scripts/sync-skill-tools.py`, never edited by hand. A tool description is one string that appears verbatim in `plugins/pi/test/fixtures/contract.json`, `crates/clax-mcp/src/tools.rs` and `plugins/pi/src/clax.ts`.
-- A working view never carries a session ID, a working directory or a PID, except the token-only `GET /api/sessions/<id>/working`. No thread, comment, event or page ever carries a session ID (spec §5, §14).
-- The page never learns a thread's store ID. The capability hands it opaque handles only, and only for threads the page created in its current document.
-- Time to usable does not regress. Nothing new is fetched before the shell's first paint. Working state and changelog notes ride on the artifact response, which the bootstrap block already embeds. The seen mark and the gallery's event stream start after load. The port's gates hold: `npm run perf` (budgets in `web/perf/budget.json`) and `node scripts/bundle-size.mjs` (`web/perf/bundle-budget.json`) pass unchanged. A budget is never raised. The changelog's banner and Changes components load by dynamic `import()`, off the entry's critical closure. If a gate fails, stop and report the numbers.
-- UI changes are verified in a real browser (Task 11 and Task 18 have explicit steps). A passing test run is not verification for frontend work.
-- UI logic lives in `web/shell/src/view/working-model.ts`, `web/shell/src/view/changelog-model.ts` and `ArtifactController`. The `.svelte` components only render and forward events. The one reactive module, `web/shell/src/ui/working-feed.svelte.ts`, holds the gallery's live working lists.
-- Rust tests never sleep on the wall clock to observe expiry. They use `ManualClock` and call `sweep` directly.
+- **Ports and homes.** Never bind or connect to port 7480 or 7481. Tests, smokes and browser checks start daemons with `--port 0` and a temporary `CLAX_HOME` (`mktemp -d`). Never read, write or delete the real `~/.clax`, `~/.clax-dev`, `~/.claude` or `~/.codex`, nor the home directory Clax used before its rename (spec D15). `scripts/smoke-codex.sh` reads `~/.codex/auth.json`, so no task runs it; Task 11 only edits it, for the person to run.
+- **Agents stage; the controller commits.** An implementing agent never runs `git commit`, `git push`, `git rebase` or `git reset`. It stages with `git add` and explicit paths only, and ends the task with `git status --short`. Each task's last step gives the commit message the controller uses. The controller commits signed, with plain `git commit` (never `--no-gpg-sign`), and checks `git cat-file commit HEAD | grep -q '^gpgsig '`.
+- **UI is verified in a browser.** Every task that changes what the shell shows ends with a browser step. It runs a scratch daemon (`--port 0`, temporary home), opens the changed routes in Playwright's Chromium, and saves screenshots in light and in dark, at 1440×900 and at 390×844, to `.superpowers/sdd/2026-09-30-redesign/build-shots/task-NN/` (`NN` is the task number). The agent looks at every screenshot and writes in its task report what it saw: the change is visible, it is styled like the rest of Echo, and nothing scrolls sideways at phone width. A passing test run is not verification for frontend work. `web/e2e/shots.ts` (Task 2) is the one script that takes them.
+- **Words.**
+  - In prose, comments, doc comments and commit messages, write "ID", never "id", except as a literal symbol in code.
+  - Doc comments and commit messages describe the contract or the change. They never mention this plan, the conversation, the mockup's history, or the history of names.
+- **The thread model.** The interaction model is comment threads, like PR comments or Google Docs comments. Product copy uses comment, thread, reply, resolve, addressed and outdated. There are no turns, no "whose move", no rounds, no "asks" and no "facts" about the artifact. History is shown as version-tagged annotations on threads. This gate prints nothing after every web task:
+
+  ```bash
+  grep -rniE "your move|whose move|agents' move|'s move|\bround [0-9]|(your|their|whose|next) turn|nothing waits on you|settled\." web/shell/src --include=*.svelte --include=*.ts --include=*.json | grep -v '\.test\.ts:'
+  ```
+
+- **Voice.**
+  - Buttons are plain verbs: Comment, Reply, Resolve, Send to claude, Clear.
+  - Playful words appear only in status lines, hints and empty states.
+  - Labels are sentence case in Plex Sans Condensed, never tracked capitals. `grep -rn "text-transform: *uppercase" web/shell/src` prints nothing after Task 2.
+  - Haiku appear in the gallery footer and on the line while an agent works. Never in comment mode, never animated.
+- **Time to usable does not regress.**
+  - The port's gates hold unchanged: `npm run perf` (budgets in `web/perf/budget.json`) and `node scripts/bundle-size.mjs` (`web/perf/bundle-budget.json`). Task 2 adds a `fonts` budget to the second.
+  - A budget is never raised. If a gate fails, first lazy-load what first paint does not need. If it still fails, stop and report the numbers to the controller. Raising a budget is the owner's call.
+  - Nothing new is fetched before the shell's first paint. Working state, changelog notes, participants and this viewer's attention ride on the artifact response and the bootstrap block.
+  - Fonts use `font-display: swap`, are never preloaded, and are never render-blocking. There are at most three WOFF2 files: Plex Mono 400, Plex Mono 600, and Plex Sans Condensed 600.
+- **Svelte.** Runes mode only: no `export let`, no `svelte/legacy`. `web/shell/src/caps/**`, `web/shell/src/view/**` and `web/bridge/**` import no `svelte`: `grep -rlE "from \"svelte" web/bridge web/shell/src/caps web/shell/src/view` prints nothing. Components render and forward events. Logic lives in `view/*-model.ts` and `ArtifactController`.
+- **Lint and types.**
+  - Rust edition 2024. `cargo clippy --workspace --all-targets -- -D warnings` and `RUSTFLAGS=-Dwarnings cargo check --workspace` pass.
+  - `npm run lint` and `npm run typecheck` pass in `web/`. The typecheck is `tsc --noEmit && svelte-check --fail-on-warnings`, and a11y warnings count.
+- **Frame modes.** Every e2e spec that opens an artifact runs in both frame modes, `subdomain` and `sandbox` (`for (const mode of ["subdomain", "sandbox"] as const)`).
+- **Gates.** Every task ends with `bash scripts/quality_gates.sh; echo "exit=$?"` printing `exit=0`. Check the status itself, not only the last line of output.
+- **Skills and tools.** The three skill copies stay word for word identical in their shared sections (`scripts/test-plugins.sh`). Tool blocks are regenerated with `python3 scripts/sync-skill-tools.py`, never edited by hand. A tool description is one string that appears verbatim in `plugins/pi/test/fixtures/contract.json`, `crates/clax-mcp/src/tools.rs` and `plugins/pi/src/clax.ts`.
+- **What views may carry.**
+  - No working view, participant view, presence view, thread, comment, event or page ever carries a session ID, a working directory or a PID. The one exception is the token-only `GET /api/sessions/<id>/working`.
+  - Agents are named to the shell by `agent_handle` (`a_` and 22 lowercase hex digits), never by session ID.
+  - Viewers are named by `public_id`, never by cookie.
+  - A viewer's per-thread looked-at marks are served only to that viewer.
+- **The page and store IDs.** The page never learns a thread's store ID. The capability hands it opaque handles only, and only for threads the page created in its current document.
+- **The clock in Rust tests.** Rust tests never sleep on the wall clock to observe expiry. They use `ManualClock` and call `sweep` directly. This applies to working and to presence.
 
 ## Review Focus
 
-1. **A stale "working" after the agent stopped.** Every path that ends work must clear it: the reply to the last named thread, a publish of the artifact by that session, the Stop hook allowing the stop, Pi's `agent_end`, session end (PATCH, the reaper, the `SessionEnd` hook, the shim exiting) and artifact deletion. A path that is missed shows "working" for up to 2 minutes. Tests: `api_working_auto.rs` (one test per path) and the working steps Task 8 adds to the comment-loop smoke.
-2. **Renewal that never lapses.** The shim's 60 s session heartbeat, the Pi injection long-poll, `wait_for_feedback` polls and `codex queue` must not renew a record. Otherwise a session that is merely alive shows "working" forever. Test: "a heartbeat and a wait poll do not renew".
-3. **Session IDs leaking.** `GET /api/artifacts/<id>/working`, the `working` SSE event, `GET /api/artifacts` and the capability must never carry `session_id`. The record's `key` is a fresh ULID per record, not derived from the session. Test: "working views carry no session ID" (Rust) and the capability test.
-4. **The capability leaking store IDs.** `working()` and `onWorking` name threads by the handles the page already holds, and count the rest. Test: "working() names only this document's own threads, by handle".
-5. **The automatic changelog link.** A publish links the threads in the publishing session's record *before* the publish clears the record. Linking never resolves a thread. An agent resolve links to the current version only when the thread has no link yet. Tests: "a publish links the threads the session was working on, then clears", and "linking leaves the thread open".
-6. **The banner showing twice, or never.** The seen mark moves forward only, only on unpinned views of the latest version, and is written as soon as the banner is decided (shown or not). A first visit sets the mark and shows nothing. Tests: e2e "seen state across reloads and viewers".
-7. **The version menu replacing the native `<select>` in `TopbarIsland.svelte`.** Keyboard (Escape returns focus, rows are links in tab order), phone width (sheet under the top bar, no horizontal scroll) and version switching through `ctl.chooseVersion` must match what the select did (`viewer.spec.ts` is updated in Task 17, not weakened).
-8. **The PostToolUse throttle.** `scripts/tool-hook.sh` must exit 0 and print nothing on every path, keep its stamp under the Clax home, and start `clax` at most once a minute per session. Test: `scripts/test-tool-hook.sh`.
-9. **Time to usable.** The new eager code (the working status line, the version menu, the controller fields) stays within the port's bundle budget, and the changelog components load lazily. Tests: the `web bundle size` and `time to usable` gates.
-10. **Batch atomicity and grouping.** A batch with any unknown, foreign or resolved thread writes nothing. A batch that is written wakes each target once, so no tier splits it. Tests: `api_batch.rs`, `api_push.rs` "a batch reaches codex as one queued message", and the hook, MCP and Pi goldens in Task 21.
-11. **Selection state.** It lives only in the controller, is pruned whenever threads change, and never outlives a deleted artifact. Tests: `batch-model.test.ts`, the controller test "drops a thread from the selection when it disappears", and e2e "leaves the selection".
+1. **A stale "working" after the agent stopped.** Every path that ends work must clear it:
+   - the reply to the last named thread;
+   - a publish of the artifact by that session;
+   - the Stop hook allowing the stop;
+   - Pi's `agent_end`;
+   - session end (PATCH, the reaper, the `SessionEnd` hook, the shim exiting);
+   - artifact deletion.
+
+   A path that is missed shows "working" for up to 2 minutes. Tests: `api_working_auto.rs`, and the working steps Task 11 adds to the comment-loop smoke.
+2. **Renewal that never lapses.** The shim's 60 s session heartbeat, the Pi injection long-poll, `wait_for_feedback` polls and `codex queue` must not renew a record. Test: "a heartbeat and a wait poll do not renew".
+3. **Session IDs leaking.** No working view, participant view, presence event, capability answer or thread view may carry `session_id`. Agent handles are random, not derived from the session ID. Tests: "working views carry no session ID", and "participants name agents by handle only" (Task 15).
+4. **The capability leaking store IDs.** `working()` and `onWorking` name threads by the handles the page already holds. Test: "working() names only this document's own threads, by handle".
+5. **The automatic changelog link.** A publish links the threads in the publishing session's record *before* the publish clears the record. Linking never resolves a thread. An agent resolve links to the current version only when the thread has no link yet.
+6. **Attention is per viewer and private.**
+   - A viewer's looked-at marks and attention are read only with that viewer's cookie, and are never in an event or in another viewer's response.
+   - Seeing a thread clears "addressed, not looked at" and "new replies" for it, and nothing else.
+   - The Addressed group does not empty itself under the viewer's eyes (provisional: Q4).
+
+   Tests: `api_attention.rs` and the e2e "attention across viewers".
+7. **Echo's first paint.**
+   - The Plex Sans Condensed file is `swap` and not preloaded, and the fallback face is metric-adjusted, so the swap barely moves the top bar.
+   - The theme script runs before first paint, so there is no light flash in dark mode.
+   - Everything lazy stays out of the entry's closure. Tests: the `fonts`, `gallery` and `artifact` budgets, `time to usable`, and the shots.
+8. **The version menu replacing the native `<select>`.** Keyboard (Escape returns focus; rows are links in tab order), phone width (a full sheet under the top bar) and version switching through `ctl.chooseVersion` must match what the select did.
+9. **The PostToolUse throttle.** `scripts/tool-hook.sh` must exit 0 and print nothing on every path, keep its stamp under the Clax home, and start `clax` at most once a minute per session. Test: `scripts/test-tool-hook.sh`.
+10. **Batch atomicity, grouping and the target.**
+    - A batch with any unknown, foreign or resolved thread, or an unknown agent handle, writes nothing.
+    - A written batch wakes each target once.
+    - With `to`, only that agent's session gets rows.
+    - Tests: `api_batch.rs`, `api_push.rs` "a batch reaches codex as one queued message", and the hook, MCP and Pi goldens.
+11. **Selection and keyboard state.**
+    - Selection lives only in the controller and is pruned whenever threads change.
+    - Shortcut keys never fire while focus is in a text field, and never reach into the frame (provisional: Q6).
+12. **No turn language anywhere.** The grep gate in Global Constraints, and the owner's model: comment threads with version-tagged history.
 
 ---
 
@@ -63,41 +121,209 @@ Rust:
 
 | Path | Responsibility |
 |---|---|
-| `crates/clax-core/src/working.rs` | `Working` registry, `Clock`, `SystemClock`, `ManualClock`, `WorkingView`, `SessionWorking`, `clean_message`, TTL and bounds (Task 2) |
-| `crates/clax-core/src/events.rs` | `Event::Working` (Task 2) |
+| `crates/clax-core/src/working.rs` | `Working` registry, `Clock`, `SystemClock`, `ManualClock`, `WorkingView`, `SessionWorking`, `clean_message`, `clean_line`, TTL and bounds (Task 7) |
+| `crates/clax-core/src/events.rs` | `Event::Working` (Task 7), `Event::Presence` (Task 24) |
 | `crates/clax-core/src/changelog.rs` | `clean_note`, `MAX_NOTE_CHARS`, `MAX_ADDRESSES`, `LinkSource` (Task 12) |
-| `crates/clax-core/src/store/changelog.rs` | Links, notes, seen marks (Task 12) |
-| `crates/clax-core/src/store/migrations.rs` | Migration 10 (Task 12) |
-| `crates/clax-server/src/working.rs` | `announce`, `sweep_and_announce`, `mark_items`, `renew_for_tier` (Tasks 3–4) |
-| `crates/clax-server/src/routes/working.rs` | Working routes, and the debug-build clock skew route (Task 3) |
-| `crates/clax-server/src/routes/viewers.rs` | Seen routes (Task 13) |
-| `crates/clax-server/tests/api_working.rs`, `api_working_auto.rs`, `api_changelog.rs` | Route tests |
-| `crates/clax-mcp/src/tools.rs`, `client.rs` | `working` tool; `publish` `addresses`/`note` (Tasks 5, 14) |
-| `crates/clax-hooks/src/events.rs`, `crates/clax-cli/src/commands/hook.rs` | `tool` hook event; the Stop hook ends the turn (Task 7) |
+| `crates/clax-core/src/store/changelog.rs` | Links, notes, version seen marks (Task 12) |
+| `crates/clax-core/src/store/attention.rs` | Comment authors, mentions, looked-at marks, attention, agent handles (Task 15) |
+| `crates/clax-core/src/mentions.rs` | `@name` parsing (Task 15) |
+| `crates/clax-core/src/presence.rs` | The in-memory presence registry (Task 24) |
+| `crates/clax-core/src/store/migrations.rs` | Migration 10 (Task 12), 11 (Task 15), 12 (Task 20) |
+| `crates/clax-server/src/working.rs` | `announce`, `sweep_and_announce`, `mark_items`, `renew_for_tier` (Tasks 8–9) |
+| `crates/clax-server/src/routes/working.rs` | Working routes, and the debug-build clock skew route (Task 8) |
+| `crates/clax-server/src/routes/viewers.rs` | Seen routes (Task 13), looked-at and attention routes (Task 15), presence routes (Task 24) |
+| `crates/clax-server/src/boot.rs` | The bootstrap carries `attention` (Task 15) |
+| `crates/clax-server/tests/api_working.rs`, `api_working_auto.rs`, `api_changelog.rs`, `api_attention.rs`, `api_batch.rs`, `api_presence.rs` | Route tests |
+| `crates/clax-mcp/src/tools.rs`, `client.rs` | `working` tool; `publish` `addresses`/`note` (Tasks 10, 14) |
+| `crates/clax-hooks/src/events.rs`, `crates/clax-cli/src/commands/hook.rs` | `tool` hook event; the Stop hook ends the turn (Task 11) |
 | `crates/clax-cli/src/commands/publish.rs` | `--note`, `--addresses` (Task 14) |
-| `crates/clax-core/src/store/batches.rs`, `crates/clax-core/src/feedback.rs` | Batch send, migration 11, the grouped payload (Task 19) |
-| `crates/clax-server/tests/api_batch.rs` | The batch route (Task 20) |
+| `crates/clax-cli/src/commands/haiku.rs` | A parity test against the shell's haiku list (Task 6) |
+| `crates/clax-core/src/store/batches.rs`, `crates/clax-core/src/feedback.rs` | Batch send, the grouped payload (Task 20) |
 
-Web (names follow the Svelte port's layout):
+Web (the Svelte port's layout):
 
 | Path | Responsibility |
 |---|---|
-| `web/shell/src/view/working-model.ts` | Pure: types, harness labels, header, badge and marker text (Task 9) |
-| `web/shell/src/ui/WorkingStatus.svelte`, `WorkingBadge.svelte` | The header status line and the gallery badge (Task 9) |
-| `web/shell/src/ui/working-feed.svelte.ts` | `WorkingFeed`: the gallery's live working lists (`$state`) (Task 9) |
-| `web/shell/src/view/artifact-controller.ts` | `ViewState.working`, `changelog`, `changesOpen`, `changesFocus`; `dismissChangelog`, `showChanges` (Tasks 9, 17) |
-| `web/shell/src/ui/TopbarIsland.svelte`, `SidebarIsland.svelte`, `StageIsland.svelte`, `Sidebar.svelte`, `ThreadCard.svelte`, `Gallery.svelte` | Wiring (Tasks 9, 17) |
-| `web/shell/src/view/changelog-model.ts` | Pure: banner decision and text, sidebar groups, version rows (Task 16) |
-| `web/shell/src/ui/ChangelogBanner.svelte`, `AddressedGroups.svelte` (lazy), `VersionMenu.svelte` | Changelog components (Task 17) |
-| `web/shell/src/caps/comments.ts`, `caps/host.ts` | `working`, `watchWorking`, `unwatchWorking` calls; `CapEnv.working` (Task 10) |
-| `web/bridge/src/caps/comments.ts` | `working()`, `onWorking(fn)` (Task 10) |
-| `web/contract/0.2.61/comments.d.ts` | The typed Clax extension (Task 10) |
-| `web/shell/src/view/batch-model.ts`, `web/shell/src/ui/BulkBar.svelte` | Batch selection model and the bulk bar (Task 22) |
-| `web/e2e/working.spec.ts`, `web/e2e/changelog.spec.ts`, `web/e2e/batch.spec.ts` | Browser tests (Tasks 11, 18, 23) |
+| `web/shell/src/theme.css` | Echo tokens, the two type voices, base and component styles (Tasks 2–6, then each UI task appends its section) |
+| `web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2` | The display face (Task 2) |
+| `web/scripts/bundle-size.mjs`, `web/perf/bundle-budget.json` | The `fonts` budget (Task 2) |
+| `web/e2e/shots.ts` | The screenshot script every UI task runs (Task 2) |
+| `web/shell/src/ui/Mark.svelte`, `web/shell/public/_clax/mark.svg` | The Echo symbol and favicon; the halves meet on click (Task 3) |
+| `web/shell/src/view/theme-model.ts`, `web/shell/src/ui/ThemeSwitch.svelte` | Follow the system, plus a light/dark switch (Task 3) |
+| `web/shell/src/view/keys.ts`, `web/shell/src/ui/KeysSheet.svelte` (lazy) | The keyboard layer and the `?` sheet (Task 3) |
+| `web/shell/src/view/skeleton.ts`, `web/shell/artifact.html`, `web/shell/index.html` | The Echo top bar skeleton and the theme script (Tasks 3–4) |
+| `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/MoreMenu.svelte` | The top bar in Echo (Task 4) |
+| `web/shell/src/view/history-model.ts` | Version-tagged thread history and the outdated test (Task 5) |
+| `web/shell/src/ui/ThreadCard.svelte`, `Sidebar.svelte`, `Pins.svelte` | Mirrored messages, history line, outdated tag, pin states (Tasks 5, 16, 18) |
+| `web/shell/src/ui/Gallery.svelte`, `GalleryCard.svelte`, `HaikuLine.svelte` (lazy), `web/shell/src/view/haiku.json` | The gallery in Echo (Tasks 6, 19) |
+| `web/shell/src/view/working-model.ts`, `web/shell/src/ui/Roster.svelte`, `WorkingSummary.svelte`, `working-feed.svelte.ts` | Working in the top bar, cards and threads (Task 16) |
+| `web/shell/src/caps/comments.ts`, `caps/host.ts`, `web/bridge/src/caps/comments.ts`, `web/contract/0.2.61/comments.d.ts` | `working()` and `onWorking(fn)` (Task 17) |
+| `web/shell/src/view/changelog-model.ts`, `web/shell/src/ui/AddressedGroup.svelte` (lazy), `VersionMenu.svelte` | Changelog in Echo (Task 18) |
+| `web/shell/src/view/attention-model.ts` | Needs your eyes and card markers (Task 19) |
+| `web/shell/src/view/batch-model.ts`, `web/shell/src/ui/HandoffBar.svelte` (lazy), `SendButton.svelte` | Batch send and the agent picker (Task 23) |
+| `web/shell/src/view/presence-model.ts`, `web/shell/src/ui/PeoplePanel.svelte` (lazy) | Presence and the people panel (Task 24) |
+| `web/e2e/echo.spec.ts`, `working.spec.ts`, `changelog.spec.ts`, `attention.spec.ts`, `batch.spec.ts`, `presence.spec.ts` | Browser tests |
 
-Plugins and scripts: `scripts/tool-hook.sh` and its copies `plugins/claude-code/scripts/tool-hook.sh`, `plugins/clax/scripts/tool-hook.sh`, `scripts/test-tool-hook.sh`, `plugins/pi/src/clax.ts`, `plugins/pi/src/client.ts`, `plugins/pi/test/clax.test.ts`, `plugins/pi/test/fixtures/contract.json`, `plugins/*/hooks/hooks.json`, `plugins/*/skills/clax/SKILL.md`, `plugins/*/README.md`, `scripts/test-plugins.sh`, `scripts/smoke-comment-loop.sh`, `scripts/smoke-codex.sh`.
+Plugins and scripts:
+- `scripts/tool-hook.sh` and its copies `plugins/claude-code/scripts/tool-hook.sh` and `plugins/clax/scripts/tool-hook.sh`; `scripts/test-tool-hook.sh`.
+- `plugins/pi/src/clax.ts`, `plugins/pi/src/client.ts`, `plugins/pi/test/clax.test.ts` and `plugins/pi/test/fixtures/contract.json`.
+- `plugins/*/hooks/hooks.json`, `plugins/*/skills/clax/SKILL.md` and `plugins/*/README.md`.
+- `scripts/test-plugins.sh`, `scripts/smoke-comment-loop.sh` and `scripts/smoke-codex.sh`.
 
 ---
+
+## Design: Echo
+
+### Principles
+
+- The artifact is the star. Clax's chrome never covers or moves it. Pins and the comment-mode outline are the only things drawn over the page.
+- There are two voices with fixed jobs. Clax's structure speaks in **Plex Sans Condensed 600**: titles, numerals, labels, buttons, group heads. What people and agents write, and all meta, is **Plex Mono**.
+- There are two colours with fixed meanings, and they never take turns:
+  - **red-orange** `--you` is people: their comments, pins, comment mode;
+  - **green** `--agent` is agents: their notes, working, primary actions;
+  - brown is ink;
+  - pink is an accent only: selection and the comment tint.
+- The two arcs of the Echo symbol are the two kinds of participant. People sit on the left and open toward the centre. Agents sit on the right and open toward it. The page, a brown dot, is between them. The same layout recurs in the mark, the top bar's roster and each gallery card's roster.
+
+### Type (numbered after Univers)
+
+| Style | Face | Size | Use |
+|---|---|---|---|
+| 68 Display | Plex Sans Condensed 600 | 40px (gallery), 30px (phone), 22px (version button) | version numerals |
+| 67 Title | Plex Sans Condensed 600 | 20px (top bar), 17–20px (cards), 19px (group heads), 26px (gallery heads) | titles, group heads |
+| 57 Label | Plex Sans Condensed 600 | 13–15px | buttons, chips, summary line 1 |
+| 45 Mono | Plex Mono 400 | 12–13.5px | comments, replies, notes, meta, history |
+| 65 Mono strong | Plex Mono 600 | as 45 | emphasis inside mono |
+
+`font-synthesis: none` stops a faux bold. Nothing uses tracked capitals.
+
+### Tokens
+
+`theme.css` keeps the port's palette and contrast ratios, and adds these:
+
+| Token | Light | Dark | Meaning |
+|---|---|---|---|
+| `--you` | `#ed5439` | `#ed5439` | people, pins, comment mode |
+| `--on-you` | `#2f0b04` | `#2f0b04` | text on red-orange (5.06:1) |
+| `--agent` | `#457d26` | `#8cc46b` | agents, working |
+| `--agent-ink` | `#3d6f21` | `#8cc46b` | agent text on the grounds |
+| `--accent-tint` | `#eef4ea` | `#22291a` | a quiet green ground |
+| `--pink` | `#f9c8bf` | `#f9c8bf` | selection, accents only |
+| `--grot` | `"IBM Plex Sans Condensed", "Plex Condensed Fallback", "Arial Narrow", sans-serif` | | 67/68/57 |
+| `--mono` | the port's `--font` stack | | 45/65 |
+
+### Components
+
+- **Buttons.** Plex Sans Condensed 600 14px, sentence case, `min-height: 32px` (40px under `pointer: coarse`), a 1px `--border-strong` border, square corners.
+  - `.primary` is green.
+  - The pressed Comment button is red-orange (`--you` on `--on-you`).
+  - `.ghost` has no border.
+  - Icon buttons are 32×32 with a 16px glyph.
+- **Comment mode.** The Comment button is pressed and red-orange, and a 3px `--you` rule runs under the top bar (`box-shadow: inset 0 -3px 0 var(--you)`). The C keycap shows on the Comment button only, and is hidden at phone width.
+- **Top bar (60px).** From left to right:
+  - the mark (a link to the gallery);
+  - the title over the "published by" line;
+  - the roster and summary (Task 16);
+  - Comment with its C keycap;
+  - Threads with its count;
+  - the version button (`v5` in 68 Display at 22px, then `of 5 ▾` in mono);
+  - a ⋯ menu (open raw, copy link);
+  - the theme switch.
+
+  At phone width (≤700px) only the mark, title, roster (one token per side) and Comment show. A Page | Threads switch sits at the foot.
+- **Thread cards.**
+  - People's comments carry a 3px `--you` rule on the left.
+  - An agent's reply carries a 3px `--agent` rule on the right, its author line right-aligned. When the reply is linked to a version, it reads `<agent> · addressed in vN`.
+  - One line of version-tagged history sits under a dashed rule.
+  - An `outdated` tag sits in the header (Task 5).
+  - The actions are Reply, Resolve, and `Send to <agent> ▾`.
+- **Sidebar groups.** Each head is a 7×16 half-disc swatch, a 19px title and a muted count. The swatch is red-orange for Open, green for Addressed in vN, an outline for Detached, and a dot for Resolved. Detached and Resolved collapse into a tail. The groups are, in order:
+  - **Addressed in vN** (Task 18), then **Open**;
+  - **Detached**, which keeps the port's meaning: the anchor is gone;
+  - **Resolved**.
+- **Pins.**
+  - Open: red-orange.
+  - An agent is working on it: split red-orange and green.
+  - Addressed in a version you have not looked at: white with a green ring and a `vN` flag.
+  - Selected: a green ring.
+  - Being written: dashed.
+- **Gallery.**
+  - The bar is 60px: the mark, `Clax` in 22px Title, `local artifacts · seen as <name>`, search, and the theme switch.
+  - **Needs your eyes** comes first, then **Everything else**, with pinned cards first and then the most recent activity. Group heads are 26px Title over a 2px ink rule.
+  - Each card leads with its version numeral in 68 Display. Under it are the title, `<agent> · <time>`, the markers (Task 19), and a footer with the roster and `seen vK`.
+  - There are no thumbnails (provisional: Q1).
+  - The footer holds one haiku, a new one each visit.
+- **Empty states.** The gallery with no artifacts shows the mark large with its halves apart: "When an agent publishes a page, it lands here." A sidebar with no open threads reads "Nothing open. Press C and click anything to comment on it."
+- **Motion.**
+  - The mark's halves meet over 300ms. The working dot breathes over 1.8s. A 2px green sweep runs along the top bar's bottom edge while an agent works.
+  - Under `prefers-reduced-motion: reduce` nothing moves: no sweep, no breathing (the dot stays solid), and no transitions.
+- **Keys** (Task 3). `?` opens the sheet, and Esc closes it or leaves comment mode. The keys are:
+  - C: comment mode;
+  - T: threads;
+  - J and K: next and previous thread;
+  - Enter: reply to the selected thread;
+  - S: send it;
+  - R: resolve it;
+  - X: tick it;
+  - Shift+S: send the ticked threads;
+  - V: versions;
+  - P: people.
+
+  Keys act only when focus is in the shell and not in a text field (provisional: Q6).
+- **Easter eggs.**
+  - "rally of 10": a muted chip on the gallery card of an artifact at v10, and once per viewer in the top bar summary when they first view v10 (provisional: Q9).
+  - Click the mark and its halves meet; click again and they part.
+
+### Haiku
+
+The shell shows the same ten haiku as `clax haiku` (`crates/clax-cli/src/commands/haiku.rs`). They live in `web/shell/src/view/haiku.json`, which is loaded by dynamic `import()` after first paint, and a Rust test keeps the two lists equal (Task 6). A haiku appears:
+- in the gallery footer, a random one on each visit;
+- on the line under an agent's working status, in the sidebar strip and the people panel. It is chosen by the working record's `key`, so it stays put while the record lives.
+
+A haiku never appears in comment mode and is never animated.
+
+## Design: participants, attention and presence
+
+### Who is in a thread
+
+A viewer is **in** a thread when any of these holds:
+- they wrote a comment in it, so `comments.author_public_id` is their `public_id`;
+- a comment in it @mentions them;
+- they resolved it.
+
+Comments written before migration 11 have no author ID and count for nobody. An @mention is `@` followed by a viewer's display name, matched case-insensitively at a word boundary. A name with spaces matches only when written in full (provisional: Q3). `@agent` keeps its existing meaning (send to the agent) and names no viewer.
+
+### Attention, per viewer, per artifact
+
+| Field | Rule |
+|---|---|
+| `addressed` | IDs of open threads the viewer is in that are linked to a version (`version_threads`) after the viewer last looked at the thread |
+| `new_replies` | IDs of threads the viewer is in with a comment by someone else newer than the viewer's last look at the thread |
+| `open_in` | IDs of open threads the viewer is in |
+| `seen` | `viewer_seen.seen_n`: the latest version the viewer has viewed, or null |
+| `looked` | `{thread ID: looked_at}` for this artifact's threads (served only on the artifact view) |
+
+- An artifact **needs your eyes** when any of these holds: `addressed` is non-empty, `seen` is non-null and less than `current_version`, or `new_replies` is non-empty. A never-viewed artifact (`seen` null) does not need your eyes for its version alone.
+- **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card, its pin, or J and K) (provisional: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
+- **Viewing** a version unpinned writes `viewer_seen`. Resolving is a separate act, and it is never needed to clear anything.
+- The Addressed in vN group is decided when the view loads, and again when a new version arrives. Looking at a thread writes the mark at once, so the gallery clears, but the thread stays in the group until the view is decided again (provisional: Q4).
+
+### Agents
+
+A session gets `agent_handle` (`a_` and 22 lowercase hex digits from 11 random bytes) when it registers. The handle is never derived from the session ID. The **agents on an artifact** are the live owner session, the live sessions watching it, and the sessions that published any of its versions, as `{handle, harness, live}` (newest first, at most 10). The shell names an agent by its harness (`claude`, `codex`, `pi`). When two agents share a harness, it adds a short suffix from the handle (`claude 7f3a`).
+
+### Send target
+
+- Send, the bulk bar and Send N unsent all go to one agent. The default is the agent this viewer last sent to on this artifact, kept in `localStorage` under `clax.sendTo.<artifact ID>`. If that agent is no longer live, the default is the latest publisher's agent.
+- The `▾` caret lists the other live agents on the artifact. With one live agent there is no caret.
+- The routes take an optional `to` (an agent handle). Without `to`, they fan out as they do today, to the owner and the watchers.
+
+### Presence (provisional: Q5)
+
+- A viewer with the artifact open reports `here` while its tab is visible, and `away` when the tab is hidden or there has been no input for 5 minutes. A 30-second heartbeat keeps the report fresh. It may also report `where`: the anchor label of the thread it has selected, or of the composer it is writing in, at most 80 characters.
+- The daemon keeps presence in memory, keyed by (artifact, viewer public ID). An entry lapses 90 s after its last report: it becomes "last here <time>" and is dropped after 10 minutes. Changes go out as the `presence` event, `{artifact_id, people: [{public_id, display_name, state, where, since}]}`.
+- The roster shows here and away. The people panel shows the location. A per-person switch in the panel, "Share where I'm looking", stops sending `where`.
+- Another viewer's last seen version (`seen vK`) is shown in the panel. Their per-thread marks are never shown (provisional: Q7).
 
 ## Design: the working record
 
@@ -107,7 +333,7 @@ The record is kept in memory, in the daemon, and never written to SQLite:
 
 - It is a claim about the present, true only while its session keeps renewing it, with a 2 minute lifetime. A restart kills every heartbeat that would renew it. A persisted row would be stale by definition after a restart and would need an explicit purge on start. An in-memory map starts empty, so "a daemon restart should not show stale work" holds by construction.
 - It changes on every hook run and tool call (renewal). Writing that to SQLite would put a write transaction on the hot path of every tool call, behind the store's single connection mutex.
-- Nothing needs its history. The changelog (Tasks 12–18) persists what matters, the threads a version addressed. It copies them out of the record at publish time.
+- Nothing needs its history. The changelog (Tasks 12–14 and 18) persists what matters, the threads a version addressed. It copies them out of the record at publish time.
 - The session identity it needs (`session_id`, `harness`) is read from the persisted `sessions` table when the record is made.
 
 ### The record
@@ -147,83 +373,111 @@ Not renewals: the shim's 60 s `PATCH /api/sessions/<S>` heartbeat, `wait` and `i
 | Harness | Automatic | Not automatic, stated plainly |
 |---|---|---|
 | Claude Code | Marked when comments arrive by any tier. Renewed by tool calls (the `PostToolUse` hook, throttled to once a minute per session by `scripts/tool-hook.sh`) and every hook. Cleared by reply, publish, the Stop hook at the real end of a turn, and `SessionEnd`. | Work the person asks for in the terminal, not through a comment, is never marked: no hook knows which artifact a prompt is about. The agent must call `working`. Automatic marks carry no message. When the person interrupts a turn (Esc), Claude Code runs no Stop hook, so the mark stays until it lapses, up to 2 minutes later. Without the plugin's hooks (a plain `.mcp.json` install), only clax tool calls renew, so long work with other tools lapses after 2 minutes. |
-| Codex | Marked when comments arrive (Stop hook, `SessionStart`, tier 1, `wait_for_feedback`, and `codex queue` on exit 0). Cleared by reply, publish, the Stop hook at turn end, and `SessionEnd`. | `codex queue` exiting 0 means "queued", not "seen". For a session with no TUI attached the mark is false and lapses after 2 minutes. Renewal by tool calls depends on Codex running the plugin's `PostToolUse` hook. Codex 0.159.0 names the event, but this is not measured yet. Task 7 adds the check to `scripts/smoke-codex.sh --hooks`, and the person runs it. The contract says "not yet measured" until their result is recorded. Until then, only clax tool calls and the Stop hook are known to renew. Hooks run only with `features.hooks = true` and after the person trusts them. `codex exec` skips untrusted hooks, so there is no turn-end clear: the mark lapses. No prompt hook is wired, so terminal requests are never marked. |
+| Codex | Marked when comments arrive (Stop hook, `SessionStart`, tier 1, `wait_for_feedback`, and `codex queue` on exit 0). Cleared by reply, publish, the Stop hook at turn end, and `SessionEnd`. | `codex queue` exiting 0 means "queued", not "seen". For a session with no TUI attached the mark is false and lapses after 2 minutes. Renewal by tool calls depends on Codex running the plugin's `PostToolUse` hook. Codex 0.159.0 names the event, but this is not measured yet. Task 11 adds the check to `scripts/smoke-codex.sh --hooks`, and the person runs it. The contract says "not yet measured" until their result is recorded. Until then, only clax tool calls and the Stop hook are known to renew. Hooks run only with `features.hooks = true` and after the person trusts them. `codex exec` skips untrusted hooks, so there is no turn-end clear: the mark lapses. No prompt hook is wired, so terminal requests are never marked. |
 | Pi | Marked when comments arrive (tier 1, tier 5 injection, `wait_for_feedback`). Renewed by every tool call (`tool_call`, at most every 15 s). Cleared by reply, publish, `agent_end` and `session_shutdown`. | Terminal requests are never marked unless the agent calls `clax_working`. A Pi process that dies without `session_shutdown` leaves the mark to lapse (2 minutes). |
 
 ### What the person sees when several sessions work at once
 
-The header shows the newest record (latest `started_at`) as `<Harness> is working: <message>`. With no message it reads `<Harness> is working on N comments` when the record names threads, else `<Harness> is working`. Then ` (+N more)` follows, and the element's `title` lists every record's line. The gallery badge reads `<Harness> working` for one record and `N agents working` for more. A thread card shows the marker of the newest record that names it.
+Echo shows working agents rather than records. The words use the agent's name (`claude`, `codex`, `pi`; provisional: Q8):
+- **Top bar, line 1:** `claude working on N` for one working agent. For several, they are listed: `claude, codex working on 5`. N counts the distinct threads the records name, by any author. With no named threads it reads `claude working`. A record's `message` replaces the count: `claude: Rebuilding the chart`.
+- **Line 2** is about you:
+  - `all yours` or `N yours` (how many of the worked-on threads you are in), then the elapsed time since the newest record's `started_at`;
+  - else `N open threads`;
+  - and `codex idle` for an agent on the artifact that is not working, when there is room.
+- **Roster.** A working agent's token is solid green with a breathing dot. An idle agent's token is an outline.
+- **Gallery card.** One `claude working on N` chip per working agent (filled green).
+- **Thread card.** `claude is working on it · 0:42` under the messages, for the newest record naming the thread. The pin is split red-orange and green.
+- **Sidebar strip.** `claude is working on #1 (yours) and #3 · 0:42`, with a haiku under it.
+- **Top bar sweep.** A 2px green sweep along the bottom edge (none under reduced motion).
+
+The summary is a polite live region whose text changes only when the set of records changes, so renewals stay silent. The elapsed time sits in a separate element outside the live region.
 
 ## Design: the version changelog
 
 ### Storage
 
 - `versions.note TEXT` (nullable): the agent's note for that version, at most 280 characters after whitespace is collapsed and control characters dropped. Longer notes are cut to 279 characters plus `…`, and the publish result says `note_truncated: true`.
-- `version_threads(artifact_id, version_n, thread_id, source, created_at)`, primary key `(artifact_id, version_n, thread_id)`: a thread is addressed in a version. `source` is `working` (automatic at publish), `explicit` (`addresses` on publish) or `resolve` (an agent resolve with no earlier link). A thread may be linked to several versions. Deleting a thread deletes its links.
-- `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`, primary key `(viewer_id, artifact_id)`: the highest version this viewer (the `clax_viewer` cookie's viewer row) has had the changelog decided for. It is monotonic. It is bounded to the 200 most recently updated artifacts per viewer, and older rows are pruned on write. Deleting an artifact deletes its rows.
+- `version_threads(artifact_id, version_n, thread_id, source, created_at)`, primary key `(artifact_id, version_n, thread_id)`: a thread is addressed in a version.
+  - `source` is `working` (automatic at publish), `explicit` (`addresses` on publish) or `resolve` (an agent resolve with no earlier link).
+  - A thread may be linked to several versions. Deleting a thread deletes its links.
+- `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`, primary key `(viewer_id, artifact_id)`: the latest version this viewer has viewed unpinned. It only moves forward. It is bounded to the 200 most recently updated artifacts per viewer, and older rows are pruned on write. Deleting an artifact deletes its rows.
 
 ### Linking rules
 
 1. A publish of A by session S links every thread in S's working record on A (source `working`), then clears the record.
-2. `addresses: [thread IDs]` on a publish links those threads (source `explicit`). Each must be a thread of A (else 400 `unknown_thread`, and nothing is published). There are at most 50 (else 400 `invalid_args`). Resolved threads may be named.
+2. `addresses: [thread IDs]` on a publish links those threads (source `explicit`). Each must be a thread of A, else 400 `unknown_thread` and nothing is published. There are at most 50, else 400 `invalid_args`. Resolved threads may be named.
 3. An agent resolve of thread T links T to A's current version (source `resolve`), but only when T has no link at all yet.
-4. Linking never changes a thread's status. The viewer resolves it, one click from the changelog.
+4. Linking never changes a thread's status. A person resolves it, one click from the Addressed group.
 
 ### Views
 
 - Version views (`GET /api/artifacts/<id>`, `GET .../versions`, publish results) gain `note` (string or null) and `addresses` (thread IDs, in link order).
 - Thread views gain `addressed_in` (version numbers, ascending).
-- `GET /api/viewers/me/seen?artifact=<id>` answers `{seen: n | null}`. `PUT /api/viewers/me/seen` with `{artifact_id, version}` answers `{seen: n}`. These are viewer routes: no token, cookie required for PUT, foreign `Origin` refused.
+- `GET /api/viewers/me/seen?artifact=<id>` answers `{seen: n | null}`. `PUT /api/viewers/me/seen` with `{artifact_id, version}` answers `{seen: n}`. These are viewer routes: no token, a cookie is required for PUT, and a foreign `Origin` is refused.
 
-### Banner decision (`view/changelog-model.ts` `decideBanner`)
+### What the viewer sees (no banner)
 
-Inputs: the versions, the viewer's `seen`, the latest version, and whether the view is pinned.
+The brief rules out a band over the page. A new version shows in four quiet places, and none of them covers or moves the artifact:
+- **The version button's dot.** A green dot on `v5` while the latest version is newer than this viewer's `seen` (the mark from before this load).
+- **Top bar line 1.** One of these, when nothing is working:
+  - `v5 addressed 3` when the newest version addressed threads you are in that you have not looked at;
+  - `3 new versions · 7 addressed` for a viewer returning after several versions (provisional: Q11).
 
-- Pinned view: no banner, and the mark is not written.
-- `seen` is null (first visit): no banner. Write `seen = latest`.
-- `seen >= latest`: no banner.
-- One new version `vN`: with k addressed threads, `vN addressed k comment(s)`, followed by `: <note>` when there is a note. With no addressed threads and a note: `vN: <note>`. With neither: no banner.
-- Several new versions (m): `m new versions, k comments addressed`. With k = 0 and at least one note: `m new versions: <latest note>`. With neither: no banner.
-- Whatever the outcome, write `seen = latest` once decided. So the banner shows once per viewer per version.
+  Line 2 then reads `yours, not looked at yet`.
+- **The Addressed in vN group** at the top of the sidebar. It holds the open threads you are in that the newest version addressed and that you had not looked at when the view was decided. Each card shows the agent's reply as `<agent> · addressed in vN`, with Reply and Resolve. Under the head, a muted line reads `claude addressed these. Have a look, then resolve each one or reply.`
+- **The version menu.** Each version lists who published it and when, the threads it addressed as numbered chips (a green ring, or a red-orange ring when still open after your reply), what you did about them (`you resolved it`, `you replied on 9, still open`), and its note.
+
+Viewing the latest version unpinned writes `seen = latest` after the view is decided. A pinned view writes nothing.
 
 ### Time to usable
 
-Notes and addresses ride on `GET /api/artifacts/<id>`, which the shell already awaits before it renders. The cost is one indexed query of `version_threads` per artifact and one more column. The seen mark is fetched after the viewer lookup that already runs after load, and the banner appears when it arrives. It is never on the path to first paint or to comment mode. The port's bootstrap block (`boot.rs` `assemble`) embeds that same artifact response and the thread views, so `working`, notes, `addresses` and `addressed_in` arrive in the HTML with no request at all. The seen mark stays an after-load fetch.
+Notes, addresses, participants and the viewer's attention ride on `GET /api/artifacts/<id>` and the bootstrap block (`boot.rs` `assemble`), which already embeds that response, the thread views and the viewer. So they arrive in the HTML with no request at all. The cost is one indexed query each of `version_threads`, `viewer_threads` and `viewer_seen` per artifact. The seen write and the looked-at writes happen after load, batched (at most one request a second).
 
 ## Design: batch send to agent
 
-Decisions: "Batch send to agent" in the decisions file.
+Decisions: "Batch send to agent" in the decisions file. The labels follow Echo.
 
 ### Route and access
 
-`POST /api/artifacts/<aid>/threads:send` with `{thread_ids, note?}`. Access is exactly the single send's (`POST .../threads/<tid>/send`, `routes/threads.rs::send`), which the sidebar's "Send to agent" calls: no token, a foreign `Origin` refused (403 `forbidden_origin`), usable by LAN viewers. The viewer cookie names the sender (`viewer::author_name`: the display name, else `Viewer`).
+`POST /api/artifacts/<aid>/threads:send` takes `{thread_ids, note?, to?}`. Access is exactly the single send's (`POST .../threads/<tid>/send`, `routes/threads.rs::send`): no token, a foreign `Origin` refused (403 `forbidden_origin`), usable by LAN viewers. The viewer cookie names the sender (`viewer::author_name`: the display name, else `Viewer`). `to` is an agent handle (Task 15). With it, only that agent's live session gets rows. The single send gains the same optional `to` (`{to}` body).
 
 ### All or nothing
 
-One SQLite transaction validates every thread, then writes every feedback row (each carrying the batch's ID), the `send_batches` row and its `batch_threads`. One `feedback::apply` then fans out for the whole batch, so every target's long-poll wakes once and `codex queue` runs once per target with every row. Errors, checked in this order, write nothing:
+One SQLite transaction validates every thread, then writes every feedback row (each carrying the batch's ID), the `send_batches` row and its `batch_threads`. One `feedback::apply` then fans out for the whole batch, so every target's long-poll wakes once and `codex queue` runs once per target with every row. Errors are checked in this order, and none writes anything:
 
 | Case | Answer |
 |---|---|
 | No threads, more than 20 (one working record's bound), or an ID that is not a ULID | 400 `invalid_args` |
 | Note over 280 characters after whitespace is collapsed (the shell caps the field at 280) | 400 `note_too_long` |
+| `to` that names no live agent on the artifact | 400 `unknown_agent` |
 | A thread that does not exist, was deleted, or is on another artifact | 400 `unknown_thread`, naming every such ID |
 | A resolved thread | 400 `thread_resolved`, naming every such ID (as the single send refuses one) |
-| Every thread already sent with nothing new to send | 409 `nothing_to_send` |
+| Every thread already sent, with nothing new to send | 409 `nothing_to_send` |
 | Unknown or deleted artifact | 404 `not_found` |
 
-Duplicate IDs collapse. An already-sent thread is accepted, as the single send is idempotent. It sends only its viewer comments that have no feedback row yet, and is reported in `unchanged` when that is none. The batch holds the threads in `sent`.
+Duplicate IDs collapse. An already-sent thread is accepted, as the single send is idempotent. Only its viewer comments that have no feedback row yet are sent, and it is reported in `unchanged` when there are none. The batch holds the threads in `sent`.
 
 ### Delivery
 
-Every tier renders through `render_items`. A run of items from one batch is led by one line: `[clax] N comments on "<title>", sent together by <name>.`, followed by ` Note: "<note>"` when there is a note (JSON-quoted, like comment bodies). So the piggyback, the Stop hook, the prompt hook, `wait_for_feedback`, `codex queue` and Pi's `sendUserMessage` each hand the agent one grouped delivery, note first. Each thread keeps its own feedback rows, so sent state, acknowledgement, resends, the working marker and the changelog link stay per thread. A delivered batch marks every thread working through the usual `mark_items`. A publish then links every thread in the record.
+Every tier renders through `render_items`. A run of items from one batch is led by one line: `[clax] N comments on "<title>", sent together by <name>.`, then ` Note: "<note>"` when there is a note (JSON-quoted, like comment bodies).
+- So the piggyback, the Stop hook, the prompt hook, `wait_for_feedback`, `codex queue` and Pi's `sendUserMessage` each hand the agent one grouped delivery, note first.
+- Each thread keeps its own feedback rows, so sent state, acknowledgement, resends, the working marker and the changelog link stay per thread.
+- A delivered batch marks every thread working through the usual `mark_items`, and a publish then links every thread in the record.
 
 ### What the person sees
 
-Checkboxes on open thread cards, Shift-click ranges, a sticky bulk bar (`N selected · Send to agent · Clear`, with an optional note, sent with Cmd+Enter or Ctrl+Enter), and a `Send N unsent to agent` button at the sidebar top. Each sent thread's history shows the send (`Sent to agent by Alex with 2 others · "note"`), from the thread view's `sends`.
+- Each open thread card has a checkbox, and Shift-click ticks a range. While any card is ticked, a hand-off bar sits at the sidebar's foot. Its parts:
+  - the converging dots (red ones meeting a green one; still under reduced motion);
+  - `3 selected` over `handed off together`;
+  - Clear;
+  - `Send 3 to claude ▾`;
+  - an optional one-line note (Cmd+Enter or Ctrl+Enter sends).
+- When open threads have not been sent, a `Send N unsent to claude` button sits at the top of the sidebar.
+- Each sent thread's history shows the send: `alex sent it to claude with 2 others · "note"`.
 
 ### The page capability: no batch `sendToClaude`
 
-Recommendation: **no**. The `comments` capability keeps one-thread `sendToClaude`. Reasons:
+The `comments` capability keeps one-thread `sendToClaude`. The reasons:
 - claude.ai's contract has no batch verb, and adding one moves Clax's copy further from pages written for claude.ai.
 - A page may only send threads it created in this document, so a batch adds little over calling `sendToClaude` per thread.
 - Every call sits in the strict gesture tier (`frameGestureStrict`, `caps/gesture.ts`) and the 10-writes-a-minute budget. A batch verb would let one gesture, possibly a forged one within the activation window, send up to 20 threads.
@@ -232,36 +486,42 @@ The viewer's batch is the sidebar's. The spec and the contract say so in Task 1.
 
 ---
 
----
+### Task 1: Spec, contract and design amendments
 
-### Task 1: Spec and contract amendments
-
-Docs only. The tool-count lists (`Twenty-two tools:` in `docs/contract.md` and the READMEs) are not touched here. `scripts/sync-skill-tools.py --check` compares them with the fixture, which gains `working` only in Task 5.
+Docs only. This task writes down everything the later tasks build: Echo, the working signal, the changelog without a banner, participants and attention, presence, the send target, and batch send. Where this plan extends the spec, the amendment is here. Provisional answers (open-questions.md) are written into the spec as decided, and each one is listed in §18 so the owner can see which are provisional. The tool-count lists (`Twenty-two tools:` in `docs/contract.md` and the READMEs) are not touched here: `scripts/sync-skill-tools.py --check` compares them with the fixture, which gains `working` only in Task 10.
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-09-28-clax-design.md` (§5, §6, §8, §9, §10, §11, §12, §13, §14, §15, §16)
-- Modify: `docs/contract.md` (`### publish`, `## Sessions`, `### The comments capability`, `### Tools` under "Comments and feedback", `### What the person sees`)
+- Modify: `docs/superpowers/specs/2026-09-28-clax-design.md` (§5, §6, §8, §9, §10, §11, §12, §13, §14, §15, §16, §18)
+- Modify: `docs/contract.md` (`### publish`, `## Sessions`, `### The comments capability`, `### Tools` under "Comments and feedback", `### Payload`, `### What the person sees`)
 
-**Interfaces:** none (documentation of Tasks 2–23).
+**Interfaces:** none (the documentation of Tasks 2–25).
 
 - [ ] **Step 1: §5 Storage and data model**
 
 In the `versions(...)` bullet, replace `session_id, files_json)` with `session_id, files_json, note)`, and append to that bullet: ``; `note` is the agent's short change note for the version (at most 280 characters, null when none).``
 
+In the `sessions(...)` bullet, add `agent_handle` after `id`, and append: ``; `agent_handle` (`a_` and 22 lowercase hex digits from 11 random bytes, unique, assigned at registration, never derived from the ID) names the session's agent to the shell, which never sees a session ID.``
+
+In the `comments(...)` bullet, add `author_public_id` after `author_name`, and append: ``; `author_public_id` is the writing viewer's `public_id` (null for agents, viewers without a cookie, and comments written before it existed).``
+
 After the `session_env(...)` bullet, add:
 
 ```markdown
 - `version_threads(artifact_id, version_n, thread_id, source, created_at)`:
-  the threads a version addressed (spec §10, "Version changelog"); `source`
+  the threads a version addressed (§10, "Version changelog"); `source`
   is `working`, `explicit` or `resolve`. Deleting a thread deletes its links.
   Linking never changes a thread's status.
-- `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`: the highest
-  version whose changelog was decided for this viewer (the `clax_viewer`
-  cookie's row). Monotonic; at most 200 rows per viewer (the least recently
+- `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`: the latest
+  version this viewer (the `clax_viewer` cookie's row) has viewed unpinned.
+  It only moves forward; at most 200 rows per viewer (the least recently
   updated are pruned on write); deleting an artifact deletes its rows.
+- `viewer_threads(viewer_id, thread_id, looked_at)`: when this viewer last
+  looked at the thread (§10, "Participants and attention"). Served only to
+  that viewer. Deleting a thread deletes its rows.
+- `mentions(comment_id, public_id)`: the viewers a comment @mentions.
 
-Working records (§10, "Working") are not stored: the daemon keeps them in
-memory, so a restart starts with none.
+Working records (§10, "Working") and presence (§10, "Presence") are not
+stored: the daemon keeps them in memory, so a restart starts with none.
 ```
 
 - [ ] **Step 2: §6 HTTP API**
@@ -296,6 +556,22 @@ After the `Feedback:` bullet, add:
   /api/viewers/me/seen` (`{artifact_id, version}`, monotonic; `{seen}`) are
   viewer routes (no token, foreign `Origin` refused; PUT without a viewer
   cookie is 400 `no_viewer`).
+- Participants and attention (§10, "Participants and attention"): `GET
+  /api/artifacts/<aid>` and the bootstrap block carry `participants`
+  (`{people: [{public_id, display_name}], agents: [{handle, harness, live}]}`)
+  and, when the request's viewer cookie names a viewer, `attention`
+  (`{addressed, new_replies, open_in, seen, looked}`); `GET /api/artifacts`
+  carries `participants` per artifact. `GET /api/viewers/me/attention`
+  answers `{artifacts: {<aid>: {addressed, new_replies, open_in, seen}}}`
+  for every artifact (`{artifacts: {}}` without a cookie). `PUT
+  /api/viewers/me/looked` takes `{artifact_id, thread_ids}` (at most 50) and
+  answers `{looked: {<thread ID>: <time>}}`. Both are viewer routes; every
+  response carrying `attention` is `private, no-cache` with `Vary: Cookie`.
+- Presence (§10, "Presence"): `PUT /api/viewers/me/presence` takes
+  `{artifact_id, state: "here" | "away", where?}` (viewer route; a cookie is
+  required) and answers `{people}`; `GET /api/artifacts/<aid>/presence`
+  answers `{people: [{public_id, display_name, state, where, since}]}`; the
+  event stream carries `presence` with the same body.
 ```
 
 In "### Publish body", add these two lines to the JSON example after the `"label"` line:
@@ -307,33 +583,108 @@ In "### Publish body", add these two lines to the JSON example after the `"label
 
 and after the example add: ``A thread in `addresses` that is not a thread of the artifact is 400 `unknown_thread`, and nothing is published.``
 
-- [ ] **Step 3: §8 Shell UI and viewer**
+- [ ] **Step 3: §8 Shell UI and viewer: Echo**
 
-Append to the Gallery paragraph: ``A card whose artifact has working records shows a badge with a pulsing dot: `<Harness> working`, or `N agents working`.``
+Replace the Gallery paragraph with:
+
+```markdown
+Gallery (`/`): two groups. **Needs your eyes** holds the artifacts where,
+for this viewer, a thread they are in was addressed after they last looked
+at it, a version newer than the last one they viewed exists, or a thread
+they are in has a reply from someone else they have not seen. **Everything
+else** follows, pinned first, then by the latest version or reply. Each card
+leads with its version numeral, then the title, the publishing agent and
+time, markers (`N addressed in vK`, `vK new`, `N new replies`, `<agent>
+working on N`, `N open`), and a footer with the roster (people on the left,
+agents on the right, at most 3 a side) and `seen vK`. Search, open, pin and
+delete as before. The footer holds one haiku, a new one each visit.
+```
 
 Replace the Header bullet with:
 
 ```markdown
-- Header: title, the working status line (below), version menu (`v3 of 3`;
-  a button opening a panel that lists every version newest first with its
-  time, label, note and "addressed N" count, each a link to that version;
-  older versions read-only), copy link, open raw content in a new tab, comment
-  mode toggle, thread sidebar toggle, viewer display name.
-- Working status line: a pulsing dot and `<Harness> is working: <message>`
-  for the newest working record (`on N comments` when it has no message but
-  names threads; nothing more when it has neither), then `(+N more)` with every
-  record's line in the element's `title`. It is a polite live region whose
-  text changes only when the set of records changes, so renewals are silent.
-  At phone width only the dot and `<Harness> is working` show. The dot does
-  not pulse under `prefers-reduced-motion: reduce`.
-- Changelog banner: on loading the latest version unpinned, once per viewer
-  per version (`viewer_seen`), `v5 addressed 3 comments: <note>` for one new
-  version, or `3 new versions, 7 comments addressed` for several, with Show
-  (opens the sidebar at its Changes section) and Dismiss. A first visit shows
-  none.
+- Top bar: the Echo mark (a link to the gallery), the title over the
+  "published by" line, the roster and its two-line summary (who is working
+  on what; what is new for you; opens the people panel), Comment (red-orange
+  when on, with a 3px red-orange rule under the bar, and the C keycap),
+  Threads with the open count, the version button (`v5 of 5`, a green dot
+  while a version newer than this viewer's last view exists) opening the
+  version menu, a menu with open raw and copy link, and the theme switch. At
+  phone width: the mark, the title, the roster (one per side) and Comment; a
+  Page | Threads switch sits at the foot.
+- Version menu: a panel listing every version newest first, each with who
+  published it and when, the threads it addressed as numbered chips, what
+  this viewer did about them, and its note; each a link to that version
+  (older versions read-only). A full sheet at phone width.
+- People panel (P, or the roster): one row per person (threads they are in,
+  presence and location, the last version they viewed) and per agent (the
+  threads it is working on and whose, elapsed time with a haiku, or idle),
+  and the viewer's own name, edited here.
+- Keys: `?` opens a sheet listing them; C comment mode; Esc leaves it or
+  closes a menu; T threads; J and K next and previous thread; Enter reply;
+  S send; R resolve; X tick; Shift+S send the ticked threads; V versions;
+  P people. Keys act only when focus is in the shell and not in a text field.
+- Theme: follows the system; the switch flips light and dark, and a choice
+  equal to the system's clears back to following it.
+- Nothing Clax draws covers or moves the artifact, except pins and the
+  comment-mode outline.
 ```
 
-In the Thread sidebar bullet, append: ``An open thread named by a working record shows `<Harness> is working…` in place of its waiting indicator until the record drops it (the agent's reply arrives at the same moment). Above the threads, a Changes section lists "Addressed in vN" groups, newest first, each thread as a row that jumps to its anchor with the existing flash (a static outline under reduced motion) and carries a Resolve button while open; the groups for versions new since the viewer's last visit start expanded.``
+Replace the Thread sidebar bullet with:
+
+```markdown
+- Thread sidebar: groups **Addressed in vN** (open threads this viewer is
+  in that the newest version addressed and they had not looked at when the
+  view was decided), **Open**, **Detached** (anchor not found on its own page
+  in this version) and **Resolved**. A card shows the anchor summary, an
+  `outdated` tag when its element changed in a later version but still
+  exists (resolved by selector or quote while its `html_hash` differs), the
+  clip, the messages (people's with a red-orange rule on the left, an
+  agent's with a green rule on the right, `<agent> · addressed in vN` when
+  linked), one line of version-tagged history (`v3 alex commented · v4 Mia
+  replied · claude worked on it · v5 claude addressed it · alex resolved`),
+  and Reply, Resolve and `Send to <agent> ▾`. Anyone may resolve; the
+  history records who. Clicking a thread scrolls the frame to its anchor and
+  flashes it (a static outline under reduced motion); a thread on another
+  page is labelled "on <file>" and clicking it navigates there first. Pins
+  show only for the page in the frame: red-orange; split red-orange and
+  green while an agent works on the thread; white with a green ring and a
+  `vN` flag when addressed and not looked at; a green ring when selected;
+  dashed while being written.
+- Working: while an agent works on the artifact, the top bar's summary reads
+  `claude working on N` (or its message), the roster's agent token is solid
+  green with a breathing dot, a 2px green sweep runs under the bar, each
+  named thread shows `claude is working on it` with the elapsed time, and the
+  sidebar starts with a strip naming the threads and a haiku. The summary is
+  a polite live region that changes only when the records change.
+```
+
+In the Live updates bullet, replace `a new version shows a
+  "v4 published, reload" banner` with `a new version shows "v4 published"
+  in the top bar's summary with a Reload button beside it`, and append:
+``Nothing is drawn over the page for a version: viewing an older version
+shows a Latest link beside the version button, the version button gets its
+dot, the summary line reads `v5 addressed 3` (or `3 new versions · 7
+addressed` for a viewer returning after several), and the Addressed group
+fills.``
+
+Everywhere else the spec and the contract name the button **Send to agent**
+(spec §1, §10 "Data flow"; the contract's comments section), write
+**Send to <agent>** (the button names the agent it sends to, for example
+**Send to claude**).
+
+Add a paragraph after the Comment mode bullets:
+
+```markdown
+Look: Echo. Plex Sans Condensed 600 (one self-hosted WOFF2, `swap`, never
+preloaded) sets titles, numerals, labels and buttons in sentence case;
+Plex Mono sets everything people and agents write. Red-orange is people,
+green is agents, brown is ink, pink is an accent only. Haiku appear in the
+gallery footer and under an agent's working line, never in comment mode,
+never animated. Buttons are plain verbs; playful words appear only in status
+lines, hints and empty states. The mark's halves meet when it is clicked; a
+"rally of 10" chip marks an artifact's tenth version.
+```
 
 - [ ] **Step 4: §9 comments capability**
 
@@ -378,12 +729,41 @@ Each version may carry a `note` and a set of threads it addressed. A
 publish by a session links the threads of that session's working record on
 the artifact (then clears the record); `addresses` names more; an agent
 resolve links the thread to the current version when it has no link yet.
-Linking never resolves: the viewer does, from the Changes section.
+Linking never resolves: a person does, from the Addressed group.
+
+### Participants and attention
+
+A viewer is in a thread when they wrote a comment in it (`author_public_id`),
+a comment in it @mentions them (`@` and their display name, any case, at a
+word boundary; `@agent` names no viewer), or they resolved it. For each
+artifact the daemon computes, per viewer: `addressed` (open threads they are
+in linked to a version after they last looked at the thread), `new_replies`
+(threads they are in with someone else's comment newer than their last
+look), `open_in`, and `seen` (`viewer_seen`). Looking at a thread is its card
+being at least half visible for a second, or selecting it; it writes
+`viewer_threads`. Viewing a version unpinned writes `viewer_seen`. Resolving
+is never needed to clear anything.
+
+The agents on an artifact are its live owner session, the live sessions
+watching it, and the sessions that published its versions, named by
+`agent_handle`. Send, single or batch, takes an optional `to` (an agent
+handle): only that agent's session gets rows. Without `to`, rows go to the
+owner and the watchers, as before. The shell defaults `to` to the agent this
+viewer last sent to on the artifact, else the latest publisher's agent.
+
+### Presence
+
+A viewer with the artifact open reports `here` (tab visible) or `away`
+(hidden, or 5 minutes without input) every 30 s, and optionally `where` (the
+anchor label of the thread they have selected or are writing on, at most 80
+characters; a per-person switch stops it). The daemon keeps reports in
+memory; one lapses 90 s after the last, shows as "last here" for 10 minutes,
+then goes. Changes go out as `presence`.
 ```
 
 - [ ] **Step 6: §11 Sessions and identity**
 
-Append to the "Heartbeats:" paragraph: ``The session heartbeat keeps the session row alive only; it never renews working records (§10, "Working").``
+Append to the "Heartbeats:" paragraph: ``The session heartbeat keeps the session row alive only; it never renews working records (§10, "Working"). Registration assigns `agent_handle`.``
 
 - [ ] **Step 7: §12 MCP tool surface**
 
@@ -403,11 +783,11 @@ In the Claude Code `hooks/hooks.json` bullet, replace `` `Stop` →
 
 - [ ] **Step 9: §14, §15, §16**
 
-§14, add a bullet: ``- Working views and events carry the record's `key`, `harness`, `message`, thread IDs and times, and are readable without the token, like threads: LAN viewers see which harness is working and its message. They never carry a session ID, working directory or PID. Messages and version notes are agent text, rendered by the shell as text only.``
+§14, add a bullet: ``- Working views and events carry the record's `key`, `harness`, `message`, thread IDs and times, and are readable without the token, like threads: LAN viewers see which harness is working and its message. They never carry a session ID, working directory or PID. Messages and version notes are agent text, rendered by the shell as text only.`` Add a second bullet: ``- Participants carry viewers' public IDs and display names (already public through comments) and agents' handles and harnesses. Attention and looked-at marks are served only to the viewer whose cookie the request carries. Presence carries public IDs, display names, here or away, and the optional location the person chose to share.``
 
 §15, in "Hook timeouts", after `prompt submit 4 s` add `, tool 2 s (1 s per daemon request)`.
 
-§16, append to the **clax-server** bullet: ``, working records (set, mark, renew, clear, expiry by an injected clock), the changelog links and seen marks``. Append to **Browser**: ``, the working status line, gallery badge, thread marker and capability, and the changelog banner, Changes section and version menu``.
+§16, append to the **clax-server** bullet: ``, working records (set, mark, renew, clear, expiry by an injected clock), the changelog links and seen marks, attention and looked-at marks, agent handles, the send target, and presence (expiry by an injected clock)``. Append to **Browser**: ``, Echo (fonts, theme switch, keys, the mark), the working summary, roster, card chips, thread marker, pins and capability, the Addressed group, version menu and history line, needs your eyes, batch send with the agent picker, and presence; every UI change is checked in screenshots, light and dark, desktop and phone``.
 
 - [ ] **Step 10: `docs/contract.md`**
 
@@ -446,9 +826,9 @@ and after that table's paragraphs add this subsection:
 ```markdown
 ### Working
 
-`working` tells the person you are acting on an artifact. The page's header
-shows `<Harness> is working: <message>`, its gallery card a badge, and each
-thread named in `thread_ids` `<Harness> is working…`. Comments sent to you
+`working` tells the person you are acting on an artifact. The top bar
+shows `claude working on N` (or `claude: <message>`), its gallery card a
+chip, and each thread named in `thread_ids` `claude is working on it`. Comments sent to you
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
 stored ones when given; `done: true` clears the record, or with `thread_ids`
@@ -482,11 +862,15 @@ without consent or gesture.
 In `### What the person sees`, add at its end:
 
 ```markdown
-An open thread a working record names shows "<Harness> is working…" instead
-of its waiting indicator. On loading a new version, the viewer sees the
-changelog banner once ("v5 addressed 3 comments: <note>", or a summary of
-several versions); the sidebar's Changes section lists each version's
-addressed threads with Resolve; the version menu lists every version's note.
+An open thread a working record names shows "claude is working on it"
+instead of its waiting indicator. A new version puts nothing over the page:
+the version button gets a dot, the top bar's summary reads "v5 addressed 3",
+the sidebar's "Addressed in v5" group lists the threads it addressed that
+the viewer is in, with your reply shown as "claude · addressed in v5", and
+the version menu lists every version's note. Each thread's history line
+shows what happened on which version. When the person sends several
+threads, or several agents work on one artifact, the person picks the agent;
+the payload is the same.
 ```
 
 - [ ] **Step 11: Batch send to agent (spec and contract)**
@@ -500,9 +884,9 @@ Spec §5: in the `feedback(...)` bullet, add `batch_id` to the column list, and 
   gets it, never a cookie. Deleting a thread or its artifact deletes its rows.
 ```
 
-Spec §6: after the `.../threads/<tid>/send` sentence in the Comments bullet, add: ``POST .../threads:send`` (no token; foreign `Origin` refused, as the single send) takes `{thread_ids, note?}` and sends 1 to 20 threads as one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`, or 400 `invalid_args` / `note_too_long` / `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes nothing on any error. Thread views carry `sends`, the batches that sent them.``
+Spec §6: after the `.../threads/<tid>/send` sentence in the Comments bullet, add: ``POST .../threads:send`` (no token; foreign `Origin` refused, as the single send) takes `{thread_ids, note?, to?}` and sends 1 to 20 threads as one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`, or 400 `invalid_args` / `note_too_long` / `unknown_agent` / `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes nothing on any error. Thread views carry `sends`, the batches that sent them. The single send takes an optional JSON body `{to}` (an agent handle; 400 `unknown_agent` when it names no live agent on the artifact).``
 
-Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click selects a range). While any is checked, a sticky bar at the sidebar top reads `N selected · Send to agent · Clear` and holds an optional one-line note (Cmd+Enter or Ctrl+Enter sends). A `Send N unsent to agent` button shows whenever open threads have not been sent. A sent thread's history shows its batch send and note. A thread that disappears leaves the selection.``
+Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click ticks a range; X ticks the selected thread). While any is ticked, a hand-off bar at the sidebar's foot reads `N selected · handed off together`, with Clear, `Send N to <agent> ▾` and an optional one-line note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to <agent>` button sits at the sidebar top whenever open threads have not been sent. A sent thread's history shows the send and its note. A thread that disappears leaves the selection.``
 
 Spec §9: append to the **comments** bullet: ``There is no batch form of `sendToClaude`: a page sends threads it created one call at a time, each in the strict gesture tier; batches are the viewer's, from the sidebar.`` In the Clax extension sentence from Step 4, after `under either declaration form`, insert ``(for `composer_only`, a Clax extension to that form, which otherwise grants only `openComposer` and `anchorFor`)``.
 
@@ -531,21 +915,1784 @@ comment text it is a request to weigh.
 
 and in `### The comments capability`, add: ``Clax adds no batch `sendToClaude`; the batch send is the viewer's, from the sidebar.``
 
-- [ ] **Step 12: Check and commit**
+- [ ] **Step 12: §18 Open questions**
 
-Run: `grep -n "fourteen tools" docs/superpowers/specs/2026-09-28-clax-design.md; bash scripts/test-plugins.sh | tail -1`
-Expected: no `fourteen tools` line; `plugin checks passed`.
+Append to §18:
+
+```markdown
+- Provisional, pending the owner (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`):
+  gallery cards without thumbnails (Q1); the theme switch's return to the
+  system (Q2); @mention matching (Q3); what counts as looking, and the
+  Addressed group holding still until the view is decided again (Q4);
+  presence built now, with location from the selected thread (Q5); keys only
+  while focus is in the shell (Q6); others' last seen version public, their
+  per-thread marks private (Q7); agents named by harness, no "publishing"
+  state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the
+  returning-viewer summary in the top bar (Q11); the version bands moved
+  into the top bar (Q12).
+```
+
+- [ ] **Step 13: Check and stage**
+
+Run: `grep -n "fourteen tools\|banner, then\|Changes section\|Send to agent" docs/superpowers/specs/2026-09-28-clax-design.md docs/contract.md; bash scripts/test-plugins.sh | tail -1`
+Expected: no lines from the grep; `plugin checks passed`.
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add docs/superpowers/specs/2026-09-28-clax-design.md docs/contract.md
-git commit -m "Specify the agent working signal, the version changelog and batch send to agent"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Specify Echo, the agent working signal, the version changelog, attention, presence and batch send")
 ```
 
 ---
 
-### Task 2: The working registry in clax-core
+### Task 2: Echo tokens, the two type voices, the font budget and the screenshot script
+
+The base layer of Echo: tokens, Plex Sans Condensed beside Plex Mono, sentence case, plain-verb buttons, and a font budget in the bundle gate. It also adds the screenshot script that every later UI task runs. Components keep their current layout. Tasks 4–6 restyle them.
+
+**Files:**
+- Create: `web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2` (copied from `.superpowers/sdd/2026-09-30-redesign/concept-3-echo/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2`, 19,816 bytes)
+- Create: `web/scripts/measure-fallback.mjs`, `web/shell/src/echo-theme.test.ts`, `web/e2e/shots.spec.ts`, `web/e2e/scenes.ts`, `web/e2e/pages/sample-report.html`
+- Modify: `web/shell/src/theme.css`, `web/scripts/bundle-size.mjs`, `web/scripts/bundle-size.test.ts`, `web/perf/bundle-budget.json`, `web/shell/public/_clax/fonts/OFL.txt`
+
+**Interfaces:**
+- CSS custom properties (both themes): `--you`, `--on-you`, `--agent`, `--agent-ink`, `--accent-tint`, `--pink`, `--grot`, `--mono` (the port's `--font` stays as an alias of `--mono`).
+- Classes: `.g` (Plex Sans Condensed 600), `.kc` (a keycap), `button.ghost`, `button.icon`.
+- `web/perf/bundle-budget.json` gains `"fonts": 50144`: the gzip-free byte total of `dist/_clax/fonts/*.woff2`. `bundle-size.mjs` also fails when a WOFF2 file is preloaded, when there are more than three of them, or when an `@font-face` lacks `font-display: swap`.
+- `web/e2e/scenes.ts`: `type Seeded = { base: string; token: string; aid: string; sid: string; threads: string[] }`, `type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page, s: Seeded): Promise<void> }`, `export const SCENES: Scene[]`, `export async function seed(base, token): Promise<Seeded>`. Later tasks append scenes.
+
+- [ ] **Step 1: The theme test, first**
+
+`web/shell/src/echo-theme.test.ts`:
+
+```ts
+// Echo's base layer (spec §8, "Look"): two type voices, sentence case,
+// swap-only fonts, and the people/agent colours in both themes.
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { describe, expect, it } from "vitest";
+
+const css = readFileSync(join(__dirname, "theme.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+const faces = [...css.matchAll(/@font-face\s*\{([^}]*)\}/g)].map(m => m[1]);
+const block = (sel: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(m => m[1].split(",").map(s => s.trim()).includes(sel)).map(m => m[2]).join(";");
+
+describe("Echo theme", () => {
+  it("self-hosts exactly three faces, every one swap, the condensed one at 600 only", () => {
+    const real = faces.filter(f => /url\(/.test(f));
+    expect(real).toHaveLength(3);
+    for (const f of real) expect(f).toMatch(/font-display:\s*swap/);
+    const condensed = real.filter(f => /IBM Plex Sans Condensed/.test(f));
+    expect(condensed).toHaveLength(1);
+    expect(condensed[0]).toMatch(/font-weight:\s*600/);
+    expect(condensed[0]).toMatch(/\/_clax\/fonts\/ibm-plex-sans-condensed-latin-600\.woff2/);
+  });
+
+  it("sets nothing in tracked capitals", () => {
+    expect(css).not.toMatch(/text-transform:\s*uppercase/);
+    expect(css).not.toMatch(/letter-spacing:\s*\.0[4-9]em/);
+  });
+
+  it("defines people and agent colours for light and both dark paths", () => {
+    expect(block(":root")).toMatch(/--you:\s*#ed5439/);
+    expect(block(":root")).toMatch(/--agent:\s*#457d26/);
+    expect(block(':root[data-theme="dark"]')).toMatch(/--agent:\s*#8cc46b/);
+    expect(css).toMatch(/:root:not\(\[data-theme="light"\]\)\s*\{\s*@media \(prefers-color-scheme: dark\)\s*\{[^}]*--agent:\s*#8cc46b/);
+  });
+
+  it("sets buttons in the condensed face, sentence case, and stops faux bold", () => {
+    expect(block("button")).toMatch(/font:\s*600 14px\/1(\.\d+)? var\(--grot\)/);
+    expect(block(":root")).toMatch(/font-synthesis:\s*none/);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/echo-theme.test.ts`
+Expected: FAIL (two faces, uppercase rules, no `--you`).
+
+- [ ] **Step 2: The font, its licence, and the fallback metrics**
+
+```bash
+cp .superpowers/sdd/2026-09-30-redesign/concept-3-echo/fonts/ibm-plex-sans-condensed-latin-600-normal.woff2 \
+   web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2
+test "$(wc -c < web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2)" -eq 19816 && echo size-ok
+```
+
+Expected: `size-ok`. In `web/shell/public/_clax/fonts/OFL.txt`, change the first copyright line so that it names the IBM Plex family as a whole (`Copyright © 2017 IBM Corp. with Reserved Font Name "Plex"`), if it names only Plex Mono. The licence text itself is the same for both faces.
+
+`web/scripts/measure-fallback.mjs`. It measures how much wider or narrower each local fallback is than Plex Sans Condensed 600 for the shell's own words, and prints the `@font-face` overrides. It runs Chromium from `@playwright/test`, with no daemon and no network:
+
+```js
+// Prints metric overrides for the local faces that stand in for IBM Plex
+// Sans Condensed 600 until it loads (font-display: swap), so the swap barely
+// moves the top bar. Plex's ascent and descent are 1.025 and 0.275 em.
+import { chromium } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+const woff = readFileSync(new URL("../shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2", import.meta.url)).toString("base64");
+const SAMPLE = "Checkout latency, week 39 Comment Threads v5 of 5 Send to claude Resolve Reply Needs your eyes Addressed in v5 0123456789";
+const FALLBACKS = {
+  "Plex Condensed Fallback": ["Avenir Next Condensed Demi Bold", "AvenirNextCondensed-DemiBold", "Helvetica Neue Condensed Bold", "HelveticaNeue-CondensedBold"],
+  "Plex Condensed Fallback L": ["DejaVu Sans Condensed Bold", "DejaVuSansCondensed-Bold", "Liberation Sans Narrow Bold", "LiberationSansNarrow-Bold", "Arial Narrow Bold", "ArialNarrow-Bold"],
+};
+const browser = await chromium.launch();
+const page = await browser.newPage();
+await page.setContent(`<style>@font-face{font-family:P;src:url(data:font/woff2;base64,${woff}) format("woff2");font-weight:600}</style>`);
+await page.evaluate(() => document.fonts.load("600 100px P"));
+const width = (family, weight) => page.evaluate(([f, w, s]) => {
+  const c = document.createElement("canvas").getContext("2d");
+  c.font = `${w} 100px ${f}`;
+  return c.measureText(s).width;
+}, [family, weight, SAMPLE]);
+const plex = await width("P", 600);
+for (const [name, locals] of Object.entries(FALLBACKS)) {
+  for (const local of locals) {
+    // A face this machine lacks falls through to monospace: skip it.
+    const w = await width(`"${local}", monospace`, 400);
+    if (Math.abs(w - (await width("monospace", 400))) < 0.5) continue;
+    const sa = plex / w;
+    const pct = n => `${(n * 100).toFixed(2)}%`;
+    console.log(`${name} (${local}): size-adjust: ${pct(sa)}; ascent-override: ${pct(1.025 / sa)}; descent-override: ${pct(0.275 / sa)}; line-gap-override: 0%;`);
+    break;
+  }
+}
+await browser.close();
+```
+
+Run: `cd web && node scripts/measure-fallback.mjs`
+Expected: one line per fallback family, for whichever local faces this machine has. Put the printed values into the two `@font-face` rules in Step 3. On a machine without one of those faces, keep the starting values given in Step 3 for that rule, and say so in the task report.
+
+- [ ] **Step 3: theme.css, the base layer**
+
+Replace the file's head, from its first comment through the `a { … }` rule, with:
+
+```css
+/* IBM Plex Mono 400/600 and IBM Plex Sans Condensed 600, Latin subsets
+   (SIL OFL 1.1, see /_clax/fonts/OFL.txt). Every face is `swap` and none is
+   preloaded: text shows at once in a metric-matched local face and swaps
+   when the file arrives. Mono carries what people and agents write; the
+   condensed face carries Clax's structure (titles, numerals, labels,
+   buttons). */
+@font-face { font-family: "IBM Plex Mono"; font-weight: 400; font-display: swap; src: url("/_clax/fonts/ibm-plex-mono-latin-400.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Mono"; font-weight: 600; font-display: swap; src: url("/_clax/fonts/ibm-plex-mono-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "IBM Plex Sans Condensed"; font-weight: 600; font-style: normal; font-display: swap; src: url("/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2") format("woff2"); }
+@font-face { font-family: "Plex Fallback"; src: local("Menlo Regular"), local("Menlo-Regular"), local("DejaVu Sans Mono"), local("DejaVuSansMono"); size-adjust: 99.66%; ascent-override: 102.85%; descent-override: 27.59%; line-gap-override: 0%; }
+@font-face { font-family: "Plex Fallback C"; src: local("Consolas"); size-adjust: 109.13%; ascent-override: 93.92%; descent-override: 25.2%; line-gap-override: 0%; }
+/* Measured by web/scripts/measure-fallback.mjs against the shell's words. */
+@font-face { font-family: "Plex Condensed Fallback"; font-weight: 600; src: local("Avenir Next Condensed Demi Bold"), local("AvenirNextCondensed-DemiBold"), local("Helvetica Neue Condensed Bold"), local("HelveticaNeue-CondensedBold"); size-adjust: 100%; ascent-override: 102.5%; descent-override: 27.5%; line-gap-override: 0%; }
+@font-face { font-family: "Plex Condensed Fallback L"; font-weight: 600; src: local("DejaVu Sans Condensed Bold"), local("DejaVuSansCondensed-Bold"), local("Liberation Sans Narrow Bold"), local("LiberationSansNarrow-Bold"), local("Arial Narrow Bold"), local("ArialNarrow-Bold"); size-adjust: 100%; ascent-override: 102.5%; descent-override: 27.5%; line-gap-override: 0%; }
+/* Light ratios (WCAG 2.x): fg ≥15.8, muted ≥6.7, accent-ink ≥5.3, danger ≥6.8
+   on every ground; border-strong ≥3.35 and focus ≥4.4 (UI); brown on
+   red-orange 5.06. Red-orange is people, green is agents, brown is ink,
+   pink is an accent only. */
+:root {
+  --bg: #fbf4f1; --card: #ffffff; --raised: #ffffff; --fg: #2f0b04; --muted: #6f4b42;
+  --border: #e8d6d1; --border-strong: #9e7b72;
+  --accent: #457d26; --accent-ink: #3d6f21; --accent-hover: #3d6f21; --on-accent: #ffffff; --accent-tint: #eef4ea;
+  --danger: #a3123a; --danger-tint: #f9eef1; --focus: #457d26;
+  --you: #ed5439; --on-you: #2f0b04; --agent: #457d26; --agent-ink: #3d6f21; --pink: #f9c8bf;
+  --pin: var(--you); --on-pin: var(--on-you); --pin-ring: #ffffff;
+  --selection-bg: var(--pink); --selection-fg: #2f0b04; --comment-hl: #fceeea; --shadow: rgba(47,11,4,.16);
+  --mono: "IBM Plex Mono", "Plex Fallback", "Plex Fallback C", ui-monospace, Menlo, Consolas, monospace;
+  --font: var(--mono);
+  --grot: "IBM Plex Sans Condensed", "Plex Condensed Fallback", "Plex Condensed Fallback L", "Arial Narrow", sans-serif;
+  --t: .12s cubic-bezier(.4,0,.2,1);
+  --radius: 0; --gutter: 16px; color-scheme: light dark; font-synthesis: none;
+}
+/* Dark ratios: fg ≥12.4, muted ≥6.4, accent ≥7.2, danger ≥6.6 on every ground;
+   border-strong ≥3.13, pin ≥4.18 (UI). */
+:root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {
+  --bg: #1a0d09; --card: #261410; --raised: #331c16; --fg: #f7e8e4; --muted: #c4a49b; --border: #45291f; --border-strong: #94695e;
+  --accent: #8cc46b; --accent-ink: #8cc46b; --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e; --focus: #8cc46b;
+  --agent: #8cc46b; --agent-ink: #8cc46b; --comment-hl: #3e1e16; --shadow: rgba(0,0,0,.55);
+} }
+:root[data-theme="dark"] {
+  --bg: #1a0d09; --card: #261410; --raised: #331c16; --fg: #f7e8e4; --muted: #c4a49b; --border: #45291f; --border-strong: #94695e;
+  --accent: #8cc46b; --accent-ink: #8cc46b; --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e; --focus: #8cc46b;
+  --agent: #8cc46b; --agent-ink: #8cc46b; --comment-hl: #3e1e16; --shadow: rgba(0,0,0,.55); color-scheme: dark;
+}
+:root[data-theme="light"] { color-scheme: light; }
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { background: var(--bg); color: var(--fg); font: 14px/1.5 var(--mono); -webkit-font-smoothing: antialiased; }
+::selection { background: var(--selection-bg); color: var(--selection-fg); }
+::placeholder { color: var(--muted); opacity: 1; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+a { color: inherit; text-decoration: none; }
+/* Structure speaks in the condensed face (68 Display, 67 Title, 57 Label). */
+.g, h1, h2, h3 { font-family: var(--grot); font-weight: 600; letter-spacing: 0; }
+.kc { font: 600 10px/14px var(--mono); border: 1px solid currentColor; padding: 0 4px; opacity: .7; }
+```
+
+Replace the `button { … }` rule and the three rules after it (`button:not(:disabled):hover`, `button.primary`, `button.primary:not(:disabled):hover`) with:
+
+```css
+button { font: 600 14px/1.15 var(--grot); min-height: 32px; padding: 7px 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }
+button:not(:disabled):hover { border-color: var(--fg); }
+button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+button.primary:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.ghost { background: none; border-color: transparent; }
+button.ghost:not(:disabled):hover { border-color: var(--border-strong); }
+button.icon { width: 32px; padding: 0; flex: none; }
+button.icon svg { width: 16px; height: 16px; }
+```
+
+Then remove every `text-transform: uppercase;` declaration and every `letter-spacing: .0Nem;` declaration that remains in the file. They are in the rules for `.topbar > h1:first-child`, `.topbar > h1:first-child + .muted`, the bracketed topbar actions, `.card .meta > span:nth-child(-n+2)`, `.banner a`, `.sidebar h2` and `.prompt h2`. Delete a rule that is left empty. In the bracketed topbar actions rule, also delete the `::before` and `::after` rules that draw `[ ` and ` ]`. Task 4 replaces those actions with a menu. In `.sidebar h2` and `.prompt h2`, set `font-size: 15px`, which suits the condensed face.
+
+Run: `cd web && npx vitest run shell/src/echo-theme.test.ts shell/src/topbar-style.test.ts`
+Expected: `echo-theme` PASS. If `topbar-style.test.ts` asserted the brackets, change that assertion to check that open raw and copy link render inside the island. Do not delete the test.
+
+- [ ] **Step 4: The font budget in the bundle gate**
+
+In `web/scripts/bundle-size.mjs`, after the `markers` loop, add:
+
+```js
+// Fonts: at most three WOFF2 files, every @font-face swap, none preloaded;
+// their bytes (already compressed) are budgeted as `fonts`.
+import { readdirSync, statSync } from "node:fs";
+const fontDir = new URL("_clax/fonts/", dist);
+const woffs = readdirSync(fontDir).filter(f => f.endsWith(".woff2"));
+if (woffs.length > 3) throw new Error(`dist/_clax/fonts holds ${woffs.length} WOFF2 files; at most 3`);
+for (const html of ["index.html", "artifact.html"]) {
+  const text = read(html).toString();
+  if (/<link[^>]+rel="?preload"?[^>]+\.woff2/.test(text)) throw new Error(`dist/${html} preloads a font; fonts must never block or jump the queue`);
+  for (const face of text.matchAll(/@font-face\s*\{([^}]*)\}/g)) {
+    if (/url\(/.test(face[1]) && !/font-display:\s*swap/.test(face[1])) throw new Error(`dist/${html}: an @font-face without font-display: swap`);
+  }
+}
+const fontBytes = woffs.reduce((n, f) => n + statSync(new URL(f, fontDir)).size, 0);
+```
+
+Move the `import` to the top of the file with the others. Then:
+- add `fonts: fontBytes` to `sizes`;
+- print it in the `console.log` line (`fonts ${sizes.fonts}`);
+- add `"fonts"` to `KEYS`, and to both lists that check and record budgets (`["gallery", "artifact", "bridge"]` becomes `["gallery", "artifact", "bridge", "fonts"]`).
+
+`--record` never raises a budget, as before.
+
+`web/perf/bundle-budget.json`: add `"fonts": 50144`. This is 14,708 + 15,620 + 19,816 bytes: the three files exactly. Any further font byte is the owner's call.
+
+In `web/scripts/bundle-size.test.ts`, add a case in the file's existing style:
+- a fixture `dist` with a fourth WOFF2 fails with `at most 3`;
+- an `index.html` with `<link rel="preload" href="/_clax/fonts/x.woff2">` fails with `preloads a font`;
+- a budget file without `fonts` fails with `lacks a numeric budget for: fonts`.
+
+Run: `cd web && npx vitest run scripts/bundle-size.test.ts && npm run build && node scripts/bundle-size.mjs; echo "exit=$?"`
+Expected: PASS and `exit=0`. The printed `fonts` is 50144. The `gallery` and `artifact` sizes may grow by the CSS. If either goes over its budget, stop and report the numbers.
+
+- [ ] **Step 5: The screenshot script**
+
+`web/e2e/pages/sample-report.html`: a stand-in for an agent's page, the mockup's sample (`concept-3-echo/index.html`, the `.art` markup from `<header class="a-hero">` to the closing `</section>` of `.a-band`, with the `.a-*` rules from its `<style>`), with the mockup's `pin`, `ov` and `ov-cursor` spans removed. It is never themed by Clax.
+
+`web/e2e/scenes.ts`:
+
+```ts
+// The states every UI task photographs (light and dark, desktop and phone),
+// on one seeded scratch daemon. Tasks append scenes as they add UI.
+import type { Page } from "@playwright/test";
+import { readFileSync } from "node:fs";
+import { api, postThread, publishAs, registerSession } from "./fixtures";
+
+export type Seeded = { base: string; token: string; aid: string; sid: string; threads: string[] };
+export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page, s: Seeded): Promise<void> };
+
+const REPORT = readFileSync(new URL("./pages/sample-report.html", import.meta.url), "utf8");
+
+/** One artifact by a claude session, three threads by "alex", two quieter artifacts. */
+export async function seed(base: string, token: string): Promise<Seeded> {
+  const s = await registerSession(base, token, "claude", "shots");
+  const { artifact } = await publishAs(base, token, s.id, "Checkout latency, week 39", { "index.html": REPORT });
+  const threads: string[] = [];
+  for (const body of ["Is p95 measured at the edge or at the app server? Say which in the label.", "Mark the deploy on the chart itself.", "Sort by p95, worst first."]) {
+    threads.push((await postThread(base, artifact.id, body)).id);
+  }
+  const other = await registerSession(base, token, "codex", "shots-codex");
+  await publishAs(base, token, other.id, "Onboarding checklist", { "index.html": "<main><h2>First week</h2><ul><li>Laptop</li><li>Access</li></ul></main>" });
+  await api(base, token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Permissions probe", files: { "index.html": { content: "<main><h2>Probe</h2></main>", encoding: "utf8" } } }) });
+  return { base, token, aid: artifact.id, sid: s.id, threads };
+}
+
+const name = async (page: Page, who: string) => {
+  await page.evaluate(n => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: n }) }), who);
+};
+
+export const SCENES: Scene[] = [
+  { name: "gallery", path: () => "/", prepare: async page => { await name(page, "alex"); await page.reload(); } },
+  { name: "view", path: s => `/a/${s.aid}` },
+  { name: "comment", path: s => `/a/${s.aid}`, prepare: async page => { await page.getByRole("button", { name: /^Comment/ }).click(); } },
+];
+```
+
+Add `postThread` to `web/e2e/fixtures.ts`. It posts a thread as the shell does (multipart), and later tasks use it:
+
+```ts
+/** Creates a viewer thread on `aid` v1 anchored to `body > main > h2`, as the shell posts it (multipart); returns the thread. */
+export async function postThread(base: string, aid: string, body: string, selector = "body > main > h2") {
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  form.set("body", body);
+  form.set("version", "1");
+  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form, headers: { origin: base } });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return (await res.json()).thread as { id: string };
+}
+```
+
+`web/e2e/shots.spec.ts`:
+
+```ts
+// Screenshots of every scene in light and dark, at 1440×900 and 390×844, for
+// the task named by CLAX_SHOTS (task-NN). Skipped unless it is set. Fails if
+// a phone-width page scrolls sideways.
+import { expect, test } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { startDaemon } from "./fixtures";
+import { SCENES, seed, type Seeded } from "./scenes";
+
+const TASK = process.env.CLAX_SHOTS ?? "";
+const ONLY = process.env.CLAX_SCENES?.split(",") ?? null;
+const SIZES = { desktop: { width: 1440, height: 900 }, phone: { width: 390, height: 844 } } as const;
+const out = fileURLToPath(new URL(`../../.superpowers/sdd/2026-09-30-redesign/build-shots/${TASK}/`, import.meta.url));
+
+test.skip(!/^task-\d\d$/.test(TASK), "set CLAX_SHOTS=task-NN to take the screenshots");
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+let s: Seeded;
+test.beforeAll(async () => { test.setTimeout(240_000); d = await startDaemon(); s = await seed(d.base, d.token); mkdirSync(out, { recursive: true }); });
+test.afterAll(async () => { await d?.stop(); });
+
+for (const scene of SCENES) {
+  for (const theme of ["light", "dark"] as const) {
+    for (const [size, viewport] of Object.entries(SIZES)) {
+      test(`${scene.name} ${theme} ${size}`, async ({ page }) => {
+        test.skip(!!ONLY && !ONLY.includes(scene.name));
+        await page.setViewportSize(viewport);
+        await page.emulateMedia({ colorScheme: theme, reducedMotion: "reduce" });
+        await page.goto(`${d.base}${scene.path(s)}`);
+        await scene.prepare?.(page, s);
+        await page.evaluate(() => document.fonts.ready);
+        await page.waitForTimeout(300);
+        await page.screenshot({ path: `${out}${theme}-${size}-${scene.name}.png` });
+        expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
+      });
+    }
+  }
+}
+```
+
+Run: `cd web && CLAX_SHOTS=task-02 npx playwright test e2e/shots.spec.ts`
+Expected: 12 screenshots in `.superpowers/sdd/2026-09-30-redesign/build-shots/task-02/`, and every test passes.
+
+- [ ] **Step 6: Look at the screenshots**
+
+Open all twelve. Write in the task report what you saw:
+- buttons, titles and group heads are in Plex Sans Condensed, sentence case, with no brackets and no tracked capitals;
+- comments and meta are in Plex Mono;
+- light and dark both read, with no white flashes or unreadable pairs;
+- the phone width has no sideways scroll;
+- nothing else moved.
+
+Run the voice gate from Global Constraints: no output.
+
+- [ ] **Step 7: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/public/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2 web/shell/public/_clax/fonts/OFL.txt web/scripts/measure-fallback.mjs \
+  web/shell/src/echo-theme.test.ts web/shell/src/theme.css web/shell/src/topbar-style.test.ts web/scripts/bundle-size.mjs web/scripts/bundle-size.test.ts \
+  web/perf/bundle-budget.json web/e2e/shots.spec.ts web/e2e/scenes.ts web/e2e/pages/sample-report.html web/e2e/fixtures.ts
+git status --short   # staged; the controller commits ("Set Clax in Echo's two voices: Plex Sans Condensed for structure, Plex Mono for words, with a font budget")
+```
+
+Do not stage the screenshots. They are evidence for the report, not source.
+
+---
+
+### Task 3: The Echo mark, the theme switch and the keyboard layer
+
+This task adds:
+- the Echo symbol, as a favicon, as a component and as markup the skeleton can carry;
+- a theme switch that follows the system until the viewer flips it, with no flash before first paint (provisional: Q2);
+- the shell's keys, with a `?` sheet that loads only when asked for. Keys act only while focus is in the shell (provisional: Q6).
+
+Each later task that adds a key also adds its row to the sheet.
+
+**Files:**
+- Create: `web/shell/public/_clax/mark.svg`, `web/shell/src/view/mark.ts`, `web/shell/src/ui/Mark.svelte`, `web/shell/src/view/theme-model.ts`, `web/shell/src/view/theme-model.test.ts`, `web/shell/src/ui/ThemeSwitch.svelte`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/ui/KeysSheet.svelte`, `web/shell/src/echo-chrome.test.ts`
+- Modify: `web/shell/index.html`, `web/shell/artifact.html`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
+
+**Interfaces:**
+- `view/mark.ts`: `export const MARK_SVG: string` (30×24, `class="mk"`, `aria-hidden="true"`).
+- `ui/Mark.svelte`: `{ size?: "bar" | "hero"; apart?: boolean; playful?: boolean }`. Only the gallery's mark is playful. The top bar's mark stays a plain link to the gallery, so a click there navigates (provisional: Q9). With `playful`, it is a button whose click makes the halves meet, and a second click parts them (`aria-pressed`). Without it, the mark is decoration.
+- `view/theme-model.ts`: `type Scheme = "light" | "dark"`, `type Choice = Scheme | null`, `THEME_KEY = "clax.theme"`, `readChoice(): Choice`, `systemScheme(): Scheme`, `shownScheme(choice: Choice, system: Scheme): Scheme`, `flip(choice: Choice, system: Scheme): Choice`, `applyChoice(c: Choice, root?: HTMLElement): void`.
+- `view/keys.ts`: `type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" }`, `export const KEY_ROWS: KeyRow[]`.
+- `ArtifactController`: `ViewState.sheet: "keys" | null` (initially `null`) and `ViewState.replyFocus: number` (initially `0`). New methods: `shortcut(a: KeyAction): void`, `closeSheet(): void`, and `private order(s?: ViewState): Thread[]`, which returns the sidebar's order (`open`, then `detached`).
+- `ThreadCard` gains `focusReply?: number`. When the card is selected and the number grows, its reply field takes focus.
+
+- [ ] **Step 1: Pure models, tests first**
+
+`web/shell/src/view/theme-model.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from "vitest";
+import { THEME_KEY, applyChoice, flip, readChoice, shownScheme } from "./theme-model";
+
+afterEach(() => { localStorage.clear(); delete document.documentElement.dataset.theme; });
+
+describe("theme-model", () => {
+  it("follows the system until flipped, and flipping back to the system's scheme follows it again", () => {
+    expect(shownScheme(null, "dark")).toBe("dark");
+    expect(flip(null, "dark")).toBe("light");
+    expect(flip("light", "dark")).toBeNull();
+    expect(flip(null, "light")).toBe("dark");
+    expect(flip("dark", "light")).toBeNull();
+  });
+  it("stores and applies a choice, and clears both for null", () => {
+    applyChoice("dark");
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(localStorage.getItem(THEME_KEY)).toBe("dark");
+    expect(readChoice()).toBe("dark");
+    applyChoice(null);
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    expect(localStorage.getItem(THEME_KEY)).toBeNull();
+    localStorage.setItem(THEME_KEY, "sepia");
+    expect(readChoice()).toBeNull();
+  });
+});
+```
+
+`web/shell/src/view/keys.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { KEY_ROWS, keyAction } from "./keys";
+
+const k = (key: string, over: Partial<KeyboardEvent> = {}, target: Element = document.body) =>
+  ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, repeat: false, target, ...over }) as unknown as KeyboardEvent;
+
+describe("keys", () => {
+  it("maps the shell's keys", () => {
+    expect(["?", "c", "C", "t", "j", "k", "Enter", "s", "r"].map(x => keyAction(k(x)))).toEqual(["help", "comment", "comment", "threads", "next", "prev", "reply", "send", "resolve"]);
+    expect(keyAction(k("S", { shiftKey: true }))).toBe("sendTicked");
+  });
+  it("never acts while typing, composing, repeating, or with a modifier", () => {
+    const input = document.createElement("input");
+    const area = document.createElement("textarea");
+    const edit = document.createElement("div");
+    edit.contentEditable = "true";
+    for (const t of [input, area, edit]) expect(keyAction(k("c", {}, t))).toBeNull();
+    expect(keyAction(k("c", { metaKey: true }))).toBeNull();
+    expect(keyAction(k("c", { ctrlKey: true }))).toBeNull();
+    expect(keyAction(k("c", { altKey: true }))).toBeNull();
+    expect(keyAction(k("c", { isComposing: true }))).toBeNull();
+    expect(keyAction(k("j", { repeat: true }))).toBeNull();
+  });
+  it("acts on Enter only outside buttons and links, which Enter already presses", () => {
+    expect(keyAction(k("Enter", {}, document.createElement("button")))).toBeNull();
+    expect(keyAction(k("Enter", {}, document.createElement("a")))).toBeNull();
+  });
+  it("lists every row the sheet shows, in order", () => {
+    expect(KEY_ROWS.map(r => r.keys.join("+"))).toEqual(["C", "Esc", "T", "J+K", "↵", "S", "R"]);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/view/theme-model.test.ts shell/src/view/keys.test.ts`
+Expected: FAIL (modules not found).
+
+`web/shell/src/view/theme-model.ts`:
+
+```ts
+// The theme (spec §8): follow the system, plus a switch that flips light and
+// dark. A flip that lands on the system's own scheme clears the choice, so
+// the shell follows the system again. The choice is a per-browser
+// convenience in localStorage; every access may throw (private windows).
+export type Scheme = "light" | "dark";
+export type Choice = Scheme | null;
+export const THEME_KEY = "clax.theme";
+
+export function readChoice(): Choice {
+  try {
+    const v = localStorage.getItem(THEME_KEY);
+    return v === "light" || v === "dark" ? v : null;
+  } catch { return null; }
+}
+
+export function systemScheme(): Scheme {
+  return typeof matchMedia === "function" && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+
+export const shownScheme = (choice: Choice, system: Scheme): Scheme => choice ?? system;
+
+/** The choice after one press of the switch. */
+export function flip(choice: Choice, system: Scheme): Choice {
+  const next: Scheme = shownScheme(choice, system) === "dark" ? "light" : "dark";
+  return next === system ? null : next;
+}
+
+/** Applies `c` to the document and remembers it (null forgets). */
+export function applyChoice(c: Choice, root: HTMLElement = document.documentElement): void {
+  if (c) root.dataset.theme = c;
+  else delete root.dataset.theme;
+  try {
+    if (c) localStorage.setItem(THEME_KEY, c);
+    else localStorage.removeItem(THEME_KEY);
+  } catch { /* storage unavailable: the choice lasts for this page */ }
+}
+```
+
+`web/shell/src/view/keys.ts`:
+
+```ts
+// The shell's keyboard layer (spec §8, "Keys"). A key acts only when focus is
+// in the shell, outside a text field, with no modifier but Shift, and not
+// while an input method composes. Keys pressed inside the artifact's frame
+// belong to the page and never reach here.
+export type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people";
+export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
+export type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" };
+
+const MAP: Record<string, KeyAction> = {
+  "?": "help", c: "comment", C: "comment", t: "threads", j: "next", k: "prev", Enter: "reply", s: "send", S: "sendTicked", r: "resolve",
+};
+
+/** The sheet's rows, in order. Tasks that add a key add its row and its MAP entry. */
+export const KEY_ROWS: KeyRow[] = [
+  { keys: ["C"], what: "Comment mode: click an element or drag an area", action: "comment" },
+  { keys: ["Esc"], what: "Leave comment mode, close a menu", action: "escape" },
+  { keys: ["T"], what: "Show or hide threads", action: "threads" },
+  { keys: ["J", "K"], what: "Next and previous thread; the page scrolls to its pin", action: "next" },
+  { keys: ["↵"], what: "Reply to the selected thread", action: "reply" },
+  { keys: ["S"], what: "Send the selected thread to an agent", action: "send" },
+  { keys: ["R"], what: "Resolve the selected thread", action: "resolve" },
+];
+
+function typing(t: EventTarget | null): boolean {
+  if (!(t instanceof Element)) return false;
+  const el = t as HTMLElement;
+  return el.localName === "input" || el.localName === "textarea" || el.localName === "select" || el.isContentEditable || el.contentEditable === "true";
+}
+
+export function keyAction(e: KeyLike): KeyAction | null {
+  if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.repeat || typing(e.target)) return null;
+  if (e.key === "Enter" && e.target instanceof Element && e.target.closest("button, a, summary, [role=button]")) return null;
+  return MAP[e.key] ?? null;
+}
+```
+
+Run: `cd web && npx vitest run shell/src/view/theme-model.test.ts shell/src/view/keys.test.ts`
+Expected: PASS.
+
+- [ ] **Step 2: The mark, the theme script and the favicon**
+
+`web/shell/public/_clax/mark.svg`: copy `.superpowers/sdd/2026-09-30-redesign/marks/1-echo.svg` unchanged. It recolours itself for dark tabs.
+
+`web/shell/src/view/mark.ts`:
+
+```ts
+/** The Echo symbol (spec §8, "Look"): people's arc on the left in red-orange,
+ * agents' arc on the right in green, the page between them. Decoration: the
+ * element around it carries the name. */
+export const MARK_SVG = `<svg class="mk" viewBox="0 0 30 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M28 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="15" cy="12" r="2.6"/></svg>`;
+```
+
+`web/shell/src/ui/Mark.svelte`:
+
+```svelte
+<script lang="ts">
+  // The Echo mark. `playful`: a click makes its halves meet, another parts
+  // them (an easter egg; no other effect). `apart`: the empty gallery's mark.
+  import { MARK_SVG } from "../view/mark";
+
+  let { size = "bar", apart = false, playful = false }: { size?: "bar" | "hero"; apart?: boolean; playful?: boolean } = $props();
+  let meet = $state(false);
+</script>
+
+{#if playful}
+  <button type="button" class={["mark", size, apart && "apart"]} aria-label="Clax" aria-pressed={meet} onclick={() => { meet = !meet; }}>{@html MARK_SVG}</button>
+{:else}
+  <span class={["mark", size, apart && "apart"]} role="img" aria-label="Clax">{@html MARK_SVG}</span>
+{/if}
+```
+
+`{@html}` renders a constant from this module, never data.
+
+In `web/shell/index.html` and `web/shell/artifact.html`, add these as the first children of `<head>` after the `<meta name="viewport">` line:
+
+```html
+<script id="clax-theme">try{var t=localStorage.getItem("clax.theme");if(t==="light"||t==="dark")document.documentElement.dataset.theme=t}catch(e){}</script>
+<link rel="icon" type="image/svg+xml" href="/_clax/mark.svg">
+```
+
+The theme script runs before the inlined CSS applies, so a dark choice never flashes light. In `artifact.html`, it comes before `clax-early`, which must still precede `<!--clax:boot-->` and `<body>`. `bundle-size.mjs` checks that order.
+
+- [ ] **Step 3: Styles**
+
+Append to `web/shell/src/theme.css`:
+
+```css
+/* The Echo mark (spec §8). Its halves meet when a playful mark is pressed. */
+.mark { display: inline-grid; place-items: center; flex: none; color: var(--fg); }
+button.mark { background: none; border: 0; padding: 4px; min-height: 0; width: auto; }
+.mk { display: block; width: 30px; height: 24px; overflow: visible; }
+.mark.hero .mk { width: 120px; height: 96px; }
+.mk path { transition: transform .3s cubic-bezier(.3,1.4,.5,1); }
+.mk .l { stroke: var(--you); } .mk .r { stroke: var(--agent); } .mk circle { fill: var(--fg); }
+.mark[aria-pressed="true"] .l { transform: translateX(3.5px); } .mark[aria-pressed="true"] .r { transform: translateX(-3.5px); }
+.mark.apart .l { transform: translateX(-4px); } .mark.apart .r { transform: translateX(4px); }
+/* The keys sheet. */
+.keys-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(26,13,9,.55); display: grid; place-items: center; padding: var(--gutter); }
+.keys-panel { background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 16px 40px var(--shadow); width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 18px 20px 20px; }
+.keys-panel h2 { margin: 0 0 4px; font-size: 22px; }
+.keys-panel .sub { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
+.keys-panel dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; font-size: 13px; align-items: baseline; }
+.keys-panel dt { display: flex; gap: 4px; justify-content: flex-end; }
+.keys-panel kbd { font: 600 12px/20px var(--mono); min-width: 24px; text-align: center; border: 1px solid var(--border-strong); border-bottom-width: 2px; padding: 0 6px; background: var(--card); }
+.keys-panel dd { margin: 0; }
+.keys-panel .foot { margin-top: 16px; display: flex; justify-content: flex-end; }
+@media (prefers-reduced-motion: reduce) { .mk path { transition: none; } }
+```
+
+- [ ] **Step 4: The components and the controller, tests first**
+
+`web/shell/src/echo-chrome.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from "vitest";
+import { flush, mount } from "./test/svelte";
+import KeysSheet from "./ui/KeysSheet.svelte";
+import Mark from "./ui/Mark.svelte";
+import ThemeSwitch from "./ui/ThemeSwitch.svelte";
+
+describe("Echo chrome", () => {
+  it("a playful mark's halves meet on one click and part on the next", () => {
+    const m = mount(Mark, { playful: true });
+    const b = m.root.querySelector("button.mark") as HTMLButtonElement;
+    expect(b.getAttribute("aria-pressed")).toBe("false");
+    flush(() => b.click());
+    expect(b.getAttribute("aria-pressed")).toBe("true");
+    flush(() => b.click());
+    expect(b.getAttribute("aria-pressed")).toBe("false");
+    m.unmount();
+  });
+
+  it("the switch flips the shown scheme and names what it will do", () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: q.includes("dark") ? false : true, addEventListener() {}, removeEventListener() {} }));
+    const m = mount(ThemeSwitch, {});
+    const b = m.root.querySelector("button") as HTMLButtonElement;
+    expect(b.getAttribute("aria-label")).toBe("Switch to dark");
+    flush(() => b.click());
+    expect(document.documentElement.dataset.theme).toBe("dark");
+    expect(b.getAttribute("aria-label")).toBe("Switch to light");
+    flush(() => b.click());
+    expect(document.documentElement.dataset.theme).toBeUndefined();
+    m.unmount();
+    vi.unstubAllGlobals();
+  });
+
+  it("the keys sheet is a labelled dialog of the rows, closed by its button and by Escape", () => {
+    const onClose = vi.fn();
+    const m = mount(KeysSheet, { onClose });
+    const d = m.root.querySelector("[role=dialog]")!;
+    expect(d.getAttribute("aria-label")).toBe("Keyboard shortcuts");
+    expect(d.querySelectorAll("dt")).toHaveLength(7);
+    flush(() => d.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    flush(() => (d.querySelector(".foot button") as HTMLButtonElement).click());
+    expect(onClose).toHaveBeenCalledTimes(2);
+    m.unmount();
+  });
+});
+```
+
+`web/shell/src/ui/ThemeSwitch.svelte`:
+
+```svelte
+<script lang="ts">
+  import { applyChoice, flip, readChoice, shownScheme, systemScheme } from "../view/theme-model";
+
+  let choice = $state(readChoice());
+  const shown = $derived(shownScheme(choice, systemScheme()));
+  const press = () => { choice = flip(choice, systemScheme()); applyChoice(choice); };
+</script>
+
+<button type="button" class="icon theme-switch" aria-label={shown === "dark" ? "Switch to light" : "Switch to dark"} title="Light or dark" onclick={press}>
+  <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6.25" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.75a6.25 6.25 0 0 1 0 12.5z" fill="currentColor"/></svg>
+</button>
+```
+
+`web/shell/src/ui/KeysSheet.svelte`:
+
+```svelte
+<script lang="ts">
+  // The `?` sheet (spec §8, "Keys"), loaded on first use. Focus moves to its
+  // Close button; Escape or Close returns it to where it was.
+  import { KEY_ROWS } from "../view/keys";
+
+  let { onClose }: { onClose(): void } = $props();
+  const back = document.activeElement as HTMLElement | null;
+  const close = () => { onClose(); back?.focus?.(); };
+  const focus = (el: HTMLElement) => { el.focus(); };
+</script>
+
+<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+<div class="keys-backdrop" onclick={e => { if (e.target === e.currentTarget) close(); }}>
+  <!-- Escape closes the dialog. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="keys-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1"
+    onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
+    <h2>Keyboard</h2>
+    <p class="sub">Press ? to open this. Esc closes it. Keys work while the page does not have focus.</p>
+    <dl>
+      {#each KEY_ROWS as r (r.keys.join("+"))}
+        <dt>{#each r.keys as key (key)}<kbd>{key}</kbd>{/each}</dt><dd>{r.what}</dd>
+      {/each}
+    </dl>
+    <div class="foot"><button type="button" {@attach focus} onclick={close}>Close</button></div>
+  </div>
+</div>
+```
+
+Add to `view/artifact-controller.test.ts`. It uses the file's harness: two open threads `t1` and `t2` from the `/threads` stub, as in the existing thread tests.
+
+```ts
+  it("acts on shell keys: C, T, J and K, ?, and Escape closes the sheet before leaving comment mode", async () => {
+    const { ctl } = await started();
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
+    key("c");
+    expect(ctl.state.get().commenting).toBe(true);
+    const panel = ctl.state.get().panel;
+    key("t");
+    expect(ctl.state.get().panel).toBe(!panel);
+    key("j");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
+    key("j");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[1].id);
+    key("k");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
+    key("?", { shiftKey: true });
+    expect(ctl.state.get().sheet).toBe("keys");
+    key("Escape");
+    expect(ctl.state.get()).toMatchObject({ sheet: null, commenting: true });
+    key("Escape");
+    expect(ctl.state.get().commenting).toBe(false);
+    ctl.dispose();
+  });
+```
+
+Run: `cd web && npx vitest run shell/src/echo-chrome.test.ts shell/src/view/artifact-controller.test.ts`
+Expected: FAIL.
+
+In `view/artifact-controller.ts`:
+- `ViewState` gains `/** The sheet over the view: the keys (spec §8), or none. */ sheet: "keys" | null;` and `/** Bumped to move focus to the selected thread's reply field. */ replyFocus: number;`. The initial values are `null` and `0`.
+- Add, near `toggleComment`:
+
+```ts
+  /** The sidebar's order: open threads, then detached ones (J, K, ranges). */
+  private order(s: ViewState = this.s): Thread[] {
+    const sec = sidebarSections(s.threads, s.resolved, s.file, f => this.holds(f, s));
+    return [...sec.open, ...sec.detached];
+  }
+
+  closeSheet(): void { this.set({ sheet: null }); }
+
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. */
+  shortcut(a: KeyAction): void {
+    const s = this.s;
+    if (!viewReady(s) || s.deleted) return;
+    const sel = s.threads.find(t => t.id === s.selected) ?? null;
+    switch (a) {
+      case "help": this.set({ sheet: "keys" }); return;
+      case "comment": this.toggleComment(); return;
+      case "threads": this.togglePanel(); return;
+      case "next": case "prev": {
+        const list = this.order(s);
+        if (!list.length) return;
+        const i = sel ? list.findIndex(t => t.id === sel.id) : -1;
+        const j = a === "next" ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
+        this.set({ panel: true });
+        this.selectThread(list[j]);
+        return;
+      }
+      case "reply": if (sel) this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 })); return;
+      case "send": if (sel && sel.status === "open" && !sel.sent_to_agent) this.sendThread(sel); return;
+      case "resolve": if (sel && sel.status === "open") this.resolveThread(sel); return;
+      default: return; // added with their features (versions, tick, sendTicked, people)
+    }
+  }
+```
+
+- In `listen()`'s `onKey`, before the `else if (e.key === "Escape" …)` branch, add a branch for keydown that is not forwarded:
+
+```ts
+      } else if (e.type === "keydown" && e.key !== "Escape") {
+        const a = keyAction(e);
+        if (a) { e.preventDefault(); this.shortcut(a); }
+```
+
+- Change the Escape branch to close the sheet first: `if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });`.
+- Import `keyAction` and `type KeyAction` from `./keys`, and `sidebarSections` from `./sidebar-model`.
+
+`ui/StageIsland.svelte`, at the end of the `{#if viewReady(s)}` block:
+
+```svelte
+  {#if s.sheet === "keys"}
+    {#await import("./KeysSheet.svelte") then { default: KeysSheet }}<KeysSheet onClose={() => ctl.closeSheet()} />{/await}
+  {/if}
+```
+
+`ui/ThreadCard.svelte`: add `focusReply?: number` to `Props`. Add `let replyInput: HTMLInputElement | undefined = $state();` and `bind:this={replyInput}` on the reply `<input>`, and:
+
+```ts
+  $effect(() => { if ((focusReply ?? 0) > 0 && selected === t.id) replyInput?.focus(); });
+```
+
+`ui/Sidebar.svelte` takes `focusReply?: number` and passes it to every `ThreadCard`. `ui/SidebarIsland.svelte` passes `focusReply={s.replyFocus}`.
+
+`ui/TopbarIsland.svelte`: add `<ThemeSwitch />` as the island's last control. Task 4 places it for good. `ui/Gallery.svelte`: add `<ThemeSwitch />` as the header's last child, and replace `<h1>Clax</h1>` with `<Mark playful /><h1>Clax</h1>`.
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck`
+Expected: PASS.
+
+- [ ] **Step 5: Budget, scenes, screenshots**
+
+Run: `cd web && npm run build && node scripts/bundle-size.mjs; echo "exit=$?"`
+Expected: `exit=0`. `KeysSheet` is its own chunk: `grep -l "Keyboard shortcuts" dist/_clax/shell/*.js` names a file outside `manifest["artifact.html"]`'s closure.
+
+Append to `SCENES` in `web/e2e/scenes.ts`:
+
+```ts
+  { name: "keys", path: s => `/a/${s.aid}`, prepare: async page => { await page.locator("body").press("Shift+?"); await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor(); } },
+```
+
+Run: `cd web && CLAX_SHOTS=task-03 npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Look at the screenshots and report:
+- the gallery bar shows the mark;
+- the keys sheet is centred, readable in both themes, and fits 390px;
+- the switch is in both bars.
+
+Then do these by hand in a headed Chromium against the same scratch daemon (`npx playwright open`), and report each:
+- the tab shows the Echo favicon;
+- clicking the gallery's mark makes the halves meet, and a second click parts them;
+- the switch flips the theme, survives a reload, and flipping back to the system's scheme clears `localStorage["clax.theme"]`;
+- with the system in dark and no choice stored, reloading shows no light flash.
+
+- [ ] **Step 6: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/public/_clax/mark.svg web/shell/src/view/mark.ts web/shell/src/ui/Mark.svelte web/shell/src/view/theme-model.ts web/shell/src/view/theme-model.test.ts \
+  web/shell/src/ui/ThemeSwitch.svelte web/shell/src/view/keys.ts web/shell/src/view/keys.test.ts web/shell/src/ui/KeysSheet.svelte web/shell/src/echo-chrome.test.ts \
+  web/shell/index.html web/shell/artifact.html web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/ui/StageIsland.svelte \
+  web/shell/src/ui/ThreadCard.svelte web/shell/src/ui/Sidebar.svelte web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/TopbarIsland.svelte web/shell/src/ui/Gallery.svelte \
+  web/shell/src/theme.css web/e2e/scenes.ts
+git status --short   # staged; the controller commits ("Add the Echo mark, a light and dark switch that follows the system, and the shell's keys with a ? sheet")
+```
+
+---
+
+### Task 4: The top bar and comment mode in Echo
+
+This task builds the artifact view's 60px top bar from the mockup. The daemon serves a new skeleton:
+- the mark links to the gallery;
+- the title sits over the "published by" line;
+- Comment turns red-orange, with its C keycap and a 3px red-orange rule under the bar;
+- Threads shows its count;
+- open raw and copy link move into a ⋯ menu;
+- the theme switch sits at the end.
+
+At phone width a Page | Threads switch sits at the foot. The roster and summary slot is laid out empty here, and Task 16 fills it. The version `<select>` stays, restyled, until Task 18 replaces it with the version menu.
+
+**Files:**
+- Create: `web/shell/src/ui/MoreMenu.svelte`, `web/shell/src/ui/PhoneTabs.svelte`, `web/shell/src/topbar.test.ts`, `web/e2e/echo.spec.ts`
+- Modify: `web/shell/src/view/skeleton.ts`, `web/shell/src/view/skeleton.test.ts`, `web/shell/artifact.html`, `web/shell/src/artifact.ts`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/topbar-style.test.ts`, `web/shell/src/theme.css`, `web/e2e/viewer.spec.ts` (selectors only)
+
+**Interfaces:**
+- `SKELETON_HTML` becomes `<header class="topbar"><a href="/" class="home" aria-label="Gallery">${MARK_SVG}</a><div class="ttl"><h1>Clax</h1><span class="by"></span></div><div class="island"></div></header><div class="viewer"><div class="stage"><!--clax:frame--><div class="island"></div></div><div class="island"></div></div>`. `Skeleton` gains `topbar: HTMLElement` and `by: HTMLElement`, and `title` is found with `.topbar h1`. The daemon's `<h1>Clax</h1>` marker (`boot.rs` `TITLE_MARK`) is unchanged.
+- `gallery-model.ts`: `publisherText(a)` reads `published by <harness>`, or `published from the command line` (previously null for the command line). The gallery's own check of null moves to `a.owner_session_id`.
+- `pageFollows` also sets `sk.by` and toggles `commenting` on `sk.topbar`.
+- `MoreMenu.svelte`: `{ rawHref: string | null; canCopy: boolean; onCopy(): void }`. `PhoneTabs.svelte`: `{ panel: boolean; open: number; onPage(): void; onThreads(): void }`.
+
+- [ ] **Step 1: Tests first**
+
+`web/shell/src/topbar.test.ts`:
+
+```ts
+import { describe, expect, it, vi } from "vitest";
+import { flush, mount } from "./test/svelte";
+import MoreMenu from "./ui/MoreMenu.svelte";
+import PhoneTabs from "./ui/PhoneTabs.svelte";
+
+describe("Echo top bar parts", () => {
+  it("the more menu holds open raw and copy link, and closes on Escape with focus back", () => {
+    const onCopy = vi.fn();
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy });
+    const b = m.root.querySelector("button.icon") as HTMLButtonElement;
+    expect(b.getAttribute("aria-label")).toBe("Open raw or copy link");
+    expect(b.getAttribute("aria-expanded")).toBe("false");
+    flush(() => b.click());
+    const menu = m.root.querySelector("[role=menu]")!;
+    expect(menu.querySelector("a")!.getAttribute("href")).toBe("/c/x/v/1/");
+    expect(menu.querySelector("a")!.getAttribute("target")).toBe("_blank");
+    flush(() => (menu.querySelector("button") as HTMLButtonElement).click());
+    expect(onCopy).toHaveBeenCalled();
+    flush(() => b.click());
+    flush(() => m.root.querySelector("[role=menu]")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    expect(document.activeElement).toBe(b);
+    m.unmount();
+  });
+
+  it("the more menu shows open raw as plain text for a deleted artifact", () => {
+    const m = mount(MoreMenu, { rawHref: null, canCopy: false, onCopy: vi.fn() });
+    flush(() => (m.root.querySelector("button.icon") as HTMLButtonElement).click());
+    expect(m.root.querySelector("[role=menu] a")).toBeNull();
+    expect(m.root.querySelector("[role=menu]")!.textContent).toContain("Open raw");
+    m.unmount();
+  });
+
+  it("phone tabs switch between the page and the threads", () => {
+    const onPage = vi.fn();
+    const onThreads = vi.fn();
+    const m = mount(PhoneTabs, { panel: false, open: 3, onPage, onThreads });
+    const [page, threads] = Array.from(m.root.querySelectorAll("button"));
+    expect(page.getAttribute("aria-pressed")).toBe("true");
+    expect(threads.textContent).toContain("3");
+    flush(() => threads.click());
+    expect(onThreads).toHaveBeenCalled();
+    m.unmount();
+  });
+});
+```
+
+In `view/skeleton.test.ts`, add `expect(a.by.parentElement?.classList.contains("ttl")).toBe(true);`, `expect(a.topbar.querySelector("a.home svg.mk")).not.toBeNull();` and `expect(a.title.localName).toBe("h1");` to the first test.
+
+In `topbar-style.test.ts`, replace the test's assertions about bracketed actions with these:
+- a rule matching `.topbar.commenting` declares `box-shadow: inset 0 -3px 0 var(--you)`;
+- the pressed Comment button matches a rule declaring `background: var(--you)`;
+- no rule matching an element in the island declares `text-transform`.
+
+Run: `cd web && npx vitest run shell/src/topbar.test.ts shell/src/view/skeleton.test.ts shell/src/topbar-style.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 2: The skeleton and the page parts**
+
+`view/skeleton.ts`:
+
+```ts
+import { MARK_SVG } from "./mark";
+
+/** The artifact view's static layout (spec §8, "Top bar"). `.island`
+ * elements are `display: contents` mount points for the top bar's controls,
+ * the stage's overlays and the sidebar; `<!--clax:frame-->` marks where the
+ * daemon may put the content frame; `<h1>Clax</h1>` is where it writes the
+ * title. The daemon may send this markup in the page, and `skeleton` adopts it. */
+export const SKELETON_HTML = `<header class="topbar"><a href="/" class="home" aria-label="Gallery">${MARK_SVG}</a><div class="ttl"><h1>Clax</h1><span class="by"></span></div><div class="island"></div></header><div class="viewer"><div class="stage"><!--clax:frame--><div class="island"></div></div><div class="island"></div></div>`;
+
+export type Skeleton = { page: HTMLElement; topbar: HTMLElement; title: HTMLElement; by: HTMLElement; viewer: HTMLElement; stage: HTMLElement; topbarIsland: HTMLElement; stageIsland: HTMLElement; sidebarIsland: HTMLElement };
+```
+
+In `skeleton()`, return `topbar: q(".topbar")`, `title: q(".topbar h1")` and `by: q(".topbar .by")`.
+
+`web/shell/artifact.html`: replace the `<div id="app">…</div>` line with the new markup, `<div id="app"><div class="page">` + `SKELETON_HTML` + `</div></div>`, with `${MARK_SVG}` written out literally. `skeleton.test.ts` checks that the two agree.
+
+`artifact.ts` `pageFollows`: after the title line, add:
+
+```ts
+  setText(sk.by, !s.error && s.data ? publisherText(s.data.artifact) : "");
+  if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
+```
+
+Import `publisherText` from `./view/gallery-model`. Change `publisherText` to answer `published from the command line` when there is no owner session, and `published by ${a.owner_harness ?? "an agent"}` otherwise. In `Gallery.svelte`, the `{#if by}` test becomes `{#if a.owner_session_id}`.
+
+- [ ] **Step 3: The components and the island**
+
+`web/shell/src/ui/MoreMenu.svelte`:
+
+```svelte
+<script lang="ts">
+  import { tick } from "svelte";
+
+  let { rawHref, canCopy, onCopy }: { rawHref: string | null; canCopy: boolean; onCopy(): void } = $props();
+  let open = $state(false);
+  let button: HTMLButtonElement | undefined = $state();
+  let menu: HTMLDivElement | undefined = $state();
+  async function toggle() {
+    open = !open;
+    if (open) { await tick(); menu?.querySelector<HTMLElement>("a, button")?.focus(); }
+  }
+  function close() { open = false; button?.focus(); }
+  function outside(e: PointerEvent) {
+    if (open && !menu?.contains(e.target as Node) && !button?.contains(e.target as Node)) open = false;
+  }
+</script>
+
+<svelte:window onpointerdown={outside} />
+
+<div class="more hide-sm">
+  <button type="button" class="icon" bind:this={button} aria-label="Open raw or copy link" aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
+    <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="13" cy="8" r="1.4" fill="currentColor"/></svg>
+  </button>
+  {#if open}
+    <!-- Escape closes the menu. -->
+    <!-- svelte-ignore a11y_interactive_supports_focus -->
+    <div class="more-menu" role="menu" bind:this={menu} onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
+      {#if rawHref}
+        <a role="menuitem" href={rawHref} target="_blank" rel="noopener" onclick={() => { open = false; }}>Open raw</a>
+      {:else}
+        <span class="muted" role="menuitem" aria-disabled="true">Open raw</span>
+      {/if}
+      {#if canCopy}<button type="button" role="menuitem" class="ghost" onclick={() => { onCopy(); close(); }}>Copy link</button>{/if}
+    </div>
+  {/if}
+</div>
+```
+
+`web/shell/src/ui/PhoneTabs.svelte`:
+
+```svelte
+<script lang="ts">
+  let { panel, open, onPage, onThreads }: { panel: boolean; open: number; onPage(): void; onThreads(): void } = $props();
+</script>
+
+<nav class="phone-tabs" aria-label="Page or threads">
+  <button type="button" aria-pressed={!panel} onclick={onPage}>Page</button>
+  <button type="button" aria-pressed={panel} onclick={onThreads}>Threads <span class="cnt">{open}</span></button>
+</nav>
+```
+
+`ui/TopbarIsland.svelte`, the body:
+
+```svelte
+{#if viewReady(s)}
+  {@const shown = ctl.shown(s)}
+  {@const latest = ctl.latest(s)}
+  <div class="who-slot"></div>
+  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
+  <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
+  {#if !s.narrow}<ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />{/if}
+  <select class="version hide-sm" value={shown} disabled={s.deleted} aria-label="Version" onchange={e => ctl.chooseVersion(Number(e.currentTarget.value))}>
+    {#each s.data.versions as v (v.n)}
+      <option value={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>
+    {/each}
+  </select>
+  <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} />
+  <span class="hide-sm"><ThemeSwitch /></span>
+  <PhoneTabs panel={s.panel} open={ctl.openCount(s)} onPage={() => { if (s.panel) ctl.togglePanel(); }} onThreads={() => { if (!s.panel) ctl.togglePanel(); }} />
+{/if}
+```
+
+The keycap carries `aria-hidden`, so the button's accessible name stays "Comment" and existing e2e locators `getByRole("button", { name: "Comment" })` keep working. In `web/e2e/viewer.spec.ts` and elsewhere, change only locators that named `open raw` or `copy link` as top bar items: they now open the ⋯ menu first (`getByRole("button", { name: "Open raw or copy link" })`), then `getByRole("menuitem", { name: "Copy link" })`.
+
+- [ ] **Step 4: Styles**
+
+In `web/shell/src/theme.css`, delete the old top bar rules: every rule whose selector starts with `.topbar` (`.topbar`, `.topbar h1`, the `:first-child` rules, `.topbar select`, `.topbar button`, the island action rules, the pressed-button rules) and the `max-width: 480px` `.topbar` lines. Add:
+
+```css
+/* The top bar (spec §8): 60px; the title over its by-line in the condensed
+   face; Comment red-orange when on, with a 3px rule under the bar. */
+.topbar { position: relative; display: flex; align-items: center; gap: 12px; height: 60px; flex: none; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
+.topbar.commenting { box-shadow: inset 0 -3px 0 var(--you); }
+.topbar > .home { display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; }
+.ttl { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.ttl h1 { margin: 0; font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ttl .by { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-slot:empty { display: none; }
+.topbar button.comment[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: var(--on-you); }
+.topbar button.threads[aria-pressed="true"] { background: var(--comment-hl); border-color: var(--accent); }
+.cnt { font: 600 11px/18px var(--mono); min-width: 18px; height: 18px; border-radius: 9px; background: var(--you); color: var(--on-you); text-align: center; padding: 0 4px; }
+.topbar select.version { font: 600 18px/1 var(--grot); height: 36px; max-width: 40vw; }
+.more { position: relative; }
+.more-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 180px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0; display: flex; flex-direction: column; }
+.more-menu > a, .more-menu > button, .more-menu > span { display: block; width: 100%; padding: 8px 14px; text-align: left; font: 600 14px/1.2 var(--grot); justify-content: flex-start; min-height: 0; border: 0; }
+.more-menu > a:hover, .more-menu > button:hover { background: var(--bg); }
+.phone-tabs { display: none; }
+@media (max-width: 700px) {
+  .topbar { gap: 8px; padding: 0 10px; height: 56px; }
+  .topbar .hide-sm, .ttl .by, .topbar .kc { display: none; }
+  .ttl h1 { font-size: 17px; }
+  .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 52px; z-index: 12; background: var(--card); border-top: 1px solid var(--border-strong); }
+  .phone-tabs button { flex: 1; border: 0; background: none; font-size: 16px; color: var(--muted); min-height: 52px; }
+  .phone-tabs button[aria-pressed="true"] { color: var(--fg); box-shadow: inset 0 3px 0 var(--fg); }
+  .viewer { margin-bottom: 52px; }
+}
+```
+
+The port's `@media (max-width: 700px) { .sidebar { … } }` rule stays as it is. At that width the sidebar covers the stage, above the tabs (`bottom: 52px` is added to its `inset` there).
+
+- [ ] **Step 5: Browser tests**
+
+`web/e2e/echo.spec.ts`:
+
+```ts
+import { test, expect } from "@playwright/test";
+import { openArtifact, publishAs, registerSession, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: the top bar reads Echo, and comment mode shows the red-orange rule`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `echo-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Echo ${mode}`, { "index.html": "<main><h2>Goals</h2></main>" });
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(page.locator(".topbar h1")).toHaveText(`Echo ${mode}`);
+    await expect(page.locator(".topbar .by")).toHaveText("published by claude");
+    const h1Font = await page.locator(".topbar h1").evaluate(e => getComputedStyle(e).fontFamily);
+    expect(h1Font).toContain("IBM Plex Sans Condensed");
+    const comment = page.getByRole("button", { name: "Comment", exact: true });
+    await comment.click();
+    await expect(comment).toHaveAttribute("aria-pressed", "true");
+    await expect(page.locator(".topbar")).toHaveClass(/commenting/);
+    expect(await page.locator(".topbar").evaluate(e => getComputedStyle(e).boxShadow)).toMatch(/inset 0px -3px 0px/);
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".topbar")).not.toHaveClass(/commenting/);
+  });
+}
+
+test("at phone width the bar keeps the mark, title and Comment, and tabs switch to threads", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "echo-phone");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "A long title that has to fit a phone without pushing anything sideways", { "index.html": "<main><h2>Goals</h2></main>" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await expect(page.locator(".topbar a.home")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible();
+  await expect(page.locator(".topbar select.version")).toBeHidden();
+  await page.getByRole("navigation", { name: "Page or threads" }).getByRole("button", { name: /Threads/ }).click();
+  await expect(page.locator("aside.sidebar")).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+```
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/echo.spec.ts e2e/viewer.spec.ts e2e/boot.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. `boot.spec.ts` proves the daemon still adopts the served skeleton and frame.
+
+Also run the Rust side that embeds `artifact.html`: `cargo test -p clax-server boot`. Expected: PASS, since the markers are unchanged.
+
+- [ ] **Step 6: Time to usable, screenshots, and a look**
+
+Run: `cd web && npm run perf; echo "exit=$?"`
+Expected: `exit=0`, with every measure within `web/perf/budget.json`. If first paint or comment ready fails, stop and report the numbers. Do not move work earlier or later to chase them.
+
+Run: `cd web && CLAX_SHOTS=task-04 npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Report what the `view` and `comment` shots show in both themes and both sizes, against `concept-3-echo/shots/*-view.png` and `*-comment.png`:
+- the bar height;
+- the mark;
+- the title over its by-line;
+- Comment and its keycap, red-orange when on, with the 3px rule;
+- the Threads count;
+- the ⋯ menu;
+- the switch;
+- at phone width, only the mark, the title and Comment, with the tabs at the foot.
+
+- [ ] **Step 7: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/src/ui/MoreMenu.svelte web/shell/src/ui/PhoneTabs.svelte web/shell/src/topbar.test.ts web/e2e/echo.spec.ts web/shell/src/view/skeleton.ts \
+  web/shell/src/view/skeleton.test.ts web/shell/artifact.html web/shell/src/artifact.ts web/shell/src/view/gallery-model.ts web/shell/src/ui/Gallery.svelte \
+  web/shell/src/ui/TopbarIsland.svelte web/shell/src/topbar-style.test.ts web/shell/src/theme.css web/e2e/viewer.spec.ts
+git add -u web/e2e
+git status --short   # staged; the controller commits ("Lay out the artifact top bar in Echo: the mark, the title over its by-line, a red-orange Comment with its rule, and a phone tab bar")
+```
+
+---
+
+### Task 5: Thread cards and the sidebar in Echo: mirrored messages, the history line, the outdated tag
+
+Echo thread cards, built from data the shell already has:
+- people's words carry a red-orange rule on the left, and an agent's a green rule on the right;
+- one line of version-tagged history;
+- an `outdated` tag when the element changed in a later version but still exists;
+- `Send to <agent>` named after the publishing agent;
+- group heads with half-disc swatches, with Detached and Resolved collapsed into a tail;
+- Echo pins.
+
+Later tasks add events to the history line: working (Task 16), addressed (Task 18), sends (Task 23).
+
+**Files:**
+- Create: `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`
+- Modify: `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/view/sidebar-model.ts`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`, and the e2e specs whose locators name `Send to agent`, or click a card in Resolved or Detached (`grep -rln "Send to agent\|section-resolved\|section-detached" web/e2e`)
+
+**Interfaces:**
+- `view/history-model.ts` (no `svelte` import):
+  - `type HistoryEvent = { v: number | null; who: string; agent: boolean; verb: string }`;
+  - `versionAt(versions: Version[], iso: string): number`: the version current at `iso`, the newest with `created_at <= iso`, else 1;
+  - `historyOf(t: Thread, versions: Version[], names: (by: string) => string): HistoryEvent[]`;
+  - `isOutdated(t: Thread, r: AnchorResult | undefined, shown: number): boolean`;
+  - `agentName(harness: string | null | undefined): string`, which answers the harness (`claude`, `codex`, `pi`), or `agent`.
+- `sidebar-model.ts`: `authorLabel(c)` answers the agent's name (`agentName(c.via_harness)`) for agent comments, else the author's name.
+- `ThreadCard` gains the props `history: HistoryEvent[]`, `outdated: boolean`, `agent: string` and `when: string`.
+- `Sidebar` gains `versions: Version[]`, `shown: number` and `agent: string`, and passes them on.
+
+- [ ] **Step 1: The history model, test first**
+
+`web/shell/src/view/history-model.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { Version } from "../api";
+import type { Comment, Thread } from "../threads";
+import { historyOf, isOutdated, versionAt } from "./history-model";
+
+const V = (n: number, at: string): Version => ({ artifact_id: "a", n, label: null, created_at: at, files: {} });
+const vs = [V(1, "2026-09-30T10:00:00.000Z"), V(2, "2026-09-30T11:00:00.000Z"), V(3, "2026-09-30T12:00:00.000Z")];
+const C = (id: string, kind: "viewer" | "agent", name: string, at: string): Comment =>
+  ({ id, thread_id: "t", author_kind: kind, author_name: name, via_harness: kind === "agent" ? "claude" : null, body: "x", created_at: at });
+const T = (over: Partial<Thread>): Thread => ({
+  id: "t", artifact_id: "a", version_n: 1, status: "open", sent_to_agent: true, has_clip: false, clip_url: null, created_at: "2026-09-30T10:30:00.000Z",
+  resolved_at: null, resolved_by: null, feedback_state: null, comments: [],
+  anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: "h1", rect: null, custom_name: null, file: "index.html" }, ...over,
+});
+const names = (by: string) => (by === "viewer:u_1" ? "alex" : by.startsWith("agent:") ? by.slice(6) : "someone");
+
+describe("history-model", () => {
+  it("tags an event with the version current when it happened", () => {
+    expect(versionAt(vs, "2026-09-30T09:00:00.000Z")).toBe(1);
+    expect(versionAt(vs, "2026-09-30T11:30:00.000Z")).toBe(2);
+    expect(versionAt(vs, "2026-09-30T13:00:00.000Z")).toBe(3);
+  });
+
+  it("reads comments, replies, an agent's reply without a tag, and the resolve", () => {
+    const t = T({
+      comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:10:00.000Z"), C("3", "agent", "Agent", "2026-09-30T11:20:00.000Z")],
+      status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T12:10:00.000Z",
+    });
+    expect(historyOf(t, vs, names)).toEqual([
+      { v: 1, who: "alex", agent: false, verb: "commented" },
+      { v: 2, who: "Mia", agent: false, verb: "replied" },
+      { v: null, who: "claude", agent: true, verb: "replied" },
+      { v: 3, who: "alex", agent: false, verb: "resolved" },
+    ]);
+  });
+
+  it("calls a thread outdated when a later version changed its element but still has it", () => {
+    const found = (method: "exact" | "selector" | "quote" | "custom") => ({ id: "t", found: true, method, rect: null });
+    expect(isOutdated(T({}), found("selector"), 2)).toBe(true);
+    expect(isOutdated(T({}), found("quote"), 2)).toBe(true);
+    expect(isOutdated(T({}), found("exact"), 2)).toBe(false);
+    expect(isOutdated(T({}), found("selector"), 1)).toBe(false);
+    expect(isOutdated(T({}), { id: "t", found: false, method: null, rect: null }, 2)).toBe(false);
+    expect(isOutdated(T({ anchor: { ...T({}).anchor, html_hash: null } }), found("selector"), 2)).toBe(false);
+    expect(isOutdated(T({}), found("custom"), 2)).toBe(false);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/view/history-model.test.ts`
+Expected: FAIL (module not found).
+
+`web/shell/src/view/history-model.ts`:
+
+```ts
+// A thread's history as version-tagged events (spec §8, "Thread sidebar"):
+// "v3 alex commented · v4 Mia replied · claude replied · v5 alex resolved".
+// A person's event carries the version current when it happened; an agent's
+// carries one only when it came with a version (Task 18 adds those).
+import type { AnchorResult } from "../../../bridge/src/protocol";
+import type { Version } from "../api";
+import type { Thread } from "../threads";
+
+export type HistoryEvent = { v: number | null; who: string; agent: boolean; verb: string };
+
+export const agentName = (h: string | null | undefined): string => h || "agent";
+
+export function versionAt(versions: Version[], iso: string): number {
+  let n = 1;
+  for (const v of versions) if (v.created_at <= iso && v.n > n) n = v.n;
+  return n;
+}
+
+/** `names` turns a `resolved_by` value (`viewer:<public_id>`, `agent:<harness>`) into a name. */
+export function historyOf(t: Thread, versions: Version[], names: (by: string) => string): HistoryEvent[] {
+  const out: HistoryEvent[] = [];
+  t.comments.forEach((c, i) => {
+    if (c.author_kind === "agent") out.push({ v: null, who: agentName(c.via_harness), agent: true, verb: "replied" });
+    else out.push({ v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: i === 0 ? "commented" : "replied" });
+  });
+  if (t.status === "resolved" && t.resolved_by && t.resolved_at) {
+    const agent = t.resolved_by.startsWith("agent:");
+    out.push({ v: agent ? null : versionAt(versions, t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" });
+  }
+  return out;
+}
+
+/** The element changed in a later version but is still there: found by
+ * selector or quote while the stored hash no longer matches (spec §8). A
+ * page-anchored (custom) thread is never outdated. */
+export function isOutdated(t: Thread, r: AnchorResult | undefined, shown: number): boolean {
+  return !!r?.found && shown > t.version_n && !!t.anchor.html_hash && (r.method === "selector" || r.method === "quote");
+}
+```
+
+Run: `cd web && npx vitest run shell/src/view/history-model.test.ts`
+Expected: PASS.
+
+- [ ] **Step 2: The card, the sidebar and the pins**
+
+`ui/ThreadCard.svelte`: add to `Props` `history: HistoryEvent[]`, `outdated: boolean`, `agent: string` and `when: string`. Replace the markup from `<header>` to the end of the actions with:
+
+```svelte
+  <header>
+    <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
+      >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
+      >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">{when}</span
+    ></button>
+  </header>
+  {#if t.clip_url}<img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />{/if}
+  {#each t.comments as c (c.id)}
+    <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
+      <b class="author">{authorLabel(c)}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b>
+      <p class="body">{c.body}</p>
+    </div>
+  {/each}
+  {#if label}<p class="st waiting">{label}</p>{/if}
+  {#if history.length}
+    <p class="hist" aria-label="History">
+      {#each history as e, i (i)}<span class={["ev", e.agent && "agent"]}>{#if e.v !== null}<span class="vt">v{e.v}</span>{/if}<b>{e.who}</b> {e.verb}</span>{/each}
+    </p>
+  {/if}
+  {#if t.status === "open"}
+    <!-- Only stops a click on these controls from also selecting the card. -->
+    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+    <div class="actions" onclick={e => e.stopPropagation()}>
+      <button onclick={() => onResolve(t)}>Resolve</button>
+      {#if !t.sent_to_agent}<button class="primary" onclick={() => onSend(t)}>Send to {agent}</button>{/if}
+    </div>
+  {/if}
+```
+
+The `Resolved by …` paragraph goes, because the history line now records the resolve. The reply form stays, with the placeholder `Reply, or @name someone`.
+
+`ui/Sidebar.svelte`:
+- Add `versions: Version[]`, `shown: number` and `agent: string` to `Props`.
+- Compute `const names = (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me);`.
+- Pass these to every `ThreadCard`: `history={historyOf(t, p.versions, names)}`, `outdated={isOutdated(t, p.resolved[t.id], p.shown)}`, `agent={p.agent}` and `when={relativeTime(t.created_at, clock.now)}`.
+- Replace the `section` snippet and its three uses with:
+
+```svelte
+{#snippet cards(list: Thread[])}
+  {#each list as t (t.id)}
+    <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file} focusReply={p.focusReply}
+      history={historyOf(t, p.versions, names)} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
+      onSelect={p.onSelect} onSend={p.onSend} onResolve={p.onResolve} onReply={p.onReply} onHover={p.onHover} />
+  {/each}
+{/snippet}
+
+<aside class="sidebar" aria-label="Comment threads">
+  {@render p.header?.()}
+  <section class="section-open">
+    <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{s.open.length}</span></h2>
+    {#if s.open.length === 0}<p class="muted small empty-open">Nothing open. Press C and click anything to comment on it.</p>{:else}{@render cards(s.open)}{/if}
+  </section>
+  <div class="tail">
+    <details class="section-detached">
+      <summary class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{s.detached.length}</span></summary>
+      {@render cards(s.detached)}
+    </details>
+    <details class="section-resolved">
+      <summary class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{s.resolved.length}</span></summary>
+      {@render cards(s.resolved)}
+    </details>
+  </div>
+</aside>
+```
+
+`ui/SidebarIsland.svelte` passes `versions={s.data.versions}`, `shown={ctl.shown(s)}` and `agent={agentName(s.data.artifact.owner_harness)}`.
+
+`view/sidebar-model.ts` `authorLabel`: `return c.author_kind === "agent" ? agentName(c.via_harness) : c.author_name;`
+
+`ui/Pins.svelte`: no markup change. The Echo pin styles below apply. Tasks 16 and 18 add state classes.
+
+In `sidebar.test.ts`:
+- every `mount(Sidebar, …)` gains `versions: [], shown: 1, agent: "claude"`;
+- assertions of `Agent · via claude` become `claude`;
+- `Send to agent` becomes `Send to claude`;
+- `Resolved by …` assertions now read the history line (`.hist`).
+
+Add a test: a thread with a second viewer comment shows `.hist` reading `v1alex commented` then `v1Mia replied`, and an open thread on v1, shown at v2 with a `selector` result and an `html_hash`, has `.vt.out` with the text `outdated`.
+
+- [ ] **Step 3: Styles**
+
+In `web/shell/src/theme.css`, replace the rules for `.sidebar`, `.sidebar h2`, `.thread-card` and everything under it, `.comment` and `.comment.*`, `.waiting`, `.thread-num, .thread-pin`, `.thread-pin` and `.thread-pin:not(:disabled):hover` with:
+
+```css
+/* The sidebar (spec §8, "Thread sidebar"). */
+.sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.gh { display: flex; align-items: center; gap: 8px; margin: 6px 2px 8px; font: 600 19px/1.1 var(--grot); list-style: none; cursor: default; }
+summary.gh { cursor: pointer; font-size: 16px; color: var(--muted); }
+summary.gh::-webkit-details-marker { display: none; }
+.gh .t { flex: 1; } .gh .c { font: 400 12px var(--mono); color: var(--muted); }
+.gh .sw { width: 7px; height: 16px; flex: none; }
+.gh.you .sw { border-radius: 0 8px 8px 0; background: var(--you); }
+.gh.ag .sw { border-radius: 8px 0 0 8px; background: var(--agent); } .gh.ag .t { color: var(--agent-ink); }
+.gh.oth .sw { border-radius: 0 8px 8px 0; box-shadow: inset 0 0 0 1.5px var(--you); }
+.gh.set .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
+.tail { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.thread-card { background: var(--card); border: 1px solid var(--border); padding: 11px 12px 10px; margin-bottom: 10px; cursor: pointer; transition: background-color var(--t); }
+.thread-card:hover { border-color: var(--border-strong); }
+.thread-card.selected { box-shadow: inset 3px 0 0 var(--accent); background: var(--comment-hl); }
+.thread-card header { margin-bottom: 8px; min-width: 0; }
+.thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12px var(--mono); }
+.thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+.thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 12px/1 var(--mono); flex: none; padding: 0; }
+.vt { font: 600 11px/15px var(--grot); padding: 0 4px; border: 1px solid var(--border-strong); color: var(--fg); background: var(--bg); white-space: nowrap; }
+.vt.out { color: var(--muted); }
+.msg { display: grid; gap: 3px; }
+.msg + .msg { margin-top: 10px; }
+.msg .author { font: 600 14px/20px var(--grot); }
+.msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.msg.you { border-left: 3px solid var(--you); padding: 1px 0 1px 10px; }
+.msg.agent { border-right: 3px solid var(--agent); padding: 1px 10px 1px 0; margin-left: 26px; text-align: right; }
+.msg.agent .author { color: var(--agent-ink); }
+.msg.agent .body { text-align: left; }
+.st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
+.hist { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 9px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+.hist .ev { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.hist .ev b { font-weight: 600; color: var(--fg); }
+.hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
+.thread-pin { position: absolute; pointer-events: auto; border: 2px solid var(--pin-ring); box-shadow: 0 1px 3px rgba(47,11,4,.45); }
+.thread-pin:not(:disabled):hover { border-color: var(--focus); }
+@media (max-width: 700px) { .sidebar { position: absolute; inset: 0 0 52px; width: auto; z-index: 10; border-left: 0; } }
+```
+
+Delete the port's older `@media (max-width: 700px) { .sidebar { … } }` line, which the last line above replaces.
+
+- [ ] **Step 4: Tests, e2e locators, screenshots**
+
+In the e2e specs listed under Files:
+- `Send to agent` becomes `/^Send to /`;
+- a step that clicks a card under Resolved or Detached first clicks that group's `summary`.
+
+Count assertions (`toHaveCount`) need no change, because closed `<details>` content stays in the DOM.
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test; echo "exit=$?"`
+Expected: `exit=0`.
+
+Append to `SCENES` in `web/e2e/scenes.ts`, with the panel open and the first thread selected:
+
+```ts
+  { name: "threads", path: s => `/a/${s.aid}`, prepare: async page => {
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    await page.locator(".thread-card").first().click();
+  } },
+```
+
+Run: `cd web && CLAX_SHOTS=task-05 npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Report what the `threads` shots show against `concept-3-echo/shots/*-view.png`:
+- the red-orange rule on people's messages;
+- the history line with its `v1` tags;
+- `Send to claude`;
+- the group head with its swatch;
+- Detached and Resolved collapsed into the tail;
+- the empty Open message, when it shows;
+- at phone width, the sidebar above the tabs.
+
+- [ ] **Step 5: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/src/view/history-model.ts web/shell/src/view/history-model.test.ts web/shell/src/ui/ThreadCard.svelte web/shell/src/ui/Sidebar.svelte \
+  web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/Pins.svelte web/shell/src/view/sidebar-model.ts web/shell/src/sidebar.test.ts web/shell/src/theme.css web/e2e/scenes.ts
+git add -u web/e2e web/shell/src
+git status --short   # staged; the controller commits ("Show threads in Echo: mirrored messages, a version-tagged history line, and an outdated tag")
+```
+
+---
+
+### Task 6: The gallery in Echo: numerals, pinned first, the haiku footer, the empty state, rally of 10
+
+The gallery in Echo:
+- a 60px bar with the playful mark, `Clax`, `local artifacts · seen as <name>`, search, and the switch;
+- cards that lead with the version numeral, pinned first and then the most recent;
+- a footer haiku, loaded after first paint;
+- the empty gallery's mark with its halves apart;
+- the "rally of 10" chip.
+
+Grouping by "needs your eyes" and the markers wait for attention (Task 19). The roster waits for participants (Task 16).
+
+**Files:**
+- Create: `web/shell/src/view/haiku.json`, `web/shell/src/view/haiku.ts`, `web/shell/src/view/haiku.test.ts`, `web/shell/src/ui/HaikuLine.svelte`, `web/shell/src/ui/GalleryCard.svelte`
+- Modify: `web/shell/src/ui/Gallery.svelte`, `web/shell/src/view/gallery-model.ts`, `web/shell/src/view/gallery-model.test.ts`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`, `crates/clax-cli/src/commands/haiku.rs`
+
+**Interfaces:**
+- `view/haiku.ts`: `pickHaiku(list: string[], seed?: string): string`. Without a seed the pick is random. With one, it is stable: an FNV-1a hash of the seed, modulo the length.
+- `view/gallery-model.ts`: `orderArtifacts(list: Artifact[]): Artifact[]` puts pinned first, then sorts by `updated_at`, newest first. `rally(a: Artifact): boolean` is true when `a.current_version === 10` (provisional: Q9).
+- `GalleryCard.svelte`: `{ a: Artifact; token: string | null; onPin(): void; onDelete(): void; markers?: Snippet; footer?: Snippet }`.
+
+- [ ] **Step 1: Haiku, with a parity test across Rust and the shell**
+
+`web/shell/src/view/haiku.json`: the ten haiku from `crates/clax-cli/src/commands/haiku.rs` `HAIKU`, in order, as a JSON array of strings, each with its `\n` line breaks.
+
+Append to the tests in `crates/clax-cli/src/commands/haiku.rs`:
+
+```rust
+    #[test]
+    fn the_shell_shows_the_same_haiku() {
+        let shell: Vec<String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../web/shell/src/view/haiku.json"
+        )))
+        .expect("haiku.json is a JSON array of strings");
+        assert_eq!(shell, HAIKU.to_vec(), "web/shell/src/view/haiku.json must match HAIKU");
+    }
+```
+
+`web/shell/src/view/haiku.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import list from "./haiku.json";
+import { pickHaiku } from "./haiku";
+
+describe("haiku", () => {
+  it("are ten, three lines each, and a seed picks the same one every time", () => {
+    expect(list).toHaveLength(10);
+    for (const h of list) expect(h.split("\n")).toHaveLength(3);
+    expect(pickHaiku(list, "01J9ABC")).toBe(pickHaiku(list, "01J9ABC"));
+    expect(list).toContain(pickHaiku(list));
+  });
+});
+```
+
+`web/shell/src/view/haiku.ts`:
+
+```ts
+// Clax's haiku in the shell (spec §8, "Look"): the gallery footer picks one
+// at random each visit; the working line picks by the record's key, so it
+// holds still while the record lives. The list is haiku.json, loaded lazily.
+export function pickHaiku(list: string[], seed?: string): string {
+  if (seed === undefined) return list[Math.floor(Math.random() * list.length)];
+  let h = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) { h ^= seed.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return list[h % list.length];
+}
+```
+
+`web/shell/src/ui/HaikuLine.svelte`:
+
+```svelte
+<script lang="ts">
+  // One haiku, loaded after first paint (the list is its own chunk). Never in
+  // comment mode, never animated: the callers decide where it shows.
+  import { pickHaiku } from "../view/haiku";
+
+  let { seed, footer = false }: { seed?: string; footer?: boolean } = $props();
+  let text = $state<string | null>(null);
+  $effect(() => { void import("../view/haiku.json").then(m => { text = pickHaiku(m.default, seed); }); });
+</script>
+
+{#if text}
+  {#if footer}
+    <footer class="gfoot"><pre>{text}</pre><span>clax haiku · a new one each visit</span></footer>
+  {:else}
+    <span class="hk">{text.replaceAll("\n", " / ")}</span>
+  {/if}
+{/if}
+```
+
+If `npm run typecheck` rejects the JSON import, add `"resolveJsonModule": true` to `compilerOptions` in `web/tsconfig.json`, and stage that file too.
+
+Run: `cargo test -p clax-cli haiku && cd web && npx vitest run shell/src/view/haiku.test.ts`
+Expected: PASS.
+
+- [ ] **Step 2: Order and the card, tests first**
+
+Add to `web/shell/src/view/gallery-model.test.ts`:
+
+```ts
+  it("puts pinned first, then the most recent", () => {
+    const A = (id: string, pinned: boolean, at: string) => ({ id, title: id, description: null, icon: null, pinned, current_version: 1, updated_at: at });
+    expect(orderArtifacts([A("old", false, "2026-09-01"), A("pin", true, "2026-08-01"), A("new", false, "2026-09-30")]).map(a => a.id)).toEqual(["pin", "new", "old"]);
+  });
+  it("marks the tenth version, and only it", () => {
+    expect([9, 10, 11, 20].map(n => rally({ current_version: n } as never))).toEqual([false, true, false, false]);
+  });
+```
+
+In `gallery.test.ts`:
+- the test that reads card text expects `.card .v` to read `v3`, and the card to be no longer `p` description;
+- a new test stubs `/api/artifacts` with `[]` and expects `.empty-gallery .mark.apart` and the text `When an agent publishes a page, it lands here.`;
+- a new test expects the pinned artifact's card first even when listed second.
+
+Run: `cd web && npx vitest run shell/src/view/gallery-model.test.ts shell/src/gallery.test.ts`
+Expected: FAIL.
+
+`view/gallery-model.ts`:
+
+```ts
+/** Pinned first, then the most recently updated. */
+export function orderArtifacts(list: Artifact[]): Artifact[] {
+  return [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at));
+}
+
+/** The "rally of 10" easter egg: the artifact is at its tenth version. */
+export const rally = (a: Artifact): boolean => a.current_version === 10;
+```
+
+`web/shell/src/ui/GalleryCard.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from "svelte";
+  import type { Artifact } from "../api";
+  import { relativeTime } from "../format";
+  import { agentName } from "../view/history-model";
+  import { rally } from "../view/gallery-model";
+
+  let { a, token, onPin, onDelete, markers, footer }: { a: Artifact; token: string | null; onPin(): void; onDelete(): void; markers?: Snippet; footer?: Snippet } = $props();
+  const by = $derived(a.owner_session_id ? agentName(a.owner_harness) : "command line");
+</script>
+
+<div class="card-wrap">
+  <a class="card" href={`/a/${a.id}`} title={a.description ?? undefined}>
+    <span class="cb2">
+      <span class="v g">v{a.current_version}</span>
+      <h3>{a.title}{#if a.pinned}<span class="pin" title="Pinned"> ★</span>{/if}</h3>
+      <span class="by">{#if a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{by} · {relativeTime(a.updated_at)}</span>
+    </span>
+    {#if markers || rally(a)}
+      <span class="mks">{@render markers?.()}{#if rally(a)}<span class="chip rally">rally of 10</span>{/if}</span>
+    {/if}
+    <span class="ft">{@render footer?.()}</span>
+  </a>
+  {#if token}
+    <div class="card-tools">
+      <button type="button" class="ghost" title={a.pinned ? "Unpin" : "Pin"} aria-label={a.pinned ? `Unpin ${a.title}` : `Pin ${a.title}`} onclick={onPin}>{a.pinned ? "★" : "☆"}</button>
+      <button type="button" class="ghost" title="Delete" onclick={onDelete}>Delete</button>
+    </div>
+  {/if}
+</div>
+```
+
+`ui/Gallery.svelte`:
+- `shown` becomes `artifacts && orderArtifacts(filterArtifacts(artifacts, query))`.
+- Add `let me = $state<string | null>(null);`, and in `onMount`, after `refresh`, add `void getViewer().then(v => { me = v.display_name; }, () => {});` with `getViewer` imported from `../threads`.
+- Replace the header and main with:
+
+```svelte
+<header class="gbar">
+  <Mark playful /><h1>Clax</h1><span class="sub hide-sm">local artifacts{#if me} · seen as {me}{/if}</span>
+  <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" bind:value={query} />
+  <ThemeSwitch />
+</header>
+<main class="gal">
+  {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}
+  {#if artifacts && artifacts.length === 0}
+    <div class="empty-gallery"><Mark size="hero" apart /><p>When an agent publishes a page, it lands here.</p><p class="muted">Or publish one yourself with <code>clax publish index.html</code>.</p></div>
+  {/if}
+  {#if artifacts && artifacts.length > 0 && shown && shown.length === 0}<p class="empty">No artifacts match your search.</p>{/if}
+  {#if shown && shown.length > 0}
+    <section class="grp rest">
+      <div class="cards">
+        {#each shown as a (a.id)}
+          <GalleryCard {a} {token} onPin={() => token && act(() => patchArtifact(a.id, { pinned: !a.pinned }, token!))}
+            onDelete={() => { if (token && confirm(`Delete "${a.title}"? This removes every version.`)) void act(() => deleteArtifact(a.id, token!)); }} />
+        {/each}
+      </div>
+    </section>
+  {/if}
+  {#if artifacts}
+    {#await import("./HaikuLine.svelte") then { default: HaikuLine }}<HaikuLine footer />{/await}
+  {/if}
+</main>
+```
+
+- [ ] **Step 3: Styles**
+
+In `web/shell/src/theme.css`, replace `.wrap`, `.grid`, `.card` and its children, `.empty` and `.empty code`, `.search`, `.card-wrap`, `.card-tools` and its children with:
+
+```css
+/* The gallery (spec §8, "Gallery"). */
+.gbar { height: 60px; display: flex; align-items: center; gap: 12px; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
+.gbar h1 { margin: 0; font-size: 22px; }
+.gbar .sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.search { margin-left: auto; width: 260px; min-width: 0; max-width: 50%; }
+.gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
+.grp { margin-bottom: 34px; min-width: 0; }
+.grp h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 26px; line-height: 1.1; padding-bottom: 10px; border-bottom: 2px solid var(--fg); }
+.grp h2 small { font: 400 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; }
+.grp h2 .sw { width: 12px; height: 24px; flex: none; }
+.grp .rule { font-size: 11.5px; color: var(--muted); margin: 6px 0 14px; line-height: 1.45; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+.card-wrap { position: relative; }
+.card { background: var(--card); border: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; transition: border-color var(--t); }
+.card:hover { border-color: var(--border-strong); }
+.card .cb2 { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; padding: 11px 14px 10px; align-items: baseline; }
+.card .v { font-size: 40px; line-height: .9; grid-row: span 2; }
+.card h3 { margin: 0; font-size: 17px; line-height: 1.15; overflow-wrap: anywhere; padding-right: 64px; }
+.card .by { font-size: 11.5px; color: var(--muted); }
+.card .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); margin-right: 5px; vertical-align: 1px; }
+.card .mks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
+.card .ft { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 8px 12px; margin-top: auto; min-height: 37px; flex-wrap: wrap; }
+.card .ft:empty { border-top-color: transparent; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 13px/1 var(--grot); padding: 4px 8px; white-space: nowrap; }
+.chip.rally { font: 400 11px var(--mono); color: var(--muted); padding: 0; }
+.card-tools { position: absolute; right: 6px; top: 8px; display: flex; gap: 2px; }
+.card-tools button { min-height: 28px; padding: 2px 8px; color: var(--muted); }
+.card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); }
+.empty { text-align: center; color: var(--muted); padding: 64px 0; }
+.empty-gallery { display: grid; place-items: center; gap: 10px; padding: 80px 0 40px; text-align: center; }
+.empty-gallery p { margin: 0; font: 600 20px var(--grot); }
+.empty-gallery p.muted { font: 400 13px var(--mono); }
+code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; color: var(--fg); }
+.gfoot { margin-top: 4px; color: var(--muted); font-size: 12px; display: flex; gap: 24px; border-top: 1px solid var(--border); padding-top: 14px; }
+.gfoot pre { margin: 0; font: inherit; line-height: 1.7; color: var(--fg); }
+.hk { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+@media (max-width: 700px) {
+  .gbar .hide-sm { display: none; }
+  .gal { padding: 18px 16px 32px; }
+  .grp h2 { font-size: 22px; }
+  .cards { grid-template-columns: 1fr; gap: 12px; }
+  .card .v { font-size: 30px; } .card h3 { font-size: 15px; }
+  .gfoot { flex-direction: column; gap: 8px; }
+}
+```
+
+Search keeps working over title and description. Pin and Delete keep their labels.
+
+- [ ] **Step 4: Run, budget, screenshots**
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs; echo "exit=$?"`
+Expected: `exit=0`. `haiku.json` and `HaikuLine` are outside `manifest["index.html"]`'s closure: `grep -l "seventy-four eighty" dist/_clax/shell/*.js` names a chunk the entry does not import statically.
+
+Add a scene for the empty gallery. Seeding happens once per run, so it is a separate run against a fresh daemon. Add `test.describe` in `shots.spec.ts` for `CLAX_SHOTS_EMPTY=1`, which skips `seed` and photographs `/` as `gallery-empty`. Run both:
+
+```bash
+cd web && CLAX_SHOTS=task-06 npx playwright test e2e/shots.spec.ts && CLAX_SHOTS=task-06 CLAX_SHOTS_EMPTY=1 npx playwright test e2e/shots.spec.ts
+```
+
+Expected: PASS.
+
+Report, against `concept-3-echo/shots/*-gallery.png`:
+- the numerals lead each card;
+- pinned is first;
+- the footer haiku is three lines in mono;
+- the empty state shows the mark large with its halves apart;
+- the bar holds the mark, the sub-line, search and the switch;
+- the phone layout is one column with no sideways scroll.
+
+In a headed browser, click the gallery's mark and see the halves meet, then part.
+
+- [ ] **Step 5: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/src/view/haiku.json web/shell/src/view/haiku.ts web/shell/src/view/haiku.test.ts web/shell/src/ui/HaikuLine.svelte web/shell/src/ui/GalleryCard.svelte \
+  web/shell/src/ui/Gallery.svelte web/shell/src/view/gallery-model.ts web/shell/src/view/gallery-model.test.ts web/shell/src/gallery.test.ts web/shell/src/theme.css \
+  crates/clax-cli/src/commands/haiku.rs web/e2e/shots.spec.ts
+git status --short   # staged; the controller commits ("Show the gallery in Echo: version numerals, pinned first, a haiku footer, and the mark apart when empty")
+```
+
+---
+
+### Task 7: The working registry in clax-core
 
 **Files:**
 - Create: `crates/clax-core/src/working.rs`
@@ -1138,29 +3285,28 @@ Add `| Event::Working { artifact_id, .. }` to `artifact_id()` and `Event::Workin
 Run: `cargo test -p clax-core`
 Expected: PASS.
 
-- [ ] **Step 4: Gates and commit**
+- [ ] **Step 4: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add crates/clax-core/src/working.rs crates/clax-core/src/lib.rs crates/clax-core/src/events.rs
-git commit -m "Add the in-memory working registry and the working event"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Add the in-memory working registry and the working event")
 ```
 
 ---
 
-### Task 3: Working routes, events and the sweeper
+### Task 8: Working routes, events and the sweeper
 
 **Files:**
 - Create: `crates/clax-server/src/working.rs`, `crates/clax-server/src/routes/working.rs`, `crates/clax-server/tests/api_working.rs`
 - Modify: `crates/clax-server/src/lib.rs`, `crates/clax-server/src/state.rs`, `crates/clax-server/src/feedback.rs` (`FeedbackCtx` gains `working`), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/routes/events.rs`, `crates/clax-server/src/routes/artifacts.rs` (`with_owner`, `list`, `get`), `crates/clax-server/src/boot.rs` (`assemble`), `crates/clax-server/src/daemon.rs`, `crates/clax-server/src/testing.rs`
 
 **Interfaces:**
-- Consumes: Task 2's `Working`.
+- Consumes: Task 7's `Working`.
 - Produces: `AppState.working: Arc<Working>`, `FeedbackCtx.working: Arc<Working>`, `TestServer.working: Arc<Working>`.
 - Produces: `clax_server::working::{announce(events: &EventBus, w: &Working, changed: &Changed), sweep_and_announce(w: &Working, events: &EventBus), SWEEP_INTERVAL: Duration = 5 s}`.
 - Produces the routes in the spec §6 amendment. Error codes: 401 `unauthorized`; 404 `not_found` (unknown session or artifact); 400 `unknown_session` (ended session); 400 `invalid_args` (`thread_ids` not ULIDs or more than 20); 400 `unknown_thread` (not a thread of the artifact); 400 `thread_not_open`; 400 `invalid_json`.
-- Produces (debug builds only): `POST /api/_test/working/skew` (token) with `{secs}`, answering `{now}` after skewing and sweeping. Playwright uses it in Task 11.
+- Produces (debug builds only): `POST /api/_test/working/skew` (token) with `{secs}`, answering `{now}` after skewing and sweeping. Playwright uses it in Task 16.
 - `GET /api/events?types=working[,…]`.
 
 - [ ] **Step 1: Write the failing route tests**
@@ -1633,7 +3779,7 @@ Update the doc comment's event list to include `working`.
 Run: `cargo test -p clax-server --test api_working`
 Expected: PASS (8 tests). Then `cargo test -p clax-server` must pass too. Existing tests comparing exact artifact JSON gain `"working": []`: add it to their expected values, and change nothing else.
 
-- [ ] **Step 5: Gates and commit**
+- [ ] **Step 5: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
@@ -1642,13 +3788,12 @@ git add crates/clax-server/src/working.rs crates/clax-server/src/routes/working.
   crates/clax-server/src/routes/events.rs crates/clax-server/src/routes/artifacts.rs crates/clax-server/src/daemon.rs crates/clax-server/src/testing.rs \
   crates/clax-server/src/boot.rs
 git add -u crates/clax-server/tests
-git commit -m "Serve working records over REST and SSE, and sweep lapsed ones"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Serve working records over REST and SSE, and sweep lapsed ones")
 ```
 
 ---
 
-### Task 4: Automatic marks, renewals and clears in the daemon
+### Task 9: Automatic marks, renewals and clears in the daemon
 
 **Files:**
 - Modify: `crates/clax-server/src/working.rs`, `crates/clax-server/src/routes/feedback.rs`, `crates/clax-server/src/push.rs`, `crates/clax-server/src/routes/threads.rs`, `crates/clax-server/src/routes/artifacts.rs` (`publish`, `delete`), `crates/clax-server/src/routes/sessions.rs` (`patch`)
@@ -1884,20 +4029,23 @@ Append to `crates/clax-server/tests/api_push.rs` a test that reuses that file's 
 Run: `cargo test -p clax-server --test api_push`
 Expected: PASS.
 
-- [ ] **Step 5: Gates and commit**
+- [ ] **Step 5: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add crates/clax-server/src/working.rs crates/clax-server/src/routes/feedback.rs crates/clax-server/src/push.rs \
   crates/clax-server/src/routes/threads.rs crates/clax-server/src/routes/artifacts.rs crates/clax-server/src/routes/sessions.rs \
   crates/clax-server/tests/api_working_auto.rs crates/clax-server/tests/api_push.rs
-git commit -m "Mark sessions working when feedback reaches them, and clear on reply, publish and end"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Mark sessions working when feedback reaches them, and clear on reply, publish and end")
 ```
 
 ---
 
-### Task 5: The `working` tool (MCP and Pi) and the twenty-three tool lists
+### Task 10: The `working` tool (MCP and Pi), and Pi's renewals and turn end
+
+Two parts: the tool itself on every harness (A), then Pi's automatic renewal on tool calls and its turn end (B). They are one task because the Pi extension changes in both, and one commit keeps it coherent.
+
+#### A. The `working` tool and the twenty-three tool lists
 
 The MCP tool and Pi's `clax_working` land together. `scripts/test-plugins.sh` requires every fixture description in both `tools.rs` and `clax.ts`.
 
@@ -1910,7 +4058,7 @@ The MCP tool and Pi's `clax_working` land together. `scripts/test-plugins.sh` re
 - The description string, verbatim everywhere:
 
 ```text
-Tell the person you are working on an artifact: its page shows `<harness> is working: <message>` in the header, a badge on its gallery card, and `working…` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.
+Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.
 ```
 
 - Result: `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s: 120, message_truncated}`, or `{artifact_id, url, working: false, cleared}`. Errors are the daemon's codes, passed through (`invalid_args`, `not_found`, `unknown_thread`, `thread_not_open`, `unknown_session`), plus the tool's own `invalid_id`, `invalid_args` and `no_session`.
@@ -1920,7 +4068,7 @@ Tell the person you are working on an artifact: its page shows `<harness> is wor
 In `plugins/pi/test/fixtures/contract.json`, insert into `tools` after `wait_for_feedback`:
 
 ```json
-    {"name": "working", "description": "Tell the person you are working on an artifact: its page shows `<harness> is working: <message>` in the header, a badge on its gallery card, and `working…` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now."},
+    {"name": "working", "description": "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now."},
 ```
 
 Append to `crates/clax-mcp/tests/comments.rs` (add `WorkingArgs` to the `use clax_mcp::tools::{...}` list):
@@ -2041,7 +4189,7 @@ and in the `#[tool_router]` block after `wait_for_feedback`:
 
 ```rust
     #[tool(
-        description = "Tell the person you are working on an artifact: its page shows `<harness> is working: <message>` in the header, a badge on its gallery card, and `working…` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now."
+        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now."
     )]
     pub async fn working(
         &self,
@@ -2153,7 +4301,7 @@ and register it after `watch`:
 
 ```ts
     define("working", "Clax working",
-      "Tell the person you are working on an artifact: its page shows `<harness> is working: <message>` in the header, a badge on its gallery card, and `working…` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
+      "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now.",
       "Show the person you are working on an Clax artifact, or clear it",
       WorkingArgs, (ctx, a) => tools.working(ctx, a));
 ```
@@ -2216,7 +4364,7 @@ bash scripts/test-plugins.sh | tail -1
 
 Expected: `plugin checks passed`.
 
-- [ ] **Step 5: Gates and commit**
+- [ ] **Step 5: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
@@ -2224,22 +4372,19 @@ git add plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs crat
   crates/clax-mcp/tests/shim.rs plugins/pi/src/clax.ts plugins/pi/src/client.ts plugins/pi/test/clax.test.ts scripts/test-plugins.sh \
   docs/contract.md README.md plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md \
   plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md
-git commit -m "Add the working tool to the MCP server and the Pi extension"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; this task continues below
 ```
 
----
-
-### Task 6: Pi renews on every tool call and ends the turn on `agent_end`
+#### B. Pi renews on every tool call and ends the turn on `agent_end`
 
 **Files:**
 - Modify: `plugins/pi/src/clax.ts`, `plugins/pi/test/clax.test.ts`
 
 **Interfaces:**
-- Consumes: `renewWorking`, `endWorking` (Task 5).
+- Consumes: `renewWorking`, `endWorking` (Task 10).
 - Produces: `RENEW_EVERY_MS = 15_000` exported from `clax.ts` (the throttle), and handlers for `tool_call` and `agent_end` (Pi 0.73.1: `AgentEndEvent { type: "agent_end"; messages }`, `ToolCallEvent`).
 
-- [ ] **Step 1: Failing tests**
+- [ ] **Step 6: Failing tests**
 
 Append to `describe("comments", ...)` in `plugins/pi/test/clax.test.ts`:
 
@@ -2274,7 +4419,7 @@ Add `RENEW_EVERY_MS` to the import from `../src/clax`, `DaemonClient` from `../s
 Run: `cd plugins/pi && npm test -- -t "renew working"`
 Expected: FAIL.
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 7: Implement**
 
 In `claxExtension`, after the `session_shutdown` handler:
 
@@ -2307,18 +4452,21 @@ export const RENEW_EVERY_MS = 15_000;
 Run: `cd plugins/pi && npm run typecheck && npm test`
 Expected: PASS.
 
-- [ ] **Step 3: Gates and commit**
+- [ ] **Step 8: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add plugins/pi/src/clax.ts plugins/pi/test/clax.test.ts
-git commit -m "Renew working records on Pi tool calls and end them when the agent loop ends"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Add the working tool to MCP and Pi, renew on Pi tool calls, and end the turn at agent_end")
 ```
 
 ---
 
-### Task 7: Hooks: the Stop hook ends the turn, and a `tool` hook renews
+### Task 11: Hooks end the turn and renew, and the comment-loop smoke shows it
+
+Two parts: the hooks (A), then the smoke that shows working on delivery and clearing on reply (B).
+
+#### A. The Stop hook ends the turn, and a `tool` hook renews
 
 **Files:**
 - Modify: `crates/clax-hooks/src/events.rs`, `crates/clax-cli/src/commands/hook.rs`, `crates/clax-hooks/tests/golden.rs`, `plugins/claude-code/hooks/hooks.json`, `plugins/clax/hooks/hooks.json`, `scripts/test-plugins.sh`, `scripts/quality_gates.sh`, `scripts/smoke-codex.sh`, `plugins/claude-code/README.md`, `plugins/clax/README.md`
@@ -2694,7 +4842,7 @@ if hooks:
 
 This prints the finding and fails nothing. The person runs `scripts/smoke-codex.sh --hooks` (it reads `~/.codex/auth.json`, which this plan must not), and the controller records the result in `docs/contract.md` ("Working" table, Codex row). Until then the contract keeps "not yet measured".
 
-- [ ] **Step 8: Gates and commit**
+- [ ] **Step 8: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
@@ -2703,18 +4851,15 @@ git add crates/clax-hooks/src/events.rs crates/clax-cli/src/commands/hook.rs cra
   plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json scripts/test-plugins.sh scripts/smoke-codex.sh \
   plugins/claude-code/README.md plugins/clax/README.md scripts/quality_gates.sh scripts/tool-hook.sh \
   plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh scripts/test-tool-hook.sh
-git commit -m "End working records when the Stop hook allows the stop, and renew them after tool calls at most once a minute"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; this task continues below
 ```
 
----
-
-### Task 8: The comment-loop smoke shows working on delivery and clearing on reply
+#### B. The comment-loop smoke shows working on delivery and clearing on reply
 
 **Files:**
 - Modify: `scripts/smoke-comment-loop.sh`
 
-- [ ] **Step 1: Assert the working state around tiers 1, 2 and the reply**
+- [ ] **Step 9: Assert the working state around tiers 1, 2 and the reply**
 
 In the Python block, add a helper after `http(...)`:
 
@@ -2729,7 +4874,7 @@ After step 3's `ok("tier 1: delivered once")`, add:
 w = working(aid)
 if len(w) != 1 or w[0]["harness"] != "claude" or w[0]["thread_ids"] != [t1["id"]] or "session_id" in w[0]:
     fail(f"working after tier 1 delivery: {w}")
-ok(f"working: 'Claude Code is working on 1 comment' appeared when the comment was delivered (key {w[0]['key']})")
+ok(f"working: a record naming the thread appeared when the comment was delivered (key {w[0]['key']})")
 ```
 
 After step 4's `ok(f"tier 2: the Stop hook blocked with thread ...")` line, the `stop(True)` call has already allowed the stop, so add:
@@ -2755,7 +4900,7 @@ In step 6, before `reply, _ = shim.call("comments_reply", ...)`, re-mark t1 expl
 set_, _ = shim.call("working", {"url_or_id": aid, "thread_ids": [t1["id"]], "message": "Two columns"})
 if not set_["working"] or set_["message"] != "Two columns":
     fail(f"working tool: {set_}")
-ok("working tool: the header now reads 'Claude Code is working: Two columns'")
+ok("working tool: the top bar now reads 'claude: Two columns'")
 ```
 
 and after `ok(f"agent reply shown as ...")`:
@@ -2766,797 +4911,22 @@ if any(t1["id"] in x["thread_ids"] for x in working(aid)):
 ok("working: the agent's reply to thread 1 took it out of the working record")
 ```
 
-- [ ] **Step 2: Run it**
+- [ ] **Step 10: Run it**
 
 Run: `scripts/smoke-comment-loop.sh`
 Expected: every step prints `PASS`, including the five new `working` lines, and the last line is `comment loop smoke passed`.
 
-- [ ] **Step 3: Gates and commit**
+- [ ] **Step 11: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add scripts/smoke-comment-loop.sh
-git commit -m "Show the working signal in the comment-loop smoke"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("End working records when the Stop hook allows the stop, renew them after tool calls at most once a minute, and show both in the smoke")
 ```
 
 ---
 
-### Task 9: The shell shows who is working: header, gallery badge, thread marker
-
-The design questions (the header text when several sessions work, the badge, the marker, phone width) are settled in "Design: the working record". There is nothing left to ask before starting. This task targets the post-port Svelte shell: the controller owns the list, a framework-free model computes the text, and the islands render it.
-
-**Files:**
-- Create: `web/shell/src/view/working-model.ts`, `web/shell/src/view/working-model.test.ts`, `web/shell/src/ui/WorkingStatus.svelte`, `web/shell/src/ui/WorkingBadge.svelte`, `web/shell/src/ui/working-feed.svelte.ts`, `web/shell/src/working-status.test.ts`
-- Modify: `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/events.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`
-
-**Interfaces:**
-- Produces (`view/working-model.ts`, no `svelte` import): `type Working = { key: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string }`, `harnessLabel(h: string): string`, `recordLine(w: Working): string`, `statusParts(list: Working[]): { who: string; detail: string; more: string; title: string } | null`, `badgeText(list: Working[]): string | null`, `threadMarker(list: Working[], threadId: string): string | null`, `newestFirst(list: Working[]): Working[]`.
-- Produces (`events.ts`): the `working` member of `ArtifactEvent` (`{ type: "working"; artifact_id: string; working: Working[] }`), a `working` listener in `subscribe`, and `subscribeWorking(onEvent: (e: ArtifactEvent) => void): () => void`. `subscribeWorking` opens `/api/events?types=working`, and is a no-op returning a no-op when `EventSource` is undefined.
-- Produces (`api.ts`): `Artifact.working?: Working[]`.
-- Produces (`ArtifactController`): `ViewState.working: Working[]` (initially `[]`).
-- Produces (`ui/working-feed.svelte.ts`): `class WorkingFeed { byId: Record<string, Working[]> ($state); seed(list: Artifact[]): void; start(onResync: () => void): void; stop(): void }`.
-- Components: `WorkingStatus` (`{ list: Working[] }`), `WorkingBadge` (`{ list: Working[] }`). `ThreadCard` gains the prop `marker?: string | null`, and `Sidebar` gains `working?: Working[]`.
-
-- [ ] **Step 1: Pure logic, test first**
-
-`web/shell/src/view/working-model.test.ts`:
-
-```ts
-import { describe, expect, it } from "vitest";
-import { badgeText, harnessLabel, statusParts, threadMarker, type Working } from "./working-model";
-
-const w = (over: Partial<Working>): Working => ({
-  key: "k", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over,
-});
-
-describe("working-model", () => {
-  it("labels harnesses", () => {
-    expect([harnessLabel("claude"), harnessLabel("codex"), harnessLabel("pi"), harnessLabel("zed")]).toEqual(["Claude Code", "Codex", "Pi", "zed"]);
-  });
-
-  it("reads one record with a message, with threads, or bare", () => {
-    expect(statusParts([w({ message: "Two columns" })])).toEqual({ who: "Claude Code is working", detail: ": Two columns", more: "", title: "Claude Code is working: Two columns" });
-    expect(statusParts([w({ thread_ids: ["a"] })])!.detail).toBe(" on 1 comment");
-    expect(statusParts([w({ thread_ids: ["a", "b"] })])!.detail).toBe(" on 2 comments");
-    expect(statusParts([w({})])!.detail).toBe("");
-    expect(statusParts([])).toBeNull();
-  });
-
-  it("shows the newest of several and lists all in the title", () => {
-    const list = [w({ key: "a", message: "old" }), w({ key: "b", harness: "codex", message: "new", started_at: "2026-09-30T10:05:00.000Z" })];
-    expect(statusParts(list)).toEqual({ who: "Codex is working", detail: ": new", more: " (+1 more)", title: "Codex is working: new\nClaude Code is working: old" });
-  });
-
-  it("badges one record by harness and several by count", () => {
-    expect(badgeText([w({})])).toBe("Claude Code working");
-    expect(badgeText([w({}), w({ key: "b", harness: "pi" })])).toBe("2 agents working");
-    expect(badgeText([])).toBeNull();
-  });
-
-  it("marks a thread named by a record", () => {
-    const list = [w({ thread_ids: ["t1"] }), w({ key: "b", harness: "codex", thread_ids: ["t1"], started_at: "2026-09-30T10:01:00.000Z" })];
-    expect(threadMarker(list, "t1")).toBe("Codex is working…");
-    expect(threadMarker(list, "t2")).toBeNull();
-  });
-});
-```
-
-Run: `cd web && npx vitest run shell/src/view/working-model.test.ts`
-Expected: FAIL (module not found).
-
-`web/shell/src/view/working-model.ts`:
-
-```ts
-// The working signal as the shell shows it (spec §8): pure functions over the
-// daemon's working views, shared by the header, the gallery and the sidebar.
-
-/** A working record as `GET /api/artifacts/<id>` and the `working` event carry it. */
-export type Working = { key: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
-
-const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi" };
-
-export function harnessLabel(h: string): string {
-  return LABELS[h] ?? h;
-}
-
-/** Newest `started_at` first; the daemon sends them so, this keeps it true. */
-export function newestFirst(list: Working[]): Working[] {
-  return [...list].sort((a, b) => b.started_at.localeCompare(a.started_at) || b.key.localeCompare(a.key));
-}
-
-function detail(w: Working): string {
-  if (w.message) return `: ${w.message}`;
-  const n = w.thread_ids.length;
-  return n ? ` on ${n} comment${n === 1 ? "" : "s"}` : "";
-}
-
-/** One record as the header reads it. */
-export function recordLine(w: Working): string {
-  return `${harnessLabel(w.harness)} is working${detail(w)}`;
-}
-
-/** The header's parts for `list`; `title` lists every record. Null when nobody works. */
-export function statusParts(list: Working[]): { who: string; detail: string; more: string; title: string } | null {
-  const sorted = newestFirst(list);
-  const top = sorted[0];
-  if (!top) return null;
-  return {
-    who: `${harnessLabel(top.harness)} is working`,
-    detail: detail(top),
-    more: sorted.length > 1 ? ` (+${sorted.length - 1} more)` : "",
-    title: sorted.map(recordLine).join("\n"),
-  };
-}
-
-/** The gallery card's badge. */
-export function badgeText(list: Working[]): string | null {
-  if (list.length === 0) return null;
-  return list.length === 1 ? `${harnessLabel(list[0].harness)} working` : `${list.length} agents working`;
-}
-
-/** The marker on a thread card: the newest record naming the thread. */
-export function threadMarker(list: Working[], threadId: string): string | null {
-  const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
-  return w ? `${harnessLabel(w.harness)} is working…` : null;
-}
-```
-
-Run: `cd web && npx vitest run shell/src/view/working-model.test.ts`
-Expected: PASS.
-
-- [ ] **Step 2: Types, events, controller state**
-
-`api.ts`: `import type { Working } from "./view/working-model";`. Add to `Artifact`: ``/** From `GET /api/artifacts`, `GET /api/artifacts/<id>` and the bootstrap block: who is working on it now (never a session ID). */ working?: Working[];``.
-
-`events.ts`: add `| { type: "working"; artifact_id: string; working: Working[] }` to `ArtifactEvent`, and `"working"` to the listener name list in `subscribe`. Add:
-
-```ts
-/** The gallery's stream: `working` events for every artifact (no artifact
- * filter), plus `ready`, `resync` and `stream_down` as in `subscribe`. Opened
- * after the gallery has rendered; a no-op where EventSource is missing. */
-export function subscribeWorking(onEvent: (e: ArtifactEvent) => void): () => void {
-  if (typeof EventSource === "undefined") return () => {};
-  const es = new EventSource("/api/events?types=working");
-  es.addEventListener("working", (e: MessageEvent) => { try { onEvent(JSON.parse(e.data)); } catch { /* ignore malformed */ } });
-  es.addEventListener("ready", () => onEvent({ type: "ready" }));
-  es.addEventListener("error", () => onEvent({ type: "stream_down" }));
-  es.addEventListener("resync", () => onEvent({ type: "resync", dropped: 0 }));
-  return () => es.close();
-}
-```
-
-In `events.test.ts`, extend the existing listener test's expected name list with `"working"`. Add a test for `subscribeWorking` in the same style as that file's `subscribe` tests: a stub `EventSource` class records its URL (`/api/events?types=working`) and its listeners, and a dispatched `working` message reaches `onEvent` parsed.
-
-`view/artifact-controller.ts`:
-- `ViewState` gains `/** Working records on this artifact, newest first (spec §8). */ working: Working[];`, initial `[]`.
-- Every `this.set({ data: … })` (the load, and the bootstrap seed from the port's Task 12) also sets `working: <that data>.artifact.working ?? []`.
-- `onEvent`: add `if (e.type === "working") this.set({ working: e.working });`. In the `resync`/`ready` refetch's `.then(d => …)`, add `this.set({ working: d.artifact.working ?? [] });`.
-- `working` does not take part in `react()`. A working change must never re-resolve anchors or refocus the frame.
-
-In `view/artifact-controller.test.ts`, make `FakeES` dispatchable:
-
-```ts
-class FakeES {
-  static last: FakeES | null = null;
-  private ls = new Map<string, (e: MessageEvent) => void>();
-  constructor() { FakeES.last = this; }
-  addEventListener(n: string, f: (e: MessageEvent) => void) { this.ls.set(n, f); }
-  close() {}
-  emit(n: string, d: unknown) { this.ls.get(n)?.({ data: JSON.stringify(d) } as MessageEvent); }
-}
-```
-
-and add:
-
-```ts
-  it("keeps the working list from the artifact and from working events, without re-resolving anchors", async () => {
-    const rec = { key: "k", harness: "codex", message: "Chart", thread_ids: [], started_at: "s", last_heartbeat: "s" };
-    (loaded.artifact as Record<string, unknown>).working = [rec];
-    try {
-      const { ctl } = await started();
-      expect(ctl.state.get().working).toEqual([rec]);
-      await vi.waitFor(() => expect(FakeES.last).not.toBeNull());
-      const data = ctl.state.get().data;
-      FakeES.last!.emit("working", { type: "working", artifact_id: ID, working: [] });
-      expect(ctl.state.get().working).toEqual([]);
-      expect(ctl.state.get().data).toBe(data);
-      ctl.dispose();
-    } finally {
-      delete (loaded.artifact as Record<string, unknown>).working;
-    }
-  });
-```
-
-Run: `cd web && npx vitest run shell/src/view/artifact-controller.test.ts shell/src/events.test.ts`
-Expected: PASS.
-
-- [ ] **Step 3: Components**
-
-`web/shell/src/ui/WorkingStatus.svelte`:
-
-```svelte
-<script lang="ts">
-  import { statusParts, type Working } from "../view/working-model";
-
-  let { list }: { list: Working[] } = $props();
-  const p = $derived(statusParts(list));
-</script>
-
-<!-- Always in the DOM, so a change is announced; its text changes only when
-     the records change, so renewals are silent. -->
-<p class={["working-status", p && "on"]} role="status" aria-live="polite" aria-atomic="true" title={p?.title}>
-  {#if p}<span class="working-dot" aria-hidden="true"></span><span class="working-who">{p.who}</span><span class="working-detail">{p.detail}</span><span class="working-more">{p.more}</span>{/if}
-</p>
-```
-
-`web/shell/src/ui/WorkingBadge.svelte`:
-
-```svelte
-<script lang="ts">
-  import { badgeText, type Working } from "../view/working-model";
-
-  let { list }: { list: Working[] } = $props();
-  const text = $derived(badgeText(list));
-</script>
-
-{#if text}<span class="working-badge"><span class="working-dot" aria-hidden="true"></span>{text}</span>{/if}
-```
-
-`web/shell/src/ui/working-feed.svelte.ts`:
-
-```ts
-// The gallery's live working lists, by artifact: seeded from
-// `GET /api/artifacts`, then kept current by the `working` event stream,
-// which opens only after the gallery has rendered.
-import type { Artifact } from "../api";
-import { subscribeWorking } from "../events";
-import type { Working } from "../view/working-model";
-
-export class WorkingFeed {
-  byId = $state<Record<string, Working[]>>({});
-  #stop: (() => void) | null = null;
-
-  seed(list: Artifact[]): void {
-    this.byId = Object.fromEntries(list.map(a => [a.id, a.working ?? []]));
-  }
-
-  /** Opens the stream once; `onResync` refetches after a reconnect or a drop. */
-  start(onResync: () => void): void {
-    if (this.#stop) return;
-    this.#stop = subscribeWorking(e => {
-      if (e.type === "working") this.byId = { ...this.byId, [e.artifact_id]: e.working };
-      else if (e.type === "ready" || e.type === "resync") onResync();
-    });
-  }
-
-  stop(): void {
-    this.#stop?.();
-    this.#stop = null;
-  }
-}
-```
-
-`web/shell/src/working-status.test.ts`:
-
-```ts
-import { describe, expect, it } from "vitest";
-import { mount } from "./test/svelte";
-import WorkingStatus from "./ui/WorkingStatus.svelte";
-
-describe("WorkingStatus", () => {
-  it("is an empty polite live region while nobody works, and fills in place", () => {
-    const m = mount(WorkingStatus, { list: [] });
-    const p = m.root.querySelector("p.working-status")!;
-    expect(p.getAttribute("role")).toBe("status");
-    expect(p.getAttribute("aria-live")).toBe("polite");
-    expect(p.textContent).toBe("");
-    m.update({ list: [{ key: "k", harness: "pi", message: "Tidying", thread_ids: [], started_at: "s", last_heartbeat: "s" }] });
-    expect(m.root.querySelector("p.working-status")).toBe(p);
-    expect(p.textContent).toBe("Pi is working: Tidying");
-    expect(p.querySelector(".working-dot")!.getAttribute("aria-hidden")).toBe("true");
-    m.unmount();
-  });
-});
-```
-
-- [ ] **Step 4: Wire the islands, the sidebar and the gallery**
-
-`ui/TopbarIsland.svelte`: import `WorkingStatus`, and render `<WorkingStatus list={s.working} />` as the first child inside `{#if !s.error && s.data}`. The island mounts right after the skeleton's `<h1>`, so the line sits between the title and the controls.
-
-`ui/SidebarIsland.svelte`: pass `working={s.working}` to `Sidebar`.
-
-`ui/Sidebar.svelte`: add `working?: Working[]` to `Props`, and pass `marker={t.status === "open" ? threadMarker(p.working ?? [], t.id) : null}` to each `ThreadCard`.
-
-`ui/ThreadCard.svelte`: add `marker?: string | null` to `Props`. Replace `{#if label}<p class="waiting">{label}</p>{/if}` with:
-
-```svelte
-  {#if marker}
-    <p class="working-marker"><span class="working-dot" aria-hidden="true"></span>{marker}</p>
-  {:else if label}
-    <p class="waiting">{label}</p>
-  {/if}
-```
-
-`sidebar.test.ts`, add (the file imports `mount` from `./test/svelte` and `Sidebar` from `./ui/Sidebar.svelte`):
-
-```ts
-  it("shows the working marker in place of the waiting indicator, until the record drops the thread", () => {
-    const t: Thread = { ...base, id: "w", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "two columns")],
-      feedback_state: { thread_id: "w", state: "delivered", tier: "stop_hook", since: base.created_at, resends: 0, exhausted: false } };
-    const rec = { key: "k", harness: "codex", message: null, thread_ids: ["w"], started_at: base.created_at, last_heartbeat: base.created_at };
-    const props = { threads: [t], resolved: {}, working: [rec], now: new Date(base.created_at), selected: null,
-      onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
-    const m = mount(Sidebar, props);
-    expect(m.root.querySelector(".working-marker")!.textContent).toBe("Codex is working…");
-    expect(m.root.querySelector(".waiting")).toBeNull();
-    m.update({ ...props, working: [] });
-    expect(m.root.querySelector(".working-marker")).toBeNull();
-    expect(m.root.querySelector(".waiting")!.textContent).toContain("delivered via the Stop hook");
-    m.unmount();
-  });
-```
-
-`ui/Gallery.svelte`:
-- `import { onDestroy } from "svelte";`, `import WorkingBadge from "./WorkingBadge.svelte";`, `import { WorkingFeed } from "./working-feed.svelte";`, and `const feed = new WorkingFeed(); onDestroy(() => feed.stop());`.
-- `refresh` becomes `() => listArtifacts().then(a => { error = null; artifacts = a; feed.seed(a); feed.start(refresh); }, e => { error = describe(e); })`. The stream opens after the first list has rendered, never before.
-- In the card's `.meta`, after the publisher span, add `<WorkingBadge list={feed.byId[a.id] ?? []} />`.
-
-`gallery.test.ts`: add `working: [{ key: "k", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-28T11:00:00Z", last_heartbeat: "2026-09-28T11:00:00Z" }]` to the first `ARTIFACTS` entry. Add a test in the file's style that mounts the gallery, waits for the cards, and asserts that the first card's `.working-badge` reads `Claude Code working` and the second card has none. jsdom has no `EventSource`, so `subscribeWorking` is a no-op there.
-
-- [ ] **Step 5: Styles (tokens for both themes, phone width, reduced motion)**
-
-Append to `web/shell/src/theme.css` (the port inlines it into both entries at build time):
-
-```css
-/* Working signal (spec §8). */
-:root { --working: #0e7490; --working-soft: #e0f2f7; }
-:root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) { --working: #22d3ee; --working-soft: #0b3440; } }
-:root[data-theme="dark"] { --working: #22d3ee; --working-soft: #0b3440; }
-.working-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--working); flex: none; animation: working-pulse 1.6s ease-in-out infinite; }
-@keyframes working-pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(.8); } }
-@media (prefers-reduced-motion: reduce) { .working-dot { animation: none; } }
-.working-status { display: none; margin: 0; min-width: 0; flex: 0 1 auto; max-width: 45%; align-items: center; gap: 6px; font-size: 13px; color: var(--fg); white-space: nowrap; overflow: hidden; }
-.working-status.on { display: flex; }
-.working-status .working-detail { overflow: hidden; text-overflow: ellipsis; min-width: 0; color: var(--muted); }
-.working-status .working-more { color: var(--muted); flex: none; }
-.working-badge { display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px; background: var(--working-soft); color: var(--fg); }
-.card .meta { flex-wrap: wrap; }
-.working-marker { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--working); margin: 6px 0; }
-@media (max-width: 480px) {
-  .working-status { max-width: 50%; }
-  .working-status .working-detail, .working-status .working-more { display: none; }
-}
-```
-
-At 480 px and below, the port's top bar wraps the title onto its own row. The status line then sits on the controls row, showing only the dot and `<Harness> is working`. Check this in Task 11's phone test, and do not change the port's `.topbar h1` rules.
-
-- [ ] **Step 6: Run and commit**
-
-Run: `cd web && npm run lint && npm run typecheck && npx vitest run && npm run build && node scripts/bundle-size.mjs; echo "exit=$?"`
-Expected: PASS and `exit=0`. If the bundle-size gate fails, stop and report the sizes. Do not record a new budget.
-
-Run: `grep -rlE "from \"svelte" web/shell/src/view web/shell/src/caps`
-Expected: no output.
-
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/shell/src/view/working-model.ts web/shell/src/view/working-model.test.ts web/shell/src/ui/WorkingStatus.svelte web/shell/src/ui/WorkingBadge.svelte \
-  web/shell/src/ui/working-feed.svelte.ts web/shell/src/working-status.test.ts web/shell/src/api.ts web/shell/src/events.ts web/shell/src/events.test.ts \
-  web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/ui/TopbarIsland.svelte web/shell/src/ui/SidebarIsland.svelte \
-  web/shell/src/ui/Sidebar.svelte web/shell/src/ui/ThreadCard.svelte web/shell/src/sidebar.test.ts web/shell/src/ui/Gallery.svelte web/shell/src/gallery.test.ts web/shell/src/theme.css
-git commit -m "Show who is working in the header, on gallery cards and on thread cards"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
-```
-
----
-
-### Task 10: The page capability: `working()` and `onWorking(fn)`
-
-**Files:**
-- Modify: `web/contract/0.2.61/comments.d.ts`, `web/shell/src/caps/host.ts` (`CapEnv.working`), `web/shell/src/caps/comments.ts`, `web/shell/src/caps/comments.test.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/test/comments.test.ts`, `web/shell/src/view/artifact-controller.ts` (passes `working` into the host env)
-
-**Interfaces:**
-- Produces (contract, in `namespace comments`):
-
-```ts
-    /** Clax extension: not part of claude.ai's comments capability. One
-     * agent session working on this artifact now. */
-    interface WorkingAgent {
-      /** `"claude"`, `"codex"`, `"pi"`, or another harness name. */
-      harness: string;
-      /** The harness as people read it ("Claude Code"). */
-      label: string;
-      /** The agent's own words, at most 140 characters; treat as untrusted text. */
-      message: string | null;
-      /** When it started (ISO 8601). */
-      since: string;
-      /** Handles of threads THIS document created that the agent is acting on. */
-      threads: string[];
-      /** How many other threads it is acting on. */
-      otherThreads: number;
-    }
-    /** Clax extension: not part of claude.ai's comments capability. */
-    interface WorkingState {
-      working: boolean;
-      /** Newest first. */
-      agents: WorkingAgent[];
-    }
-```
-
-and in `interface Comments`:
-
-```ts
-    /**
-     * Clax extension, not part of claude.ai's comments capability: which
-     * agents are working on this artifact now. Read-only. Clax grants it
-     * under either declaration form, including `composer_only` (a Clax
-     * extension to that form, which otherwise grants only openComposer and
-     * anchorFor), with no consent prompt and no gesture. Never names a
-     * session or a thread's store ID.
-     */
-    working(): Promise<WorkingState>;
-    /**
-     * Clax extension, not part of claude.ai's comments capability: calls `fn`
-     * with the current state, then on every change. Resolves a function
-     * that stops the calls.
-     */
-    onWorking(fn: (state: WorkingState) => void): Promise<() => void>;
-```
-
-- Shell handler methods: `working` → `WorkingState`; `watchWorking` → `null` (starts pushes on topic `working`); `unwatchWorking` → `null`.
-- `CapEnv` gains `working(): Working[]`.
-- Pure helper in `caps/comments.ts`: `pageWorking(list: Working[], handleOf: (id: string) => string | undefined): WorkingState`.
-
-- [ ] **Step 1: Failing shell handler tests**
-
-In `web/shell/src/caps/comments.test.ts`, give the harness a working list. Add at module level `let workingList: Working[] = [];` (with `import type { Working } from "../view/working-model";`), reset it in the `beforeEach` (`workingList = [];`), and add `working: () => workingList` to the `env` object literal in `setup`. Then add to `describe("comments in the shell", ...)`:
-
-```ts
-  const rec = (over: Partial<Working> = {}): Working => ({ key: "k", harness: "codex", message: "Chart", thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over });
-
-  it("working() names only this document's own threads, by handle", async () => {
-    const { h, posted } = setup({ comments: {} });
-    daemon(T("01J9C"));
-    const created = await h.call("create", [{ anchor: T("x").anchor, text: "hi", version: 1 }]) as { threadId: string };
-    workingList = [rec({ thread_ids: ["01J9C", "01J9Z"] })];
-    const s = await h.call("working", []);
-    expect(s).toEqual({ working: true, agents: [{ harness: "codex", label: "Codex", message: "Chart", since: "2026-09-30T10:00:00.000Z", threads: [created.threadId], otherThreads: 1 }] });
-    expect(JSON.stringify(s)).not.toContain("01J9C");
-    expect(JSON.stringify(s)).not.toContain("\"k\"");
-    expect(posted.filter(m => m.type === "clax:event" && m.topic === "working")).toEqual([]);
-  });
-
-  it("pushes working state to a watching page on every working event, until it stops watching", async () => {
-    const { h, posted } = setup({ comments: {} });
-    const pushes = () => posted.filter(m => m.type === "clax:event" && m.topic === "working") as unknown as { data: { working: boolean } }[];
-    await h.call("watchWorking", []);
-    expect(pushes().at(-1)!.data).toEqual({ working: false, agents: [] });
-    workingList = [rec({ harness: "pi", message: null })];
-    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: workingList });
-    expect(pushes().at(-1)!.data.working).toBe(true);
-    await h.call("unwatchWorking", []);
-    const n = pushes().length;
-    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: [] });
-    expect(pushes().length).toBe(n);
-  });
-
-  it("answers working() under the composer-only form, without consent or gesture", async () => {
-    const { h, prompt } = setup({ comments: { composer_only: true } });
-    gesture(false);
-    expect(await h.call("working", [])).toEqual({ working: false, agents: [] });
-    expect(prompt).not.toHaveBeenCalled();
-  });
-```
-
-Run: `cd web && npx vitest run shell/src/caps/comments.test.ts`
-Expected: FAIL (`comments.working is not part of this runtime`).
-
-- [ ] **Step 2: Implement the shell side**
-
-In `caps/host.ts`, add to `CapEnv`: `/** Who is working on the artifact now (the view's latest working list). */ working(): Working[];`. In `view/artifact-controller.ts` `viewChanged()`, add `working: () => this.s.working,` to the env object passed to `new CapabilityHost(...)`. It reads the controller's current state at each call. `onEvent` already forwards every event to `this.host`, so `working` events reach the handler.
-
-In `caps/comments.ts`:
-
-```ts
-import { harnessLabel, newestFirst, type Working } from "../view/working-model";
-
-/** The Clax `working()` state for the page: agents newest first; threads as
- * the handles this document holds, the rest counted. No record key, no
- * session, no store ID. */
-export function pageWorking(list: Working[], handleOf: (id: string) => string | undefined) {
-  const agents = newestFirst(list).map(w => {
-    const threads = w.thread_ids.map(handleOf).filter((h): h is string => h !== undefined);
-    return { harness: w.harness, label: harnessLabel(w.harness), message: w.message, since: w.started_at, threads, otherThreads: w.thread_ids.length - threads.length };
-  });
-  return { working: agents.length > 0, agents };
-}
-```
-
-In `commentsHandler`, add `let watchingWorking = false;`, a `const ownHandle = (id: string) => [...created].find(([, v]) => v === id)?.[0];`, and a `const pushWorking = () => { if (watchingWorking && !disposed) env.post(event("working", pageWorking(env.working(), ownHandle))); };`. Add cases before `default`. These run before any consent or gesture check in the handler, and are allowed under `composer_only`:
-
-```ts
-        case "working":
-          return pageWorking(env.working(), ownHandle);
-        case "watchWorking":
-          watchingWorking = true;
-          pushWorking();
-          return null;
-        case "unwatchWorking":
-          watchingWorking = false;
-          return null;
-```
-
-In `onEvent`, add `if (e.type === "working") pushWorking();`. In `reset` and `dispose`, set `watchingWorking = false`.
-
-If the handler's method gate (the place that rejects write verbs under `composer_only` with `not_granted`) runs before the `switch`, add `working`, `watchWorking` and `unwatchWorking` to its allowed list for the composer-only form.
-
-- [ ] **Step 3: The bridge side**
-
-In `web/bridge/src/caps/comments.ts` (after the port's Task 13 it is part of the lazy `caps` part, and `commentsLocals(rpc, config, env)` takes a `CapsEnv`), inside `commentsLocals`, add:
-
-```ts
-  const workingFns = new Set<(s: unknown) => void>();
-  let offWorking: (() => void) | null = null;
-  const working = () => rpc.call("comments", "working", []);
-  const onWorking = async (fn: unknown) => {
-    if (typeof fn !== "function") throw invalid("onWorking takes a function");
-    const f = fn as (s: unknown) => void;
-    workingFns.add(f);
-    if (!offWorking) {
-      offWorking = rpc.on("comments", "working", d => { for (const g of workingFns) { try { g(d); } catch { /* the page's own error */ } } });
-      await rpc.call("comments", "watchWorking", []);
-    } else {
-      try { f(await working()); } catch { /* the page's own error */ }
-    }
-    return () => {
-      workingFns.delete(f);
-      if (workingFns.size === 0 && offWorking) {
-        offWorking();
-        offWorking = null;
-        void rpc.call("comments", "unwatchWorking", []).catch(() => {});
-      }
-    };
-  };
-```
-
-and add `working` and `onWorking` to the namespace object this function returns, under both declaration forms. Add to `web/bridge/test/comments.test.ts`, with its `fakeRpc`:
-
-```ts
-  it("onWorking shares one shell subscription and ends it with the last subscriber", async () => {
-    const f = fakeRpc(() => ({ working: false, agents: [] }));
-    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as unknown as { onWorking(fn: (s: unknown) => void): Promise<() => void> };
-    const a: unknown[] = [];
-    const b: unknown[] = [];
-    const offA = await c.onWorking(s => a.push(s));
-    const offB = await c.onWorking(s => b.push(s));
-    const methods = () => f.rpc.call.mock.calls.map(x => x[1]);
-    expect(methods().filter(m => m === "watchWorking")).toHaveLength(1);
-    f.emit("working", { working: true, agents: [] });
-    expect(a.at(-1)).toEqual({ working: true, agents: [] });
-    expect(b.at(-1)).toEqual({ working: true, agents: [] });
-    offA();
-    expect(methods()).not.toContain("unwatchWorking");
-    offB();
-    expect(methods()).toContain("unwatchWorking");
-  });
-```
-
-- [ ] **Step 4: Run and commit**
-
-Run: `cd web && npm run lint && npm run typecheck && npx vitest run`
-Expected: PASS.
-
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/contract/0.2.61/comments.d.ts web/shell/src/caps/host.ts web/shell/src/caps/comments.ts web/shell/src/caps/comments.test.ts \
-  web/bridge/src/caps/comments.ts web/shell/src/view/artifact-controller.ts
-git add web/bridge/test/comments.test.ts
-git commit -m "Let pages read who is working through the comments capability (Clax extension)"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
-```
-
----
-
-### Task 11: Browser tests and browser verification for the working signal
-
-**Files:**
-- Create: `web/e2e/working.spec.ts`, `web/e2e/pages/working-cap.html`
-- Modify: `web/e2e/fixtures.ts` (`setWorking`, `skewWorking`, `postThread` helpers)
-
-**Interfaces:**
-- Produces (fixtures): `setWorking(base, token, sid, aid, body): Promise<any>`, `skewWorking(base, token, secs): Promise<void>` (the debug build's `POST /api/_test/working/skew`), `postThread(base, aid, body): Promise<{ id: string }>`.
-
-- [ ] **Step 1: Fixtures**
-
-Append to `web/e2e/fixtures.ts`:
-
-```ts
-/** Marks `sid` working on `aid` (`PUT /api/sessions/<sid>/working/<aid>`). */
-export async function setWorking(base: string, token: string, sid: string, aid: string, body: { thread_ids?: string[]; message?: string }) {
-  return api(base, token, `/api/sessions/${sid}/working/${aid}`, { method: "PUT", body: JSON.stringify(body) });
-}
-
-/** Creates a viewer thread on `aid` v1 anchored to `body > main > h2`, as the shell posts it (multipart); returns the thread. */
-export async function postThread(base: string, aid: string, body: string) {
-  const form = new FormData();
-  form.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: "Quarterly goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
-  form.set("body", body);
-  form.set("version", "1");
-  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form });
-  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
-  return (await res.json()).thread as { id: string };
-}
-
-/** Moves the daemon's working clock forward and sweeps (debug builds only). */
-export async function skewWorking(base: string, token: string, secs: number) {
-  await api(base, token, "/api/_test/working/skew", { method: "POST", body: JSON.stringify({ secs }) });
-}
-```
-
-`web/e2e/pages/working-cap.html`:
-
-```html
-<!doctype html><title>Working cap</title>
-<main><h2 id="h">Goals</h2><p id="state">none</p><button id="add">Add</button></main>
-<script>
-  (async () => {
-    const c = await window.claude.use("comments");
-    const out = document.getElementById("state");
-    const show = s => { out.textContent = s.working ? s.agents.map(a => `${a.label}|${a.message}|${a.threads.length}|${a.otherThreads}`).join(",") : "none"; };
-    show(await c.working());
-    await c.onWorking(show);
-    document.getElementById("add").onclick = async () => {
-      const r = await c.create({ anchor: { path: "#h" }, text: "from the page" });
-      document.body.dataset.handle = r.threadId;
-    };
-  })();
-</script>
-```
-
-- [ ] **Step 2: The spec**
-
-`web/e2e/working.spec.ts`:
-
-```ts
-import { test, expect } from "@playwright/test";
-import { readFileSync } from "node:fs";
-import { api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, startDaemon } from "./fixtures";
-
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
-
-const PAGE = "<main><h2>Quarterly goals</h2></main>";
-
-for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: the header, the marker and the gallery badge follow the working record`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });
-    const t = { thread: await postThread(d.base, artifact.id, "@agent two columns") };
-    await openArtifact(page, d.base, artifact.id, 1, mode);
-    const status = page.locator("p.working-status");
-    await expect(status).toHaveAttribute("aria-live", "polite");
-    await expect(status).toBeHidden();
-    await page.getByRole("button", { name: /Threads/ }).click();
-    await api(d.base, d.token, `/api/sessions/${s.id}/feedback?tier=piggyback`);
-    await expect(status).toHaveText("Claude Code is working on 1 comment");
-    const card = page.locator(`.thread-card[data-thread="${t.thread.id}"]`);
-    await expect(card.locator(".working-marker")).toHaveText("Claude Code is working…");
-    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Two columns" });
-    await expect(status).toHaveText("Claude Code is working: Two columns");
-    const other = await registerSession(d.base, d.token, "codex", `work-other-${mode}`);
-    await setWorking(d.base, d.token, other.id, artifact.id, { message: "Chart" });
-    await expect(status).toHaveText("Codex is working: Chart (+1 more)");
-    await expect(status).toHaveAttribute("title", "Codex is working: Chart\nClaude Code is working: Two columns");
-    await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.thread.id}/comments`, { method: "POST", session: s.id,
-      body: JSON.stringify({ body: "Done: two columns.", author_kind: "agent" }) });
-    await expect(card.locator(".working-marker")).toHaveCount(0);
-    await expect(card.locator(".comment.agent .body")).toHaveText("Done: two columns.");
-    const gallery = await page.context().newPage();
-    await gallery.goto(`${d.base}/`);
-    const badge = gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".working-badge");
-    await expect(badge).toHaveText("Codex working");
-    await api(d.base, d.token, `/api/sessions/${other.id}/working/end`, { method: "POST", body: "{}" });
-    await expect(badge).toHaveCount(0, { timeout: 10_000 });
-    await expect(status).toBeHidden();
-  });
-
-  test(`${mode}: a record lapses 2 minutes after its last renewal`, async ({ page }) => {
-    const s = await registerSession(d.base, d.token, "pi", `lapse-${mode}`);
-    const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse ${mode}`, { "index.html": PAGE });
-    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Tidying" });
-    await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(page.locator("p.working-status")).toHaveText("Pi is working: Tidying");
-    await skewWorking(d.base, d.token, 121);
-    await expect(page.locator("p.working-status")).toBeHidden();
-  });
-
-  test(`${mode}: the page reads working state through the comments capability`, async ({ page }) => {
-    const html = readFileSync(new URL("./pages/working-cap.html", import.meta.url), "utf8");
-    const s = await registerSession(d.base, d.token, "codex", `cap-${mode}`);
-    const { artifact } = await publishWith(d.base, d.token, `Cap ${mode}`, html, { comments: {} });
-    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await expect(frame.locator("#state")).toHaveText("none");
-    await page.getByLabel("Your name").fill("Alex");
-    await page.getByLabel("Your name").press("Enter");
-    await reach(page, frame.locator("#add"));
-    await frame.locator("#add").click();
-    await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
-    await expect.poll(() => frame.locator("body").getAttribute("data-handle")).toBeTruthy();
-    const threads = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`);
-    const tid = threads.threads[0].id as string;
-    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Chart", thread_ids: [tid] });
-    await expect(frame.locator("#state")).toHaveText("Codex|Chart|1|0");
-    const handle = await frame.locator("body").getAttribute("data-handle");
-    expect(handle).not.toBe(tid);
-    await api(d.base, d.token, `/api/sessions/${s.id}/working/${artifact.id}`, { method: "DELETE" });
-    await expect(frame.locator("#state")).toHaveText("none");
-  });
-}
-
-test("the status line fits a phone in dark mode and holds still under reduced motion", async ({ page }) => {
-  const s = await registerSession(d.base, d.token, "claude", "phone-work");
-  const { artifact } = await publishAs(d.base, d.token, s.id, "A long title for a phone-width working status check", { "index.html": PAGE });
-  await setWorking(d.base, d.token, s.id, artifact.id, { message: "Rebuilding the quarterly chart with the new numbers" });
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
-  const status = page.locator("p.working-status");
-  await expect(status.locator(".working-who")).toHaveText("Claude Code is working");
-  await expect(status.locator(".working-detail")).toBeHidden();
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
-  expect(await status.locator(".working-dot").evaluate(e => getComputedStyle(e).animationName)).toBe("none");
-  await expect(page.locator(".topbar h1")).toBeVisible();
-});
-```
-
-Run: `cd web && npx playwright test e2e/working.spec.ts`
-Expected: PASS (7 tests).
-
-- [ ] **Step 3: Browser verification (required)**
-
-Start a scratch daemon and look at the UI, both themes and phone width. This is not the real home, and not port 7480:
-
-```bash
-export CLAX_HOME="$(mktemp -d)/home"
-cargo run -q -p clax-cli -- --port 0 serve
-python3 - <<'PY'
-import json, os, urllib.request
-info = json.load(open(os.path.join(os.environ["CLAX_HOME"], "daemon.json")))
-base, tok = f"http://localhost:{info['port']}", info["token"]
-def call(method, path, body=None, session=None):
-    req = urllib.request.Request(base + path, data=None if body is None else json.dumps(body).encode(), method=method)
-    req.add_header("authorization", f"Bearer {tok}"); req.add_header("content-type", "application/json")
-    if session: req.add_header("x-clax-session", session)
-    return json.load(urllib.request.urlopen(req))
-s = call("POST", "/api/sessions", {"harness": "claude", "harness_session_id": "verify", "cwd": "/tmp"})["session"]["id"]
-a = call("POST", "/api/artifacts", {"title": "Verify working", "files": {"index.html": {"content": "<h2>Goals</h2>", "encoding": "utf8"}}}, s)["artifact"]["id"]
-call("PUT", f"/api/sessions/{s}/working/{a}", {"message": "Rebuilding the chart"})
-print(f"{base}/a/{a}  and  {base}/")
-PY
-```
-
-Open both printed URLs in a browser. Check each of these, and write down what you saw in the task report:
-- The header shows the pulsing dot and `Claude Code is working: Rebuilding the chart`. It is styled like the rest of the top bar, in light and in dark mode.
-- The gallery card shows the badge.
-- At 375 px width (device toolbar) only the dot and `Claude Code is working` show, and nothing scrolls sideways.
-- With reduced motion emulated, the dot does not pulse.
-
-Then stop the daemon: `cargo run -q -p clax-cli -- stop` (same `CLAX_HOME`).
-
-- [ ] **Step 4: Gates and commit**
-
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/e2e/working.spec.ts web/e2e/pages/working-cap.html web/e2e/fixtures.ts
-git commit -m "Test the working signal in the browser in both frame modes"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
-```
-
----
-
-### Task 12: Changelog storage: notes, links and seen marks
+### Task 12: Changelog storage: notes, links and version seen marks
 
 **Files:**
 - Create: `crates/clax-core/src/changelog.rs`, `crates/clax-core/src/store/changelog.rs`
@@ -3688,7 +5058,7 @@ Append to `MIGRATIONS` in `store/migrations.rs`:
 
 ```rust
     // 10: the version changelog: each version's note, the threads it
-    // addressed, and each viewer's last decided version per artifact. No
+    // addressed, and the latest version each viewer has viewed. No
     // foreign key to `artifacts`: the doctor's hard deletes of broken artifact
     // rows must not trip on them; artifact deletion removes them explicitly.
     "ALTER TABLE versions ADD COLUMN note TEXT;
@@ -3903,7 +5273,7 @@ impl Store {
 Run: `cargo test -p clax-core`
 Expected: PASS. Update existing tests whose expected `Version` JSON is exact by adding `"note": null, "addresses": []`, and change nothing else.
 
-- [ ] **Step 4: Gates and commit**
+- [ ] **Step 4: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
@@ -3911,13 +5281,12 @@ git add crates/clax-core/src/changelog.rs crates/clax-core/src/store/changelog.r
   crates/clax-core/src/store/migrations.rs crates/clax-core/src/model.rs crates/clax-core/src/publish.rs crates/clax-core/src/store/artifacts.rs \
   crates/clax-core/src/store/threads.rs crates/clax-core/src/working.rs
 git add -u crates/clax-core
-git commit -m "Store version notes, the threads each version addressed, and viewers' seen marks"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Store version notes, the threads each version addressed, and viewers' seen marks")
 ```
 
 ---
 
-### Task 13: Changelog routes: automatic links at publish and resolve, seen marks
+### Task 13: Changelog routes: automatic links at publish and resolve, version seen marks
 
 **Files:**
 - Modify: `crates/clax-server/src/routes/artifacts.rs` (`create`, `publish`), `crates/clax-server/src/routes/threads.rs` (`resolve`), `crates/clax-server/src/feedback.rs` (`thread_view`), `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/mod.rs`
@@ -4044,7 +5413,7 @@ Expected: FAIL.
             let truncated = p.note_truncated;
 ```
 
-The working record must be read before the clear that Task 4 added after `ensure_watch`. After the publish succeeds and the version event is sent, publish a `thread` event for each linked thread that exists (`st.get_thread(tid)?` then `crate::routes::threads::publish_thread(&ctx, st, &t)?`; make `publish_thread` `pub(crate)`). Return `truncated` alongside and add `"note_truncated": truncated` to the response JSON. `create` does the same for `note_truncated`. `addresses` there can only fail, since no thread exists yet.
+The working record must be read before the clear that Task 9 added after `ensure_watch`. After the publish succeeds and the version event is sent, publish a `thread` event for each linked thread that exists (`st.get_thread(tid)?` then `crate::routes::threads::publish_thread(&ctx, st, &t)?`; make `publish_thread` `pub(crate)`). Return `truncated` alongside and add `"note_truncated": truncated` to the response JSON. `create` does the same for `note_truncated`. `addresses` there can only fail, since no thread exists yet.
 
 `feedback.rs::thread_view`: add `v["addressed_in"] = json!(st.addressed_in(&t.id)?);`.
 
@@ -4059,7 +5428,7 @@ pub struct SeenQuery {
 }
 
 /// `GET /api/viewers/me/seen?artifact=<aid>`: `{seen}`, the highest version
-/// whose changelog this viewer has had decided; null for none or no cookie.
+/// this viewer has viewed unpinned; null for none or no cookie.
 pub async fn seen(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -4113,20 +5482,21 @@ pub async fn set_seen(
 Run: `cargo test -p clax-server`
 Expected: PASS. Existing exact thread-view assertions gain `"addressed_in": []`, and publish-response assertions gain `note_truncated`.
 
-- [ ] **Step 3: Gates and commit**
+- [ ] **Step 3: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add crates/clax-server/src/routes/artifacts.rs crates/clax-server/src/routes/threads.rs crates/clax-server/src/feedback.rs \
   crates/clax-server/src/routes/viewers.rs crates/clax-server/src/routes/mod.rs crates/clax-server/tests/api_changelog.rs
 git add -u crates/clax-server/tests
-git commit -m "Link versions to the threads they addressed, and keep each viewer's seen mark"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Link versions to the threads they addressed, and keep each viewer's seen mark")
 ```
 
 ---
 
-### Task 14: `note` and `addresses` on the publish tool, the CLI and Pi
+### Task 14: `note` and `addresses` on publish (the tool, the CLI and Pi), and the smoke shows the links
+
+#### A. `note` and `addresses` on the publish tool, the CLI and Pi
 
 **Files:**
 - Modify: `plugins/pi/test/fixtures/contract.json` (`publish` and `comments_resolve` descriptions), `crates/clax-mcp/src/tools.rs`, `crates/clax-mcp/tests/tools.rs`, `crates/clax-mcp/tests/comments.rs`, `crates/clax-cli/src/commands/publish.rs`, `crates/clax-cli/tests/cli.rs`, `plugins/pi/src/clax.ts`, `plugins/pi/test/clax.test.ts`, `plugins/*/skills/clax/SKILL.md` (the `### publish` argument list in each, and the shared "Comment loop"), `docs/contract.md` (`### Tools` row for `comments_resolve`)
@@ -4247,25 +5617,22 @@ Add `("note", &a.note)` to the body loop and `if !a.addresses.is_empty() { body[
 Run: `python3 scripts/sync-skill-tools.py && bash scripts/test-plugins.sh | tail -1 && cargo test -p clax-mcp && cargo test -p clax-cli && (cd plugins/pi && npm run typecheck && npm test)`
 Expected: `plugin checks passed`, then every suite PASS.
 
-- [ ] **Step 3: Gates and commit**
+- [ ] **Step 3: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs crates/clax-mcp/tests/tools.rs crates/clax-mcp/tests/comments.rs \
   crates/clax-cli/src/commands/publish.rs crates/clax-cli/tests/cli.rs plugins/pi/src/clax.ts plugins/pi/test/clax.test.ts \
   plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md docs/contract.md
-git commit -m "Take a change note and addressed threads on publish, in the tools, the CLI and Pi"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; this task continues below
 ```
 
----
-
-### Task 15: The comment-loop smoke shows a publish linking its threads
+#### B. The comment-loop smoke shows a publish linking its threads
 
 **Files:**
 - Modify: `scripts/smoke-comment-loop.sh`
 
-- [ ] **Step 1: Assert the links**
+- [ ] **Step 4: Assert the links**
 
 In step 6b of the Python block, the agent's reply in step 6 emptied its working record. Mark it working on thread 3 (the one `wait_for_feedback` returned in step 5), then publish the second page with a note, naming the plain thread explicitly. Replace the `v2, _ = shim.call("publish", {"id": aid, ...})` line with:
 
@@ -4286,9 +5653,9 @@ if working(aid):
 ok("working: the publish cleared the session's working record")
 ```
 
-Keep the lines that follow unchanged. `plain` is defined in step 6 above this point, and `working` in Task 8.
+Keep the lines that follow unchanged. `plain` is defined in step 6 above this point, and `working` in Task 11.
 
-- [ ] **Step 2: Run, gates, commit**
+- [ ] **Step 5: Run, gates and staging**
 
 Run: `scripts/smoke-comment-loop.sh`
 Expected: all `PASS`, ending with `comment loop smoke passed`.
@@ -4296,378 +5663,1574 @@ Expected: all `PASS`, ending with `comment loop smoke passed`.
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add scripts/smoke-comment-loop.sh
-git commit -m "Show a publish listing its addressed threads in the comment-loop smoke"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Take a change note and addressed threads on publish, and show the links in the comment-loop smoke")
 ```
 
 ---
 
-### Task 16: Changelog logic in a framework-free model
+### Task 15: Participants: comment authors, @mentions, agent handles, looked-at marks and attention
+
+The daemon side of "threads you're in". This task adds:
+- comments record their author's viewer public ID;
+- @mentions are stored;
+- each viewer's looked-at marks are stored;
+- the daemon computes each viewer's attention per artifact;
+- sessions get an opaque `agent_handle`, so the shell can name and target an agent;
+- version views name their publishing agent.
+
+It all rides on the responses the shell already loads and on the bootstrap block. Only the gallery adds one request, made beside its list.
 
 **Files:**
-- Create: `web/shell/src/view/changelog-model.ts`, `web/shell/src/view/changelog-model.test.ts`
-- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `getSeen`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`)
+- Create: `crates/clax-core/src/mentions.rs`, `crates/clax-core/src/store/attention.rs`, `crates/clax-server/tests/api_attention.rs`
+- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/ids.rs`, `crates/clax-core/src/store/mod.rs`, `crates/clax-core/src/store/migrations.rs` (migration 11), `crates/clax-core/src/store/threads.rs` (`NewThread`, `NewComment`, the comment row, `delete_thread_touched`), `crates/clax-core/src/store/sessions.rs` (`register_session`), `crates/clax-core/src/store/artifacts.rs` (`delete_artifact`, the version row), `crates/clax-core/src/model.rs` (`Comment`, `Session`, `Version`), `crates/clax-server/src/viewer.rs` (`author`), `crates/clax-server/src/routes/threads.rs` (create, comment), `crates/clax-server/src/routes/artifacts.rs` (`get`, `list`, `with_owner`), `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/boot.rs`, `crates/clax-server/src/testing.rs`, `web/shell/src/api.ts`, `web/shell/src/threads.ts`, `web/shell/src/view/boot.ts`
 
 **Interfaces:**
-- `api.ts`: `Version` gains `note?: string | null; addresses?: string[]`. Adds `getSeen(aid: string): Promise<number | null>` (`GET /api/viewers/me/seen?artifact=`; null on any failure) and `putSeen(aid: string, n: number): Promise<void>` (`PUT /api/viewers/me/seen`; failures ignored).
+- `clax_core::ids::new_agent_handle() -> String`: `a_` and 22 lowercase hex digits. `is_agent_handle(&str) -> bool`.
+- `clax_core::mentions::mentioned(body: &str, names: &[(String, String)]) -> Vec<String>` (provisional: Q3) takes `(public_id, display_name)` pairs and returns the public IDs whose `@<display name>` appears in `body`. The match ignores case and needs a boundary after the name (end, whitespace, or one of `.,;:!?)]}'"`). `@agent` is never a viewer.
+- `NewThread` and `NewComment` gain `author_public_id: Option<String>`. Comment views gain `author_public_id` (null for agents and anonymous viewers).
+- `Session` gains `agent_handle: String`. Version views gain `agent: Option<String>` (the publishing session's handle) and `agent_harness: Option<String>`.
+- The `Store` gains:
+  - `participants(aid) -> Result<Participants>`, where `Participants { people: Vec<Person { public_id, display_name }>, agents: Vec<AgentView { handle, harness, live }> }`. Agents are the live owner, the live watchers and the version publishers, live first, then newest, at most 10.
+  - `live_agent(aid, handle) -> Result<Option<String>>`: the session ID of the live owner or watcher whose handle this is, for the send target in Task 21.
+  - `mark_looked(viewer_id, aid, &[String]) -> Result<BTreeMap<String, String>>`: only threads of `aid`. It answers the marks after the write.
+  - `attention(viewer_id, aid) -> Result<Attention { addressed, new_replies, open_in: Vec<String>, addressed_v: Option<u32> (the newest version among those links), seen: Option<u32>, looked: BTreeMap<String, String> }>`.
+  - `attention_all(viewer_id) -> Result<BTreeMap<String, AttentionSummary { addressed, new_replies, open_in, seen }>>`, over live artifacts.
+- HTTP, all viewer routes:
+  - `GET /api/artifacts/<aid>` adds `participants`, and with a viewer cookie also `attention`. That response is then `Cache-Control: private, no-cache` with `Vary: Cookie`.
+  - `GET /api/artifacts` adds `participants` per artifact.
+  - `GET /api/viewers/me/attention` answers `{artifacts: {<aid>: summary}}`, and `{artifacts: {}}` without a cookie.
+  - `PUT /api/viewers/me/looked` takes `{artifact_id, thread_ids}` (1 to 50 ULIDs) and answers `{looked}`. Without a cookie it is 400 `no_viewer`. A foreign `Origin` is 403. An unknown artifact is 404.
+  - The bootstrap block gains `participants` (inside `artifact.artifact`) and `attention` (top level, only with a viewer).
+- Shell types: `Comment.author_public_id?: string | null`; `Version.agent?: string | null` and `Version.agent_harness?: string | null`; `Artifact.participants?: Participants`; `Boot.attention?: Attention | null`; and `getAttention(): Promise<Record<string, AttentionSummary>>` and `putLooked(aid, ids): Promise<void>` in `api.ts`.
+
+- [ ] **Step 1: Failing tests**
+
+In `crates/clax-server/src/testing.rs`, add:
+
+```rust
+    /// Creates a thread as the viewer whose cookie value is `cookie`; returns the thread view.
+    pub async fn thread_as(&self, aid: &str, cookie: &str, body: &str) -> serde_json::Value {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", "1");
+        let res = self.client.post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .header("cookie", format!("clax_viewer={cookie}")).multipart(form).send().await.unwrap();
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+
+    /// Replies on `tid` as the viewer whose cookie value is `cookie`; returns the thread view.
+    pub async fn reply_as(&self, aid: &str, tid: &str, cookie: &str, body: &str) -> serde_json::Value {
+        let res = self.client.post(format!("{}/api/artifacts/{aid}/threads/{tid}/comments", self.base))
+            .header("cookie", format!("clax_viewer={cookie}")).json(&serde_json::json!({"body": body})).send().await.unwrap();
+        assert_eq!(res.status(), 200);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+```
+
+`crates/clax-server/tests/api_attention.rs`:
+
+```rust
+mod common;
+use common::TestServer;
+use serde_json::{Value, json};
+
+async fn artifact(ts: &TestServer) -> (String, String) {
+    let s = ts.register_session("claude", "att-1").await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let a = ts.publish_as(&sid, "T", "<main><h2>Quarterly goals</h2></main>").await;
+    (sid, a["artifact"]["id"].as_str().unwrap().to_string())
+}
+
+async fn att(ts: &TestServer, aid: &str, cookie: &str) -> Value {
+    let v: Value = ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)).header("cookie", format!("clax_viewer={cookie}"))
+        .send().await.unwrap().json().await.unwrap();
+    v["attention"].clone()
+}
+
+async fn look(ts: &TestServer, aid: &str, cookie: &str, ids: &[&str]) -> reqwest::Response {
+    ts.client.put(format!("{}/api/viewers/me/looked", ts.base)).header("cookie", format!("clax_viewer={cookie}"))
+        .json(&json!({"artifact_id": aid, "thread_ids": ids})).send().await.unwrap()
+}
+
+#[tokio::test]
+async fn comments_name_their_author_and_threads_you_are_in_are_yours() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = artifact(&ts).await;
+    let alex = ts.viewer(Some("Alex")).await;
+    let mia = ts.viewer(Some("Mia Kovač")).await;
+    let t = ts.thread_as(&aid, &alex.cookie, "Two columns").await;
+    let tid = t["id"].as_str().unwrap();
+    assert_eq!(t["comments"][0]["author_public_id"], alex.public_id);
+    assert_eq!(att(&ts, &aid, &alex.cookie).await["open_in"], json!([tid]));
+    assert_eq!(att(&ts, &aid, &mia.cookie).await["open_in"], json!([]));
+    let other = ts.thread_as(&aid, &alex.cookie, "@mia kovač which log?").await;
+    let a = att(&ts, &aid, &mia.cookie).await;
+    assert_eq!(a["open_in"], json!([other["id"]]), "a full-name mention puts Mia in the thread");
+    assert_eq!(a["new_replies"], json!([other["id"]]), "someone else's comment she has not looked at");
+}
+
+#[tokio::test]
+async fn an_address_after_your_last_look_needs_your_eyes_until_you_look() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = artifact(&ts).await;
+    let alex = ts.viewer(Some("Alex")).await;
+    let tid = ts.thread_as(&aid, &alex.cookie, "Two columns").await["id"].as_str().unwrap().to_string();
+    assert_eq!(look(&ts, &aid, &alex.cookie, &[&tid]).await.status(), 200);
+    assert_eq!(att(&ts, &aid, &alex.cookie).await["addressed"], json!([]));
+    let res = ts.authed(ts.client.post(format!("{}/api/artifacts/{aid}/versions", ts.base))).header("x-clax-session", &sid)
+        .json(&json!({"if_version": 1, "addresses": [tid], "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}}))
+        .send().await.unwrap();
+    assert_eq!(res.status(), 201);
+    let a = att(&ts, &aid, &alex.cookie).await;
+    assert_eq!(a["addressed"], json!([tid]));
+    assert_eq!(a["addressed_v"], 2);
+    look(&ts, &aid, &alex.cookie, &[&tid]).await;
+    assert_eq!(att(&ts, &aid, &alex.cookie).await["addressed"], json!([]), "seeing the thread clears it; resolving is not needed");
+}
+
+#[tokio::test]
+async fn attention_is_the_viewers_own_and_never_anyone_elses() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = artifact(&ts).await;
+    let alex = ts.viewer(Some("Alex")).await;
+    let tid = ts.thread_as(&aid, &alex.cookie, "Two columns").await["id"].as_str().unwrap().to_string();
+    look(&ts, &aid, &alex.cookie, &[&tid]).await;
+    let anon: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    assert!(anon.get("attention").is_none(), "no cookie, no attention");
+    let res = ts.client.get(format!("{}/api/artifacts/{aid}", ts.base)).header("cookie", format!("clax_viewer={}", alex.cookie)).send().await.unwrap();
+    assert_eq!(res.headers()["vary"], "Cookie");
+    assert!(res.headers()["cache-control"].to_str().unwrap().contains("private"));
+    let threads: Value = ts.get(&format!("/api/artifacts/{aid}/threads")).await.json().await.unwrap();
+    assert!(!threads.to_string().contains("looked"), "thread views never carry looked-at marks");
+    assert_eq!(look(&ts, &aid, "not-a-cookie", &[&tid]).await.status(), 400);
+    let foreign = ts.client.put(format!("{}/api/viewers/me/looked", ts.base)).header("cookie", format!("clax_viewer={}", alex.cookie))
+        .header("origin", "http://evil.example").json(&json!({"artifact_id": aid, "thread_ids": [tid]})).send().await.unwrap();
+    assert_eq!(foreign.status(), 403);
+    let all: Value = ts.client.get(format!("{}/api/viewers/me/attention", ts.base)).header("cookie", format!("clax_viewer={}", alex.cookie))
+        .send().await.unwrap().json().await.unwrap();
+    assert_eq!(all["artifacts"][&aid]["open_in"], json!([tid]));
+    assert!(all["artifacts"][&aid].get("looked").is_none());
+}
+
+#[tokio::test]
+async fn participants_name_agents_by_handle_only() {
+    let ts = TestServer::spawn().await;
+    let (sid, aid) = artifact(&ts).await;
+    let alex = ts.viewer(Some("Alex")).await;
+    ts.thread_as(&aid, &alex.cookie, "Two columns").await;
+    let v: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    let p = &v["artifact"]["participants"];
+    assert_eq!(p["people"], json!([{"public_id": alex.public_id, "display_name": "Alex"}]));
+    let agent = &p["agents"][0];
+    assert_eq!(agent["harness"], "claude");
+    assert_eq!(agent["live"], true);
+    let handle = agent["handle"].as_str().unwrap();
+    assert!(handle.starts_with("a_") && handle.len() == 24);
+    assert!(!v.to_string().contains(&sid), "no session ID anywhere in the artifact view");
+    assert_eq!(v["versions"][0]["agent"], handle);
+    let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
+    assert_eq!(list["artifacts"][0]["participants"]["agents"][0]["handle"], handle);
+    assert!(!list.to_string().contains(&sid));
+}
+```
+
+In `crates/clax-core/src/mentions.rs`, the tests module:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::mentioned;
+
+    fn names() -> Vec<(String, String)> {
+        vec![("u_a".into(), "Alex".into()), ("u_m".into(), "Mia Kovač".into()), ("u_j".into(), "Jun".into())]
+    }
+
+    #[test]
+    fn mentions_match_whole_names_in_any_case_at_a_boundary() {
+        assert_eq!(mentioned("@alex and @JUN, look", &names()), ["u_a", "u_j"]);
+        assert_eq!(mentioned("ask @mia kovač.", &names()), ["u_m"]);
+        assert!(mentioned("@mia alone", &names()).is_empty(), "a two-word name needs both words");
+        assert!(mentioned("@alexander", &names()).is_empty());
+        assert!(mentioned("email alex@example.com", &names()).is_empty());
+        assert!(mentioned("@agent please", &[("u_x".into(), "agent".into())]).is_empty());
+    }
+}
+```
+
+Run: `cargo test -p clax-core mentions; cargo test -p clax-server --test api_attention`
+Expected: FAIL to compile.
+
+- [ ] **Step 2: Migration 11**
+
+Append to `MIGRATIONS` in `store/migrations.rs`:
+
+```rust
+    // 11: participants. A comment's author (the viewer's public ID), the
+    // viewers a comment mentions, each viewer's last look at a thread, and an
+    // opaque handle per session so the shell can name and target an agent
+    // without a session ID. Existing sessions get a handle; existing comments
+    // stay unattributed.
+    "ALTER TABLE comments ADD COLUMN author_public_id TEXT;
+    CREATE INDEX comments_by_author ON comments(author_public_id);
+    CREATE TABLE mentions (
+        comment_id TEXT NOT NULL REFERENCES comments(id),
+        public_id TEXT NOT NULL,
+        PRIMARY KEY (comment_id, public_id)
+    );
+    CREATE INDEX mentions_by_viewer ON mentions(public_id);
+    CREATE TABLE viewer_threads (
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        looked_at TEXT NOT NULL,
+        PRIMARY KEY (viewer_id, thread_id)
+    );
+    ALTER TABLE sessions ADD COLUMN agent_handle TEXT;
+    UPDATE sessions SET agent_handle = 'a_' || lower(hex(randomblob(11)));
+    CREATE UNIQUE INDEX sessions_by_handle ON sessions(agent_handle);",
+```
+
+- [ ] **Step 3: Implement the core**
+
+`ids.rs`: generalise `new_public_id` into `fn new_prefixed(prefix: &str) -> String`, and keep `new_public_id()` as `new_prefixed("u_")`. Add `pub fn new_agent_handle() -> String { new_prefixed("a_") }` and `pub fn is_agent_handle(s: &str) -> bool` (`a_` and 22 lowercase hex digits). Re-export both from `lib.rs`.
+
+`crates/clax-core/src/mentions.rs`:
+
+```rust
+//! @mentions in comment text (spec §10, "Participants and attention").
+
+/// The public IDs of the viewers `body` mentions: `@` and their whole display
+/// name, in any case, followed by the end, whitespace or punctuation, and not
+/// preceded by a word character (so an email address is no mention). A
+/// viewer named `agent` is never mentioned: `@agent` sends to the agent.
+pub fn mentioned(body: &str, names: &[(String, String)]) -> Vec<String> {
+    let lower = body.to_lowercase();
+    let mut out = Vec::new();
+    for (public_id, name) in names {
+        let n = name.trim().to_lowercase();
+        if n.is_empty() || n == "agent" {
+            continue;
+        }
+        let needle = format!("@{n}");
+        let mut from = 0;
+        while let Some(i) = lower[from..].find(&needle) {
+            let at = from + i;
+            let before_ok = lower[..at].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+            let after = lower[at + needle.len()..].chars().next();
+            let after_ok = after.is_none_or(|c| c.is_whitespace() || ".,;:!?)]}'\"".contains(c));
+            if before_ok && after_ok {
+                out.push(public_id.clone());
+                break;
+            }
+            from = at + needle.len();
+        }
+    }
+    out
+}
+```
+
+`store/threads.rs`:
+- `NewThread` and `NewComment` gain `pub author_public_id: Option<String>`. The comment `INSERT` writes it.
+- After inserting a viewer comment (in `create_thread` and `add_comment`), insert its mentions in the same transaction:
+
+```rust
+fn insert_mentions(tx: &Transaction<'_>, comment_id: &str, body: &str) -> Result<()> {
+    let names: Vec<(String, String)> = {
+        let mut st = tx.prepare("SELECT public_id, display_name FROM viewers WHERE display_name IS NOT NULL AND display_name != ''")?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?
+    };
+    for p in crate::mentions::mentioned(body, &names) {
+        tx.execute("INSERT OR IGNORE INTO mentions (comment_id, public_id) VALUES (?1, ?2)", params![comment_id, p])?;
+    }
+    Ok(())
+}
+```
+
+- The comment row mapper reads `author_public_id`. `model::Comment` gains `pub author_public_id: Option<String>`, serialised.
+- `delete_thread_touched` deletes the thread's `mentions` rows (through its comment IDs) and its `viewer_threads` rows, before the comments.
+
+`store/sessions.rs::register_session`: insert `agent_handle = crate::new_agent_handle()`. `model::Session` gains `pub agent_handle: String`. Only token routes serve `Session`.
+
+`store/artifacts.rs`: the version row mapper joins `sessions` on `versions.session_id` and fills `agent` (`agent_handle`) and `agent_harness`. `delete_artifact` deletes the `viewer_threads` and `mentions` rows of its threads.
+
+`crates/clax-core/src/store/attention.rs`:
+
+```rust
+//! Participants and each viewer's attention per artifact (spec §10,
+//! "Participants and attention"). Looked-at marks and attention are the
+//! viewer's own: nothing here is served to anyone else.
+
+use super::Store;
+use crate::{ArtifactId, Result};
+use rusqlite::{OptionalExtension, params};
+use serde::Serialize;
+use std::collections::BTreeMap;
+
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct Person { pub public_id: String, pub display_name: Option<String> }
+#[derive(Serialize, Debug, Clone, PartialEq)]
+pub struct AgentView { pub handle: String, pub harness: String, pub live: bool }
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
+pub struct Participants { pub people: Vec<Person>, pub agents: Vec<AgentView> }
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
+pub struct AttentionSummary { pub addressed: Vec<String>, pub addressed_v: Option<u32>, pub new_replies: Vec<String>, pub open_in: Vec<String>, pub seen: Option<u32> }
+#[derive(Serialize, Debug, Clone, PartialEq, Default)]
+pub struct Attention { #[serde(flatten)] pub summary: AttentionSummary, pub looked: BTreeMap<String, String> }
+
+/// Most agents a participant list names.
+pub const MAX_AGENTS: usize = 10;
+/// Most threads one looked-at write may name.
+pub const MAX_LOOKED: usize = 50;
+
+/// Threads of `?1` (artifact) the viewer with public ID `?2` is in: wrote a
+/// comment, is mentioned, or resolved it.
+const IN_THREAD: &str = "SELECT t.id, t.status FROM threads t WHERE t.artifact_id = ?1 AND (
+    EXISTS (SELECT 1 FROM comments c WHERE c.thread_id = t.id AND c.author_public_id = ?2)
+    OR EXISTS (SELECT 1 FROM mentions m JOIN comments c ON c.id = m.comment_id WHERE c.thread_id = t.id AND m.public_id = ?2)
+    OR t.resolved_by = 'viewer:' || ?2) ORDER BY t.created_at, t.id";
+
+impl Store {
+    pub fn participants(&self, aid: &ArtifactId) -> Result<Participants> {
+        self.with_conn(|c| {
+            let people = c.prepare(
+                "SELECT v.public_id, v.display_name FROM viewers v WHERE v.public_id IN
+                   (SELECT c.author_public_id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1 AND c.author_public_id IS NOT NULL)
+                 ORDER BY v.created_at",
+            )?.query_map(params![aid.as_str()], |r| Ok(Person { public_id: r.get(0)?, display_name: r.get(1)? }))?
+              .collect::<rusqlite::Result<Vec<_>>>()?;
+            let agents = c.prepare(
+                "SELECT s.agent_handle, s.harness, s.ended_at IS NULL AS live, MAX(COALESCE(v.created_at, s.started_at)) AS at
+                   FROM sessions s LEFT JOIN versions v ON v.session_id = s.id AND v.artifact_id = ?1
+                  WHERE s.id = (SELECT owner_session_id FROM artifacts WHERE id = ?1)
+                     OR s.id IN (SELECT session_id FROM watches WHERE artifact_id = ?1)
+                     OR s.id IN (SELECT session_id FROM versions WHERE artifact_id = ?1)
+                  GROUP BY s.id ORDER BY live DESC, at DESC LIMIT ?2",
+            )?.query_map(params![aid.as_str(), MAX_AGENTS as i64], |r| Ok(AgentView { handle: r.get(0)?, harness: r.get(1)?, live: r.get(2)? }))?
+              .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(Participants { people, agents })
+        })
+    }
+
+    /// The live owner or watcher of `aid` whose handle is `handle`, as a session ID.
+    pub fn live_agent(&self, aid: &ArtifactId, handle: &str) -> Result<Option<String>> {
+        self.with_conn(|c| Ok(c.query_row(
+            "SELECT id FROM sessions WHERE agent_handle = ?2 AND ended_at IS NULL AND
+               (id = (SELECT owner_session_id FROM artifacts WHERE id = ?1) OR id IN (SELECT session_id FROM watches WHERE artifact_id = ?1))",
+            params![aid.as_str(), handle], |r| r.get(0)).optional()?))
+    }
+
+    /// Records that the viewer looked at `thread_ids` (threads of other
+    /// artifacts are ignored) now; answers the viewer's marks on `aid`.
+    pub fn mark_looked(&self, viewer_id: &str, aid: &ArtifactId, thread_ids: &[String]) -> Result<BTreeMap<String, String>> {
+        let now = Store::now();
+        self.with_tx(|tx| {
+            for tid in thread_ids.iter().take(MAX_LOOKED) {
+                tx.execute(
+                    "INSERT INTO viewer_threads (viewer_id, thread_id, looked_at)
+                     SELECT ?1, id, ?3 FROM threads WHERE id = ?2 AND artifact_id = ?4
+                     ON CONFLICT (viewer_id, thread_id) DO UPDATE SET looked_at = excluded.looked_at",
+                    params![viewer_id, tid, now, aid.as_str()],
+                )?;
+            }
+            looked_in(tx, viewer_id, aid.as_str())
+        })
+    }
+
+    pub fn attention(&self, viewer_id: &str, aid: &ArtifactId) -> Result<Attention> {
+        self.with_conn(|c| {
+            let public_id: Option<String> = c.query_row("SELECT public_id FROM viewers WHERE id = ?1", params![viewer_id], |r| r.get(0)).optional()?;
+            let Some(p) = public_id else { return Ok(Attention::default()) };
+            let looked = looked_in(c, viewer_id, aid.as_str())?;
+            let summary = summary(c, viewer_id, &p, aid.as_str(), &looked)?;
+            Ok(Attention { summary, looked })
+        })
+    }
+
+    pub fn attention_all(&self, viewer_id: &str) -> Result<BTreeMap<String, AttentionSummary>> {
+        let ids: Vec<ArtifactId> = self.list_artifacts()?.into_iter().map(|a| a.id).collect();
+        let mut out = BTreeMap::new();
+        for id in ids {
+            let a = self.attention(viewer_id, &id)?;
+            out.insert(id.as_str().to_string(), a.summary);
+        }
+        Ok(out)
+    }
+}
+
+fn looked_in(c: &rusqlite::Connection, viewer_id: &str, aid: &str) -> Result<BTreeMap<String, String>> {
+    let mut st = c.prepare("SELECT vt.thread_id, vt.looked_at FROM viewer_threads vt JOIN threads t ON t.id = vt.thread_id WHERE vt.viewer_id = ?1 AND t.artifact_id = ?2")?;
+    Ok(st.query_map(params![viewer_id, aid], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?)
+}
+
+fn summary(c: &rusqlite::Connection, viewer_id: &str, public_id: &str, aid: &str, looked: &BTreeMap<String, String>) -> Result<AttentionSummary> {
+    let mut s = AttentionSummary::default();
+    let in_threads: Vec<(String, String)> = c.prepare(IN_THREAD)?.query_map(params![aid, public_id], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    for (tid, status) in in_threads {
+        let since = looked.get(&tid).map(String::as_str).unwrap_or("");
+        let open = status == "open";
+        if open { s.open_in.push(tid.clone()); }
+        let addressed: bool = c.query_row("SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1 AND created_at > ?2)", params![tid, since], |r| r.get(0))?;
+        if open && addressed {
+            let v: Option<u32> = c.query_row("SELECT MAX(version_n) FROM version_threads WHERE thread_id = ?1 AND created_at > ?2", params![tid, since], |r| r.get(0))?;
+            s.addressed_v = s.addressed_v.max(v);
+            s.addressed.push(tid.clone());
+        }
+        let replied: bool = c.query_row(
+            "SELECT EXISTS(SELECT 1 FROM comments WHERE thread_id = ?1 AND created_at > ?2 AND (author_public_id IS NULL OR author_public_id != ?3))",
+            params![tid, since, public_id], |r| r.get(0))?;
+        if replied { s.new_replies.push(tid); }
+    }
+    s.seen = c.query_row("SELECT seen_n FROM viewer_seen WHERE viewer_id = ?1 AND artifact_id = ?2", params![viewer_id, aid], |r| r.get(0)).optional()?;
+    Ok(s)
+}
+```
+
+Register `pub mod attention;` in `store/mod.rs`. Re-export `Participants`, `Attention`, `AttentionSummary` and `AgentView` from `lib.rs`.
+
+`with_tx` hands a `Transaction`, which derefs to `Connection`, so `looked_in(tx, …)` compiles as written. If the store's helpers take `&Connection` explicitly, pass `&tx`.
+
+- [ ] **Step 4: Implement the routes and the bootstrap**
+
+`crates/clax-server/src/viewer.rs`:
+
+```rust
+/// The comment author for `cookie`: the display name as `author_name` gives
+/// it, and the viewer's public ID when the cookie names a viewer.
+pub fn author(st: &Store, cookie: Option<&str>) -> clax_core::Result<(String, Option<String>)> {
+    let v = match cookie { Some(id) => st.get_viewer(id)?, None => None };
+    let name = display_name(v.as_ref().and_then(|v| v.display_name.as_deref()).unwrap_or(""));
+    Ok((name, v.map(|v| v.public_id)))
+}
+```
+
+In `routes/threads.rs`, the thread create and viewer comment handlers call `author` in place of `author_name`, and fill `author_public_id`. Agent comments pass `None`.
+
+`routes/artifacts.rs`:
+- `with_owner` adds `v["participants"] = json!(st.participants(&a.id)?)`. It now takes the store and returns `Result<Value>`. Update its callers: `get`, `list` and `boot.rs`.
+- `get` reads the viewer cookie (`crate::viewer::read(&headers)`). With a viewer, it adds `"attention": st.attention(&vid, &id)?` to the body, and answers with `Cache-Control: private, no-cache` and `Vary: Cookie` (the headers `routes/shell.rs` already sets for its viewer-dependent page).
+
+`routes/viewers.rs`:
+
+```rust
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookedBody { artifact_id: String, thread_ids: Vec<String> }
+
+/// `GET /api/viewers/me/attention`: this viewer's attention on every live
+/// artifact, without looked-at times; `{artifacts: {}}` without a cookie.
+pub async fn attention(State(s): State<AppState>, viewer: ViewerCookie) -> Result<impl IntoResponse, ApiError> {
+    let out = match viewer.0 {
+        Some(v) => s.store_call(move |st| Ok(match st.get_viewer(&v)? { Some(_) => json!(st.attention_all(&v)?), None => json!({}) })).await?,
+        None => json!({}),
+    };
+    Ok(([(header::CACHE_CONTROL, "private, no-cache"), (header::VARY, "Cookie")], Json(json!({"artifacts": out}))))
+}
+
+/// `PUT /api/viewers/me/looked`: records that this viewer looked at the
+/// threads now (spec §10, "Participants and attention"); `{looked}`.
+pub async fn set_looked(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    req: Result<Json<LookedBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let b = body(req)?;
+    let id = parse_id(&b.artifact_id)?;
+    if b.thread_ids.is_empty() || b.thread_ids.len() > clax_core::store::attention::MAX_LOOKED || !b.thread_ids.iter().all(|t| clax_core::is_ulid(t)) {
+        return Err(ApiError::bad_request("invalid_args", "thread_ids: 1 to 50 thread IDs"));
+    }
+    let Some(vid) = viewer.0 else { return Err(ApiError::bad_request("no_viewer", "no viewer cookie")) };
+    let looked = s.store_call(move |st| {
+        st.get_artifact(&id)?.ok_or(clax_core::CoreError::NotFound)?;
+        st.get_viewer(&vid)?.ok_or_else(|| clax_core::CoreError::invalid("no_viewer", "no viewer cookie"))?;
+        st.mark_looked(&vid, &id, &b.thread_ids)
+    }).await?;
+    Ok(Json(json!({"looked": looked})))
+}
+```
+
+Use the file's existing helpers for parsing the body and the ID; their names may differ from `body` and `parse_id`. `routes/mod.rs`, before `/api/viewers/me`, adds:
+- `.route("/api/viewers/me/attention", get(viewers::attention))`;
+- `.route("/api/viewers/me/looked", put(viewers::set_looked))`.
+
+`boot.rs::assemble`: the artifact JSON comes from `with_owner`, so it carries `participants`. When `viewer` is `Some`, add `"attention": st.attention(&vid, &id)?` to the block. `without_sessions` keeps stripping `owner_session_id` and the versions' `session_id`. Version views now carry `agent` (a handle), which is safe to embed. Extend `crates/clax-server/tests/shell_boot.rs` to assert that the block has `artifact.artifact.participants`, has `attention` only with a viewer cookie, and contains no session ID.
+
+`web/shell/src/api.ts` and `threads.ts`: add the types from Interfaces, and:
+
+```ts
+export type Participants = { people: { public_id: string; display_name: string | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
+export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
+export type Attention = AttentionSummary & { looked: Record<string, string> };
+
+/** This viewer's attention on every artifact; {} without a viewer or on failure. */
+export async function getAttention(): Promise<Record<string, AttentionSummary>> {
+  try { const r = await fetch("/api/viewers/me/attention"); return r.ok ? (await r.json()).artifacts : {}; } catch { return {}; }
+}
+/** Records that this viewer looked at `ids`; failures are ignored (the next look writes again). */
+export async function putLooked(aid: string, ids: string[]): Promise<Record<string, string> | null> {
+  try {
+    const r = await fetch("/api/viewers/me/looked", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, thread_ids: ids }) });
+    return r.ok ? (await r.json()).looked : null;
+  } catch { return null; }
+}
+```
+
+`view/boot.ts`: `Boot` gains `attention?: Attention | null`. `readBoot` drops `attention` for `back_forward`, as it drops the viewer.
+
+Run: `cargo test --workspace && cd web && npm run typecheck && npx vitest run`
+Expected: PASS. Exact JSON assertions elsewhere gain the following, and nothing else changes:
+- comments: `"author_public_id": null`;
+- versions: `"agent"` and `"agent_harness"`;
+- artifacts: `"participants"`.
+
+- [ ] **Step 5: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add crates/clax-core/src/mentions.rs crates/clax-core/src/store/attention.rs crates/clax-server/tests/api_attention.rs crates/clax-core/src/lib.rs crates/clax-core/src/ids.rs \
+  crates/clax-core/src/store/mod.rs crates/clax-core/src/store/migrations.rs crates/clax-core/src/store/threads.rs crates/clax-core/src/store/sessions.rs \
+  crates/clax-core/src/store/artifacts.rs crates/clax-core/src/model.rs crates/clax-server/src/viewer.rs crates/clax-server/src/routes/threads.rs \
+  crates/clax-server/src/routes/artifacts.rs crates/clax-server/src/routes/viewers.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/boot.rs \
+  crates/clax-server/src/testing.rs crates/clax-server/tests/shell_boot.rs web/shell/src/api.ts web/shell/src/threads.ts web/shell/src/view/boot.ts
+git add -u crates web/shell/src
+git status --short   # staged; the controller commits ("Record comment authors and mentions, give agents opaque handles, and compute each viewer's attention")
+```
+
+---
+
+### Task 16: Working in Echo: the roster, the top bar summary, card chips, thread markers, split pins, and a haiku while working
+
+The working signal in the Echo shell, as designed in "What the person sees when several sessions work at once":
+- the roster (people on the left, agents on the right) and its two-line summary;
+- the green sweep under the top bar;
+- a `claude working on N` chip on gallery cards;
+- `claude is working on it` with the elapsed time on thread cards, and a `working on it` event in the history line;
+- split pins;
+- a sidebar strip with a haiku.
+
+The daemon's working views gain the agent's handle, so two sessions of one harness can be told apart.
+
+**Files:**
+- Create: `web/shell/src/view/working-model.ts`, `web/shell/src/view/working-model.test.ts`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/ui/WorkingSummary.svelte`, `web/shell/src/ui/WorkingStrip.svelte`, `web/shell/src/ui/working-feed.svelte.ts`, `web/shell/src/working-ui.test.ts`, `web/e2e/working.spec.ts`, `web/e2e/pages/working-cap.html`
+- Modify: `crates/clax-core/src/working.rs` (`Actor.agent`, `WorkingView.agent`), `crates/clax-server/src/routes/working.rs`, `crates/clax-server/src/working.rs`, and the `Actor { … }` literals in their tests; `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/events.test.ts`, `web/shell/src/artifact.ts` (the sweep class), `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/view/history-model.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`
+
+**Interfaces:**
+- Rust:
+  - `clax_core::working::Actor` gains `pub agent: String`, the session's `agent_handle` from Task 15.
+  - `WorkingView` gains `pub agent: String`, so working views name the agent by handle and never by session.
+  - The two server constructions (`routes/working.rs::set` and `working.rs::mark_items`) pass `agent: sess.agent_handle`. Test literals add `agent: format!("a_{sid}")`, or a fixed string.
+- `view/working-model.ts` (no `svelte` import):
+  - `type Working = { key: string; agent: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string }`.
+  - `harnessLabel(h)` gives the product name, for the capability.
+  - `newestFirst(list)`.
+  - `agentNames(list: Working[], agents: AgentView[]): Map<string, string>` maps a handle to a name: the harness, plus the handle's first 4 hex digits when two agents share a harness (provisional: Q8).
+  - `clock(since: string, now: Date): string` gives `m:ss`, or `h:mm:ss` past an hour.
+  - `summary(i: SummaryInput): Summary`, where `SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; now: Date }` and `Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null }`.
+  - `threadMarker(list, threadId, names): { text: string; since: string } | null`, and `threadAgent(list, threadId, names): string | null` (the name alone).
+  - `stripText(w: Working, names, numbers: Map<string, number>, mine: Set<string>): string`.
+  - `chips(list: Working[], names): string[]`.
+  - `workingThreads(list): Set<string>`.
+- `events.ts`: the `working` member of `ArtifactEvent`, and `subscribeWorking(onEvent)`, the gallery's `?types=working` stream.
+- `ArtifactController`: `ViewState.working: Working[]` (initially `[]`).
+- `ui/working-feed.svelte.ts`: `class WorkingFeed { byId; seed(list); start(onResync); stop() }`.
+- Components:
+  - `Roster` `{ people; agents; working: Working[]; me: string | null; max: number; small?: boolean }`.
+  - `WorkingSummary` `{ s: Summary }`.
+  - `WorkingStrip` `{ w: Working; text: string; commenting: boolean }`.
+  - `ThreadCard` gains `marker?: { text: string; since: string } | null` and `now: Date`.
+  - `Pins` gains `onit?: Set<string>`.
+
+- [ ] **Step 1: The daemon names the agent in working views**
+
+In `crates/clax-core/src/working.rs`, add `pub agent: String` to `Actor` and to `WorkingView`. The record keeps the actor, so the view copies `agent` from it. Fill it in the two server constructions from `sess.agent_handle`. In `views_are_newest_first_and_carry_no_session_id`, also assert `v.agent.starts_with("a_")` once the actor literals carry `a_…` handles.
+
+Run: `cargo test -p clax-core working && cargo test -p clax-server --test api_working`
+Expected: PASS, with exact view JSON in those tests gaining `"agent"`.
+
+- [ ] **Step 2: The model, test first**
+
+`web/shell/src/view/working-model.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { agentNames, chips, clock, stripText, summary, threadMarker, type Working } from "./working-model";
+
+const w = (over: Partial<Working>): Working => ({
+  key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over,
+});
+const now = new Date("2026-09-30T10:00:42.000Z");
+const agents = [{ handle: "a_1111aaaa", harness: "claude", live: true }, { handle: "a_2222bbbb", harness: "codex", live: true }];
+
+describe("working-model", () => {
+  it("names agents by harness, and tells two of one harness apart", () => {
+    expect(agentNames([w({})], agents).get("a_1111aaaa")).toBe("claude");
+    const two = agentNames([w({}), w({ agent: "a_3333cccc" })], [...agents, { handle: "a_3333cccc", harness: "claude", live: true }]);
+    expect([two.get("a_1111aaaa"), two.get("a_3333cccc")]).toEqual(["claude 1111", "claude 3333"]);
+  });
+
+  it("reads the summary for one agent, all yours, some yours, a message, and nobody", () => {
+    const names = agentNames([w({})], agents);
+    const base = { names, open: 3, idle: [], addressed: null, now };
+    expect(summary({ ...base, working: [w({ thread_ids: ["a", "b"] })], mine: new Set(["a", "b"]) }))
+      .toEqual({ line1: "claude working on 2", agent: true, line2: "all yours", elapsed: "0:42" });
+    expect(summary({ ...base, working: [w({ thread_ids: ["a", "b"] })], mine: new Set(["a"]) }).line2).toBe("1 yours");
+    expect(summary({ ...base, working: [w({ message: "Rebuilding the chart" })], mine: new Set() }).line1).toBe("claude: Rebuilding the chart");
+    expect(summary({ ...base, working: [], mine: new Set(), idle: ["codex"] })).toEqual({ line1: "Nobody working", agent: false, line2: "3 open threads · codex idle", elapsed: null });
+    expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3" })).toEqual({ line1: "v5 addressed 3", agent: false, line2: "yours, not looked at yet", elapsed: null });
+  });
+
+  it("lists several agents and counts distinct threads", () => {
+    const list = [w({ thread_ids: ["a", "b"] }), w({ key: "k2", agent: "a_2222bbbb", harness: "codex", thread_ids: ["b", "c"], started_at: "2026-09-30T10:00:10.000Z" })];
+    expect(summary({ working: list, names: agentNames(list, agents), mine: new Set(), open: 3, idle: [], addressed: null, now }).line1).toBe("codex, claude working on 3");
+    expect(chips(list, agentNames(list, agents))).toEqual(["codex working on 2", "claude working on 2"]);
+  });
+
+  it("marks a thread and writes the strip", () => {
+    const list = [w({ thread_ids: ["t1", "t3"] })];
+    const names = agentNames(list, agents);
+    expect(threadMarker(list, "t1", names)).toEqual({ text: "claude is working on it", since: "2026-09-30T10:00:00.000Z" });
+    expect(threadMarker(list, "t2", names)).toBeNull();
+    expect(stripText(list[0], names, new Map([["t1", 1], ["t3", 3]]), new Set(["t1"]))).toBe("claude is working on #1 (yours) and #3");
+    expect(stripText(w({ thread_ids: ["x", "y", "z", "q"] }), names, new Map(), new Set())).toBe("claude is working on 4 threads");
+  });
+
+  it("formats the clock", () => {
+    expect([clock("2026-09-30T10:00:00.000Z", now), clock("2026-09-30T08:59:00.000Z", now)]).toEqual(["0:42", "1:01:42"]);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/view/working-model.test.ts`
+Expected: FAIL.
+
+`web/shell/src/view/working-model.ts`:
+
+```ts
+// The working signal as Echo shows it (spec §8, "Working"): pure functions
+// over the daemon's working views, shared by the top bar, the gallery, the
+// sidebar, the pins and the capability.
+import type { Participants } from "../api";
+
+export type Working = { key: string; agent: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
+export type AgentView = Participants["agents"][number];
+export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; now: Date };
+export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
+
+const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi" };
+/** The harness as a product name ("Claude Code"), for the page capability. */
+export const harnessLabel = (h: string): string => LABELS[h] ?? h;
+
+export function newestFirst(list: Working[]): Working[] {
+  return [...list].sort((a, b) => b.started_at.localeCompare(a.started_at) || b.key.localeCompare(a.key));
+}
+
+/** Handle → name: the harness, with the handle's first four hex digits when two agents share it. */
+export function agentNames(list: Working[], agents: AgentView[]): Map<string, string> {
+  const all = new Map<string, string>(agents.map(a => [a.handle, a.harness]));
+  for (const w of list) if (!all.has(w.agent)) all.set(w.agent, w.harness);
+  const count = new Map<string, number>();
+  for (const h of all.values()) count.set(h, (count.get(h) ?? 0) + 1);
+  return new Map([...all].map(([handle, h]) => [handle, (count.get(h) ?? 0) > 1 ? `${h} ${handle.slice(2, 6)}` : h]));
+}
+
+export function clock(since: string, now: Date): string {
+  const s = Math.max(0, Math.floor((now.getTime() - new Date(since).getTime()) / 1000));
+  const two = (n: number) => String(n).padStart(2, "0");
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}` : `${Math.floor(s / 60)}:${two(s % 60)}`;
+}
+
+export const workingThreads = (list: Working[]) => new Set(list.flatMap(w => w.thread_ids));
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? "" : "s"}`;
+
+export function summary(i: SummaryInput): Summary {
+  const idle = i.idle.length ? ` · ${i.idle.join(", ")} idle` : "";
+  const list = newestFirst(i.working);
+  if (list.length) {
+    const who = [...new Set(list.map(w => i.names.get(w.agent) ?? w.harness))].join(", ");
+    const threads = workingThreads(list);
+    const line1 = list.length === 1 && list[0].message ? `${who}: ${list[0].message}` : threads.size ? `${who} working on ${threads.size}` : `${who} working`;
+    const mine = [...threads].filter(t => i.mine.has(t)).length;
+    const line2 = (mine && mine === threads.size ? "all yours" : mine ? `${mine} yours` : plural(i.open, "open thread")) + idle;
+    return { line1, agent: true, line2, elapsed: clock(list[0].started_at, i.now) };
+  }
+  if (i.addressed) return { line1: i.addressed, agent: false, line2: "yours, not looked at yet", elapsed: null };
+  return { line1: "Nobody working", agent: false, line2: plural(i.open, "open thread") + idle, elapsed: null };
+}
+
+export function threadMarker(list: Working[], threadId: string, names: Map<string, string>): { text: string; since: string } | null {
+  const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
+  return w ? { text: `${names.get(w.agent) ?? w.harness} is working on it`, since: w.started_at } : null;
+}
+
+export function threadAgent(list: Working[], threadId: string, names: Map<string, string>): string | null {
+  const w = newestFirst(list).find(x => x.thread_ids.includes(threadId));
+  return w ? names.get(w.agent) ?? w.harness : null;
+}
+
+export function stripText(w: Working, names: Map<string, string>, numbers: Map<string, number>, mine: Set<string>): string {
+  const who = names.get(w.agent) ?? w.harness;
+  if (w.message) return `${who}: ${w.message}`;
+  if (!w.thread_ids.length) return `${who} is working`;
+  const numbered = w.thread_ids.filter(t => numbers.has(t));
+  if (numbered.length !== w.thread_ids.length || numbered.length > 3) return `${who} is working on ${plural(w.thread_ids.length, "thread")}`;
+  const parts = numbered.map(t => `#${numbers.get(t)}${mine.has(t) ? " (yours)" : ""}`);
+  return `${who} is working on ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}`;
+}
+
+export function chips(list: Working[], names: Map<string, string>): string[] {
+  return newestFirst(list).map(w => (w.thread_ids.length ? `${names.get(w.agent) ?? w.harness} working on ${w.thread_ids.length}` : `${names.get(w.agent) ?? w.harness} working`));
+}
+```
+
+Run: `cd web && npx vitest run shell/src/view/working-model.test.ts`
+Expected: PASS.
+
+- [ ] **Step 3: Types, events, controller**
+
+- `api.ts`: `import type { Working } from "./view/working-model";`. Add to `Artifact`: `/** Who is working on it now (never a session ID). */ working?: Working[];`.
+- `events.ts`:
+  - add `| { type: "working"; artifact_id: string; working: Working[] }` to `ArtifactEvent`, and `"working"` to `subscribe`'s listener names;
+  - add `subscribeWorking`, which opens `/api/events?types=working`, listens for `working`, `ready`, `error` (as `stream_down`) and `resync`, and is a no-op when `EventSource` is undefined. Write it in `subscribe`'s style;
+  - in `events.test.ts`, extend the listener-name test, and add one for `subscribeWorking`'s URL and its parse.
+- `view/artifact-controller.ts`:
+  - `ViewState.working: Working[]`, initially `[]`;
+  - every `this.set({ data: … })` (load and bootstrap) also sets `working: d.artifact.working ?? []`;
+  - `onEvent` handles `working` with `this.set({ working: e.working })`;
+  - the resync refetch sets it too;
+  - `working` is not part of `react()`: a working change never re-resolves anchors or refocuses the frame.
+- `view/artifact-controller.test.ts`: make `FakeES` dispatchable (`emit(name, data)`), and add a test. The artifact's `working` seeds the state, and a `working` event replaces it without changing `data`.
+- `view/history-model.ts`: `historyOf(t, versions, names, more: { working?: string | null } = {})` appends `{ v: null, who: more.working, agent: true, verb: "working on it" }` when `more.working` is set and the thread is open.
+- `artifact.ts` `pageFollows` toggles `working` on `sk.topbar` when `s.working.length > 0`.
+
+`web/shell/src/ui/working-feed.svelte.ts`:
+
+```ts
+// The gallery's live working lists, by artifact: seeded from
+// `GET /api/artifacts`, then kept current by the `working` event stream,
+// which opens only after the gallery has rendered.
+import type { Artifact } from "../api";
+import { subscribeWorking } from "../events";
+import type { Working } from "../view/working-model";
+
+export class WorkingFeed {
+  byId = $state<Record<string, Working[]>>({});
+  #stop: (() => void) | null = null;
+  seed(list: Artifact[]): void { this.byId = Object.fromEntries(list.map(a => [a.id, a.working ?? []])); }
+  start(onResync: () => void): void {
+    if (this.#stop) return;
+    this.#stop = subscribeWorking(e => {
+      if (e.type === "working") this.byId = { ...this.byId, [e.artifact_id]: e.working };
+      else if (e.type === "ready" || e.type === "resync") onResync();
+    });
+  }
+  stop(): void { this.#stop?.(); this.#stop = null; }
+}
+```
+
+- [ ] **Step 4: Components, test first**
+
+`web/shell/src/working-ui.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { mount } from "./test/svelte";
+import Roster from "./ui/Roster.svelte";
+import WorkingSummary from "./ui/WorkingSummary.svelte";
+
+const agents = [{ handle: "a_1111aaaa", harness: "claude", live: true }, { handle: "a_2222bbbb", harness: "codex", live: true }];
+const people = [{ public_id: "u_me", display_name: "alex" }, { public_id: "u_mia", display_name: "Mia Kovač" }];
+
+describe("working UI", () => {
+  it("the roster puts people left and agents right, the viewer nearest the centre, a working agent solid", () => {
+    const working = [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" }];
+    const m = mount(Roster, { people, agents, working, me: "u_me", max: 5 });
+    const ppl = Array.from(m.root.querySelectorAll(".ppl .tok")).map(e => e.textContent);
+    expect(ppl).toEqual(["AL", "MK"]);
+    expect(m.root.querySelector(".ppl .tok.me")!.textContent).toBe("AL");
+    expect(Array.from(m.root.querySelectorAll(".agt .tok")).map(e => [e.textContent, e.classList.contains("work")])).toEqual([["cl", true], ["cx", false]]);
+    m.unmount();
+  });
+
+  it("the roster overflows past max with a +n token", () => {
+    const many = Array.from({ length: 7 }, (_, i) => ({ public_id: `u_${i}`, display_name: `P${i} Q` }));
+    const m = mount(Roster, { people: many, agents: [], working: [], me: null, max: 3, small: true });
+    expect(m.root.querySelector(".ppl .tok.more")!.textContent).toBe("+4");
+    m.unmount();
+  });
+
+  it("the summary is a polite live region whose elapsed time sits outside it", () => {
+    const m = mount(WorkingSummary, { s: { line1: "claude working on 2", agent: true, line2: "all yours", elapsed: "0:42" } });
+    const live = m.root.querySelector("[role=status]")!;
+    expect(live.getAttribute("aria-live")).toBe("polite");
+    expect(live.textContent).toBe("claude working on 2all yours");
+    expect(m.root.querySelector(".el")!.textContent).toBe("0:42");
+    expect(live.contains(m.root.querySelector(".el"))).toBe(false);
+    m.unmount();
+  });
+});
+```
+
+`web/shell/src/ui/Roster.svelte`:
+
+```svelte
+<script lang="ts">
+  // Participants as Echo draws them (spec §8): people open toward the centre
+  // from the left in red-orange, agents from the right in green, the page a
+  // dot between. The viewer is nearest the centre and underlined.
+  import type { Participants } from "../api";
+  import type { Working } from "../view/working-model";
+
+  type Props = { people: Participants["people"]; agents: Participants["agents"]; working: Working[]; me: string | null; max: number; small?: boolean; presence?: Record<string, "here" | "away"> };
+  let { people, agents, working, me, max, small = false, presence = {} }: Props = $props();
+  const initials = (n: string | null) => {
+    const w = (n ?? "?").trim().split(/\s+/);
+    return (w.length > 1 ? w[0][0] + w[1][0] : w[0].slice(0, 2)).toUpperCase();
+  };
+  const AGENT: Record<string, string> = { claude: "cl", codex: "cx", pi: "pi" };
+  const ordered = $derived([...people].sort((a, b) => Number(b.public_id === me) - Number(a.public_id === me)));
+  const busy = $derived(new Set(working.map(w => w.agent)));
+</script>
+
+<span class={["ros", small && "sm"]}>
+  <span class="side ppl">
+    {#each ordered.slice(0, max) as p (p.public_id)}
+      <span class={["tok", "p", p.public_id === me && "me", presence[p.public_id]]} title={p.display_name ?? "Viewer"}>{initials(p.display_name)}</span>
+    {/each}
+    {#if ordered.length > max}<span class="tok more">+{ordered.length - max}</span>{/if}
+  </span>
+  <span class="hub" aria-hidden="true"></span>
+  <span class="side agt">
+    {#each agents.slice(0, max) as a (a.handle)}
+      <span class={["tok", "a", busy.has(a.handle) && "work"]} title={a.harness}>{AGENT[a.harness] ?? a.harness.slice(0, 2)}</span>
+    {/each}
+    {#if agents.length > max}<span class="tok more">+{agents.length - max}</span>{/if}
+  </span>
+</span>
+```
+
+`web/shell/src/ui/WorkingSummary.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Summary } from "../view/working-model";
+  let { s }: { s: Summary } = $props();
+</script>
+
+<span class="sum">
+  <span role="status" aria-live="polite" aria-atomic="true"><b class={["l1", s.agent && "ag"]}>{s.line1}</b><small class="l2">{s.line2}</small></span>{#if s.elapsed}<small class="el" aria-hidden="true">{s.elapsed}</small>{/if}
+</span>
+```
+
+`web/shell/src/ui/WorkingStrip.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Working } from "../view/working-model";
+  import HaikuLine from "./HaikuLine.svelte";
+  let { w, text, commenting }: { w: Working; text: string; commenting: boolean } = $props();
+</script>
+
+<div class="strip ag">
+  <span class="tok a work" aria-hidden="true">{w.harness.slice(0, 2)}</span><b>{text}</b>
+  {#if !commenting}<HaikuLine seed={w.key} />{/if}
+</div>
+```
+
+`HaikuLine` loads its list lazily (Task 6). `WorkingStrip` itself loads by dynamic `import()` from the sidebar, only while someone works.
+
+- [ ] **Step 5: Wire the islands, the sidebar, the pins and the gallery**
+
+- `TopbarIsland.svelte`: replace `<div class="who-slot"></div>` with:
+
+```svelte
+  {@const parts = s.data.artifact.participants ?? { people: [], agents: [] }}
+  {@const names = agentNames(s.working, parts.agents)}
+  {@const busy = new Set(s.working.map(w => w.agent))}
+  <div class="who">
+    <Roster people={parts.people} agents={parts.agents} working={s.working} me={s.me?.public_id ?? null} max={s.narrow ? 1 : 5} />
+    <WorkingSummary s={summary({ working: s.working, names, mine: new Set(s.attention?.open_in ?? []), open: ctl.openCount(s), now: tick.now,
+      idle: parts.agents.filter(a => a.live && !busy.has(a.handle)).map(a => names.get(a.handle) ?? a.harness), addressed: null })} />
+  </div>
+```
+
+  `tick` is the port's `ticker` (`ui/ticker.svelte.ts`), ticking each second while `s.working.length > 0`. Task 18 passes `addressed`.
+- `ViewState` gains `attention: Attention | null`. It is set from `boot.attention`, else from the `attention` key of `getArtifact`'s response, which carries it whenever the request carries the viewer cookie (Task 15). `getArtifact`'s return type and `Loaded` gain `attention?: Attention`. Every refetch refreshes it.
+- `SidebarIsland.svelte` passes `working={s.working}`, `commenting={s.commenting}`, `agents={s.data.artifact.participants?.agents ?? []}` and `mine={s.attention?.open_in ?? []}` to `Sidebar`, which declares the four props.
+- `Sidebar.svelte`:
+  - computes `names` from `agentNames(p.working ?? [], p.agents ?? [])`;
+  - passes `marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, names) : null}` to each card;
+  - passes `{ working: t.status === "open" ? threadAgent(p.working ?? [], t.id, names) : null }` to `historyOf`;
+  - renders the strip first, inside the aside, after the header, when anyone works. The `{#await}` keeps `WorkingStrip` and `HaikuLine` out of the entry:
+
+```svelte
+  {#each newestFirst(p.working ?? []) as w (w.key)}
+    {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
+      <WorkingStrip {w} text={stripText(w, names, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
+    {/await}
+  {/each}
+```
+
+- `ThreadCard.svelte`:
+  - adds `marker?: { text: string; since: string } | null`;
+  - in place of the waiting line, while a marker shows: `<p class="st ag"><span class="tok a work sm" aria-hidden="true"></span>{marker.text}<small>{clock(marker.since, now)}</small></p>`;
+  - otherwise the waiting line as before.
+- `Pins.svelte`: adds `onit?: Set<string>`, and puts `class:onit={onit?.has(p.thread.id)}` on each pin. `StageIsland` passes `onit={workingThreads(s.working)}`.
+- `Gallery.svelte`:
+  - a `WorkingFeed`: seeded and started after the first list renders, and stopped in `onDestroy`;
+  - each `GalleryCard` gets a `markers` snippet listing `chips(feed.byId[a.id] ?? [], agentNames(feed.byId[a.id] ?? [], a.participants?.agents ?? []))` as `<span class="chip ag">…</span>`;
+  - each card gets a `footer` snippet rendering `<Roster people={a.participants?.people ?? []} agents={a.participants?.agents ?? []} working={feed.byId[a.id] ?? []} me={meId} max={3} small />`, where `meId` comes from the gallery's `getViewer()`.
+
+Tests:
+- in `sidebar.test.ts`, a thread named by a record shows `.st.ag` reading `claude is working on it` and the clock, and a history event `claude working on it`. When the record drops it, the waiting line returns;
+- in `gallery.test.ts`, the first card shows `.chip.ag` reading `claude working`, and the second shows none.
+
+- [ ] **Step 6: Styles**
+
+Append to `web/shell/src/theme.css`:
+
+```css
+/* Participants and the working signal (spec §8, "Working"). */
+.ros { display: flex; align-items: center; gap: 2px; }
+.ros .side { display: flex; gap: 2px; } .ros .ppl { flex-direction: row-reverse; }
+.ros .hub { width: 7px; height: 7px; border-radius: 50%; background: var(--fg); margin: 0 4px; flex: none; }
+.tok { display: inline-grid; place-items: center; height: 26px; min-width: 30px; padding: 0 6px; font: 600 12px/1 var(--grot); flex: none; position: relative; }
+.tok.p { border-radius: 0 13px 13px 0; padding-right: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--you); color: var(--fg); }
+.tok.p.me::after { content: ""; position: absolute; left: 4px; right: 8px; bottom: 3px; height: 1.5px; background: currentColor; }
+.tok.p.away { opacity: .5; }
+.tok.p.here::before { content: ""; position: absolute; right: 2px; top: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--agent); box-shadow: 0 0 0 1.5px var(--card); }
+.tok.a { border-radius: 13px 0 0 13px; padding-left: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--agent); color: var(--agent-ink); }
+.tok.a.work { background: var(--agent); color: var(--on-accent); box-shadow: none; padding-left: 13px; }
+.tok.a.work::before { content: ""; position: absolute; left: 5px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: currentColor; animation: breathe 1.8s ease-in-out infinite; }
+.tok.more { background: none; box-shadow: none; color: var(--muted); min-width: 0; padding: 0 3px; }
+.ros.sm .tok, .tok.sm { height: 20px; min-width: 24px; font-size: 11px; padding: 0 5px; }
+@keyframes breathe { 50% { opacity: .3; } }
+.who { display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 10px 0 6px; border: 1px solid var(--border-strong); background: var(--bg); flex: none; min-width: 0; }
+.who .sum { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.who .sum b { display: block; font: 600 14px/1.1 var(--grot); white-space: nowrap; } .who .sum b.ag { color: var(--agent-ink); }
+.who .sum small { display: block; font: 400 11px/1.3 var(--mono); color: var(--muted); white-space: nowrap; }
+.topbar.working::after { content: ""; position: absolute; left: 0; bottom: -1px; height: 2px; width: 20%; background: var(--agent); animation: sweep 2.4s cubic-bezier(.4,0,.2,1) infinite; }
+@keyframes sweep { from { transform: translateX(-100%); } to { transform: translateX(500%); } }
+.st.ag { color: var(--agent-ink); font: 600 13.5px/1.2 var(--grot); } .st small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: auto; }
+.strip { margin: 0 0 4px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: center; }
+.strip.ag { box-shadow: inset 3px 0 0 var(--agent); } .strip b { font: 600 15px/1.2 var(--grot); color: var(--agent-ink); } .strip .hk { grid-column: 2; }
+.thread-pin.onit { background: linear-gradient(90deg, var(--you) 50%, var(--agent) 50%); color: #fff; text-shadow: 0 0 2px #2f0b04; }
+.chip.ag { background: var(--agent); color: var(--on-accent); }
+.card .ft .ros { margin-right: auto; }
+@media (max-width: 700px) { .who { height: 36px; padding: 0 6px 0 3px; gap: 0; } .who .sum { display: none; } }
+@media (prefers-reduced-motion: reduce) { .topbar.working::after { animation: none; display: none; } .tok.a.work::before { animation: none; } }
+```
+
+- [ ] **Step 7: Browser tests**
+
+Add to `web/e2e/fixtures.ts` `setWorking(base, token, sid, aid, body)` (`PUT /api/sessions/<sid>/working/<aid>`) and `skewWorking(base, token, secs)` (the debug build's `POST /api/_test/working/skew`).
+
+`web/e2e/pages/working-cap.html`: the page that prints `working()` and `onWorking` state, as in Task 17's test. Its script:
+
+```html
+<!doctype html><title>Working cap</title>
+<main><h2 id="h">Goals</h2><p id="state">none</p><button id="add">Add</button></main>
+<script>
+  (async () => {
+    const c = await window.claude.use("comments");
+    const out = document.getElementById("state");
+    const show = s => { out.textContent = s.working ? s.agents.map(a => `${a.label}|${a.message}|${a.threads.length}|${a.otherThreads}`).join(",") : "none"; };
+    show(await c.working());
+    await c.onWorking(show);
+    document.getElementById("add").onclick = async () => { const r = await c.create({ anchor: { path: "#h" }, text: "from the page" }); document.body.dataset.handle = r.threadId; };
+  })();
+</script>
+```
+
+`web/e2e/working.spec.ts`:
+
+```ts
+import { test, expect } from "@playwright/test";
+import { api, openArtifact, postThread, publishAs, registerSession, setWorking, skewWorking, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+const PAGE = "<main><h2>Quarterly goals</h2></main>";
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });
+    const t = await postThread(d.base, artifact.id, "@agent two columns");
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    const line1 = page.locator(".who .sum b.l1");
+    await expect(line1).toHaveText("Nobody working");
+    await expect(page.locator(".who [role=status]")).toHaveAttribute("aria-live", "polite");
+    await api(d.base, d.token, `/api/sessions/${s.id}/feedback?tier=piggyback`);
+    await expect(line1).toHaveText("claude working on 1");
+    await expect(page.locator(".who .agt .tok.work")).toHaveCount(1);
+    await expect(page.locator(".topbar")).toHaveClass(/working/);
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    const card = page.locator(`.thread-card[data-thread="${t.id}"]`);
+    await expect(card.locator(".st.ag")).toContainText("claude is working on it");
+    await expect(card.locator(".hist")).toContainText("claude working on it");
+    await expect(page.locator(".thread-pin.onit")).toHaveCount(1);
+    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Two columns" });
+    await expect(line1).toHaveText("claude: Two columns");
+    const gallery = await page.context().newPage();
+    await gallery.goto(`${d.base}/`);
+    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveText("claude working on 1");
+    await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done.", author_kind: "agent" }) });
+    await expect(card.locator(".st.ag")).toHaveCount(0);
+    await expect(line1).toHaveText("Nobody working");
+    await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test(`${mode}: a record lapses 2 minutes after its last renewal`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "pi", `lapse-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse ${mode}`, { "index.html": PAGE });
+    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Tidying" });
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(page.locator(".who .sum b.l1")).toHaveText("pi: Tidying");
+    await skewWorking(d.base, d.token, 121);
+    await expect(page.locator(".who .sum b.l1")).toHaveText("Nobody working");
+  });
+}
+
+test("at phone width in dark mode with reduced motion the roster shrinks and nothing moves", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "phone-work");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "A long title for a phone-width working check", { "index.html": PAGE });
+  await setWorking(d.base, d.token, s.id, artifact.id, { message: "Rebuilding the quarterly chart with the new numbers" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await expect(page.locator(".who .agt .tok.work")).toBeVisible();
+  await expect(page.locator(".who .sum")).toBeHidden();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+  expect(await page.locator(".who .tok.work").evaluate(e => getComputedStyle(e, "::before").animationName)).toBe("none");
+});
+```
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/working.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. `WorkingStrip` is outside `artifact.html`'s closure.
+
+- [ ] **Step 8: Screenshots and a look**
+
+Append to `web/e2e/scenes.ts` a `working` scene: `prepare` calls `setWorking(s.base, s.token, s.sid, s.aid, { thread_ids: s.threads })`, reloads, and opens the panel.
+
+Run: `cd web && CLAX_SHOTS=task-16 CLAX_SCENES=gallery,view,working npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Report, against `concept-3-echo/shots/*-working.png`:
+- the roster with the solid green agent token;
+- `claude working on 3` over `all yours` and the clock (here 0:0x);
+- the sweep is absent in the reduced-motion shots;
+- the strip with its haiku;
+- the split pins;
+- the markers on each card;
+- the gallery chip;
+- the phone bar with one token per side.
+
+Run `npm run perf` and report its result.
+
+- [ ] **Step 9: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add crates/clax-core/src/working.rs crates/clax-server/src/routes/working.rs crates/clax-server/src/working.rs web/shell/src/view/working-model.ts \
+  web/shell/src/view/working-model.test.ts web/shell/src/ui/Roster.svelte web/shell/src/ui/WorkingSummary.svelte web/shell/src/ui/WorkingStrip.svelte \
+  web/shell/src/ui/working-feed.svelte.ts web/shell/src/working-ui.test.ts web/e2e/working.spec.ts web/e2e/pages/working-cap.html web/e2e/fixtures.ts web/e2e/scenes.ts
+git add -u crates web/shell/src
+git status --short   # staged; the controller commits ("Show who is working in Echo: the roster and summary, card chips, thread markers, split pins and a haiku")
+```
+
+---
+
+### Task 17: The page capability: `working()` and `onWorking(fn)`
+
+The page reads who is working through the `comments` capability (a Clax extension, marked as such). This needs no UI change: the page's own display is the page's business.
+
+**Files:**
+- Modify: `web/contract/0.2.61/comments.d.ts`, `web/shell/src/caps/host.ts` (`CapEnv.working`), `web/shell/src/caps/comments.ts`, `web/shell/src/caps/comments.test.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/test/comments.test.ts`, `web/shell/src/view/artifact-controller.ts` (passes `working` into the host env)
+
+**Interfaces:**
+- Produces (contract, in `namespace comments`):
+
+```ts
+    /** Clax extension: not part of claude.ai's comments capability. One
+     * agent session working on this artifact now. */
+    interface WorkingAgent {
+      /** `"claude"`, `"codex"`, `"pi"`, or another harness name. */
+      harness: string;
+      /** The harness as people read it ("Claude Code"). */
+      label: string;
+      /** The agent's own words, at most 140 characters; treat as untrusted text. */
+      message: string | null;
+      /** When it started (ISO 8601). */
+      since: string;
+      /** Handles of threads THIS document created that the agent is acting on. */
+      threads: string[];
+      /** How many other threads it is acting on. */
+      otherThreads: number;
+    }
+    /** Clax extension: not part of claude.ai's comments capability. */
+    interface WorkingState {
+      working: boolean;
+      /** Newest first. */
+      agents: WorkingAgent[];
+    }
+```
+
+and in `interface Comments`:
+
+```ts
+    /**
+     * Clax extension, not part of claude.ai's comments capability: which
+     * agents are working on this artifact now. Read-only. Clax grants it
+     * under either declaration form, including `composer_only` (a Clax
+     * extension to that form, which otherwise grants only openComposer and
+     * anchorFor), with no consent prompt and no gesture. Never names a
+     * session or a thread's store ID.
+     */
+    working(): Promise<WorkingState>;
+    /**
+     * Clax extension, not part of claude.ai's comments capability: calls `fn`
+     * with the current state, then on every change. Resolves a function
+     * that stops the calls.
+     */
+    onWorking(fn: (state: WorkingState) => void): Promise<() => void>;
+```
+
+- Shell handler methods: `working` → `WorkingState`; `watchWorking` → `null` (starts pushes on topic `working`); `unwatchWorking` → `null`.
+- `CapEnv` gains `working(): Working[]`.
+- Pure helper in `caps/comments.ts`: `pageWorking(list: Working[], handleOf: (id: string) => string | undefined): WorkingState`.
+
+- [ ] **Step 1: Failing shell handler tests**
+
+In `web/shell/src/caps/comments.test.ts`, give the harness a working list. Add at module level `let workingList: Working[] = [];` (with `import type { Working } from "../view/working-model";`), reset it in the `beforeEach` (`workingList = [];`), and add `working: () => workingList` to the `env` object literal in `setup`. Then add to `describe("comments in the shell", ...)`:
+
+```ts
+  const rec = (over: Partial<Working> = {}): Working => ({ key: "k", agent: "a_x", harness: "codex", message: "Chart", thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over });
+
+  it("working() names only this document's own threads, by handle", async () => {
+    const { h, posted } = setup({ comments: {} });
+    daemon(T("01J9C"));
+    const created = await h.call("create", [{ anchor: T("x").anchor, text: "hi", version: 1 }]) as { threadId: string };
+    workingList = [rec({ thread_ids: ["01J9C", "01J9Z"] })];
+    const s = await h.call("working", []);
+    expect(s).toEqual({ working: true, agents: [{ harness: "codex", label: "Codex", message: "Chart", since: "2026-09-30T10:00:00.000Z", threads: [created.threadId], otherThreads: 1 }] });
+    expect(JSON.stringify(s)).not.toContain("01J9C");
+    expect(JSON.stringify(s)).not.toContain("\"k\"");
+    expect(posted.filter(m => m.type === "clax:event" && m.topic === "working")).toEqual([]);
+  });
+
+  it("pushes working state to a watching page on every working event, until it stops watching", async () => {
+    const { h, posted } = setup({ comments: {} });
+    const pushes = () => posted.filter(m => m.type === "clax:event" && m.topic === "working") as unknown as { data: { working: boolean } }[];
+    await h.call("watchWorking", []);
+    expect(pushes().at(-1)!.data).toEqual({ working: false, agents: [] });
+    workingList = [rec({ harness: "pi", message: null })];
+    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: workingList });
+    expect(pushes().at(-1)!.data.working).toBe(true);
+    await h.call("unwatchWorking", []);
+    const n = pushes().length;
+    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: [] });
+    expect(pushes().length).toBe(n);
+  });
+
+  it("answers working() under the composer-only form, without consent or gesture", async () => {
+    const { h, prompt } = setup({ comments: { composer_only: true } });
+    gesture(false);
+    expect(await h.call("working", [])).toEqual({ working: false, agents: [] });
+    expect(prompt).not.toHaveBeenCalled();
+  });
+```
+
+Run: `cd web && npx vitest run shell/src/caps/comments.test.ts`
+Expected: FAIL (`comments.working is not part of this runtime`).
+
+- [ ] **Step 2: Implement the shell side**
+
+In `caps/host.ts`, add to `CapEnv`: `/** Who is working on the artifact now (the view's latest working list). */ working(): Working[];`. In `view/artifact-controller.ts` `viewChanged()`, add `working: () => this.s.working,` to the env object passed to `new CapabilityHost(...)`. It reads the controller's current state at each call. `onEvent` already forwards every event to `this.host`, so `working` events reach the handler.
+
+In `caps/comments.ts`:
+
+```ts
+import { harnessLabel, newestFirst, type Working } from "../view/working-model";
+
+/** The Clax `working()` state for the page: agents newest first; threads as
+ * the handles this document holds, the rest counted. No record key, no
+ * session, no store ID. */
+export function pageWorking(list: Working[], handleOf: (id: string) => string | undefined) {
+  const agents = newestFirst(list).map(w => {
+    const threads = w.thread_ids.map(handleOf).filter((h): h is string => h !== undefined);
+    return { harness: w.harness, label: harnessLabel(w.harness), message: w.message, since: w.started_at, threads, otherThreads: w.thread_ids.length - threads.length };
+  });
+  return { working: agents.length > 0, agents };
+}
+```
+
+In `commentsHandler`, add `let watchingWorking = false;`, a `const ownHandle = (id: string) => [...created].find(([, v]) => v === id)?.[0];`, and a `const pushWorking = () => { if (watchingWorking && !disposed) env.post(event("working", pageWorking(env.working(), ownHandle))); };`. Add cases before `default`. These run before any consent or gesture check in the handler, and are allowed under `composer_only`:
+
+```ts
+        case "working":
+          return pageWorking(env.working(), ownHandle);
+        case "watchWorking":
+          watchingWorking = true;
+          pushWorking();
+          return null;
+        case "unwatchWorking":
+          watchingWorking = false;
+          return null;
+```
+
+In `onEvent`, add `if (e.type === "working") pushWorking();`. In `reset` and `dispose`, set `watchingWorking = false`.
+
+If the handler's method gate (the place that rejects write verbs under `composer_only` with `not_granted`) runs before the `switch`, add `working`, `watchWorking` and `unwatchWorking` to its allowed list for the composer-only form.
+
+- [ ] **Step 3: The bridge side**
+
+In `web/bridge/src/caps/comments.ts` (after the port's Task 13 it is part of the lazy `caps` part, and `commentsLocals(rpc, config, env)` takes a `CapsEnv`), inside `commentsLocals`, add:
+
+```ts
+  const workingFns = new Set<(s: unknown) => void>();
+  let offWorking: (() => void) | null = null;
+  const working = () => rpc.call("comments", "working", []);
+  const onWorking = async (fn: unknown) => {
+    if (typeof fn !== "function") throw invalid("onWorking takes a function");
+    const f = fn as (s: unknown) => void;
+    workingFns.add(f);
+    if (!offWorking) {
+      offWorking = rpc.on("comments", "working", d => { for (const g of workingFns) { try { g(d); } catch { /* the page's own error */ } } });
+      await rpc.call("comments", "watchWorking", []);
+    } else {
+      try { f(await working()); } catch { /* the page's own error */ }
+    }
+    return () => {
+      workingFns.delete(f);
+      if (workingFns.size === 0 && offWorking) {
+        offWorking();
+        offWorking = null;
+        void rpc.call("comments", "unwatchWorking", []).catch(() => {});
+      }
+    };
+  };
+```
+
+and add `working` and `onWorking` to the namespace object this function returns, under both declaration forms. Add to `web/bridge/test/comments.test.ts`, with its `fakeRpc`:
+
+```ts
+  it("onWorking shares one shell subscription and ends it with the last subscriber", async () => {
+    const f = fakeRpc(() => ({ working: false, agents: [] }));
+    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as unknown as { onWorking(fn: (s: unknown) => void): Promise<() => void> };
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const offA = await c.onWorking(s => a.push(s));
+    const offB = await c.onWorking(s => b.push(s));
+    const methods = () => f.rpc.call.mock.calls.map(x => x[1]);
+    expect(methods().filter(m => m === "watchWorking")).toHaveLength(1);
+    f.emit("working", { working: true, agents: [] });
+    expect(a.at(-1)).toEqual({ working: true, agents: [] });
+    expect(b.at(-1)).toEqual({ working: true, agents: [] });
+    offA();
+    expect(methods()).not.toContain("unwatchWorking");
+    offB();
+    expect(methods()).toContain("unwatchWorking");
+  });
+```
+
+- [ ] **Step 4: The browser test**
+
+Add to the `for (const mode …)` loop in `web/e2e/working.spec.ts` (it needs `publishWith`, `reach` and `readFileSync`):
+
+```ts
+  test(`${mode}: the page reads working state through the comments capability`, async ({ page }) => {
+    const html = readFileSync(new URL("./pages/working-cap.html", import.meta.url), "utf8");
+    const s = await registerSession(d.base, d.token, "codex", `cap-${mode}`);
+    const { artifact } = await publishWith(d.base, d.token, `Cap ${mode}`, html, { comments: {} });
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(frame.locator("#state")).toHaveText("none");
+    await page.getByLabel("Your name").fill("Alex");
+    await page.getByLabel("Your name").press("Enter");
+    await reach(page, frame.locator("#add"));
+    await frame.locator("#add").click();
+    await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+    await expect.poll(() => frame.locator("body").getAttribute("data-handle")).toBeTruthy();
+    const tid = (await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`)).threads[0].id as string;
+    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Chart", thread_ids: [tid] });
+    await expect(frame.locator("#state")).toHaveText("Codex|Chart|1|0");
+    expect(await frame.locator("body").getAttribute("data-handle")).not.toBe(tid);
+    await api(d.base, d.token, `/api/sessions/${s.id}/working/${artifact.id}`, { method: "DELETE" });
+    await expect(frame.locator("#state")).toHaveText("none");
+  });
+```
+
+Until Task 24 moves the name field into the people panel, `getByLabel("Your name")` finds it in the top bar. Task 24 updates this locator.
+
+Run: `cd web && npx playwright test e2e/working.spec.ts`
+Expected: PASS.
+
+- [ ] **Step 5: Run, gates and staging**
+
+Run: `cd web && npm run lint && npm run typecheck && npx vitest run`
+Expected: PASS.
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/contract/0.2.61/comments.d.ts web/shell/src/caps/host.ts web/shell/src/caps/comments.ts web/shell/src/caps/comments.test.ts \
+  web/bridge/src/caps/comments.ts web/shell/src/view/artifact-controller.ts
+git add web/bridge/test/comments.test.ts web/e2e/working.spec.ts
+git status --short   # staged; the controller commits ("Let pages read who is working through the comments capability (Clax extension)")
+```
+
+---
+
+### Task 18: The changelog in Echo: the Addressed group, the version menu and its dot, looked-at marks, history, and a jump with highlight
+
+The version changelog with no band over the page:
+- an "Addressed in vN" group at the top of the sidebar;
+- `claude · addressed in vN` on the agent's reply, and `vN claude addressed it` in the history line;
+- addressed pins (white, a green ring, a `vN` flag);
+- a version button with a green dot while a version newer than this viewer's last view exists;
+- `v5 addressed 3` (or `3 new versions · 7 addressed`) in the top bar summary;
+- a version menu that reads as a changelog (V opens it).
+
+This task also writes the viewer's marks: the version seen, and each thread looked at.
+
+**Files:**
+- Create: `web/shell/src/view/changelog-model.ts`, `web/shell/src/view/changelog-model.test.ts`, `web/shell/src/ui/AddressedGroup.svelte`, `web/shell/src/ui/VersionMenu.svelte`, `web/shell/src/ui/VersionPanel.svelte`, `web/shell/src/changelog-ui.test.ts`, `web/e2e/changelog.spec.ts`
+- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, `web/e2e/viewer.spec.ts`
+
+**Interfaces:**
+- `api.ts`: `Version` gains `note?: string | null` and `addresses?: string[]`. `putSeen(aid: string, n: number): Promise<void>` sends `PUT /api/viewers/me/seen`, and ignores failures.
 - `threads.ts`: `Thread` gains `addressed_in?: number[]`.
 - `view/changelog-model.ts` (no `svelte` import):
-  - `decideBanner(versions: Version[], seen: number | null, latest: number, pinned: boolean): { banner: Banner | null; write: number | null }`, with `type Banner = { text: string; versions: number[]; addressed: number }`.
-  - `changeGroups(versions: Version[], threads: Thread[], expand: number[]): Group[]`, with `type Group = { n: number; note: string | null; threads: Thread[]; open: boolean }`. It covers versions that address at least one thread still present, newest first, at most 10.
-  - `versionRows(versions: Version[], latest: number, shown: number, now: Date): Row[]`, with `type Row = { n: number; current: boolean; latest: boolean; label: string | null; note: string | null; addressed: number; when: string }`, newest first.
-  - `excerpt(t: Thread): string`: the first comment's body, whitespace collapsed, cut to 80 characters plus `…`.
-  - `plural(n: number, word: string): string`.
+  - `type Decided = { n: number; ids: string[]; dot: boolean; line: string | null }`;
+  - `decide(versions: Version[], latest: number, attention: Attention | null, pinned: boolean): Decided`. Its `line` is the returning-viewer summary (provisional: Q11);
+  - `type Row = { n: number; current: boolean; latest: boolean; who: string; when: string; chips: Chip[]; did: string | null; note: string | null; label: string | null }` and `type Chip = { id: string; n: number | null; open: boolean }`;
+  - `versionRows(i: RowInput): Row[]`;
+  - `excerpt(t: Thread): string`.
+- `history-model.ts`: `historyOf` also emits `{ v: n, who: <agent of vN>, agent: true, verb: "addressed it" }` for each `n` in `t.addressed_in`. Events are ordered by time: comments by `created_at`, an address by its version's `created_at`, the resolve by `resolved_at`, and working last. `addressedNote(t: Thread, c: Comment): number | null` gives the version an agent reply is labelled with: the first version in `addressed_in` created at or after that reply, else null.
+- `keys.ts`: `v` maps to `versions`, with a row `{ keys: ["V"], what: "Versions, with what each one addressed", action: "versions" }` after `R`.
+- `ArtifactController`:
+  - `ViewState` gains `decided: Decided | null`, `menu: "versions" | "people" | null`, and `looked: Record<string, string>` (this viewer's marks, seeded from `attention.looked`).
+  - New methods: `look(t: Thread): void`, which queues a mark and flushes at most once a second through `putLooked`; `openMenu(m)`; `closeMenu()`.
+  - `shortcut("versions")` opens the menu.
+  - A private `decideChangelog()` runs once the view is ready, and again when a new latest version is loaded. It writes `seen` (unpinned latest only) after deciding.
+- Components:
+  - `AddressedGroup` `{ n: number; agent: string; children: Snippet }`, lazy.
+  - `VersionMenu` `{ shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; rows: () => Row[]; hrefFor(n: number): string; onChoose(n: number): void }`. It is eager. Its panel, `VersionPanel`, is lazy.
+  - `ThreadCard` gains `onSeen?(t: Thread): void`, which fires when the card has been at least half visible for 1 s (provisional: Q4).
+  - `Pins` gains `addressed?: Map<string, number>` (thread ID → version).
 
-- [ ] **Step 1: Tests first**
+- [ ] **Step 1: The model, test first**
 
 `web/shell/src/view/changelog-model.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
-import type { Version } from "../api";
+import type { Attention, Version } from "../api";
 import type { Thread } from "../threads";
-import { changeGroups, decideBanner, excerpt, versionRows } from "./changelog-model";
+import { decide, excerpt, versionRows } from "./changelog-model";
 
-const V = (n: number, note: string | null = null, addresses: string[] = []): Version =>
-  ({ artifact_id: "a", n, label: null, created_at: `2026-09-30T10:0${n}:00.000Z`, files: {}, note, addresses });
-const T = (id: string, status: "open" | "resolved" = "open", body = "Make this  two\ncolumns"): Thread => ({
-  id, artifact_id: "a", version_n: 1, status, sent_to_agent: true, has_clip: false, clip_url: null, created_at: "x", resolved_at: null,
-  resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "Alex", via_harness: null, body, created_at: "x" }],
-  anchor: { kind: "element", selector: "h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
+const V = (n: number, addresses: string[] = [], note: string | null = null): Version =>
+  ({ artifact_id: "a", n, label: null, created_at: `2026-09-30T1${n}:00:00.000Z`, files: {}, note, addresses, agent: "a_1", agent_harness: "claude" });
+const A = (over: Partial<Attention>): Attention => ({ addressed: [], addressed_v: null, new_replies: [], open_in: [], seen: null, looked: {}, ...over });
+const T = (id: string, status: "open" | "resolved" = "open", extra: Partial<Thread> = {}): Thread => ({
+  id, artifact_id: "a", version_n: 1, status, sent_to_agent: true, has_clip: false, clip_url: null, created_at: "2026-09-30T10:30:00.000Z", resolved_at: null,
+  resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "alex", author_public_id: "u_me", via_harness: null, body: "Make this  two\ncolumns", created_at: "2026-09-30T10:30:00.000Z" }],
+  anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }, ...extra,
 });
 
-describe("decideBanner", () => {
-  const vs = [V(1), V(2, "Two columns", ["t1", "t2", "t3"]), V(3, null, ["t3", "t4"]), V(4, "Spacing")];
-  it("says nothing on a first visit, but records it", () => {
-    expect(decideBanner(vs, null, 4, false)).toEqual({ banner: null, write: 4 });
+describe("decide", () => {
+  const vs = [V(1), V(2, ["t1"]), V(3, ["t1", "t2", "t3"], "Two columns")];
+  it("holds the newest version's addressed threads you are in and have not looked at", () => {
+    expect(decide(vs, 3, A({ addressed: ["t1", "t3", "t9"], seen: 2 }), false)).toEqual({ n: 3, ids: ["t1", "t3"], dot: true, line: "v3 addressed 2" });
   });
-  it("summarises one new version with its note", () => {
-    expect(decideBanner(vs.slice(0, 2), 1, 2, false)).toEqual({ banner: { text: "v2 addressed 3 comments: Two columns", versions: [2], addressed: 3 }, write: 2 });
-    expect(decideBanner(vs, 3, 4, false).banner!.text).toBe("v4: Spacing");
-    expect(decideBanner([V(1), V(2, null, ["t1"])], 1, 2, false).banner!.text).toBe("v2 addressed 1 comment");
-    expect(decideBanner([V(1), V(2)], 1, 2, false)).toEqual({ banner: null, write: 2 });
+  it("summarises a return after several versions", () => {
+    expect(decide(vs, 3, A({ addressed: ["t1", "t2"], seen: 1 }), false).line).toBe("2 new versions · 2 addressed");
   });
-  it("summarises several versions by distinct threads", () => {
-    expect(decideBanner(vs, 1, 4, false).banner).toEqual({ text: "3 new versions, 4 comments addressed", versions: [2, 3, 4], addressed: 4 });
-    expect(decideBanner([V(1), V(2), V(3, "Tidy")], 1, 3, false).banner!.text).toBe("2 new versions: Tidy");
-  });
-  it("stays quiet and writes nothing when pinned or already seen", () => {
-    expect(decideBanner(vs, 1, 4, true)).toEqual({ banner: null, write: null });
-    expect(decideBanner(vs, 4, 4, false)).toEqual({ banner: null, write: null });
+  it("shows no dot on a first visit or once seen, and nothing for a pinned or anonymous view", () => {
+    expect(decide(vs, 3, A({ seen: null }), false).dot).toBe(false);
+    expect(decide(vs, 3, A({ seen: 3 }), false)).toEqual({ n: 3, ids: [], dot: false, line: null });
+    expect(decide(vs, 3, A({ addressed: ["t1"], seen: 2 }), true)).toEqual({ n: 3, ids: [], dot: false, line: null });
+    expect(decide(vs, 3, null, false)).toEqual({ n: 3, ids: [], dot: false, line: null });
   });
 });
 
-describe("changeGroups and versionRows", () => {
-  it("groups present threads by version, newest first, opening the requested ones", () => {
-    const vs = [V(1), V(2, "Two columns", ["t1", "gone"]), V(3, null, ["t2"])];
-    const g = changeGroups(vs, [T("t1"), T("t2", "resolved")], [2]);
-    expect(g.map(x => [x.n, x.threads.map(t => t.id), x.open])).toEqual([[3, ["t2"], false], [2, ["t1"], true]]);
-    expect(changeGroups(vs, [T("t1"), T("t2")], [])[0].open).toBe(true);
-  });
-  it("lists versions newest first with notes and counts", () => {
-    const rows = versionRows([V(1), V(2, "Two columns", ["t1"])], 2, 1, new Date("2026-09-30T10:05:00.000Z"));
-    expect(rows).toEqual([
-      { n: 2, current: false, latest: true, label: null, note: "Two columns", addressed: 1, when: "3 min ago" },
-      { n: 1, current: true, latest: false, label: null, note: null, addressed: 0, when: "4 min ago" },
-    ]);
-  });
-  it("excerpts the first comment on one line", () => {
+describe("versionRows and excerpt", () => {
+  it("lists versions newest first with who, the threads addressed, what you did, and the note", () => {
+    const resolved = T("t1", "resolved", { resolved_by: "viewer:u_me", resolved_at: "2026-09-30T12:30:00.000Z" });
+    const replied = T("t2", "open", { comments: [...T("t2").comments, { id: "r", thread_id: "t2", author_kind: "viewer", author_name: "alex", author_public_id: "u_me", via_harness: null, body: "not yet", created_at: "2026-09-30T12:40:00.000Z" }] });
+    const rows = versionRows({ versions: [V(1), V(2, ["t1", "t2"], "Units: ms")], latest: 2, shown: 2, now: new Date("2026-09-30T12:45:00.000Z"),
+      threads: [resolved, replied], numbers: new Map([["t2", 2]]), me: "u_me" });
+    expect(rows[0]).toMatchObject({ n: 2, current: true, latest: true, who: "claude", chips: [{ id: "t1", n: null, open: false }, { id: "t2", n: 2, open: true }],
+      did: "you resolved it; you replied on #2, still open", note: "Units: ms" });
+    expect(rows[1]).toMatchObject({ n: 1, chips: [], did: null, note: "First publish" });
     expect(excerpt(T("t"))).toBe("Make this two columns");
-    expect(excerpt(T("t", "open", "x".repeat(90)))).toBe(`${"x".repeat(80)}…`);
   });
 });
 ```
 
 Run: `cd web && npx vitest run shell/src/view/changelog-model.test.ts`
-Expected: FAIL (module not found).
-
-- [ ] **Step 2: Implement**
+Expected: FAIL.
 
 `web/shell/src/view/changelog-model.ts`:
 
 ```ts
-// The version changelog as the shell shows it (spec §8, §10): the once-per-
-// viewer banner, the sidebar's "Addressed in vN" groups and the version menu's
-// rows, as pure functions.
-import type { Version } from "../api";
+// The version changelog as Echo shows it (spec §8, §10): no band over the
+// page. A load decides the Addressed group (frozen until the next decision),
+// the version button's dot and the summary's line, from this viewer's
+// attention; the version menu reads as a changelog.
+import type { Attention, Version } from "../api";
 import { relativeTime } from "../format";
 import type { Thread } from "../threads";
+import { agentName } from "./history-model";
 
-export type Banner = { text: string; versions: number[]; addressed: number };
-export type Group = { n: number; note: string | null; threads: Thread[]; open: boolean };
-export type Row = { n: number; current: boolean; latest: boolean; label: string | null; note: string | null; addressed: number; when: string };
+export type Decided = { n: number; ids: string[]; dot: boolean; line: string | null };
+export type Chip = { id: string; n: number | null; open: boolean };
+export type Row = { n: number; current: boolean; latest: boolean; who: string; when: string; chips: Chip[]; did: string | null; note: string | null; label: string | null };
+export type RowInput = { versions: Version[]; latest: number; shown: number; now: Date; threads: Thread[]; numbers: Map<string, number>; me: string | null };
 
-/** Most groups the sidebar lists (older ones are in the version menu). */
-export const MAX_GROUPS = 10;
-
-export const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? "" : "s"}`;
-
-/** What to show a viewer arriving at `latest`, and the seen mark to write
- * (null: write nothing). A pinned view neither shows nor writes. */
-export function decideBanner(versions: Version[], seen: number | null, latest: number, pinned: boolean): { banner: Banner | null; write: number | null } {
-  if (pinned) return { banner: null, write: null };
-  if (seen === null) return { banner: null, write: latest };
-  if (seen >= latest) return { banner: null, write: null };
-  const fresh = versions.filter(v => v.n > seen && v.n <= latest).sort((a, b) => a.n - b.n);
-  const threads = new Set(fresh.flatMap(v => v.addresses ?? []));
-  const k = threads.size;
-  const lastNote = [...fresh].reverse().find(v => v.note)?.note ?? null;
-  const ns = fresh.map(v => v.n);
-  let text: string | null = null;
-  if (fresh.length === 1) {
-    const v = fresh[0];
-    if (k > 0) text = `v${v.n} addressed ${plural(k, "comment")}${v.note ? `: ${v.note}` : ""}`;
-    else if (v.note) text = `v${v.n}: ${v.note}`;
-  } else if (fresh.length > 1) {
-    if (k > 0) text = `${fresh.length} new versions, ${plural(k, "comment")} addressed`;
-    else if (lastNote) text = `${fresh.length} new versions: ${lastNote}`;
-  }
-  return { banner: text ? { text, versions: ns, addressed: k } : null, write: latest };
+export function decide(versions: Version[], latest: number, att: Attention | null, pinned: boolean): Decided {
+  const none = { n: latest, ids: [], dot: false, line: null };
+  if (pinned || !att) return none;
+  const v = versions.find(x => x.n === latest);
+  const addressed = new Set(att.addressed);
+  const ids = (v?.addresses ?? []).filter(id => addressed.has(id));
+  const seen = att.seen;
+  const dot = seen !== null && latest > seen;
+  let line: string | null = null;
+  if (seen !== null && latest - seen > 1) {
+    const k = new Set(versions.filter(x => x.n > seen).flatMap(x => x.addresses ?? []).filter(id => addressed.has(id))).size;
+    if (k) line = `${latest - seen} new versions · ${k} addressed`;
+  } else if (ids.length) line = `v${latest} addressed ${ids.length}`;
+  return { n: latest, ids, dot, line };
 }
 
-/** "Addressed in vN" groups for versions that address a thread still present,
- * newest first; `expand` names the versions shown open (the newest when empty). */
-export function changeGroups(versions: Version[], threads: Thread[], expand: number[]): Group[] {
-  const byId = new Map(threads.map(t => [t.id, t]));
-  const groups = [...versions]
-    .sort((a, b) => b.n - a.n)
-    .map(v => ({ n: v.n, note: v.note ?? null, threads: (v.addresses ?? []).map(id => byId.get(id)).filter((t): t is Thread => !!t), open: false }))
-    .filter(g => g.threads.length > 0)
-    .slice(0, MAX_GROUPS);
-  const want = expand.length ? new Set(expand) : new Set(groups.slice(0, 1).map(g => g.n));
-  for (const g of groups) g.open = want.has(g.n);
-  return groups;
+export function versionRows(i: RowInput): Row[] {
+  const byId = new Map(i.threads.map(t => [t.id, t]));
+  return [...i.versions].sort((a, b) => b.n - a.n).map(v => {
+    const chips: Chip[] = [];
+    const did: string[] = [];
+    for (const id of v.addresses ?? []) {
+      const t = byId.get(id);
+      if (!t) continue;
+      const mineAfter = t.comments.some(c => c.author_public_id === i.me && c.created_at > v.created_at);
+      chips.push({ id, n: i.numbers.get(id) ?? null, open: t.status === "open" && mineAfter });
+      const num = i.numbers.get(id);
+      if (t.status === "resolved" && t.resolved_by === `viewer:${i.me}`) did.push(`you resolved ${num ? `#${num}` : "it"}`);
+      else if (t.status === "open" && mineAfter) did.push(`you replied on ${num ? `#${num}` : "it"}, still open`);
+    }
+    return {
+      n: v.n, current: v.n === i.shown, latest: v.n === i.latest, who: v.agent_harness ? agentName(v.agent_harness) : "command line",
+      when: relativeTime(v.created_at, i.now), chips, did: did.length ? did.join("; ") : null,
+      note: v.note ?? (v.n === 1 ? "First publish" : null), label: v.label,
+    };
+  });
 }
 
-/** The version menu, newest first. */
-export function versionRows(versions: Version[], latest: number, shown: number, now: Date): Row[] {
-  return [...versions].sort((a, b) => b.n - a.n).map(v => ({
-    n: v.n, current: v.n === shown, latest: v.n === latest, label: v.label, note: v.note ?? null,
-    addressed: (v.addresses ?? []).length, when: relativeTime(v.created_at, now),
-  }));
-}
-
-/** The thread's first comment, on one line, at most 80 characters. */
 export function excerpt(t: Thread): string {
   const s = (t.comments[0]?.body ?? "").split(/\s+/).filter(Boolean).join(" ");
   return s.length > 80 ? `${s.slice(0, 80)}…` : s;
 }
 ```
 
-`api.ts`:
+In `history-model.ts`, give `historyOf` its addressed events and time order:
 
 ```ts
-/** This viewer's seen mark on `aid`; null when none, or when the request fails. */
-export async function getSeen(aid: string): Promise<number | null> {
-  try {
-    const r = await fetch(`/api/viewers/me/seen?artifact=${encodeURIComponent(aid)}`);
-    return r.ok ? ((await r.json()) as { seen: number | null }).seen : null;
-  } catch { return null; }
-}
-/** Raises this viewer's seen mark on `aid` to `n`; failures are ignored (the banner may show again). */
-export async function putSeen(aid: string, n: number): Promise<void> {
-  try {
-    await fetch("/api/viewers/me/seen", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, version: n }) });
-  } catch { /* the next load decides again */ }
+export function addressedNote(t: Thread, c: Comment, versions: Version[]): number | null {
+  if (c.author_kind !== "agent") return null;
+  const at = (n: number) => versions.find(v => v.n === n)?.created_at ?? "";
+  return (t.addressed_in ?? []).find(n => at(n) >= c.created_at) ?? null;
 }
 ```
 
-Run: `cd web && npx vitest run shell/src/view/changelog-model.test.ts && npm run typecheck`
+Build the list as `{ at, e }` pairs. A comment's `at` is its `created_at`. An address's `at` is its version's `created_at`, with the event `{ v: n, who: agentName(<version n>.agent_harness), agent: true, verb: "addressed it" }`. The resolve's `at` is `resolved_at`, and working's `at` is `"~"`, which sorts last. Sort by `at` and map to `e`. Add a test to `history-model.test.ts`: an agent reply at 11:20, then v3 at 12:00 addressing the thread, gives `[…, claude replied, v3 claude addressed it]`, and `addressedNote` for that reply is `3`.
+
+Run: `cd web && npx vitest run shell/src/view/changelog-model.test.ts shell/src/view/history-model.test.ts`
 Expected: PASS.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 2: The controller, test first**
 
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/shell/src/view/changelog-model.ts web/shell/src/view/changelog-model.test.ts web/shell/src/api.ts web/shell/src/threads.ts
-git commit -m "Decide the changelog banner, groups and version rows in a framework-free model"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
-```
-
----
-
-### Task 17: Changelog UI: banner, Changes section, version menu, jump with highlight
-
-**Design spec.** The person asked for a "slick changelog". Build to this, and verify it in the browser (Task 18).
-
-- **Typography.** The shell's system UI stack. Banner text 14px/1.4. The version number (`v5`) is semibold with `font-variant-numeric: tabular-nums`. The note is regular, in `--muted` after a colon, and clamped to 2 lines with `-webkit-line-clamp`. Sidebar group heading: the sidebar `h2` style (13px, uppercase, `.04em` tracking), reading `Addressed in v5` plus a muted count. Rows are 13px. Version menu rows: `v5` semibold, then a `latest` chip (11px, `--working-soft`-style pill using the accent), the time in `--muted` 12px, and the note 13px on its own line, clamped to 2 lines.
-- **Spacing.** An 8 px rhythm. Banner padding 10px 14px, gap 12px, radius 12px, max width `min(560px, calc(100vw - 32px))`, 12 px from the stage's top, centred. A 3 px accent rule on its left edge (`box-shadow: inset 3px 0 0 var(--accent)`). Shadow `0 8px 28px rgba(0,0,0,.18)`. Group rows padding 6px 8px, radius 8px, hover background `--bg`. Version panel width 340px, rows padding 10px 12px, separated by 1 px `--border`.
-- **Motion.** The banner enters over 180 ms `cubic-bezier(.2,.8,.2,1)` from `translateY(-6px)`, opacity 0 to 1, and leaves over 120 ms with opacity only. The version panel opens over 140 ms from `scale(.98)` and opacity 0, with origin at the top right. Group disclosure uses native `<details>`, with no animation. Under `prefers-reduced-motion: reduce` there are no transforms and no transitions (instant), and the bridge's jump highlight is a static outline for 1.2 s with an instant scroll.
-- **Colour.** Only existing tokens (`--card`, `--fg`, `--muted`, `--border`, `--accent`, `--on-accent`, `--bg`) plus `--chip: color-mix(in srgb, var(--accent) 14%, transparent)`, which works in both themes because it derives from `--accent`.
-- **Phone width (≤480px).** The banner spans the stage minus 16 px gutters. Its buttons sit on a second row, right-aligned. The version panel becomes a sheet fixed under the top bar (`left: 8px; right: 8px; max-height: 70vh; overflow: auto`). Nothing scrolls sideways.
-- **Accessibility.** The banner is `role="status"` (polite). Show and Dismiss are real buttons: `Show changes` and `Dismiss` (`aria-label="Dismiss changelog"`), and focus is never moved to the banner. The version menu button has `aria-haspopup="dialog"` and `aria-expanded`. The panel is `role="dialog" aria-label="Versions"`. Opening it focuses the current version's link. Escape or a click outside closes it and returns focus to the button. Rows are links (`aria-current="page"` on the shown version). Group rows: the jump is a button labelled with the anchor and excerpt, and Resolve is a button labelled `Resolve`.
-
-**Files:**
-- Create: `web/shell/src/ui/ChangelogBanner.svelte`, `web/shell/src/ui/AddressedGroups.svelte`, `web/shell/src/ui/VersionMenu.svelte`, `web/shell/src/changelog-ui.test.ts`
-- Modify: `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/viewer.spec.ts`
-
-**Interfaces:**
-- `ArtifactController`:
-  - `ViewState` gains `changelog: Banner | null`, `changesOpen: number[]` (the versions whose groups start expanded) and `changesFocus: number` (bumped to move focus to the Changes heading). They start as `null`, `[]` and `0`.
-  - New methods: `dismissChangelog(): void` and `showChanges(): void` (clears the banner, opens the panel, bumps `changesFocus`).
-  - A private `decideChangelog()`. `start()` runs it once, after the viewer lookup the controller already awaits in `openStream`, and after `data` is present. It is never on the path to first paint.
-- `ChangelogBanner.svelte` `{ banner: Banner; onShow(): void; onDismiss(): void }`. The stage island loads it by dynamic `import()` only when a banner is decided.
-- `AddressedGroups.svelte` `{ groups: Group[]; focus: number; onJump(t: Thread): void; onResolve(t: Thread): void }`. `Sidebar` loads it by dynamic `import()` only when there are groups.
-- `VersionMenu.svelte` `{ rows: Row[]; shown: number; latest: number; hrefFor(n: number): string; onChoose(n: number): void }`. It is eager and replaces the `<select>` in `TopbarIsland.svelte`.
-- `Sidebar` gains `changes?: Group[]` and `changesFocus?: number`.
-
-- [ ] **Step 1: Tests first**
-
-`web/shell/src/changelog-ui.test.ts`:
+Add to `view/artifact-controller.test.ts`. The `loaded` fixture is at v2. Give it `versions` with v2 `addresses: ["t1"]`, `note: "Two columns"`, and `attention: { addressed: ["t1"], addressed_v: 2, new_replies: [], open_in: ["t1"], seen: 1, looked: {} }` on the artifact response. Record `PUT` bodies in the `fetch` stub.
 
 ```ts
-import { describe, expect, it, vi } from "vitest";
-import { flush, mount } from "./test/svelte";
-import ChangelogBanner from "./ui/ChangelogBanner.svelte";
-import VersionMenu from "./ui/VersionMenu.svelte";
-
-describe("changelog UI", () => {
-  it("the banner is a polite status with Show and Dismiss", () => {
-    const onShow = vi.fn();
-    const onDismiss = vi.fn();
-    const m = mount(ChangelogBanner, { banner: { text: "v2 addressed 3 comments: Two columns", versions: [2], addressed: 3 }, onShow, onDismiss });
-    const el = m.root.querySelector(".changelog-banner")!;
-    expect(el.getAttribute("role")).toBe("status");
-    expect(el.textContent).toContain("v2 addressed 3 comments: Two columns");
-    flush(() => (m.root.querySelector("button[aria-label='Dismiss changelog']") as HTMLButtonElement).click());
-    expect(onDismiss).toHaveBeenCalled();
-    flush(() => Array.from(m.root.querySelectorAll("button")).find(b => b.textContent === "Show changes")!.click());
-    expect(onShow).toHaveBeenCalled();
-    m.unmount();
+  it("decides the changelog once ready, writes seen for the unpinned latest, and batches looked-at marks", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { ctl } = await started();
+    await vi.waitFor(() => expect(ctl.state.get().decided).toEqual({ n: 2, ids: ["t1"], dot: true, line: "v2 addressed 1" }));
+    const puts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "PUT");
+    expect(puts().some(([u, i]) => String(u) === "/api/viewers/me/seen" && JSON.parse((i as RequestInit).body as string).version === 2)).toBe(true);
+    const t1 = ctl.state.get().threads.find(t => t.id === "t1")!;
+    ctl.look(t1);
+    ctl.look(t1);
+    await vi.advanceTimersByTimeAsync(1100);
+    const looked = puts().filter(([u]) => String(u) === "/api/viewers/me/looked");
+    expect(looked).toHaveLength(1);
+    expect(JSON.parse((looked[0][1] as RequestInit).body as string)).toEqual({ artifact_id: ID, thread_ids: ["t1"] });
+    expect(ctl.state.get().decided!.ids).toEqual(["t1"]);
+    ctl.dispose();
+    vi.useRealTimers();
   });
-
-  it("the version menu opens a dialog of links, focuses the shown version, chooses through the controller, and closes on Escape", async () => {
-    const rows = [
-      { n: 2, current: false, latest: true, label: null, note: "Two columns", addressed: 1, when: "just now" },
-      { n: 1, current: true, latest: false, label: "first", note: null, addressed: 0, when: "5 min ago" },
-    ];
-    const onChoose = vi.fn();
-    const m = mount(VersionMenu, { rows, shown: 1, latest: 2, hrefFor: (n: number) => `/a/x${n === 2 ? "" : `/v/${n}`}`, onChoose });
-    const button = m.root.querySelector("button.version-button") as HTMLButtonElement;
-    expect(button.textContent).toBe("v1 of 2");
-    expect(button.getAttribute("aria-expanded")).toBe("false");
-    flush(() => button.click());
-    const dialog = m.root.querySelector("[role=dialog]")!;
-    expect(dialog.getAttribute("aria-label")).toBe("Versions");
-    const links = Array.from(dialog.querySelectorAll("a"));
-    expect(links.map(a => a.getAttribute("href"))).toEqual(["/a/x", "/a/x/v/1"]);
-    expect(dialog.textContent).toContain("Two columns");
-    expect(dialog.textContent).toContain("addressed 1");
-    await vi.waitFor(() => expect(document.activeElement).toBe(links[1]));
-    expect(links[1].getAttribute("aria-current")).toBe("page");
-    flush(() => links[0].click());
-    expect(onChoose).toHaveBeenCalledWith(2);
-    flush(() => button.click());
-    const again = m.root.querySelector("[role=dialog]")!;
-    flush(() => again.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    expect(m.root.querySelector("[role=dialog]")).toBeNull();
-    expect(document.activeElement).toBe(button);
-    m.unmount();
-  });
-});
 ```
 
-Add to `sidebar.test.ts`:
+The last assertion holds because the group stays decided until the next decision (provisional: Q4).
+
+Implement in `view/artifact-controller.ts`:
+- `ViewState` fields: `decided: null`, `menu: null` and `looked: {}`. `looked` is seeded from `attention?.looked ?? {}` whenever attention is set.
+- `private decideFor = 0;` and:
 
 ```ts
-  it("lists addressed threads by version, with jump and one-click Resolve, loaded after the threads", async () => {
-    const t: Thread = { ...base, id: "a1", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "two columns")] };
-    const onSelect = vi.fn();
-    const onResolve = vi.fn();
-    const m = mount(Sidebar, { threads: [t], resolved: {}, changes: [{ n: 2, note: "Two columns", threads: [t], open: true }], changesFocus: 0,
-      selected: null, onSelect, onSend: vi.fn(), onResolve, onReply: vi.fn() });
-    const section = await vi.waitFor(() => { const s = m.root.querySelector(".section-changes"); if (!s) throw new Error("not loaded yet"); return s; });
-    expect(section.querySelector("summary")!.textContent).toContain("Addressed in v2");
-    flush(() => (section.querySelector(".change-jump") as HTMLButtonElement).click());
-    expect(onSelect).toHaveBeenCalledWith(t);
-    flush(() => Array.from(section.querySelectorAll("button")).find(b => b.textContent === "Resolve")!.click());
-    expect(onResolve).toHaveBeenCalledWith(t);
-    expect(m.root.querySelectorAll(".section-open .thread-card")).toHaveLength(1);
-    m.unmount();
-  });
+  /** The changelog for this load (spec §8): decided once the view is ready,
+   * and again when a newer latest version loads; never on the path to first
+   * paint. Writes the version seen for an unpinned view of the latest. */
+  private decideChangelog(): void {
+    const s = this.s;
+    if (!viewReady(s)) return;
+    const latest = s.data.artifact.current_version;
+    if (this.decideFor === latest) return;
+    this.decideFor = latest;
+    const pinned = this.pinnedVersion !== null || this.shown(s) !== latest;
+    this.set({ decided: decide(s.data.versions, latest, s.attention, pinned) });
+    if (!pinned && s.me) void putSeen(this.id, latest);
+  }
+
+  private pendingLook = new Set<string>();
+  private lookTimer: ReturnType<typeof setTimeout> | undefined;
+  /** This viewer looked at `t` (spec §10, "Participants and attention"); marks go out at most once a second. */
+  look(t: Thread): void {
+    if (this.s.looked[t.id] && this.s.looked[t.id] >= (t.comments.at(-1)?.created_at ?? "")) return;
+    this.pendingLook.add(t.id);
+    this.lookTimer ??= setTimeout(() => {
+      this.lookTimer = undefined;
+      const ids = [...this.pendingLook];
+      this.pendingLook.clear();
+      void putLooked(this.id, ids).then(m => { if (m && !this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } })); });
+    }, 1000);
+  }
+
+  openMenu(m: "versions" | "people"): void { this.set(s => ({ menu: s.menu === m ? null : m })); }
+  closeMenu(): void { this.set({ menu: null }); }
 ```
 
-Add to `view/artifact-controller.test.ts`. Extend the harness's `fetch` stub to answer `/api/viewers/me/seen` with `{ seen: 1 }` and record `PUT` bodies. The shared `loaded` fixture is at version 2; give its `versions` a `v2` with `addresses: ["t1"]`, `note: "Two columns"`, and a `v1`, for this test only:
+- Call `decideChangelog()` at the end of `loaded(d)`, after the bootstrap seed, and in the `react()` pass when `prev.data !== s.data`.
+- `selectThread(t)` also calls `this.look(t)`.
+- `dispose` clears `lookTimer`.
+- The Escape branch closes `menu` before `sheet` and comment mode.
+- `shortcut("versions")` calls `this.openMenu("versions")`.
+- Import `decide` and `type Decided` from `./changelog-model`, and `putSeen` and `putLooked` from `../api`.
 
-```ts
-  it("decides the changelog after load, writes the seen mark, and Show opens the Changes section", async () => {
-    const saved = loaded.versions;
-    loaded.versions = [{ artifact_id: ID, n: 1, label: null, created_at: "x", files: {} }, { artifact_id: ID, n: 2, label: null, created_at: "x", files: {}, note: "Two columns", addresses: ["t1"] }] as typeof saved;
-    try {
-      const { ctl } = await started();
-      await vi.waitFor(() => expect(ctl.state.get().changelog?.text).toBe("v2 addressed 1 comment: Two columns"));
-      const puts = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([u, i]) => String(u).startsWith("/api/viewers/me/seen") && (i as RequestInit | undefined)?.method === "PUT");
-      expect(JSON.parse((puts[0][1] as RequestInit).body as string)).toEqual({ artifact_id: ID, version: 2 });
-      ctl.showChanges();
-      expect(ctl.state.get()).toMatchObject({ changelog: null, panel: true, changesOpen: [2], changesFocus: 1 });
-      ctl.dispose();
-    } finally {
-      loaded.versions = saved;
-    }
-  });
-```
+- [ ] **Step 3: Components**
 
-In the harness's `fetch` stub, answer `url.startsWith("/api/viewers/me/seen")` with `{ seen: 1 }` before the generic `/api/viewers` branch.
-
-Run: `cd web && npx vitest run shell/src/changelog-ui.test.ts shell/src/sidebar.test.ts shell/src/view/artifact-controller.test.ts`
-Expected: FAIL.
-
-- [ ] **Step 2: Components**
-
-`web/shell/src/ui/ChangelogBanner.svelte`:
+`web/shell/src/ui/AddressedGroup.svelte`:
 
 ```svelte
 <script lang="ts">
-  import type { Banner } from "../view/changelog-model";
-
-  let { banner, onShow, onDismiss }: { banner: Banner; onShow(): void; onDismiss(): void } = $props();
+  import type { Snippet } from "svelte";
+  let { n, agent, count, children }: { n: number; agent: string; count: number; children: Snippet } = $props();
 </script>
 
-<div class="changelog-banner" role="status">
-  <p class="changelog-text">{banner.text}</p>
-  <div class="changelog-actions">
-    <button type="button" class="primary" onclick={onShow}>Show changes</button>
-    <button type="button" aria-label="Dismiss changelog" onclick={onDismiss}>Dismiss</button>
-  </div>
-</div>
-```
-
-`web/shell/src/ui/AddressedGroups.svelte`:
-
-```svelte
-<script lang="ts">
-  import { anchorLabel, type Thread } from "../threads";
-  import { excerpt, type Group } from "../view/changelog-model";
-
-  let { groups, focus, onJump, onResolve }: { groups: Group[]; focus: number; onJump(t: Thread): void; onResolve(t: Thread): void } = $props();
-  let heading: HTMLElement | undefined = $state();
-  // Show changes bumps `focus`; the heading takes focus, never on first render.
-  $effect(() => { if (focus > 0) heading?.focus(); });
-</script>
-
-<section class="section-changes" aria-label="Changes">
-  <h2 tabindex="-1" bind:this={heading}>Changes</h2>
-  {#each groups as g (g.n)}
-    <details class="change-group" open={g.open}>
-      <summary>Addressed in v{g.n} <span class="muted">{g.threads.length}</span></summary>
-      {#if g.note}<p class="change-note">{g.note}</p>{/if}
-      <ul>
-        {#each g.threads as t (t.id)}
-          <li class="change-row">
-            <button type="button" class="change-jump" onclick={() => onJump(t)}>
-              <span class="anchor-label">{anchorLabel(t.anchor)}</span>
-              <span class="change-excerpt muted">{excerpt(t)}</span>
-            </button>
-            {#if t.status === "open"}
-              <button type="button" onclick={() => onResolve(t)}>Resolve</button>
-            {:else}
-              <span class="muted small">Resolved</span>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </details>
-  {/each}
+<section class="section-addressed" aria-label={`Addressed in v${n}`}>
+  <h2 class="gh ag"><span class="sw" aria-hidden="true"></span><span class="t">Addressed in v{n}</span> <span class="c">{count}</span></h2>
+  <p class="gsub">{agent} addressed these. Have a look, then resolve each one or reply.</p>
+  {@render children()}
 </section>
 ```
 
@@ -4675,406 +7238,567 @@ Expected: FAIL.
 
 ```svelte
 <script lang="ts">
-  import { tick } from "svelte";
+  // The version button (spec §8): `v5 of 5`, a green dot while a version
+  // newer than this viewer's last view exists. Its panel loads on first open.
   import type { Row } from "../view/changelog-model";
 
-  let { rows, shown, latest, hrefFor, onChoose }: { rows: Row[]; shown: number; latest: number; hrefFor(n: number): string; onChoose(n: number): void } = $props();
-  let open = $state(false);
+  let { shown, latest, dot, open, onToggle, rows, hrefFor, onChoose }: {
+    shown: number; latest: number; dot: boolean; open: boolean; onToggle(): void; rows: () => Row[]; hrefFor(n: number): string; onChoose(n: number): void;
+  } = $props();
   let button: HTMLButtonElement | undefined = $state();
-  let panel: HTMLDivElement | undefined = $state();
+</script>
 
-  async function toggle() {
-    open = !open;
-    if (open) { await tick(); panel?.querySelector<HTMLElement>("a[aria-current=page]")?.focus(); }
-  }
-  function close() { open = false; button?.focus(); }
-  function outside(e: PointerEvent) {
-    if (open && !panel?.contains(e.target as Node) && !button?.contains(e.target as Node)) open = false;
-  }
+<div class="version-menu hide-sm">
+  <button type="button" class="vbtn" bind:this={button} aria-haspopup="dialog" aria-expanded={open} aria-label={`Version ${shown} of ${latest}${dot ? ", a newer version you have not seen" : ""}`} onclick={onToggle}>
+    v{shown}<span>of {latest} ▾</span>{#if dot}<i class="new" aria-hidden="true"></i>{/if}
+  </button>
+  {#if open}
+    {#await import("./VersionPanel.svelte") then { default: VersionPanel }}
+      <VersionPanel rows={rows()} {hrefFor} {onChoose} onClose={() => { onToggle(); button?.focus(); }} />
+    {/await}
+  {/if}
+</div>
+```
+
+`web/shell/src/ui/VersionPanel.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Row } from "../view/changelog-model";
+
+  let { rows, hrefFor, onChoose, onClose }: { rows: Row[]; hrefFor(n: number): string; onChoose(n: number): void; onClose(): void } = $props();
+  let panel: HTMLDivElement | undefined = $state();
+  $effect(() => { panel?.querySelector<HTMLElement>("a[aria-current=page]")?.focus(); });
   function choose(e: MouseEvent, n: number) {
     // A plain click moves through the controller, as the select did; a
     // modified click keeps the link's own behaviour (a new tab).
     if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
     e.preventDefault();
-    open = false;
     onChoose(n);
   }
+  function outside(e: PointerEvent) { if (panel && !panel.contains(e.target as Node) && !(e.target as Element).closest?.(".vbtn")) onClose(); }
 </script>
 
 <svelte:window onpointerdown={outside} />
-
-<div class="version-menu">
-  <button type="button" class="version-button" bind:this={button} aria-haspopup="dialog" aria-expanded={open} onclick={toggle}>v{shown} of {latest}</button>
-  {#if open}
-    <div class="version-panel" role="dialog" aria-label="Versions" tabindex="-1" bind:this={panel}
-      onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); close(); } }}>
-      <ol>
-        {#each rows as r (r.n)}
-          <li>
-            <a href={hrefFor(r.n)} aria-current={r.current ? "page" : undefined} onclick={e => choose(e, r.n)}>
-              <span class="version-head"><strong>v{r.n}</strong>{#if r.latest}<span class="chip">latest</span>{/if}<span class="muted">{r.when}</span>{#if r.label}<span class="muted">· {r.label}</span>{/if}</span>
-              {#if r.note}<span class="version-note">{r.note}</span>{/if}
-              {#if r.addressed > 0}<span class="version-count muted">addressed {r.addressed}</span>{/if}
-            </a>
-          </li>
-        {/each}
-      </ol>
-    </div>
-  {/if}
+<!-- Escape closes the dialog. -->
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+<div class="vmenu" role="dialog" aria-label="Versions" tabindex="-1" bind:this={panel}
+  onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
+  <ol>
+    {#each rows as r (r.n)}
+      <li class={["vrow", r.current && "cur"]}>
+        <a href={hrefFor(r.n)} aria-current={r.current ? "page" : undefined} onclick={e => choose(e, r.n)}>
+          <span class="g">v{r.n}</span>
+          <span class="h">{r.who}<small>{r.when}{r.label ? ` · ${r.label}` : ""}</small></span>
+          {#if r.chips.length}<span class="cl">Addressed {#each r.chips as c (c.id)}<span class={["pc", c.open && "open"]}><i>{c.n ?? "•"}</i></span>{/each}</span>{/if}
+          {#if r.did}<span class="cl">{r.did}</span>{/if}
+          {#if r.note}<span class="cl note">{r.note}</span>{/if}
+        </a>
+      </li>
+    {/each}
+  </ol>
 </div>
 ```
 
-If `svelte-check` reports `a11y_no_noninteractive_element_interactions` for the dialog's `onkeydown`, put `<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->` directly above the `<div class="version-panel" …>`, with a comment saying Escape closes a dialog. Do not remove the handler.
-
-- [ ] **Step 3: Wire the controller and the islands**
-
-`view/artifact-controller.ts`:
+`ui/ThreadCard.svelte`:
+- Add `onSeen?(t: Thread): void`, and attach to the `<article>`:
 
 ```ts
-  private decided = false;
-
-  /** The changelog banner for this load (spec §8): once, after the viewer
-   * lookup and the artifact, never on the path to first paint. */
-  private decideChangelog(): void {
-    const s = this.s;
-    if (this.decided || !s.data) return;
-    this.decided = true;
-    const latest = s.data.artifact.current_version;
-    const pinned = this.pinnedVersion !== null || this.shown() !== latest;
-    const versions = s.data.versions;
-    void getSeen(this.id).then(seen => {
-      if (this.disposed) return;
-      const { banner, write } = decideBanner(versions, seen, latest, pinned);
-      if (write !== null) void putSeen(this.id, write);
-      if (banner) this.set({ changelog: banner, changesOpen: banner.versions });
-    });
-  }
-
-  dismissChangelog(): void { this.set({ changelog: null }); }
-
-  showChanges(): void {
-    this.set(s => ({ changelog: null, panel: true, changesFocus: s.changesFocus + 1 }));
-  }
+  const seen = (el: HTMLElement) => {
+    if (!onSeen || typeof IntersectionObserver !== "function") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const io = new IntersectionObserver(([e]) => {
+      clearTimeout(timer);
+      if (e.intersectionRatio >= 0.5) timer = setTimeout(() => onSeen(t), 1000);
+    }, { threshold: [0, 0.5] });
+    io.observe(el);
+    return () => { clearTimeout(timer); io.disconnect(); };
+  };
 ```
 
-Call `this.decideChangelog()` in `openStream`'s `first` (after `getViewer()` settles), and also wherever `data` is first set. The `decided` flag makes it run once, whichever comes last. Import `getSeen`, `putSeen` from `../api` and `decideBanner`, `type Banner` from `./changelog-model`.
+- In the author line of an agent comment, append `{#if note}<span class="muted"> · addressed in v{note}</span>{/if}`, with `{@const note = addressedNote(t, c, versions)}`. The card takes `versions` from `Sidebar`.
 
-`ui/TopbarIsland.svelte`: replace the `<select …>…</select>` with:
-
-```svelte
-  <VersionMenu rows={versionRows(s.data.versions, latest, shown, new Date())} {shown} {latest}
-    hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => ctl.chooseVersion(n)} />
-```
-
-and import `VersionMenu` and `versionRows`. `ctl.chooseVersion` is the method the select called, so moving between versions behaves exactly as before.
-
-`ui/StageIsland.svelte`: before the `{#if s.newer && !s.deleted}` banner, add:
+`ui/Sidebar.svelte`:
+- Add `decided?: Decided | null` and `onSeen?(t: Thread): void`.
+- The Open section lists `s.open` minus `decided.ids`.
+- Before it, render the group with the `{#await}`:
 
 ```svelte
-  {#if s.changelog && !s.newer && !s.deleted}
-    {#await import("./ChangelogBanner.svelte") then { default: ChangelogBanner }}
-      <ChangelogBanner banner={s.changelog} onShow={() => ctl.showChanges()} onDismiss={() => ctl.dismissChangelog()} />
+  {@const group = p.decided ? p.threads.filter(t => p.decided!.ids.includes(t.id)) : []}
+  {#if group.length}
+    {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
+      <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
     {/await}
   {/if}
 ```
 
-`ui/SidebarIsland.svelte`: pass `changes={changeGroups(s.data.versions, s.threads, s.changesOpen)}` and `changesFocus={s.changesFocus}` to `Sidebar`.
+- `cards` passes `onSeen={p.onSeen}` and `versions={p.versions}`.
 
-`ui/Sidebar.svelte`: add the two props. After `{@render p.header?.()}`, and before the Open section, add:
+`ui/SidebarIsland.svelte` passes `decided={s.decided}` and `onSeen={t => ctl.look(t)}`.
+
+`ui/Pins.svelte`: `addressed?: Map<string, number>` adds `class:addressed` and `data-v={`v${n}`}` to a pin whose thread is in the map. `StageIsland` passes the map of `s.decided.ids` (all at `s.decided.n`) minus threads in `s.looked` newer than the decision.
+
+`ui/TopbarIsland.svelte`:
+- Replace the `<select class="version …">` with:
 
 ```svelte
-  {#if p.changes?.length}
-    {#await import("./AddressedGroups.svelte") then { default: AddressedGroups }}
-      <AddressedGroups groups={p.changes} focus={p.changesFocus ?? 0} onJump={p.onSelect} onResolve={p.onResolve} />
-    {/await}
-  {/if}
+  <VersionMenu {shown} {latest} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
+    rows={() => versionRows({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null })}
+    hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
 ```
 
-`onSelect` is the controller's `selectThread`: it selects the thread, scrolls the frame to the anchor and flashes it, and first navigates to the thread's page when it is on another one. The existing sections are unchanged, so pin numbering is untouched.
+  `ctl.numbers(s)` is the pin numbering the sidebar uses (`sidebarSections(...).numbers`). Expose it as a public method.
+- Pass `addressed: s.decided?.line ?? null` into `summary(...)`.
 
-- [ ] **Step 4: Reduced-motion highlight in the bridge**
-
-In `web/bridge/src/comment-mode.ts`, append to `CSS`: `@media (prefers-reduced-motion: reduce){.o.flash,.f.flash{animation:none}}`. In `flash`, use a 1200 ms timeout instead of 1800 when `matchMedia("(prefers-reduced-motion: reduce)").matches`. In `web/bridge/src/bridge.ts`, in the `clax:scroll-to` case (inside its `withComment(l => …)`), compute `const behavior: ScrollBehavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";` and pass it to both `scrollBy` and `scrollIntoView`.
-
-- [ ] **Step 5: Styles**
-
-Append to `web/shell/src/theme.css`:
-
-```css
-/* Version changelog (spec §8). */
-:root { --chip: color-mix(in srgb, var(--accent) 14%, transparent); }
-.changelog-banner { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); z-index: 5; width: max-content; max-width: min(560px, calc(100% - 32px));
-  display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 12px; background: var(--card); color: var(--fg);
-  border: 1px solid var(--border); box-shadow: inset 3px 0 0 var(--accent), 0 8px 28px rgba(0,0,0,.18); animation: changelog-in 180ms cubic-bezier(.2,.8,.2,1); }
-@keyframes changelog-in { from { opacity: 0; transform: translate(-50%, -6px); } to { opacity: 1; transform: translate(-50%, 0); } }
-.changelog-text { margin: 0; font-size: 14px; line-height: 1.4; font-variant-numeric: tabular-nums; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.changelog-actions { display: flex; gap: 8px; flex: none; }
-.section-changes h2:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.change-group { margin-bottom: 8px; }
-.change-group summary { cursor: pointer; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; padding: 4px 0; }
-.change-note { margin: 2px 0 6px; font-size: 13px; color: var(--muted); }
-.change-group ul { list-style: none; margin: 0; padding: 0; }
-.change-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 8px; }
-.change-row:hover { background: var(--bg); }
-.change-jump { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: flex-start; gap: 2px; background: none; border: 0; padding: 0; text-align: left; font-size: 13px; }
-.change-excerpt { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.change-row > button:not(.change-jump) { flex: none; padding: 2px 8px; font-size: 12px; }
-.version-menu { position: relative; flex: none; }
-.version-button { font-variant-numeric: tabular-nums; }
-.version-panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; width: 340px; max-height: 70vh; overflow: auto; background: var(--card);
-  border: 1px solid var(--border); border-radius: 12px; box-shadow: 0 12px 32px rgba(0,0,0,.2); transform-origin: top right; animation: version-in 140ms ease-out; }
-@keyframes version-in { from { opacity: 0; transform: scale(.98); } to { opacity: 1; transform: none; } }
-.version-panel ol { list-style: none; margin: 0; padding: 0; }
-.version-panel li + li { border-top: 1px solid var(--border); }
-.version-panel a { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; }
-.version-panel a:hover, .version-panel a:focus-visible { background: var(--bg); outline: none; }
-.version-panel a[aria-current=page] { box-shadow: inset 3px 0 0 var(--accent); }
-.version-head { display: flex; align-items: baseline; gap: 8px; font-size: 13px; font-variant-numeric: tabular-nums; }
-.version-head .muted { font-size: 12px; }
-.chip { font-size: 11px; padding: 0 6px; border-radius: 999px; background: var(--chip); color: var(--fg); }
-.version-note { font-size: 13px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.version-count { font-size: 12px; }
-@media (max-width: 480px) {
-  .changelog-banner { width: calc(100% - 16px); max-width: none; flex-wrap: wrap; }
-  .changelog-actions { width: 100%; justify-content: flex-end; }
-  .version-panel { position: fixed; left: 8px; right: 8px; width: auto; top: 56px; }
-}
-@media (prefers-reduced-motion: reduce) { .changelog-banner, .version-panel { animation: none; } }
-```
-
-- [ ] **Step 6: Update the one e2e step that used the `<select>`**
+`view/keys.ts`: add `v: "versions"` to `MAP`, and the `V` row after `R`. Update `keys.test.ts`'s row list.
 
 In `web/e2e/viewer.spec.ts`, replace `await page.selectOption("select", "1");` with:
 
 ```ts
-  await page.getByRole("button", { name: "v2 of 2" }).click();
+  await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
   await page.getByRole("dialog", { name: "Versions" }).getByRole("link", { name: /^v1\b/ }).click();
 ```
 
-The assertions that follow it (URL `/v/1`, frame shows `v1`) stay as they are.
+- [ ] **Step 4: The version banners move off the page (provisional: Q12)**
 
-- [ ] **Step 7: Run, check the budgets, commit**
+The port shows two bands over the stage: `vN published` with Reload, and `viewing vN; latest is vM` with a link. Echo puts nothing over the page, so both move into the top bar.
+- In `ui/StageIsland.svelte`, delete the two `<div class="banner">` blocks for `s.newer` and for `shown < latest`. The `s.notice` alert stays: it reports a failure the person dismisses.
+- `summary(...)` takes `published: number | null`. With nobody working, `line1` is `v{n} published` and `line2` is `reload to see it`. In `TopbarIsland.svelte`, pass `published: s.deleted ? null : s.newer`. Right after the `.who` block, add:
 
-Run: `cd web && npm run lint && npm run typecheck && npx vitest run && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/viewer.spec.ts; echo "exit=$?"`
-Expected: `exit=0`. `ChangelogBanner` and `AddressedGroups` are separate chunks outside `artifact.html`'s closure: `grep -l "Show changes" dist/_clax/shell/*.js` names a chunk that is not in `manifest["artifact.html"].imports`. If the bundle budget fails, stop and report the sizes. Never record a higher budget.
-
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/shell/src/ui/ChangelogBanner.svelte web/shell/src/ui/AddressedGroups.svelte web/shell/src/ui/VersionMenu.svelte web/shell/src/changelog-ui.test.ts \
-  web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/ui/TopbarIsland.svelte web/shell/src/ui/StageIsland.svelte \
-  web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/Sidebar.svelte web/shell/src/sidebar.test.ts web/shell/src/theme.css \
-  web/bridge/src/comment-mode.ts web/bridge/src/bridge.ts web/e2e/viewer.spec.ts
-git commit -m "Show each version's changelog: a once-per-viewer banner, the Changes section and the version menu"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+```svelte
+  {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
+  {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
 ```
 
----
+- In `working-model.test.ts`, add: `published: 3` with nobody working reads `v3 published` over `reload to see it`. Every other case passes `published: null`.
+- The e2e step that clicked `Reload` in the stage still finds the button by role and name. Specs that asserted the stage `.banner` text assert the summary line instead: `grep -rln '"\.banner"\|v[0-9] published' web/e2e`.
 
-### Task 18: Browser tests and verification for the changelog
+Add to the CSS in Step 6: `.topbar a.latest { font: 600 14px var(--grot); color: var(--accent-ink); }`.
 
-**Files:**
-- Create: `web/e2e/changelog.spec.ts`
-- Modify: `web/e2e/fixtures.ts` (`publishNext`, `seenOf`)
+- [ ] **Step 5: Reduced-motion highlight in the bridge**
 
-**Interfaces:**
-- `publishNext(base, token, sid, aid, ifVersion, extra: { note?: string; addresses?: string[] }): Promise<any>` publishes `PAGE` as the next version with `X-Clax-Session`.
-- `seenOf(page, aid): Promise<number | null>` reads this page's viewer's seen mark from inside the page, so the request carries its cookie.
+In `web/bridge/src/comment-mode.ts`:
+- append to `CSS`: `@media (prefers-reduced-motion: reduce){.o.flash,.f.flash{animation:none}}`;
+- in `flash`, use a 1200 ms timeout instead of 1800 when `matchMedia("(prefers-reduced-motion: reduce)").matches`.
 
-- [ ] **Step 1: Fixtures**
+In `web/bridge/src/bridge.ts`, in the `clax:scroll-to` case, compute `const behavior: ScrollBehavior = matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";` and pass it to both `scrollBy` and `scrollIntoView`.
 
-Append to `web/e2e/fixtures.ts`:
+- [ ] **Step 6: Styles**
 
-```ts
-/** Publishes `<main><h2>Quarterly goals</h2></main>` as the next version of `aid`, as session `sid`, with a note or addresses. */
-export async function publishNext(base: string, token: string, sid: string, aid: string, ifVersion: number, extra: { note?: string; addresses?: string[] } = {}) {
-  return api(base, token, `/api/artifacts/${aid}/versions`, { method: "POST", session: sid,
-    body: JSON.stringify({ if_version: ifVersion, ...extra, files: { "index.html": { content: "<main><h2>Quarterly goals</h2></main>", encoding: "utf8" } } }) });
-}
+Append to `web/shell/src/theme.css`:
 
-/** The seen mark of the viewer whose shell is `page`. */
-export async function seenOf(page: Page, aid: string): Promise<number | null> {
-  return page.evaluate(async id => (await (await fetch(`/api/viewers/me/seen?artifact=${id}`)).json()).seen, aid);
-}
+```css
+/* The changelog (spec §8): no band over the page. */
+.gsub { margin: -4px 2px 10px 17px; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.version-menu { position: relative; }
+.vbtn { display: flex; align-items: baseline; gap: 4px; padding: 0 10px; height: 36px; position: relative; font: 600 22px/36px var(--grot); }
+.vbtn span { font: 400 12px var(--mono); color: var(--muted); }
+.vbtn .new { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); }
+.vmenu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 440px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0; }
+.vmenu ol { list-style: none; margin: 0; padding: 0; }
+.vrow a { display: grid; grid-template-columns: 48px 1fr; gap: 2px 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); }
+.vrow:last-child a { border-bottom: 0; }
+.vrow a:hover, .vrow a:focus-visible { background: var(--bg); outline: none; }
+.vrow .g { font-size: 24px; line-height: 1; grid-row: span 4; }
+.vrow.cur a { background: var(--bg); } .vrow.cur .g { color: var(--agent-ink); }
+.vrow .h { font: 600 14px var(--grot); } .vrow .h small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: 6px; }
+.vrow .cl { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); align-items: center; }
+.pc i { font-style: normal; display: inline-block; width: 17px; height: 17px; border-radius: 50%; font: 600 10px/17px var(--mono); text-align: center; background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--agent); }
+.pc.open i { box-shadow: inset 0 0 0 1.5px var(--you); }
+.thread-pin.addressed { background: #fff; border-color: #457d26; color: #2f0b04; }
+.thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--grot); background: #fff; color: #2f0b04; border: 1px solid #457d26; padding: 0 3px; white-space: nowrap; }
+@media (max-width: 700px) { .vmenu { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; } }
 ```
 
-- [ ] **Step 2: The spec**
+The pin colours are literal, because pins sit over the artifact, whose colours Clax does not set.
+
+- [ ] **Step 7: Browser tests**
+
+Add to `web/e2e/fixtures.ts`:
+- `publishNext(base, token, sid, aid, ifVersion, extra: { note?: string; addresses?: string[] })`;
+- `seenOf(page, aid)`, which reads `/api/viewers/me/seen?artifact=` from inside the page.
 
 `web/e2e/changelog.spec.ts`:
 
 ```ts
-import { test, expect } from "@playwright/test";
-import { contentFrame, openArtifact, postThread, publishAs, publishNext, reach, registerSession, seenOf, startDaemon } from "./fixtures";
+import { test, expect, type Page } from "@playwright/test";
+import { contentFrame, openArtifact, publishAs, publishNext, reach, registerSession, seenOf, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
 test.afterAll(async () => { await d?.stop(); });
-
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
-async function fresh(title: string) {
-  const s = await registerSession(d.base, d.token, "claude", `cl-${title}`);
-  const { artifact } = await publishAs(d.base, d.token, s.id, title, { "index.html": PAGE });
-  return { sid: s.id, aid: artifact.id };
+/** Names this page's viewer and comments on the heading through the shell's own API call, so the thread is theirs. */
+async function commentAs(page: Page, aid: string, name: string, body: string): Promise<string> {
+  return page.evaluate(async ([aid, name, body]) => {
+    await fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
+    const f = new FormData();
+    f.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    f.set("body", body); f.set("version", "1");
+    return (await (await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: f })).json()).thread.id as string;
+  }, [aid, name, body] as const);
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: the banner shows once per viewer per version, and Show opens the Changes section`, async ({ page, browser }) => {
-    const { sid, aid } = await fresh(`Banner ${mode}`);
-    const t1 = await postThread(d.base, aid, "@agent two columns");
-    await openArtifact(page, d.base, aid, 1, mode);
-    await expect.poll(() => seenOf(page, aid)).toBe(1);
-    await expect(page.locator(".changelog-banner")).toHaveCount(0);
-    await publishNext(d.base, d.token, sid, aid, 1, { note: "Two columns", addresses: [t1.id] });
+  test(`${mode}: a new version puts nothing over the page: a dot, a summary line, and the Addressed group`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `cl-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Changelog ${mode}`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    const tid = await commentAs(page, artifact.id, "alex", "Two columns");
+    await expect.poll(() => seenOf(page, artifact.id)).toBe(1);
+    await publishNext(d.base, d.token, s.id, artifact.id, 1, { note: "Two columns", addresses: [tid] });
     await page.getByRole("button", { name: "Reload" }).click();
-    await contentFrame(page, aid, 2);
-    const banner = page.locator(".changelog-banner");
-    await expect(banner).toHaveText(/v2 addressed 1 comment: Two columns/);
-    await expect(banner).toHaveAttribute("role", "status");
-    await banner.getByRole("button", { name: "Show changes" }).click();
-    await expect(banner).toHaveCount(0);
-    const changes = page.locator(".section-changes");
-    await expect(changes.locator("summary")).toContainText("Addressed in v2");
-    await expect(changes.locator("h2")).toBeFocused();
+    await contentFrame(page, artifact.id, 2);
+    await expect(page.locator(".stage .banner:not(.notice)")).toHaveCount(0);
+    await expect(page.locator(".vbtn .new")).toHaveCount(1);
+    await expect(page.locator(".who .sum b.l1")).toHaveText("v2 addressed 1");
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    const group = page.locator(".section-addressed");
+    await expect(group.locator("h2")).toContainText("Addressed in v2");
+    await expect(group.locator(".hist")).toContainText("v2claude addressed it");
+    await expect(page.locator(".thread-pin.addressed")).toHaveAttribute("data-v", "v2");
+    await page.waitForTimeout(2500);
     await page.reload();
-    await contentFrame(page, aid, 2);
-    await expect.poll(() => seenOf(page, aid)).toBe(2);
-    await expect(page.locator(".changelog-banner")).toHaveCount(0);
-    const other = await (await browser.newContext()).newPage();
-    await openArtifact(other, d.base, aid, 2, mode);
-    await expect.poll(() => seenOf(other, aid)).toBe(2);
-    await expect(other.locator(".changelog-banner")).toHaveCount(0);
-    await other.context().close();
+    await contentFrame(page, artifact.id, 2);
+    await expect(page.locator(".section-addressed")).toHaveCount(0);
+    await expect(page.locator(".vbtn .new")).toHaveCount(0);
   });
 
-  test(`${mode}: a returning viewer gets a summary of every version since the last visit`, async ({ page }) => {
-    const { sid, aid } = await fresh(`Summary ${mode}`);
-    const [t1, t2] = [await postThread(d.base, aid, "@agent one"), await postThread(d.base, aid, "@agent two")];
-    await openArtifact(page, d.base, aid, 1, mode);
-    await expect.poll(() => seenOf(page, aid)).toBe(1);
-    await page.goto(`${d.base}/`);
-    await publishNext(d.base, d.token, sid, aid, 1, { addresses: [t1.id] });
-    await publishNext(d.base, d.token, sid, aid, 2, { addresses: [t1.id, t2.id], note: "Spacing" });
-    await publishNext(d.base, d.token, sid, aid, 3, {});
-    await openArtifact(page, d.base, aid, 4, mode);
-    await expect(page.locator(".changelog-banner")).toHaveText(/3 new versions, 2 comments addressed/);
-  });
-
-  test(`${mode}: a changelog row jumps to its anchor with a highlight, and resolves in one click`, async ({ page }) => {
-    const { sid, aid } = await fresh(`Jump ${mode}`);
-    const t1 = await postThread(d.base, aid, "@agent two columns");
-    await publishNext(d.base, d.token, sid, aid, 1, { addresses: [t1.id], note: "Two columns" });
-    const frame = await openArtifact(page, d.base, aid, 2, mode);
-    await page.getByRole("button", { name: /Threads/ }).click();
-    const row = page.locator(".section-changes .change-row").first();
-    await reach(page, row.locator(".change-jump"));
-    await row.locator(".change-jump").click();
-    await expect(frame.locator("clax-overlay .o.flash")).toHaveCount(1);
-    await row.getByRole("button", { name: "Resolve" }).click();
-    await expect(row).toContainText("Resolved");
-    await expect(page.locator(`.section-resolved .thread-card[data-thread="${t1.id}"]`)).toHaveCount(1);
-  });
-
-  test(`${mode}: the version menu reads as a changelog and moves between versions`, async ({ page }) => {
-    const { sid, aid } = await fresh(`Menu ${mode}`);
-    const t1 = await postThread(d.base, aid, "@agent two columns");
-    await publishNext(d.base, d.token, sid, aid, 1, { addresses: [t1.id], note: "Two columns" });
-    await openArtifact(page, d.base, aid, 2, mode);
-    await page.getByRole("button", { name: "v2 of 2" }).click();
+  test(`${mode}: the version menu reads as a changelog, opens with V, and closes with Escape`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `menu-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Menu ${mode}`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    const tid = await commentAs(page, artifact.id, "alex", "Two columns");
+    await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid], note: "Two columns" });
+    await openArtifact(page, d.base, artifact.id, 2, mode);
+    await page.locator("body").press("v");
     const dialog = page.getByRole("dialog", { name: "Versions" });
-    await expect(dialog.getByRole("link").first()).toContainText("Two columns");
-    await expect(dialog.getByRole("link").first()).toContainText("addressed 1");
+    await expect(dialog.locator(".vrow").first()).toContainText("Two columns");
+    await expect(dialog.locator(".vrow").first().locator(".pc")).toHaveCount(1);
     await expect(dialog.locator("a[aria-current=page]")).toBeFocused();
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "v2 of 2" })).toBeFocused();
-    await page.getByRole("button", { name: "v2 of 2" }).click();
+    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
     await dialog.getByRole("link", { name: /^v1\b/ }).click();
-    await expect(page).toHaveURL(new RegExp(`/a/${aid}/v/1$`));
+    await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
+  });
+
+  test(`${mode}: a pinned view writes no seen mark, and a group card jumps with a highlight and resolves`, async ({ page }) => {
+    const s = await registerSession(d.base, d.token, "claude", `jump-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Jump ${mode}`, { "index.html": PAGE });
+    await openArtifact(page, d.base, artifact.id, 1, mode);
+    const tid = await commentAs(page, artifact.id, "alex", "Two columns");
+    await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid] });
+    await page.goto(`${d.base}/a/${artifact.id}/v/1`);
+    await page.waitForTimeout(1500);
+    expect(await seenOf(page, artifact.id)).toBe(1);
+    const frame = await openArtifact(page, d.base, artifact.id, 2, mode);
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    const card = page.locator(`.section-addressed .thread-card[data-thread="${tid}"]`);
+    await reach(page, card.locator(".card-head"));
+    await card.locator(".card-head").click();
+    await expect(frame.locator("clax-overlay .o.flash")).toHaveCount(1);
+    await card.getByRole("button", { name: "Resolve" }).click();
+    await expect(card.locator(".hist")).toContainText("alex resolved");
   });
 }
-
-test("the changelog fits a phone in dark mode and holds still under reduced motion", async ({ page }) => {
-  const { sid, aid } = await fresh("Phone changelog");
-  const t1 = await postThread(d.base, aid, "@agent two columns");
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await openArtifact(page, d.base, aid, 1, "subdomain");
-  await expect.poll(() => seenOf(page, aid)).toBe(1);
-  await publishNext(d.base, d.token, sid, aid, 1, { addresses: [t1.id], note: "A longer note that has to wrap on a phone-width screen without pushing anything sideways" });
-  await page.reload();
-  const banner = page.locator(".changelog-banner");
-  await expect(banner).toBeVisible();
-  expect(await banner.evaluate(e => getComputedStyle(e).animationName)).toBe("none");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
-  await page.getByRole("button", { name: "v2 of 2" }).click();
-  const panel = page.getByRole("dialog", { name: "Versions" });
-  const box = (await panel.boundingBox())!;
-  expect(box.x).toBeGreaterThanOrEqual(0);
-  expect(box.x + box.width).toBeLessThanOrEqual(375);
-});
 ```
 
-Run: `cd web && npx playwright test e2e/changelog.spec.ts e2e/viewer.spec.ts e2e/working.spec.ts && npm run perf; echo "exit=$?"`
-Expected: PASS and `exit=0`. The time-to-usable budgets hold: the banner and the Changes section load after first paint.
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/changelog.spec.ts e2e/viewer.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. `AddressedGroup` and `VersionPanel` are outside `artifact.html`'s closure.
 
-- [ ] **Step 3: Browser verification (required)**
+- [ ] **Step 8: Screenshots and a look**
 
-With a scratch `CLAX_HOME` and `--port 0`, as in Task 11 Step 3, create an artifact as a session, open it once in the browser, then post a thread and publish v2 with `note` and `addresses`:
+Append scenes to `web/e2e/scenes.ts`. Each one publishes v2 addressing the seeded threads with the note `Two columns; units in ms`, after naming the viewer "alex" and posting a thread as them:
+- `changelog`: panel open;
+- `versions`: the menu open.
 
-```bash
-python3 - <<'PY'
-import json, os, urllib.request, uuid
-info = json.load(open(os.path.join(os.environ["CLAX_HOME"], "daemon.json")))
-base, tok = f"http://localhost:{info['port']}", info["token"]
-def call(method, path, body=None, session=None):
-    req = urllib.request.Request(base + path, data=None if body is None else json.dumps(body).encode(), method=method)
-    req.add_header("authorization", f"Bearer {tok}"); req.add_header("content-type", "application/json")
-    if session: req.add_header("x-clax-session", session)
-    return json.load(urllib.request.urlopen(req))
-s = call("POST", "/api/sessions", {"harness": "claude", "harness_session_id": "verify-cl", "cwd": "/tmp"})["session"]["id"]
-a = call("POST", "/api/artifacts", {"title": "Verify changelog", "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2></main>", "encoding": "utf8"}}}, s)["artifact"]["id"]
-print(f"open {base}/a/{a} now, then press Enter"); input()
-b = uuid.uuid4().hex
-anchor = json.dumps({"kind": "element", "selector": "body > main > h2", "quote": "Quarterly goals", "prefix": None, "suffix": None, "html_hash": None, "rect": None, "custom_name": None})
-form = "".join(f"--{b}\r\nContent-Disposition: form-data; name=\"{k}\"\r\n\r\n{v}\r\n" for k, v in [("anchor", anchor), ("body", "Make this two columns"), ("version", "1")]) + f"--{b}--\r\n"
-req = urllib.request.Request(f"{base}/api/artifacts/{a}/threads", data=form.encode(), method="POST")
-req.add_header("content-type", f"multipart/form-data; boundary={b}")
-tid = json.load(urllib.request.urlopen(req))["thread"]["id"]
-call("POST", f"/api/artifacts/{a}/versions", {"if_version": 1, "note": "Two columns; third bullet dropped", "addresses": [tid],
-     "files": {"index.html": {"content": "<main><h2>Quarterly goals</h2><p>v2</p></main>", "encoding": "utf8"}}}, s)
-print("published v2; reload the tab")
-PY
-```
+Run: `cd web && CLAX_SHOTS=task-18 CLAX_SCENES=changelog,versions,threads npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
 
-In the browser, check each of these and write down what you saw in the task report:
-- The banner enters smoothly and reads `v2 addressed 1 comment: Two columns; third bullet dropped`.
-- Show changes opens the sidebar at "Addressed in v2", and a row click scrolls to and flashes the heading.
-- Resolve works in one click.
-- The version menu lists both versions with the note.
-- Both themes look right, and at 375 px nothing scrolls sideways and the menu is a sheet.
-- A reload shows no banner.
-- With reduced motion emulated there is no slide and no pulse.
+Report, against `concept-3-echo/shots/*-changelog.png` and `*-versions.png`:
+- nothing covers the page;
+- the dot sits on the version button;
+- the summary line;
+- the green group head and its sub-line;
+- `claude · addressed in v2` with the green rule on the right;
+- the history line;
+- the addressed pins with their flags;
+- the menu rows (numeral, who, when, chips, what you did, the note);
+- the phone sheet.
 
-Stop the daemon with `cargo run -q -p clax-cli -- stop`.
+Run `npm run perf` and report it.
 
-- [ ] **Step 4: Gates and commit**
+- [ ] **Step 9: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/e2e/changelog.spec.ts web/e2e/fixtures.ts
-git commit -m "Test the version changelog in the browser in both frame modes"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git add web/shell/src/view/changelog-model.ts web/shell/src/view/changelog-model.test.ts web/shell/src/ui/AddressedGroup.svelte web/shell/src/ui/VersionMenu.svelte \
+  web/shell/src/ui/VersionPanel.svelte web/e2e/changelog.spec.ts web/bridge/src/comment-mode.ts web/bridge/src/bridge.ts web/e2e/fixtures.ts web/e2e/scenes.ts web/e2e/viewer.spec.ts
+git add -u web/shell/src
+git status --short   # staged; the controller commits ("Show each version's changelog without covering the page: the Addressed group, the version menu and its dot, and history")
 ```
 
 ---
 
-### Task 19: Batch send in the store: one transaction, one batch, grouped payload
+### Task 19: Needs your eyes: the gallery's grouping and card markers
+
+The gallery floats what needs this viewer's eyes and puts everything else below, pinned first and then the most recent. Each card carries its markers, its roster and `seen vK`. Attention comes from one request made beside the artifact list. A version or a thread event refreshes it, at most once a second.
+
+**Files:**
+- Create: `web/shell/src/view/attention-model.ts`, `web/shell/src/view/attention-model.test.ts`, `web/e2e/attention.spec.ts`
+- Modify: `web/shell/src/ui/Gallery.svelte`, `web/shell/src/ui/GalleryCard.svelte`, `web/shell/src/ui/working-feed.svelte.ts`, `web/shell/src/events.ts`, `web/shell/src/events.test.ts`, `web/shell/src/gallery.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
+
+**Interfaces:**
+- `view/attention-model.ts` (no `svelte` import):
+  - `type Marker = { kind: "you" | "new" | "rep" | "ag" | "oth"; text: string }`;
+  - `needsEyes(a: Artifact, att?: AttentionSummary): boolean`;
+  - `markers(a: Artifact, att: AttentionSummary | undefined, working: string[]): Marker[]`;
+  - `groups(list: Artifact[], att: Record<string, AttentionSummary>): { needs: Artifact[]; rest: Artifact[] }`;
+  - `seenText(att?: AttentionSummary): string | null`.
+- `events.ts`: `subscribeWorking` becomes `subscribeGallery(onEvent)`, which opens `/api/events?types=working,version,thread`. The working feed keeps its name and API, and adds `onChange(fn)` for version and thread events.
+
+- [ ] **Step 1: The model, test first**
+
+`web/shell/src/view/attention-model.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import type { Artifact, AttentionSummary } from "../api";
+import { groups, markers, needsEyes, seenText } from "./attention-model";
+
+const A = (id: string, over: Partial<Artifact> = {}): Artifact => ({ id, title: id, description: null, icon: null, updated_at: "2026-09-30T10:00:00Z", current_version: 5, pinned: false, ...over });
+const S = (over: Partial<AttentionSummary> = {}): AttentionSummary => ({ addressed: [], addressed_v: null, new_replies: [], open_in: [], seen: 5, ...over });
+
+describe("attention-model", () => {
+  it("needs your eyes for an address, a version you have not seen, or a reply", () => {
+    expect(needsEyes(A("a"), S({ addressed: ["t"], addressed_v: 5 }))).toBe(true);
+    expect(needsEyes(A("a"), S({ seen: 4 }))).toBe(true);
+    expect(needsEyes(A("a"), S({ new_replies: ["t"] }))).toBe(true);
+    expect(needsEyes(A("a"), S({ open_in: ["t"] }))).toBe(false);
+    expect(needsEyes(A("a"), S({ seen: null }))).toBe(false);
+    expect(needsEyes(A("a"), undefined)).toBe(false);
+  });
+
+  it("orders markers: addressed, new version, replies, working, open", () => {
+    expect(markers(A("a"), S({ addressed: ["t"], addressed_v: 5, seen: 4, new_replies: ["t", "u"], open_in: ["t", "u"] }), ["claude working on 2"])).toEqual([
+      { kind: "you", text: "1 addressed in v5" }, { kind: "new", text: "v5 new" }, { kind: "rep", text: "2 new replies" },
+      { kind: "ag", text: "claude working on 2" }, { kind: "oth", text: "2 open" },
+    ]);
+    expect(markers(A("a"), S({ new_replies: ["t"] }), [])).toEqual([{ kind: "rep", text: "1 new reply" }]);
+  });
+
+  it("groups needs first by recency, then the rest pinned first", () => {
+    const list = [A("old", { updated_at: "2026-09-01" }), A("pin", { pinned: true, updated_at: "2026-08-01" }), A("eyes", { updated_at: "2026-09-02" }), A("new", { updated_at: "2026-09-30" })];
+    const g = groups(list, { eyes: S({ seen: 4 }) });
+    expect(g.needs.map(a => a.id)).toEqual(["eyes"]);
+    expect(g.rest.map(a => a.id)).toEqual(["pin", "new", "old"]);
+  });
+
+  it("says which version you last saw", () => {
+    expect([seenText(S({ seen: 4 })), seenText(S({ seen: null })), seenText(undefined)]).toEqual(["seen v4", null, null]);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/view/attention-model.test.ts`
+Expected: FAIL.
+
+`web/shell/src/view/attention-model.ts`:
+
+```ts
+// Needs your eyes (spec §8, "Gallery"): from this viewer's attention, which
+// artifacts float to the top and which markers each card carries. A
+// never-viewed artifact does not need your eyes for its version alone.
+import type { Artifact, AttentionSummary } from "../api";
+import { orderArtifacts } from "./gallery-model";
+
+export type Marker = { kind: "you" | "new" | "rep" | "ag" | "oth"; text: string };
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+
+export function needsEyes(a: Artifact, att?: AttentionSummary): boolean {
+  if (!att) return false;
+  return att.addressed.length > 0 || att.new_replies.length > 0 || (att.seen !== null && a.current_version > att.seen);
+}
+
+export function markers(a: Artifact, att: AttentionSummary | undefined, working: string[]): Marker[] {
+  const out: Marker[] = [];
+  if (att?.addressed.length) out.push({ kind: "you", text: `${att.addressed.length} addressed in v${att.addressed_v ?? a.current_version}` });
+  if (att && att.seen !== null && a.current_version > att.seen) out.push({ kind: "new", text: `v${a.current_version} new` });
+  if (att?.new_replies.length) out.push({ kind: "rep", text: plural(att.new_replies.length, "new reply", "new replies") });
+  for (const w of working) out.push({ kind: "ag", text: w });
+  if (att?.open_in.length) out.push({ kind: "oth", text: `${att.open_in.length} open` });
+  return out;
+}
+
+export function groups(list: Artifact[], att: Record<string, AttentionSummary>): { needs: Artifact[]; rest: Artifact[] } {
+  const needs = list.filter(a => needsEyes(a, att[a.id])).sort((x, y) => y.updated_at.localeCompare(x.updated_at));
+  const rest = orderArtifacts(list.filter(a => !needs.includes(a)));
+  return { needs, rest };
+}
+
+export const seenText = (att?: AttentionSummary): string | null => (att?.seen != null ? `seen v${att.seen}` : null);
+```
+
+Run: `cd web && npx vitest run shell/src/view/attention-model.test.ts`
+Expected: PASS.
+
+- [ ] **Step 2: The gallery**
+
+`events.ts`: rename `subscribeWorking` to `subscribeGallery`. It opens `/api/events?types=working,version,thread` and forwards `version` and `thread` events as well. Update `events.test.ts`. `working-feed.svelte.ts` calls it. Its `start(onResync)` gains `onChange: () => void`, which is called for `version` and `thread` events.
+
+`ui/Gallery.svelte`:
+- `let att = $state<Record<string, AttentionSummary>>({});`.
+- `refresh` loads both at once: `Promise.all([listArtifacts(), getAttention()]).then(([a, t]) => { error = null; artifacts = a; att = t; feed.seed(a); feed.start(refresh, refreshSoon); }, …)`.
+- `refreshSoon` debounces `refresh` to at most once a second.
+- With a query, the gallery shows one flat list, as before (`orderArtifacts(filterArtifacts(…))`). Without one, it shows `groups(shown, att)`:
+
+```svelte
+    {@const g = groups(shown, att)}
+    {#if g.needs.length}
+      <section class="grp needs">
+        <h2><span class="sw" aria-hidden="true"></span>Needs your eyes<small>{g.needs.length}</small></h2>
+        <p class="rule">A thread you're in was addressed and you haven't looked, or there's a version or reply you haven't seen.</p>
+        <div class="cards">{#each g.needs as a (a.id)}{@render card(a)}{/each}</div>
+      </section>
+    {/if}
+    <section class="grp rest">
+      <h2><span class="sw" aria-hidden="true"></span>{g.needs.length ? "Everything else" : "Artifacts"}<small>pinned first, then most recent</small></h2>
+      <div class="cards">{#each g.rest as a (a.id)}{@render card(a)}{/each}</div>
+    </section>
+```
+
+  `card(a)` is a snippet rendering `GalleryCard` with these snippets:
+  - `markers`: `{#each markers(a, att[a.id], chips(feed.byId[a.id] ?? [], names)) as m}<span class={["chip", m.kind]}>{m.text}</span>{/each}`;
+  - `footer`: the `Roster` from Task 16, then `{#if seenText(att[a.id])}<span class="seen">{seenText(att[a.id])}</span>{/if}`.
+
+  Task 16's working-chip snippet folds into `markers`.
+
+In `gallery.test.ts`, stub `/api/viewers/me/attention` to return `{ artifacts: { aaaaaaaaaaaa: { addressed: [], addressed_v: null, new_replies: ["t"], open_in: ["t"], seen: 1 } } }`. Assert:
+- `.grp.needs` holds the `Other` card, whose `.chip.rep` reads `1 new reply` and `.chip.oth` reads `1 open`;
+- the `Pinned one` card is under `.grp.rest`;
+- with the attention request failing, there is no `.grp.needs` and both cards show.
+
+- [ ] **Step 3: Styles**
+
+Append to `web/shell/src/theme.css`:
+
+```css
+/* Needs your eyes (spec §8). */
+.needs h2 .sw { border-radius: 0 12px 12px 0; background: var(--you); }
+.rest h2 .sw { border-radius: 50%; width: 14px; height: 14px; background: var(--border-strong); }
+.needs .cards { grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); }
+.needs .card .v { font-size: 48px; } .needs .card h3 { font-size: 20px; }
+.chip.you { background: var(--you); color: var(--on-you); }
+.chip.new { box-shadow: inset 0 0 0 1.5px var(--agent); color: var(--agent-ink); }
+.chip.new::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--agent); }
+.chip.rep { box-shadow: inset 0 0 0 1.5px var(--border-strong); }
+.chip.oth { box-shadow: inset 0 0 0 1.5px var(--you); }
+.card .ft .seen { font-size: 11px; color: var(--muted); margin-left: auto; }
+@media (max-width: 700px) { .needs .cards { grid-template-columns: 1fr; } .needs .card .v { font-size: 30px; } .needs .card h3 { font-size: 15px; } }
+```
+
+- [ ] **Step 4: Browser tests across two viewers**
+
+`web/e2e/attention.spec.ts`:
+
+```ts
+import { test, expect, type Page } from "@playwright/test";
+import { contentFrame, openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+const PAGE = "<main><h2>Quarterly goals</h2></main>";
+
+async function name(page: Page, n: string) {
+  await page.evaluate(n => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: n }) }), n);
+}
+async function comment(page: Page, aid: string, body: string, tid?: string): Promise<string> {
+  return page.evaluate(async ([aid, body, tid]) => {
+    if (tid) return (await (await fetch(`/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body }) })).json()).thread.id;
+    const f = new FormData();
+    f.set("anchor", JSON.stringify({ kind: "element", selector: "body > main > h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    f.set("body", body); f.set("version", "1");
+    return (await (await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: f })).json()).thread.id;
+  }, [aid, body, tid] as const);
+}
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: attention across viewers: addressed, new version, a mention, and looking clears`, async ({ browser }) => {
+    const s = await registerSession(d.base, d.token, "claude", `att-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Eyes ${mode}`, { "index.html": PAGE });
+    const alex = await (await browser.newContext()).newPage();
+    const mia = await (await browser.newContext()).newPage();
+    await openArtifact(alex, d.base, artifact.id, 1, mode);
+    await openArtifact(mia, d.base, artifact.id, 1, mode);
+    await name(alex, "alex");
+    await name(mia, "Mia");
+    const tid = await comment(alex, artifact.id, "Two columns");
+    await comment(alex, artifact.id, "@Mia which log?", tid);
+    await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid] });
+    await alex.goto(`${d.base}/`);
+    const card = alex.locator(".grp.needs .card-wrap", { hasText: `Eyes ${mode}` });
+    await expect(card.locator(".chip.you")).toHaveText("1 addressed in v2");
+    await expect(card.locator(".chip.new")).toHaveText("v2 new");
+    await expect(card.locator(".ft .seen")).toHaveText("seen v1");
+    await mia.goto(`${d.base}/`);
+    await expect(mia.locator(".grp.needs .card-wrap", { hasText: `Eyes ${mode}` }).locator(".chip.rep")).toHaveText("1 new reply");
+    await openArtifact(alex, d.base, artifact.id, 2, mode);
+    if (!(await alex.locator("aside.sidebar").isVisible())) await alex.getByRole("button", { name: /Threads/ }).first().click();
+    await expect(alex.locator(`.thread-card[data-thread="${tid}"]`)).toBeVisible();
+    await alex.waitForTimeout(2500);
+    await alex.goto(`${d.base}/`);
+    await expect(alex.locator(".grp.needs .card-wrap", { hasText: `Eyes ${mode}` })).toHaveCount(0);
+    await expect(alex.locator(".grp.rest .card-wrap", { hasText: `Eyes ${mode}` }).locator(".chip.oth")).toHaveText("1 open");
+    await alex.context().close();
+    await mia.context().close();
+  });
+}
+```
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/attention.spec.ts e2e/working.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. If the `gallery` budget fails, move `attention-model` and the markers behind a dynamic `import()` that resolves with the attention request. Do not raise the budget.
+
+- [ ] **Step 5: Screenshots and a look**
+
+Make the `gallery` scene in `web/e2e/scenes.ts` produce a "needs your eyes" artifact:
+1. name the viewer "alex";
+2. post a thread as them on the seeded artifact;
+3. view it (open `/a/<id>` once);
+4. publish v2 addressing that thread;
+5. go back to `/`.
+
+Run: `cd web && CLAX_SHOTS=task-19 CLAX_SCENES=gallery npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Report, against `concept-3-echo/shots/*-gallery.png`:
+- Needs your eyes comes first, with its red-orange swatch, its rule line, and wider cards;
+- Everything else follows, pinned first;
+- the markers sit in their order and colours;
+- each footer holds the roster and `seen v1`;
+- at phone width there is one column and no sideways scroll.
+
+- [ ] **Step 6: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add web/shell/src/view/attention-model.ts web/shell/src/view/attention-model.test.ts web/e2e/attention.spec.ts web/shell/src/ui/Gallery.svelte \
+  web/shell/src/ui/GalleryCard.svelte web/shell/src/ui/working-feed.svelte.ts web/shell/src/events.ts web/shell/src/events.test.ts web/shell/src/gallery.test.ts \
+  web/shell/src/theme.css web/e2e/scenes.ts
+git status --short   # staged; the controller commits ("Float what needs each viewer's eyes in the gallery, with markers, the roster and the last version seen")
+```
+
+---
+
+### Task 20: Batch send in the store: one transaction, one batch, grouped payload
 
 Decisions: `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, "Batch send to agent". The rules this task implements are in "Design: batch send to agent" above.
 
 **Files:**
 - Create: `crates/clax-core/src/store/batches.rs`
-- Modify: `crates/clax-core/src/store/mod.rs`, `crates/clax-core/src/store/migrations.rs` (migration 11), `crates/clax-core/src/store/feedback.rs` (`send_to_agent` split, `take_feedback` fills `batch`), `crates/clax-core/src/store/threads.rs` (`delete_thread_touched`), `crates/clax-core/src/store/artifacts.rs` (`delete_artifact`), `crates/clax-core/src/feedback.rs` (`FeedbackItem.batch`, `FeedbackBatch`, `render_items`), `crates/clax-core/src/lib.rs`
+- Modify: `crates/clax-core/src/store/mod.rs`, `crates/clax-core/src/store/migrations.rs` (migration 12), `crates/clax-core/src/store/feedback.rs` (`send_to_agent` split, `take_feedback` fills `batch`), `crates/clax-core/src/store/threads.rs` (`delete_thread_touched`), `crates/clax-core/src/store/artifacts.rs` (`delete_artifact`), `crates/clax-core/src/feedback.rs` (`FeedbackItem.batch`, `FeedbackBatch`, `render_items`), `crates/clax-core/src/lib.rs`
 
 **Interfaces:**
 - `clax_core::feedback::FeedbackBatch { id: String, size: u32, note: Option<String>, sent_by: String }`. `FeedbackItem` gains `batch: Option<FeedbackBatch>` (`#[serde(default)]`).
@@ -5195,12 +7919,12 @@ Add to the tests in `crates/clax-core/src/feedback.rs`, using its `item()` helpe
 Run: `cargo test -p clax-core batches && cargo test -p clax-core feedback`
 Expected: FAIL to compile.
 
-- [ ] **Step 2: Migration 11**
+- [ ] **Step 2: Migration 12**
 
 Append to `MIGRATIONS`:
 
 ```rust
-    // 11: batch sends: the batch (its note and who sent it), its threads, and
+    // 12: batch sends: the batch (its note and who sent it), its threads, and
     // the batch each feedback row came from.
     "CREATE TABLE send_batches (
         id TEXT PRIMARY KEY,
@@ -5396,29 +8120,31 @@ Register `pub mod batches;` in `store/mod.rs`, and re-export `FeedbackBatch` fro
 Run: `cargo test -p clax-core`
 Expected: PASS. Update exact `FeedbackItem` JSON expectations elsewhere with `"batch": null`, and change nothing else.
 
-- [ ] **Step 4: Gates and commit**
+- [ ] **Step 4: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add crates/clax-core/src/store/batches.rs crates/clax-core/src/store/mod.rs crates/clax-core/src/store/migrations.rs crates/clax-core/src/store/feedback.rs \
   crates/clax-core/src/store/threads.rs crates/clax-core/src/store/artifacts.rs crates/clax-core/src/feedback.rs crates/clax-core/src/lib.rs
 git add -u crates/clax-core
-git commit -m "Send several threads to the agent as one batch with an optional note"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Send several threads to the agent as one batch with an optional note")
 ```
 
 ---
 
-### Task 20: The batch send route
+### Task 21: The batch send route, and the send target
+
+The batch route from "Design: batch send to agent", plus the optional `to` (an agent handle, Task 15) on both the batch and the single send. With `to`, only that agent's live session gets rows. Without it, the fan-out is as before.
 
 **Files:**
-- Modify: `crates/clax-server/src/routes/threads.rs` (new `send_batch` handler), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/feedback.rs` (`thread_view` gains `sends`)
+- Modify: `crates/clax-server/src/routes/threads.rs` (new `send_batch` handler; `send` takes an optional `{to}`), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/feedback.rs` (`thread_view` gains `sends`), `crates/clax-core/src/store/feedback.rs` (`send_to`), `crates/clax-core/src/store/batches.rs` (`SendBatch.to`)
 - Create: `crates/clax-server/tests/api_batch.rs`
 
 **Interfaces:**
-- `POST /api/artifacts/<aid>/threads:send` with body `{thread_ids: [ULID], note?: string}` (`deny_unknown_fields`). Auth is exactly that of `POST .../threads/<tid>/send`: no token, `SameOrigin` (a foreign `Origin` is 403 `forbidden_origin`), and the optional viewer cookie names the sender (`crate::viewer::author_name`). This is the route the sidebar calls, as its single send does. The capability's `sendToClaude` keeps calling the single route (see "Design: batch send to agent").
-- `200 {batch: {id, size, note, sent_by}, sent: [ID], unchanged: [ID], threads: [thread view]}`. Errors: 400 `invalid_args`, 400 `note_too_long`, 400 `unknown_thread`, 400 `thread_resolved`, 409 `nothing_to_send`, 404 `not_found` (unknown or deleted artifact). In every error case nothing is written.
+- `POST /api/artifacts/<aid>/threads:send` with body `{thread_ids: [ULID], note?: string, to?: agent handle}` (`deny_unknown_fields`). Auth is exactly that of `POST .../threads/<tid>/send`: no token, `SameOrigin` (a foreign `Origin` is 403 `forbidden_origin`), and the optional viewer cookie names the sender (`crate::viewer::author_name`). This is the route the sidebar calls, as its single send does. The capability's `sendToClaude` keeps calling the single route (see "Design: batch send to agent").
+- `200 {batch: {id, size, note, sent_by}, sent: [ID], unchanged: [ID], threads: [thread view]}`. Errors: 400 `invalid_args`, 400 `note_too_long`, 400 `unknown_agent`, 400 `unknown_thread`, 400 `thread_resolved`, 409 `nothing_to_send`, 404 `not_found` (unknown or deleted artifact). In every error case nothing is written.
 - Thread views gain `sends: [{batch_id, size, note, sent_by, sent_at}]`.
+- `POST .../threads/<tid>/send` takes an optional JSON body `{to}` (an agent handle); 400 `unknown_agent` when it names no live owner or watcher of the artifact.
 - After the commit: one `feedback::apply` for the whole batch's `touched` (one wake-up, one `codex queue` dispatch per target), then a `thread` event per sent thread.
 
 - [ ] **Step 1: Failing tests**
@@ -5609,21 +8335,73 @@ pub async fn send_batch(
 Run: `cargo test -p clax-server`
 Expected: PASS. Exact thread-view assertions elsewhere gain `"sends": []`.
 
-- [ ] **Step 3: Gates and commit**
+- [ ] **Step 3: The send target, test first**
+
+Append to `crates/clax-server/tests/api_batch.rs`:
+
+```rust
+#[tokio::test]
+async fn to_sends_only_to_that_agent_and_an_unknown_handle_writes_nothing() {
+    let ts = TestServer::spawn().await;
+    let (owner, aid, tids) = setup(&ts).await;
+    let w = ts.register_session("codex", "batch-watch").await;
+    let watcher = w["id"].as_str().unwrap().to_string();
+    let res = ts.authed(ts.client.post(format!("{}/api/sessions/{watcher}/watches", ts.base))).json(&json!({"artifact": aid})).send().await.unwrap();
+    assert!(res.status().is_success());
+    let a: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    let handle = a["artifact"]["participants"]["agents"].as_array().unwrap().iter()
+        .find(|x| x["harness"] == "codex").unwrap()["handle"].as_str().unwrap().to_string();
+    let bad = send(&ts, &aid, json!({"thread_ids": [tids[0]], "to": "a_00000000000000000000aa"})).await;
+    assert_eq!(bad.status(), 400);
+    assert_eq!(bad.json::<Value>().await.unwrap()["error"]["code"], "unknown_agent");
+    let t: Value = ts.get(&format!("/api/artifacts/{aid}/threads/{}", tids[0])).await.json().await.unwrap();
+    assert_eq!(t["thread"]["sent_to_agent"], false, "nothing was written");
+    assert_eq!(send(&ts, &aid, json!({"thread_ids": [tids[0], tids[1]], "to": handle})).await.status(), 200);
+    let to_watcher: Value = ts.get_authed(&format!("/api/sessions/{watcher}/feedback?tier=piggyback")).await.json().await.unwrap();
+    let to_owner: Value = ts.get_authed(&format!("/api/sessions/{owner}/feedback?tier=piggyback")).await.json().await.unwrap();
+    assert_eq!(to_watcher["feedback"].as_array().unwrap().len(), 2);
+    assert_eq!(to_owner["feedback"].as_array().unwrap().len(), 0);
+    let single = ts.client.post(format!("{}/api/artifacts/{aid}/threads/{}/send", ts.base, tids[2])).json(&json!({"to": handle})).send().await.unwrap();
+    assert_eq!(single.status(), 200);
+    let again: Value = ts.get_authed(&format!("/api/sessions/{owner}/feedback?tier=piggyback")).await.json().await.unwrap();
+    assert_eq!(again["feedback"].as_array().unwrap().len(), 0, "the single send with to skips the owner too");
+}
+```
+
+Write the watch request as `api_watches.rs` writes it, if its body differs from `{artifact}`.
+
+Run: `cargo test -p clax-server --test api_batch to_sends`
+Expected: FAIL.
+
+Implement:
+- `store/feedback.rs`: `send_in(tx, thread_id, batch_id, to: Option<&str>, touched)`. With `to = Some(sid)`, the targets are `[sid]` when `sid` is among `live_targets`. Otherwise it is `CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle")`. Add `pub fn send_to(&self, thread_id: &str, to: Option<&str>) -> Result<(Thread, Touched)>`, and keep `send_to_agent(tid)` as `send_to(tid, None)`. Other callers keep it: `@agent` and the capability's `sendToClaude`.
+- `store/batches.rs`: `SendBatch` gains `pub to: Option<String>` (a session ID). `send_batch` checks it before any thread, as the first validation after the bounds, and passes it to every `send_in`. Existing `SendBatch { … }` literals (Task 20's tests) add `to: None`.
+- `routes/threads.rs`: `BatchBody` gains `#[serde(default)] to: Option<String>`. A single-send body is `#[derive(Deserialize, Default)] #[serde(deny_unknown_fields)] struct SendBody { #[serde(default)] to: Option<String> }`, read as `resolve` reads its optional `ResolveBody`. In both handlers, inside the store call:
+
+```rust
+            let to = match b.to.as_deref() {
+                Some(h) if clax_core::is_agent_handle(h) => Some(st.live_agent(&id, h)?.ok_or_else(|| CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle"))?),
+                Some(_) => return Err(CoreError::invalid("unknown_agent", "not an agent handle")),
+                None => None,
+            };
+```
+
+  The batch passes `to` in `SendBatch`. The single send calls `st.send_to(&tid, to.as_deref())`.
+
+Run: `cargo test -p clax-server --test api_batch && cargo test -p clax-core`
+Expected: PASS.
+
+- [ ] **Step 4: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add crates/clax-server/src/routes/threads.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/feedback.rs crates/clax-server/src/error.rs crates/clax-server/tests/api_batch.rs
+git add crates/clax-core/src/store/feedback.rs crates/clax-core/src/store/batches.rs crates/clax-server/src/routes/threads.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/feedback.rs crates/clax-server/src/error.rs crates/clax-server/tests/api_batch.rs
 git add -u crates/clax-server/tests
-git commit -m "Add the batch send-to-agent route, all or nothing"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Add the batch send route, all or nothing, and an optional agent target for every send")
 ```
+### Task 22: One grouped delivery on every harness: goldens, skills, smoke
 
----
-
-### Task 21: One grouped delivery on every harness: goldens, skills, smoke
-
-Every tier renders through `render_items` (Task 19), so there is nothing new to build per tier. This task proves the grouped delivery on each path an agent reads, and teaches the skills what a batch looks like.
+Every tier renders through `render_items` (Task 20), so there is nothing new to build per tier. This task proves the grouped delivery on each path an agent reads, and teaches the skills what a batch looks like.
 
 **Files:**
 - Modify: `crates/clax-server/tests/api_push.rs`, `crates/clax-hooks/tests/golden.rs`, `crates/clax-mcp/tests/comments.rs`, `plugins/pi/test/clax.test.ts`, `plugins/claude-code/skills/clax/SKILL.md`, `plugins/clax/skills/clax/SKILL.md`, `plugins/pi/skills/clax/SKILL.md`, `scripts/smoke-comment-loop.sh`
@@ -5723,7 +8501,7 @@ Append to `describe("comments", ...)` in `plugins/pi/test/clax.test.ts`:
 ```
 
 Run: `cargo test -p clax-server --test api_push a_batch && cargo test -p clax-hooks --test golden a_batch && cargo test -p clax-mcp --test comments a_batch && (cd plugins/pi && npm test -- -t "a batch reaches Pi")`
-Expected: PASS. These describe behaviour Task 19 already built. If one fails, the grouping has a gap on that path: fix the path, not the test.
+Expected: PASS. These describe behaviour Task 20 already built. If one fails, the grouping has a gap on that path: fix the path, not the test.
 
 - [ ] **Step 4: The skills describe a batch (identical in all three)**
 
@@ -5774,59 +8552,67 @@ ok(f"batch: publish v{v3['version']} listed all three threads as addressed")
 Run: `scripts/smoke-comment-loop.sh`
 Expected: all `PASS`, including the three `batch:` lines, ending with `comment loop smoke passed`.
 
-- [ ] **Step 6: Gates and commit**
+- [ ] **Step 6: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add crates/clax-server/tests/api_push.rs crates/clax-hooks/tests/golden.rs crates/clax-mcp/tests/comments.rs plugins/pi/test/clax.test.ts \
   plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md scripts/smoke-comment-loop.sh
-git commit -m "Prove a batch arrives as one delivery on every harness, and teach the skills to read one"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git status --short   # staged; the controller commits ("Prove a batch arrives as one delivery on every harness, and teach the skills to read one")
 ```
 
 ---
 
-### Task 22: Batch send in the shell: checkboxes, range select, bulk bar, send all unsent
+### Task 23: Batch send in Echo: checkboxes, the hand-off bar, the agent picker, and Send N unsent
 
-**Design spec.** Keep it calm and consistent with the sidebar's existing cards.
+The viewer's side of batch send, in Echo:
+- checkboxes on open cards, with Shift-click ranges, and X ticks the selected thread;
+- a hand-off bar at the sidebar's foot, loaded when the first box is ticked: converging dots, `3 selected` over `handed off together`, Clear, `Send 3 to claude ▾`, and an optional note sent with Cmd+Enter or Ctrl+Enter or Shift+S;
+- `Send N unsent to claude` at the sidebar's top;
+- one agent picker shared by every Send.
 
-- **Checkbox.** Each selectable card (open, and the artifact not deleted) has a 16 px native checkbox with `accent-color: var(--accent)`, left of the card head. It has a real label: `aria-label="Select comment N: <anchor label>"`, where `N` is the pin number, or the anchor label alone for threads without one. A checked card gets a 1 px accent inner ring (`box-shadow: inset 0 0 0 1px var(--accent)`), distinct from the selected (focused) card's border.
-- **Range select.** Shift-click (or Shift+Space) on a checkbox selects every selectable card between it and the last checkbox the viewer toggled, in the sidebar's order (Open, then Detached), and sets them to the clicked box's new state.
-- **Bulk bar.** It appears at the top of the sidebar while one or more cards are checked. The bar is `position: sticky; top: 0` inside the sidebar, with the card background, a bottom border and padding 10px 12px. Row 1: `N selected` (semibold, tabular numbers), then `Send to agent` (primary) and `Clear`. Row 2: a full-width text field `Note for the agent (optional)`, `maxlength="280"`, and Cmd+Enter or Ctrl+Enter sends. The count is a polite live region (`role="status"`), so screen readers hear "3 selected" as it changes. The bar enters over 140 ms with opacity and a 4 px slide, with no motion under `prefers-reduced-motion`.
-- **Send all unsent.** At the top of the sidebar (above the bar), whenever open threads exist with `sent_to_agent: false`: a full-width secondary button `Send N unsent to agent`. It sends them as one batch with the bar's note, when the bar is open and has one.
-- **After a send.** The selection and the note clear, the cards update from the response, and each sent card shows its send in its history. The line comes right after the comments, 12 px muted: `Sent to agent by Alex with 2 others · "Before the demo"`, or `Sent to agent by Alex` for a batch of one without a note. A failed send keeps the selection and the note, and shows the shell's usual notice (`SEND_FAILED` prefix) with the daemon's message.
-- **A thread that disappears** (deleted, resolved, or its artifact deleted) leaves the selection at once.
-- **Phone width (≤480px).** The sidebar is full-screen there (the port's rule). The bar keeps both rows, and the buttons stay at least 36 px tall.
-- **Dark mode.** Existing tokens only.
+Send goes to the agent you last sent to on this artifact, falling back to the latest publisher's agent. The caret appears only when more than one agent is live.
 
 **Files:**
-- Create: `web/shell/src/view/batch-model.ts`, `web/shell/src/view/batch-model.test.ts`, `web/shell/src/ui/BulkBar.svelte`, `web/shell/src/batch-ui.test.ts`
-- Modify: `web/shell/src/threads.ts` (`sendBatch`, `Thread.sends`), `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/theme.css`
+- Create: `web/shell/src/view/batch-model.ts`, `web/shell/src/view/batch-model.test.ts`, `web/shell/src/view/send-target.ts`, `web/shell/src/view/send-target.test.ts`, `web/shell/src/ui/HandoffBar.svelte`, `web/shell/src/ui/SendButton.svelte`, `web/e2e/batch.spec.ts`
+- Modify: `web/shell/src/threads.ts` (`sendBatch`, `sendToAgent(…, to)`, `Thread.sends`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
 
 **Interfaces:**
-- `threads.ts`: `sendBatch(aid: string, threadIds: string[], note: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }>`. It does `POST /api/artifacts/<aid>/threads:send` like `sendToAgent` (same headers, no token), and throws `ApiError` with the daemon's message. `Thread` gains `sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[]`.
-- `view/batch-model.ts` (no `svelte` import):
-  - `type Selection = { ids: string[]; anchor: string | null }` and `EMPTY_SELECTION`.
-  - `selectable(t: Thread, deleted: boolean): boolean`.
-  - `toggle(sel: Selection, id: string, shift: boolean, order: string[]): Selection`.
-  - `prune(sel: Selection, threads: Thread[], deleted: boolean): Selection`.
-  - `unsent(threads: Thread[]): Thread[]`.
-  - `countLabel(n: number): string`, `unsentLabel(n: number): string`, `sendLine(s: ThreadSend): string`.
+- `threads.ts`:
+  - `sendToAgent(aid, tid, to: string | null = null)` posts `{to}` when set;
+  - `sendBatch(aid, threadIds, note, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }>` calls `POST /api/artifacts/<aid>/threads:send` with no token, and throws `ApiError` with the daemon's message;
+  - `Thread` gains `sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[]`.
+- `view/batch-model.ts`:
+  - `type Selection = { ids: string[]; anchor: string | null }` and `EMPTY_SELECTION`;
+  - `selectable(t, deleted)`;
+  - `toggle(sel, id, shift, order: string[])`;
+  - `prune(sel, threads, deleted)`;
+  - `unsent(threads)`;
+  - `countLabel(n)`, `unsentLabel(n, agent)` and `sendLabel(n, agent)`.
+- `view/send-target.ts`:
+  - `liveAgents(agents: AgentView[]): AgentView[]`;
+  - `defaultTarget(aid: string, agents: AgentView[], versions: Version[]): string | null`, which picks the remembered handle if it is live, else the latest version's `agent` if it is live, else the first live agent, else null;
+  - `rememberTarget(aid, handle)`, kept in `localStorage` `clax.sendTo.<aid>` with every access guarded.
+- `history-model.ts`: each send in `t.sends` adds `{ v: versionAt(sent_at), who: sent_by, agent: false, verb: "sent it" + (size > 1 ? " with N others" : "") + (note ? ` · “${note}”` : "") }`.
+- `keys.ts`: `x` maps to `tick`. `S` (Shift+S) has mapped to `sendTicked` since Task 3. Rows `{ keys: ["X"], what: "Tick the selected thread", action: "tick" }` and `{ keys: ["⇧", "S"], what: "Send every ticked thread together", action: "sendTicked" }` go after `R`.
 - `ArtifactController`:
-  - `ViewState` gains `selection: Selection`, `batchNote: string` and `batchBusy: boolean`.
-  - New methods: `toggleSelect(t: Thread, shift: boolean)`, `clearSelection()`, `setBatchNote(v: string)`, `sendSelection(): Promise<void>` and `sendUnsent(): Promise<void>`.
-  - The order used for range selection is the sidebar's: `sidebarSections(...)`'s `open` list, then `detached`.
-- `ThreadCard` gains the props `checked?: boolean` and `onToggle?(t: Thread, shift: boolean): void`. The checkbox renders only when `onToggle` is given. `Sidebar` gains the props `selection`, `batchNote`, `batchBusy`, `unsentCount`, `onToggle`, `onClear`, `onNote`, `onSendSelection` and `onSendUnsent`.
-- `isSubmitKey`: reuse the function the port kept. Find it with `grep -rn "export function isSubmitKey" web/shell/src`. If the port removed it together with `comments.tsx`, restore it into `web/shell/src/view/composer-model.ts`, unchanged, from `git show <the port's base commit>:web/shell/src/comments.tsx`, with its tests moved to `view/composer-model.test.ts`.
+  - `ViewState` gains `selection: Selection`, `batchNote: string`, `batchBusy: boolean` and `sendTo: string | null`;
+  - new methods: `toggleSelect(t, shift)`, `clearSelection()`, `setBatchNote(v)`, `sendSelection()`, `sendUnsent()`, `chooseTarget(handle)`;
+  - `sendThread(t)` passes `this.s.sendTo`;
+  - `shortcut("tick")` toggles the selected thread, and `shortcut("sendTicked")` calls `sendSelection()`.
+- Components:
+  - `SendButton` `{ label: string; agents: AgentView[]; names: Map<string, string>; target: string | null; disabled?: boolean; onSend(): void; onChoose(handle: string): void }`. Its caret is a menu button, and it is shown only with more than one live agent.
+  - `HandoffBar` (lazy) `{ count; note; busy; send: Snippet; onNote; onClear; onSend }`.
+  - `ThreadCard` gains `checked?: boolean`, `onToggle?(t, shift)` and `send?: Snippet` (it renders the shared Send button).
 
-- [ ] **Step 1: Model, test first**
+- [ ] **Step 1: Models, tests first**
 
 `web/shell/src/view/batch-model.test.ts`:
 
 ```ts
 import { describe, expect, it } from "vitest";
 import type { Thread } from "../threads";
-import { EMPTY_SELECTION, countLabel, prune, selectable, sendLine, toggle, unsent, unsentLabel } from "./batch-model";
+import { EMPTY_SELECTION, countLabel, prune, selectable, sendLabel, toggle, unsent, unsentLabel } from "./batch-model";
 
 const T = (id: string, status: "open" | "resolved" = "open", sent = false) => ({ id, status, sent_to_agent: sent } as Thread);
 const order = ["a", "b", "c", "d", "e"];
@@ -5835,7 +8621,6 @@ describe("batch-model", () => {
   it("selects open threads of a live artifact only", () => {
     expect([selectable(T("a"), false), selectable(T("a", "resolved"), false), selectable(T("a"), true)]).toEqual([true, false, false]);
   });
-
   it("toggles one, then a shift range to the clicked box's new state, in sidebar order", () => {
     let s = toggle(EMPTY_SELECTION, "b", false, order);
     expect(s).toEqual({ ids: ["b"], anchor: "b" });
@@ -5843,44 +8628,59 @@ describe("batch-model", () => {
     expect(s.ids).toEqual(["b", "c", "d"]);
     s = toggle(s, "c", false, order);
     expect(s).toEqual({ ids: ["b", "d"], anchor: "c" });
-    s = toggle(s, "a", true, order);
-    expect([...s.ids].sort()).toEqual(["a", "b", "c", "d"]);
   });
-
   it("drops threads that disappeared, were resolved, or whose artifact went", () => {
     const s = { ids: ["a", "b", "c"], anchor: "c" };
     expect(prune(s, [T("a"), T("b", "resolved")], false)).toEqual({ ids: ["a"], anchor: null });
     expect(prune(s, [T("a"), T("b"), T("c")], true)).toEqual(EMPTY_SELECTION);
     expect(prune(s, [T("a"), T("b"), T("c")], false)).toBe(s);
   });
-
-  it("counts unsent open threads and labels things", () => {
+  it("counts unsent threads and labels in Echo's words", () => {
     expect(unsent([T("a"), T("b", "open", true), T("c", "resolved")]).map(t => t.id)).toEqual(["a"]);
-    expect([countLabel(1), countLabel(3), unsentLabel(1), unsentLabel(4)]).toEqual(["1 selected", "3 selected", "Send 1 unsent to agent", "Send 4 unsent to agent"]);
-    expect(sendLine({ batch_id: "b", size: 3, note: "Before the demo", sent_by: "Alex", sent_at: "x" })).toBe("Sent to agent by Alex with 2 others · “Before the demo”");
-    expect(sendLine({ batch_id: "b", size: 2, note: null, sent_by: "Alex", sent_at: "x" })).toBe("Sent to agent by Alex with 1 other");
-    expect(sendLine({ batch_id: "b", size: 1, note: null, sent_by: "Viewer", sent_at: "x" })).toBe("Sent to agent by Viewer");
+    expect([countLabel(3), unsentLabel(4, "claude"), sendLabel(3, "claude"), sendLabel(1, "codex")]).toEqual(["3 selected", "Send 4 unsent to claude", "Send 3 to claude", "Send to codex"]);
   });
 });
 ```
 
-Run: `cd web && npx vitest run shell/src/view/batch-model.test.ts`
-Expected: FAIL (module not found).
+`web/shell/src/view/send-target.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from "vitest";
+import type { Version } from "../api";
+import { defaultTarget, liveAgents, rememberTarget } from "./send-target";
+
+const agents = [{ handle: "a_cl", harness: "claude", live: true }, { handle: "a_cx", harness: "codex", live: true }, { handle: "a_old", harness: "pi", live: false }];
+const V = (n: number, agent: string | null) => ({ artifact_id: "x", n, label: null, created_at: "x", files: {}, agent } as Version);
+afterEach(() => localStorage.clear());
+
+describe("send-target", () => {
+  it("prefers the agent you last sent to, then the latest publisher, then any live agent", () => {
+    expect(defaultTarget("x", agents, [V(1, "a_cl"), V(2, "a_cx")])).toBe("a_cx");
+    rememberTarget("x", "a_cl");
+    expect(defaultTarget("x", agents, [V(1, "a_cl"), V(2, "a_cx")])).toBe("a_cl");
+    rememberTarget("x", "a_old");
+    expect(defaultTarget("x", agents, [V(1, "a_old")])).toBe("a_cl");
+    expect(defaultTarget("x", [], [])).toBeNull();
+    expect(liveAgents(agents).map(a => a.handle)).toEqual(["a_cl", "a_cx"]);
+  });
+});
+```
+
+Run: `cd web && npx vitest run shell/src/view/batch-model.test.ts shell/src/view/send-target.test.ts`
+Expected: FAIL.
 
 `web/shell/src/view/batch-model.ts`:
 
 ```ts
-// Batch send to agent in the sidebar (spec §8): which cards can be checked,
-// range selection, pruning, and the words shown. Framework-free.
+// Batch send in the sidebar (spec §8): which cards can be ticked, range
+// selection, pruning, and the words shown. Framework-free.
 import type { Thread } from "../threads";
 
 export type Selection = { ids: string[]; anchor: string | null };
-export type ThreadSend = { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string };
 export const EMPTY_SELECTION: Selection = { ids: [], anchor: null };
-
 export const selectable = (t: Thread, deleted: boolean) => !deleted && t.status === "open";
 
-/** Checks or unchecks `id`. With `shift` and an anchor, every ID in `order`
+/** Ticks or unticks `id`. With `shift` and an anchor, every ID in `order`
  * between the anchor and `id` takes `id`'s new state. `id` becomes the anchor. */
 export function toggle(sel: Selection, id: string, shift: boolean, order: string[]): Selection {
   const on = !sel.ids.includes(id);
@@ -5891,7 +8691,7 @@ export function toggle(sel: Selection, id: string, shift: boolean, order: string
   return { ids: on ? [...rest, ...range] : rest, anchor: id };
 }
 
-/** Keeps only IDs of threads still selectable; the anchor goes with its thread. */
+/** Keeps only IDs of threads still selectable; the same object when nothing changed. */
 export function prune(sel: Selection, threads: Thread[], deleted: boolean): Selection {
   const live = new Set(threads.filter(t => selectable(t, deleted)).map(t => t.id));
   const ids = sel.ids.filter(id => live.has(id));
@@ -5901,39 +8701,62 @@ export function prune(sel: Selection, threads: Thread[], deleted: boolean): Sele
 
 export const unsent = (threads: Thread[]) => threads.filter(t => t.status === "open" && !t.sent_to_agent);
 export const countLabel = (n: number) => `${n} selected`;
-export const unsentLabel = (n: number) => `Send ${n} unsent to agent`;
+export const unsentLabel = (n: number, agent: string) => `Send ${n} unsent to ${agent}`;
+export const sendLabel = (n: number, agent: string) => (n > 1 ? `Send ${n} to ${agent}` : `Send to ${agent}`);
+```
 
-/** One send in a thread's history. */
-export function sendLine(s: ThreadSend): string {
-  const others = s.size - 1;
-  const with_ = others > 0 ? ` with ${others} other${others === 1 ? "" : "s"}` : "";
-  return `Sent to agent by ${s.sent_by}${with_}${s.note ? ` · “${s.note}”` : ""}`;
+`web/shell/src/view/send-target.ts`:
+
+```ts
+// Which agent a Send goes to (spec §10, "Participants and attention"): the
+// one this viewer last sent to on the artifact, else the latest publisher's,
+// else any live agent. Remembered per browser; storage may throw.
+import type { Version } from "../api";
+import type { AgentView } from "./working-model";
+
+const key = (aid: string) => `clax.sendTo.${aid}`;
+export const liveAgents = (agents: AgentView[]) => agents.filter(a => a.live);
+
+export function rememberTarget(aid: string, handle: string): void {
+  try { localStorage.setItem(key(aid), handle); } catch { /* this page only */ }
+}
+
+export function defaultTarget(aid: string, agents: AgentView[], versions: Version[]): string | null {
+  const live = new Set(liveAgents(agents).map(a => a.handle));
+  let last: string | null = null;
+  try { last = localStorage.getItem(key(aid)); } catch { /* none */ }
+  if (last && live.has(last)) return last;
+  const latest = [...versions].sort((a, b) => b.n - a.n)[0]?.agent ?? null;
+  if (latest && live.has(latest)) return latest;
+  return liveAgents(agents)[0]?.handle ?? null;
 }
 ```
 
-`prune` returns the same object when nothing changed, so the controller's store sees no change.
-
-Run: `cd web && npx vitest run shell/src/view/batch-model.test.ts`
+Run: `cd web && npx vitest run shell/src/view/batch-model.test.ts shell/src/view/send-target.test.ts`
 Expected: PASS.
 
-- [ ] **Step 2: Controller, test first**
+- [ ] **Step 2: The controller, test first**
 
-Add to `view/artifact-controller.test.ts`. Extend the harness's `fetch` stub: `/threads` answers two open threads `t1` and `t2` (from `T`-style literals in that file). A `POST` to `…/threads:send` records its body and answers `{ threads: [<t1 and t2 with sent_to_agent: true>], sent: ["t1", "t2"], unchanged: [] }`.
+Extend the harness in `view/artifact-controller.test.ts`:
+- `/threads` answers two open threads, `t1` and `t2`;
+- the artifact has `participants.agents` with one live claude agent `a_cl`;
+- a `POST` to `…/threads:send` records its body and answers both threads with `sent_to_agent: true`.
+
+Then add:
 
 ```ts
-  it("selects a range, sends it as one batch with the note, then clears", async () => {
+  it("ticks a range, sends it as one batch to the default agent with the note, then clears", async () => {
     const { ctl } = await started();
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
     const [t1, t2] = ctl.state.get().threads;
+    expect(ctl.state.get().sendTo).toBe("a_cl");
     ctl.toggleSelect(t1, false);
     ctl.toggleSelect(t2, true);
-    expect(ctl.state.get().selection.ids.sort()).toEqual(["t1", "t2"]);
     ctl.setBatchNote("Before the demo");
     await ctl.sendSelection();
     const call = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(([u]) => String(u).endsWith("/threads:send"))!;
-    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ thread_ids: ["t1", "t2"], note: "Before the demo" });
+    expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ thread_ids: ["t1", "t2"], note: "Before the demo", to: "a_cl" });
     expect(ctl.state.get()).toMatchObject({ selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false });
-    expect(ctl.state.get().threads.every(t => t.sent_to_agent)).toBe(true);
     ctl.dispose();
   });
 
@@ -5951,185 +8774,145 @@ Add to `view/artifact-controller.test.ts`. Extend the harness's `fetch` stub: `/
 ```
 
 Implement in `view/artifact-controller.ts`:
-- `ViewState` fields with initial values `selection: EMPTY_SELECTION`, `batchNote: ""` and `batchBusy: false`.
-- `private order(s = this.s): string[]`: the IDs of `sidebarSections(s.threads, s.resolved, s.file, f => this.holds(f, s))`'s `open`, then its `detached`.
-- `toggleSelect(t, shift)`: `this.set(s => ({ selection: toggle(s.selection, t.id, shift, this.order(s)) }))`.
-- `clearSelection()`: `this.set({ selection: EMPTY_SELECTION })`.
-- `setBatchNote(v)`: `this.set({ batchNote: v })`.
-- `private async send(ids: string[])`: returns when `ids` is empty or `batchBusy` is set. Otherwise it sets `batchBusy: true` and calls `sendBatch(this.id, ids, this.s.batchNote.trim() || null)` inside `report(…, SEND_FAILED, this.noticeFor(SEND_FAILED))`. On success it upserts every returned thread through `changeThreads` and sets `selection: EMPTY_SELECTION, batchNote: ""`. It always ends with `batchBusy: false`.
-- `sendSelection()`: `this.send(this.s.selection.ids)`. `sendUnsent()`: `this.send(unsent(this.s.threads).map(t => t.id))`.
-- In `react()`, when `prev.threads !== s.threads || prev.deleted !== s.deleted`, add `const pruned = prune(s.selection, s.threads, s.deleted); if (pruned !== s.selection) this.set({ selection: pruned });`.
+- Fields: `selection: EMPTY_SELECTION`, `batchNote: ""`, `batchBusy: false` and `sendTo: null`.
+- When `data` is first set, set `sendTo: defaultTarget(this.id, d.artifact.participants?.agents ?? [], d.versions)`.
+- `chooseTarget(h)`: `rememberTarget(this.id, h); this.set({ sendTo: h });`.
+- `toggleSelect(t, shift)`: `this.set(s => ({ selection: toggle(s.selection, t.id, shift, this.order(s).map(x => x.id)) }))`.
+- `clearSelection()` and `setBatchNote(v)`, as their names say.
+- `private async sendIds(ids)`:
+  - returns when `ids` is empty or a send is busy;
+  - otherwise sets `batchBusy`, and calls `sendBatch(this.id, ids, note || null, this.s.sendTo)` inside `report(…, SEND_FAILED, this.noticeFor(SEND_FAILED))`;
+  - on success, upserts the returned threads, clears the selection and note, and calls `rememberTarget` for `sendTo`;
+  - always ends with `batchBusy: false`.
+- `sendSelection()` sends `this.s.selection.ids`. `sendUnsent()` sends `unsent(this.s.threads)`.
+- `sendThread(t)` becomes `this.saveThread(sendToAgent(this.id, t.id, this.s.sendTo), SEND_FAILED)`, and remembers the target.
+- In `react()`, when `prev.threads !== s.threads || prev.deleted !== s.deleted`, prune the selection, and set it only if it changed.
+- `shortcut("tick")`: `if (sel && selectable(sel, s.deleted)) this.toggleSelect(sel, false)`. `shortcut("sendTicked")`: `void this.sendSelection()`.
 
 Run: `cd web && npx vitest run shell/src/view/artifact-controller.test.ts`
 Expected: PASS.
 
 - [ ] **Step 3: Components**
 
-`web/shell/src/ui/BulkBar.svelte`:
+`web/shell/src/ui/SendButton.svelte`:
 
 ```svelte
 <script lang="ts">
+  // A Send that names its agent (spec §10). The caret, shown only when more
+  // than one agent is live, picks another; the choice is remembered.
+  import type { AgentView } from "../view/working-model";
+
+  let { label, agents, names, target, disabled = false, onSend, onChoose }: {
+    label: string; agents: AgentView[]; names: Map<string, string>; target: string | null; disabled?: boolean; onSend(): void; onChoose(h: string): void;
+  } = $props();
+  let open = $state(false);
+  const live = $derived(agents.filter(a => a.live));
+</script>
+
+<span class="send">
+  <button type="button" class="primary" {disabled} onclick={onSend}>{label}</button>
+  {#if live.length > 1}
+    <button type="button" class="primary caret" aria-label="Choose the agent" aria-haspopup="menu" aria-expanded={open} onclick={() => { open = !open; }}>▾</button>
+    {#if open}
+      <!-- Escape closes the menu. -->
+      <!-- svelte-ignore a11y_interactive_supports_focus -->
+      <div class="send-menu" role="menu" onkeydown={e => { if (e.key === "Escape") { e.stopPropagation(); open = false; } }}>
+        {#each live as a (a.handle)}
+          <button type="button" role="menuitemradio" aria-checked={a.handle === target} class="ghost" onclick={() => { onChoose(a.handle); open = false; }}>{names.get(a.handle) ?? a.harness}</button>
+        {/each}
+      </div>
+    {/if}
+  {/if}
+</span>
+```
+
+`web/shell/src/ui/HandoffBar.svelte`:
+
+```svelte
+<script lang="ts">
+  import type { Snippet } from "svelte";
   import { countLabel } from "../view/batch-model";
   import { isSubmitKey } from "../view/composer-model";
 
-  let { count, note, busy, onNote, onSend, onClear }: {
-    count: number; note: string; busy: boolean; onNote(v: string): void; onSend(): void; onClear(): void;
-  } = $props();
+  let { count, note, busy, send, onNote, onClear, onSend }: { count: number; note: string; busy: boolean; send: Snippet; onNote(v: string): void; onClear(): void; onSend(): void } = $props();
 </script>
 
-<div class="bulk-bar" role="region" aria-label="Selected comments">
-  <div class="bulk-row">
-    <p class="bulk-count" role="status">{countLabel(count)}</p>
-    <button type="button" class="primary" disabled={busy} onclick={onSend}>Send to agent</button>
-    <button type="button" onclick={onClear}>Clear</button>
+<div class="handoff" role="region" aria-label="Selected comments">
+  <div class="handoff-row">
+    <span class="converge" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+    <span class="txt"><b role="status">{countLabel(count)}</b>handed off together</span>
+    <button type="button" class="ghost" onclick={onClear}>Clear</button>
+    {@render send()}
   </div>
-  <input class="bulk-note" aria-label="Note for the agent (optional)" placeholder="Note for the agent (optional)" maxlength="280"
-    value={note} oninput={e => onNote(e.currentTarget.value)}
-    onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); onSend(); } }} />
+  <input class="handoff-note" aria-label="Note for the agent (optional)" placeholder="Note for the agent (optional)" maxlength="280" value={note} disabled={busy}
+    oninput={e => onNote(e.currentTarget.value)} onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); onSend(); } }} />
 </div>
 ```
 
-(The import path is wherever the check under Interfaces found `isSubmitKey`.)
+`isSubmitKey` is the function the port keeps in `view/composer-model.ts`.
 
 `ui/ThreadCard.svelte`:
-- Add the props `checked?: boolean` and `onToggle?(t: Thread, shift: boolean): void`. As the first child of `<header>`, before the card-head button:
+- Add `checked?: boolean`, `onToggle?(t: Thread, shift: boolean): void` and `send?: Snippet`.
+- As the header's first child, when `onToggle` is given: `<input type="checkbox" class="thread-check" checked={checked ?? false} aria-label={`Select thread ${n ?? ""} ${anchorLabel(t.anchor)}`.replace("  ", " ")} onclick={e => { e.stopPropagation(); onToggle(t, e.shiftKey); }} />`. The click handler reads `shiftKey`, so Shift-click makes a range.
+- In the actions, replace the Send button with `{#if !t.sent_to_agent}{@render send?.()}{/if}`.
+
+`ui/Sidebar.svelte`:
+- Add `selection`, `batchNote`, `batchBusy`, `sendTo`, `onToggle`, `onClear`, `onNote`, `onSendSelection`, `onSendUnsent` and `onChoose` to `Props`.
+- Every open card gets `checked`, `onToggle` and a `send` snippet rendering `SendButton` with `label={`Send to ${names.get(p.sendTo ?? "") ?? p.agent}`}` and `onSend={() => p.onSend(t)}`.
+- At the top of the aside, after the strip: `{#if unsent(p.threads).length}<button class="send-unsent" onclick={p.onSendUnsent}>{unsentLabel(unsent(p.threads).length, agent)}</button>{/if}`.
+- At the end of the aside, when `p.selection.ids.length`, the lazy bar:
 
 ```svelte
-    {#if onToggle}
-      <input type="checkbox" class="thread-check" checked={checked ?? false}
-        aria-label={`Select comment ${n !== undefined ? `${n}: ` : ""}${anchorLabel(t.anchor)}`}
-        onclick={e => { e.stopPropagation(); e.preventDefault(); onToggle(t, e.shiftKey); }} />
-    {/if}
+    {#await import("./HandoffBar.svelte") then { default: HandoffBar }}
+      <HandoffBar count={p.selection.ids.length} note={p.batchNote} busy={p.batchBusy} onNote={p.onNote} onClear={p.onClear} onSend={p.onSendSelection}>
+        {#snippet send()}<SendButton label={sendLabel(p.selection.ids.length, agent)} agents={p.agents ?? []} {names} target={p.sendTo} disabled={p.batchBusy} onSend={p.onSendSelection} onChoose={p.onChoose} />{/snippet}
+      </HandoffBar>
+    {/await}
 ```
 
-  `preventDefault` keeps the box showing the controller's state: the next render sets `checked` from the selection.
-- Give the article the class `checked` when `checked` is true: `class={["thread-card", selected === t.id && "selected", checked && "checked"]}`.
-- After the comments loop, add `{#each t.sends ?? [] as s (s.batch_id)}<p class="send-line muted">{sendLine(s)}</p>{/each}`.
+`ui/SidebarIsland.svelte` wires all of these to the controller.
 
-`ui/Sidebar.svelte`: add the props listed under Interfaces. Right after `{@render p.header?.()}` (and before the Changes section from Task 17):
+`history-model.ts` adds the send events. `keys.ts` adds `x` and the two rows. Update the row list in `keys.test.ts`.
 
-```svelte
-  {#if p.unsentCount}
-    <button type="button" class="send-unsent" disabled={p.batchBusy} onclick={p.onSendUnsent}>{unsentLabel(p.unsentCount)}</button>
-  {/if}
-  {#if p.selection?.ids.length}
-    <BulkBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
-      onNote={p.onNote!} onSend={p.onSendSelection!} onClear={p.onClear!} />
-  {/if}
-```
-
-Pass `checked={p.selection?.ids.includes(t.id) ?? false}` to each `ThreadCard`, and `onToggle` only for selectable threads (`t.status === "open"`). Sections other than Open and Detached get no `onToggle`.
-
-`ui/SidebarIsland.svelte`: pass `selection={s.selection}`, `batchNote={s.batchNote}`, `batchBusy={s.batchBusy}`, `unsentCount={s.deleted ? 0 : unsent(s.threads).length}`, `onToggle={(t, shift) => ctl.toggleSelect(t, shift)}`, `onClear={() => ctl.clearSelection()}`, `onNote={v => ctl.setBatchNote(v)}`, `onSendSelection={() => void ctl.sendSelection()}` and `onSendUnsent={() => void ctl.sendUnsent()}`. When `s.deleted` is set, pass no `onToggle`.
-
-`web/shell/src/batch-ui.test.ts`:
-
-```ts
-import { describe, expect, it, vi } from "vitest";
-import { flush, mount } from "./test/svelte";
-import BulkBar from "./ui/BulkBar.svelte";
-
-describe("BulkBar", () => {
-  it("announces the count politely and sends on Cmd or Ctrl+Enter from the note", () => {
-    const onSend = vi.fn();
-    const onNote = vi.fn();
-    const m = mount(BulkBar, { count: 3, note: "", busy: false, onNote, onSend, onClear: vi.fn() });
-    const count = m.root.querySelector(".bulk-count")!;
-    expect(count.textContent).toBe("3 selected");
-    expect(count.getAttribute("role")).toBe("status");
-    const input = m.root.querySelector("input.bulk-note") as HTMLInputElement;
-    expect(input.getAttribute("aria-label")).toBe("Note for the agent (optional)");
-    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
-    expect(onSend).not.toHaveBeenCalled();
-    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", ctrlKey: true, bubbles: true })));
-    flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true })));
-    expect(onSend).toHaveBeenCalledTimes(2);
-    m.update({ count: 2, note: "", busy: true, onNote, onSend, onClear: vi.fn() });
-    expect(count.textContent).toBe("2 selected");
-    expect((m.root.querySelector("button.primary") as HTMLButtonElement).disabled).toBe(true);
-    m.unmount();
-  });
-});
-```
-
-Add to `sidebar.test.ts`:
-
-```ts
-  it("shows checkboxes on open threads only, the unsent button, and each thread's sends", () => {
-    const open: Thread = { ...base, id: "o", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "x")],
-      sends: [{ batch_id: "b", size: 2, note: "Soon", sent_by: "Alex", sent_at: base.created_at }] };
-    const fresh: Thread = { ...base, id: "f", anchor, status: "open", sent_to_agent: false, comments: [comment("2", "viewer", "Alex", "y")] };
-    const done: Thread = { ...base, id: "d", anchor, status: "resolved", sent_to_agent: false, comments: [comment("3", "viewer", "Alex", "z")] };
-    const onToggle = vi.fn();
-    const onSendUnsent = vi.fn();
-    const m = mount(Sidebar, { threads: [open, fresh, done], resolved: {}, selected: null, selection: { ids: ["o"], anchor: "o" }, batchNote: "", batchBusy: false,
-      unsentCount: 1, onToggle, onClear: vi.fn(), onNote: vi.fn(), onSendSelection: vi.fn(), onSendUnsent,
-      onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
-    expect(m.root.querySelectorAll(".section-open .thread-check")).toHaveLength(2);
-    expect(m.root.querySelectorAll(".section-resolved .thread-check")).toHaveLength(0);
-    expect(m.root.querySelector(`.thread-card[data-thread="o"]`)!.classList.contains("checked")).toBe(true);
-    expect(m.root.querySelector(".bulk-count")!.textContent).toBe("1 selected");
-    expect(m.root.querySelector(`.thread-card[data-thread="o"] .send-line`)!.textContent).toBe("Sent to agent by Alex with 1 other · “Soon”");
-    flush(() => (m.root.querySelector("button.send-unsent") as HTMLButtonElement).click());
-    expect(onSendUnsent).toHaveBeenCalled();
-    const box = m.root.querySelector(`.thread-card[data-thread="f"] .thread-check`) as HTMLInputElement;
-    flush(() => box.dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
-    expect(onToggle).toHaveBeenCalledWith(fresh, true);
-    m.unmount();
-  });
-```
+In `sidebar.test.ts`, add tests that:
+- a ticked card's checkbox reads `Select thread 1 …`;
+- Shift-click passes `shift: true`;
+- with two live agents the caret menu lists both and checks the target;
+- with one live agent there is no caret.
 
 - [ ] **Step 4: Styles**
 
 Append to `web/shell/src/theme.css`:
 
 ```css
-/* Batch send to agent (spec §8). */
-.thread-card header { display: flex; align-items: center; gap: 8px; }
-.thread-check { width: 16px; height: 16px; margin: 0; flex: none; accent-color: var(--accent); cursor: pointer; }
-.thread-card.checked { box-shadow: inset 0 0 0 1px var(--accent); }
-.send-line { font-size: 12px; margin: 4px 0; }
+/* Batch send (spec §8). */
+.thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; }
+.thread-card:has(.thread-check:checked) { box-shadow: inset 0 0 0 1px var(--accent); }
+.send { display: inline-flex; position: relative; }
+.send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
+.send-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); display: flex; flex-direction: column; padding: 4px 0; }
+.send-menu button { justify-content: flex-start; border: 0; min-height: 32px; }
+.send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
 .send-unsent { width: 100%; }
-.bulk-bar { position: sticky; top: -12px; z-index: 2; margin: -12px -12px 0; padding: 10px 12px; background: var(--card); border-bottom: 1px solid var(--border);
-  display: flex; flex-direction: column; gap: 8px; animation: bulk-in 140ms ease-out; }
-@keyframes bulk-in { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
-.bulk-row { display: flex; align-items: center; gap: 8px; }
-.bulk-count { margin: 0 auto 0 0; font-weight: 600; font-variant-numeric: tabular-nums; }
-.bulk-note { font: inherit; width: 100%; background: var(--bg); color: var(--fg); border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; }
-@media (max-width: 480px) { .bulk-row button, .send-unsent { min-height: 36px; } }
-@media (prefers-reduced-motion: reduce) { .bulk-bar { animation: none; } }
+.handoff { position: sticky; bottom: 0; margin: auto -14px -18px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--raised); border-top: 1px solid var(--border-strong); box-shadow: 0 -8px 24px var(--shadow); }
+.handoff-row { display: flex; align-items: center; gap: 12px; }
+.handoff .txt { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.handoff .txt b { display: block; color: var(--fg); font: 600 16px/1.1 var(--grot); }
+.converge { position: relative; width: 46px; height: 24px; flex: none; }
+.converge i { position: absolute; top: 5px; width: 14px; height: 14px; border-radius: 50%; background: var(--you); border: 1.5px solid var(--raised); transition: left .4s cubic-bezier(.4,0,.2,1); }
+.converge i:nth-child(1) { left: 0; } .converge i:nth-child(2) { left: 8px; } .converge i:nth-child(3) { left: 16px; }
+.converge i:nth-child(4) { left: 28px; top: 2px; width: 20px; height: 20px; background: var(--agent); }
+@media (max-width: 700px) { .handoff-row { flex-wrap: wrap; } .handoff button { min-height: 40px; } }
+@media (prefers-reduced-motion: reduce) { .converge i { transition: none; } }
 ```
 
-The sidebar has `padding: 12px`. The bar's negative margins and `top: -12px` let it span the sidebar edge to edge and stick flush to its top.
-
-- [ ] **Step 5: Run and commit**
-
-Run: `cd web && npm run lint && npm run typecheck && npx vitest run && npm run build && node scripts/bundle-size.mjs; echo "exit=$?"`
-Expected: `exit=0`. If the bundle budget fails, stop and report the sizes.
-
-```bash
-bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/shell/src/view/batch-model.ts web/shell/src/view/batch-model.test.ts web/shell/src/ui/BulkBar.svelte web/shell/src/batch-ui.test.ts \
-  web/shell/src/threads.ts web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/ui/SidebarIsland.svelte \
-  web/shell/src/ui/Sidebar.svelte web/shell/src/ui/ThreadCard.svelte web/shell/src/sidebar.test.ts web/shell/src/theme.css
-git commit -m "Select several threads in the sidebar and send them to the agent as one batch"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
-```
-
----
-
-### Task 23: Browser tests and verification for batch send
-
-**Files:**
-- Create: `web/e2e/batch.spec.ts`
-
-- [ ] **Step 1: The spec**
+- [ ] **Step 5: Browser tests**
 
 `web/e2e/batch.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
-import { api, openArtifact, postThread, publishAs, reach, registerSession, startDaemon } from "./fixtures";
+import { api, openArtifact, postThread, publishAs, registerSession, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -6142,87 +8925,556 @@ async function fresh(title: string, n: number) {
   for (let i = 0; i < n; i++) ids.push((await postThread(d.base, artifact.id, `item ${i}`)).id);
   return { sid: s.id, aid: artifact.id, ids };
 }
+const panel = async (page: import("@playwright/test").Page) => {
+  if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+};
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: select three with a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
+  test(`${mode}: tick a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
     const { sid, aid, ids } = await fresh(`Batch ${mode}`, 4);
     await openArtifact(page, d.base, aid, 1, mode);
-    await page.getByRole("button", { name: /Threads/ }).click();
+    await panel(page);
     const box = (id: string) => page.locator(`.thread-card[data-thread="${id}"] .thread-check`);
     await box(ids[0]).click();
     await box(ids[2]).click({ modifiers: ["Shift"] });
     const bar = page.getByRole("region", { name: "Selected comments" });
     await expect(bar.getByRole("status")).toHaveText("3 selected");
-    await expect(box(ids[3])).not.toBeChecked();
-    await expect(page.getByRole("button", { name: "Send 4 unsent to agent" })).toBeVisible();
+    await expect(bar.getByRole("button", { name: "Send 3 to claude" })).toBeVisible();
+    await expect(bar.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Send 4 unsent to claude" })).toBeVisible();
     await bar.getByLabel("Note for the agent (optional)").fill("Before the demo");
     await bar.getByLabel("Note for the agent (optional)").press("ControlOrMeta+Enter");
     await expect(bar).toHaveCount(0);
     const got = await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`);
     expect(got.feedback.map((f: { thread_id: string }) => f.thread_id)).toEqual(ids.slice(0, 3));
     expect(got.text.split("\n")[1]).toBe(`[clax] 3 comments on "Batch ${mode}", sent together by Viewer. Note: "Before the demo"`);
-    await expect(page.locator(`.thread-card[data-thread="${ids[1]}"] .send-line`)).toHaveText("Sent to agent by Viewer with 2 others · “Before the demo”");
-    await expect(page.locator(`.thread-card[data-thread="${ids[1]}"] .working-marker`)).toHaveText("Claude Code is working…");
-    await page.getByRole("button", { name: "Send 1 unsent to agent" }).click();
-    await expect(page.getByRole("button", { name: /unsent to agent/ })).toHaveCount(0);
-    const rest = await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`);
-    expect(rest.feedback.map((f: { thread_id: string }) => f.thread_id)).toEqual([ids[3]]);
+    await expect(page.locator(`.thread-card[data-thread="${ids[1]}"] .hist`)).toContainText("sent it with 2 others · “Before the demo”");
+    await page.getByRole("button", { name: "Send 1 unsent to claude" }).click();
+    await expect(page.getByRole("button", { name: /unsent to/ })).toHaveCount(0);
   });
 
-  test(`${mode}: a selected thread that disappears leaves the selection`, async ({ page }) => {
+  test(`${mode}: with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
+    const { sid, aid, ids } = await fresh(`Pick ${mode}`, 1);
+    const other = await registerSession(d.base, d.token, "codex", `pick-${mode}`);
+    await api(d.base, d.token, `/api/sessions/${other.id}/watches`, { method: "POST", body: JSON.stringify({ artifact: aid }) });
+    await openArtifact(page, d.base, aid, 1, mode);
+    await panel(page);
+    const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
+    await card.getByRole("button", { name: "Choose the agent" }).click();
+    await card.getByRole("menuitemradio", { name: "codex" }).click();
+    await card.getByRole("button", { name: "Send to codex" }).click();
+    expect((await api(d.base, d.token, `/api/sessions/${other.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
+    expect((await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`)).feedback).toHaveLength(0);
+    await page.reload();
+    await panel(page);
+    expect(await page.evaluate(id => localStorage.getItem(`clax.sendTo.${id}`), aid)).toMatch(/^a_/);
+  });
+
+  test(`${mode}: a ticked thread that disappears leaves the selection; X and Shift+S work from the keyboard`, async ({ page }) => {
     const { aid, ids } = await fresh(`Prune ${mode}`, 2);
     await openArtifact(page, d.base, aid, 1, mode);
-    await page.getByRole("button", { name: /Threads/ }).click();
-    for (const id of ids) await page.locator(`.thread-card[data-thread="${id}"] .thread-check`).click();
+    await panel(page);
+    await page.locator("body").press("j");
+    await page.locator("body").press("x");
+    await page.locator("body").press("j");
+    await page.locator("body").press("x");
     const count = page.getByRole("region", { name: "Selected comments" }).getByRole("status");
     await expect(count).toHaveText("2 selected");
-    await page.request.post(`${d.base}/api/artifacts/${aid}/threads/${ids[0]}/resolve`);
+    await page.request.post(`${d.base}/api/artifacts/${aid}/threads/${ids[0]}/resolve`, { headers: { origin: d.base } });
     await expect(count).toHaveText("1 selected");
-    await reach(page, page.locator(".bulk-bar"));
-    await page.getByRole("button", { name: "Clear" }).click();
-    await expect(page.locator(".bulk-bar")).toHaveCount(0);
+    await page.locator("body").press("Shift+S");
+    await expect(page.getByRole("region", { name: "Selected comments" })).toHaveCount(0);
   });
 }
-
-test("the bulk bar fits a phone in dark mode and holds still under reduced motion", async ({ page }) => {
-  const { aid, ids } = await fresh("Phone batch", 3);
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.emulateMedia({ colorScheme: "dark", reducedMotion: "reduce" });
-  await openArtifact(page, d.base, aid, 1, "subdomain");
-  await page.getByRole("button", { name: /Threads/ }).click();
-  await page.locator(`.thread-card[data-thread="${ids[0]}"] .thread-check`).click();
-  const bar = page.locator(".bulk-bar");
-  await expect(bar).toBeVisible();
-  expect(await bar.evaluate(e => getComputedStyle(e).animationName)).toBe("none");
-  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(375);
-  const send = (await bar.getByRole("button", { name: "Send to agent" }).boundingBox())!;
-  expect(send.height).toBeGreaterThanOrEqual(36);
-  expect(send.x + send.width).toBeLessThanOrEqual(375);
-});
 ```
 
-Run: `cd web && npx playwright test e2e/batch.spec.ts`
-Expected: PASS (5 tests).
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/batch.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. `HandoffBar` is outside `artifact.html`'s closure. If the `artifact` budget fails, lazy-load `SendButton`'s menu next. Do not raise the budget.
 
-- [ ] **Step 2: Browser verification (required)**
+- [ ] **Step 6: Screenshots and a look**
 
-With a scratch `CLAX_HOME` and `--port 0`, as in Task 11 Step 3, publish an artifact as a session and post four threads (the Task 18 Step 3 script's multipart helper, called four times). Open it and check each of these, writing down what you saw in the task report:
-- The checkboxes sit neatly beside each card head.
-- Shift-click selects the range.
-- The bar sticks to the sidebar top with `N selected · Send to agent · Clear` and the note field.
-- Cmd+Enter sends.
-- The send line appears in each card's history.
-- `Send N unsent to agent` shows and hides correctly.
-- Both themes look right, and at 375 px nothing scrolls sideways.
-- With a screen reader (VoiceOver: Cmd+F5), the count is announced when it changes, and each checkbox reads its label.
+Append a `bulk` scene to `web/e2e/scenes.ts`: open the panel, tick the first and third card (Shift-click the third), and type a note.
 
-Stop the daemon afterwards.
+Run: `cd web && CLAX_SHOTS=task-23 CLAX_SCENES=bulk,threads npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
 
-- [ ] **Step 3: Gates and commit**
+Report, against `concept-3-echo/shots/*-bulk.png`:
+- the checkboxes beside each card head;
+- the hand-off bar at the foot with its dots, `2 selected` over `handed off together`, Clear, and `Send 2 to claude`;
+- the note field;
+- `Send N unsent to claude` at the top;
+- the phone layout, with buttons at least 40px and no sideways scroll.
+
+With VoiceOver (Cmd+F5) in a headed browser:
+- check that the count is announced as it changes;
+- check that each checkbox reads its label.
+
+- [ ] **Step 7: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add web/e2e/batch.spec.ts
-git commit -m "Test batch send to agent in the browser in both frame modes"
-git cat-file commit HEAD | grep -q '^gpgsig ' && echo signed
+git add web/shell/src/view/batch-model.ts web/shell/src/view/batch-model.test.ts web/shell/src/view/send-target.ts web/shell/src/view/send-target.test.ts \
+  web/shell/src/ui/HandoffBar.svelte web/shell/src/ui/SendButton.svelte web/e2e/batch.spec.ts web/e2e/scenes.ts
+git add -u web/shell/src
+git status --short   # staged; the controller commits ("Send several threads at once in Echo: checkboxes, the hand-off bar with a note, and an agent picker")
+```
+
+---
+
+### Task 24: Presence and the people panel (provisional: Q5, Q7)
+
+This task adds:
+- here or away in the roster;
+- the location, in the people panel only;
+- the people panel itself, opened from the roster or with P, which also holds the viewer's name.
+
+Presence lives in memory in the daemon, like working: a restart starts with none, and reports lapse 90 s after the last one. Multiplayer is coming later, so this is the light layer the brief describes, and it stays out of the way: it never moves or covers the page.
+
+**Files:**
+- Create: `crates/clax-core/src/presence.rs`, `crates/clax-server/tests/api_presence.rs`, `web/shell/src/view/presence-model.ts`, `web/shell/src/view/presence-model.test.ts`, `web/shell/src/ui/PeoplePanel.svelte`, `web/e2e/presence.spec.ts`
+- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/events.rs` (`Event::Presence`), `crates/clax-core/src/store/attention.rs` (`Person.seen`), `crates/clax-server/src/state.rs`, `crates/clax-server/src/daemon.rs` (sweeper), `crates/clax-server/src/testing.rs`, `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/artifacts.rs`, `crates/clax-server/src/routes/mod.rs`, `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, and every e2e spec that fills `Your name` (`grep -rln "Your name" web/e2e`)
+
+**Interfaces:**
+- `clax_core::presence`:
+  - `PRESENCE_TTL_SECS: i64 = 90`, `GONE_KEEP_SECS: i64 = 600`, `MAX_WHERE_CHARS: usize = 80`;
+  - `enum State { Here, Away, Gone }`;
+  - `PresenceView { public_id, display_name, state, r#where: Option<String>, since: String }`;
+  - `Presence::new(clock: Arc<dyn Clock>)`, `report(aid, public_id, display_name, state, where_) -> Changed`, `sweep() -> Vec<String>` (the artifacts that changed), and `for_artifact(aid) -> Vec<PresenceView>`.
+  - `Gone` means a report has lapsed: `since` is the last report, and the shell shows "last here <time>".
+- `Event::Presence { artifact_id: String, people: Vec<PresenceView> }`, with the SSE name `presence`.
+- `Person` gains `seen: Option<u32>`, the person's `viewer_seen` on this artifact (provisional: Q7).
+- HTTP:
+  - `PUT /api/viewers/me/presence` (`SameOrigin`, a cookie is required) takes `{artifact_id, state: "here" | "away", where?}` and answers `{people}`;
+  - `GET /api/artifacts/<aid>/presence` answers `{people}`;
+  - the artifact view's bootstrap block does not carry presence, since it is fetched after load.
+- Shell:
+  - `ViewState.presence: PresenceView[]` and `ViewState.shareWhere: boolean` (from `localStorage` `clax.shareWhere`, default true);
+  - `ctl.setShareWhere(on)`;
+  - a private reporter: a report on start, on `visibilitychange`, when the selection or the composer's anchor changes, on input after an away period, and every 30 s;
+  - `shortcut("people")` calls `openMenu("people")`;
+  - the `.who` block becomes a button that does the same;
+  - `presence-model.ts`: `stateFor(visible: boolean, idleMs: number): "here" | "away"` (away after 5 minutes idle), `whereLabel(s: ViewState): string | null`, and `personLine(p, now): string`.
+
+- [ ] **Step 1: The registry, test first**
+
+`crates/clax-core/src/presence.rs`, tests first:
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::working::ManualClock;
+    use std::sync::Arc;
+
+    fn reg() -> (Arc<ManualClock>, Presence) {
+        let c = Arc::new(ManualClock::at("2026-09-30T10:00:00Z"));
+        (c.clone(), Presence::new(c))
+    }
+
+    #[test]
+    fn a_report_is_here_until_it_lapses_then_gone_then_dropped() {
+        let (c, p) = reg();
+        p.report("a1", "u_a", Some("Alex"), State::Here, Some("«Quarterly goals»"));
+        assert_eq!(p.for_artifact("a1")[0].state, State::Here);
+        assert_eq!(p.for_artifact("a1")[0].r#where.as_deref(), Some("«Quarterly goals»"));
+        c.advance(91);
+        assert_eq!(p.sweep(), vec!["a1".to_string()]);
+        let v = &p.for_artifact("a1")[0];
+        assert_eq!((v.state, v.r#where.is_none()), (State::Gone, true), "a lapsed report keeps no location");
+        c.advance(600);
+        p.sweep();
+        assert!(p.for_artifact("a1").is_empty());
+    }
+
+    #[test]
+    fn where_is_cleaned_and_bounded_and_away_keeps_no_location() {
+        let (_c, p) = reg();
+        p.report("a1", "u_a", None, State::Here, Some(&format!("  {}\n", "x".repeat(100))));
+        assert_eq!(p.for_artifact("a1")[0].r#where.as_ref().unwrap().chars().count(), 80);
+        p.report("a1", "u_a", None, State::Away, Some("chart"));
+        assert!(p.for_artifact("a1")[0].r#where.is_none());
+    }
+}
+```
+
+`ManualClock::advance(secs)` is Task 7's. The registry takes the same `Clock` trait (`crate::working::Clock`).
+
+Above the tests, the registry has these parts:
+- a `Mutex<BTreeMap<(String, String), Entry>>`, where `Entry { display_name, state, where_, last_report: DateTime<Utc> }`, and an `Arc<dyn Clock>`;
+- `report`, which replaces the entry and sets `last_report = now`. `where_` goes through `crate::working::clean_line(w, MAX_WHERE_CHARS)`, and is dropped unless the state is `Here`. It returns whether the visible view changed;
+- `for_artifact`, which sorts by state (here, away, gone), then by name. An entry past `last_report + 90 s` reads as `Gone` with no `where`, at once;
+- `sweep`, which turns lapsed entries into `Gone`, drops those past `last_report + 90 + 600 s`, and returns the artifacts whose view changed.
+
+Register `pub mod presence;` in `lib.rs`. Add `Event::Presence` to `events.rs` the way Task 7 added `Event::Working`: its variant, `artifact_id()`, `name()` (`"presence"`), and the names test.
+
+Run: `cargo test -p clax-core presence`
+Expected: PASS.
+
+- [ ] **Step 2: The routes, test first**
+
+`crates/clax-server/tests/api_presence.rs`:
+
+```rust
+mod common;
+use clax_core::presence::Presence;
+use clax_core::working::ManualClock;
+use common::TestServer;
+use serde_json::{Value, json};
+use std::sync::Arc;
+
+#[tokio::test]
+async fn presence_is_reported_by_viewers_announced_and_lapses() {
+    let c = Arc::new(ManualClock::at("2026-09-30T10:00:00Z"));
+    let pc = c.clone();
+    let ts = TestServer::spawn_with(move |s| s.presence = Arc::new(Presence::new(pc))).await;
+    let a = ts.publish("T", &[("index.html", "<p>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let alex = ts.viewer(Some("Alex")).await;
+    let mut ev = ts.events(&format!("?artifact={aid}&types=presence")).await;
+    let put = |state: &'static str, origin: Option<&'static str>| {
+        let (ts, aid, cookie) = (&ts, aid.clone(), alex.cookie.clone());
+        async move {
+            let mut r = ts.client.put(format!("{}/api/viewers/me/presence", ts.base)).header("cookie", format!("clax_viewer={cookie}"))
+                .json(&json!({"artifact_id": aid, "state": state, "where": "«Quarterly goals»"}));
+            if let Some(o) = origin { r = r.header("origin", o); }
+            r.send().await.unwrap()
+        }
+    };
+    assert_eq!(put("here", None).await.status(), 200);
+    let e = ev.next_named("presence").await;
+    assert_eq!(e["people"][0]["display_name"], "Alex");
+    assert_eq!(e["people"][0]["state"], "here");
+    assert_eq!(e["people"][0]["where"], "«Quarterly goals»");
+    assert!(!e.to_string().contains(&alex.cookie), "never the cookie");
+    assert_eq!(put("here", Some("http://evil.example")).await.status(), 403);
+    let anon = ts.client.put(format!("{}/api/viewers/me/presence", ts.base)).json(&json!({"artifact_id": aid, "state": "here"})).send().await.unwrap();
+    assert_eq!(anon.status(), 400);
+    c.advance(91);
+    clax_server::presence::sweep_and_announce(&ts.presence, &ts.events);
+    assert_eq!(ev.next_named("presence").await["people"][0]["state"], "gone");
+    let g: Value = ts.get(&format!("/api/artifacts/{aid}/presence")).await.json().await.unwrap();
+    assert_eq!(g["people"][0]["state"], "gone");
+}
+```
+
+Run: `cargo test -p clax-server --test api_presence`
+Expected: FAIL.
+
+Implement, following Task 8's working wiring:
+- `AppState.presence: Arc<Presence>`, initialised with `SystemClock` in `daemon.rs` and `testing.rs`;
+- `TestServer.presence`;
+- `crates/clax-server/src/presence.rs` with `sweep_and_announce`, which publishes `Event::Presence` for each changed artifact;
+- the 5 s sweeper (Task 8) also calls `crate::presence::sweep_and_announce`;
+- `routes/viewers.rs::set_presence`, which reads the viewer (400 `no_viewer` without one), checks that the artifact exists (404), takes the viewer's `public_id` and `display_name`, reports, and announces when the report changed something;
+- `routes/artifacts.rs::presence` for the GET;
+- in `routes/mod.rs`, the PUT before `/api/viewers/me`, and `.route("/api/artifacts/{aid}/presence", get(artifacts::presence))`;
+- `participants`' people SQL left-joins `viewer_seen` for `seen`.
+
+Run: `cargo test --workspace`
+Expected: PASS.
+
+- [ ] **Step 3: The shell model, test first**
+
+`web/shell/src/view/presence-model.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { personLine, stateFor } from "./presence-model";
+
+describe("presence-model", () => {
+  it("is here while visible and active, away when hidden or idle 5 minutes", () => {
+    expect([stateFor(true, 1000), stateFor(false, 0), stateFor(true, 5 * 60_000)]).toEqual(["here", "away", "away"]);
+  });
+  it("reads a person's line", () => {
+    const now = new Date("2026-09-30T10:03:00Z");
+    expect(personLine({ public_id: "u", display_name: "Mia", state: "here", where: "«p95 chart»", since: "x" }, now)).toBe("here, looking at «p95 chart»");
+    expect(personLine({ public_id: "u", display_name: "Mia", state: "here", where: null, since: "x" }, now)).toBe("here");
+    expect(personLine({ public_id: "u", display_name: "Jun", state: "gone", where: null, since: "2026-09-30T10:00:00Z" }, now)).toBe("last here 3 min ago");
+  });
+});
+```
+
+`web/shell/src/view/presence-model.ts`:
+
+```ts
+// Presence (spec §10, "Presence"): here or away, and where, if shared.
+import { relativeTime } from "../format";
+import { anchorLabel } from "../threads";
+import type { ViewState } from "./artifact-controller";
+
+export type PresenceView = { public_id: string; display_name: string | null; state: "here" | "away" | "gone"; where: string | null; since: string };
+export const AWAY_AFTER_MS = 5 * 60_000;
+export const stateFor = (visible: boolean, idleMs: number): "here" | "away" => (visible && idleMs < AWAY_AFTER_MS ? "here" : "away");
+
+/** Where this viewer is looking: the thread they selected, else the anchor they are writing on. */
+export function whereLabel(s: ViewState): string | null {
+  const t = s.threads.find(x => x.id === s.selected);
+  if (t) return anchorLabel(t.anchor);
+  return s.draft?.anchor ? anchorLabel(s.draft.anchor) : null;
+}
+
+export function personLine(p: PresenceView, now: Date): string {
+  if (p.state === "gone") return `last here ${relativeTime(p.since, now)}`;
+  if (p.state === "away") return "away";
+  return p.where ? `here, looking at ${p.where}` : "here";
+}
+```
+
+If `Draft` names its anchor differently, read it from where `Composer.svelte` reads it.
+
+Run: `cd web && npx vitest run shell/src/view/presence-model.test.ts`
+Expected: PASS.
+
+- [ ] **Step 4: The controller, the panel, the roster**
+
+`view/artifact-controller.ts`:
+- `ViewState.presence: []` and `shareWhere`, read guarded from `localStorage` (default `true`).
+- `onEvent` handles `presence` with `this.set({ presence: e.people })`. `events.ts` adds the event and its listener name.
+- After load, fetch `GET /api/artifacts/<id>/presence` once, after paint.
+- A private reporter:
+  - `report()` sends `PUT /api/viewers/me/presence` with `stateFor(document.visibilityState === "visible", Date.now() - lastInput)`, plus `where: this.s.shareWhere ? whereLabel(this.s) : null`;
+  - it runs at most once per 2 s, unless the state flips;
+  - it runs on start, on `visibilitychange`, on a selection or draft change (in `react()`), on the first input after away, and every 30 s (an interval cleared in `dispose`);
+  - it reports only when `this.s.me` is set (a viewer cookie exists).
+- `setShareWhere(on)` stores the choice, sets it, and reports.
+- `shortcut("people")` calls `this.openMenu("people")`.
+
+`view/keys.ts`: add `p: "people"`, and the row `{ keys: ["P"], what: "People and agents here", action: "people" }` last. Update `keys.test.ts`.
+
+`ui/Roster.svelte` gains `presence` (public ID → `"here" | "away" | "gone"`). The `here` and `away` classes come from it, and `gone` renders as `away`.
+
+`ui/TopbarIsland.svelte`:
+- the `.who` `div` becomes `<button type="button" class="who" aria-haspopup="dialog" aria-expanded={s.menu === "people"} aria-label="People and agents" onclick={() => ctl.openMenu("people")}>`;
+- its `Roster` gets the presence map;
+- remove `{#if !s.narrow}<ViewerName …/>{/if}`;
+- after the button, while `s.menu === "people"`:
+
+```svelte
+    {#await import("./PeoplePanel.svelte") then { default: PeoplePanel }}
+      <PeoplePanel {ctl} {s} onClose={() => ctl.closeMenu()} />
+    {/await}
+```
+
+`ui/SidebarIsland.svelte`: remove the narrow `nameField` header, because the name now lives in the panel.
+
+`web/shell/src/ui/PeoplePanel.svelte` (lazy) is a `role="dialog" aria-label="People and agents"` panel, 420px wide, a full sheet at phone width. Escape and an outside click close it and return focus to the `.who` button. It holds:
+- **People · N**: one row per participant and present viewer (the union of `participants.people` and `presence`). Each row has its token, the name (with `you` for this viewer), `personLine`, and a muted line: `In N threads.` (open threads whose comments carry their `author_public_id`), then `Seen vK.` from `Person.seen`.
+- **Agents · N**: one row per agent. Each row has its token, the name, and one of these:
+  - the threads it works on (`On #1 (yours) and #3`, from `stripText`) with the clock, and a `HaikuLine` seeded by the record key, hidden in comment mode;
+  - or `Idle`, plus `Addressed #2 in v5` for the newest version it published that addressed threads.
+- **The name row**: `You are <name>` with the port's `ViewerName` field. Under it, a checkbox `Share where I'm looking` bound to `ctl.setShareWhere`.
+
+Styles, appended to `theme.css` (the mockup's `.pop` and `.prow`):
+
+```css
+/* The people panel (spec §8). */
+.people { position: absolute; top: 56px; left: 16px; z-index: 20; width: 420px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0 8px; }
+.people h3 { margin: 10px 16px 6px; font: 600 14px var(--grot); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+.people h3 .sw { width: 7px; height: 14px; } .people .ph .sw { border-radius: 0 7px 7px 0; background: var(--you); } .people .ah .sw { border-radius: 7px 0 0 7px; background: var(--agent); }
+.prow { display: grid; grid-template-columns: 52px 1fr; gap: 2px 10px; padding: 7px 16px; align-items: start; }
+.prow b { font: 600 15px/1.2 var(--grot); } .prow b small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: 6px; }
+.prow p { grid-column: 2; margin: 0; font-size: 12.5px; line-height: 1.45; } .prow .tok { grid-row: span 2; justify-self: start; }
+.prow .hk { grid-column: 2; }
+.prow.edit { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
+button.who { cursor: pointer; font: inherit; }
+@media (max-width: 700px) { .people { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; } }
+```
+
+- [ ] **Step 5: The name field moves: update the e2e specs**
+
+Add to `web/e2e/fixtures.ts`:
+
+```ts
+/** Sets this page's viewer name through the people panel, as a person does. */
+export async function setName(page: Page, name: string) {
+  await page.getByRole("button", { name: "People and agents" }).click();
+  const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
+  await field.fill(name);
+  await field.press("Enter");
+  await page.keyboard.press("Escape");
+}
+```
+
+In every spec from `grep -rln "Your name" web/e2e`, replace the two-line `getByLabel("Your name").fill(…)` and `.press("Enter")` with `await setName(page, …)`. That includes Task 17's capability test.
+
+- [ ] **Step 6: Browser tests**
+
+`web/e2e/presence.spec.ts`:
+
+```ts
+import { test, expect } from "@playwright/test";
+import { openArtifact, postThread, publishAs, registerSession, setName, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: two viewers see each other here, the location only in the panel, and away when hidden`, async ({ browser }) => {
+    const s = await registerSession(d.base, d.token, "claude", `pres-${mode}`);
+    const { artifact } = await publishAs(d.base, d.token, s.id, `Presence ${mode}`, { "index.html": "<main><h2>Quarterly goals</h2></main>" });
+    const t = await postThread(d.base, artifact.id, "Two columns");
+    const alex = await (await browser.newContext()).newPage();
+    const mia = await (await browser.newContext()).newPage();
+    await openArtifact(alex, d.base, artifact.id, 1, mode);
+    await openArtifact(mia, d.base, artifact.id, 1, mode);
+    await setName(alex, "alex");
+    await setName(mia, "Mia");
+    if (!(await mia.locator("aside.sidebar").isVisible())) await mia.getByRole("button", { name: /Threads/ }).first().click();
+    await mia.locator(`.thread-card[data-thread="${t.id}"] .card-head`).click();
+    await expect(alex.locator(".who .ppl .tok.here")).toHaveCount(2);
+    await expect(alex.locator(".who")).not.toContainText("looking at");
+    await alex.locator("body").press("p");
+    const panel = alex.getByRole("dialog", { name: "People and agents" });
+    await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("here, looking at");
+    await mia.evaluate(() => { Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
+    await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("away");
+    await alex.context().close();
+    await mia.context().close();
+  });
+}
+```
+
+Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test; echo "exit=$?"`
+Expected: `exit=0`. The full suite runs, because the name field moved. `PeoplePanel` is outside `artifact.html`'s closure.
+
+- [ ] **Step 7: Screenshots and a look**
+
+Append a `multiplayer` scene to `web/e2e/scenes.ts`:
+1. a second browser context names itself "Mia" and selects a thread;
+2. a working record runs on one thread;
+3. the main page opens the panel with P.
+
+Run: `cd web && CLAX_SHOTS=task-24 CLAX_SCENES=multiplayer,view npx playwright test e2e/shots.spec.ts`
+Expected: PASS.
+
+Report, against `concept-3-echo/shots/*-multiplayer.png`:
+- the roster's here dots;
+- the panel's two sections;
+- Mia's location shown in the panel and nowhere else;
+- the agent row with its clock and haiku;
+- the name row and the share switch;
+- the phone sheet.
+
+Run `npm run perf` and report it.
+
+- [ ] **Step 8: Gates and staging**
+
+```bash
+bash scripts/quality_gates.sh; echo "exit=$?"
+git add crates/clax-core/src/presence.rs crates/clax-server/tests/api_presence.rs crates/clax-server/src/presence.rs web/shell/src/view/presence-model.ts \
+  web/shell/src/view/presence-model.test.ts web/shell/src/ui/PeoplePanel.svelte web/e2e/presence.spec.ts web/e2e/fixtures.ts web/e2e/scenes.ts
+git add -u crates web/shell/src web/e2e
+git status --short   # staged; the controller commits ("Show who is here and where they look, in a people panel that also holds your name")
+```
+
+---
+
+### Task 25: The Echo pass: rally of 10 in the top bar, the full screenshot sweep, and every gate
+
+This task finishes Echo's last easter egg, then checks the whole redesign against the mockup in one sweep, in light and dark, at desktop and phone width. It runs every gate. Nothing new is built beyond the rally line. A defect the sweep finds is fixed here when it is a styling slip. When it is a design question, it is reported to the controller.
+
+**Files:**
+- Create: `web/shell/src/view/rally.ts`, `web/shell/src/view/rally.test.ts`
+- Modify: `web/shell/src/view/working-model.ts` (`summary` takes `rally`), `web/shell/src/view/working-model.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/e2e/echo.spec.ts`, `web/e2e/scenes.ts`, plus whatever styling slips the sweep finds in `web/shell/src/theme.css` and the components
+
+**Interfaces:**
+- `view/rally.ts`: `rallyOnce(aid: string, version: number): boolean`. It is true once per browser per artifact, the first time the viewer views v10 (provisional: Q9). It keeps `clax.rally.<aid>` in `localStorage`, guarded.
+- `summary(...)` takes `rally: boolean`. With nobody working and nothing addressed, it appends ` · rally of 10` to `line2`.
+
+- [ ] **Step 1: Rally of 10, test first**
+
+`web/shell/src/view/rally.test.ts`:
+
+```ts
+import { afterEach, describe, expect, it } from "vitest";
+import { rallyOnce } from "./rally";
+
+afterEach(() => localStorage.clear());
+
+describe("rally", () => {
+  it("fires once per artifact, on v10 only", () => {
+    expect(rallyOnce("a", 9)).toBe(false);
+    expect(rallyOnce("a", 10)).toBe(true);
+    expect(rallyOnce("a", 10)).toBe(false);
+    expect(rallyOnce("b", 10)).toBe(true);
+  });
+});
+```
+
+`web/shell/src/view/rally.ts`:
+
+```ts
+// "Rally of 10" (spec §8, "Look"): an easter egg, shown once per browser per
+// artifact when its tenth version is first viewed. Storage may throw.
+export function rallyOnce(aid: string, version: number): boolean {
+  if (version !== 10) return false;
+  try {
+    const k = `clax.rally.${aid}`;
+    if (localStorage.getItem(k)) return false;
+    localStorage.setItem(k, "1");
+    return true;
+  } catch { return false; }
+}
+```
+
+In `TopbarIsland.svelte`, compute `const rally = rallyOnce(ctl.id, shown)` once, in the script, when the view first becomes ready. Pass it to `summary`. In `working-model.ts`, the `Nobody working` branch appends ` · rally of 10` when `rally`. Add that case to `working-model.test.ts`, and pass `rally: false` in the others.
+
+Run: `cd web && npx vitest run shell/src/view/rally.test.ts shell/src/view/working-model.test.ts`
+Expected: PASS.
+
+Add to `web/e2e/echo.spec.ts` a test that publishes ten versions as one session, opens v10, and expects `.who .sum .l2` to contain `rally of 10`. After a reload it no longer does. In the gallery, the card's `.chip.rally` reads `rally of 10`.
+
+- [ ] **Step 2: The sweep**
+
+Run every scene: `cd web && CLAX_SHOTS=task-25 npx playwright test e2e/shots.spec.ts && CLAX_SHOTS=task-25 CLAX_SHOTS_EMPTY=1 npx playwright test e2e/shots.spec.ts`
+Expected: PASS. Every scene (`gallery`, `gallery-empty`, `view`, `comment`, `threads`, `keys`, `working`, `changelog`, `versions`, `bulk`, `multiplayer`) is shot in light and dark, at 1440×900 and 390×844.
+
+Put each against its counterpart in `.superpowers/sdd/2026-09-30-redesign/concept-3-echo/shots/`, which uses the same theme, size and scene names. Write a table in the task report with one row per scene. For each scene and each of the four variants, it says whether these match the mockup, with a short note where they differ:
+- the type (condensed for structure, mono for words);
+- the colours (people red-orange, agents green, pink only as an accent);
+- sentence case;
+- spacing;
+- nothing over the page;
+- the phone layout.
+
+Fix every styling slip in `theme.css` or the component, and shoot that scene again. Report every design difference, such as a missing thumbnail or a different word, as a question for the controller, and do not change the design. Thumbnails are expected to be missing (provisional: Q1).
+
+Then check by hand in a headed browser:
+- in comment mode, no haiku shows anywhere: the sidebar strip hides its haiku, and the gallery is not in view;
+- under reduced motion, nothing moves: the sweep, the breathing dot, the mark and the converging dots;
+- the theme switch and the system scheme work together as in Task 3;
+- the `?` sheet lists C, Esc, T, J and K, Enter, S, R, V, X, Shift+S and P, and each key works;
+- the tab's favicon is the Echo mark in light and dark tab strips.
+
+- [ ] **Step 3: Every gate**
+
+```bash
+grep -rniE "your move|whose move|agents' move|'s move|\bround [0-9]|(your|their|whose|next) turn|nothing waits on you|settled\." web/shell/src --include=*.svelte --include=*.ts --include=*.json | grep -v '\.test\.ts:'
+grep -rn "text-transform: *uppercase" web/shell/src
+grep -rlE "from \"svelte" web/bridge web/shell/src/caps web/shell/src/view
+grep -rn "Send to agent\|changelog-banner\|Show changes" web/shell/src web/e2e
+```
+
+Expected: no output from any of the four.
+
+```bash
+cd web && npm run lint && npm run typecheck && npx vitest run && npm run build && node scripts/bundle-size.mjs && npx playwright test && npm run perf; echo "exit=$?"
+```
+
+Expected: `exit=0`, every budget held. Put the printed sizes (`gallery`, `artifact`, `bridge`, `fonts`) and the perf medians into the task report, beside the port's numbers in `web/perf/budget.json` and `web/perf/bundle-budget.json`.
+
+```bash
+cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && bash scripts/test-plugins.sh && scripts/smoke-comment-loop.sh
+bash scripts/quality_gates.sh; echo "exit=$?"
+```
+
+Expected: every command passes, ending with `exit=0`.
+
+- [ ] **Step 4: Staging**
+
+```bash
+git add web/shell/src/view/rally.ts web/shell/src/view/rally.test.ts web/e2e/echo.spec.ts web/e2e/scenes.ts
+git add -u web/shell/src web/e2e
+git status --short   # staged; the controller commits ("Finish Echo: rally of 10 in the top bar, and the redesign checked against the mockup in both themes")
 ```
