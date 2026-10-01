@@ -49,11 +49,12 @@ a { color: inherit; text-decoration: none; }
 .topbar select { min-width: 0; max-width: 40vw; }
 .topbar button { white-space: nowrap; flex: none; }
 /* The bar's small text actions (open raw, copy link): bracketed, no box. */
-.topbar > select ~ .hide-sm, .topbar > button:last-child:not(:first-of-type) { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; color: var(--accent-ink); background: none; border-color: transparent; padding: 6px 2px; }
-.topbar > span.hide-sm { color: var(--muted); }
-.topbar > select ~ .hide-sm::before, .topbar > button:last-child:not(:first-of-type)::before { content: "[ "; content: "[ " / ""; color: var(--muted); }
-.topbar > select ~ .hide-sm::after, .topbar > button:last-child:not(:first-of-type)::after { content: " ]"; content: " ]" / ""; color: var(--muted); }
-.topbar > a.hide-sm:hover, .topbar > button:last-child:not(:first-of-type):not(:disabled):hover { text-decoration: underline; border-color: transparent; }
+/* The artifact view's controls sit in the topbar's island (`display: contents`); :where keeps these rules' specificity. */
+.topbar > :where(.island) > select ~ .hide-sm, .topbar > :where(.island) > button:last-child:not(:first-of-type) { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; white-space: nowrap; color: var(--accent-ink); background: none; border-color: transparent; padding: 6px 2px; }
+.topbar > span.hide-sm, .topbar > :where(.island) > span.hide-sm { color: var(--muted); }
+.topbar > :where(.island) > select ~ .hide-sm::before, .topbar > :where(.island) > button:last-child:not(:first-of-type)::before { content: "[ "; content: "[ " / ""; color: var(--muted); }
+.topbar > :where(.island) > select ~ .hide-sm::after, .topbar > :where(.island) > button:last-child:not(:first-of-type)::after { content: " ]"; content: " ]" / ""; color: var(--muted); }
+.topbar > :where(.island) > a.hide-sm:hover, .topbar > :where(.island) > button:last-child:not(:first-of-type):not(:disabled):hover { text-decoration: underline; border-color: transparent; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; position: relative; transition: border-color var(--t), transform var(--t); }
 .card:hover { border-color: var(--border-strong); }
@@ -73,7 +74,7 @@ button.primary:not(:disabled):hover { background: var(--accent-hover); border-co
 button:disabled { opacity: .5; cursor: default; }
 /* Comment mode on: the colour of the pins it makes (brown on red-orange, 5.06:1). */
 .topbar button[aria-pressed="true"] { background: var(--comment-hl); border-color: var(--accent); }
-.topbar > button[aria-pressed="true"]:first-of-type { background: var(--pin); border-color: var(--pin); color: var(--on-pin); }
+.topbar > :where(.island) > button[aria-pressed="true"]:first-of-type { background: var(--pin); border-color: var(--pin); color: var(--on-pin); }
 input, select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 0; padding: 6px 8px; min-height: 32px; transition: border-color var(--t); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 input, select { line-height: 1.2; }

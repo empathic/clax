@@ -28,6 +28,10 @@ import type { SetNotice } from "./viewer-name-model";
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
 export type Loaded = { artifact: Artifact; versions: Version[] };
 export type ViewState = {
+  /** The version the shell URL pins, null for the latest (a prop). */
+  pinnedVersion: number | null;
+  /** The page the frame opens on, from the shell URL (a prop). */
+  startFile: string;
   data: Loaded | null;
   error: string | null;
   /** The artifact origin, null in sandbox mode, undefined until decided. */
@@ -81,8 +85,6 @@ const threadIds = (ts: Thread[]) => ts.map(t => t.id).join(",");
 export class ArtifactController {
   readonly state: Store<ViewState>;
   readonly id: string;
-  private pinned: number | null;
-  private openFile: string;
   /** The URL fragment the frame opens at. */
   readonly startHash: string;
   /** The content frame; the mount sets it before `start`. */
@@ -140,16 +142,17 @@ export class ArtifactController {
   /** Rendered changes (from, to) whose reactions have not run yet. */
   private readonly reactions: [ViewState, ViewState][] = [];
   private flushScheduled = false;
+  /** The host the latest reaction pass told of the UI. */
+  private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
   private readonly prompt = promptQueue(ask => this.set({ ask }));
 
   constructor({ id, pinnedVersion, file: startFile = INDEX_FILE }: ArtifactProps) {
     this.id = id;
-    this.pinned = pinnedVersion;
-    this.openFile = startFile;
     this.startHash = location.hash;
     this.frameHash = this.startHash;
     this.state = new Store<ViewState>({
+      pinnedVersion, startFile,
       data: null, error: null, origin: undefined, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
@@ -204,18 +207,18 @@ export class ArtifactController {
 
   /** The version the shell URL pins, null for the latest. */
   get pinnedVersion(): number | null {
-    return this.pinned;
+    return this.s.pinnedVersion;
   }
 
   /** The page the frame opens on, from the shell URL. */
   get startFile(): string {
-    return this.openFile;
+    return this.s.startFile;
   }
 
   // ---- derived values (pure over a snapshot, so components can derive them) ----
 
   shown(s: ViewState = this.s): number {
-    return this.pinnedVersion ?? s.data?.artifact.current_version ?? 0;
+    return s.pinnedVersion ?? s.data?.artifact.current_version ?? 0;
   }
 
   latest(s: ViewState = this.s): number {
@@ -230,7 +233,7 @@ export class ArtifactController {
    * always there): it gets a message instead of the daemon's 404 in the frame. */
   missing(s: ViewState = this.s): string | null {
     const version = this.version(s);
-    return this.startFile !== INDEX_FILE && version !== undefined && !Object.hasOwn(version.files, this.startFile) ? this.startFile : null;
+    return s.startFile !== INDEX_FILE && version !== undefined && !Object.hasOwn(version.files, s.startFile) ? s.startFile : null;
   }
 
   /** Whether the shown version holds `f` (the index always; any file while the
@@ -289,16 +292,28 @@ export class ArtifactController {
     this.turnFrom = null;
     if (!from || this.disposed) return;
     const to = this.s;
+    // Render-time work, as the frame unmounted in the render that showed the
+    // deletion: a deleted artifact's frame goes before anything paints, so
+    // its gate never stays open beside the message.
+    if (from.deleted !== to.deleted) this.showFrame();
     this.runReactions();
     this.reactions.push([from, to]);
-    if (!this.flushScheduled) {
-      this.flushScheduled = true;
-      this.cancelFlush = afterPaint(() => { this.flushScheduled = false; this.runReactions(); });
-    }
+    this.schedulePass();
+  }
+
+  private schedulePass(): void {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    this.cancelFlush = afterPaint(() => { this.flushScheduled = false; this.runReactions(); });
   }
 
   private runReactions(): void {
     for (const [prev, next] of this.reactions.splice(0)) if (!this.disposed) this.react(prev, next);
+    // A host made since the last pass hears of the UI once, in this pass.
+    if (!this.disposed && this.host && this.host !== this.toldHost) {
+      this.toldHost = this.host;
+      this.host.uiChanged();
+    }
   }
 
   /** What Preact ran as effects after the render that went from `prev` to
@@ -310,8 +325,10 @@ export class ArtifactController {
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
     if (prev.draft?.clipToken !== next.draft?.clipToken || prev.draft?.capturing !== next.draft?.capturing) this.armCapture(next.draft);
-    if (prev.deleted !== next.deleted) this.showFrame();
-    if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy) this.host?.uiChanged();
+    if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy || this.host !== this.toldHost) {
+      this.toldHost = this.host;
+      this.host?.uiChanged();
+    }
   }
 
   // The pick's composer closed (posted, cancelled, or dismissed): comment mode
@@ -405,8 +422,9 @@ export class ArtifactController {
         comments: this.commentsUi,
         files: data.versions.find(v => v.n === shown)?.files,
       })));
-      const host = this.host;
-      queueMicrotask(() => { if (this.host === host && !this.disposed) host.uiChanged(); });
+      // It hears of the UI in the next reaction pass, as the effect that
+      // depended on the host did after the render that made it.
+      this.schedulePass();
     }
     this.showFrame();
   }
@@ -516,8 +534,7 @@ export class ArtifactController {
   update({ id, pinnedVersion, file = INDEX_FILE }: ArtifactProps): void {
     if (id !== this.id) throw new Error("ArtifactController.update: another artifact needs another controller");
     if (this.disposed) return;
-    this.pinned = pinnedVersion;
-    this.openFile = file;
+    this.set({ pinnedVersion, startFile: file });
     this.viewChanged();
   }
 

@@ -50,7 +50,7 @@ function Stage({ ctl, s }: IslandProps) {
     <>
       {deleted
         ? <p class="empty">This artifact was deleted.</p>
-        : missing && <p class="empty">v{shown} has no page {missing}. <a href={shellPath(ctl.id, ctl.pinnedVersion, INDEX_FILE)}>Open the index</a></p>}
+        : missing && <p class="empty">v{shown} has no page {missing}. <a href={shellPath(ctl.id, s.pinnedVersion, INDEX_FILE)}>Open the index</a></p>}
       {!deleted && !missing && <div class="frame-shield" aria-hidden="true" ref={registerShield}><div /><div /><div /><div /></div>}
       {s.hint && <p class="gesture-hint" role="status">{s.hint}</p>}
       {!deleted && !missing && <Pins threads={s.threads} resolved={s.resolved} file={s.file} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />}

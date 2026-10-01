@@ -3,7 +3,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
 
-class FakeES { addEventListener() {} close() {} }
+class FakeES {
+  static last: FakeES | undefined;
+  listeners = new Map<string, (e: MessageEvent) => void>();
+  constructor() { FakeES.last = this; }
+  addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
+  close() {}
+  emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
+}
 
 async function started() {
   vi.stubGlobal("EventSource", FakeES);
@@ -26,7 +33,7 @@ const fromFrame = (win: Window, data: unknown) => window.dispatchEvent(new Messa
 const hello = (win: Window, version = 2) => fromFrame(win, { type: "clax:hello", artifact: ID, version, file: "index.html" });
 
 describe("ArtifactController", () => {
-  beforeEach(() => { vi.resetModules(); history.replaceState(null, "", `/a/${ID}`); });
+  beforeEach(() => { vi.resetModules(); FakeES.last = undefined; history.replaceState(null, "", `/a/${ID}`); });
   // The gesture module this test's registry loaded watches the document until its `unwatchShell` runs.
   afterEach(async () => { (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
 
@@ -37,6 +44,9 @@ describe("ArtifactController", () => {
     expect(frame.getAttribute("src")).toBe(`/c/${ID}/v/2/`);
     const posted: { type: string }[] = [];
     frame.contentWindow!.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    // A hello for another version of the artifact is not welcomed.
+    hello(frame.contentWindow!, 1);
+    expect(posted.map(m => m.type)).not.toContain("clax:welcome");
     hello(frame.contentWindow!);
     expect(posted.map(m => m.type)).toContain("clax:welcome");
     ctl.dispose();
@@ -89,6 +99,26 @@ describe("ArtifactController", () => {
     expect(ctl.state.get().resolved).toEqual({});
     fromFrame(win, { type: "clax:anchors", results: [{ id: handle, found: true, method: "quote" }] });
     expect(ctl.state.get().resolved).toEqual({});
+    ctl.dispose();
+  });
+
+  it("drops a deleted artifact's frame before the next paint, so nothing the page posts after the deletion is answered", async () => {
+    const { ctl, frame } = await started();
+    const win = frame.contentWindow!;
+    const posted: { type: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    hello(win);
+    expect(posted.map(m => m.type)).toContain("clax:welcome");
+    const deadline = Date.now() + 2000;
+    while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+    posted.length = 0;
+    FakeES.last!.emit("artifact_deleted", { type: "artifact_deleted", artifact_id: ID });
+    await Promise.resolve();
+    expect(frame.isConnected).toBe(false);
+    fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
+    fromFrame(win, { type: "clax:pick-start", pickId: "p1", anchor: { kind: "element", selector: "p", file: "index.html" }, version: 2 });
+    await new Promise(r => setTimeout(r, 50));
+    expect(posted).toEqual([]);
     ctl.dispose();
   });
 });
