@@ -7,7 +7,7 @@ default: help
 help:
     @just --list --unsorted
 
-# Run a server that reloads on Rust and web changes
+# Run a dev server that reloads on Rust and web changes, on its own home (~/.clax-dev) and port 7481; --shared serves the real home on 7480
 dev *ARGS:
     ./scripts/dev.sh {{ARGS}}
 

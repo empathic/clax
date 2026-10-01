@@ -3,14 +3,25 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PORT=7480
-ARGS="$*"
-
-if [ -n "${CLAX_HOME:-}" ]; then
-    echo "Clax dev: serving CLAX_HOME=$CLAX_HOME"
+# By default the dev daemon runs apart from the installed one that agents'
+# plugins use: its own home (~/.clax-dev) on port 7481, so rebuilding never
+# takes the agents' Clax down and the two never fight over a port.
+# `just dev --shared` serves the real home on 7480 instead (stop the installed
+# daemon first). A CLAX_HOME you set yourself always wins.
+SHARED=0
+ARGS=()
+for a in "$@"; do
+    if [ "$a" = "--shared" ]; then SHARED=1; else ARGS+=("$a"); fi
+done
+if [ "$SHARED" = 1 ]; then
+    PORT=7480
+    export CLAX_HOME="${CLAX_HOME:-$HOME/.clax}"
 else
-    echo "Clax dev: serving CLAX_HOME=$HOME/.clax (the default home; CLAX_HOME=<scratch dir> just dev keeps it untouched)"
+    PORT="${CLAX_DEV_PORT:-7481}"
+    export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
 fi
+ARGS="${ARGS[*]:-}"
+echo "Clax dev: serving CLAX_HOME=$CLAX_HOME on port $PORT"
 
 if ! cargo watch --version >/dev/null 2>&1; then
     echo "cargo-watch is required: cargo install cargo-watch" >&2
@@ -18,7 +29,7 @@ if ! cargo watch --version >/dev/null 2>&1; then
 fi
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 if curl -fsS "http://localhost:$PORT/healthz" >/dev/null 2>&1; then
-    echo "a daemon is already listening on $PORT; run \`just stop\` first" >&2
+    echo "a daemon is already listening on $PORT; stop it first (CLAX_HOME=$CLAX_HOME clax stop)" >&2
     exit 1
 fi
 if [ ! -d web/node_modules ]; then
