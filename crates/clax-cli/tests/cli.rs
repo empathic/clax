@@ -1434,3 +1434,16 @@ fn doctor_reports_the_homes_serve_port() {
     assert_eq!(c["ok"], true, "{c}");
     assert_eq!(c["detail"], "[serve] port = 7481");
 }
+
+#[test]
+fn haiku_prints_one_of_ten() {
+    let e = Env::new();
+    let out = e.cmd().args(["haiku", "--json"]).output().unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["haiku"].as_str().unwrap().lines().count(), 3);
+}
