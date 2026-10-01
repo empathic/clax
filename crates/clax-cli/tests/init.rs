@@ -27,8 +27,9 @@ impl Env {
             std::fs::write(
                 &p,
                 format!(
-                    "#!/bin/sh\nline=\"{h} $*\"\necho \"$line\" >> '{calls}'\nif grep -qxF \"$line\" '{fail}' 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nexit 0\n",
+                    "#!/bin/sh\nline=\"{h} $*\"\necho \"$line\" >> '{calls}'\npwd -P >> '{cwds}'\nif grep -qxF \"$line\" '{fail}' 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nexit 0\n",
                     calls = dir.path().join("calls").display(),
+                    cwds = dir.path().join("cwds").display(),
                     fail = dir.path().join("fail").display(),
                 ),
             )
@@ -79,6 +80,18 @@ fn status(v: &serde_json::Value, agent: &str) -> String {
         .iter()
         .find(|a| a["agent"] == agent)
         .unwrap()["status"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn detail(v: &serde_json::Value, agent: &str) -> String {
+    v["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == agent)
+        .unwrap()["detail"]
         .as_str()
         .unwrap()
         .to_string()
@@ -231,8 +244,21 @@ fn init_removes_stale_registrations_including_the_previous_names_and_nothing_els
         r#"{"name":"@someone/else"}"#.into(),
     );
     w(
+        "abspkg/package.json",
+        r#"{"name":"@empathic/clax-pi"}"#.into(),
+    );
+    w(
+        "homepkg/package.json",
+        format!(r#"{{"name":"@empathic/{OLD}-pi"}}"#),
+    );
+    // Local sources as Pi stores them: relative to the Pi directory,
+    // absolute, as an object, and under `~`; plus a package elsewhere.
+    w(
         "pi/settings.json",
-        r#"{"packages":["../oldpkg","../claxpkg","../otherpkg","npm:@x/y"]}"#.into(),
+        format!(
+            r#"{{"packages":["../oldpkg",{{"source":"../claxpkg"}},"{abs}","~/homepkg","../otherpkg","npm:@x/y"]}}"#,
+            abs = e.p("abspkg").display()
+        ),
     );
     // The previous name's home, which must stay exactly as it is.
     w(&format!(".{OLD}/marker"), "keep".into());
@@ -245,15 +271,13 @@ fn init_removes_stale_registrations_including_the_previous_names_and_nothing_els
         format!("claude plugin marketplace remove {OLD}"),
         format!("codex plugin remove {OLD}@{OLD}"),
         format!("codex plugin marketplace remove {OLD}"),
-        // Pi packages are named by their canonical directory.
-        format!(
-            "pi remove {}",
-            e.p("oldpkg").canonicalize().unwrap().display()
-        ),
-        format!(
-            "pi remove {}",
-            e.p("claxpkg").canonicalize().unwrap().display()
-        ),
+        // Pi packages are named by the path Pi resolves the entry to:
+        // lexically, without resolving symlinks (the scratch directory is
+        // under the symlinked /var on macOS).
+        format!("pi remove {}", e.p("oldpkg").display()),
+        format!("pi remove {}", e.p("claxpkg").display()),
+        format!("pi remove {}", e.p("abspkg").display()),
+        format!("pi remove {}", e.p("homepkg").display()),
     ] {
         assert!(calls.contains(&want), "missing {want:?} in {calls:#?}");
     }
@@ -314,4 +338,140 @@ fn init_twice_does_the_same_again_and_uninit_removes_registrations_and_the_marke
     assert!(!e.root().exists());
     assert_eq!(std::fs::read_to_string(e.p("ax/clax.db")).unwrap(), "data");
     assert_eq!(status(&v, "pi"), "removed");
+}
+
+#[test]
+fn a_pi_registration_whose_directory_is_gone_is_still_removed() {
+    let e = Env::new(&["pi"]);
+    std::fs::create_dir_all(e.p("pi")).unwrap();
+    let gone = e.p(&format!("Devel/{OLD}/plugins/pi"));
+    let elsewhere = e.p("Devel/other/plugins/pi");
+    std::fs::write(
+        e.p("pi/settings.json"),
+        format!(
+            r#"{{"packages":["{}","{}"]}}"#,
+            gone.display(),
+            elsewhere.display()
+        ),
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(e.calls(), vec![format!("pi remove {}", gone.display())]);
+    let detail = detail(&v, "pi");
+    assert!(detail.contains("is gone"), "{detail}");
+    assert!(detail.contains("left alone"), "{detail}");
+}
+
+#[test]
+fn uninit_of_one_harness_keeps_the_marketplace_the_others_still_use() {
+    let e = Env::new(&["claude", "codex", "pi"]);
+    assert!(e.json(&["init"]).0);
+    let r = e.root().display().to_string();
+    // What the real CLIs record on `init` (the fakes record nothing).
+    std::fs::create_dir_all(e.p("claude/plugins")).unwrap();
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(
+        e.p("claude/plugins/known_marketplaces.json"),
+        format!(r#"{{"clax":{{"source":{{"source":"directory","path":"{r}"}}}}}}"#),
+    )
+    .unwrap();
+    std::fs::write(
+        e.p("codex/config.toml"),
+        format!("[marketplaces.clax]\nsource = \"{r}\"\n"),
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["uninit", "--agent", "pi"]);
+    assert!(ok, "{v}");
+    assert!(e.root().join("plugins/claude-code").is_dir(), "{v}");
+    let kept = v["marketplace_detail"].as_str().unwrap();
+    assert!(kept.contains("claude") && kept.contains("codex"), "{kept}");
+
+    // Once Claude Code and Codex no longer refer to it, it goes.
+    std::fs::remove_file(e.p("claude/plugins/known_marketplaces.json")).unwrap();
+    std::fs::write(e.p("codex/config.toml"), "").unwrap();
+    let (ok, v) = e.json(&["uninit", "--agent", "claude"]);
+    assert!(ok, "{v}");
+    assert!(!e.root().exists(), "{v}");
+}
+
+#[test]
+fn init_replaces_the_marketplace_and_leaves_no_temporary_trees() {
+    let e = Env::new(&[]);
+    assert!(e.json(&["init"]).0);
+    std::fs::write(e.root().join("plugins/clax/dropped.txt"), "old").unwrap();
+    std::fs::create_dir_all(e.p("ax/.marketplace.1.tmp")).unwrap();
+    assert!(e.json(&["init"]).0);
+    assert!(!e.root().join("plugins/clax/dropped.txt").exists());
+    let debris: Vec<_> = std::fs::read_dir(e.p("ax"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|d| d.file_name().to_string_lossy().to_string())
+        .filter(|n| n.starts_with(".marketplace."))
+        .collect();
+    assert!(debris.is_empty(), "{debris:?}");
+}
+
+#[test]
+fn concurrent_inits_take_turns() {
+    let e = Env::new(&["pi"]);
+    let runs: Vec<_> = (0..4)
+        .map(|_| {
+            let mut c = e.cmd();
+            c.args(["init", "--json"]);
+            std::thread::spawn(move || c.output().unwrap().status.success())
+        })
+        .collect();
+    for r in runs {
+        assert!(r.join().unwrap(), "every concurrent init succeeds");
+    }
+    assert!(e.root().join("plugins/clax").is_dir());
+    let debris = std::fs::read_dir(e.p("ax"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|d| d.file_name().to_string_lossy().starts_with(".marketplace."))
+        .count();
+    assert_eq!(debris, 0);
+}
+
+#[test]
+fn an_unparseable_registry_is_reported_and_registration_goes_ahead() {
+    let e = Env::new(&["codex"]);
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(e.p("codex/config.toml"), "[marketplaces\n").unwrap();
+    let (ok, v) = e.json(&["init"]);
+    assert!(ok, "{v}");
+    assert_eq!(status(&v, "codex"), "registered");
+    let detail = detail(&v, "codex");
+    assert!(detail.contains("could not parse"), "{detail}");
+}
+
+#[test]
+fn a_failed_removal_is_noted_but_does_not_fail_the_harness() {
+    let e = Env::new(&["claude"]);
+    std::fs::write(e.p("fail"), "claude plugin uninstall clax@clax\n").unwrap();
+    let (ok, v) = e.json(&["init"]);
+    assert!(ok, "{v}");
+    assert_eq!(status(&v, "claude"), "registered");
+    let detail = detail(&v, "claude");
+    assert!(detail.contains("failed (ignored)"), "{detail}");
+}
+
+#[test]
+fn harness_clis_run_in_the_home_directory_not_the_callers() {
+    let e = Env::new(&["claude", "codex", "pi"]);
+    std::fs::create_dir_all(e.p("project")).unwrap();
+    let out = e
+        .cmd()
+        .current_dir(e.p("project"))
+        .args(["init", "--json"])
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let home = e.dir.path().canonicalize().unwrap().display().to_string();
+    let cwds = std::fs::read_to_string(e.p("cwds")).unwrap();
+    assert!(!cwds.is_empty());
+    for l in cwds.lines() {
+        assert_eq!(l, home);
+    }
 }
