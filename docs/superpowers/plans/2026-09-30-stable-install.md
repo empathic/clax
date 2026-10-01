@@ -3684,30 +3684,69 @@ git checkout -- docs/superpowers/specs/2026-09-28-clax-design.md
 
 ### A2. Check `clax init` against the real harness CLIs, in scratch directories
 
-The agents ran `clax init` and `clax uninit` only against fake `claude`, `codex` and `pi` commands. Before B, run them against the real CLIs, with every home pointing at a scratch directory, so your real registrations are not touched. Use a fresh shell, so the variables do not stay set:
+The agents ran `clax init` and `clax uninit` only against fake `claude`, `codex` and `pi` commands. Before B, run them against the real CLIs, with every home pointing at a scratch directory, so your real registrations are not touched. Everything below runs in one subshell (`bash`, left with `exit` at the end), so the scratch variables never reach your own shell. Paste the blocks in order, and tell the agents about any check that fails.
+
+**Setup.**
 
 ```bash
 cd /Users/alex/Devel/empathic/clax && cargo build -p clax-cli
-T="$(mktemp -d)"; mkdir -p "$T/codex" "$T/claude" "$T/pi"
+bash
+CLAX="$PWD/target/debug/clax"
+OLD="arti""fax"                     # the previous name, assembled
+T="$(mktemp -d)"; mkdir -p "$T/codex" "$T/claude" "$T/pi" "$T/other"
 export HOME="$T" CLAX_HOME="$T/ax" CODEX_HOME="$T/codex" CLAUDE_CONFIG_DIR="$T/claude" PI_CODING_AGENT_DIR="$T/pi"
 export PATH="$PWD/plugins/pi/node_modules/.bin:$PATH"
-target/debug/clax init; echo "exit=$?"
-target/debug/clax init; echo "exit=$?"
-cat "$T/codex/config.toml" "$T/claude/plugins/known_marketplaces.json" "$T/claude/plugins/installed_plugins.json" "$T/pi/settings.json"
-target/debug/clax uninit; echo "exit=$?"
-cat "$T/codex/config.toml" "$T/claude/plugins/known_marketplaces.json" "$T/claude/plugins/installed_plugins.json" "$T/pi/settings.json"
+show() { for f in "$T/codex/config.toml" "$T/claude/settings.json" "$T/claude/plugins/known_marketplaces.json" "$T/claude/plugins/installed_plugins.json" "$T/pi/settings.json"; do echo "== $f"; cat "$f" 2>/dev/null; done; }
 ```
 
-Check, and tell the agents about any that fails:
+**Seed for check 2, before the first `init`.** A comment and another marketplace in Codex's `config.toml`:
 
-1. Each run prints `exit=0`. After `init`, Codex's `config.toml` and Claude's `known_marketplaces.json` name `$T/ax/marketplace`, and Pi's `settings.json` lists `…/ax/marketplace/plugins/pi`. After `uninit`, none of the three names Clax, and `$T/ax/marketplace` is gone.
-2. Codex: before the first `init`, add a comment and a second `[marketplaces.other]` table to `$T/codex/config.toml`. `codex plugin remove` and `codex plugin marketplace remove` must delete only the `clax` tables and keep the comment, the other table and their order.
-3. Claude Code: whether a user-scope `marketplace add` still records the marketplace in `known_marketplaces.json`, or now also in `settings.json` `extraKnownMarketplaces`. A previous-name marketplace or plugin declared only in a settings file is not found by `init`. Also, that `plugin install clax@clax` copies the plugin into the cache and enables it, and that a second `init` replaces a same-version cached copy with the new content.
-4. Pi: `$T` is under `/var`, a symlink on macOS. `pi remove` with the path `init` passes (lexical, not symlink-resolved) must match the entry `pi install` wrote: the second `init` and the `uninit` must leave no duplicate or leftover entry. Then start `pi` in that shell and check that the `clax_*` tools load from `$T/ax/marketplace/plugins/pi`, which has no `node_modules`.
-5. A previous-name setup like this machine's: in `$T`, register a Claude Code and a Codex marketplace under the previous name from a directory you then delete, and add a Pi `settings.json` entry for a deleted checkout's `…/plugins/pi`. Run `init`. It must remove all three; for Codex, `codex plugin remove <old>@<old>` must succeed, or fail cleanly, when the old marketplace's directory is gone.
+```bash
+printf '# keep this comment\n[marketplaces.other]\nsource_type = "local"\nsource = "%s"\n' "$T/other" > "$T/codex/config.toml"
+```
+
+**Seed for check 5: a setup under the previous name, like this machine's.** A marketplace directory with the previous name, registered with all three harnesses, and then deleted. The first line only writes the plugin tree (no harness is on that `PATH`):
+
+```bash
+env PATH=/usr/bin:/bin "$CLAX" init >/dev/null 2>&1
+mv "$T/ax/marketplace" "$T/oldcheckout"; rm -rf "$T/ax"
+for f in .claude-plugin/marketplace.json .agents/plugins/marketplace.json plugins/claude-code/.claude-plugin/plugin.json plugins/clax/.codex-plugin/plugin.json; do
+  sed -i '' "s/\"name\": *\"clax\"/\"name\": \"$OLD\"/" "$T/oldcheckout/$f"
+done
+sed -i '' "s#@empathic/clax-pi#@empathic/$OLD-pi#" "$T/oldcheckout/plugins/pi/package.json"
+claude plugin marketplace add "$T/oldcheckout" && claude plugin install "$OLD@$OLD"
+codex plugin marketplace add "$T/oldcheckout" && codex plugin add "$OLD@$OLD"
+pi install "$T/oldcheckout/plugins/pi"
+show
+rm -rf "$T/oldcheckout"
+```
+
+`show` must list the previous name in all three registries. If a CLI refuses a step here, note which one and its message.
+
+**The runs.**
+
+```bash
+"$CLAX" init; echo "exit=$?"; show
+ls -l "$T/claude/plugins/cache"/*/*
+"$CLAX" init; echo "exit=$?"; show
+ls -l "$T/claude/plugins/cache"/*/*
+"$CLAX" uninit --agent pi; echo "exit=$?"; ls "$T/ax"; show
+"$CLAX" uninit; echo "exit=$?"; ls "$T/ax"; show
+```
+
+**Checks.**
+
+1. Each run prints `exit=0`. After each `init`, Codex's `config.toml` and Claude's `known_marketplaces.json` (or `settings.json`) name `$T/ax/marketplace`, and Pi's `settings.json` lists `…/ax/marketplace/plugins/pi` once. After `uninit --agent pi`, Pi's entry is gone, `$T/ax` still holds `marketplace`, and the `marketplace` line of the output says it is kept because claude and codex still register it. After the final `uninit`, none of the files names Clax, and `$T/ax` holds no `marketplace`.
+2. Codex: after every run, the comment and `[marketplaces.other]` are still in `config.toml`, where they were. If Codex rejected the seeded table, note its message.
+3. Claude Code: where the user-scope `marketplace add` recorded the marketplace: `known_marketplaces.json`, `settings.json` `extraKnownMarketplaces`, or both (`show` prints all three files). The plugin is in `$T/claude/plugins/cache` and enabled in `settings.json`, and the second `ls -l` of the cache shows newer times than the first, so the second `init` replaced the cached copy.
+4. Pi: `$T` is under `/var`, a symlink on macOS. The second `init` and the `uninit` leave no duplicate or leftover entry, which shows that `pi remove` matched the path `pi install` stored. Whether the extension loads from `$T/ax/marketplace/plugins/pi`, which has no `node_modules`, needs a Pi session, and a session needs provider auth in the scratch Pi directory. Pi reads it from `$PI_CODING_AGENT_DIR/auth.json`: copy yours with `cp /Users/alex/.pi/agent/auth.json "$T/pi/"` (the scratch directory is deleted at the end), or export your provider's API key variable. Then, right after an `init`, run `pi -p "Call the clax status tool and print what it returns"`. Without auth, `pi list` shows only that the package is registered.
+5. The previous name: the first `init` removes the Claude Code and Codex registrations under the previous name, by name, although their directory is gone. The Pi entry for the deleted `$T/oldcheckout/plugins/pi` is left registered, and Pi's line in the output names it with the command `pi remove …`. Run that command, and check that `show` no longer lists it. If `codex plugin remove` of the previous name failed because its directory is gone, Codex's line says so; note the message.
+
+**Clean up.**
 
 ```bash
 rm -rf "$T"
+exit          # leave the subshell
 ```
 
 ### B. Move this machine to the new install
@@ -3719,7 +3758,7 @@ just install
 which -a clax        # ~/.cargo/bin/clax must come first
 ```
 
-`just install` runs `clax init`. That re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. Its output lists each harness as `registered` or `skipped`. Then:
+`just install` runs `clax init`. That re-registers Claude Code, Codex and Pi from `~/.clax/marketplace/`, replacing the Codex marketplace that pointed at the old checkout path, and removes registrations under the previous name. Its output lists each harness as `registered` or `skipped`. A Pi package whose directory no longer exists (the old checkout's `plugins/pi`) is left registered, and Pi's line names it with the `pi remove …` command; run that command. Then:
 
 - Remove stale binaries that `which -a clax` shows ahead of or beside `~/.cargo/bin/clax`: an old `~/.local/bin/clax` or `~/.clax/bin/clax`. Unset `CLAX_SOURCE_DIR` and `CLAX_INSTALL_DIR` in your shell profile.
 - Start a new session in each harness. Run `clax doctor --agent claude`, then `codex`, then `pi`: `binary` must say the plugins run `~/.cargo/bin/clax`, and `plugin` must pass. Ask the agent to call `status`; `binary.path` must be `~/.cargo/bin/clax`.

@@ -58,11 +58,21 @@ pub enum Cmd {
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
     Hook(commands::hook::Args),
     /// Register the Clax plugins built into this binary with each harness
-    /// whose CLI is on PATH, replacing stale registrations. Re-running
-    /// reinstalls the plugin, which enables it again where it was disabled.
+    /// whose CLI is on PATH, replacing stale registrations.
+    ///
+    /// Re-running reinstalls the plugin, which enables it again where it was
+    /// disabled. A Pi package is removed only when `init` recorded it or its
+    /// package.json names Clax's Pi package; one whose directory is missing
+    /// is left and named, with the command that removes it. Known miss: Pi
+    /// entries are matched as Pi resolves them, except that `~` in
+    /// PI_CODING_AGENT_DIR, `~user/` paths and surrounding spaces are not
+    /// expanded, so such an entry is left registered.
     Init(commands::init::Args),
     /// Remove the Clax plugin registrations from each harness whose CLI is
     /// on PATH, and the plugins' copy once no harness refers to it.
+    ///
+    /// The copy is kept while any harness's registry still names it or
+    /// cannot be read. The same known miss as `init` applies to Pi entries.
     Uninit(commands::init::Args),
 }
 
@@ -129,8 +139,13 @@ fn main() {
             std::process::exit(code);
         }
     };
-    let home = match clax_core::Home::from_env() {
-        Ok(home) => home,
+    // An absolute home, so commands that run elsewhere (the daemon, the
+    // harness CLIs `init` runs in HOME) see the same directory.
+    let home = match clax_core::Home::from_env()
+        .map_err(|e| e.to_string())
+        .and_then(|h| std::path::absolute(h.root()).map_err(|e| format!("CLAX_HOME: {e}")))
+    {
+        Ok(root) => clax_core::Home::at(root),
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(if hook { 0 } else { 1 });
