@@ -30,9 +30,10 @@
   - *link → comment ready* is the moment the bridge turns comment mode on in the frame (`documentElement.style.cursor === "crosshair"`), after the harness pressed **Comment** as soon as it could, minus the same origin.
   - *frame paint* is link → first paint in a tab of its own where the harness opens the link and does nothing else. The harness's input in the first tab moves when the frame gets to paint, so this is the measure of the shell and the bridge alone.
   - *ready latency* runs from the click on **Comment** (the click event's own timestamp in the shell) to the crosshair in the frame: the shell's and the bridge's share of comment ready, without the harness's time to find and press the button.
+  - *cold ready latency* is the same in a tab where the comment part's bytes are held back until the click has been dispatched, so loading and running the lazy part is on the measured path.
   - Each is the median of 9 samples after 2 discarded warm-ups, per frame mode.
 - **Budgets** (in `web/perf/budget.json`) scale under load: `limit = budget × clamp(controlMedian / control, 1, 3)`, where the control is a direct navigation to the same content URL measured in the same run. The perf project retries a failed test twice. Budgets only ever go down: recording a budget refuses to raise one.
-- **Targets**, checked from Task 13 on: *frame paint* and *ready latency* have budgets of their own (baselines recorded in Task 13, budgeted by the same rule as the others: `max(median × 1.25, median + 30 ms)`), checked when `enforceTargets` is set; *link → first paint* and *link → comment ready* keep their Task 1 budgets. No relative target is set on the latter two: in Chromium the frame cannot paint before the shell's second compositor frame (29 ms with no shell JavaScript at all), and the harness's press on **Comment** itself lands 38–45 ms after the link, so neither can fall to a fraction of the Preact baseline whatever the shell does. The eager bridge is ≤ 30% of its gzip size before the split (`bridgeBaseline`, recorded in Task 11; the bridge does not change in Tasks 1–10). If a target is missed, stop and report the numbers. Do not loosen it.
+- **Targets**, checked from Task 13 on: *frame paint*, *ready latency* and *cold ready latency* have budgets of their own (baselines recorded in Task 13, budgeted by the same rule as the others: `max(median × 1.25, median + 30 ms)`; a recording run measures three times and records the median of the three medians), checked when `enforceTargets` is set; *link → first paint* and *link → comment ready* keep their Task 1 budgets. No relative target is set on the latter two: in Chromium the frame cannot paint before the shell's second compositor frame (29 ms with no shell JavaScript at all), and the harness's press on **Comment** itself lands 38–45 ms after the link, so neither can fall to a fraction of the Preact baseline whatever the shell does. The eager bridge is ≤ 30% of its gzip size before the split (`bridgeBaseline`, recorded in Task 11; the bridge does not change in Tasks 1–10). If a target is missed, stop and report the numbers. Do not loosen it.
 - The daemon token never appears in any HTML the daemon serves.
 
 ## Review Focus
@@ -5237,41 +5238,87 @@ export const PART_FAILED: Record<"comment" | "clip" | "caps", string> = {
 };
 ```
 
-In `ArtifactController.onMessage`, add:
+In `ArtifactController`, remember per greeted page which parts failed (cleared on each `clax:hello`), and say so in the shell's own words only, since a page can post `clax:degraded` itself. While the comment part has failed, comment mode cannot come on, however it is asked for (the Comment button, a resumed pick, `comments.enterMode`): `set` turns it off again and repeats the notice. The comment notice outranks the others.
 
 ```ts
+  /** The bridge's lazy parts the greeted page reported it could not load
+   * (`clax:degraded`); forgotten at the next greeting. */
+  private failedParts = new Set<keyof typeof PART_FAILED>();
+
+  // in set(), after `this.state.set(patch)`:
+    if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
+
+  // in onMessage():
       case "clax:degraded": {
-        if (!this.gate.open || !(m.part in PART_FAILED)) break;
-        const text = PART_FAILED[m.part];
-        this.noticeFor(text)(`${text}: ${typeof m.message === "string" ? m.message.slice(0, 200) : "unknown error"}`);
+        if (!this.gate.open || typeof m.part !== "string" || !Object.hasOwn(PART_FAILED, m.part)) break;
+        this.failedParts.add(m.part);
+        this.showPartFailed(m.part);
         if (m.part === "comment") this.set({ commenting: false });
         break;
       }
+
+  private showPartFailed(part: keyof typeof PART_FAILED): void {
+    if (part !== "comment" && this.failedParts.has("comment")) return;
+    const text = PART_FAILED[part];
+    this.noticeFor(text)(`${text}.`);
+  }
 ```
 
 `web/e2e/bridge-parts.spec.ts`:
 
 ```ts
 import { test, expect } from "@playwright/test";
-import { type FrameMode, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
+import { type FrameMode, openArtifact, publish, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
 test.afterAll(async () => { await d?.stop(); });
 
+const partsLoaded = (frame: import("@playwright/test").Frame) =>
+  frame.evaluate(() => performance.getEntriesByType("resource").map(e => e.name).filter(n => n.includes("/_clax/bridge/")));
+
 for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
   test(`loads comment mode lazily and says so when the page's CSP blocks it (${mode})`, async ({ page }) => {
     const ok = await publish(d.base, d.token, "Parts", { "index.html": "<h1 id=h>Parts</h1>" });
     const frame = await openArtifact(page, d.base, ok.artifact.id, 1, mode);
-    const scripts = await frame.evaluate(() => performance.getEntriesByType("resource").map(e => e.name).filter(n => n.includes("/_clax/")));
-    expect(scripts.some(n => /\/_clax\/bridge\/comment-[^/]+\.js$/.test(n))).toBe(true);
+    // The comment part loads from the daemon's /_clax/bridge/, once the page has greeted.
+    await expect.poll(async () => (await partsLoaded(frame)).some(n => /\/_clax\/bridge\/comment-[^/]+\.js$/.test(n))).toBe(true);
+    const host = new URL(frame.url()).host;
+    for (const n of await partsLoaded(frame)) expect(new URL(n).host).toBe(host);
     await page.getByRole("button", { name: "Comment" }).click();
     await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+    // Comment mode turned on starts the clip part.
+    await expect.poll(async () => (await partsLoaded(frame)).some(n => /\/_clax\/bridge\/clip-[^/]+\.js$/.test(n))).toBe(true);
 
-    const blocked = await publish(d.base, d.token, "Strict", { "index.html": `<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'"><h1>Strict</h1>` });
-    await openArtifact(page, d.base, blocked.artifact.id, 1, mode);
-    await expect(page.getByRole("alert")).toContainText("Comment mode could not load in this page");
-    await contentFrame(page, blocked.artifact.id, 1);
+    // A full document, so its CSP is in its <head> (a fragment's is moved into
+    // the skeleton's <body>, where a browser ignores it). The bridge comes
+    // before it, so only the lazy parts are blocked.
+    const blocked = await publish(d.base, d.token, "Strict", { "index.html": `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'"></head><body><h1>Strict</h1></body></html>` });
+    const strict = await openArtifact(page, d.base, blocked.artifact.id, 1, mode);
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("Comment mode could not load in this page");
+    // Pressing Comment there keeps comment mode off and says why again, even
+    // once the notice was dismissed.
+    await alert.getByRole("button", { name: "Dismiss" }).click();
+    await expect(alert).toHaveCount(0);
+    const comment = page.getByRole("button", { name: "Comment", exact: true });
+    await comment.click();
+    await expect(alert).toContainText("Comment mode could not load in this page");
+    await expect(comment).toHaveAttribute("aria-pressed", "false");
+    expect(await strict.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
+  });
+
+  // A smoke test only: Chromium honours an import map added after a module
+  // load, so this passes with or without the bridge's wait for the parse.
+  // bridge-parse-gate.test.ts guards that wait.
+  test(`smoke: a page's own import map and comment mode work together (${mode})`, async ({ page }) => {
+    const html = `<!doctype html><script type="importmap">{"imports":{"greeting":"data:text/javascript,export default 'mapped'"}}</script>`
+      + `<script type="module">import g from "greeting"; document.getElementById("out").textContent = g;</script><p id="out">waiting</p>`;
+    const ok = await publish(d.base, d.token, "Import map", { "index.html": html });
+    const frame = await openArtifact(page, d.base, ok.artifact.id, 1, mode);
+    await expect(frame.locator("#out")).toHaveText("mapped");
+    await page.getByRole("button", { name: "Comment" }).click();
+    await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
   });
 }
 ```
@@ -5305,7 +5352,7 @@ Expected: `exit=0`. If an assertion still fails after `await settle()`, the orde
 Run: `cd web && npm run e2e; echo "exit=$?"`
 Expected: `exit=0` in both modes. The area, gesture, clip and comments-capability specs matter most here, because they use every lazy part.
 
-Record the *frame paint* and *ready latency* baselines and budgets (`CLAX_PERF_RECORD=baseline` adds only those to a platform that already has a baseline; the recorded values are the median of three runs' medians), and set `"enforceTargets": true` in `web/perf/budget.json`, then:
+Record the *frame paint*, *ready latency* and *cold ready latency* baselines and budgets (`CLAX_PERF_RECORD=baseline` adds only the missing ones to a platform that already has a baseline; a recording run records the median of three runs' medians), and set `"enforceTargets": true` in `web/perf/budget.json`, then:
 Run: `cd web && npm run perf; echo "exit=$?"; cat perf/results.json | python3 -c "import json,sys; r=json.load(sys.stdin); print({m: r[m]['median'] for m in r})"`
 Expected: `exit=0`. Every metric is within its budget in both modes, and the Task 1 budgets are unchanged. If a metric is over its budget, do not commit. Report the medians against the budgets to the person.
 

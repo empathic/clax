@@ -218,7 +218,21 @@ pub async fn static_file(
 ) -> Result<Response, ApiError> {
     let path = path(p)?;
     let file = format!("_clax/{path}");
-    let f = asset(&file).ok_or_else(ApiError::not_found)?;
+    // A missing part answers so that a sandboxed page can read the failure
+    // (its import is a CORS request); build files whose names start with a
+    // dot (a bundler's manifest) are never served.
+    let part = path.starts_with("bridge/");
+    let hidden = path.split('/').any(|c| c.starts_with('.'));
+    let Some(f) = (!hidden).then(|| asset(&file)).flatten() else {
+        let mut res = ApiError::not_found().into_response();
+        if part {
+            res.headers_mut().insert(
+                header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                header::HeaderValue::from_static("*"),
+            );
+        }
+        return Ok(res);
+    };
     let ct = if path.ends_with(".js") {
         "text/javascript".to_string()
     } else {
@@ -237,7 +251,7 @@ pub async fn static_file(
     // request). They hold no data, so any origin may read them. A debug
     // build's parts keep one name while `just watch` rebuilds them, so there
     // they are revalidated (with an `ETag`, a `304`).
-    if path.starts_with("bridge/") {
+    if part {
         let cc = if cfg!(debug_assertions) {
             REVALIDATE
         } else {

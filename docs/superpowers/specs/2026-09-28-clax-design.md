@@ -274,8 +274,9 @@ Browser-facing:
 - `GET /_clax/bridge/<part>-<hash>.js`: the bridge's lazy parts, ES modules
   with content-hashed names, `Cache-Control: public, max-age=31536000,
   immutable` and `Access-Control-Allow-Origin: *` (a sandboxed frame imports
-  them from an opaque origin). The eager `bridge.js` names them, so its `?v=`
-  hash changes whenever a part does.
+  them from an opaque origin; a missing part's 404 carries it too). The eager
+  `bridge.js` names them, so its `?v=` hash changes whenever a part does. No
+  path under `/_clax/` with a component starting with `.` is served.
 
 Browser caching (every route above):
 
@@ -691,8 +692,9 @@ the frame, for a viewer who presses **Comment** as soon as they can. Two more
 measures isolate what the shell and the bridge control: *frame paint* is link →
 first paint in a tab where nothing else happens (a press on **Comment** moves
 when the frame gets to paint), and *ready latency* runs from the click on
-**Comment** (the event's own timestamp) to comment mode on in the frame. All
-four are measured in Chromium for a warm browser (the shell's files cached,
+**Comment** (the event's own timestamp) to comment mode on in the frame,
+also with the comment part's bytes held back until the click (*cold ready
+latency*). All five are measured in Chromium for a warm browser (the shell's files cached,
 cookies set, a fresh tab), in both frame modes, by `web/perf/usable.perf.ts`,
 a quality gate with budgets in `web/perf/budget.json`.
 
@@ -728,12 +730,20 @@ What makes it fast:
   heard, and so no capability is answered, until the tab's probe agrees; if
   the probe disagrees, the frame is replaced unanswered.
 - The bridge loads eagerly only what every page needs (`window.claude`, the
-  hello, the channel, link handover). Comment mode with anchors and areas,
-  clip rendering, and the page-side capability members are separate parts
-  under `/_clax/bridge/`, loaded on first use: comment mode right after the
-  welcome, clip rendering when comment mode turns on, capability members on
-  the first `claude.use`. A part that cannot load (the page's own CSP forbids
-  it) makes the bridge post `clax:degraded`, and the shell says so.
+  hello, the channel, link handover, and the pick flow that renders a clip
+  only once the shell's composer is ready). Comment mode with anchors and
+  areas, clip rendering, and the page-side capability members are separate
+  parts under `/_clax/bridge/`, loaded on need and never before the page has
+  parsed (so never ahead of the page's own import maps): comment mode on the
+  first shell order that needs it, and also in a task of its own once the
+  page has parsed after the welcome, so it is ready when the viewer presses
+  **Comment**; clip rendering once comment mode is on; capability members on
+  the first `claude.use` the shell grants. A load that fails or takes longer
+  than 15 s makes the bridge post `clax:degraded`; a later need tries again
+  after a backoff (2 s, doubling to 60 s). The shell remembers, per greeted
+  page, which parts failed and says so in its own words: while the comment
+  part has failed, comment mode stays off and pressing **Comment** repeats
+  the notice, which outranks the one for clips.
 
 ## 9. Runtime bridge and capabilities
 
@@ -767,7 +777,9 @@ records it on every anchor it builds, and never resolves an anchor whose
 
 The bridge's comment mode, clip rendering and page-side capability members
 are lazy parts (§8 Time to usable); the protocol gains `clax:degraded`
-(bridge → shell: `{ part: "comment" | "clip" | "caps", message }`).
+(bridge → shell: `{ part: "comment" | "clip" | "caps", message }`, one per
+failed attempt; `message` is for debugging, and the shell never shows it,
+since the page could post this itself).
 
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.
