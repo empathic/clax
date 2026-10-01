@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 # Runs every check CI runs. Pass --verbose to stream each gate's output.
+# The whole script is one function, so bash reads all of it before running
+# any of it: editing this file during a run cannot break that run.
+main() {
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # One run at a time per checkout: parallel runs corrupt each other (each
@@ -47,3 +50,5 @@ run "comment loop"          scripts/smoke-comment-loop.sh
 run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'
 echo "all gates passed"
+}
+main "$@"; exit
