@@ -740,8 +740,16 @@ What makes it fast:
   **Comment**; clip rendering once comment mode is on; capability members on
   the first `claude.use` the shell grants. A load that fails or takes longer
   than 15 s makes the bridge post `clax:degraded`; a later need tries again
-  after a backoff (2 s, doubling to 60 s). The shell remembers, per greeted
-  page, which parts failed and says so in its own words: while the comment
+  after a backoff (2 s, doubling to 60 s), under a query naming the attempt,
+  since a browser keeps a failed module load for its URL. Each part is
+  self-contained (no part imports another; shared code is bundled into each),
+  so a retry fetches everything that part needs. Every failed attempt is
+  reported, so a page that keeps asking for a part that cannot load (calling
+  `claude.use` again and again, say) brings the notice back once per backoff,
+  at most once a minute. The shell remembers, per greeted
+  page (forgotten whenever its gate closes: another page, version or origin,
+  or a document that loaded without greeting), which parts failed and says
+  so in its own words: while the comment
   part has failed, comment mode stays off and pressing **Comment** repeats
   the notice, which outranks the one for clips.
 

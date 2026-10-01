@@ -5153,6 +5153,8 @@ The `import type` from `./anchor` does not affect the split, because the split g
 
 - [ ] **Step 4: Build the parts and point the bridge at them**
 
+As shipped, the parts are self-contained: `web/scripts/build-parts.mjs` builds each part on its own with `web/vite.bridge-parts.config.ts` (no shared chunks, no `manualChunks`) and writes the manifest below itself, so a retry of one part after another part's file failed still fetches everything it needs. `npm run build` and `just watch` call that script in place of `vite build -c vite.bridge-parts.config.ts`. The config first written here was:
+
 `web/vite.bridge-parts.config.ts`:
 
 ```ts

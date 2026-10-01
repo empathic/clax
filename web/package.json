@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && vite build -c vite.bridge-parts.config.ts && vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
+    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
     "lint": "oxlint --deny-warnings shell bridge e2e perf scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vitest.config.ts svelte.config.js playwright.config.ts",

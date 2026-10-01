@@ -148,7 +148,10 @@ async function coldLatency(browser: Browser, base: string, id: string, mode: Fra
     const page = await ctx.newPage();
     let release = () => {};
     const clicked = new Promise<void>(r => { release = r; });
-    await page.route(/\/_clax\/bridge\/comment-[^/?]*\.js/, async route => { await clicked; await route.fulfill({ response: await route.fetch() }); });
+    // The comment part by its hashed name or a `just watch` build's
+    // (`comment.js`), with or without a retry's query.
+    let held = 0;
+    await page.route(/\/_clax\/bridge\/comment(-[^/?]+)?\.js(\?|$)/, async route => { held++; await clicked; await route.fulfill({ response: await route.fetch() }); });
     await page.goto(`${base}/a/${id}`, { waitUntil: "commit" });
     const frame = await contentFrame(page, id, 1);
     // Clicked once the page has parsed, so the bridge has asked for the part.
@@ -158,6 +161,8 @@ async function coldLatency(browser: Browser, base: string, id: string, mode: Fra
     release();
     const click = await poll(() => page.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.click ?? null), "the click on Comment");
     const at = await poll(() => frame.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.crosshair ?? null), "comment mode with the part held back");
+    // A part this route did not catch would make this the warm path's time.
+    if (held === 0) throw new Error("cold ready latency: the comment part was never held back; does the route still match its name?");
     return at - click;
   } finally {
     await ctx.close();
