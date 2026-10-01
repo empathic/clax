@@ -825,6 +825,9 @@ async fn status_reports_the_plugin_version_and_skew_when_known() {
         s.get("plugin_version").is_none() && s.get("skew").is_none(),
         "{s}"
     );
+    assert_eq!(s["binary"]["version"], env!("CARGO_PKG_VERSION"));
+    assert!(!s["binary"]["path"].as_str().unwrap().is_empty(), "{s}");
+    assert!(s.get("upgrade_held").is_none(), "{s}");
     let old = tools_for(&ts).with_plugin_version(Some("0.1.0".into()));
     let s = ok(old.status(Parameters(StatusArgs {})).await);
     assert_eq!(s["plugin_version"], "0.1.0");
@@ -833,6 +836,32 @@ async fn status_reports_the_plugin_version_and_skew_when_known() {
     let s = ok(same.status(Parameters(StatusArgs {})).await);
     assert_eq!(s["plugin_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(s["skew"], false);
+}
+
+#[tokio::test]
+async fn status_reports_a_failed_upgrade_that_holds_the_daemon_back() {
+    let ts = TestServer::spawn().await;
+    let asked = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+    let seen = asked.clone();
+    let probe: clax_mcp::tools::UpgradeHoldProbe = std::sync::Arc::new(move |v: &str| {
+        seen.lock().unwrap().push(v.to_string());
+        Some(serde_json::json!({"version": "9.9.9", "reason": "it crashed"}))
+    });
+    let s = ok(tools_for(&ts)
+        .with_upgrade_hold(probe)
+        .status(Parameters(StatusArgs {}))
+        .await);
+    assert_eq!(s["upgrade_held"]["reason"], "it crashed", "{s}");
+    assert_eq!(
+        *asked.lock().unwrap(),
+        vec![s["version"].as_str().unwrap().to_string()]
+    );
+    let none: clax_mcp::tools::UpgradeHoldProbe = std::sync::Arc::new(|_: &str| None);
+    let s = ok(tools_for(&ts)
+        .with_upgrade_hold(none)
+        .status(Parameters(StatusArgs {}))
+        .await);
+    assert!(s.get("upgrade_held").is_none(), "{s}");
 }
 
 #[tokio::test]

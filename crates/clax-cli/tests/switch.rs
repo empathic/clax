@@ -303,3 +303,105 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     assert!(log.contains("replacing clax daemon v0.0.1"), "{log}");
     clax(dir.path()).arg("stop").assert().success();
 }
+
+/// Records, as a rolled-back upgrade does, that upgrading to this binary
+/// failed just now.
+fn hold_this_binary(dir: &std::path::Path) {
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clax")).unwrap();
+    let mtime = std::fs::metadata(&exe)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let logs = dir.join("ax/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let rec = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "exe": exe.display().to_string(),
+        "mtime_ns": mtime.as_nanos().to_string(),
+        "at": now.as_secs(),
+        "from_version": "0.0.1",
+        "reason": "the new clax daemon failed to start: it crashed",
+    });
+    std::fs::write(logs.join("failed-upgrade.json"), rec.to_string()).unwrap();
+}
+
+#[test]
+fn serve_status_and_doctor_say_when_a_failed_upgrade_keeps_an_older_daemon() {
+    let dir = Scratch::new();
+    let fake = fake_daemon(&dir.path().join("ax"), "0.0.1");
+    hold_this_binary(dir.path());
+    let out = clax(dir.path())
+        .args(["serve", "--json", "--port", "0"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        !fake.shutdown_seen.load(Ordering::SeqCst),
+        "the held upgrade is not tried"
+    );
+    for s in [
+        "keeping clax daemon v0.0.1",
+        &format!("to v{}", env!("CARGO_PKG_VERSION")),
+        "not tried again until",
+        "`clax stop`",
+    ] {
+        assert!(stderr.contains(s), "{s} in {stderr}");
+    }
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["version"], "0.0.1");
+    let held = &j["upgrade_held"];
+    assert_eq!(held["version"], env!("CARGO_PKG_VERSION"), "{j}");
+    assert_eq!(held["from_version"], "0.0.1");
+    assert!(
+        held["reason"].as_str().unwrap().contains("it crashed"),
+        "{j}"
+    );
+    for k in ["exe", "failed_at", "until", "advice"] {
+        assert!(held[k].is_string(), "{k} in {j}");
+    }
+
+    let out = clax(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["upgrade_held"]["reason"], held["reason"], "{j}");
+    let out = clax(dir.path()).arg("status").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("upgrade held: keeping clax daemon v0.0.1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("why: the new clax daemon failed to start"),
+        "{text}"
+    );
+
+    let out = clax(dir.path())
+        .args(["doctor", "--agent", "claude", "--json"])
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let upgrade = j["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "upgrade")
+        .unwrap_or_else(|| panic!("no upgrade check in {j}"))
+        .clone();
+    assert_eq!(upgrade["ok"], false, "{upgrade}");
+    assert!(
+        upgrade["detail"]
+            .as_str()
+            .unwrap()
+            .contains("why: the new clax daemon failed"),
+        "{upgrade}"
+    );
+}

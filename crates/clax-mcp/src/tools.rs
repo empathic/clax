@@ -621,8 +621,13 @@ pub struct ClaxTools {
     session: Option<Session>,
     log_path: PathBuf,
     plugin_version: Option<String>,
+    upgrade_hold: Option<UpgradeHoldProbe>,
     tool_router: ToolRouter<Self>,
 }
+
+/// Given the running daemon's version, the failed upgrade that keeps that
+/// daemon at it (as `status` reports it, as `upgrade_held`), or None.
+pub type UpgradeHoldProbe = std::sync::Arc<dyn Fn(&str) -> Option<Value> + Send + Sync>;
 
 impl ClaxTools {
     /// Tools calling the daemon through `client`. `browser_base` (`http://localhost:<port>`)
@@ -641,6 +646,7 @@ impl ClaxTools {
             session,
             log_path,
             plugin_version: None,
+            upgrade_hold: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -650,6 +656,13 @@ impl ClaxTools {
     /// build's version).
     pub fn with_plugin_version(mut self, version: Option<String>) -> ClaxTools {
         self.plugin_version = version;
+        self
+    }
+
+    /// These tools with `probe`, which `status` asks whether a failed
+    /// upgrade keeps the daemon at its version.
+    pub fn with_upgrade_hold(mut self, probe: UpgradeHoldProbe) -> ClaxTools {
+        self.upgrade_hold = Some(probe);
         self
     }
 
@@ -1045,6 +1058,17 @@ impl ClaxTools {
         if let Some(v) = &self.plugin_version {
             out["plugin_version"] = json!(v);
             out["skew"] = json!(v != env!("CARGO_PKG_VERSION"));
+        }
+        // Which binary answers: the plugins run the clax on PATH.
+        out["binary"] = json!({
+            "path": std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default(),
+            "version": env!("CARGO_PKG_VERSION"),
+        });
+        // A failed upgrade that keeps the daemon at an older version.
+        if let (Some(probe), Some(v)) = (&self.upgrade_hold, h["version"].as_str())
+            && let Some(hold) = probe(v)
+        {
+            out["upgrade_held"] = hold;
         }
         Ok(out)
     }

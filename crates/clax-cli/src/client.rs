@@ -36,10 +36,13 @@ fn http() -> reqwest::blocking::Client {
 /// newer daemon is kept (it serves older clients), as is one whose version does
 /// not parse.
 fn needs_replacing(info: &DaemonInfo, ours: &str) -> bool {
-    match (
-        semver::Version::parse(&info.version),
-        semver::Version::parse(ours),
-    ) {
+    older(&info.version, ours)
+}
+
+/// True when version `theirs` is older than `ours`; false when either does
+/// not parse.
+fn older(theirs: &str, ours: &str) -> bool {
+    match (semver::Version::parse(theirs), semver::Version::parse(ours)) {
         (Ok(theirs), Ok(ours)) => theirs < ours,
         _ => false,
     }
@@ -261,31 +264,155 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Records that upgrading to `version` from `exe` failed and was rolled back.
-fn record_failed_upgrade(home: &Home, version: &str, exe: &std::path::Path) {
+/// Records that upgrading the daemon of version `from` to `version` from
+/// `exe` failed with `reason` and was rolled back.
+fn record_failed_upgrade(
+    home: &Home,
+    version: &str,
+    exe: &std::path::Path,
+    from: &str,
+    reason: &str,
+) {
     if let Some(mut key) = upgrade_key(version, exe) {
         key["at"] = unix_now().into();
+        key["from_version"] = from.into();
+        key["reason"] = reason.into();
         let _ = std::fs::write(failed_upgrade_path(home), key.to_string());
     }
+}
+
+/// A failed upgrade that is not retried until `until`: the daemon of version
+/// `from_version` was kept, or restarted, instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UpgradeHold {
+    /// The version the upgrade was to.
+    pub version: String,
+    /// The canonical path of the executable that failed to start.
+    pub exe: std::path::PathBuf,
+    /// The version of the daemon it was to replace, when recorded.
+    pub from_version: Option<String>,
+    /// Why it failed, and what became of the previous daemon.
+    pub reason: String,
+    /// When it failed, in seconds since the epoch.
+    pub at: u64,
+    /// When the hold ends, in seconds since the epoch.
+    pub until: u64,
+}
+
+/// `secs` since the epoch as an RFC 3339 UTC time.
+fn rfc3339(secs: u64) -> String {
+    chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
+        .map(|t| t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|| secs.to_string())
+}
+
+impl UpgradeHold {
+    /// What to do about the hold.
+    pub fn advice(&self, home: &Home) -> String {
+        format!(
+            "Upgrades to this build are not tried again until {}. A rebuilt or reinstalled clax is tried at once, so install a build that starts (see {} for why this one did not); or run `clax stop`, then `clax serve`, to try this build again now, with no older daemon to fall back to",
+            rfc3339(self.until),
+            home.log_path().display()
+        )
+    }
+
+    /// One line saying that the daemon of version `kept` is kept because of
+    /// this hold, and what to do.
+    pub fn line(&self, home: &Home, kept: &str) -> String {
+        format!(
+            "keeping clax daemon v{kept}: upgrading it to v{} ({}) failed at {}. {}",
+            self.version,
+            self.exe.display(),
+            rfc3339(self.at),
+            self.advice(home)
+        )
+    }
+
+    /// The hold as `status` and `serve --json` report it, as `upgrade_held`.
+    pub fn to_json(&self, home: &Home) -> serde_json::Value {
+        serde_json::json!({
+            "version": self.version,
+            "exe": self.exe.display().to_string(),
+            "from_version": self.from_version,
+            "reason": self.reason,
+            "failed_at": rfc3339(self.at),
+            "until": rfc3339(self.until),
+            "advice": self.advice(home),
+        })
+    }
+}
+
+/// The failed upgrade recorded for `home`, while it holds: less than
+/// [`FAILED_UPGRADE_HOLD`] ago, with its executable unchanged since (the
+/// same modification time). None when there is none, or it no longer holds.
+pub fn upgrade_hold(home: &Home) -> Option<UpgradeHold> {
+    let rec: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(failed_upgrade_path(home)).ok()?).ok()?;
+    let version = rec["version"].as_str()?;
+    let exe = std::path::Path::new(rec["exe"].as_str()?);
+    let key = upgrade_key(version, exe)?;
+    if rec["mtime_ns"] != key["mtime_ns"] {
+        return None;
+    }
+    let at = rec["at"].as_u64()?;
+    let until = at + FAILED_UPGRADE_HOLD.as_secs();
+    (unix_now() < until).then(|| UpgradeHold {
+        version: version.to_string(),
+        exe: exe.to_path_buf(),
+        from_version: rec["from_version"].as_str().map(str::to_string),
+        reason: rec["reason"]
+            .as_str()
+            .unwrap_or("the reason was not recorded")
+            .to_string(),
+        at,
+        until,
+    })
+}
+
+/// The hold that keeps a daemon of version `daemon_version` from being
+/// upgraded: the [`upgrade_hold`] of `home`, when that daemon is older than
+/// the version the hold is for.
+pub fn upgrade_hold_for(home: &Home, daemon_version: &str) -> Option<UpgradeHold> {
+    upgrade_hold(home).filter(|h| older(daemon_version, &h.version))
 }
 
 /// True when upgrading to `version` from `exe`, unchanged since, failed
 /// less than [`FAILED_UPGRADE_HOLD`] ago.
 fn upgrade_recently_failed(home: &Home, version: &str, exe: &std::path::Path) -> bool {
-    let Some(key) = upgrade_key(version, exe) else {
-        return false;
-    };
-    let Some(rec) = std::fs::read_to_string(failed_upgrade_path(home))
-        .ok()
-        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
-    else {
-        return false;
-    };
-    let at = rec["at"].as_u64().unwrap_or(0);
-    ["version", "exe", "mtime_ns"]
-        .iter()
-        .all(|k| rec[*k] == key[*k])
-        && unix_now().saturating_sub(at) < FAILED_UPGRADE_HOLD.as_secs()
+    upgrade_hold(home).is_some_and(|h| h.version == version && h.exe == exe)
+}
+
+/// The hold that kept `c`, the daemon this binary connected to, at its
+/// older version: one for this binary's version and executable. `clax
+/// serve` reports it.
+pub fn held_upgrade(home: &Home, c: &Client) -> Option<UpgradeHold> {
+    let exe = canonical(&std::env::current_exe().ok()?);
+    held_upgrade_of(home, &c.info, env!("CARGO_PKG_VERSION"), &exe)
+}
+
+fn held_upgrade_of(
+    home: &Home,
+    daemon: &DaemonInfo,
+    ours: &str,
+    exe: &std::path::Path,
+) -> Option<UpgradeHold> {
+    upgrade_hold(home)
+        .filter(|h| needs_replacing(daemon, ours) && h.version == ours && h.exe == exe)
+}
+
+/// Warns, once per process, that the daemon `kept` is kept because upgrading
+/// it to `ours` from `exe` is held.
+fn warn_held(home: &Home, kept: &DaemonInfo, ours: &str, exe: &std::path::Path) {
+    static HELD: std::sync::Once = std::sync::Once::new();
+    HELD.call_once(|| match held_upgrade_of(home, kept, ours, exe) {
+        Some(h) => tracing::warn!("{}", h.line(home, &kept.version)),
+        None => tracing::warn!(
+            "keeping clax daemon v{}: upgrading it to v{ours} ({}) failed recently; see {}",
+            kept.version,
+            exe.display(),
+            home.log_path().display()
+        ),
+    });
 }
 
 impl Client {
@@ -493,24 +620,17 @@ impl Client {
         }
         let exe = canonical(exe);
         if upgrade_recently_failed(home, ours, &exe) {
-            static HELD: std::sync::Once = std::sync::Once::new();
-            HELD.call_once(|| {
-                tracing::warn!(
-                    "keeping clax daemon v{}: upgrading it to v{ours} ({}) failed recently; see {}",
-                    c.info.version,
-                    exe.display(),
-                    home.log_path().display()
-                )
-            });
+            warn_held(home, &c.info, ours, &exe);
             return Ok(c);
         }
-        match Client::replace(home, &c, &exe, |info| !needs_replacing(info, ours)) {
-            Err(e) if e.downcast_ref::<UpgradeFailed>().is_some() => {
-                record_failed_upgrade(home, ours, &exe);
-                Err(e.context(format!("upgrading the clax daemon to v{ours}")))
-            }
-            r => r.with_context(|| format!("upgrading the clax daemon to v{ours}")),
-        }
+        Client::replace(
+            home,
+            &c,
+            &exe,
+            |info| !needs_replacing(info, ours),
+            Some(ours),
+        )
+        .with_context(|| format!("upgrading the clax daemon to v{ours}"))
     }
 
     /// Replaces the daemon `old` names with one started from `exe` on the
@@ -528,11 +648,18 @@ impl Client {
     /// address. The error, an [`UpgradeFailed`], then says whether it is
     /// running again or no daemon is running and how to recover, and names
     /// the log.
+    ///
+    /// With `upgrade`, the version of `exe`, a held upgrade ([`upgrade_hold`])
+    /// is checked again under the start lock, and the daemon found there is
+    /// kept; and a failed upgrade is recorded before the lock is released.
+    /// So clients that waited for the lock while another tried the upgrade
+    /// do not each try it again.
     pub fn replace(
         home: &Home,
         old: &Client,
         exe: &std::path::Path,
         accept: impl Fn(&DaemonInfo) -> bool,
+        upgrade: Option<&str>,
     ) -> anyhow::Result<Client> {
         let exe = &canonical(exe);
         home.ensure_dirs()?;
@@ -542,6 +669,12 @@ impl Client {
             && c.info.pid != old.info.pid
             && accept(&c.info)
         {
+            return Ok(Client::from_info(c.info.clone()));
+        }
+        if let (Some(c), Some(ours)) = (&current, upgrade)
+            && upgrade_recently_failed(home, ours, exe)
+        {
+            warn_held(home, &c.info, ours, exe);
             return Ok(Client::from_info(c.info.clone()));
         }
         let answered = current.is_some();
@@ -567,7 +700,19 @@ impl Client {
         stop_for_replacement(home, &target, answered)?;
         let new = match Client::spawn(home, exe, target.port, bind, true) {
             Ok(c) => c,
-            Err(e) => return Err(roll_back(home, &target, exe, bind, &e)),
+            Err(e) => {
+                let e = roll_back(home, &target, exe, bind, &e);
+                let Some(ours) = upgrade else { return Err(e) };
+                record_failed_upgrade(home, ours, exe, &target.version, &format!("{e:#}"));
+                // The hold only keeps a running daemon.
+                if Client::discover(home).is_none() {
+                    return Err(e);
+                }
+                return Err(anyhow::Error::new(UpgradeFailed(format!(
+                    "{e:#}. Upgrades to this build are not tried again for {} minutes; `clax status` says why and what to do",
+                    FAILED_UPGRADE_HOLD.as_secs() / 60
+                ))));
+            }
         };
         if new.info.port != target.port {
             let msg = format!(
@@ -685,8 +830,14 @@ impl Client {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    /// Records, as a rolled-back upgrade does, that upgrading to `version`
+    /// from `exe` failed with `reason` just now.
+    pub(crate) fn write_hold(home: &Home, version: &str, exe: &std::path::Path, reason: &str) {
+        record_failed_upgrade(home, version, &canonical(exe), "0.0.0", reason);
+    }
 
     fn info(version: &str) -> DaemonInfo {
         DaemonInfo {
@@ -859,7 +1010,7 @@ srv.serve_forever()
         let bad = script(dir.path(), "bad", "exit 1");
         let e = format!(
             "{:#}",
-            Client::replace(&home, &old, &bad, |_| false)
+            Client::replace(&home, &old, &bad, |_| false, None)
                 .err()
                 .expect("replace fails")
         );
@@ -884,7 +1035,7 @@ srv.serve_forever()
         let bad = script(dir.path(), "bad", "exit 1");
         let e = format!(
             "{:#}",
-            Client::replace(&home, &old, &bad, |_| false)
+            Client::replace(&home, &old, &bad, |_| false, None)
                 .err()
                 .expect("replace fails")
         );
@@ -902,7 +1053,7 @@ srv.serve_forever()
         let bad = script(dir.path(), "bad", "exit 1");
         let e = format!(
             "{:#}",
-            Client::replace(&home, &old, &bad, |_| false)
+            Client::replace(&home, &old, &bad, |_| false, None)
                 .err()
                 .expect("replace fails")
         );
@@ -927,7 +1078,7 @@ srv.serve_forever()
         );
         let e = format!(
             "{:#}",
-            Client::replace(&home, &old, &slow, |_| false)
+            Client::replace(&home, &old, &slow, |_| false, None)
                 .err()
                 .expect("replace fails")
         );
@@ -948,7 +1099,7 @@ srv.serve_forever()
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
         let started = Instant::now();
-        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(15),
             "{:?}",
@@ -971,7 +1122,7 @@ srv.serve_forever()
         info.bind = "127.0.0.1".into();
         let old = Client::from_info(info);
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
-        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
         assert_eq!(c.info.bind, "0.0.0.0");
         assert_eq!(c.info.port, current.info.port);
         let log = log(&home);
@@ -985,7 +1136,7 @@ srv.serve_forever()
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, Some(0));
-        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
         assert_ne!(c.info.port, old.info.port);
         let log = log(&home);
         assert!(log.contains(&format!("not {}", old.info.port)), "{log}");
@@ -1011,7 +1162,7 @@ srv.serve_forever()
         let old = Client::from_info(gone);
         let new_exe = fake_exe(dir.path(), "new", "0.0.2", false, None);
         let started = Instant::now();
-        let c = Client::replace(&home, &old, &new_exe, |_| false).unwrap();
+        let c = Client::replace(&home, &old, &new_exe, |_| false, None).unwrap();
         assert!(
             started.elapsed() < Duration::from_secs(5),
             "{:?}",
@@ -1042,7 +1193,7 @@ srv.serve_forever()
         std::os::unix::fs::symlink(&old_exe, &link).unwrap();
         let e = format!(
             "{:#}",
-            Client::replace(&home, &old, &link, |_| false)
+            Client::replace(&home, &old, &link, |_| false, None)
                 .err()
                 .expect("replace fails")
         );
@@ -1076,8 +1227,20 @@ srv.serve_forever()
                 .expect("the upgrade fails")
         );
         assert!(e.contains("running again"), "{e}");
+        assert!(e.contains("not tried again for 10 minutes"), "{e}");
         assert_eq!(replacements(&home), 1);
         let rolled_back = Client::discover(&home).unwrap().info;
+        let hold = upgrade_hold_for(&home, &rolled_back.version).expect("the hold is reported");
+        assert_eq!(hold.version, "0.0.2");
+        assert_eq!(hold.exe, canonical(&bad));
+        assert_eq!(hold.from_version.as_deref(), Some("0.0.1"));
+        assert!(hold.reason.contains("failed to start"), "{hold:?}");
+        assert_eq!(hold.until - hold.at, 600);
+        assert_eq!(
+            held_upgrade_of(&home, &rolled_back, "0.0.2", &canonical(&bad)),
+            Some(hold.clone())
+        );
+        assert!(upgrade_hold_for(&home, "0.0.2").is_none(), "not older");
 
         // The same build again: the rolled-back daemon is kept, untouched.
         let c = Client::connect_matching(&home, 0, lo, "0.0.2", &bad).unwrap();
@@ -1104,5 +1267,53 @@ srv.serve_forever()
         assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
         assert_eq!(replacements(&home), 3, "retried after ten minutes");
         stop(&home);
+    }
+
+    #[test]
+    fn clients_waiting_on_the_start_lock_do_not_repeat_a_failed_upgrade() {
+        let dir = Scratch::new();
+        let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
+        let (home, _old) = running(dir.path(), &old_exe, "127.0.0.1");
+        let bad = script(dir.path(), "bad", "sleep 0.3\nexit 1");
+        let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        // Each client finds the old daemon before any takes the start lock.
+        let ready = std::sync::Barrier::new(3);
+        let results: Vec<anyhow::Result<Client>> = std::thread::scope(|s| {
+            let clients: Vec<_> = (0..3)
+                .map(|_| {
+                    s.spawn(|| {
+                        ready.wait();
+                        Client::connect_matching(&home, 0, lo, "0.0.2", &bad)
+                    })
+                })
+                .collect();
+            clients.into_iter().map(|c| c.join().unwrap()).collect()
+        });
+        assert_eq!(replacements(&home), 1, "{}", log(&home));
+        let failed = results.iter().filter(|r| r.is_err()).count();
+        assert_eq!(failed, 1, "one client tried the upgrade");
+        let now = Client::discover(&home).unwrap().info;
+        for c in results.iter().flatten() {
+            assert_eq!(c.info.pid, now.pid, "the others use the rolled-back daemon");
+            assert_eq!(c.info.version, "0.0.1");
+        }
+        stop(&home);
+    }
+
+    #[test]
+    fn no_hold_is_reported_without_a_record_or_once_the_executable_changes() {
+        let dir = Scratch::new();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        assert!(upgrade_hold(&home).is_none());
+        let exe = script(dir.path(), "new", "exit 1");
+        write_hold(&home, "0.0.2", &exe, "why");
+        assert_eq!(upgrade_hold(&home).unwrap().reason, "why");
+        std::thread::sleep(Duration::from_millis(20));
+        std::fs::write(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n").unwrap();
+        assert!(
+            upgrade_hold(&home).is_none(),
+            "a rebuilt executable lifts it"
+        );
     }
 }

@@ -48,11 +48,19 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     if let Some(requested) = a.bind {
         c.require_bind(requested)?;
     }
-    super::print(cli, super::daemon_json(&c), |j| {
+    let mut out = super::daemon_json(&c);
+    // A daemon kept at an older version because upgrading it to this
+    // build failed recently: say so, and what to do.
+    if let Some(h) = crate::client::held_upgrade(home, &c) {
+        eprintln!("warning: {}", h.line(home, &c.info.version));
+        out["upgrade_held"] = h.to_json(home);
+    }
+    super::print(cli, out, |j| {
         format!(
-            "clax daemon running at {} (pid {})",
+            "clax daemon running at {} (pid {}, v{})",
             j["url"].as_str().unwrap(),
-            j["pid"]
+            j["pid"],
+            j["version"].as_str().unwrap_or("?")
         )
     });
     Ok(())

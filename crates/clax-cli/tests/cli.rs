@@ -455,6 +455,8 @@ fn doctor_check(e: &Env, args: &[&str], name: &str) -> serde_json::Value {
         .arg("doctor")
         .args(args)
         .arg("--json")
+        // `--agent` runs every clax on PATH; keep it to the system's.
+        .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -1191,9 +1193,12 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         .write_stdin("{}")
         .assert()
         .success();
+    // The plugins run this binary: CLAX_BIN names it, and PATH holds no clax.
     let out = e
         .cmd()
         .args(["doctor", "--agent", "codex", "--json"])
+        .env("CLAX_BIN", env!("CARGO_BIN_EXE_clax"))
+        .env("PATH", "/usr/bin:/bin")
         .output()
         .unwrap();
     assert_eq!(out.status.code(), Some(1));
@@ -1210,13 +1215,18 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         by_name(n);
     }
     let binary = by_name("binary");
-    assert_eq!(binary["ok"], true);
+    assert_eq!(binary["ok"], true, "{binary}");
+    let detail = binary["detail"].as_str().unwrap();
+    assert!(detail.contains(env!("CARGO_PKG_VERSION")), "{detail}");
     assert!(
-        binary["detail"]
-            .as_str()
-            .unwrap()
-            .contains(env!("CARGO_PKG_VERSION"))
+        detail.contains(&format!(
+            "the plugins run: {} (from CLAX_BIN)",
+            env!("CARGO_BIN_EXE_clax")
+        )),
+        "{detail}"
     );
+    assert!(detail.contains("on PATH, in order: none"), "{detail}");
+    assert_eq!(by_name("upgrade")["ok"], true);
     let plugin = by_name("plugin");
     assert_eq!(plugin["ok"], true, "{plugin}");
     assert!(
@@ -1260,10 +1270,24 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     }
 
     // Every harness is accepted; the text form names each layer.
+    // Without CLAX_BIN or a clax on PATH, the plugins run nothing.
     for agent in ["claude", "pi"] {
-        let out = e.cmd().args(["doctor", "--agent", agent]).output().unwrap();
+        let out = e
+            .cmd()
+            .args(["doctor", "--agent", agent])
+            .env_remove("CLAX_BIN")
+            .env("PATH", "/usr/bin:/bin")
+            .output()
+            .unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
-        for n in ["binary", "plugin", "skill", "mcp", "hooks", "feedback"] {
+        assert!(
+            text.contains("FAIL binary")
+                && text.contains("the plugins run: nothing (no clax on PATH)"),
+            "{text}"
+        );
+        for n in [
+            "binary", "upgrade", "plugin", "skill", "mcp", "hooks", "feedback",
+        ] {
             assert!(text.contains(&format!(" {n} ")), "{agent}: {n} in {text}");
         }
         assert!(!text.contains("codex_push"), "{text}");

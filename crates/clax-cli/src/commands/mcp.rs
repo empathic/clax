@@ -67,6 +67,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             token: c.token,
         })
     });
+    let hold_home = home.clone();
+    let upgrade_hold: clax_mcp::tools::UpgradeHoldProbe = Arc::new(move |daemon_version: &str| {
+        crate::client::upgrade_hold_for(&hold_home, daemon_version).map(|h| h.to_json(&hold_home))
+    });
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(shim::run(
         harness,
@@ -74,6 +78,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         refresh,
         discover,
         Duration::from_millis(a.heartbeat_interval_ms.max(1)),
+        Some(upgrade_hold),
     ));
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
     rt.shutdown_timeout(Duration::from_millis(100));
