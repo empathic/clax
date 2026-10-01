@@ -1,6 +1,5 @@
-// Mounts a Svelte component for a unit test, with the same exports as
-// test/preact.ts. Updates are applied synchronously (flushSync), so a test
-// reads the DOM right after an action, as it did under Preact's act().
+// Mounts a Svelte component for a unit test. Updates are applied
+// synchronously (flushSync), so a test reads the DOM right after an action.
 import { render } from "@testing-library/svelte";
 import { type Component, flushSync } from "svelte";
 

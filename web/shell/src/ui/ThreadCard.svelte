@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { isSubmitKey } from "../comments";
+  import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel, resolvedByLabel } from "../threads";
   import { authorLabel } from "../view/sidebar-model";
   import { waitingLabel } from "../waiting";

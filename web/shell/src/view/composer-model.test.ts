@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Draft, composerQuote } from "./composer-model";
+import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "./composer-model";
 
 const d = (anchor: Record<string, unknown>, label?: string) => ({ pickId: "p", version: 1, clip: null, label, anchor: { file: "index.html", ...anchor } }) as unknown as Draft;
 
@@ -14,5 +14,19 @@ describe("composerQuote", () => {
   });
   it("shows an empty label from the page rather than the quote", () => {
     expect(composerQuote(d({ quote: "x" }, ""))).toBe("");
+  });
+});
+
+describe("isSubmitKey and submitKeysLabel", () => {
+  it("is Enter with Cmd or Ctrl, outside an IME composition", () => {
+    const k = { key: "Enter", metaKey: false, ctrlKey: false, isComposing: false };
+    expect(isSubmitKey({ ...k, metaKey: true })).toBe(true);
+    expect(isSubmitKey({ ...k, ctrlKey: true })).toBe(true);
+    expect(isSubmitKey(k)).toBe(false);
+    expect(isSubmitKey({ ...k, metaKey: true, isComposing: true })).toBe(false);
+    expect(isSubmitKey({ ...k, key: "a", metaKey: true })).toBe(false);
+    expect(submitKeysLabel("MacIntel")).toBe("⌘↵");
+    expect(submitKeysLabel("Win32")).toBe("Ctrl+Enter");
+    expect(submitKeysLabel("Linux x86_64")).toBe("Ctrl+Enter");
   });
 });

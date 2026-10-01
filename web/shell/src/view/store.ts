@@ -1,6 +1,5 @@
 /** An immutable-snapshot store. `subscribe` follows the Svelte store
- * contract, so a Svelte component reads it with `fromStore`; a Preact
- * component, with `useState` plus `subscribe`. */
+ * contract, so a Svelte component reads it with `fromStore`. */
 export class Store<S extends object> {
   private value: S;
   private readonly subs = new Set<(s: S) => void>();

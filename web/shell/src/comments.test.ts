@@ -1,12 +1,11 @@
 import type { Component } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { isSubmitKey, submitKeysLabel } from "./comments";
 import { flush, mount } from "./test/svelte";
 import { type Thread, areaLabel } from "./threads";
 import Composer from "./ui/Composer.svelte";
 import Pins from "./ui/Pins.svelte";
 import Sidebar from "./ui/Sidebar.svelte";
-import { type Draft, nextDraft, withClip } from "./view/composer-model";
+import { type Draft, nextDraft, submitKeysLabel, withClip } from "./view/composer-model";
 import { PIN_RIGHT_ROOM } from "./view/pins-model";
 
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
@@ -141,18 +140,6 @@ describe("the submit shortcut", () => {
     const typeText = (v: string) => flush(() => { ta.value = v; ta.dispatchEvent(new Event("input", { bubbles: true })); });
     return { ...m, ta, typeText, onSubmit };
   }
-
-  it("is Enter with Cmd or Ctrl, outside an IME composition", () => {
-    const k = { key: "Enter", metaKey: false, ctrlKey: false, isComposing: false };
-    expect(isSubmitKey({ ...k, metaKey: true })).toBe(true);
-    expect(isSubmitKey({ ...k, ctrlKey: true })).toBe(true);
-    expect(isSubmitKey(k)).toBe(false);
-    expect(isSubmitKey({ ...k, metaKey: true, isComposing: true })).toBe(false);
-    expect(isSubmitKey({ ...k, key: "a", metaKey: true })).toBe(false);
-    expect(submitKeysLabel("MacIntel")).toBe("⌘↵");
-    expect(submitKeysLabel("Win32")).toBe("Ctrl+Enter");
-    expect(submitKeysLabel("Linux x86_64")).toBe("Ctrl+Enter");
-  });
 
   for (const mod of ["metaKey", "ctrlKey"] as const) {
     it(`posts the comment on ${mod === "metaKey" ? "Cmd" : "Ctrl"}+Enter, once`, () => {

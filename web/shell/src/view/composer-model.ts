@@ -41,3 +41,14 @@ export function composerQuote(draft: Draft): string {
   if (draft.anchor.kind === "area") return areaLabel(draft.anchor);
   return draft.anchor.selector ?? "";
 }
+
+/** Whether `e` is the shortcut that posts a comment: Enter with Cmd or Ctrl
+ * (either, on every platform), and not while an IME composition is in progress. */
+export function isSubmitKey(e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "isComposing">): boolean {
+  return e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing;
+}
+
+/** The submit shortcut as `platform` names it: "⌘↵" on Apple platforms, "Ctrl+Enter" elsewhere. */
+export function submitKeysLabel(platform = typeof navigator === "undefined" ? "" : navigator.platform): string {
+  return /Mac|iPhone|iPad|iPod/.test(platform) ? "⌘↵" : "Ctrl+Enter";
+}
