@@ -102,29 +102,9 @@ for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/w
     [ -f "$f" ] || fail "$f is missing"
 done
 
-# One version everywhere: the workspace, both plugin manifests, the Pi package,
-# and the wrapper's CLAX_VERSION.
-if out="$(python3 - Cargo.toml plugins/claude-code/.claude-plugin/plugin.json plugins/clax/.codex-plugin/plugin.json \
-    plugins/pi/package.json scripts/ensure-clax.sh 2>&1 <<'PY'
-import json, re, sys
-cargo, claude, codex, pi, installer = sys.argv[1:6]
-def first(pattern, text):
-    m = re.search(pattern, text, re.M)
-    return m.group(1) if m else None
-ws = re.search(r'^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)', open(cargo).read(), re.M | re.S)
-versions = {
-    "Cargo.toml [workspace.package]": first(r'^version\s*=\s*"([^"]+)"', ws.group(1)) if ws else None,
-    claude: json.load(open(claude)).get("version"),
-    codex: json.load(open(codex)).get("version"),
-    pi: json.load(open(pi)).get("version"),
-    installer + " CLAX_VERSION": first(r'^CLAX_VERSION="([^"]+)"', open(installer).read()),
-}
-if None in versions.values() or len(set(versions.values())) != 1:
-    print(", ".join(f"{k}={v}" for k, v in versions.items()))
-    sys.exit(1)
-PY
-)"; then pass "the workspace, plugin manifests, Pi package and CLAX_VERSION share one version"
-else fail "versions differ: $out"; fi
+# One version everywhere: see scripts/check-version.sh for the list.
+if out="$(scripts/check-version.sh 2>&1)"; then pass "every written version agrees (scripts/check-version.sh)"
+else fail "$out"; fi
 
 # The Rust tools and the Pi extension carry the same twenty-two tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
@@ -167,13 +147,13 @@ PY
 then pass "Codex marketplace sources are ./plugins/<name> and exist"; else fail "a Codex marketplace source is not ./plugins/<name> or does not exist"; fi
 
 # The Codex manifest: pinned fields, companion paths that resolve, no top-level hooks.
-if python3 - plugins/clax/.codex-plugin/plugin.json 2>/dev/null <<'PY'
+if python3 - plugins/clax/.codex-plugin/plugin.json "$(scripts/check-version.sh --print)" 2>/dev/null <<'PY'
 import json, os, sys
 m = json.load(open(sys.argv[1]))
 root = os.path.dirname(os.path.dirname(sys.argv[1]))
 i = m.get("interface", {})
 prompts = i.get("defaultPrompt")
-ok = (m.get("name") == "clax" and m.get("version") == "0.2.0"
+ok = (m.get("name") == "clax" and m.get("version") == sys.argv[2]
       and m.get("mcpServers") == "./.mcp.json" and os.path.isfile(os.path.join(root, ".mcp.json"))
       and m.get("skills") == "./skills/" and os.path.isdir(os.path.join(root, "skills"))
       and "hooks" not in m
