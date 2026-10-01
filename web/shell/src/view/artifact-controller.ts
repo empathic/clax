@@ -65,6 +65,11 @@ export type ViewState = {
   file: string | null;
 };
 
+/** The artifact is loaded and the frame mode decided: the islands show. */
+export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
+  return !s.error && !!s.data && s.origin !== undefined;
+}
+
 /** How long a pick's start stays valid for its pick (longer than the
  * longest clip render, an area's 12 s). */
 const PICK_WAIT_MS = 20_000;
@@ -347,8 +352,8 @@ export class ArtifactController {
     if (!draft && !deleted) this.set({ commenting: true });
   }
 
-  // A screenshot still being taken that never arrives: the composer says so
-  // (Post stays disabled until then).
+  // A screenshot still being taken that never arrives: the composer says so,
+  // and a post it queued goes ahead without one.
   private armCapture(draft: Draft | null): void {
     clearTimeout(this.captureTimer);
     const token = draft?.capturing ? draft.clipToken : undefined;

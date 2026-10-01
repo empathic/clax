@@ -1,9 +1,11 @@
-import type { ComponentType } from "preact";
+import type { Component } from "svelte";
 import { describe, expect, it, vi } from "vitest";
-import { Composer, Pins, isSubmitKey, submitKeysLabel } from "./comments";
-import { Sidebar } from "./sidebar";
-import { flush, mount } from "./test/preact";
+import { isSubmitKey, submitKeysLabel } from "./comments";
+import { flush, mount } from "./test/svelte";
 import { type Thread, areaLabel } from "./threads";
+import Composer from "./ui/Composer.svelte";
+import Pins from "./ui/Pins.svelte";
+import Sidebar from "./ui/Sidebar.svelte";
 import { type Draft, nextDraft, withClip } from "./view/composer-model";
 import { PIN_RIGHT_ROOM } from "./view/pins-model";
 
@@ -15,7 +17,7 @@ const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
 });
 const at = (id: string, y: number) => ({ id, found: true, method: "exact" as const, rect: { x: 10, y, w: 100, h: 20 } });
 
-function mountIt<P extends object>(C: ComponentType<P>, props: P) {
+function mountIt<P extends Record<string, unknown>>(C: Component<P>, props: P) {
   const view = mount(C, props);
   const { root } = view;
   return { root, update: view.update, done: () => { view.unmount(); root.remove(); } };
@@ -269,6 +271,26 @@ describe("the submit shortcut", () => {
     m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
     expect(onSubmit).toHaveBeenCalledWith("Ship it");
     expect(postButton.getAttribute("aria-disabled")).toBeNull();
+    m.done();
+  });
+
+  it("describes the waiting Post by the status line, which says when a post is queued", () => {
+    const onSubmit = vi.fn<(body: string) => Promise<void>>(async () => {});
+    const d = draft({ capturing: true, clipToken: "t" });
+    const m = mountIt(Composer, { draft: d, onCancel: vi.fn(), onSubmit });
+    const postButton = m.root.querySelector<HTMLButtonElement>("button[type=submit]")!;
+    const status = m.root.querySelector<HTMLElement>("[role=status]")!;
+    expect(status.textContent).toBe("Taking the screenshot…");
+    expect(status.id).not.toBe("");
+    expect(postButton.getAttribute("aria-describedby")).toBe(status.id);
+    const ta = m.root.querySelector("textarea")!;
+    flush(() => { ta.value = "Ship it"; ta.dispatchEvent(new Event("input", { bubbles: true })); });
+    flush(() => { postButton.click(); });
+    expect(m.root.querySelector("[role=status]")).toBe(status);
+    expect(status.textContent).toBe("Posting once the screenshot is taken…");
+    m.update({ draft: { ...d, capturing: false, clipToken: undefined, clipError: "blank" }, onCancel: vi.fn(), onSubmit });
+    expect(m.root.querySelector("[role=status]")!.textContent).toBe("No screenshot: blank");
+    expect(postButton.hasAttribute("aria-describedby")).toBe(false);
     m.done();
   });
 

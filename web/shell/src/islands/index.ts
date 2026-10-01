@@ -9,4 +9,4 @@ import { svelteIslands } from "./svelte";
 export type MountIsland = (target: HTMLElement, ctl: ArtifactController) => () => void;
 export type Islands = { topbar: MountIsland; stage: MountIsland; sidebar: MountIsland };
 
-export const ISLANDS: Islands = { topbar: preactIslands.topbar, stage: preactIslands.stage, sidebar: svelteIslands.sidebar! };
+export const ISLANDS: Islands = { topbar: preactIslands.topbar, stage: svelteIslands.stage!, sidebar: svelteIslands.sidebar! };
