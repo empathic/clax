@@ -457,3 +457,39 @@ async fn a_host_the_api_refuses_gets_no_data() {
         assert!(html.contains("<iframe"), "{host}");
     }
 }
+
+#[tokio::test]
+async fn no_page_may_frame_the_shell() {
+    dist();
+    let ts = TestServer::spawn().await;
+    let id = ts.publish("F", &[("index.html", "<p>x</p>")]).await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let unframeable = |res: &reqwest::Response, what: &str| {
+        assert_eq!(
+            res.headers()["content-security-policy"],
+            "frame-ancestors 'none'",
+            "{what}"
+        );
+        assert_eq!(res.headers()["x-frame-options"], "DENY", "{what}");
+    };
+    for path in [
+        "/".to_string(),
+        format!("/a/{id}"),
+        format!("/a/{id}/v/1/"),
+        "/a/not-an-id".to_string(),
+    ] {
+        let res = page(&ts, &path, &[]).await;
+        assert_eq!(res.status(), 200, "{path}");
+        unframeable(&res, &path);
+    }
+    // The bare entry (an artifact the store does not have) and a revalidation
+    // keep the headers too.
+    unframeable(&page(&ts, "/a/7q3k9mzx2b4t", &[]).await, "bare entry");
+    let first = page(&ts, &format!("/a/{id}"), &[]).await;
+    let tag = first.headers()["etag"].to_str().unwrap().to_string();
+    let again = page(&ts, &format!("/a/{id}"), &[("if-none-match", tag)]).await;
+    assert_eq!(again.status(), 304);
+    unframeable(&again, "304");
+}

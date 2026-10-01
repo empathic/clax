@@ -32,6 +32,16 @@ async fn each_route_gets_its_own_entry() {
     );
     assert_eq!(body("/a/not-an-id").await, "<p>gallery</p>");
     assert_eq!(ts.get("/").await.headers()["cache-control"], "no-cache");
+    // No other page may frame either entry.
+    for p in ["/", "/a/not-an-id", "/a/7q3k9mzx2b4t"] {
+        let res = ts.get(p).await;
+        assert_eq!(
+            res.headers()["content-security-policy"],
+            "frame-ancestors 'none'",
+            "{p}"
+        );
+        assert_eq!(res.headers()["x-frame-options"], "DENY", "{p}");
+    }
     let res = ts.get("/a/7q3k9mzx2b4t").await;
     assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert!(res.headers().contains_key("etag"));

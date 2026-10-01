@@ -23,13 +23,45 @@ use std::sync::Arc;
 /// Content served on the main origin must not run same-origin with the API.
 const SANDBOX: &str = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
 
-fn sandboxed(mut res: Response, origin: &Option<Extension<OnArtifactOrigin>>) -> Response {
+/// The `Content-Security-Policy` of a content response.
+///
+/// - On the main origin (sandbox mode): the sandbox, and no
+///   `frame-ancestors`. A sandboxed page has an opaque origin, which no
+///   `frame-ancestors` source matches, so any such list would also refuse an
+///   artifact's page framed by another of its pages. Framed by another site,
+///   the page reaches nothing of the viewer's: it runs at an opaque origin,
+///   and its bridge talks only to a parent at the shell's origin.
+/// - On an artifact origin (`<id>.localhost[:port]`, subdomain mode): framed
+///   only by the artifact's own pages (`'self'`) and the shell, at
+///   `localhost` or `127.0.0.1` on the same port, the only hosts from which
+///   the shell uses subdomain frames.
+///
+/// The policy is a separate one: a page's own `<meta>` policy still applies
+/// in full beside it, and cannot set `frame-ancestors` itself.
+fn content_policy(origin: &Option<Extension<OnArtifactOrigin>>, req: &HeaderMap) -> HeaderValue {
     if origin.is_none() {
-        res.headers_mut().insert(
-            header::CONTENT_SECURITY_POLICY,
-            HeaderValue::from_static(SANDBOX),
-        );
+        return HeaderValue::from_static(SANDBOX);
     }
+    // The rewrite accepted this host only with a numeric port, or none.
+    let port = req
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|h| h.split_once(':'))
+        .map(|(_, p)| format!(":{p}"))
+        .unwrap_or_default();
+    HeaderValue::from_str(&format!(
+        "frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
+}
+
+fn framed_by_shell(
+    mut res: Response,
+    origin: &Option<Extension<OnArtifactOrigin>>,
+    req: &HeaderMap,
+) -> Response {
+    res.headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
     res
 }
 
@@ -50,7 +82,11 @@ pub async fn index(
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
-        Served::Page(html) => Ok(sandboxed(http_cache::html(&req, &html), &origin)),
+        Served::Page(html) => Ok(framed_by_shell(
+            http_cache::html(&req, &html),
+            &origin,
+            &req,
+        )),
         Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "index.html is not UTF-8",
@@ -131,7 +167,13 @@ pub async fn file(
     }
     let tag_source = format!("{aid}/{n}/{rel}");
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
-        Served::Page(html) => return Ok(sandboxed(http_cache::html(&req, &html), &origin)),
+        Served::Page(html) => {
+            return Ok(framed_by_shell(
+                http_cache::html(&req, &html),
+                &origin,
+                &req,
+            ));
+        }
         Served::Raw(disk, meta) => (disk, meta),
     };
     let f = tokio::fs::File::open(&disk)
@@ -155,7 +197,7 @@ pub async fn file(
             )
                 .into_response()
         });
-        return Ok(sandboxed(res, &origin));
+        return Ok(framed_by_shell(res, &origin, &req));
     }
     let cache_control = http_cache::IMMUTABLE;
     let res = (
@@ -169,7 +211,7 @@ pub async fn file(
         body,
     )
         .into_response();
-    Ok(sandboxed(res, &origin))
+    Ok(framed_by_shell(res, &origin, &req))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,

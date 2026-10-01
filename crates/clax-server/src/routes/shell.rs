@@ -6,7 +6,7 @@ use crate::http_cache::{self, IMMUTABLE, REVALIDATE};
 use crate::routes::artifacts::path;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, RawQuery};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::RustEmbed;
 
@@ -124,10 +124,28 @@ fn bridge_cache_control(query: Option<&str>, served: &str) -> &'static str {
     }
 }
 
+/// A shell page, which no other page may frame: the shell holds the viewer's
+/// consent and comment controls, and a page that framed it could lay its own
+/// content over them or post to it. `frame-ancestors 'none'` is its own
+/// policy and restricts nothing else; `X-Frame-Options` covers browsers
+/// without CSP.
+fn unframeable(mut res: Response) -> Response {
+    let h = res.headers_mut();
+    h.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static("frame-ancestors 'none'"),
+    );
+    h.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    res
+}
+
 /// An entry of the shell (`index.html` or `artifact.html`) as an HTML page.
 fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
     match asset(name) {
-        Some(f) => Ok(http_cache::html(req, &String::from_utf8_lossy(&f.data))),
+        Some(f) => Ok(unframeable(http_cache::html(
+            req,
+            &String::from_utf8_lossy(&f.data),
+        ))),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "ui_not_built",
@@ -178,10 +196,10 @@ pub async fn artifact_page(
     let h = res.headers_mut();
     h.insert(
         header::CACHE_CONTROL,
-        axum::http::HeaderValue::from_static(PRIVATE_REVALIDATE),
+        HeaderValue::from_static(PRIVATE_REVALIDATE),
     );
-    h.insert(header::VARY, axum::http::HeaderValue::from_static("Cookie"));
-    Ok(res)
+    h.insert(header::VARY, HeaderValue::from_static("Cookie"));
+    Ok(unframeable(res))
 }
 
 /// The bootstrap `assemble` makes, or none (logged) when it fails or takes

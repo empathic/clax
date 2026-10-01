@@ -1,9 +1,11 @@
 import { BRIDGE_TYPES, type BridgeToShell, type ShellToBridge } from "../../bridge/src/protocol";
 
-/** The message when it came from the content frame's window: at `frameOrigin`
- * in subdomain mode, or from an opaque origin ("null") in sandbox mode. */
+/** The message when the browser delivered it (`isTrusted`, so no script in
+ * the shell's origin forged it) from the content frame's window: at
+ * `frameOrigin` in subdomain mode, or from an opaque origin ("null") in
+ * sandbox mode. */
 export function acceptFromFrame(e: MessageEvent, frame: Window | null, frameOrigin: string | null): BridgeToShell | null {
-  if (!frame || e.source !== frame) return null;
+  if (!e.isTrusted || !frame || e.source !== frame) return null;
   if (frameOrigin ? e.origin !== frameOrigin : e.origin !== "null") return null;
   const d = e.data;
   if (!d || typeof d !== "object" || !BRIDGE_TYPES.has(d.type)) return null;

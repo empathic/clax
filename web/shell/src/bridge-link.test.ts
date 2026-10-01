@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { trusted } from "../../bridge/test/trusted";
 import { acceptFromFrame, helloMatches } from "./bridge-link";
 
-const ev = (data: unknown, origin: string, source: Window | null) => new MessageEvent("message", { data, origin, source });
+/** A message as the browser delivers one. */
+const ev = (data: unknown, origin: string, source: Window | null) => trusted(new MessageEvent("message", { data, origin, source }));
 
 describe("acceptFromFrame", () => {
   it("takes bridge messages from the frame at its origin in subdomain mode", () => {
@@ -10,6 +12,9 @@ describe("acceptFromFrame", () => {
   it("takes only opaque-origin messages in sandbox mode", () => {
     expect(acceptFromFrame(ev({ type: "clax:cancel" }, "null", window), window, null)).not.toBeNull();
     expect(acceptFromFrame(ev({ type: "clax:cancel" }, "http://localhost:7480", window), window, null)).toBeNull();
+  });
+  it("rejects a message a script made rather than the browser delivered", () => {
+    expect(acceptFromFrame(new MessageEvent("message", { data: { type: "clax:cancel" }, origin: "null", source: window }), window, null)).toBeNull();
   });
   it("rejects other windows and unknown types", () => {
     expect(acceptFromFrame(ev({ type: "clax:cancel" }, "null", null), window, null)).toBeNull();

@@ -700,7 +700,13 @@ when the frame gets to paint), and *ready latency* runs from the click on
 also with the comment part's bytes held back until the click (*cold ready
 latency*). All five are measured in Chromium for a warm browser (the shell's files cached,
 cookies set, a fresh tab), in both frame modes, by `web/perf/usable.perf.ts`,
-a quality gate with budgets in `web/perf/budget.json`.
+a quality gate with budgets in `web/perf/budget.json`. Timings differ too much
+between machines for one budget to judge another's, so the budgets are per
+platform (keyed `<os>-<arch>`, such as `darwin-arm64`), and the gate is
+enforced where the platform has budgets. On a platform without them the run
+only reports its timings, under a `WARNING: … NOT GATED` line that the quality
+gates print too. A platform gains budgets by recording a baseline there
+(`CLAX_PERF_RECORD=baseline`); `CLAX_PERF_RECORD=budget` later lowers them.
 
 What makes it fast:
 
@@ -1426,6 +1432,19 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   allow-downloads` and `/_blob/...` responses carry
   `Content-Security-Policy: sandbox` (see section 8 for the PDF note), so a
   top-level navigation cannot reach the API same-origin.
+- Framing. The shell's pages (`/`, `/a/...`) carry
+  `Content-Security-Policy: frame-ancestors 'none'` and
+  `X-Frame-Options: DENY`: no other page may frame the shell, lay its own
+  content over the consent dialog, or post to it. Content on an artifact
+  origin carries `Content-Security-Policy: frame-ancestors 'self'
+  http://localhost:<port> http://127.0.0.1:<port>`: the shell (the only hosts
+  from which it uses subdomain frames) and the artifact's own pages. Content
+  on the main origin names no `frame-ancestors`: a sandboxed page's origin
+  is opaque, which no source matches, so a list would refuse an artifact page
+  framed by another of its pages; framed elsewhere, such a page reaches
+  nothing of the viewer's, since its bridge talks only to a parent at the
+  shell's origin. Each is a policy of its own, so a page's `<meta>` policy
+  applies in full beside it.
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
   results render comment bodies only as JSON-escaped strings inside the
   labelled feedback block; `db_*` results return documents as JSON data
@@ -1514,8 +1533,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   the same script.
 - Shell unit tests use Vitest with jsdom and `@testing-library/svelte`.
   `svelte-check --fail-on-warnings` runs with the typecheck. Two gates hold
-  time to usable: `web/perf` (Playwright timing, budgets in
-  `web/perf/budget.json`) and `web/scripts/bundle-size.mjs` (gzip sizes of
+  time to usable: `web/perf` (Playwright timing, budgets per platform in
+  `web/perf/budget.json`, enforced where the platform has budgets and
+  report-only with a warning elsewhere; §8 Time to usable) and
+  `web/scripts/bundle-size.mjs` (gzip sizes of
   each entry's critical JavaScript and of the eager bridge, budgets in
   `web/perf/bundle-budget.json`).
 

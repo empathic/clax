@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
+import { dispatchTrusted } from "../../bridge/test/trusted";
 
 class FakeES {
   static last: FakeES | undefined;
@@ -1250,7 +1251,7 @@ function buttonNamed(root: Element, name: string | RegExp): HTMLButtonElement {
 
 /** A message from the content frame as a sandboxed (opaque-origin) bridge sends it. */
 function fromFrame(win: Window, data: unknown) {
-  window.dispatchEvent(new MessageEvent("message", { data, origin: "null", source: win }));
+  dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
 }
 
 /** The viewer's gesture in the content frame: transient activation, with

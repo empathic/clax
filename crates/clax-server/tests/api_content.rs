@@ -103,6 +103,12 @@ fn no_redirect_client() -> reqwest::Client {
         .unwrap()
 }
 
+/// The policy of content on the main origin: sandboxed. It names no
+/// `frame-ancestors`, which would refuse a page framed by another page of its
+/// artifact (a sandboxed parent's origin is opaque).
+const SANDBOXED: &str =
+    "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+
 #[tokio::test]
 async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
     let ts = TestServer::spawn().await;
@@ -110,10 +116,13 @@ async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
         .publish("R", &[("index.html", "<p>hi</p>"), ("a.css", "p{}")])
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let csp = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
     for path in [format!("/c/{id}/v/1/"), format!("/c/{id}/v/1/a.css")] {
         let res = ts.get(&path).await;
-        assert_eq!(res.headers()["content-security-policy"], csp, "{path}");
+        assert_eq!(
+            res.headers()["content-security-policy"],
+            SANDBOXED,
+            "{path}"
+        );
     }
     let host = format!("{id}.localhost");
     for path in ["/v/1/", "/v/1/a.css"] {
@@ -125,11 +134,64 @@ async fn main_origin_content_is_sandboxed_but_artifact_origin_is_not() {
             .await
             .unwrap();
         assert_eq!(res.status(), 200);
-        assert!(
-            res.headers().get("content-security-policy").is_none(),
-            "{path}"
-        );
+        let csp = res.headers()["content-security-policy"].to_str().unwrap();
+        assert!(!csp.contains("sandbox"), "{path}: {csp}");
     }
+}
+
+#[tokio::test]
+async fn only_the_shell_and_the_artifact_frame_content_on_an_artifact_origin() {
+    let ts = TestServer::spawn().await;
+    let created = ts
+        .publish(
+            "R",
+            &[("index.html", "<p>hi</p>"), ("about.html", "<p>a</p>")],
+        )
+        .await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    // On an artifact origin the shell is at localhost or 127.0.0.1 on the
+    // same port; the artifact's own pages may frame each other.
+    for (host, port) in [
+        (format!("{id}.localhost:4321"), ":4321"),
+        (format!("{id}.localhost"), ""),
+    ] {
+        for path in ["/v/1/", "/v/1/about.html"] {
+            let res = ts
+                .client
+                .get(format!("{}{path}", ts.base))
+                .header("host", &host)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(res.status(), 200);
+            assert_eq!(
+                res.headers()["content-security-policy"],
+                format!("frame-ancestors 'self' http://localhost{port} http://127.0.0.1{port}")
+                    .as_str(),
+                "{host}{path}"
+            );
+        }
+    }
+    // A revalidation keeps the policy.
+    let host = format!("{id}.localhost:4321");
+    let get = |etag: Option<String>| {
+        let mut req = ts
+            .client
+            .get(format!("{}/v/1/", ts.base))
+            .header("host", &host);
+        if let Some(e) = etag {
+            req = req.header("if-none-match", e);
+        }
+        req.send()
+    };
+    let first = get(None).await.unwrap();
+    let etag = first.headers()["etag"].to_str().unwrap().to_string();
+    let again = get(Some(etag)).await.unwrap();
+    assert_eq!(again.status(), 304);
+    assert_eq!(
+        again.headers()["content-security-policy"],
+        "frame-ancestors 'self' http://localhost:4321 http://127.0.0.1:4321"
+    );
 }
 
 #[tokio::test]
@@ -272,7 +334,6 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         )
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let csp = "sandbox allow-scripts allow-forms allow-modals allow-popups allow-downloads";
     let index = ts.get(&format!("/c/{id}/v/1/")).await.text().await.unwrap();
     assert!(index.contains("data-file=\"index.html\""), "{index}");
 
@@ -280,7 +341,7 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
     assert_eq!(res.status(), 200);
     assert_eq!(res.headers()["content-type"], "text/html; charset=utf-8");
     assert_eq!(res.headers()["cache-control"], "no-cache");
-    assert_eq!(res.headers()["content-security-policy"], csp);
+    assert_eq!(res.headers()["content-security-policy"], SANDBOXED);
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1, "{html}");
     // The bridge goes right after the doctype, before any page script.
@@ -330,7 +391,10 @@ async fn supporting_html_files_are_wrapped_like_the_index_and_others_are_not() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
-    assert!(res.headers().get("content-security-policy").is_none());
+    assert_eq!(
+        res.headers()["content-security-policy"],
+        "frame-ancestors 'self' http://localhost http://127.0.0.1"
+    );
     let html = res.text().await.unwrap();
     assert_eq!(html.matches("/_clax/bridge.js").count(), 1);
     assert!(html.contains("data-file=\"about.html\""));

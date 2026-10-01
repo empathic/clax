@@ -1,6 +1,8 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { test, expect } from "@playwright/test";
 import { FRAME_SANDBOX } from "../shell/src/view/frame-host";
-import { type FrameMode, contentFrame, publish, startDaemon } from "./fixtures";
+import { type FrameMode, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -45,6 +47,18 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(await el.getAttribute("sandbox")).toBe(mode === "sandbox" ? FRAME_SANDBOX : null);
     expect(await el.getAttribute("allow")).toBe("clipboard-write; fullscreen");
     await ctx.close();
+  });
+
+  test(`the shell frames the content, and the artifact's pages frame each other (${mode})`, async ({ page }) => {
+    const { artifact } = await publish(d.base, d.token, "Nested", {
+      "index.html": `<p id="top">top</p><iframe src="about.html"></iframe>`,
+      "about.html": `<p id="about">about</p>`,
+    });
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    expect(new URL(frame.url()).hostname).toBe(mode === "subdomain" ? `${artifact.id}.localhost` : "localhost");
+    await expect(frame.locator("#top")).toHaveText("top");
+    await expect.poll(() => frame.childFrames().length).toBe(1);
+    await expect(frame.childFrames()[0].locator("#about")).toHaveText("about");
   });
 
   test(`a hostile title is shown as text (${mode})`, async ({ browser }) => {
@@ -101,4 +115,24 @@ test("a page reached under a rebound host name gets no bootstrap and no frame, a
   const html = await (await fetch(`${d.base}/a/${artifact.id}`, { headers: { cookie: "clax_frame=sandbox" } })).text();
   expect(html).toContain(`id="clax-boot"`);
   expect(html).toContain("<iframe");
+});
+
+test("no other site can frame the shell, or the content on an artifact origin", async ({ page }) => {
+  const { artifact } = await publish(d.base, d.token, "Framed", { "index.html": `<p id="hi">hi</p>` });
+  const port = new URL(d.base).port;
+  const refused = [`${d.base}/`, `${d.base}/a/${artifact.id}`, `http://${artifact.id}.localhost:${port}/v/1/`];
+  // Sandboxed content names no frame ancestors (its opaque origin would match
+  // none); it shows that the other site can frame this daemon at all.
+  const shown = `${d.base}/c/${artifact.id}/v/1/`;
+  const body = [...refused, shown].map(t => `<iframe src="${t}"></iframe>`).join("");
+  // Another site on this machine, so the browser's local network checks allow its frames.
+  const other = createServer((_, res) => { res.writeHead(200, { "content-type": "text/html" }); res.end(body); });
+  await new Promise<void>(r => other.listen(0, "127.0.0.1", r));
+  try {
+    await page.goto(`http://127.0.0.1:${(other.address() as AddressInfo).port}/`);
+    await expect.poll(() => page.frames().length).toBe(2 + refused.length);
+    const frames = page.frames().slice(1);
+    await expect(frames[refused.length].locator("#hi")).toHaveText("hi");
+    for (const [i, url] of refused.entries()) await expect.poll(() => frames[i].url(), url).toBe("chrome-error://chromewebdata/");
+  } finally { other.close(); }
 });
