@@ -42,6 +42,7 @@ run "plugins"               scripts/test-plugins.sh
 run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
 run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
 run "web build"             bash -c 'cd web && npm run build'
+run "web bundle size"       bash -c 'cd web && node scripts/bundle-size.mjs'
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace

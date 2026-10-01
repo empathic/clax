@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import cases from "./route-cases.json";
 import { parseShellPath, shellPath } from "./route";
 
 const ID = "7q3k9mzx2b4t";
@@ -47,5 +48,11 @@ describe("shellPath", () => {
   it("gives a v/<digits>/ file the shown version, since the unversioned form would read as a version", () => {
     expect(shellPath(ID, null, "v/12/x.html", 5)).toBe(`/a/${ID}/v/5/v/12/x.html`);
     expect(shellPath(ID, null, "v/x.html", 5)).toBe(`/a/${ID}/v/x.html`);
+  });
+});
+
+describe("parseShellPath and the daemon agree", () => {
+  it.each(cases)("$path", ({ path, route }) => {
+    expect(parseShellPath(path)).toEqual(route);
   });
 });

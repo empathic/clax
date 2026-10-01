@@ -24,7 +24,7 @@ build:
 # Install web dependencies and build the frontend bundles
 web:
     cd web && npm ci
-    rm -rf web/dist/_clax web/dist/index.html
+    cd web && node scripts/clean-dist.mjs
     cd web && npm run build
 
 # Run the web lint, typecheck, and unit tests
@@ -100,4 +100,4 @@ doctor:
 # Remove build output and web dependencies
 clean:
     cargo clean
-    rm -rf web/dist/_clax web/dist/index.html web/node_modules
+    rm -rf web/dist/_clax web/dist/.vite web/dist/index.html web/dist/artifact.html web/node_modules

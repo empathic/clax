@@ -201,7 +201,7 @@ async fn shell_routes_serve_ui_or_explain_missing_build() {
 }
 
 #[tokio::test]
-async fn every_page_path_under_an_artifact_serves_the_shell() {
+async fn every_page_path_under_an_artifact_serves_the_artifact_entry() {
     let ts = TestServer::spawn().await;
     let created = ts
         .publish(
@@ -210,7 +210,7 @@ async fn every_page_path_under_an_artifact_serves_the_shell() {
         )
         .await;
     let id = created["artifact"]["id"].as_str().unwrap();
-    let shell = ts.get("/").await;
+    let shell = ts.get(&format!("/a/{id}")).await;
     let (status, body) = (shell.status(), shell.bytes().await.unwrap());
     for path in [
         format!("/a/{id}/about.html"),
@@ -221,7 +221,11 @@ async fn every_page_path_under_an_artifact_serves_the_shell() {
     ] {
         let res = ts.get(&path).await;
         assert_eq!(res.status(), status, "{path}");
-        assert_eq!(res.bytes().await.unwrap(), body, "{path} is the shell");
+        assert_eq!(
+            res.bytes().await.unwrap(),
+            body,
+            "{path} is the artifact entry"
+        );
     }
     // Content, the API, and the shell's own assets keep their routes.
     let res = ts.get(&format!("/c/{id}/v/1/docs/about.html")).await;

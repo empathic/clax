@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
+    "build": "node scripts/clean-dist.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
-    "lint": "oxlint --deny-warnings shell bridge e2e perf vite.shell.config.ts vite.bridge.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
+    "lint": "oxlint --deny-warnings shell bridge e2e perf scripts vite.shell.config.ts vite.bridge.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "e2e": "playwright test",
     "perf": "playwright test -c perf/playwright.config.ts"

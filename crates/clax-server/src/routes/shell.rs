@@ -1,4 +1,5 @@
-//! Serves the embedded web UI: the shell document and static assets.
+//! Serves the embedded web UI: the shell's two entries (the gallery and the
+//! artifact view) and static assets.
 
 use crate::error::ApiError;
 use crate::http_cache::{self, IMMUTABLE, REVALIDATE};
@@ -123,14 +124,29 @@ fn bridge_cache_control(query: Option<&str>, served: &str) -> &'static str {
     }
 }
 
-pub async fn shell(req: HeaderMap) -> Result<Response, ApiError> {
-    match asset("index.html") {
-        Some(f) => Ok(http_cache::html(&req, &String::from_utf8_lossy(&f.data))),
+/// An entry of the shell (`index.html` or `artifact.html`) as an HTML page.
+fn entry(req: &HeaderMap, name: &str) -> Result<Response, ApiError> {
+    match asset(name) {
+        Some(f) => Ok(http_cache::html(req, &String::from_utf8_lossy(&f.data))),
         None => Err(ApiError::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "ui_not_built",
             "the web UI has not been built; run `just web`",
         )),
+    }
+}
+
+/// `/`: the gallery.
+pub async fn gallery_page(req: HeaderMap) -> Result<Response, ApiError> {
+    entry(&req, "index.html")
+}
+
+/// `/a/…`: the artifact view, or the gallery for a path that names no artifact
+/// (the shell shows the gallery for it too).
+pub async fn artifact_page(uri: axum::http::Uri, req: HeaderMap) -> Result<Response, ApiError> {
+    match crate::shell_route::parse_shell_path(uri.path()) {
+        crate::shell_route::ShellRoute::Artifact { .. } => entry(&req, "artifact.html"),
+        crate::shell_route::ShellRoute::Gallery => entry(&req, "index.html"),
     }
 }
 

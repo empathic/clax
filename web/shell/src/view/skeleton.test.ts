@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { SKELETON_HTML, skeleton } from "./skeleton";
 
@@ -19,5 +21,13 @@ describe("skeleton", () => {
     root.innerHTML = `<div class="page">${SKELETON_HTML}</div>`;
     const page = root.firstElementChild;
     expect(skeleton(root).page).toBe(page);
+  });
+});
+
+describe("artifact.html", () => {
+  it("carries the skeleton markup exactly", () => {
+    const html = readFileSync(join(__dirname, "../../artifact.html"), "utf8");
+    expect(html).toContain(`<div id="app"><div class="page">${SKELETON_HTML}</div></div>`);
+    expect(html).toContain("<!--clax:boot-->");
   });
 });
