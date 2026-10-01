@@ -18,7 +18,7 @@ describe("FrameHost", () => {
     expect(el.title).toBe("artifact content");
     expect(el.getAttribute("allow")).toBe("clipboard-write; fullscreen");
     expect(el.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
-    expect(host.show("/c/x/v/1/#moved", true, "1-s")).toBe(el);
+    expect(host.show("/c/x/v/1/", true, "1-s")).toBe(el);
     const next = host.show("http://x.localhost:1/v/2/", false, "2-o");
     expect(next).not.toBe(el);
     expect(el.isConnected).toBe(false);
@@ -38,6 +38,16 @@ describe("FrameHost", () => {
     const made = new FrameHost(other, () => {}).show("/c/x/v/1/", true, "1-s");
     expect(made).not.toBe(stale);
     expect(stale.isConnected).toBe(false);
+  });
+  it("sends a frame kept for the same key to a new src, and leaves it alone for the same src", () => {
+    const s = stage();
+    const host = new FrameHost(s, () => {});
+    const el = host.show("/c/x/v/1/", true, "1-s");
+    el.src = "/c/x/v/1/about.html";
+    expect(host.show("/c/x/v/1/", true, "1-s")).toBe(el);
+    expect(el.getAttribute("src")).toBe("/c/x/v/1/about.html");
+    expect(host.show("/c/x/v/1/#moved", true, "1-s")).toBe(el);
+    expect(el.getAttribute("src")).toBe("/c/x/v/1/#moved");
   });
   it("removes the frame and stops hearing its loads", () => {
     const s = stage();

@@ -1,12 +1,9 @@
 import { render } from "preact";
+import { mountArtifactView } from "./artifact";
 import Gallery from "./gallery";
-import ArtifactView from "./artifact";
 import { parseShellPath } from "./route";
 
-function route() {
-  const r = parseShellPath(location.pathname);
-  if (r.kind === "artifact") return <ArtifactView id={r.id} pinnedVersion={r.version} file={r.file} />;
-  return <Gallery />;
-}
-
-render(route(), document.getElementById("app")!);
+const app = document.getElementById("app")!;
+const r = parseShellPath(location.pathname);
+if (r.kind === "artifact") mountArtifactView(app, { id: r.id, pinnedVersion: r.version, file: r.file });
+else render(<Gallery />, app);

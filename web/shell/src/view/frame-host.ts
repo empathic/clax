@@ -9,17 +9,24 @@ export const FRAME_SANDBOX = "allow-scripts allow-forms allow-modals allow-popup
 export class FrameHost {
   el: HTMLIFrameElement | null = null;
   private key = "";
+  /** The `src` the frame was last given (not where it has navigated since). */
+  private src = "";
   private readonly loaded = () => this.onLoad();
 
   constructor(private readonly stage: HTMLElement, private readonly onLoad: () => void) {}
 
-  /** The frame for `key`, opened on `src` when it is made (a frame kept for
-   * the same key is not sent to `src`). */
+  /** The frame for `key`, opened on `src` when it is made. A frame kept for
+   * the same key is sent to `src` only when `src` differs from the one it was
+   * last given, as a keyed element whose `src` attribute changed would be;
+   * the same `src` leaves it where it has navigated to. */
   show(src: string, sandboxed: boolean, key: string): HTMLIFrameElement {
-    if (this.el && this.key === key) return this.el;
+    if (this.el && this.key === key) {
+      if (src !== this.src) { this.src = src; this.el.src = src; }
+      return this.el;
+    }
     const served = this.el ? null : this.stage.querySelector<HTMLIFrameElement>(":scope > iframe.frame");
     if (served && served.getAttribute("src") === src && served.hasAttribute("sandbox") === sandboxed) {
-      this.take(served, key);
+      this.take(served, key, src);
       return served;
     }
     served?.remove();
@@ -30,7 +37,7 @@ export class FrameHost {
     el.setAttribute("allow", "clipboard-write; fullscreen");
     if (sandboxed) el.setAttribute("sandbox", FRAME_SANDBOX);
     el.src = src;
-    this.take(el, key);
+    this.take(el, key, src);
     this.stage.prepend(el);
     return el;
   }
@@ -40,11 +47,13 @@ export class FrameHost {
     this.el?.remove();
     this.el = null;
     this.key = "";
+    this.src = "";
   }
 
-  private take(el: HTMLIFrameElement, key: string): void {
+  private take(el: HTMLIFrameElement, key: string, src: string): void {
     el.addEventListener("load", this.loaded);
     this.el = el;
     this.key = key;
+    this.src = src;
   }
 }
