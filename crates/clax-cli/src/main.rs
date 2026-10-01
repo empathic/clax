@@ -57,10 +57,12 @@ pub enum Cmd {
     Mcp(commands::mcp::Args),
     /// Handle a harness lifecycle hook (reads the hook input from stdin).
     Hook(commands::hook::Args),
-    /// Register the Clax plugins built into this binary with Claude Code,
-    /// Codex and Pi (each one whose CLI is on PATH), replacing stale ones.
+    /// Register the Clax plugins built into this binary with each harness
+    /// whose CLI is on PATH, replacing stale registrations. Re-running
+    /// reinstalls the plugin, which enables it again where it was disabled.
     Init(commands::init::Args),
-    /// Remove the Clax plugin registrations from Claude Code, Codex and Pi.
+    /// Remove the Clax plugin registrations from each harness whose CLI is
+    /// on PATH, and the plugins' copy once no harness refers to it.
     Uninit(commands::init::Args),
 }
 
