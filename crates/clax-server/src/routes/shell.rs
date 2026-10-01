@@ -143,12 +143,22 @@ pub async fn gallery_page(req: HeaderMap) -> Result<Response, ApiError> {
 
 /// `/a/…`: `artifact.html` with the first-load data ([`crate::boot`]), or the
 /// gallery for a path that names no artifact (the shell shows the gallery for
-/// it too). The page differs by viewer and frame mode, both read from
-/// cookies, so it carries `Vary: Cookie`, and its `ETag` is over the exact
-/// bytes sent: a revalidation answers `304` only for the same bytes.
+/// it too).
+///
+/// The data is the API's, so it follows the API's host rule
+/// ([`crate::auth::request_host_allowed`], checked before anything is read):
+/// a request whose `Host` the API would refuse (a DNS name rebound to this
+/// machine) gets the bare entry, whose own API calls then fail. A store error
+/// or a store slower than the API's timeout also gives the bare entry, and
+/// the shell loads the data itself.
+///
+/// The page differs by viewer and frame mode, both read from cookies: it is
+/// `private, no-cache` with `Vary: Cookie`, and its `ETag` is over the exact
+/// bytes sent, so a revalidation answers `304` only for the same bytes.
 pub async fn artifact_page(
     axum::extract::State(s): axum::extract::State<crate::state::AppState>,
     uri: axum::http::Uri,
+    extensions: axum::http::Extensions,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let route = crate::shell_route::parse_shell_path(uri.path());
@@ -159,12 +169,44 @@ pub async fn artifact_page(
         return entry(&req, "artifact.html");
     };
     let template = String::from_utf8_lossy(&f.data).into_owned();
-    let injected = crate::boot::assemble(&s, route, &req).await?;
+    let injected = if crate::auth::request_host_allowed(&req, &uri, &extensions) {
+        within(s.request_timeout, crate::boot::assemble(&s, route, &req)).await
+    } else {
+        None
+    };
     let mut res = http_cache::html(&req, &crate::boot::inject(&template, injected.as_ref()));
-    res.headers_mut()
-        .insert(header::VARY, axum::http::HeaderValue::from_static("Cookie"));
+    let h = res.headers_mut();
+    h.insert(
+        header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static(PRIVATE_REVALIDATE),
+    );
+    h.insert(header::VARY, axum::http::HeaderValue::from_static("Cookie"));
     Ok(res)
 }
+
+/// The bootstrap `assemble` makes, or none (logged) when it fails or takes
+/// longer than `limit`: the page is then served bare, and the shell loads the
+/// data itself.
+async fn within(
+    limit: std::time::Duration,
+    assemble: impl std::future::Future<Output = Result<Option<crate::boot::Injected>, ApiError>>,
+) -> Option<crate::boot::Injected> {
+    match tokio::time::timeout(limit, assemble).await {
+        Ok(Ok(i)) => i,
+        Ok(Err(e)) => {
+            tracing::warn!(error = ?e, "artifact page served without its bootstrap");
+            None
+        }
+        Err(_) => {
+            tracing::warn!(?limit, "artifact page bootstrap timed out");
+            None
+        }
+    }
+}
+
+/// The artifact page's `Cache-Control`: it carries one viewer's data, so no
+/// shared cache may store it, and the browser asks before every use.
+pub const PRIVATE_REVALIDATE: &str = "private, no-cache";
 
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
@@ -203,6 +245,26 @@ pub async fn static_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_failed_or_slow_bootstrap_is_left_out() {
+        let ok = crate::boot::Injected {
+            boot: "{}".into(),
+            frame: None,
+            title: "t".into(),
+        };
+        let limit = std::time::Duration::from_millis(20);
+        assert!(within(limit, async { Ok(Some(ok)) }).await.is_some());
+        assert!(
+            within(limit, async { Err(ApiError::not_found()) })
+                .await
+                .is_none()
+        );
+        assert!(
+            within(limit, std::future::pending()).await.is_none(),
+            "a store slower than the limit"
+        );
+    }
 
     #[test]
     fn only_the_url_naming_the_served_bytes_is_immutable() {

@@ -278,18 +278,20 @@ async fn renders_the_frame_only_when_the_mode_is_known() {
         boot(&sub).1["frame"],
         json!({"mode": "subdomain", "src": format!("http://{id}.localhost:{port}/v/2/")})
     );
-    let lan = get(
+    // A loopback host not named `localhost` (as on a LAN view: no artifact
+    // origins) is always sandboxed, whatever the cookie says.
+    let v6 = get(
         format!("/a/{id}"),
         vec![
-            ("host", format!("192.168.1.5:{port}")),
+            ("host", format!("[::1]:{port}")),
             ("cookie", "clax_frame=subdomain".into()),
         ],
     )
     .await;
     assert!(
-        lan.contains(&format!(r#"src="/c/{id}/v/2/""#))
-            && lan.contains(&format!(r#"sandbox="{FRAME_SANDBOX}""#)),
-        "{lan}"
+        v6.contains(&format!(r#"src="/c/{id}/v/2/""#))
+            && v6.contains(&format!(r#"sandbox="{FRAME_SANDBOX}""#)),
+        "{v6}"
     );
     let pinned = get(
         format!("/a/{id}/v/1/docs/a%20b.html"),
@@ -330,12 +332,13 @@ async fn the_etag_covers_the_injected_bytes() {
         .unwrap()
         .to_string();
     let first = page(&ts, &format!("/a/{id}"), &[]).await;
-    assert_eq!(first.headers()["cache-control"], "no-cache");
+    assert_eq!(first.headers()["cache-control"], "private, no-cache");
     assert_eq!(first.headers()["vary"], "Cookie");
     let tag = first.headers()["etag"].to_str().unwrap().to_string();
     let again = page(&ts, &format!("/a/{id}"), &[("if-none-match", tag.clone())]).await;
     assert_eq!(again.status(), 304);
     assert_eq!(again.headers()["vary"], "Cookie");
+    assert_eq!(again.headers()["cache-control"], "private, no-cache");
     ts.thread(&id, 1, "new").await;
     let after = page(&ts, &format!("/a/{id}"), &[("if-none-match", tag.clone())]).await;
     assert_eq!(after.status(), 200);
@@ -382,4 +385,75 @@ async fn an_unknown_artifact_gets_the_bare_entry() {
     assert!(!html.contains(OPEN) && !html.contains("<!--clax:boot-->"));
     assert!(!html.contains("<iframe") && !html.contains("<!--clax:frame-->"));
     assert!(html.contains("<h1>Clax</h1>"));
+}
+
+#[tokio::test]
+async fn a_host_the_api_refuses_gets_no_data() {
+    dist();
+    let ts = TestServer::spawn().await;
+    let id = ts
+        .publish("Secret plans", &[("index.html", "<p>x</p>")])
+        .await["artifact"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.thread(&id, 1, "a private remark").await;
+    let v = ts.viewer(Some("Ada")).await;
+    let port = ts.addr.port();
+    let cookie = format!("clax_viewer={}; clax_frame=sandbox", v.cookie);
+    for host in [
+        format!("evil.example:{port}"),
+        "evil.example:7480".to_string(),
+        format!("192.168.1.5:{port}"),
+        format!("localhost.evil.example:{port}"),
+    ] {
+        let api = page(
+            &ts,
+            &format!("/api/artifacts/{id}/threads"),
+            &[("host", host.clone())],
+        )
+        .await;
+        assert_eq!(api.status(), 403, "{host}: the API refuses this host");
+        let res = page(
+            &ts,
+            &format!("/a/{id}"),
+            &[("host", host.clone()), ("cookie", cookie.clone())],
+        )
+        .await;
+        assert_eq!(res.status(), 200, "{host}");
+        let html = res.text().await.unwrap();
+        assert!(!html.contains(OPEN), "{host}: {html}");
+        assert!(!html.contains("<iframe"), "{host}");
+        assert!(
+            !html.contains("a private remark") && !html.contains("Ada"),
+            "{host}"
+        );
+        assert!(
+            !html.contains("Secret plans") && html.contains("<h1>Clax</h1>"),
+            "{host}"
+        );
+    }
+    for host in [
+        format!("localhost:{port}"),
+        format!("127.0.0.1:{port}"),
+        format!("[::1]:{port}"),
+        ts.addr.to_string(),
+    ] {
+        let html = page(
+            &ts,
+            &format!("/a/{id}"),
+            &[("host", host.clone()), ("cookie", cookie.clone())],
+        )
+        .await
+        .text()
+        .await
+        .unwrap();
+        let (_, b) = boot(&html);
+        assert_eq!(
+            b["threads"][0]["comments"][0]["body"], "a private remark",
+            "{host}"
+        );
+        assert_eq!(b["viewer"]["display_name"], "Ada", "{host}");
+        assert!(html.contains("<iframe"), "{host}");
+    }
 }

@@ -843,7 +843,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         // Reload with the shell's script held back until the viewer's input.
         let release!: () => void;
         const held = new Promise<void>(r => { release = r; });
-        await page.route("**/_clax/shell/index-*.js", async route => { await held; await route.continue(); });
+        // The module script the artifact page's HTML itself names.
+        const html = await (await page.request.get(`${d.base}/a/${id}`)).text();
+        const entry = /<script type="module"[^>]*\ssrc="([^"]+)"/.exec(html)?.[1];
+        expect(entry, "the artifact entry's module script").toMatch(/^\/_clax\/shell\/.+\.js$/);
+        let heldHits = 0;
+        await page.route(u => u.pathname === entry, async route => { heldHits++; await held; await route.continue(); });
         await page.goto(`${d.base}/a/${id}`, { waitUntil: "commit" });
         await page.waitForTimeout(300);
         if (how === "a key") await page.keyboard.press("a");
@@ -855,6 +860,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
           await page.mouse.move(fb.x + fb.width / 2 + (i % 2) * 30, fb.y + fb.height / 2 + i * 5, { steps: 3 });
         }
         await page.waitForTimeout(4_000);
+        expect(heldHits, "the shell's script was held").toBe(1);
         await expectRefused(page, null, id, verb);
       });
     }

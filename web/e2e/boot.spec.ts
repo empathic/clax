@@ -84,3 +84,21 @@ test("a cookie naming the wrong frame mode never weakens the frame: a sandbox ta
   expect((await ctx.cookies(d.base)).find(c => c.name === "clax_frame")?.value).toBe("sandbox");
   await ctx.close();
 });
+
+test("a page reached under a rebound host name gets no bootstrap and no frame, as the API refuses it", async ({ playwright }) => {
+  const { artifact } = await publish(d.base, d.token, "Rebound", { "index.html": "<p>x</p>" });
+  const port = new URL(d.base).port;
+  const rebound = await playwright.request.newContext({ extraHTTPHeaders: { host: `rebind.example:${port}`, cookie: "clax_frame=sandbox" } });
+  try {
+    expect((await rebound.get(`${d.base}/api/artifacts/${artifact.id}`)).status()).toBe(403);
+    const res = await rebound.get(`${d.base}/a/${artifact.id}`);
+    expect(res.status()).toBe(200);
+    const html = await res.text();
+    expect(html).not.toContain(`id="clax-boot"`);
+    expect(html).not.toContain("<iframe");
+    expect(html).not.toContain("Rebound");
+  } finally { await rebound.dispose(); }
+  const html = await (await fetch(`${d.base}/a/${artifact.id}`, { headers: { cookie: "clax_frame=sandbox" } })).text();
+  expect(html).toContain(`id="clax-boot"`);
+  expect(html).toContain("<iframe");
+});
