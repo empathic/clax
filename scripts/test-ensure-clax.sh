@@ -23,7 +23,7 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 # (never a clax).
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"
-for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls mkfifo tee; do
+for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls; do
     if p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ]; then ln -sf "$p" "$TOOLS/$t"; fi
 done
 
@@ -140,7 +140,7 @@ else fail "the fallback escapes quotes and backslashes (out=$OUT)"; fi
 new_env
 OUT="$({
     printf '%s\n' "$(echo "$REQS" | head -1)"
-    sleep 0.5
+    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     fake_clax "$FAKEBIN" "clax $V"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
@@ -157,58 +157,183 @@ if [ "$RC" = 0 ] && [ "$OUT" = "$(printf 'got: one\ngot: two')" ] && ! hooks_log
     pass "the MCP server gets the client's stdin and stdout"
 else fail "the MCP server gets the client's stdin and stdout (rc=$RC out=$OUT log=$(hooks_log))"; fi
 
-# A server that exits with an error at startup, before reading stdin: the
-# client gets the fallback server, whose status tool gives the error.
+# A fake clax whose `mcp --preflight` fails with $2 on stderr while the file
+# $3 exists, and which otherwise prints its arguments.
+preflight_clax() {
+    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ] && [ -e "%s" ]; then echo "%s" >&2; exit 1; fi; done\necho "args: $*"\n' "$V" "$3" "$2" > "$1/clax"
+    chmod +x "$1/clax"
+}
+
+# The preflight fails: the client gets its reason from the fallback server,
+# and clax mcp itself never runs.
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "starting" >&2\necho "error: /x/config.toml: bad \\"port\\"" >&2\necho "  detail" >&2\nexit 1\n' "$V" > "$FAKEBIN/clax"
+preflight_clax "$FAKEBIN" "error: /x/config.toml: bad port" "$SANDBOX/broken"
+: > "$SANDBOX/broken"
+mcp
+if text="$(fallback_text)" \
+    && [ "$text" = "Clax is unavailable: clax cannot start its MCP server: /x/config.toml: bad port. Fix that, then reconnect the clax MCP server (/mcp in Claude Code) or start a new session. (Details: ~/.clax/logs/hooks.log.)" ] \
+    && ! echo "$OUT" | grep -q "args:" \
+    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: /x/config.toml: bad port."; then
+    pass "a failing preflight: the MCP client gets its reason from the fallback server"
+else fail "a failing preflight (out=$OUT err=$ERR log=$(hooks_log))"; fi
+
+# Once the cause is fixed, the status tool says so.
+new_env
+preflight_clax "$FAKEBIN" "error: broken" "$SANDBOX/broken"
+: > "$SANDBOX/broken"
+OUT="$({
+    printf '%s\n' "$(echo "$REQS" | head -1)"
+    # Fix the cause once the fallback is serving.
+    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
+    rm -f "$SANDBOX/broken"
+    printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
+} | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
+if echo "$OUT" | tail -1 | grep -q "clax can start now. Reconnect"; then
+    pass "the fallback's status tool notices a preflight that passes since"
+else fail "the fallback's status tool notices a preflight that passes since (out=$OUT)"; fi
+
+# A clax that predates --preflight runs as before.
+new_env
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ]; then echo "error: unexpected argument '"'"'--preflight'"'"' found" >&2; exit 2; fi; done\necho "args: $*"\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
 mcp
-if text="$(fallback_text)" && [ "$text" = "Clax is unavailable: clax exited 1: error: /x/config.toml: bad 'port' detail (Details: ~/.clax/logs/hooks.log.)" ] \
-    && echo "$ERR" | grep -q "^starting$" \
-    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"clax exited 1: error: /x/config.toml: bad 'port' detail\""; then
-    pass "a server that fails at startup: the MCP client gets its error from the fallback server"
-else fail "a server that fails at startup (out=$OUT err=$ERR log=$(hooks_log))"; fi
+if [ "$OUT" = "args: mcp --agent codex" ] && ! hooks_log | grep -q launcher; then
+    pass "a clax without --preflight still runs"
+else fail "a clax without --preflight still runs (out=$OUT log=$(hooks_log))"; fi
 
-# TERM, INT and HUP reach the server, and the wrapper exits with its status.
+# The wrapper execs clax mcp: its parent is the harness. Here the harness is
+# a Python process that starts the wrapper in the plugin's directory, with
+# the system directories on PATH as a harness has them (they hold no clax).
+SYS_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho $$ > "%s/pid"\ntrap "exit 0" TERM\nwhile :; do sleep 0.05; done\n' "$V" "$SANDBOX" > "$FAKEBIN/clax"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\ncase "$*" in *--preflight*) exit 0 ;; esac\necho "ppid=$PPID"\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
-# Stdin stays open, as a client's does, through a FIFO this shell holds.
-mkfifo "$SANDBOX/in"
-exec 7<>"$SANDBOX/in"
-"$TOOLS/bash" "$SCRIPT" exec mcp --agent claude < "$SANDBOX/in" > "$SANDBOX/out" 2>&1 &
-WPID=$!
-i=0; while [ ! -s "$SANDBOX/pid" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-kill -TERM "$WPID" 2>/dev/null
-i=0; while kill -0 "$WPID" 2>/dev/null && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
-SPID="$(cat "$SANDBOX/pid" 2>/dev/null)"
-if ! kill -0 "$WPID" 2>/dev/null && [ -n "$SPID" ] && ! kill -0 "$SPID" 2>/dev/null && [ ! -s "$SANDBOX/out" ]; then
-    pass "TERM to the wrapper stops the MCP server"
-else fail "TERM to the wrapper stops the MCP server (out=$(cat "$SANDBOX/out"))"; kill -9 "$WPID" $SPID 2>/dev/null; fi
-wait "$WPID" 2>/dev/null
-exec 7>&-
+mkdir -p "$SANDBOX/plugin"
+OUT="$(PATH="$PATH:$SYS_PATH" "$PY" - "$TOOLS/bash" "$SCRIPT" "$SANDBOX/plugin" <<'PYEOF'
+import os, subprocess, sys
+out = subprocess.run([sys.argv[1], sys.argv[2], "exec", "mcp", "--agent", "codex"], cwd=sys.argv[3],
+                     stdin=subprocess.DEVNULL, capture_output=True, text=True).stdout.strip()
+print(out == f"ppid={os.getpid()}", out, os.getpid())
+PYEOF
+)"
+case "$OUT" in True*) pass "clax mcp's parent is the harness, not the wrapper" ;; *) fail "clax mcp's parent is the harness ($OUT)" ;; esac
 
-# The real binary, on a home whose config.toml does not parse: `clax mcp`
-# exits at startup, and the client gets the reason naming the file.
+# An unusable clax on PATH is named in the reason.
 new_env
+printf '#!/bin/sh\necho "dyld: Library not loaded: libfoo.dylib" >&2\nexit 134\n' > "$FAKEBIN/clax"
+chmod +x "$FAKEBIN/clax"
+run exec hook --agent codex stop
+if [ "$RC" = 0 ] && echo "$ERR" | grep -qF "no usable clax binary is on PATH ($FAKEBIN/clax: \`--version\` exited 134: dyld: Library not loaded: libfoo.dylib). Reinstall it with"; then
+    pass "an unusable clax on PATH is named with its --version failure"
+else fail "an unusable clax on PATH is named (rc=$RC err=$ERR)"; fi
+
+# A --version that hangs is cut off.
+new_env
+printf '#!/bin/sh\nexec sleep 30\n' > "$FAKEBIN/clax"
+chmod +x "$FAKEBIN/clax"
+START="$(date +%s)"
+run exec hook --agent codex stop
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 10 ] && echo "$ERR" | grep -qF "\`--version\` did not finish within 5 s"; then
+    pass "a --version that hangs is cut off after 5 s"
+else fail "a --version that hangs is cut off (rc=$RC elapsed=$ELAPSED err=$ERR)"; fi
+
+# Nested "id" and "method" keys, as in a tool call's arguments, are not
+# mistaken for the request's own, in either key order.
+new_env
+OUT="$(printf '%s\n' \
+    '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"status","arguments":{"id":42}}}' \
+    '{"method":"tools/call","params":{"name":"status","arguments":{"method":"GET","id":"x"}},"jsonrpc":"2.0","id":"a\"b"}' \
+    '{"jsonrpc":"2.0","method":"notifications/cancelled","params":{"requestId":1,"id":7}}' \
+    | "$TOOLS/bash" "$SCRIPT" exec mcp --agent codex 2>/dev/null)"
+if "$PY" - "$OUT" <<'PYEOF'
+import json, sys
+lines = [json.loads(l) for l in sys.argv[1].splitlines()]
+assert [l["id"] for l in lines] == [2, 'a"b'], lines
+assert all(l["result"]["isError"] is True for l in lines), lines
+PYEOF
+then pass "the fallback reads only top-level id and method"
+else fail "the fallback reads only top-level id and method (out=$OUT)"; fi
+
+# The real binary ($CLAX_TEST_BIN, else built here). Cargo and rustup get
+# their own homes, the real ones unless set; everything else, the build
+# included, sees a scratch HOME.
 REAL_BIN="${CLAX_TEST_BIN:-}"
 if [ -z "$REAL_BIN" ]; then
     REPO="$(cd "$HERE/.." && pwd)"
-    # Cargo and rustup need the real HOME; the binary itself never runs with it.
-    if (cd "$REPO" && HOME="$ORIG_HOME" PATH="$ORIG_PATH" cargo build -q -p clax-cli --bin clax) >"$SANDBOX/build.log" 2>&1; then
-        REAL_BIN="$(cd "$REPO" && HOME="$ORIG_HOME" PATH="$ORIG_PATH" cargo metadata --format-version 1 --no-deps | "$PY" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/debug/clax"
+    export CARGO_HOME="${CARGO_HOME:-$ORIG_HOME/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$ORIG_HOME/.rustup}"
+    if (cd "$REPO" && HOME="$ROOT" PATH="$ORIG_PATH" cargo build -q -p clax-cli --bin clax) >"$ROOT/build.log" 2>&1; then
+        REAL_BIN="$(cd "$REPO" && HOME="$ROOT" PATH="$ORIG_PATH" cargo metadata --format-version 1 --no-deps | "$PY" -c 'import json, sys; print(json.load(sys.stdin)["target_directory"])')/debug/clax"
     fi
 fi
-export CLAX_HOME="$SANDBOX/clax-home"
-mkdir -p "$CLAX_HOME"
-printf '[serve\nport = 7481\n' > "$CLAX_HOME/config.toml"
-if [ -x "$REAL_BIN" ] && [ "$("$REAL_BIN" --version)" = "clax $V" ]; then
+if [ ! -x "$REAL_BIN" ] || [ "$("$REAL_BIN" --version)" != "clax $V" ]; then
+    fail "no clax $V binary to test with (bin=$REAL_BIN; $(tail -5 "$ROOT/build.log" 2>/dev/null))"
+    REAL_BIN=""
+fi
+
+# On a home whose config.toml does not parse, the client gets the reason,
+# naming the file, and no daemon starts.
+if [ -n "$REAL_BIN" ]; then
+    new_env
+    export CLAX_HOME="$SANDBOX/clax-home"
+    mkdir -p "$CLAX_HOME"
+    printf '[serve\nport = 7481\n' > "$CLAX_HOME/config.toml"
     CLAX_BIN="$REAL_BIN" mcp
-    if text="$(fallback_text)" && echo "$text" | grep -qF "Clax is unavailable: clax exited 1: error: $CLAX_HOME/config.toml" \
-        && hooks_log | grep -qF "launcher mode=mcp agent=codex exit=fallback reason=\"clax exited 1: error: $CLAX_HOME/config.toml"; then
+    if text="$(fallback_text)" && echo "$text" | grep -qF "Clax is unavailable: clax cannot start its MCP server: $CLAX_HOME/config.toml: TOML parse error" \
+        && hooks_log | grep -qF "launcher mode=mcp agent=codex exit=fallback reason=\"clax cannot start its MCP server: $CLAX_HOME/config.toml" \
+        && [ ! -e "$CLAX_HOME/daemon.json" ]; then
         pass "clax mcp on a malformed config.toml: the MCP client gets the reason from the fallback server"
     else fail "clax mcp on a malformed config.toml (out=$OUT err=$ERR log=$(hooks_log))"; fi
-else fail "clax mcp on a malformed config.toml: no clax $V binary to run (bin=$REAL_BIN; $(tail -5 "$SANDBOX/build.log" 2>/dev/null))"; fi
+fi
+
+# A Codex session through the wrapper registers the harness as its parent and
+# the harness's directory as its cwd, not the wrapper's (spec §11). The fake
+# harness runs in a project
+# directory and starts the wrapper in the plugin's, as Codex does. The daemon
+# listens on a free port of the scratch home.
+if [ -n "$REAL_BIN" ]; then
+    new_env
+    export CLAX_HOME="$SANDBOX/clax-home" CLAX_NO_OPEN=1
+    mkdir -p "$CLAX_HOME" "$SANDBOX/project" "$SANDBOX/plugin"
+    PORT="$("$PY" -c '
+import socket
+while True:
+    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
+    if p not in (7480, 7481): print(p); break')"
+    printf '[serve]\nport = %s\n' "$PORT" > "$CLAX_HOME/config.toml"
+    # The system directories hold lsof, which reads the harness's cwd on macOS.
+    OUT="$(cd "$SANDBOX/project" && PATH="$PATH:$SYS_PATH" CLAX_BIN="$REAL_BIN" "$PY" - "$TOOLS/bash" "$SCRIPT" "$SANDBOX/plugin" "$CLAX_HOME" <<'PYEOF' 2>"$SANDBOX/stderr"
+import json, os, subprocess, sys, time, urllib.request
+bash, script, plugin, home = sys.argv[1:5]
+p = subprocess.Popen([bash, script, "exec", "mcp", "--agent", "codex"], cwd=plugin,
+                     stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+p.stdin.write(b'{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"t","version":"1"}}}\n')
+p.stdin.flush()
+init = json.loads(p.stdout.readline())
+sessions = []
+deadline = time.time() + 30
+while time.time() < deadline and not sessions:
+    try:
+        info = json.load(open(os.path.join(home, "daemon.json")))
+        req = urllib.request.Request(f"http://127.0.0.1:{info['port']}/api/sessions",
+                                     headers={"Authorization": f"Bearer {info['token']}"})
+        sessions = [s for s in json.load(urllib.request.urlopen(req, timeout=2))["sessions"] if s["harness"] == "codex"]
+    except Exception:
+        pass
+    if not sessions:
+        time.sleep(0.2)
+p.stdin.close()
+p.wait(timeout=15)
+ok = ("result" in init and len(sessions) == 1 and sessions[0]["parent_pid"] == os.getpid()
+      and os.path.realpath(sessions[0]["cwd"]) == os.path.realpath(os.getcwd()))
+print(ok, json.dumps(sessions), os.getpid(), os.getcwd())
+PYEOF
+)"
+    CLAX_BIN="$REAL_BIN" "$REAL_BIN" stop > /dev/null 2>&1
+    case "$OUT" in True*) pass "a Codex session through the wrapper registers the harness's PID and cwd" ;;
+        *) fail "a Codex session through the wrapper registers the harness's PID and cwd ($OUT; $(tail -5 "$SANDBOX/stderr"))" ;; esac
+    unset CLAX_NO_OPEN
+fi
 
 # Neither a checkout, ~/.cargo/bin off PATH, ~/.local/bin, nor a harness's
 # configuration is searched.

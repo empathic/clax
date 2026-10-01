@@ -6,7 +6,7 @@
 
 use crate::client::DaemonClient;
 pub use crate::client::{Endpoint, Refresh};
-use crate::tools::ClaxTools;
+use crate::tools::{ClaxTools, UpgradeHoldProbe};
 use anyhow::Context;
 use clax_core::{Home, RegisterSession};
 use rmcp::ServiceExt;
@@ -132,13 +132,15 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 /// session use `discover`; either runs again whenever the daemon stops
 /// answering, and the session is then registered again. When no daemon can be reached the shim serves anyway, and tool calls
 /// retry and report `daemon_unreachable` until one can. The session is marked
-/// seen every `heartbeat`.
+/// seen every `heartbeat`. `status` reports what `upgrade_hold` says about
+/// the daemon's version, when given.
 pub async fn run(
     harness: Harness,
     home: &Home,
     refresh: Refresh,
     discover: Refresh,
     heartbeat: Duration,
+    upgrade_hold: Option<UpgradeHoldProbe>,
 ) -> anyhow::Result<()> {
     // SAFETY: getppid has no preconditions and cannot fail.
     let parent_pid = unsafe { libc::getppid() } as u32;
@@ -182,8 +184,11 @@ pub async fn run(
         Some(v) => tracing::info!(plugin_version = %v, "plugin version matches the binary"),
         None => tracing::info!("plugin root unknown; plugin version not checked"),
     }
-    let tools = ClaxTools::new(client.clone(), String::new(), None, home.log_path())
+    let mut tools = ClaxTools::new(client.clone(), String::new(), None, home.log_path())
         .with_plugin_version(plugin_version);
+    if let Some(probe) = upgrade_hold {
+        tools = tools.with_upgrade_hold(probe);
+    }
 
     let beat = {
         let client = client.clone();

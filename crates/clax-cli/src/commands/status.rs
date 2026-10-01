@@ -15,14 +15,29 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         Client::discover(home)
     };
     match c {
-        Some(c) => super::print(cli, super::daemon_json(&c), |j| {
-            format!(
-                "running at {} (pid {}, v{})",
-                j["url"].as_str().unwrap(),
-                j["pid"],
-                j["version"].as_str().unwrap()
-            )
-        }),
+        Some(c) => {
+            let mut out = super::daemon_json(&c);
+            let hold = crate::client::upgrade_hold_for(home, &c.info.version);
+            if let Some(h) = &hold {
+                out["upgrade_held"] = h.to_json(home);
+            }
+            super::print(cli, out, |j| {
+                let mut text = format!(
+                    "running at {} (pid {}, v{})",
+                    j["url"].as_str().unwrap(),
+                    j["pid"],
+                    j["version"].as_str().unwrap()
+                );
+                if let Some(h) = &hold {
+                    text.push_str(&format!(
+                        "\nupgrade held: {}\nwhy: {}",
+                        h.line(home, &c.info.version),
+                        h.reason
+                    ));
+                }
+                text
+            })
+        }
         None => super::print(
             cli,
             serde_json::json!({"running": false, "home": home.root()}),

@@ -37,6 +37,20 @@ describe("outlineColors", () => {
     return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
   };
   const contrast = (a: number, b: number) => (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  it("keeps 3:1 on any grey through one of its white and brown halos", () => {
+    for (let v = 0; v <= 255; v += 5) {
+      const g = `#${v.toString(16).padStart(2, "0").repeat(3)}`;
+      expect(Math.max(contrast(lum("#ffffff"), lum(g)), contrast(lum("#2f0b04"), lum(g))), g).toBeGreaterThanOrEqual(3);
+    }
+  });
+  it("is the comment colour on every ground, tinted more over dark ones", () => {
+    for (const bg of ["rgb(255, 255, 255)", "rgb(128, 128, 128)", "rgb(0, 0, 0)", "rgba(0, 0, 0, 0)"]) {
+      expect(outlineColors(bg).border, bg).toBe("#ed5439");
+      expect(outlineColors(bg).tint, bg).toMatch(/^rgba\(237, 84, 57, /);
+    }
+    expect(outlineColors("rgb(0, 0, 0)").tint).toBe("rgba(237, 84, 57, 0.24)");
+    expect(outlineColors("rgb(255, 255, 255)").tint).toBe("rgba(237, 84, 57, 0.16)");
+  });
   it("keeps at least 3:1 against light and dark page backgrounds, with a visible tint", () => {
     for (const [bg, hex] of [["rgb(255, 255, 255)", "#ffffff"], ["rgb(243, 243, 235)", "#f3f3eb"], ["rgba(0, 0, 0, 0)", "#ffffff"]] as const) {
       const c = outlineColors(bg);
@@ -57,14 +71,14 @@ describe("backgroundBehind and colorLuminance", () => {
     document.body.style.backgroundColor = "rgb(255, 255, 255)";
     document.body.innerHTML = `<div id="dark" style="background-color: rgb(24, 26, 27)"><p style="background-color: rgba(255, 255, 255, 0.1)"><b id="t">x</b></p></div><p id="light">y</p>`;
     expect(backgroundBehind(document.getElementById("t")!)).toBe("rgb(24, 26, 27)");
-    expect(outlineColors(backgroundBehind(document.getElementById("t")!)).border).toBe("#fdba74");
-    expect(outlineColors(backgroundBehind(document.getElementById("light")!)).border).toBe("#c2410c");
+    expect(outlineColors(backgroundBehind(document.getElementById("t")!)).tintAlpha).toBe(0.24);
+    expect(outlineColors(backgroundBehind(document.getElementById("light")!)).tintAlpha).toBe(0.16);
   });
   it("falls back to the page's color-scheme when nothing behind the target is opaque", () => {
     document.body.innerHTML = `<p id="t">y</p>`;
     expect(backgroundBehind(document.getElementById("t")!)).toBe("#ffffff");
     document.documentElement.style.colorScheme = "dark";
-    expect(outlineColors(backgroundBehind(document.getElementById("t")!)).border).toBe("#fdba74");
+    expect(outlineColors(backgroundBehind(document.getElementById("t")!)).tintAlpha).toBe(0.24);
   });
   it("reads modern colour syntax", () => {
     expect(colorLuminance("oklch(0.2 0.02 250)")!.lum).toBeLessThan(0.05);
@@ -75,15 +89,15 @@ describe("backgroundBehind and colorLuminance", () => {
     expect(colorLuminance("color(srgb 0.1 0.1 0.12)")!.lum).toBeLessThan(0.05);
     expect(colorLuminance("#1e1e1e")!.lum).toBeLessThan(0.05);
     expect(colorLuminance("rgb(250 250 250 / 0)")).toMatchObject({ alpha: 0 });
-    expect(outlineColors("oklch(0.2 0.02 250)").border).toBe("#fdba74");
-    expect(outlineColors("oklch(0.97 0.01 90)").border).toBe("#c2410c");
+    expect(outlineColors("oklch(0.2 0.02 250)").tintAlpha).toBe(0.24);
+    expect(outlineColors("oklch(0.97 0.01 90)").tintAlpha).toBe(0.16);
   });
   it("judges an oklch wrapper background as dark", () => {
     document.body.style.backgroundColor = "rgb(255, 255, 255)";
     document.body.innerHTML = `<section style="background-color: oklch(0.21 0.03 264)"><p id="t">x</p></section>`;
     const bg = backgroundBehind(document.getElementById("t")!);
     expect(bg).toBe("oklch(0.21 0.03 264)");
-    expect(outlineColors(bg).border).toBe("#fdba74");
+    expect(outlineColors(bg).tintAlpha).toBe(0.24);
   });
 });
 

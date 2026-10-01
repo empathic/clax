@@ -14,6 +14,34 @@ struct Fake {
     shutdown_seen: Arc<AtomicBool>,
 }
 
+/// A test's scratch home. Dropping it (when the test ends, passing or
+/// panicking) runs `clax stop` there, so a daemon a failing test started is
+/// not left running.
+struct Scratch(tempfile::TempDir);
+
+impl Scratch {
+    fn new() -> Scratch {
+        Scratch(tempfile::tempdir().unwrap())
+    }
+    fn path(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = clax(self.path()).arg("stop").output();
+    }
+}
+
+impl Drop for Fake {
+    fn drop(&mut self) {
+        let mut c = self.child.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = c.kill();
+        let _ = c.wait();
+    }
+}
+
 /// A stand-in daemon of `version`: its PID is a `sleep` child, it answers
 /// `/healthz`, and on `POST /api/admin/shutdown` it closes its listener and
 /// kills the child, as a real daemon exits.
@@ -79,7 +107,7 @@ fn daemon_json(dir: &std::path::Path) -> serde_json::Value {
 
 #[test]
 fn serve_replaces_an_older_daemon_on_its_port() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let fake = fake_daemon(&dir.path().join("ax"), "0.0.1");
     let out = clax(dir.path())
         .args(["serve", "--json", "--port", "0"])
@@ -108,7 +136,7 @@ fn serve_replaces_an_older_daemon_on_its_port() {
 
 #[test]
 fn serve_keeps_a_newer_daemon() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let fake = fake_daemon(&dir.path().join("ax"), "999.0.0");
     let out = clax(dir.path())
         .args(["serve", "--json", "--port", "0"])
@@ -121,9 +149,7 @@ fn serve_keeps_a_newer_daemon() {
     );
     assert!(!fake.shutdown_seen.load(Ordering::SeqCst));
     assert_eq!(daemon_json(dir.path())["version"], "999.0.0");
-    let mut c = fake.child.lock().unwrap();
-    let _ = c.kill();
-    let _ = c.wait();
+    drop(fake);
 }
 
 /// `clax serve` as a child process, for tests that act while it runs.
@@ -179,7 +205,7 @@ fn finish(child: Child) -> serde_json::Value {
 
 #[test]
 fn serve_replaces_an_older_daemon_another_client_started_while_it_waited() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let held = lock(dir.path());
     // No daemon yet: serve finds none and waits for the start lock.
     let mut child = serve_child(dir.path());
@@ -199,7 +225,7 @@ fn serve_replaces_an_older_daemon_another_client_started_while_it_waited() {
 
 #[test]
 fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_place() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let old = fake_daemon(&dir.path().join("ax"), "0.0.1");
     let held = lock(dir.path());
     // serve finds the older daemon and waits for the lock to replace it.
@@ -219,17 +245,12 @@ fn replace_waits_for_the_start_lock_and_keeps_a_daemon_another_client_put_in_pla
     );
     assert!(!old.shutdown_seen.load(Ordering::SeqCst));
     assert!(!newer.shutdown_seen.load(Ordering::SeqCst));
-    for f in [old, newer] {
-        let mut c = f.child.lock().unwrap();
-        let _ = c.kill();
-        let _ = c.wait();
-    }
 }
 
 #[test]
 fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     use std::time::{Duration, Instant};
-    let dir = tempfile::tempdir().unwrap();
+    let dir = Scratch::new();
     let home = dir.path().join("ax");
     let mut old = std::process::Command::new(env!("CARGO_BIN_EXE_clax"))
         .args([
@@ -281,4 +302,106 @@ fn serve_replaces_a_real_older_daemon_and_ends_its_event_streams() {
     let log = std::fs::read_to_string(home.join("logs/daemon.log")).unwrap();
     assert!(log.contains("replacing clax daemon v0.0.1"), "{log}");
     clax(dir.path()).arg("stop").assert().success();
+}
+
+/// Records, as a rolled-back upgrade does, that upgrading to this binary
+/// failed just now.
+fn hold_this_binary(dir: &std::path::Path) {
+    let exe = std::fs::canonicalize(env!("CARGO_BIN_EXE_clax")).unwrap();
+    let mtime = std::fs::metadata(&exe)
+        .unwrap()
+        .modified()
+        .unwrap()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap();
+    let logs = dir.join("ax/logs");
+    std::fs::create_dir_all(&logs).unwrap();
+    let rec = serde_json::json!({
+        "version": env!("CARGO_PKG_VERSION"),
+        "exe": exe.display().to_string(),
+        "mtime_ns": mtime.as_nanos().to_string(),
+        "at": now.as_secs(),
+        "from_version": "0.0.1",
+        "reason": "the new clax daemon failed to start: it crashed",
+    });
+    std::fs::write(logs.join("failed-upgrade.json"), rec.to_string()).unwrap();
+}
+
+#[test]
+fn serve_status_and_doctor_say_when_a_failed_upgrade_keeps_an_older_daemon() {
+    let dir = Scratch::new();
+    let fake = fake_daemon(&dir.path().join("ax"), "0.0.1");
+    hold_this_binary(dir.path());
+    let out = clax(dir.path())
+        .args(["serve", "--json", "--port", "0"])
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{stderr}");
+    assert!(
+        !fake.shutdown_seen.load(Ordering::SeqCst),
+        "the held upgrade is not tried"
+    );
+    for s in [
+        "keeping clax daemon v0.0.1",
+        &format!("to v{}", env!("CARGO_PKG_VERSION")),
+        "not tried again until",
+        "`clax stop`",
+    ] {
+        assert!(stderr.contains(s), "{s} in {stderr}");
+    }
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["version"], "0.0.1");
+    let held = &j["upgrade_held"];
+    assert_eq!(held["version"], env!("CARGO_PKG_VERSION"), "{j}");
+    assert_eq!(held["from_version"], "0.0.1");
+    assert!(
+        held["reason"].as_str().unwrap().contains("it crashed"),
+        "{j}"
+    );
+    for k in ["exe", "failed_at", "until", "advice"] {
+        assert!(held[k].is_string(), "{k} in {j}");
+    }
+
+    let out = clax(dir.path())
+        .args(["status", "--json"])
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(j["upgrade_held"]["reason"], held["reason"], "{j}");
+    let out = clax(dir.path()).arg("status").output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        text.contains("upgrade held: keeping clax daemon v0.0.1"),
+        "{text}"
+    );
+    assert!(
+        text.contains("why: the new clax daemon failed to start"),
+        "{text}"
+    );
+
+    let out = clax(dir.path())
+        .args(["doctor", "--agent", "claude", "--json"])
+        .env("PATH", "/usr/bin:/bin")
+        .output()
+        .unwrap();
+    let j: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let upgrade = j["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "upgrade")
+        .unwrap_or_else(|| panic!("no upgrade check in {j}"))
+        .clone();
+    assert_eq!(upgrade["ok"], false, "{upgrade}");
+    assert!(
+        upgrade["detail"]
+            .as_str()
+            .unwrap()
+            .contains("why: the new clax daemon failed"),
+        "{upgrade}"
+    );
 }

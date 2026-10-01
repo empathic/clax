@@ -346,11 +346,13 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rusqlite",
+ "rust-embed",
  "semver",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
+ "toml",
  "tracing",
  "tracing-subscriber",
 ]

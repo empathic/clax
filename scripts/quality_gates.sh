@@ -2,6 +2,20 @@
 # Runs every check CI runs. Pass --verbose to stream each gate's output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# One run at a time per checkout: parallel runs corrupt each other (each
+# `npm ci` replaces web/node_modules under the other's tests). The lock lives
+# in this checkout's git dir, so separate worktrees still run in parallel.
+LOCK="$(git rev-parse --git-dir)/quality-gates.lock"
+while ! mkdir "$LOCK" 2>/dev/null; do
+    holder="$(cat "$LOCK/pid" 2>/dev/null || true)"
+    if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then
+        rm -rf "$LOCK"; continue
+    fi
+    echo "quality gates: waiting for the run holding $LOCK (pid ${holder:-unknown})" >&2
+    sleep 10
+done
+echo $$ > "$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
 VERBOSE="${1:-}"
 PLAYWRIGHT_INSTALL="npx playwright install chromium"
 if [ -n "${CI:-}" ]; then PLAYWRIGHT_INSTALL="npx playwright install --with-deps chromium"; fi

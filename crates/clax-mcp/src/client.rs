@@ -336,7 +336,9 @@ impl DaemonClient {
 
     /// Sends the request `build` makes. A managed client first ensures its
     /// session, and on a refreshable failure refreshes and retries once; when
-    /// the refresh fails, the original error is returned.
+    /// the refresh fails, its error is returned (it says why the daemon
+    /// cannot be reached, such as an upgrade that was rolled back), naming
+    /// the original failure too.
     async fn send<F>(&self, build: F) -> Result<reqwest::Response>
     where
         F: Fn(&Conn<'_>) -> reqwest::RequestBuilder,
@@ -356,8 +358,8 @@ impl DaemonClient {
                     endpoint: Some(conn.endpoint.clone()),
                     session_id: conn.session_id.clone(),
                 };
-                if self.refresh(stale, mode).await.is_err() {
-                    return Err(f.error);
+                if let Err(r) = self.refresh(stale, mode).await {
+                    return Err(refresh_failed(f.error, r));
                 }
                 attempt(build(&self.conn()?)).await.map_err(|f| f.error)
             }
@@ -764,6 +766,18 @@ impl DaemonClient {
             })
             .await?;
         session_of(body_json(res).await?).map(Some)
+    }
+}
+
+/// The error for a request that failed with `original` and whose refresh
+/// then failed with `refresh`: the refresh's reason first, since it is why
+/// the retry could not happen.
+fn refresh_failed(original: ClientError, refresh: ClientError) -> ClientError {
+    match refresh {
+        ClientError::Unreachable(why) => {
+            ClientError::Unreachable(format!("{why} (the request had failed with: {original})"))
+        }
+        other => other,
     }
 }
 
