@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
-import { mount } from "./test/preact";
 
 class FakeES {
   static last: FakeES | undefined;
@@ -45,10 +44,12 @@ async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise
     return fetchImpl(url, init);
   }));
   sessionStorage.setItem("clax.origin-ok", "0");
-  const { default: ArtifactView } = await import("./artifact");
+  const { mountArtifactView } = await import("./artifact");
   gesture = await import("./caps/gesture");
   gestureModules.add(gesture);
-  return mount(ArtifactView, { id: ID, pinnedVersion: pinned, file });
+  const root = document.createElement("div");
+  document.body.appendChild(root);
+  return mountArtifactView(root, { id: ID, pinnedVersion: pinned, file });
 }
 
 describe("ArtifactView", () => {
