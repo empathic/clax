@@ -30,6 +30,7 @@ run() {
 run "justfile"              scripts/test-justfile.sh
 run "installer"             scripts/test-ensure-clax.sh
 run "release scripts"       scripts/test-release.sh
+run "release installer"     scripts/test-install.sh
 run "plugins"               scripts/test-plugins.sh
 # The web UI is built before the cargo gates: a debug build serves web/dist
 # from disk and a release build embeds it, so `cargo test` and the comment
