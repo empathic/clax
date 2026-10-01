@@ -89,6 +89,27 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("forgets a failed part when the frame's document goes without greeting, not at its own load", async () => {
+    const { ctl, frame } = await started();
+    frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    fromFrame(frame.contentWindow!, { type: "clax:degraded", part: "comment", message: "x" });
+    // The greeted document's own load keeps what it reported.
+    ctl.frameLoaded();
+    ctl.dismissNotice();
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(false);
+    expect(ctl.state.get().notice).toBe("Comment mode could not load in this page.");
+    // A document that loaded without greeting: the gate closed, and the
+    // failure belonged to the page before it.
+    ctl.frameLoaded();
+    ctl.dismissNotice();
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(true);
+    expect(ctl.state.get().notice).toBeNull();
+    ctl.dispose();
+  });
+
   it("tells the capability host about UI changes once per pass after the paint, however many fields changed", async () => {
     const { ctl, frame } = await started();
     hello(frame.contentWindow!);

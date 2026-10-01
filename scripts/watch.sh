@@ -54,8 +54,9 @@ trap 'exit 130' INT TERM HUP
 # built once first: the bridge build reads their names from that build's
 # manifest when it starts.
 export CLAX_DEV=1
-(cd web && npx vite build -c vite.bridge-parts.config.ts)
-for cfg in bridge-parts bridge shell; do
+(cd web && node scripts/build-parts.mjs)
+(cd web && node scripts/build-parts.mjs --watch 2>&1 | sed -u "s/^/[web:bridge-parts] /") &
+for cfg in bridge shell; do
     (cd web && npx vite build -c "vite.$cfg.config.ts" --watch 2>&1 | sed -u "s/^/[web:$cfg] /") &
 done
 

@@ -118,7 +118,9 @@ export class ArtifactController {
   // the start arrived.
   private pendingPick: { pickId: string; at: number } | null = null;
   /** The bridge's lazy parts the greeted page reported it could not load
-   * (`clax:degraded`); forgotten at the next greeting. */
+   * (`clax:degraded`); forgotten whenever the gate closes (another page,
+   * version or origin, or a document that loaded without greeting) and at
+   * the next greeting. */
   private failedParts = new Set<keyof typeof PART_FAILED>();
   // The pick ID of the open composer when a pick made in comment mode opened
   // it: comment mode, off while that composer is open, comes back on when it
@@ -429,6 +431,7 @@ export class ArtifactController {
     if (this.gateFor !== key) {
       this.gateFor = key;
       this.gate.reset();
+      this.failedParts.clear();
     }
     // Made before the frame it serves is inserted: a hello and a capability
     // request can arrive as soon as it is.
@@ -475,7 +478,7 @@ export class ArtifactController {
   frameLoaded(): void {
     if (this.disposed) return;
     if (this.held) { this.held.push(LOADED); return; }
-    if (this.gate.load()) this.set({ file: null, resolved: {} });
+    if (this.gate.load()) { this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
   }
 
   private resolveAll(): void {
@@ -506,6 +509,7 @@ export class ArtifactController {
     if (!frame) return;
     this.frameHash = hash;
     this.gate.close();
+    this.failedParts.clear();
     this.set({ file: null, resolved: {} });
     const url = pageSrc(this.id, this.shown(), this.s.origin ?? null, target) + hash;
     if (replace && frame.contentWindow) {

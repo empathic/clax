@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { type FrameMode, openArtifact, publish, startDaemon } from "./fixtures";
+import { type FrameMode, openArtifact, publish, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -37,6 +37,37 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     await expect(alert).toContainText("Comment mode could not load in this page");
     await expect(comment).toHaveAttribute("aria-pressed", "false");
     expect(await strict.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
+  });
+
+  test(`recovers from a comment part that failed once: capabilities load, and a later need loads comment mode again (${mode})`, async ({ page }) => {
+    const html = `<!doctype html><html><head><title>Flaky</title></head><body><h1 id="t">Flaky</h1><button id="use">Use</button><p id="out">waiting</p>
+<script>document.getElementById("use").onclick = async () => { const c = await claude.use("comments"); document.getElementById("out").textContent = c ? "ready" : "null"; };</script></body></html>`;
+    const { artifact } = await publishWith(d.base, d.token, "Flaky", html, { comments: {} });
+    // The comment part's first request fails (a daemon restarted under the
+    // tab, say); its retry, and every other part, load.
+    const seen: string[] = [];
+    await page.route(/\/_clax\/bridge\/[^/]+\.js/, async route => {
+      const u = new URL(route.request().url());
+      seen.push(u.pathname.replace(/^.*\//, "").replace(/-[^.]+\.js$/, ".js") + u.search);
+      if (/\/comment[-.]/.test(u.pathname) && !u.search && seen.filter(s => s === "comment.js").length === 1) {
+        await route.fulfill({ status: 404, headers: { "access-control-allow-origin": "*" }, body: "gone" });
+      } else await route.continue();
+    });
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(page.getByRole("alert")).toContainText("Comment mode could not load in this page");
+    // The capability members load on their own, with no request for the comment part's file.
+    await frame.locator("#use").click();
+    await expect(frame.locator("#out")).toHaveText("ready");
+    expect(seen).toEqual(["comment.js", "caps.js"]);
+    // After the backoff, a thread arriving makes the shell resolve anchors:
+    // the comment part loads again under a retry query, and the pin shows.
+    await page.waitForTimeout(2_200);
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "#t", quote: "Flaky", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", "Retry me"); form.set("version", "1");
+    expect((await fetch(`${d.base}/api/artifacts/${artifact.id}/threads`, { method: "POST", body: form })).status).toBe(201);
+    await expect(page.locator(".thread-pin")).toHaveCount(1);
+    expect(seen).toContain("comment.js?retry=1");
   });
 
   // A smoke test only: Chromium honours an import map added after a module
