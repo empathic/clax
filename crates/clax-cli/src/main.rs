@@ -64,9 +64,8 @@ pub enum Cmd {
     /// disabled. A Pi package is removed only when `init` recorded it or its
     /// package.json names Clax's Pi package; one whose directory is missing
     /// is left and named, with the command that removes it. Known miss: Pi
-    /// entries are matched as Pi resolves them, except that `~` in
-    /// PI_CODING_AGENT_DIR, `~user/` paths and surrounding spaces are not
-    /// expanded, so such an entry is left registered.
+    /// entries are matched as Pi resolves them, except that a `~user/` path
+    /// is not expanded, so such an entry is left registered.
     Init(commands::init::Args),
     /// Remove the Clax plugin registrations from each harness whose CLI is
     /// on PATH, and the plugins' copy once no harness refers to it.
@@ -120,13 +119,21 @@ fn agent_arg() -> String {
         .unwrap_or_else(|| "-".into())
 }
 
+/// The Clax home, as an absolute path, so commands that run elsewhere (the
+/// daemon, the harness CLIs `init` runs in HOME) see the same directory.
+fn home_from_env() -> Result<clax_core::Home, String> {
+    let home = clax_core::Home::from_env().map_err(|e| e.to_string())?;
+    let root = std::path::absolute(home.root()).map_err(|e| format!("CLAX_HOME: {e}"))?;
+    Ok(clax_core::Home::at(root))
+}
+
 fn main() {
     let started = std::time::Instant::now();
     let hook = is_hook_invocation();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            if hook && let Ok(home) = clax_core::Home::from_env() {
+            if hook && let Ok(home) = home_from_env() {
                 let text = e.to_string();
                 commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()));
             }
@@ -139,13 +146,8 @@ fn main() {
             std::process::exit(code);
         }
     };
-    // An absolute home, so commands that run elsewhere (the daemon, the
-    // harness CLIs `init` runs in HOME) see the same directory.
-    let home = match clax_core::Home::from_env()
-        .map_err(|e| e.to_string())
-        .and_then(|h| std::path::absolute(h.root()).map_err(|e| format!("CLAX_HOME: {e}")))
-    {
-        Ok(root) => clax_core::Home::at(root),
+    let home = match home_from_env() {
+        Ok(home) => home,
         Err(e) => {
             eprintln!("error: {e}");
             std::process::exit(if hook { 0 } else { 1 });
