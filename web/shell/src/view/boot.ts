@@ -4,14 +4,27 @@ import type { Loaded } from "./artifact-controller";
 /** The daemon's first-load data for `/a/…` (spec §8 Time to usable). */
 export type Boot = { v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null; frame: { mode: "subdomain" | "sandbox"; src: string } | null };
 
+/** How this document was reached (`back_forward` for history), from Navigation Timing. */
+function navigationType(): string {
+  try {
+    return (performance.getEntriesByType("navigation")[0] as PerformanceNavigationTiming | undefined)?.type ?? "";
+  } catch {
+    return "";
+  }
+}
+
 /** The bootstrap block in `doc`, or null when there is none, it does not
- * parse, or it is not version 1. */
-export function readBoot(doc: Document = document): Boot | null {
+ * parse, or it is not version 1. A page reached through history may come
+ * from the browser's cache without asking the daemon, so its viewer can be
+ * stale: it is left out (`viewer: null`), and the shell looks the viewer up.
+ * The threads and the artifact are reloaded on the stream's first `ready`. */
+export function readBoot(doc: Document = document, navType: string = navigationType()): Boot | null {
   const text = doc.getElementById("clax-boot")?.textContent;
   if (!text) return null;
   try {
     const b = JSON.parse(text) as Boot;
-    return b && b.v === 1 && b.artifact?.artifact && Array.isArray(b.artifact.versions) && Array.isArray(b.threads) ? b : null;
+    if (!(b && b.v === 1 && b.artifact?.artifact && Array.isArray(b.artifact.versions) && Array.isArray(b.threads))) return null;
+    return navType === "back_forward" ? { ...b, viewer: null } : b;
   } catch {
     return null;
   }
@@ -19,7 +32,9 @@ export function readBoot(doc: Document = document): Boot | null {
 
 /** What `artifact.html`'s inline listener kept before the shell mounted,
  * oldest first: every `message` to the shell and every `load` of an
- * `<iframe>`. The listener stops. */
+ * `<iframe>`. The listener stops. Past 256 events it keeps nothing at all
+ * (a flooding page loses its early hello, and is heard from its next one):
+ * a gap in the middle could hide a load that must close the gate. */
 export function takeEarly(win: Window = window): Event[] {
   const early = (win as unknown as { __claxEarly?: { take(): Event[] } }).__claxEarly;
   return early ? early.take() : [];

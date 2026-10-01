@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Clax</title>
 <link rel="stylesheet" href="./src/theme.css">
-<script id="clax-early">(function(){var q=[],d=document,o=null;function keep(e){q.push(e)}function load(e){if(e.target&&e.target.localName==="iframe")q.push(e)}function stop(){if(o){o.disconnect();o=null}}addEventListener("message",keep);d.addEventListener("load",load,true);try{if(sessionStorage.getItem("clax.origin-ok")==="0"){o=new MutationObserver(function(){var f=d.querySelector(".stage>iframe.frame:not([sandbox])");if(f)f.remove()});o.observe(d,{childList:true,subtree:true});d.addEventListener("DOMContentLoaded",stop)}}catch(x){}window.__claxEarly={take:function(){stop();removeEventListener("message",keep);d.removeEventListener("load",load,true);var r=q;q=[];return r}}})();</script>
+<script id="clax-early">(function(){var q=[],d=document,o=null;function keep(e){if(q){q.push(e);if(q.length>256)q=null}}function load(e){if(e.target&&e.target.localName==="iframe")keep(e)}function stop(){if(o){o.disconnect();o=null}}addEventListener("message",keep);d.addEventListener("load",load,true);try{if(sessionStorage.getItem("clax.origin-ok")==="0"){o=new MutationObserver(function(){var f=d.querySelector(".stage>iframe.frame:not([sandbox])");if(f)f.remove()});o.observe(d,{childList:true,subtree:true});d.addEventListener("DOMContentLoaded",stop)}}catch(x){}window.__claxEarly={take:function(){stop();removeEventListener("message",keep);d.removeEventListener("load",load,true);var r=q||[];q=[];return r}}})();</script>
 <!--clax:boot-->
 </head>
 <body>

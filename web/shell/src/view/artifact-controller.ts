@@ -85,6 +85,9 @@ export const pageWait = { ms: 5000 };
 export const MOVE_TO_PICK = "Move the pointer to pick";
 export const MOVE_TO_CLICK = "Move the pointer, then click again";
 
+/** A load of the content frame, kept in `held`. */
+const LOADED = Symbol("loaded");
+
 const media = (q: string) => typeof matchMedia === "function" && matchMedia(q).matches;
 const threadIds = (ts: Thread[]) => ts.map(t => t.id).join(",");
 
@@ -153,6 +156,9 @@ export class ArtifactController {
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
   private readonly prompt = promptQueue(ask => this.set({ ask }));
+  /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
+   * messages to the shell and the frame's loads (`LOADED`), in order. */
+  private held: (MessageEvent | typeof LOADED)[] | null = null;
 
   /** `init.boot`: the daemon's first-load data for this artifact, read in
    * place of the first requests (the artifact, its threads, the viewer). */
@@ -454,6 +460,7 @@ export class ArtifactController {
    * load closes the gate and loses its page and pins. */
   frameLoaded(): void {
     if (this.disposed) return;
+    if (this.held) { this.held.push(LOADED); return; }
     if (this.gate.load()) this.set({ file: null, resolved: {} });
   }
 
@@ -558,8 +565,21 @@ export class ArtifactController {
     if (cached !== null) { decided(cached ? o : null); return; }
     if (boot?.frame) {
       const guess = boot.frame.mode === "subdomain" ? o : null;
+      // An unsandboxed frame shown on the cookie's word alone is heard only
+      // once this tab's probe agrees: until then what it posts, and its
+      // loads, wait in order, and the gate stays as it was reset.
+      if (guess) this.held = [];
       decided(guess);
-      void probeOrigin(o).then(ok => { if ((ok ? o : null) !== guess) decided(ok ? o : null); });
+      void probeOrigin(o).then(ok => {
+        const held = this.held ?? [];
+        this.held = null;
+        if ((ok ? o : null) !== guess) { decided(ok ? o : null); return; }
+        for (const e of held) {
+          if (this.disposed) return;
+          if (e === LOADED) this.frameLoaded();
+          else this.onMessage(e);
+        }
+      });
       return;
     }
     void probeOrigin(o).then(ok => decided(ok ? o : null));
@@ -570,8 +590,14 @@ export class ArtifactController {
    * heard now; a load counts only when it is the adopted frame's. */
   replay(e: Event): void {
     if (this.disposed) return;
-    if (e.type === "message") this.onMessage(e as MessageEvent);
+    if (e.type === "message") this.hear(e as MessageEvent);
     else if (e.type === "load" && this.frame?.el && e.target === this.frame.el) this.frameLoaded();
+  }
+
+  /** A message to the shell: judged now, or kept in order while `held`. */
+  private hear(e: MessageEvent): void {
+    if (this.held) this.held.push(e);
+    else this.onMessage(e);
   }
 
   /** Shows other props for the same artifact as a re-render of the view with
@@ -605,7 +631,7 @@ export class ArtifactController {
   }
 
   private listen(): void {
-    const onMessage = (e: MessageEvent) => this.onMessage(e);
+    const onMessage = (e: MessageEvent) => this.hear(e);
     addEventListener("message", onMessage);
     // Whether the pointer is over the content frame (the shell sees a
     // mouseover on the iframe element as it enters, and on another element

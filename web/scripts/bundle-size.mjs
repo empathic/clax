@@ -26,6 +26,12 @@ for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script i
   const text = read(html).toString();
   if (text.includes(`<link rel="stylesheet"`)) throw new Error(`dist/${html} links a stylesheet; the CSS must be inlined`);
   for (const m of markers) if (!text.includes(m)) throw new Error(`dist/${html} lost ${m}, which the daemon injects at or the shell needs`);
+  // The early listener and its guard must run before the stage is parsed,
+  // and before the bootstrap block.
+  if (html === "artifact.html") {
+    const early = text.indexOf(`<script id="clax-early">`);
+    if (!(early < text.indexOf("<!--clax:boot-->") && early < text.indexOf("<body"))) throw new Error(`dist/${html}: the clax-early script must come before the bootstrap marker and <body>`);
+  }
 }
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };

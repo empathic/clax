@@ -256,8 +256,9 @@ Browser-facing:
   (see §8 for how it reads the path).
 - `GET /` → `index.html`; `GET /a/<id>[/v/<n>][/<file>]` → `artifact.html` with
   the bootstrap block and, when the frame mode is known, the content `<iframe>`
-  (§8 Time to usable). Both are HTML responses: `Cache-Control: no-cache`, an
-  `ETag` over the exact bytes sent, and `Vary: Cookie`. The bootstrap never
+  (§8 Time to usable). Both are HTML responses with an `ETag` over the exact
+  bytes sent: `/` is `Cache-Control: no-cache`; `/a/…`, which carries one
+  viewer's data, is `private, no-cache` with `Vary: Cookie`. The bootstrap never
   holds the daemon token and is escaped for a `<script>` element (`<`, `>`,
   `&`, U+2028 and U+2029 as `\u` escapes).
 - `GET /c/<aid>/v/<n>/` wrapped content document (bridge prepended).
@@ -701,18 +702,27 @@ What makes it fast:
   its versions, every thread, and the viewer when the request's viewer cookie
   names one: what an unauthenticated browser reads from the API, less the
   session IDs (no token, no viewer cookie, no clip path, and no viewer is
-  created). The shell reads it instead of making its first API calls.
+  created). It follows the API's host rule (§14): a request whose `Host` the
+  API would refuse gets the entry with no bootstrap and no frame. A store
+  error, or a store slower than the API's request timeout, also gives the
+  bare entry. The shell reads the block instead of making its first API
+  calls; for a page reached through history (possibly from the browser's
+  cache) it ignores the block's viewer and looks the viewer up.
 - When the request carries a `clax_frame` cookie (`subdomain` or `sandbox`,
-  set by the shell once it has decided the frame mode), or comes from a
-  non-loopback host (always `sandbox`), the daemon also injects the content
+  set by the shell once it has decided the frame mode), or comes from a host
+  other than `localhost` and `127.0.0.1` (always `sandbox`, as the shell has
+  no artifact origins there), the daemon also injects the content
   `<iframe>` itself. The artifact then loads in parallel with the shell's
   JavaScript. The shell adopts that frame when its own decision agrees, and
   replaces it otherwise. Messages the frame posts before the shell has mounted,
   and the frame's loads, are buffered by an inline listener and replayed in
-  order, through the same checks as later ones. The same listener removes a
-  served frame without a sandbox while the page is parsed when this tab has
-  already found that artifact origins do not work, so a wrong cookie never
-  runs the artifact less isolated than the tab would.
+  order, through the same checks as later ones (at most 256 events; past
+  that it keeps none). The same listener removes a served frame without a
+  sandbox while the page is parsed when this tab has already found that
+  artifact origins do not work. In a tab that has not probed yet, a served
+  subdomain frame is adopted on the cookie's word, but nothing it posts is
+  heard, and so no capability is answered, until the tab's probe agrees; if
+  the probe disagrees, the frame is replaced unanswered.
 - The bridge loads eagerly only what every page needs (`window.claude`, the
   hello, the channel, link handover). Comment mode with anchors and areas,
   clip rendering, and the page-side capability members are separate parts
@@ -1365,7 +1375,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   bind address; for an unspecified bind, the interface address the client
   reached, as an IP literal). Anything else, any other DNS name included, is
   403 `forbidden_host`. Artifact hosts (`<aid>.localhost`) never reach
-  `/api`; the shell, content, and `/healthz` are not checked. LAN viewers can
+  `/api`; the shell, content, and `/healthz` are not checked, except that
+  `/a/…` embeds its bootstrap and frame only for a `Host` this rule admits
+  (§8 Time to usable). LAN viewers can
   view, comment, send to agent, and resolve; once they have set a display
   name they hold `interact` and may also write `db` docs at that level,
   reopen or delete threads; unnamed viewers hold `view`. No LAN viewer can

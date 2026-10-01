@@ -15,7 +15,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect.poll(() => frame.evaluate(() => typeof (window as unknown as { claude?: unknown }).claude)).toBe("object");
 
     const shell = seen.find(r => new URL(r.url()).pathname === `/a/${artifact.id}`)!;
-    expect(shell.headers()["cache-control"]).toBe("no-cache");
+    expect(shell.headers()["cache-control"]).toBe("private, no-cache");
     expect(shell.headers()["etag"]).toBeTruthy();
 
     const doc = seen.find(r => r.url() === frame.url())!;

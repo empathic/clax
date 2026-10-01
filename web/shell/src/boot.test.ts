@@ -238,6 +238,52 @@ describe("the first load from the daemon's HTML", () => {
     expect(document.cookie).toContain("clax_frame=sandbox");
   });
 
+  it("hears a frame adopted on a subdomain guess only once this tab's probe agrees", async () => {
+    let answer!: (r: Response) => void;
+    stubFetch(() => new Promise<Response>(r => { answer = r; }));
+    new Function(EARLY)();
+    const root = served(SUBDOMAIN);
+    const frame = root.querySelector("iframe")!;
+    const posted = posts(frame);
+    const origin = `http://${ID}.localhost:3000`;
+    fromFrame(frame.contentWindow!, HELLO, origin);
+    await mountServed(root, boot({ mode: "subdomain", src: SUB }));
+    expect(root.querySelector("iframe")).toBe(frame);
+    fromFrame(frame.contentWindow!, { type: "clax:use", id: "u1", name: "permissions" }, origin);
+    await sleep(30);
+    expect(answered(posted)).toEqual([]);
+    await waitFor(() => answer, "the probe");
+    answer(new Response("{}"));
+    await waitFor(() => posted.some(m => m.type === "clax:use-result" && m.id === "u1"), "the held request's answer");
+    expect(posted.findIndex(m => m.type === "clax:welcome")).toBeLessThan(posted.findIndex(m => m.type === "clax:use-result"));
+  });
+
+  it("never answers a frame adopted on a subdomain guess that the probe then refuses", async () => {
+    let fail!: (e: Error) => void;
+    stubFetch(() => new Promise<Response>((_, r) => { fail = r; }));
+    new Function(EARLY)();
+    const root = served(SUBDOMAIN);
+    const guess = root.querySelector("iframe")!;
+    const posted = posts(guess);
+    const origin = `http://${ID}.localhost:3000`;
+    fromFrame(guess.contentWindow!, HELLO, origin);
+    await mountServed(root, boot({ mode: "subdomain", src: SUB }));
+    fromFrame(guess.contentWindow!, { type: "clax:use", id: "u1", name: "permissions" }, origin);
+    await waitFor(() => fail, "the probe");
+    fail(new TypeError("blocked"));
+    await waitFor(() => root.querySelector("iframe") !== guess, "the replacement");
+    await sleep(30);
+    expect(answered(posted)).toEqual([]);
+    expect(root.querySelector("iframe")!.getAttribute("sandbox")).toBe(FRAME_SANDBOX);
+  });
+
+  it("keeps nothing early once a page floods it, so no load in between is lost", async () => {
+    new Function(EARLY)();
+    for (let i = 0; i < 300; i++) window.dispatchEvent(new MessageEvent("message", { data: i }));
+    const { takeEarly } = await import("./view/boot");
+    expect(takeEarly()).toEqual([]);
+  });
+
   it("opens the served frame at the URL's fragment and keeps it in the address bar", async () => {
     stubFetch(async () => new Response("{}"));
     sessionStorage.setItem("clax.origin-ok", "0");
@@ -266,6 +312,13 @@ describe("readBoot", () => {
     expect(readBoot()).toBeNull();
     block(JSON.stringify(boot(null)).replace(/</g, "\\u003c"));
     expect(readBoot()).toEqual(boot(null));
+  });
+
+  it("leaves out the viewer of a page reached through history, which may come from the cache", async () => {
+    const { readBoot } = await import("./view/boot");
+    block(JSON.stringify(boot(null)));
+    expect(readBoot(document, "navigate")!.viewer).toEqual(viewer);
+    expect(readBoot(document, "back_forward")).toEqual({ ...boot(null), viewer: null });
   });
 
   it("refuses a block that does not parse or is not version 1", async () => {

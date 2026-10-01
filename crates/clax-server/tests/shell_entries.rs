@@ -25,7 +25,8 @@ async fn each_route_gets_its_own_entry() {
         "<p>artifact</p>"
     );
     assert_eq!(body("/a/not-an-id").await, "<p>gallery</p>");
+    assert_eq!(ts.get("/").await.headers()["cache-control"], "no-cache");
     let res = ts.get("/a/7q3k9mzx2b4t").await;
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     assert!(res.headers().contains_key("etag"));
 }

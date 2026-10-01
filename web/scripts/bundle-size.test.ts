@@ -8,7 +8,9 @@ let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
 
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
-function run(budget: Record<string, unknown>) {
+const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
+
+function run(budget: Record<string, unknown>, artifact = ENTRY) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -18,7 +20,7 @@ function run(budget: Record<string, unknown>) {
   copyFileSync(join(__dirname, "bundle-size.mjs"), join(web, "scripts/bundle-size.mjs"));
   const dist = (p: string, s: string) => writeFileSync(join(web, "dist", p), s);
   dist("index.html", "<p>gallery</p>");
-  dist("artifact.html", "<script id=\"clax-early\"></script><!--clax:boot--><!--clax:frame--><h1>Clax</h1>");
+  dist("artifact.html", artifact);
   dist("_clax/bridge.js", "bridge");
   dist("_clax/shell/a.js", "a");
   dist(".vite/manifest.json", JSON.stringify({ "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" } }));
@@ -31,6 +33,21 @@ describe("bundle-size.mjs", () => {
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
+  });
+
+  it("fails when the artifact entry lost a marker, or runs the early script after the page", () => {
+    for (const html of [
+      ENTRY.replace("<!--clax:frame-->", ""),
+      ENTRY.replace("<h1>Clax</h1>", ""),
+      ENTRY.replace("<script id=\"clax-early\"></script>", ""),
+      ENTRY.replace("<script id=\"clax-early\"></script>", "").replace("</body>", "<script id=\"clax-early\"></script></body>"),
+      ENTRY.replace("<script id=\"clax-early\"></script><!--clax:boot-->", "<!--clax:boot--><script id=\"clax-early\"></script>"),
+    ]) {
+      const r = run(full, html);
+      expect(r.status, html).toBe(1);
+      expect(r.stderr).toContain("artifact.html");
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("fails when a size is over its budget", () => {

@@ -189,7 +189,13 @@ async fn shell_routes_serve_ui_or_explain_missing_build() {
                     .unwrap()
                     .starts_with("text/html")
             );
-            assert_eq!(res.headers()["cache-control"], "no-cache");
+            // The artifact page carries one viewer's data: no shared cache.
+            let want = if path == "/" {
+                "no-cache"
+            } else {
+                "private, no-cache"
+            };
+            assert_eq!(res.headers()["cache-control"], want, "{path}");
         } else {
             assert_eq!(
                 res.json::<serde_json::Value>().await.unwrap()["error"]["code"],

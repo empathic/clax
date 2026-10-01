@@ -99,6 +99,26 @@ pub fn api_host_allowed(host: &str, local: Option<SocketAddr>) -> bool {
     })
 }
 
+/// Whether the request (its `Host`, else the URI's authority, and the
+/// connection it arrived on) may read what the API serves: the
+/// [`api_host_allowed`] rule, shared by [`require_api_host`] and by the shell
+/// page that embeds API data (`crate::boot`).
+pub fn request_host_allowed(
+    headers: &axum::http::HeaderMap,
+    uri: &axum::http::Uri,
+    extensions: &axum::http::Extensions,
+) -> bool {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .or_else(|| uri.authority().map(|a| a.as_str()))
+        .unwrap_or("");
+    let local = extensions
+        .get::<axum::extract::ConnectInfo<Conn>>()
+        .map(|c| c.0.local);
+    api_host_allowed(host, local)
+}
+
 /// Middleware: every `/api` path answers 403 `forbidden_host` unless the
 /// request's `Host` passes [`api_host_allowed`]. Artifact hosts never reach
 /// `/api` (the host rewrite answers them first), and non-API paths (the shell,
@@ -109,24 +129,14 @@ pub async fn require_api_host(
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let path = req.uri().path();
-    if path == "/api" || path.starts_with("/api/") {
-        let host = req
-            .headers()
-            .get(axum::http::header::HOST)
-            .and_then(|h| h.to_str().ok())
-            .or_else(|| req.uri().authority().map(|a| a.as_str()))
-            .unwrap_or("");
-        let local = req
-            .extensions()
-            .get::<axum::extract::ConnectInfo<Conn>>()
-            .map(|c| c.0.local);
-        if !api_host_allowed(host, local) {
-            return ApiError::forbidden(
-                "forbidden_host",
-                "the API answers only to localhost, 127.0.0.1, [::1], or the address the daemon is bound to",
-            )
-            .into_response();
-        }
+    if (path == "/api" || path.starts_with("/api/"))
+        && !request_host_allowed(req.headers(), req.uri(), req.extensions())
+    {
+        return ApiError::forbidden(
+            "forbidden_host",
+            "the API answers only to localhost, 127.0.0.1, [::1], or the address the daemon is bound to",
+        )
+        .into_response();
     }
     next.run(req).await
 }
