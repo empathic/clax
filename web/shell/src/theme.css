@@ -86,3 +86,4 @@ select { font: inherit; background: var(--card); color: var(--fg); border: 1px s
 .composer .file-label { margin: 0; }
 .composer button[aria-disabled="true"] { opacity: .55; cursor: progress; }
 .composer button:disabled { opacity: .5; cursor: default; }
+.island { display: contents; }

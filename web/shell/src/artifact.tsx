@@ -18,6 +18,7 @@ import { Sidebar } from "./sidebar";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "./threads";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./view/composer-model";
 import { type Ask, promptQueue } from "./view/prompt-queue";
+import { setUrl, validHash } from "./view/url";
 import { ViewerName } from "./viewer-name";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
@@ -29,22 +30,6 @@ const PICK_WAIT_MS = 20_000;
 
 /** The notice kind for a thread the daemon kept without its screenshot. */
 const CLIP_DROPPED = "Posted without its screenshot";
-
-/** A fragment the frame may report or a link may carry: "" or `#…`, at most 512 characters. */
-const validHash = (h: unknown): h is string => typeof h === "string" && (h === "" || h.startsWith("#")) && h.length <= 512;
-
-/** Replaces (or, with `push`, adds) the shell's history entry for `url`;
- * false when the browser refuses (Safari and Firefox throw a SecurityError
- * past their rate limits), leaving the address bar as it was. */
-function setUrl(url: string, push = false): boolean {
-  try {
-    if (push) history.pushState(null, "", url);
-    else history.replaceState(history.state, "", url);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /** How long a page the shell sent the frame to may take to greet before the
  * jump is given up (settable for tests). */

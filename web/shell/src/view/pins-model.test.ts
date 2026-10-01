@@ -8,9 +8,9 @@ const at = (x: number, y: number, w = 100, h = 20): AnchorResult => ({ id: "x", 
 
 describe("pinPlaces", () => {
   it("numbers attached open threads on the page and skips unmeasured and scrolled-away ones without renumbering", () => {
-    const threads = [t("a"), t("b"), t("c"), t("d", "other.html"), t("e", "index.html", "resolved")];
-    const places = pinPlaces(threads, { a: at(10, 50), b: { id: "b", found: true, method: "selector", rect: null } as AnchorResult, c: at(10, -40, 100, 30) }, "index.html", 0);
-    expect(places.map(p => [p.thread.id, p.n])).toEqual([["a", 1]]);
+    const threads = [t("a"), t("b"), t("c"), t("d", "other.html"), t("e", "index.html", "resolved"), t("f")];
+    const places = pinPlaces(threads, { a: at(10, 50), b: { id: "b", found: true, method: "selector", rect: null } as AnchorResult, c: at(10, -40, 100, 30), f: at(10, 100) }, "index.html", 0);
+    expect(places.map(p => [p.thread.id, p.n])).toEqual([["a", 1], ["f", 4]]);
     expect(places[0]).toMatchObject({ left: 98, top: 38 });
   });
   it("keeps a pin clear of the stage's right edge", () => {

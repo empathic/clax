@@ -26,4 +26,20 @@ describe("NameSaver", () => {
     await new Promise(r => setTimeout(r, 10));
     expect(calls).toHaveLength(2);
   });
+  it("shows the stored name when the viewer did not type, and reports the viewer after a load and after a save", async () => {
+    const viewer = (name: string) => ({ public_id: "u_1", display_name: name, created_at: "x" });
+    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) =>
+      Promise.resolve(new Response(JSON.stringify({ viewer: viewer(init?.method ? "Cy" : "Bo") })))));
+    const { NameSaver } = await import("./viewer-name-model");
+    const shown: string[] = [];
+    const viewers: string[] = [];
+    const s = new NameSaver(() => {}, v => viewers.push(v.display_name ?? ""));
+    s.load(n => shown.push(n));
+    await new Promise(r => setTimeout(r, 10));
+    expect(shown).toEqual(["Bo"]);
+    expect(viewers).toEqual(["Bo"]);
+    s.save(" Cy ");
+    await new Promise(r => setTimeout(r, 10));
+    expect(viewers).toEqual(["Bo", "Cy"]);
+  });
 });
