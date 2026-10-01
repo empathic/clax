@@ -1,7 +1,9 @@
 // Gzip sizes of what must load before each shell entry can render (the HTML
 // and its module script with that script's static imports, per the Vite
-// manifest) and of the eager bridge, against web/perf/bundle-budget.json.
-// --record lowers the budgets to the measured sizes plus 10%, never raising one.
+// manifest), of the eager bridge, and of each of the bridge's lazy parts with
+// the files it imports (per the parts build's manifest), against
+// web/perf/bundle-budget.json. --record lowers the budgets to the measured
+// sizes plus 10%, never raising one, and adds a budget that is missing.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
@@ -34,13 +36,27 @@ for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script i
   }
 }
 
-const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}`);
+const partsManifest = JSON.parse(read("_clax/bridge/.vite/manifest.json"));
+const partKeys = { comment: "partComment", clip: "partClip", caps: "partCaps" };
+function part(name) {
+  const key = Object.keys(partsManifest).find(k => partsManifest[k].isEntry && partsManifest[k].name === name);
+  if (!key) throw new Error(`dist/_clax/bridge has no ${name} part`);
+  const seen = new Set();
+  const walk = k => { if (seen.has(k)) return; seen.add(k); for (const i of partsManifest[k].imports ?? []) walk(i); };
+  walk(key);
+  return [...seen].reduce((n, k) => n + gz(`_clax/bridge/${partsManifest[k].file}`), 0);
+}
 
-const KEYS = ["gallery", "artifact", "bridge", "bridgeBaseline"];
+const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
+for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}`);
+
+const MEASURED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
+const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
 // A missing or non-numeric budget would turn its check off; refuse it instead.
-const bad = budget ? KEYS.filter(k => !Number.isFinite(budget[k])) : [];
+// Recording may add a missing measured budget, never the baseline.
+const bad = (budget ? KEYS.filter(k => !Number.isFinite(budget[k])) : []).filter(k => !process.argv.includes("--record") || !MEASURED.includes(k));
 if (bad.length) {
   console.error(`web/perf/bundle-budget.json lacks a numeric budget for: ${bad.join(", ")}`);
   process.exit(1);
@@ -48,13 +64,13 @@ if (bad.length) {
 if (process.argv.includes("--record")) {
   const up = n => Math.floor(n * 1.1);
   const next = { ...(budget ?? { bridgeBaseline: sizes.bridge }) };
-  for (const k of ["gallery", "artifact", "bridge"]) next[k] = Math.min(up(sizes[k]), budget?.[k] ?? Infinity);
+  for (const k of MEASURED) next[k] = Math.min(up(sizes[k]), Number.isFinite(budget?.[k]) ? budget[k] : Infinity);
   writeFileSync(budgetFile, JSON.stringify(next, null, 2) + "\n");
   process.exit(0);
 }
 if (!budget) throw new Error("web/perf/bundle-budget.json is missing; run node scripts/bundle-size.mjs --record");
 let failed = false;
-for (const k of ["gallery", "artifact", "bridge"]) {
+for (const k of MEASURED) {
   if (sizes[k] > budget[k]) { console.error(`${k}: ${sizes[k]} gzip bytes, over its budget of ${budget[k]}`); failed = true; }
 }
 if (failed) process.exit(1);

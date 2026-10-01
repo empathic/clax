@@ -117,6 +117,9 @@ export class ArtifactController {
   // opened the composer, while its screenshot is still to come, with when
   // the start arrived.
   private pendingPick: { pickId: string; at: number } | null = null;
+  /** The bridge's lazy parts the greeted page reported it could not load
+   * (`clax:degraded`); forgotten at the next greeting. */
+  private failedParts = new Set<keyof typeof PART_FAILED>();
   // The pick ID of the open composer when a pick made in comment mode opened
   // it: comment mode, off while that composer is open, comes back on when it
   // closes.
@@ -291,6 +294,9 @@ export class ArtifactController {
     if (this.disposed) return;
     const prev = this.s;
     this.state.set(patch);
+    // Comment mode cannot come on in a page whose comment part did not load,
+    // however it was asked for: the viewer is told again instead.
+    if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
     if (this.turnFrom === null && this.s !== prev) {
       this.turnFrom = prev;
       queueMicrotask(() => this.rendered());
@@ -378,6 +384,14 @@ export class ArtifactController {
   // lookup finishing after a failed thread load cannot hide that failure.
   private noticeFor(prefix: string): (text: string | null) => void {
     return scopedNotice(this.setNotice, prefix);
+  }
+
+  /** The notice for a part the greeted page could not load. Comment mode's
+   * outranks the others: without it no pick, so no clip, can happen. */
+  private showPartFailed(part: keyof typeof PART_FAILED): void {
+    if (part !== "comment" && this.failedParts.has("comment")) return;
+    const text = PART_FAILED[part];
+    this.noticeFor(text)(`${text}.`);
   }
 
   private showHint(text: string): void {
@@ -698,6 +712,7 @@ export class ArtifactController {
         const greeted = typeof m.file === "string" && m.file ? m.file : INDEX_FILE;
         this.gate.hello(helloMatches(m, this.id, this.shown()) && this.holds(greeted));
         this.pendingPick = null;
+        this.failedParts.clear();
         this.set({ resolved: {} });
         this.anchorIds.forget();
         if (!this.gate.open) { this.set({ file: null }); break; }
@@ -840,8 +855,8 @@ export class ArtifactController {
         // the comment part. The page could post this itself, so the notice
         // is the shell's own words only, never the message's text.
         if (!this.gate.open || typeof m.part !== "string" || !Object.hasOwn(PART_FAILED, m.part)) break;
-        const text = PART_FAILED[m.part];
-        this.noticeFor(text)(`${text}.`);
+        this.failedParts.add(m.part);
+        this.showPartFailed(m.part);
         if (m.part === "comment") this.set({ commenting: false });
         break;
       }

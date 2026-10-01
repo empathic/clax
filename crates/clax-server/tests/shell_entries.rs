@@ -59,4 +59,20 @@ async fn each_route_gets_its_own_entry() {
         .unwrap();
     assert_eq!(again.status(), 304);
     assert_eq!(again.headers()["access-control-allow-origin"], "*");
+
+    // A part that is not there (an older bridge's, after an upgrade) is a
+    // 404 a sandboxed page can read; a build manifest is never served.
+    let gone = ts.get("/_clax/bridge/comment-old.js").await;
+    assert_eq!(gone.status(), 404);
+    assert_eq!(gone.headers()["access-control-allow-origin"], "*");
+    std::fs::create_dir_all(dist.path().join("_clax/bridge/.vite")).unwrap();
+    std::fs::write(dist.path().join("_clax/bridge/.vite/manifest.json"), "{}").unwrap();
+    assert_eq!(
+        ts.get("/_clax/bridge/.vite/manifest.json").await.status(),
+        404
+    );
+    std::fs::write(dist.path().join("_clax/.hidden.js"), "x").unwrap();
+    let res = ts.get("/_clax/.hidden.js").await;
+    assert_eq!(res.status(), 404);
+    assert!(!res.headers().contains_key("access-control-allow-origin"));
 }

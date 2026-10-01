@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { type FrameMode, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
+import { type FrameMode, openArtifact, publish, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -25,12 +25,24 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     // the skeleton's <body>, where a browser ignores it). The bridge comes
     // before it, so only the lazy parts are blocked.
     const blocked = await publish(d.base, d.token, "Strict", { "index.html": `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'"></head><body><h1>Strict</h1></body></html>` });
-    await openArtifact(page, d.base, blocked.artifact.id, 1, mode);
-    await expect(page.getByRole("alert")).toContainText("Comment mode could not load in this page");
-    await contentFrame(page, blocked.artifact.id, 1);
+    const strict = await openArtifact(page, d.base, blocked.artifact.id, 1, mode);
+    const alert = page.getByRole("alert");
+    await expect(alert).toContainText("Comment mode could not load in this page");
+    // Pressing Comment there keeps comment mode off and says why again, even
+    // once the notice was dismissed.
+    await alert.getByRole("button", { name: "Dismiss" }).click();
+    await expect(alert).toHaveCount(0);
+    const comment = page.getByRole("button", { name: "Comment", exact: true });
+    await comment.click();
+    await expect(alert).toContainText("Comment mode could not load in this page");
+    await expect(comment).toHaveAttribute("aria-pressed", "false");
+    expect(await strict.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
   });
 
-  test(`leaves the page's own import map working, and comment mode with it (${mode})`, async ({ page }) => {
+  // A smoke test only: Chromium honours an import map added after a module
+  // load, so this passes with or without the bridge's wait for the parse.
+  // bridge-parse-gate.test.ts guards that wait.
+  test(`smoke: a page's own import map and comment mode work together (${mode})`, async ({ page }) => {
     const html = `<!doctype html><script type="importmap">{"imports":{"greeting":"data:text/javascript,export default 'mapped'"}}</script>`
       + `<script type="module">import g from "greeting"; document.getElementById("out").textContent = g;</script><p id="out">waiting</p>`;
     const ok = await publish(d.base, d.token, "Import map", { "index.html": html });

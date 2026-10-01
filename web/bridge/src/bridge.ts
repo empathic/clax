@@ -45,6 +45,7 @@ import { commentsContext } from "./comments-context";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
 import type { CommentPart, Parts } from "./parts/types";
+import { type Clock, retrying } from "./part-loader";
 import { PickFlow } from "./pick";
 import type { Anchor, AnchorResult, Box, BridgeToShell } from "./protocol";
 import { Rpc } from "./rpc";
@@ -72,11 +73,9 @@ type PartName = keyof Parts;
   const loaders = loadParts(script?.src || location.href);
   let parsed = document.readyState !== "loading";
   const whenDone = new Promise<void>(resolve => whenParsed(document, () => { parsed = true; resolve(); }));
-  const parts: Parts = {
-    comment: () => parsed ? loaders.comment() : whenDone.then(loaders.comment),
-    clip: () => parsed ? loaders.clip() : whenDone.then(loaders.clip),
-    caps: () => parsed ? loaders.caps() : whenDone.then(loaders.caps),
-  };
+  // The timers and clock as they are now: a page replacing them later can
+  // only hold up or hurry its own parts.
+  const clock: Clock = { now: performance.now.bind(performance), setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window) as (t: unknown) => void };
 
   // The shell's window as it is when the bridge loads: a page script that
   // later replaces `window.parent` can neither read nor alter what the
@@ -86,24 +85,26 @@ type PartName = keyof Parts;
   let shellOrigin: string | null = null;
   const post = (m: BridgeToShell, transfer: Transferable[] = []) =>
     shellWin.postMessage(m, shellOrigin ?? "*", transfer);
-  const reported = new Set<PartName>();
-  /** Reports, once per part, that it could not load: to the shell once it
-   * has welcomed this page (every part is first asked for after that). */
+  /** Reports a failed attempt to load `part`: to the shell once it has
+   * welcomed this page (every part is first asked for after that). */
   const failed = (part: PartName) => (e: unknown) => {
-    if (reported.has(part)) return;
-    reported.add(part);
     console.warn(`clax: the ${part} part of the bridge could not load`, e);
     if (framed && shellOrigin !== null) post({ type: "clax:degraded", part, message: e instanceof Error ? e.message : String(e) });
   };
-  const clips = () => parts.clip().catch(e => { failed("clip")(e); throw e; });
+  // Each part loads on need, never before the page has parsed (so never
+  // before the page's own import maps), within a time limit, and again on a
+  // later need after a failure (part-loader.ts).
+  const onNeed = <T>(name: PartName, load: (attempt: number) => Promise<T>) => {
+    const next = retrying(name, load, failed(name), clock);
+    return () => parsed ? next() : whenDone.then(next);
+  };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps) };
+  const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
     framed,
     rpc,
-    locals: (name, r, config) => parts.caps().then(
-      c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips }),
-      e => { failed("caps")(e); throw e; },
-    ),
+    locals: (name, r, config) => parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
   });
 
   try {
@@ -151,34 +152,39 @@ type PartName = keyof Parts;
   /** Runs `f` with comment mode once its part has loaded; calls run in the
    * order they were made. */
   const withComment = (f: (l: Live) => void) => {
-    live ??= parts.comment().then(part => {
-      // One cache for resolving and focusing. A detached thread is retried
-      // when the page changes (content rendered late), not only on scroll or resize.
-      let resolutions: Cache | null = null;
-      const mode: Mode = new part.CommentMode(document, {
-        hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
-        pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
-        pickRange: r => { void pick(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
-        // The clip is the drawn rectangle, placed on its element at release,
-        // cropped out of a render of that element. The rectangle stays drawn
-        // (as capturing) until the pick is posted.
-        pickArea: r => {
-          const el = part.containingElement(document, r);
-          const anchor = part.buildAreaAnchor(document, r, meta.file, el);
-          const at = part.areaBox(anchor.area!, part.boxOf(el));
-          void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
-        },
-        cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
+    if (!live) {
+      const loading: Promise<Live> = parts.comment().then(part => {
+        // One cache for resolving and focusing. A detached thread is retried
+        // when the page changes (content rendered late), not only on scroll or resize.
+        let resolutions: Cache | null = null;
+        const mode: Mode = new part.CommentMode(document, {
+          hover: t => post({ type: "clax:hover", selector: t ? part.cssPath(t instanceof Element ? t : part.blockAncestor(t.commonAncestorContainer, window)) : null, rect: t ? box(t) : null }),
+          pickElement: el => { void pick(part.buildElementAnchor(document, el, meta.file), () => clips().then(c => c.renderTargetClip(el))).finally(() => mode.captured()); },
+          pickRange: r => { void pick(part.buildRangeAnchor(document, r, meta.file), () => clips().then(c => c.renderTargetClip(r))).finally(() => mode.captured()); },
+          // The clip is the drawn rectangle, placed on its element at release,
+          // cropped out of a render of that element. The rectangle stays drawn
+          // (as capturing) until the pick is posted.
+          pickArea: r => {
+            const el = part.containingElement(document, r);
+            const anchor = part.buildAreaAnchor(document, r, meta.file, el);
+            const at = part.areaBox(anchor.area!, part.boxOf(el));
+            void pick(anchor, () => clips().then(c => c.renderAreaClip(el, at))).finally(() => mode.captured());
+          },
+          cancel: () => { mode.set(false); post({ type: "clax:cancel" }); },
+        });
+        commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
+        return {
+          part,
+          mode,
+          cache: () => resolutions ??= new part.AnchorCache(document, undefined, meta.file, () => reflow()),
+          reset: () => resolutions?.reset(),
+        };
       });
-      commentsContext.liveChanged = () => mode.set(shellMode && !commentsContext.live);
-      return {
-        part,
-        mode,
-        cache: () => resolutions ??= new part.AnchorCache(document, undefined, meta.file, () => reflow()),
-        reset: () => resolutions?.reset(),
-      };
-    });
-    live.then(f, failed("comment"));
+      // A failed load is reported by the loader; the next need tries again.
+      loading.catch(() => { if (live === loading) live = null; });
+      live = loading;
+    }
+    live.then(f, () => {});
   };
 
   const updateFocus = (l: Live, flash = false) => {
@@ -206,12 +212,15 @@ type PartName = keyof Parts;
   addEventListener("scroll", reflow, { passive: true, capture: true });
   addEventListener("resize", reflow);
 
-  /** Turns the bridge's comment mode to follow the shell's; the clip part
-   * starts loading as it turns on, so a pick's screenshot does not wait for
-   * it. Comment mode that never loaded is off already. */
+  /** Turns the bridge's comment mode to follow the shell's. The clip part
+   * starts loading once comment mode is on, so a pick's screenshot does not
+   * wait for it, and a page whose comment part cannot load reports that, not
+   * the clip part. Comment mode that never loaded is off already. */
   const followMode = () => {
-    if (shellMode) void clips().catch(() => {});
-    if (shellMode || live) withComment(l => l.mode.set(shellMode && !commentsContext.live));
+    if (shellMode || live) withComment(l => {
+      l.mode.set(shellMode && !commentsContext.live);
+      if (shellMode) void clips().catch(() => {});
+    });
   };
 
   /** Once the page has parsed after the shell's welcome, comment mode loads

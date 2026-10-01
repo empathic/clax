@@ -71,6 +71,21 @@ describe("ArtifactController", () => {
     degraded("comment");
     expect(ctl.state.get().notice).toBe("Comment mode could not load in this page.");
     expect(ctl.state.get().commenting).toBe(false);
+    // The comment notice outranks the clip notice.
+    degraded("clip");
+    expect(ctl.state.get().notice).toBe("Comment mode could not load in this page.");
+    // While the comment part has failed, pressing Comment keeps comment mode
+    // off and says so again, even after the notice was dismissed.
+    ctl.dismissNotice();
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(false);
+    expect(ctl.state.get().notice).toBe("Comment mode could not load in this page.");
+    // The page's next greeting forgets it.
+    hello(frame.contentWindow!);
+    ctl.dismissNotice();
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(true);
+    expect(ctl.state.get().notice).toBeNull();
     ctl.dispose();
   });
 

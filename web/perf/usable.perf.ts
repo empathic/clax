@@ -14,9 +14,23 @@ import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtu
  * - `readyLatency`: the viewer's click on Comment (the click event's own
  *   timestamp) → comment mode on in the frame: the shell's and the bridge's
  *   share of comment ready, without the harness's time to find and press the
- *   button. */
+ *   button. The bridge has usually loaded its comment part by then;
+ * - `coldLatency`: the same, in a tab where the comment part's bytes are held
+ *   back until the click has been dispatched, so loading and running the part
+ *   is on the measured path (plus the harness's round trip to release it).
+ * The click and the crosshair are read from the shell's and the frame's own
+ * clocks (`timeOrigin + timeStamp`, `timeOrigin + now()`); in subdomain mode
+ * those are two renderer processes, whose clocks Chromium keeps on one
+ * monotonic base.
+ *
+ * The daemon is a debug build (`cargo run`, as the e2e suite's), which serves
+ * the bridge and its parts `no-cache` (a 304 per load, about a millisecond
+ * on loopback) where a release build serves them immutable. A release build
+ * for this gate would cost a full optimised build of the workspace per run,
+ * so the times here are slightly worse than shipped. */
 type Metrics = { firstPaint: number; commentReady: number };
-type Shell = { framePaint: number; readyLatency: number };
+type Shell = { framePaint: number; readyLatency: number; coldLatency: number };
+const SHELL_KEYS = ["framePaint", "readyLatency", "coldLatency"] as const;
 type Modes<T> = { subdomain: T; sandbox: T };
 /** `enforceTargets` turns on the checks of the `Shell` metrics against their
  * budgets; `Metrics` budgets are always checked. A platform recorded before
@@ -33,6 +47,8 @@ const BUDGET = fileURLToPath(new URL("./budget.json", import.meta.url));
 const RESULTS = fileURLToPath(new URL("./results.json", import.meta.url));
 const WARMUPS = 2;
 const SAMPLES = 9;
+/** Runs per recording: a baseline or budget is the median of their medians. */
+const RECORD_RUNS = 3;
 const MODES: FrameMode[] = ["subdomain", "sandbox"];
 /** What `CLAX_PERF_RECORD` asks for: nothing, the first baseline, or lower budgets. */
 const RECORD = process.env.CLAX_PERF_RECORD ?? "";
@@ -115,6 +131,39 @@ async function quietPaint(browser: Browser, base: string, id: string, mode: Fram
   }
 }
 
+/** Click on Comment → crosshair in a context set up as `sample`'s, in a tab
+ * whose frame gets the comment part's bytes only once the click has been
+ * dispatched. */
+async function coldLatency(browser: Browser, base: string, id: string, mode: FrameMode): Promise<number> {
+  const ctx = await browser.newContext();
+  try {
+    await ctx.addInitScript(recorder);
+    if (mode === "sandbox") await ctx.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } });
+    const first = await ctx.newPage();
+    await first.goto(`${base}/a/${id}`);
+    await contentFrame(first, id, 1);
+    await first.getByRole("button", { name: "Comment" }).waitFor();
+    await first.close();
+
+    const page = await ctx.newPage();
+    let release = () => {};
+    const clicked = new Promise<void>(r => { release = r; });
+    await page.route(/\/_clax\/bridge\/comment-[^/?]*\.js/, async route => { await clicked; await route.fulfill({ response: await route.fetch() }); });
+    await page.goto(`${base}/a/${id}`, { waitUntil: "commit" });
+    const frame = await contentFrame(page, id, 1);
+    // Clicked once the page has parsed, so the bridge has asked for the part.
+    await poll(() => frame.evaluate(() => document.readyState !== "loading" ? true : null), "the frame's parse");
+    const comment = page.getByRole("button", { name: "Comment", disabled: false });
+    await comment.click({ force: true });
+    release();
+    const click = await poll(() => page.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.click ?? null), "the click on Comment");
+    const at = await poll(() => frame.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.crosshair ?? null), "comment mode with the part held back");
+    return at - click;
+  } finally {
+    await ctx.close();
+  }
+}
+
 /** One sample: a context that has seen the artifact once (a first tab that
  * loaded it and pressed nothing), then a fresh tab opening the link. */
 async function sample(browser: Browser, base: string, port: string, id: string, mode: FrameMode): Promise<Sample> {
@@ -161,11 +210,13 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
 
 
     const q = await quietPaint(browser, base, id, mode);
+    const cold = await coldLatency(browser, base, id, mode);
     return {
       firstPaint: (rec.paint ?? rec.raf)! - shell,
       commentReady: rec.crosshair! - shell,
       framePaint: q.paint,
       readyLatency: rec.crosshair! - click,
+      coldLatency: cold,
       control: ctl,
       paintSource: rec.paint !== null ? "paint" : "raf",
       framePaintSource: q.source,
@@ -197,24 +248,26 @@ const floored = (control: number) => Math.max(control, NOISE_FLOOR_MS);
 function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void {
   const round = (x: number) => Math.ceil(x);
   const b = loadAll()[PLATFORM] ?? null;
+  const shellBaseline = Object.fromEntries(SHELL_KEYS.map(k => [k, round(m[k])])) as Shell;
+  const shellBudget = Object.fromEntries(SHELL_KEYS.map(k => [k, budgetFor(m[k])])) as Shell;
   if (RECORD === "baseline") {
     // Each metric's baseline is recorded once per platform: a platform that
     // already has the `Metrics` baselines gains only the missing `Shell` ones.
     if (b?.baseline[mode].firstPaint) {
-      if (b.baseline[mode].framePaint) throw new Error(`budget.json already holds a ${PLATFORM} baseline; it is recorded once per platform`);
-      b.baseline[mode] = { ...b.baseline[mode], framePaint: round(m.framePaint), readyLatency: round(m.readyLatency) };
-      b.budget[mode] = { ...b.budget[mode], framePaint: budgetFor(m.framePaint), readyLatency: budgetFor(m.readyLatency) };
+      const missing = SHELL_KEYS.filter(k => b.baseline[mode][k] === undefined);
+      if (!missing.length) throw new Error(`budget.json already holds a ${PLATFORM} baseline; it is recorded once per platform`);
+      for (const k of missing) { b.baseline[mode][k] = shellBaseline[k]; b.budget[mode][k] = shellBudget[k]; }
       save(b);
       return;
     }
     const next: Budget = b ?? { baseline: { subdomain: { firstPaint: 0, commentReady: 0, control: 0 }, sandbox: { firstPaint: 0, commentReady: 0, control: 0 } }, budget: { subdomain: { firstPaint: 0, commentReady: 0 }, sandbox: { firstPaint: 0, commentReady: 0 } }, control: { subdomain: 0, sandbox: 0 }, enforceTargets: true };
-    next.baseline[mode] = { firstPaint: round(m.firstPaint), commentReady: round(m.commentReady), framePaint: round(m.framePaint), readyLatency: round(m.readyLatency), control: round(m.control) };
-    next.budget[mode] = { firstPaint: budgetFor(m.firstPaint), commentReady: budgetFor(m.commentReady), framePaint: budgetFor(m.framePaint), readyLatency: budgetFor(m.readyLatency) };
+    next.baseline[mode] = { firstPaint: round(m.firstPaint), commentReady: round(m.commentReady), ...shellBaseline, control: round(m.control) };
+    next.budget[mode] = { firstPaint: budgetFor(m.firstPaint), commentReady: budgetFor(m.commentReady), ...shellBudget };
     next.control[mode] = round(m.control);
     save(next);
     return;
   }
-  const measured = `first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, frame paint ${m.framePaint.toFixed(0)} ms, ready latency ${m.readyLatency.toFixed(0)} ms, control ${m.control.toFixed(0)} ms`;
+  const measured = `first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, frame paint ${m.framePaint.toFixed(0)} ms, ready latency ${m.readyLatency.toFixed(0)} ms, cold ready latency ${m.coldLatency.toFixed(0)} ms, control ${m.control.toFixed(0)} ms`;
   if (!b) {
     // No baseline for this platform (a CI runner, say): report, never fail.
     console.log(`${mode}: NOT GATED: web/perf/budget.json has no baseline for ${PLATFORM}, so this run only reports: ${measured}. Record one on this platform with CLAX_PERF_RECORD=baseline.`);
@@ -225,23 +278,20 @@ function judge(mode: FrameMode, m: Metrics & Shell & { control: number }): void 
   const limit = (x: number) => x * scale;
   const bud = b.budget[mode];
   const of = (x: number | undefined) => x === undefined ? "no budget" : `budget ${x}, limit ${limit(x).toFixed(0)}`;
-  const report = `${mode}: first paint ${m.firstPaint.toFixed(0)} ms (${of(bud.firstPaint)}), comment ready ${m.commentReady.toFixed(0)} ms (${of(bud.commentReady)}), frame paint ${m.framePaint.toFixed(0)} ms (${of(bud.framePaint)}), ready latency ${m.readyLatency.toFixed(0)} ms (${of(bud.readyLatency)}), control ${m.control.toFixed(0)} ms (scale ${scale.toFixed(2)})`;
+  const report = `${mode}: first paint ${m.firstPaint.toFixed(0)} ms (${of(bud.firstPaint)}), comment ready ${m.commentReady.toFixed(0)} ms (${of(bud.commentReady)}), frame paint ${m.framePaint.toFixed(0)} ms (${of(bud.framePaint)}), ready latency ${m.readyLatency.toFixed(0)} ms (${of(bud.readyLatency)}), cold ready latency ${m.coldLatency.toFixed(0)} ms (${of(bud.coldLatency)}), control ${m.control.toFixed(0)} ms (scale ${scale.toFixed(2)})`;
   console.log(report);
   expect(m.firstPaint, report).toBeLessThanOrEqual(limit(bud.firstPaint));
   expect(m.commentReady, report).toBeLessThanOrEqual(limit(bud.commentReady));
   if (b.enforceTargets) {
-    if (bud.framePaint === undefined || bud.readyLatency === undefined) throw new Error(`${report}: enforceTargets is on, but ${PLATFORM} has no frame paint or ready latency budget; record them with CLAX_PERF_RECORD=baseline`);
-    expect(m.framePaint, report).toBeLessThanOrEqual(limit(bud.framePaint));
-    expect(m.readyLatency, report).toBeLessThanOrEqual(limit(bud.readyLatency));
+    const missing = SHELL_KEYS.filter(k => bud[k] === undefined);
+    if (missing.length) throw new Error(`${report}: enforceTargets is on, but ${PLATFORM} has no budget for ${missing.join(", ")}; record them with CLAX_PERF_RECORD=baseline`);
+    for (const k of SHELL_KEYS) expect(m[k], `${k}: ${report}`).toBeLessThanOrEqual(limit(bud[k]!));
   }
   if (RECORD === "budget") {
     const low = (next: number, cur: number | undefined) => Math.min(next, cur ?? Infinity);
-    b.budget[mode] = {
-      firstPaint: low(budgetFor(m.firstPaint), bud.firstPaint),
-      commentReady: low(budgetFor(m.commentReady), bud.commentReady),
-      ...(bud.framePaint !== undefined ? { framePaint: low(budgetFor(m.framePaint), bud.framePaint) } : {}),
-      ...(bud.readyLatency !== undefined ? { readyLatency: low(budgetFor(m.readyLatency), bud.readyLatency) } : {}),
-    };
+    const next: Metrics & Partial<Shell> = { firstPaint: low(budgetFor(m.firstPaint), bud.firstPaint), commentReady: low(budgetFor(m.commentReady), bud.commentReady) };
+    for (const k of SHELL_KEYS) if (bud[k] !== undefined) next[k] = low(shellBudget[k], bud[k]);
+    b.budget[mode] = next;
     b.control[mode] = round(m.control);
     save(b);
   }
@@ -259,12 +309,19 @@ test.afterAll(async () => { await d?.stop(); });
 for (const mode of MODES) {
   test(`time to usable (${mode})`, async ({ browser }) => {
     const port = new URL(d.base).port;
-    for (let i = 0; i < WARMUPS; i++) await sample(browser, d.base, port, id, mode);
-    const xs: Sample[] = [];
-    for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id, mode));
-    const m: Metrics & Shell & { control: number } = { firstPaint: median(xs.map(x => x.firstPaint)), commentReady: median(xs.map(x => x.commentReady)), framePaint: median(xs.map(x => x.framePaint)), readyLatency: median(xs.map(x => x.readyLatency)), control: median(xs.map(x => x.control)) };
+    // A recording takes the median of several runs' medians; a check, one run.
+    const runs: { median: Metrics & Shell & { control: number }; samples: Sample[] }[] = [];
+    for (let run = 0; run < (RECORD ? RECORD_RUNS : 1); run++) {
+      for (let i = 0; i < WARMUPS; i++) await sample(browser, d.base, port, id, mode);
+      const xs: Sample[] = [];
+      for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id, mode));
+      const of = (k: keyof (Metrics & Shell) | "control") => median(xs.map(x => x[k]));
+      runs.push({ median: { firstPaint: of("firstPaint"), commentReady: of("commentReady"), framePaint: of("framePaint"), readyLatency: of("readyLatency"), coldLatency: of("coldLatency"), control: of("control") }, samples: xs });
+    }
+    const across = (k: keyof (Metrics & Shell) | "control") => median(runs.map(r => r.median[k]));
+    const m: Metrics & Shell & { control: number } = { firstPaint: across("firstPaint"), commentReady: across("commentReady"), framePaint: across("framePaint"), readyLatency: across("readyLatency"), coldLatency: across("coldLatency"), control: across("control") };
     const results = existsSync(RESULTS) ? JSON.parse(readFileSync(RESULTS, "utf8")) : {};
-    results[mode] = { platform: PLATFORM, median: m, samples: xs };
+    results[mode] = { platform: PLATFORM, median: m, runs };
     writeFileSync(RESULTS, JSON.stringify(results, null, 2) + "\n");
     judge(mode, m);
   });
