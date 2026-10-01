@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod blocking;
+pub mod boot;
 pub mod daemon;
 pub mod db_caller;
 pub mod error;

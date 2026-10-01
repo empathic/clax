@@ -10,11 +10,12 @@ import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { type ArtifactEvent, subscribe } from "../events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
-import { artifactOrigin, pageSrc, probeOrigin } from "../origin";
+import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendToAgent, upsert } from "../threads";
 import { afterPaint } from "./after-paint";
 import { AnchorHandles } from "./anchor-handles";
+import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
 import type { FrameHost } from "./frame-host";
@@ -153,7 +154,9 @@ export class ArtifactController {
   private cancelFlush: () => void = () => {};
   private readonly prompt = promptQueue(ask => this.set({ ask }));
 
-  constructor({ id, pinnedVersion, file: startFile = INDEX_FILE }: ArtifactProps) {
+  /** `init.boot`: the daemon's first-load data for this artifact, read in
+   * place of the first requests (the artifact, its threads, the viewer). */
+  constructor({ id, pinnedVersion, file: startFile = INDEX_FILE }: ArtifactProps, private readonly init: { boot?: Boot | null } = {}) {
     this.id = id;
     this.startHash = location.hash;
     this.frameHash = this.startHash;
@@ -515,24 +518,60 @@ export class ArtifactController {
   start(): void {
     if (this.live || this.disposed) return;
     this.live = true;
-    getArtifact(this.id).then(d => {
-      if (this.disposed) return;
-      this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
-      this.set(s => ({ data: d, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
-      this.viewChanged();
-    }, e => this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }));
+    const boot = this.init.boot ?? null;
+    if (boot) {
+      seedViewer(boot.viewer);
+      this.set({ threads: boot.threads });
+      this.loaded(boot.artifact);
+    } else {
+      getArtifact(this.id).then(d => this.loaded(d), e => this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }));
+    }
+    this.decideOrigin(boot);
+    this.offs.push(onShieldPress(() => this.showHint(this.s.commenting ? MOVE_TO_PICK : MOVE_TO_CLICK)));
+    this.listen();
+    // The stream's first `ready` reloads the threads either way.
+    if (!boot) this.loadThreads();
+    this.openStream();
+  }
+
+  private loaded(d: Loaded): void {
+    if (this.disposed) return;
+    this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
+    this.set(s => ({ data: d, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.viewChanged();
+  }
+
+  /** The frame mode: this tab's cached probe; else the daemon's guess (from
+   * the `clax_frame` cookie, when it served a frame), confirmed or corrected
+   * by a probe; else a probe. The decision is remembered in the cookie for
+   * the next load's HTML. */
+  private decideOrigin(boot: Boot | null): void {
+    const o = artifactOrigin(this.id);
     const decided = (origin: string | null) => {
       if (this.disposed) return;
+      rememberFrameMode(origin);
       this.set({ origin });
       this.viewChanged();
     };
-    const o = artifactOrigin(this.id);
-    if (!o) decided(null);
-    else void probeOrigin(o).then(ok => decided(ok ? o : null));
-    this.offs.push(onShieldPress(() => this.showHint(this.s.commenting ? MOVE_TO_PICK : MOVE_TO_CLICK)));
-    this.listen();
-    this.loadThreads();
-    this.openStream();
+    if (!o) { decided(null); return; }
+    const cached = cachedOriginOk();
+    if (cached !== null) { decided(cached ? o : null); return; }
+    if (boot?.frame) {
+      const guess = boot.frame.mode === "subdomain" ? o : null;
+      decided(guess);
+      void probeOrigin(o).then(ok => { if ((ok ? o : null) !== guess) decided(ok ? o : null); });
+      return;
+    }
+    void probeOrigin(o).then(ok => decided(ok ? o : null));
+  }
+
+  /** What the page's inline listener kept before the shell listened (see
+   * `takeEarly`), in order: a message goes through the same checks as one
+   * heard now; a load counts only when it is the adopted frame's. */
+  replay(e: Event): void {
+    if (this.disposed) return;
+    if (e.type === "message") this.onMessage(e as MessageEvent);
+    else if (e.type === "load" && this.frame?.el && e.target === this.frame.el) this.frameLoaded();
   }
 
   /** Shows other props for the same artifact as a re-render of the view with

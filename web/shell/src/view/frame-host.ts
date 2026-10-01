@@ -1,11 +1,29 @@
 /** The sandbox a frame gets when artifacts have no origin of their own. */
 export const FRAME_SANDBOX = "allow-scripts allow-forms allow-modals allow-popups allow-downloads";
+/** The permissions every content frame delegates. */
+const FRAME_ALLOW = "clipboard-write; fullscreen";
+const FRAME_TITLE = "artifact content";
+
+/** Whether `el`, a frame the daemon put in the stage, is the one the shell
+ * would make for `src` (fragment aside: the daemon never sees it): the same
+ * `src`, `allow`, title and class, and the same sandbox, exactly, or none. */
+function servedAs(el: HTMLIFrameElement, src: string, sandboxed: boolean): boolean {
+  const hash = src.indexOf("#");
+  return el.getAttribute("src") === (hash < 0 ? src : src.slice(0, hash))
+    && el.getAttribute("sandbox") === (sandboxed ? FRAME_SANDBOX : null)
+    && el.getAttribute("allow") === FRAME_ALLOW
+    && el.getAttribute("title") === FRAME_TITLE
+    && el.className === "frame";
+}
 
 /** The content `<iframe>`, first in the stage. The shell never re-creates it
  * on a render: it is replaced only when `key` (version and frame mode)
  * changes, and one the daemon already put in the stage is adopted when its
- * `src` and sandboxing are what the shell would have made. `onLoad` runs on
- * every load of a document in it, navigations inside the frame included. */
+ * `src` (without the fragment) and attributes are what the shell would have
+ * made; it is then sent to the fragment. Any other frame in the stage is
+ * removed. Adopting a frame opens nothing: the gate opens only on a hello.
+ * `onLoad` runs on every load of a document in it, navigations inside the
+ * frame included (loads before the adoption are the caller's to replay). */
 export class FrameHost {
   el: HTMLIFrameElement | null = null;
   private key = "";
@@ -25,16 +43,17 @@ export class FrameHost {
       return this.el;
     }
     const served = this.el ? null : this.stage.querySelector<HTMLIFrameElement>(":scope > iframe.frame");
-    if (served && served.getAttribute("src") === src && served.hasAttribute("sandbox") === sandboxed) {
+    if (served && servedAs(served, src, sandboxed)) {
       this.take(served, key, src);
+      if (served.getAttribute("src") !== src) served.src = src;
       return served;
     }
     served?.remove();
     this.remove();
     const el = this.stage.ownerDocument.createElement("iframe");
     el.className = "frame";
-    el.title = "artifact content";
-    el.setAttribute("allow", "clipboard-write; fullscreen");
+    el.title = FRAME_TITLE;
+    el.setAttribute("allow", FRAME_ALLOW);
     if (sandboxed) el.setAttribute("sandbox", FRAME_SANDBOX);
     el.src = src;
     this.take(el, key, src);
@@ -42,7 +61,9 @@ export class FrameHost {
     return el;
   }
 
+  /** Removes the frame, and a served one not adopted. */
   remove(): void {
+    if (!this.el) this.stage.querySelector(":scope > iframe.frame")?.remove();
     this.el?.removeEventListener("load", this.loaded);
     this.el?.remove();
     this.el = null;

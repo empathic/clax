@@ -96,7 +96,7 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended)
 /// and `owner_harness` (the owner's harness, when it exists). The owner
 /// session itself is not exposed: these routes need no token.
-fn with_owner(a: &Artifact, owner: Option<&Session>) -> Value {
+pub(crate) fn with_owner(a: &Artifact, owner: Option<&Session>) -> Value {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
