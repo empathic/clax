@@ -1,0 +1,6 @@
+import { mountArtifactView } from "./artifact";
+import { parseShellPath } from "./route";
+
+const r = parseShellPath(location.pathname);
+// The daemon serves this entry only for artifact paths.
+if (r.kind === "artifact") mountArtifactView(document.getElementById("app")!, { id: r.id, pinnedVersion: r.version, file: r.file });

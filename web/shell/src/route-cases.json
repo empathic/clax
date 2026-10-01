@@ -1,0 +1,16 @@
+[
+  { "path": "/", "route": { "kind": "gallery" } },
+  { "path": "/a/7q3k9mzx2b4t", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": null, "file": "index.html" } },
+  { "path": "/a/7q3k9mzx2b4t/", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": null, "file": "index.html" } },
+  { "path": "/a/7q3k9mzx2b4t/v/3", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": 3, "file": "index.html" } },
+  { "path": "/a/7q3k9mzx2b4t/v/3/docs/about.html", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": 3, "file": "docs/about.html" } },
+  { "path": "/a/7q3k9mzx2b4t/docs/a%20b.html", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": null, "file": "docs/a b.html" } },
+  { "path": "/a/7q3k9mzx2b4t/v/x/a.html", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": null, "file": "v/x/a.html" } },
+  { "path": "/a/7q3k9mzx2b4t/%E2%9C%93.html", "route": { "kind": "artifact", "id": "7q3k9mzx2b4t", "version": null, "file": "✓.html" } },
+  { "path": "/a/7q3k9mzx2b4t/%E0%A4%A.html", "route": { "kind": "gallery" } },
+  { "path": "/a/7q3k9mzx2b4t/%ED%A0%80.html", "route": { "kind": "gallery" } },
+  { "path": "/a/7q3k9mzx2b4t/%+1.html", "route": { "kind": "gallery" } },
+  { "path": "/a/7q3k9mzx2b4u", "route": { "kind": "gallery" } },
+  { "path": "/a/7Q3K9MZX2B4T", "route": { "kind": "gallery" } },
+  { "path": "/b/7q3k9mzx2b4t", "route": { "kind": "gallery" } }
+]
