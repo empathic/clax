@@ -134,15 +134,92 @@ pub async fn shell(req: HeaderMap) -> Result<Response, ApiError> {
     }
 }
 
+/// Where the runtime contract's type definitions are served under `/_clax/`.
+const CONTRACT_PREFIX: &str = "contract/0.2.61/";
+
+/// The type definitions of runtime contract 0.2.61 (`web/contract/0.2.61/`),
+/// built into the binary so agents can read them from their daemon at
+/// `/_clax/contract/0.2.61/<name>.d.ts`.
+const CONTRACT_FILES: &[(&str, &str)] = &[
+    (
+        "artifact.d.ts",
+        include_str!("../../../../web/contract/0.2.61/artifact.d.ts"),
+    ),
+    (
+        "assets.d.ts",
+        include_str!("../../../../web/contract/0.2.61/assets.d.ts"),
+    ),
+    (
+        "claude.d.ts",
+        include_str!("../../../../web/contract/0.2.61/claude.d.ts"),
+    ),
+    (
+        "comments.d.ts",
+        include_str!("../../../../web/contract/0.2.61/comments.d.ts"),
+    ),
+    (
+        "db.d.ts",
+        include_str!("../../../../web/contract/0.2.61/db.d.ts"),
+    ),
+    (
+        "downloads.d.ts",
+        include_str!("../../../../web/contract/0.2.61/downloads.d.ts"),
+    ),
+    (
+        "files.d.ts",
+        include_str!("../../../../web/contract/0.2.61/files.d.ts"),
+    ),
+    (
+        "mcp.d.ts",
+        include_str!("../../../../web/contract/0.2.61/mcp.d.ts"),
+    ),
+    (
+        "permissions.d.ts",
+        include_str!("../../../../web/contract/0.2.61/permissions.d.ts"),
+    ),
+    (
+        "room.d.ts",
+        include_str!("../../../../web/contract/0.2.61/room.d.ts"),
+    ),
+    (
+        "sample.d.ts",
+        include_str!("../../../../web/contract/0.2.61/sample.d.ts"),
+    ),
+    (
+        "self.d.ts",
+        include_str!("../../../../web/contract/0.2.61/self.d.ts"),
+    ),
+    (
+        "user.d.ts",
+        include_str!("../../../../web/contract/0.2.61/user.d.ts"),
+    ),
+];
+
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
-/// have content-hashed names.
+/// have content-hashed names. `contract/0.2.61/<name>.d.ts` is one of the
+/// runtime contract's type definitions, as plain text.
 pub async fn static_file(
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let path = path(p)?;
+    if let Some(name) = path.strip_prefix(CONTRACT_PREFIX) {
+        let (_, text) = CONTRACT_FILES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .ok_or_else(ApiError::not_found)?;
+        return Ok((
+            [
+                (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
+                (header::CACHE_CONTROL, "no-cache"),
+                (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+            ],
+            *text,
+        )
+            .into_response());
+    }
     let file = format!("_clax/{path}");
     let f = asset(&file).ok_or_else(ApiError::not_found)?;
     let ct = if path.ends_with(".js") {
@@ -171,6 +248,18 @@ pub async fn static_file(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_contract_file_is_built_in() {
+        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/../../web/contract/0.2.61");
+        let mut on_disk: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().into_string().unwrap())
+            .collect();
+        on_disk.sort();
+        let built: Vec<String> = CONTRACT_FILES.iter().map(|(n, _)| n.to_string()).collect();
+        assert_eq!(built, on_disk);
+    }
 
     #[test]
     fn only_the_url_naming_the_served_bytes_is_immutable() {

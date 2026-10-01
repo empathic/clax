@@ -3,9 +3,12 @@
 # Not a quality gate. It starts a daemon in a scratch CLAX_HOME on an
 # ephemeral port (Codex push off), publishes the tracker sample page, seeds
 # and reads it with the db_* tools over the daemon's /mcp endpoint, checks
-# caller levels, private subtrees, SSE doc events, PATCH capabilities, and a
-# page publish, then (unless --no-browser) runs the claude.ai-page suite in
-# both frame modes. Each check prints `smoke: ok <check>`; the last line is
+# caller levels, private subtrees, SSE doc events, PATCH capabilities, and the
+# REST publish a page's `artifact.publish` makes, then (unless --no-browser)
+# runs the claude.ai-page suite in both frame modes against the built web UI.
+# It never builds the web UI (a build rewrites web/dist, which `just dev` and
+# the quality gates serve): when web/dist is older than its sources it stops
+# and says so. Each check prints `smoke: ok <check>`; the last line is
 # `smoke: all checks passed`.
 #
 # Usage: scripts/smoke-capabilities.sh [--no-browser] [scratch-dir]
@@ -167,12 +170,19 @@ s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 1, "file
 if s != 201: fail(f"page publish: {s} {v}")
 s, v, _ = call("POST", f"/api/artifacts/{AID}/versions", {"if_version": 1, "files": {"index.html": {"content": PAGE, "encoding": "utf8"}}}, token=True)
 if s != 409 or v["error"]["current"] != 2: fail(f"a stale republish was not a conflict: {s} {v}")
-ok("a page publish creates v2 and a stale one is a conflict naming v2")
+ok("a REST publish marked as the page's (X-Clax-Via: page) creates v2, and a stale one is a conflict naming v2")
 PY
 
 if [ "$BROWSER" = 1 ]; then
+    # The suite's daemon serves web/dist; it must be built from the current sources.
+    for out in web/dist/index.html web/dist/_clax/bridge.js; do
+        [ -f "$out" ] || die "$out is missing: run (cd web && npm run build) first, or pass --no-browser"
+        newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/package.json web/package-lock.json \
+            -type f ! -name '*.test.ts' -newer "$out" -print -quit)"
+        [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && npm run build) first, or pass --no-browser"
+    done
     echo "smoke: running the claude.ai-page suite (web/e2e/contract.spec.ts) in both frame modes"
-    (cd web && npm run build >/dev/null && npx playwright test contract.spec.ts --reporter=line) || die "the claude.ai-page suite failed"
+    (cd web && npx playwright test contract.spec.ts --reporter=line) || die "the claude.ai-page suite failed"
     echo "smoke: ok the claude.ai sample pages run unchanged in both frame modes"
 fi
 echo "smoke: all checks passed"

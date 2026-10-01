@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
+import { contentFrame, openArtifact, publishWith, reach, startDaemon, type FrameMode } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -17,6 +17,11 @@ const html = (file: string) => readFileSync(new URL(file, dir), "utf8");
 /** Pages in web/e2e/pages that are not claude.ai sample pages but deliberate
  * misuse for artifact.spec.ts (publishing on load, publishing in a burst). */
 const MISUSE = ["publish-burst.html", "publish-on-load.html"];
+
+/** The content frame's URL in each frame mode: the artifact's own origin, or
+ * the main origin's sandboxed `/c/` path. */
+const frameUrl = (mode: FrameMode, id: string) =>
+  mode === "subdomain" ? new RegExp(`^http://${id}\\.localhost:\\d+/v/1/$`) : new RegExp(`^http://localhost:\\d+/c/${id}/v/1/$`);
 
 type Case = { caps: Record<string, unknown>; check(f: Frame, page: Page, id: string): Promise<void> };
 
@@ -71,36 +76,74 @@ const CASES: Record<string, Case> = {
       const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("dialog").getByRole("button", { name: "Save" }).click()]);
       expect(download.suggestedFilename()).toBe("q3 report.csv");
       await expect(f.locator("#status")).toHaveText("saved");
+      // A type outside the contract's allowlist is refused without a prompt.
+      await reach(page, f.locator("#exe"));
+      await f.locator("#exe").click();
+      await expect(f.locator("#status")).toHaveText("rejected_extension");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
     },
   },
   "who.html": {
     caps: { user: { scopes: ["profile"] } },
     async check(f) {
-      await expect(f.locator("#facts")).toContainText('"isOwner":true');
-      await expect(f.locator("#facts")).toContainText('"idShape":true');
+      await expect(f.locator("#facts")).not.toHaveText("waiting");
+      expect(JSON.parse((await f.locator("#facts").textContent())!)).toEqual({
+        isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true,
+        name: "", meResolved: "", isMe: true, stranger: "", other: null, search: 0,
+      });
     },
   },
   "gallery.html": {
     caps: { assets: {}, db: {} },
-    async check(f) {
+    async check(f, page) {
       await expect(f.locator("#status")).toHaveText("ready");
       await f.locator("#upload").click();
-      await expect(f.locator("#status")).toContainText('"loaded":40');
+      await expect(f.locator("#status")).toHaveText(JSON.stringify({ loaded: 40, files: 1, type: "image/png" }));
+      await reach(page, f.locator("#remove"));
+      await f.locator("#remove").click();
+      await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
     },
   },
   "board.html": {
     caps: { comments: { customAnchors: true } },
     async check(f, page, id) {
+      // create: the viewer's consent, asked once, then a write as the viewer.
+      await f.locator(".note").click();
+      await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+      await expect(f.locator("#status")).toHaveText("created string");
+      // The strict tier: a write within 5.5 s of input to the shell (the
+      // Allow click) is refused, with nothing written.
+      await reach(page, f.locator(".note"));
+      await f.locator(".note").click();
+      await expect(f.locator("#status")).toHaveText("shell_input_recent");
+      // customAnchors: in comment mode the page's own click composes on its shape.
+      const post = page.getByRole("button", { name: "Post comment" });
+      await page.getByRole("button", { name: "Comment", exact: true }).click();
+      await expect(f.locator("#status")).toHaveText("mode true");
+      await reach(page, f.locator("#canvas"));
+      await f.locator("#canvas").click({ position: { x: 50, y: 50 } });
+      await expect(page.getByText("Red square")).toBeVisible();
+      await page.locator("textarea").fill("Make it blue.");
+      await post.click();
+      // Out of comment mode, openComposer: the composer opens on the card; the viewer posts.
+      await page.getByRole("button", { name: "Comment", exact: true }).click();
+      await expect(f.locator("#status")).toHaveText("mode false");
+      await reach(page, f.locator(".comment"));
       await f.locator(".comment").click();
       await expect(f.locator("#status")).toContainText('"opened":true');
-      const post = page.getByRole("button", { name: "Post comment" });
       await expect(post).toBeVisible();
       await page.locator("textarea").fill("Split this card in two.");
       await post.click();
+      await expect(post).toHaveCount(0);
+      type Thread = { anchor: { kind: string; quote?: string | null; custom_name?: string | null }; comments: { body: string; via_page: boolean }[] };
       await expect.poll(async () => {
-        const body = await (await fetch(`${d.base}/api/artifacts/${id}/threads`)).json() as { threads: { anchor: { quote?: string | null }; comments: { body: string }[] }[] };
-        return body.threads.map(t => [t.anchor.quote ?? "", t.comments.map(c => c.body)]);
-      }).toEqual([[expect.stringContaining("Quarterly goals"), ["Split this card in two."]]]);
+        const body = await (await fetch(`${d.base}/api/artifacts/${id}/threads`)).json() as { threads: Thread[] };
+        return body.threads.map(t => [t.anchor.kind, t.anchor.custom_name ?? t.anchor.quote ?? "", t.comments.map(c => [c.body, c.via_page])]);
+      }).toEqual([
+        [expect.any(String), expect.stringContaining("Quarterly goals"), [["Looks right to me.", true]]],
+        ["custom", "shape-red", [["Make it blue.", false]]],
+        [expect.any(String), expect.stringContaining("Quarterly goals"), [["Split this card in two.", false]]],
+      ]);
     },
   },
 };
@@ -128,6 +171,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         expect(await seed(artifact.id, "tasks/b", { title: "Seeded two", created: 2 })).toBe(200);
       }
       const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+      expect(f.url()).toMatch(frameUrl(mode, artifact.id));
       await c.check(f, page, artifact.id);
     });
   }
@@ -139,6 +183,7 @@ test("LAN: the tracker is readable, and writable only as far as the viewer's lev
   // The token without a viewer cannot write a viewer's private subtree either.
   expect(await seed(artifact.id, "data/users/u_ffffffffffffffffffffff/prefs", { note: "not yours" })).toBe(404);
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
+  expect(f.url()).toMatch(frameUrl("sandbox", artifact.id));
   await expect(f.locator("#status")).toHaveText("tasks 1");
   await f.getByRole("textbox", { name: "New task" }).fill("From the LAN");
   await f.getByRole("button", { name: "Add" }).click();

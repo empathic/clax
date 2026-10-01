@@ -45,7 +45,6 @@ These touch a real harness, a real home or GitHub, so no agent runs them.
 
 ## Known issues
 
-- **Installed plugins don't ship the capability type definitions.** The skills point agents at `web/contract/0.2.61/` in the Clax source; an agent outside a checkout cannot read them. Embed them in the binary and write them with the plugin copy, or serve them from the daemon.
 - **The daemon's own `/mcp` `status` does not report `upgrade_held`.** The
   shim, the CLI and Pi report it; the daemon-served MCP endpoint has no hold
   probe (Task 5 review, Low 5).

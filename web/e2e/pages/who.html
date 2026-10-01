@@ -23,7 +23,8 @@
   const show = async () => {
     const me = user ? await user.me() : null;
     if (me) { document.getElementById("avatar").src = me.avatarUrl; document.getElementById("greeting").textContent = "Hello, " + (me.name || "you"); }
-    // The spec publishes this page with another viewer's public ID here.
+    // Another viewer's public ID: as published here it names nobody, and a
+    // test may publish the page with a real one in its place.
     const other = document.body.dataset.other;
     const ids = me && me.id ? [me.id, "u_ffffffffffffffffffffff", other] : [];
     const people = user ? await user.profiles(ids) : {};
