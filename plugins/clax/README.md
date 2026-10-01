@@ -10,56 +10,33 @@ repository root.
 
 ## Install
 
-No release has been published yet: install from a clone of this repository.
+From a clone of the Clax repository, run `just install`: it installs `clax`
+into `~/.cargo/bin` and runs `clax init`, which registers this plugin (the
+copy built into that binary, written to `~/.clax/marketplace/`). Then start a
+new session. Without a clone, the release installer (`install.sh`, see the
+top-level README) puts `clax` in `~/.local/bin`; then run `clax init`.
 
-```
-cd /path/to/clax
-just web                      # once: builds the web UI the binary embeds
-cargo build -p clax-cli       # builds target/debug/clax
-codex plugin marketplace add /path/to/clax
-codex plugin add clax@clax
-```
+The plugin runs `clax` from the `PATH` the harness starts with (or
+`CLAX_BIN`), through a small wrapper, `scripts/ensure-clax.sh`. The wrapper
+never downloads or builds anything. A `clax` whose version differs from the
+plugin's runs with a warning in `~/.clax/logs/hooks.log`. Without any `clax`,
+the MCP server still starts, with a single tool, `status`, that says why and
+how to fix it. Hooks print one line, log it, and exit 0, so a missing binary
+never fails a turn.
 
-`codex mcp list` then shows the `clax` server. Start a new Codex session to
-pick up the tools and the skill.
-
-The plugin runs `clax` through a small launcher, `scripts/ensure-clax.sh`,
-which uses the first of:
-
-1. `CLAX_BIN`, an absolute path to a build;
-2. `clax` on `PATH`;
-3. `~/.local/bin/clax` (or `$CLAX_INSTALL_DIR/clax`), then
-   `~/.clax/bin/clax`;
-4. the source checkout's `target/release/clax` or `target/debug/clax`,
-   whichever is newer (see "Working from a source checkout");
-5. a download of the latest release, checked against its `.sha256` file
-   (which comes from the same place as the tarball, so it protects integrity,
-   not authenticity). This is not available until the first release is
-   published; until then it fails with a message naming the remedies.
-
-Hooks never download anything: when no binary is found they print one line,
-log it to `~/.clax/logs/hooks.log`, and exit 0, so a missing binary never
-fails a Codex turn.
+`codex mcp list` then shows the `clax` server. Codex runs plugin hooks only
+with `features.hooks = true` and after you trust them (see below).
 
 ## Working from a source checkout
 
-- Build once with `cargo build -p clax-cli`. Codex runs the plugin from its
-  own copy (below), so the launcher finds the checkout through the marketplace
-  source Codex recorded in `$CODEX_HOME/config.toml` (`[marketplaces.clax]
-  source`), and uses its `target/debug/clax`, or `target/release/clax`
-  when that is newer. After a rebuild, new sessions use the new binary.
-- Or run `cargo install --path crates/clax-cli`, which puts `clax` in
-  `~/.cargo/bin`; when that is on the `PATH` Codex starts with, it wins over
-  the checkout's build.
-- Or set `CLAX_BIN` to a binary, or `CLAX_SOURCE_DIR` to a checkout, in
-  the environment Codex starts with (`.mcp.json` forwards both to the MCP
-  server).
-
-Codex copies the plugin into `$CODEX_HOME/plugins/cache/clax/clax/<version>/`
-when you run `codex plugin add`, and runs that copy. Changing the checkout (the
-skill, the hooks, the launcher) does not change the copy: run
-`codex plugin add clax@clax` again, then start a new session.
-`clax doctor --agent codex` reports a stale copy.
+`just dev codex` starts a session on a fresh build, on a separate home and
+port; "Developing Clax" in the top-level README has the details. Codex cannot
+load a plugin from a directory: it runs the copy `codex plugin add` put in
+`$CODEX_HOME/plugins/cache/clax/clax/<version>/`, so `just dev codex` uses
+your installed plugin. A change to the skill, the hooks or the wrapper
+reaches Codex through `just install`, which reinstalls the plugin from the
+copy built into the new binary. `clax doctor --agent codex` reports a stale
+copy.
 
 ## When something is missing
 
@@ -67,12 +44,14 @@ If the tools are missing, a hook reports an error, or comments do not arrive,
 run
 
 ```
-clax doctor --agent codex        # or /path/to/clax/target/debug/clax doctor --agent codex
+clax doctor --agent codex
 ```
 
-It checks each layer and names the fix for each failure: `binary` (which
-`clax` and its version), `plugin` (Codex's installed copy and whether its
-version and launcher match the binary), `skill` (whether the installed skill
+It checks each layer and names the fix for each failure: `binary` (this
+`clax`, the one the plugins run, and every `clax` on `PATH`), `upgrade`
+(whether a failed upgrade keeps the daemon at an older version, until
+when, and why), `plugin` (Codex's installed copy and whether its version and
+wrapper match the binary), `skill` (whether the installed skill
 states the binary's tool count and is the skill the binary was built with),
 `mcp` (whether the daemon has a live Codex session, which the MCP server
 registers), `hooks` (the latest Codex lines in `~/.clax/logs/hooks.log`),
@@ -81,9 +60,12 @@ registers), `hooks` (the latest Codex lines in `~/.clax/logs/hooks.log`),
 
 `~/.clax/logs/hooks.log` (under `$CLAX_HOME` when set) has one line per
 hook run (agent, event, binary, duration, exit code, and the start of any
-error) and one per launcher run that found no binary. It rotates to
-`hooks.log.1` past 1 MiB. The `status` tool reports `plugin_version` and
-`skew: true` when the plugin and the binary differ.
+error), one `launch` line per MCP server start (the binary, its version, and
+any version warning), and one `launcher` line per wrapper run that could not
+run `clax` (the reason and the binaries it tried). It rotates to
+`hooks.log.1` past 1 MiB. The `status` tool reports `binary` (the `clax`
+answering), `plugin_version`, and `skew: true` when the plugin and the
+binary differ.
 
 ## What it adds
 
@@ -200,9 +182,7 @@ against the installed plugin root, so `.mcp.json` sets `"cwd": "./"` and runs
 
 Codex starts MCP servers with a minimal environment (`HOME`, `PATH`, and a few
 others), so `.mcp.json` forwards the Clax variables through `env_vars`:
-`CLAX_HOME`, `CLAX_NO_OPEN`, `CLAX_BIN`, `CLAX_SOURCE_DIR`, `CLAX_INSTALL_DIR`,
-`CLAX_CONFIG_DIR`, `CLAX_RELEASE_BASE_URL`, `CLAX_RELEASE_VERSION`,
-`CLAX_CODEX_BIN`. A daemon the MCP server starts inherits that environment,
+`CLAX_HOME`, `CLAX_NO_OPEN`, `CLAX_BIN` and `CLAX_CODEX_BIN`. A daemon the MCP server starts inherits that environment,
 including Codex's `PATH`.
 
 ## Maintaining
@@ -212,11 +192,11 @@ repository root; `scripts/test-plugins.sh` fails when they differ. Update the
 root copy and copy it over. `scripts/test-plugins.sh` also runs Codex's plugin
 validator when `~/.codex/skills/.system/plugin-creator` is installed.
 
-Codex installs a copy of the plugin under `$CODEX_HOME/plugins/cache`; after
-changing files here, run `codex plugin add clax@clax` again. The skill's
-tool list and plugin version are generated: after adding a tool to
-`plugins/pi/test/fixtures/contract.json` or changing the version, run
-`scripts/sync-skill-tools.py`.
+Codex installs a copy of the plugin under `$CODEX_HOME/plugins/cache`, from
+the copy built into the binary; after changing files here, run
+`just install`. The skill's tool list and plugin version are generated: after
+adding a tool to `plugins/pi/test/fixtures/contract.json` or changing the
+version, run `scripts/sync-skill-tools.py`.
 
 `scripts/smoke-codex.sh` (manual, calls a model) installs the marketplace and
 plugin into a scratch `CODEX_HOME`, runs `codex exec` to publish a page, and
