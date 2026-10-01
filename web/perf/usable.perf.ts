@@ -1,12 +1,18 @@
 import { test, expect, type Browser } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { arch, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { type FrameMode, contentFrame, publish, startDaemon } from "../e2e/fixtures";
 
 type Metrics = { firstPaint: number; commentReady: number };
 type Modes<T> = { subdomain: T; sandbox: T };
 type Budget = { baseline: Modes<Metrics & { control: number }>; budget: Modes<Metrics>; control: Modes<number>; enforceTargets: boolean };
-type Sample = Metrics & { control: number };
+/** budget.json: one Budget per platform, keyed by `PLATFORM`. Times differ
+ * too much between machines for one platform's budget to judge another's. */
+type Budgets = Record<string, Budget>;
+/** `paintSource` says which clock gave `firstPaint`: the frame's paint
+ * timing, or the two-animation-frame fallback where paint timing is missing. */
+type Sample = Metrics & { control: number; paintSource: "paint" | "raf" };
 
 const BUDGET = fileURLToPath(new URL("./budget.json", import.meta.url));
 const RESULTS = fileURLToPath(new URL("./results.json", import.meta.url));
@@ -15,6 +21,8 @@ const SAMPLES = 9;
 const MODES: FrameMode[] = ["subdomain", "sandbox"];
 /** What `CLAX_PERF_RECORD` asks for: nothing, the first baseline, or lower budgets. */
 const RECORD = process.env.CLAX_PERF_RECORD ?? "";
+/** The key of this machine's entry in budget.json, e.g. `darwin-arm64`. */
+const PLATFORM = `${platform()}-${arch()}`;
 
 /** A readable page of about 60 KB: headings, paragraphs, a table. */
 const PAGE = "<!doctype html><title>Perf</title><style>body{font:16px/1.5 system-ui;margin:2rem}</style>"
@@ -69,7 +77,14 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
 
     const page = await ctx.newPage();
     await page.goto(`${base}/a/${id}`, { waitUntil: "commit" });
-    await page.getByRole("button", { name: "Comment" }).click();
+    // Press Comment the moment it exists and is enabled. A plain `click()`
+    // first waits for the button to hold still over two animation frames,
+    // which adds about 46 ms of Playwright to the app's time. `force` skips
+    // those checks but still sends real input through Chromium, so the shell
+    // sees a trusted click, as a person's; `dispatchEvent` would be synthetic.
+    const comment = page.getByRole("button", { name: "Comment", disabled: false });
+    await comment.waitFor({ state: "attached" });
+    await comment.click({ force: true });
     const frame = await contentFrame(page, id, 1);
     const shell = await poll(() => page.evaluate(() => (window as unknown as { claxPerf?: Rec }).claxPerf?.origin ?? null), "the shell's time origin");
     const rec = await poll(async () => {
@@ -77,21 +92,32 @@ async function sample(browser: Browser, base: string, port: string, id: string, 
       return r && (r.paint ?? r.raf) !== null && r.crosshair !== null ? r : null;
     }, "first paint and comment mode in the frame");
 
-    const direct = mode === "subdomain" ? `http://${id}.localhost:${port}/v/1/` : `${base}/c/${id}/v/1/`;
-    await page.goto(direct);
+    // The control, in both modes, is a direct navigation to the artifact's
+    // own host. Leaving the shell's origin for it is a cross-site move that
+    // starts a new renderer process, so it slows down with the machine (44 ms
+    // quiet, 72 ms under load here). A same-site `/c/` navigation takes about
+    // 16 ms, under the noise floor, and barely moves under load, so it could
+    // not scale the sandbox budgets.
+    await page.goto(`http://${id}.localhost:${port}/v/1/`);
     const ctl = await poll(() => page.evaluate(() => {
       const r = (window as unknown as { claxPerf?: Rec }).claxPerf;
       const p = r ? r.paint ?? r.raf : null;
       return r && p !== null ? p - r.origin : null;
     }), "the control page's first paint");
-    return { firstPaint: (rec.paint ?? rec.raf)! - shell, commentReady: rec.crosshair! - shell, control: ctl };
+    return { firstPaint: (rec.paint ?? rec.raf)! - shell, commentReady: rec.crosshair! - shell, control: ctl, paintSource: rec.paint !== null ? "paint" : "raf" };
   } finally {
     await ctx.close();
   }
 }
 
-function load(): Budget | null {
-  return existsSync(BUDGET) ? JSON.parse(readFileSync(BUDGET, "utf8")) as Budget : null;
+function loadAll(): Budgets {
+  return existsSync(BUDGET) ? JSON.parse(readFileSync(BUDGET, "utf8")) as Budgets : {};
+}
+
+function save(b: Budget): void {
+  const all = loadAll();
+  all[PLATFORM] = b;
+  writeFileSync(BUDGET, JSON.stringify(all, null, 2) + "\n");
 }
 
 /** Chromium reports these times in 4 ms steps, and the medians are only
@@ -103,19 +129,24 @@ const NOISE_FLOOR_MS = 30;
 const budgetFor = (mid: number) => Math.ceil(Math.max(mid * 1.25, mid + NOISE_FLOOR_MS));
 const floored = (control: number) => Math.max(control, NOISE_FLOOR_MS);
 
-function judge(mode: FrameMode, m: Sample): void {
+function judge(mode: FrameMode, m: Metrics & { control: number }): void {
   const round = (x: number) => Math.ceil(x);
-  const b = load();
+  const b = loadAll()[PLATFORM] ?? null;
   if (RECORD === "baseline") {
-    if (b?.baseline[mode].firstPaint) throw new Error("budget.json already holds a baseline; it is recorded once, in Task 1");
+    if (b?.baseline[mode].firstPaint) throw new Error(`budget.json already holds a ${PLATFORM} baseline; it is recorded once per platform`);
     const next: Budget = b ?? { baseline: { subdomain: { firstPaint: 0, commentReady: 0, control: 0 }, sandbox: { firstPaint: 0, commentReady: 0, control: 0 } }, budget: { subdomain: { firstPaint: 0, commentReady: 0 }, sandbox: { firstPaint: 0, commentReady: 0 } }, control: { subdomain: 0, sandbox: 0 }, enforceTargets: false };
     next.baseline[mode] = { firstPaint: round(m.firstPaint), commentReady: round(m.commentReady), control: round(m.control) };
     next.budget[mode] = { firstPaint: budgetFor(m.firstPaint), commentReady: budgetFor(m.commentReady) };
     next.control[mode] = round(m.control);
-    writeFileSync(BUDGET, JSON.stringify(next, null, 2) + "\n");
+    save(next);
     return;
   }
-  if (!b) throw new Error("web/perf/budget.json is missing; record a baseline with CLAX_PERF_RECORD=baseline");
+  if (!b) {
+    // No baseline for this platform (a CI runner, say): report, never fail.
+    console.log(`${mode}: NOT GATED: web/perf/budget.json has no baseline for ${PLATFORM}, so this run only reports: first paint ${m.firstPaint.toFixed(0)} ms, comment ready ${m.commentReady.toFixed(0)} ms, control ${m.control.toFixed(0)} ms. Record one on this platform with CLAX_PERF_RECORD=baseline.`);
+    if (RECORD === "budget") throw new Error(`no ${PLATFORM} baseline to lower budgets from; record one with CLAX_PERF_RECORD=baseline`);
+    return;
+  }
   const scale = Math.min(3, Math.max(1, floored(m.control) / floored(b.control[mode])));
   const limit = (x: number) => x * scale;
   const report = `${mode}: first paint ${m.firstPaint.toFixed(0)} ms (budget ${b.budget[mode].firstPaint}, limit ${limit(b.budget[mode].firstPaint).toFixed(0)}), comment ready ${m.commentReady.toFixed(0)} ms (budget ${b.budget[mode].commentReady}, limit ${limit(b.budget[mode].commentReady).toFixed(0)}), control ${m.control.toFixed(0)} ms (scale ${scale.toFixed(2)})`;
@@ -130,7 +161,7 @@ function judge(mode: FrameMode, m: Sample): void {
     const next = { firstPaint: budgetFor(m.firstPaint), commentReady: budgetFor(m.commentReady) };
     b.budget[mode] = { firstPaint: Math.min(next.firstPaint, b.budget[mode].firstPaint), commentReady: Math.min(next.commentReady, b.budget[mode].commentReady) };
     b.control[mode] = round(m.control);
-    writeFileSync(BUDGET, JSON.stringify(b, null, 2) + "\n");
+    save(b);
   }
 }
 
@@ -149,9 +180,9 @@ for (const mode of MODES) {
     for (let i = 0; i < WARMUPS; i++) await sample(browser, d.base, port, id, mode);
     const xs: Sample[] = [];
     for (let i = 0; i < SAMPLES; i++) xs.push(await sample(browser, d.base, port, id, mode));
-    const m: Sample = { firstPaint: median(xs.map(x => x.firstPaint)), commentReady: median(xs.map(x => x.commentReady)), control: median(xs.map(x => x.control)) };
+    const m: Metrics & { control: number } = { firstPaint: median(xs.map(x => x.firstPaint)), commentReady: median(xs.map(x => x.commentReady)), control: median(xs.map(x => x.control)) };
     const results = existsSync(RESULTS) ? JSON.parse(readFileSync(RESULTS, "utf8")) : {};
-    results[mode] = { median: m, samples: xs };
+    results[mode] = { platform: PLATFORM, median: m, samples: xs };
     writeFileSync(RESULTS, JSON.stringify(results, null, 2) + "\n");
     judge(mode, m);
   });

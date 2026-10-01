@@ -1,29 +1,31 @@
 {
-  "baseline": {
-    "subdomain": {
-      "firstPaint": 50,
-      "commentReady": 88,
-      "control": 44
+  "darwin-arm64": {
+    "baseline": {
+      "subdomain": {
+        "firstPaint": 51,
+        "commentReady": 56,
+        "control": 44
+      },
+      "sandbox": {
+        "firstPaint": 50,
+        "commentReady": 56,
+        "control": 44
+      }
     },
-    "sandbox": {
-      "firstPaint": 50,
-      "commentReady": 89,
-      "control": 16
-    }
-  },
-  "budget": {
-    "subdomain": {
-      "firstPaint": 80,
-      "commentReady": 118
+    "budget": {
+      "subdomain": {
+        "firstPaint": 81,
+        "commentReady": 86
+      },
+      "sandbox": {
+        "firstPaint": 80,
+        "commentReady": 86
+      }
     },
-    "sandbox": {
-      "firstPaint": 80,
-      "commentReady": 119
-    }
-  },
-  "control": {
-    "subdomain": 44,
-    "sandbox": 16
-  },
-  "enforceTargets": false
+    "control": {
+      "subdomain": 44,
+      "sandbox": 44
+    },
+    "enforceTargets": false
+  }
 }
