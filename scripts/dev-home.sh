@@ -66,7 +66,10 @@ wait_gone() {
 stop_orphan_daemon() {
     ! is_agents_home "$1" || return 0
     daemon_record "$1"
-    if [ -n "$DAEMON_EXE" ] && [ ! -e "$DAEMON_EXE" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null; then
+    # The PID must still be that daemon: a reused PID belongs to some other
+    # program, whose command line will not name the recorded binary.
+    if [ -n "$DAEMON_EXE" ] && [ ! -e "$DAEMON_EXE" ] && [ -n "$DAEMON_PID" ] && kill -0 "$DAEMON_PID" 2>/dev/null \
+        && ps -o command= -p "$DAEMON_PID" 2>/dev/null | grep -qF -- "$DAEMON_EXE"; then
         echo "clax: stopping the daemon of $1 (pid $DAEMON_PID): its binary $DAEMON_EXE is gone (an earlier \`just dev\`)"
         kill "$DAEMON_PID" 2>/dev/null || true
         wait_gone "$DAEMON_PID" || echo "clax: pid $DAEMON_PID has not exited yet" >&2

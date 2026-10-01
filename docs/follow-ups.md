@@ -8,6 +8,9 @@ found. Remove an entry when it is fixed or decided.
 
 These touch a real harness, a real home or GitHub, so no agent runs them.
 
+- **`just dev claude`, `just dev pi` and `just dev codex` against the real
+  CLIs.** Only fake harness commands have run these loops. Run each once and
+  check the session sees the dev build and `~/.clax-dev`.
 - **`clax init` and `clax uninit` against the real harness CLIs.** Only fake
   `claude`, `codex` and `pi` commands have exercised them (Task 6 skipped its
   real-CLI step). Run `scripts/verify-harnesses.sh` and keep its whole
@@ -42,6 +45,13 @@ These touch a real harness, a real home or GitHub, so no agent runs them.
 
 ## Known issues
 
+- **The daemon's own `/mcp` `status` does not report `upgrade_held`.** The
+  shim, the CLI and Pi report it; the daemon-served MCP endpoint has no hold
+  probe (Task 5 review, Low 5).
+- **One canonicalization in the daemon replacement has no test.** Reverting
+  the second canonical-path comparison in `crates/clax-cli/src/client.rs`
+  passes every test; the first one, in `replace`, is tested and covers the
+  same case (Task 3 re-review 2).
 - **`clax doctor --agent`'s `binary` check probes differently from the
   wrapper** (Task 5 review, Low 1). Doctor, and Pi's `binaryVersion`, allow
   3 s for `--version` and ignore its exit status; the wrapper allows 5 s and
@@ -86,9 +96,21 @@ These touch a real harness, a real home or GitHub, so no agent runs them.
 
 ## Tests
 
-No flaky test is parked. The only end-to-end failures seen
-(`web/e2e/comment-flows.spec.ts:125`, and a run broken by a concurrent
-`npm ci`) came from changes to the tree during a run and passed on rerun.
-`scripts/quality_gates.sh` now takes a lock per checkout, so two runs no
-longer share `web/node_modules`. If `comment-flows.spec.ts:125` fails again
-on a quiet tree, record it here.
+These tests have failed intermittently under heavy machine load and passed
+on rerun; each is parked for a fix:
+
+- `clax-mcp` `open_status`: relies on a 1.5 s wait for the fake browser opener.
+- `api_docs::an_oversized_batch_names_the_docs_batch_limit`: a connection reset
+  under load.
+- `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
+  `sendToClaude` case: a 120 s timeout under load.
+- `web/shell/src/artifact.test.ts`, "says so when the page of an opened thread
+  never greets": races a 50 ms wait against 120 ms sleeps.
+- `web/e2e/subpages.spec.ts`, "sandbox: one link inside the frame is one
+  history entry": failed about 1 run in 120 under load; passed 10 of 10 alone.
+- `clax-hooks` golden `no_daemon_prints_nothing_and_starts_none`:
+  timing under load.
+
+`scripts/quality_gates.sh` takes a lock per checkout and is read whole before
+it runs, so concurrent runs and mid-run edits no longer break it.
+
