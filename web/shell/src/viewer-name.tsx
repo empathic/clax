@@ -1,35 +1,15 @@
-import { useEffect, useRef, useState } from "preact/hooks";
-import { NAME_FAILED, NAME_LOAD_FAILED, report, scopedNotice } from "./failure";
-import { type Viewer, getViewer, setViewerName } from "./threads";
+import { useEffect, useMemo, useState } from "preact/hooks";
+import type { Viewer } from "./threads";
+import { NameSaver, type SetNotice } from "./view/viewer-name-model";
 
-type SetNotice = (u: string | null | ((prev: string | null) => string | null)) => void;
-
-/** The "Your name" field; saves on Enter or blur. A failed load or save shows
- * in the notice; a successful save clears either. A save waits for the initial
- * lookup, which sets the viewer cookie, so the two never create two viewers. */
+/** The "Your name" field; saves on Enter or blur through a `NameSaver`. */
 export function ViewerName({ setNotice, onViewer }: { setNotice: SetNotice; onViewer?(v: Viewer): void }) {
   const [name, setName] = useState("");
-  const saved = useRef("");
-  const loaded = useRef<Promise<unknown>>(Promise.resolve());
-  const edited = useRef(false);
-  useEffect(() => {
-    const p = report(getViewer(), NAME_LOAD_FAILED, scopedNotice(setNotice, NAME_LOAD_FAILED)).then(v => {
-      if (!v) return;
-      onViewer?.(v);
-      saved.current = v.display_name ?? "";
-      if (!edited.current) setName(v.display_name ?? "");
-    });
-    loaded.current = p;
-  }, []);
-  const save = () => {
-    const next = name.trim();
-    void loaded.current.then(() => {
-      if (next === saved.current) return;
-      void report(setViewerName(next), NAME_FAILED, scopedNotice(setNotice, NAME_FAILED, NAME_LOAD_FAILED)).then(v => { if (v) { onViewer?.(v); saved.current = v.display_name ?? ""; } });
-    });
-  };
+  const saver = useMemo(() => new NameSaver(setNotice, onViewer), []);
+  useEffect(() => saver.load(setName), []);
+  const save = () => saver.save(name);
   return (
     <input class="viewer-name" aria-label="Your name" placeholder="Your name" value={name} maxLength={60}
-      onInput={e => { edited.current = true; setName((e.target as HTMLInputElement).value); }} onBlur={save} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); save(); } }} />
+      onInput={e => { saver.edit(); setName((e.target as HTMLInputElement).value); }} onBlur={save} onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); save(); } }} />
   );
 }

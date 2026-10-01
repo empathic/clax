@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "./api";
 import { acceptFromFrame, helloMatches, sendToFrame } from "./bridge-link";
-import { CAPTURE_LATE, Composer, type Draft, MAX_CLIP_BYTES, Pins, captureWait, nextDraft, withClip } from "./comments";
+import { Composer, Pins } from "./comments";
 import type { Declared } from "./caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, registerShield, setForwardedKeys } from "./caps/gesture";
 import { CapabilityHost, type CommentsUi } from "./caps/host";
@@ -11,11 +11,13 @@ import { type ArtifactEvent, subscribe } from "./events";
 import { LOAD_FAILED, OPEN_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "./failure";
 import { Frame } from "./frame";
 import { nav } from "./nav";
-import { type Ask, PromptDialog, promptQueue } from "./prompt";
+import { PromptDialog } from "./prompt";
 import { artifactOrigin, pageSrc, probeOrigin } from "./origin";
 import { parseShellPath, shellPath } from "./route";
 import { Sidebar } from "./sidebar";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, sendToAgent, upsert } from "./threads";
+import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./view/composer-model";
+import { type Ask, promptQueue } from "./view/prompt-queue";
 import { ViewerName } from "./viewer-name";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */

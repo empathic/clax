@@ -1,9 +1,11 @@
 import type { ComponentType } from "preact";
 import { describe, expect, it, vi } from "vitest";
-import { Composer, type Draft, PIN_RIGHT_ROOM, Pins, isSubmitKey, nextDraft, submitKeysLabel, withClip } from "./comments";
+import { Composer, Pins, isSubmitKey, submitKeysLabel } from "./comments";
 import { Sidebar } from "./sidebar";
 import { flush, mount } from "./test/preact";
 import { type Thread, areaLabel } from "./threads";
+import { type Draft, nextDraft, withClip } from "./view/composer-model";
+import { PIN_RIGHT_ROOM } from "./view/pins-model";
 
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
