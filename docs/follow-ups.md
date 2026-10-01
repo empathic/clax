@@ -102,14 +102,10 @@ on rerun; each is parked for a fix:
 - `clax-mcp` `open_status`: relies on a 1.5 s wait for the fake browser opener.
 - `api_docs::an_oversized_batch_names_the_docs_batch_limit`: a connection reset
   under load.
-- `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
-  `sendToClaude` case: a 120 s timeout under load.
 - `web/shell/src/artifact.test.ts`, "says so when the page of an opened thread
   never greets": races a 50 ms wait against 120 ms sleeps.
 - `web/e2e/subpages.spec.ts`, "sandbox: one link inside the frame is one
   history entry": failed about 1 run in 120 under load; passed 10 of 10 alone.
-- `clax-hooks` golden `no_daemon_prints_nothing_and_starts_none`:
-  timing under load.
 - `web/e2e/artifact.spec.ts`, "sandbox: a second viewer's vote 2 s after
   another viewer's vote reloaded it publishes": the reloaded frame did not
   appear within 30 s once in a full gates run; passed 10 of 10 alone.

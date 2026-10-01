@@ -30,6 +30,10 @@ pub enum CoreError {
     },
     #[error("{message}")]
     Invalid { code: &'static str, message: String },
+    /// The artifact's current version does not declare `capability`, which
+    /// the request needs.
+    #[error("this artifact does not declare the {capability} capability")]
+    NotDeclared { capability: &'static str },
     /// A stored JSON column of `artifact_id` (and, for version columns, of
     /// version `version`) does not parse.
     #[error("corrupt {column} for artifact {artifact_id}{}", version.map(|n| format!(" version {n}")).unwrap_or_default())]

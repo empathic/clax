@@ -1485,8 +1485,10 @@ input to the Clax window; otherwise they resolve `{opened: false}`.
 `create`, `reply`, `resolve`, `delete`, `sendToClaude`, and
 `artifact.publish` also need no input to the Clax window (its buttons, name
 field, composer, dialogs) in the last 5.5 seconds: inside that time they
-reject `shell_input_recent` (a Clax code) with nothing written, so show a message and let
-the viewer click again. Call these only from a click or key press in the page,
+reject `shell_input_recent` with nothing written, so show a message and let
+the viewer click again. That code is Clax's own: it and Clax's other
+additions are declared in `<daemon_url>/_clax/contract/clax-extensions.d.ts`,
+beside the unchanged 0.2.61 files. Call these only from a click or key press in the page,
 never on load or a timer.
 
 ### Differences from claude.ai
@@ -1545,12 +1547,19 @@ plan for:
 - `artifact`: version identifiers are integers as strings. A page that is
   not HTML in its version rejects `invalid_content`, and an artifact that
   stopped declaring the capability rejects `not_declared`.
-- `db`: `revoked` is never returned. While the event stream is down, every
+- `db`: `revoked` is returned only on another machine, once a republish
+  has dropped `db` from the declaration: the daemon then refuses every
+  caller without the token. While the event stream is down, every
   subscription is refetched every 30 seconds, and a refetch the daemon could
-  not answer is retried. `resource_exhausted` is returned for a view's 65th
-  subscription, for a lease beyond 100 in force, and when the daemon answers
-  408 or 429. Who a viewer is for live updates is fixed when the viewer's
-  event stream opens; the shell reopens it after the viewer enters a name.
+  not answer, or answered with a timeout, is retried. `resource_exhausted`
+  is returned for a view's 65th subscription, for a lease beyond 100 in
+  force, and when the daemon answers 429. An ordered query without `limit`
+  returns every match. A field value of exactly `{"__delete__": true}` is
+  the `db_update` tool's delete marker, and page writes honour it too: in
+  `update` it removes the field instead of storing that value, and `set`
+  rejects it `invalid_argument`. Who a viewer is for live updates is fixed
+  when the viewer's event stream opens; the shell reopens it after the
+  viewer enters a name.
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
 - `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
@@ -1846,8 +1855,11 @@ harness and the daemon, each `ok` or failed with the fix:
   are immutable: their URLs name bytes that never change.
 - The runtime contract's type definitions,
   `/_clax/contract/0.2.61/<name>.d.ts` (built into the daemon from
-  `web/contract/0.2.61/`), are served as `text/plain; charset=utf-8` with
-  `Cache-Control: no-cache`; any other name under that path is a 404.
+  `web/contract/0.2.61/`, claude.ai's files unchanged), and Clax's additions
+  to them, `/_clax/contract/clax-extensions.d.ts` (from
+  `web/contract/clax-extensions.d.ts`), are served as
+  `text/plain; charset=utf-8` with `Cache-Control: no-cache`; any other name
+  under that path is a 404.
 
 ## Known limitations
 

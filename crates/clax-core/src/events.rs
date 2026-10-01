@@ -53,7 +53,9 @@ pub enum Event {
     /// A `db` document changed; `version` is `None` after a delete. The body
     /// is never carried (SSE needs no token). `private_to` names the viewer
     /// whose private subtree holds `path` (the event goes only to that viewer);
-    /// otherwise it goes only to subscribers at `read_level` or above.
+    /// otherwise it goes only to subscribers at `read_level` or above, and to
+    /// the viewer named in `self_read` (the path is in their opened `{self}`
+    /// subtree) at its level or above.
     Doc {
         artifact_id: String,
         path: String,
@@ -62,6 +64,8 @@ pub enum Event {
         private_to: Option<String>,
         #[serde(skip)]
         read_level: crate::db::Level,
+        #[serde(skip)]
+        self_read: Option<(String, crate::db::Level)>,
     },
 }
 
@@ -188,6 +192,7 @@ mod tests {
                 version: Some(1),
                 private_to: Some("u_x".into()),
                 read_level: crate::db::Level::View,
+                self_read: None,
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());
@@ -202,6 +207,7 @@ mod tests {
             version: None,
             private_to: Some("u_x".into()),
             read_level: crate::db::Level::Admin,
+            self_read: Some(("u_x".into(), crate::db::Level::View)),
         };
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),

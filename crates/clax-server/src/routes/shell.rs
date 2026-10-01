@@ -137,9 +137,14 @@ pub async fn shell(req: HeaderMap) -> Result<Response, ApiError> {
 /// Where the runtime contract's type definitions are served under `/_clax/`.
 const CONTRACT_PREFIX: &str = "contract/0.2.61/";
 
+/// Clax's additions to the contract (`web/contract/clax-extensions.d.ts`),
+/// served under `/_clax/` beside the unchanged 0.2.61 files.
+const EXTENSIONS_PATH: &str = "contract/clax-extensions.d.ts";
+const EXTENSIONS: &str = include_str!("../../../../web/contract/clax-extensions.d.ts");
+
 /// The type definitions of runtime contract 0.2.61 (`web/contract/0.2.61/`),
-/// built into the binary so agents can read them from their daemon at
-/// `/_clax/contract/0.2.61/<name>.d.ts`.
+/// claude.ai's files byte for byte, built into the binary so agents can read
+/// them from their daemon at `/_clax/contract/0.2.61/<name>.d.ts`.
 const CONTRACT_FILES: &[(&str, &str)] = &[
     (
         "artifact.d.ts",
@@ -198,25 +203,33 @@ const CONTRACT_FILES: &[(&str, &str)] = &[
 /// `/_clax/<path>`. The bridge is immutable at its versioned URL and
 /// revalidated at the bare one (both carry an `ETag`); the shell's bundles
 /// have content-hashed names. `contract/0.2.61/<name>.d.ts` is one of the
-/// runtime contract's type definitions, as plain text.
+/// runtime contract's type definitions, and `contract/clax-extensions.d.ts`
+/// Clax's additions to them, as plain text.
 pub async fn static_file(
     p: Result<Path<String>, PathRejection>,
     RawQuery(query): RawQuery,
     req: HeaderMap,
 ) -> Result<Response, ApiError> {
     let path = path(p)?;
-    if let Some(name) = path.strip_prefix(CONTRACT_PREFIX) {
+    let contract = if path == EXTENSIONS_PATH {
+        Some(EXTENSIONS)
+    } else if let Some(name) = path.strip_prefix(CONTRACT_PREFIX) {
         let (_, text) = CONTRACT_FILES
             .iter()
             .find(|(n, _)| *n == name)
             .ok_or_else(ApiError::not_found)?;
+        Some(*text)
+    } else {
+        None
+    };
+    if let Some(text) = contract {
         return Ok((
             [
                 (header::CONTENT_TYPE, "text/plain; charset=utf-8"),
                 (header::CACHE_CONTROL, "no-cache"),
                 (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
             ],
-            *text,
+            text,
         )
             .into_response());
     }
@@ -259,6 +272,79 @@ mod tests {
         on_disk.sort();
         let built: Vec<String> = CONTRACT_FILES.iter().map(|(n, _)| n.to_string()).collect();
         assert_eq!(built, on_disk);
+    }
+
+    /// SHA-256 of claude.ai's 0.2.61 files as shipped; Clax's additions go
+    /// in `clax-extensions.d.ts`, never into these.
+    const UPSTREAM_SHA256: &[(&str, &str)] = &[
+        (
+            "artifact.d.ts",
+            "978bbdde2dadc7b7d888bd28987bef97a988a6c75b35c244ede518dd645e06a8",
+        ),
+        (
+            "assets.d.ts",
+            "160805f8e9906d3de0f75ae03236128735002ac8d47f0be2726356ddd30ba667",
+        ),
+        (
+            "claude.d.ts",
+            "54bfa849203cd184725473e365669e501612a826a13651c531d5d01c7ad8ae42",
+        ),
+        (
+            "comments.d.ts",
+            "09b354e492a1006e9f593843459975ab4ffa58902c646736b0d60ded4394520b",
+        ),
+        (
+            "db.d.ts",
+            "fd2989b7a812c9e925483dd217856cb13ac3515bd7597ab7e90825cd62105f97",
+        ),
+        (
+            "downloads.d.ts",
+            "5875d79313416c4a99e9ce0e5021083f15c2cb61e53b0ae482e34ca9883b3ad9",
+        ),
+        (
+            "files.d.ts",
+            "13b170a86bc9e98a61aecc419d1ab151ed1a29612d1068c3cc945258f542a48a",
+        ),
+        (
+            "mcp.d.ts",
+            "b508739a82a60199abf28ede69495b510bfd40c80ff123bf061aecf3defa3c7d",
+        ),
+        (
+            "permissions.d.ts",
+            "2152b995eba82f96e66e41ed9e4c8fda14a1e9eaa0b284289737cf99743fbdcc",
+        ),
+        (
+            "room.d.ts",
+            "2e846b4678eb852bc4030b8fea1e4b8d071c278e6a441c6f07fd6f9bfd092729",
+        ),
+        (
+            "sample.d.ts",
+            "aff7f58ecbe77359d179b9a103f4572dd40b98ada302e8c3fc8a4c8807fd256f",
+        ),
+        (
+            "self.d.ts",
+            "162ec5ebc98126b8a532348a2a6af9815f8cb667822105dce02748cb165e3515",
+        ),
+        (
+            "user.d.ts",
+            "ddb94ee7b94f02d932dbbf08f2ae96986a0d3aa248177407eb384e0fb467994e",
+        ),
+    ];
+
+    #[test]
+    fn the_contract_files_are_the_upstream_bytes() {
+        use sha2::Digest;
+        let hex = |b: &[u8]| b.iter().map(|x| format!("{x:02x}")).collect::<String>();
+        let got: Vec<(&str, String)> = CONTRACT_FILES
+            .iter()
+            .map(|(n, text)| (*n, hex(&sha2::Sha256::digest(text.as_bytes()))))
+            .collect();
+        let want: Vec<(&str, String)> = UPSTREAM_SHA256
+            .iter()
+            .map(|(n, h)| (*n, h.to_string()))
+            .collect();
+        assert_eq!(got, want);
+        assert!(EXTENSIONS.contains("shell_input_recent"));
     }
 
     #[test]

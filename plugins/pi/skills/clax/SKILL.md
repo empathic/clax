@@ -331,8 +331,10 @@ input to the Clax window; otherwise they resolve `{opened: false}`.
 `create`, `reply`, `resolve`, `delete`, `sendToClaude`, and
 `artifact.publish` also need no input to the Clax window (its buttons, name
 field, composer, dialogs) in the last 5.5 seconds: inside that time they
-reject `shell_input_recent` (a Clax code) with nothing written, so show a message and let
-the viewer click again. Call these only from a click or key press in the page,
+reject `shell_input_recent` with nothing written, so show a message and let
+the viewer click again. That code is Clax's own: it and Clax's other
+additions are declared in `<daemon_url>/_clax/contract/clax-extensions.d.ts`,
+beside the unchanged 0.2.61 files. Call these only from a click or key press in the page,
 never on load or a timer.
 
 ### Differences from claude.ai

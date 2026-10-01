@@ -165,7 +165,10 @@ export const artifactHandler: HandlerFactory = env => {
       disposed = true;
       if (reloadTimer !== null) clearTimeout(reloadTimer);
       reloadTimer = null;
-      for (let n = held; n > 0; n--) release(false);
+      // This view's publishes end here, and any reload they scheduled is
+      // cancelled: when that leaves none in flight, `settled` runs once, so
+      // a publish deferred behind them is applied.
+      for (let n = held; n > 0; n--) release(n === 1);
     },
   };
 };

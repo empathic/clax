@@ -1,7 +1,7 @@
 //! The caller level of a `db` request (spec §9 "db", §14): the bearer token
-//! without a viewer cookie (an agent, the CLI, a script) is `owner`; the
-//! bearer token with a viewer cookie (the owner shell on localhost) is
-//! `admin`; a cookie naming a viewer with a display name is `interact`;
+//! without a viewer (an agent, the CLI, a script; a cookie that names no
+//! viewer row is no viewer) is `owner`; the bearer token with a viewer (the
+//! owner shell on localhost) is `admin`; a cookie naming a viewer with a display name is `interact`;
 //! anything else is `view`. `?as_level=view|interact|admin` narrows the level
 //! and never raises it. The caller's viewer identity is the cookie's viewer's
 //! public ID, whatever the level.
@@ -11,8 +11,8 @@ use crate::error::ApiError;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
-use clax_core::Store;
 use clax_core::db::{Caller, Level};
+use clax_core::{ArtifactId, CoreError, Store};
 
 /// The value of the first `key=` parameter of `parts`' query string,
 /// percent-decoded (`+` is a space). `Some(None)` when the value's encoding
@@ -62,7 +62,7 @@ fn base_caller(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Resu
         Some(c) => st.get_viewer(c)?,
         None => None,
     };
-    let level = if token && cookie.is_none() {
+    let level = if token && viewer.is_none() {
         Level::Owner
     } else if token {
         Level::Admin
@@ -129,6 +129,18 @@ impl CallerParts {
             viewer: base.viewer,
         })
     }
+
+    /// The caller of a request on artifact `id`'s documents, as
+    /// [`CallerParts::resolve`]. A caller without the token is refused
+    /// [`CoreError::NotDeclared`] when the artifact's current version does
+    /// not declare `db`; the token keeps access, so agents can seed data
+    /// before the page that reads it is published.
+    pub fn resolve_for(&self, st: &Store, id: &ArtifactId) -> clax_core::Result<Caller> {
+        if !self.token && !st.doc_declared(id)? {
+            return Err(CoreError::NotDeclared { capability: "db" });
+        }
+        self.resolve(st)
+    }
 }
 
 /// Who is subscribing to `/api/events`, for filtering `doc` events. An
@@ -160,8 +172,8 @@ impl FromRequestParts<AppState> for Subscriber {
 }
 
 impl Subscriber {
-    /// The subscriber's level and viewer: a valid token with a viewer cookie
-    /// is `admin` (the owner shell), without one `owner` (an agent, the CLI);
+    /// The subscriber's level and viewer: a valid token with a viewer is
+    /// `admin` (the owner shell), without one `owner` (an agent, the CLI);
     /// a cookie alone is `interact` for a named viewer, else `view`; neither
     /// is `view`.
     pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
