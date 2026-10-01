@@ -1380,7 +1380,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   send-to-agent → feedback rows, long-poll delivery, `db` rules by level,
   token enforcement per route.
 - **clax-mcp**: spawn the shim against a test daemon, drive it with an
-  MCP client over stdio, assert tool schemas and tier 1 piggyback.
+  MCP client over stdio, assert tool schemas and tier 1 piggyback. The
+  `db_*` tools are tested in-process against a test daemon
+  (`crates/clax-mcp/tests/db.rs`); the shim test only checks that their
+  eight names are listed.
 - **clax-hooks**: fixture-driven tests with captured stdin JSON for each
   harness event and golden stdout, including `stop_hook_active` and the
   Codex `stop` shape.
@@ -1388,7 +1391,10 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   banner, comment mode on element and range, clip produced, send to agent,
   agent reply visible via SSE, `window.claude.use` for each capability in
   both origin modes (`*.localhost` and opaque sandbox), db `onSnapshot`,
-  self-publish reload.
+  self-publish reload. `web/e2e/contract.spec.ts` runs the sample pages in
+  `web/e2e/pages/`, written for claude.ai's contract 0.2.61, unchanged in
+  both frame modes; `scripts/smoke-capabilities.sh` checks the capabilities
+  end to end against a scratch daemon (not a quality gate).
 - **Plugins**: shell tests for `ensure-clax.sh` (the `PATH` lookup, the
   fallback MCP server, hooks), and tests of `clax init`/`uninit` and
   `just dev` against fake `claude`, `codex` and `pi` commands and scratch

@@ -1,0 +1,162 @@
+// Pages written for claude.ai's runtime contract 0.2.61 (web/e2e/pages/*.html)
+// run unchanged in Clax, in both frame modes. Each page is published as is,
+// with the declaration its capabilities need. The checks use only what a
+// viewer and the page can observe: the page's own text, the shell's roles and
+// labels, downloads, and the daemon's API.
+import { readdirSync, readFileSync } from "node:fs";
+import { test, expect, type Frame, type Page } from "@playwright/test";
+import { contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
+
+let d: Awaited<ReturnType<typeof startDaemon>>;
+test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
+test.afterAll(async () => { await d?.stop(); });
+
+const dir = new URL("./pages/", import.meta.url);
+const html = (file: string) => readFileSync(new URL(file, dir), "utf8");
+
+/** Pages in web/e2e/pages that are not claude.ai sample pages but deliberate
+ * misuse for artifact.spec.ts (publishing on load, publishing in a burst). */
+const MISUSE = ["publish-burst.html", "publish-on-load.html"];
+
+type Case = { caps: Record<string, unknown>; check(f: Frame, page: Page, id: string): Promise<void> };
+
+/** Writes a document with the token, as an agent or script would. */
+async function seed(id: string, path: string, data: Record<string, unknown>) {
+  const res = await fetch(`${d.base}/api/artifacts/${id}/docs/${path}`, {
+    method: "PUT", headers: { "content-type": "application/json", authorization: `Bearer ${d.token}` },
+    body: JSON.stringify({ data }),
+  });
+  return res.status;
+}
+
+const CASES: Record<string, Case> = {
+  "permissions.html": {
+    caps: { comments: {}, db: {} },
+    async check(f, page) {
+      await expect(f.locator("#state")).toHaveText(JSON.stringify({ db: "granted", user: "granted", comments: "prompt" }));
+      await f.locator("#ask").click();
+      await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+      await expect(f.locator("#state")).toHaveText(JSON.stringify({ db: "granted", user: "granted", comments: "granted" }));
+    },
+  },
+  "tracker.html": {
+    caps: { db: { rules: [{ path: "settings", write: "admin" }] }, user: {} },
+    async check(f, page, id) {
+      await expect(f.locator("#status")).toHaveText("tasks 2");
+      await f.getByRole("textbox", { name: "New task" }).fill("Ship v1");
+      await f.getByRole("button", { name: "Add" }).click();
+      await expect(f.locator("#tasks li")).toHaveText(["Seeded one", "Seeded two", "Ship v1"]);
+      await f.getByRole("textbox", { name: "Private note" }).fill("mine");
+      await f.locator("#save-note").click();
+      await expect(f.locator("#status")).toHaveText("note saved");
+      await f.locator("#lock").click();
+      await expect(f.locator("#status")).toHaveText("locked");
+      await page.reload();
+      const again = await contentFrame(page, id, 1);
+      await expect(again.getByRole("textbox", { name: "Private note" })).toHaveValue("mine");
+    },
+  },
+  "poll.html": {
+    caps: { artifact: {} },
+    async check(f, page, id) {
+      await expect(f.locator("#count")).toHaveText("0");
+      await f.locator("#vote").click();
+      await expect((await contentFrame(page, id, 2)).locator("#count")).toHaveText("1");
+    },
+  },
+  "downloads.html": {
+    caps: { downloads: {} },
+    async check(f, page) {
+      await f.locator("#csv").click();
+      const [download] = await Promise.all([page.waitForEvent("download"), page.getByRole("dialog").getByRole("button", { name: "Save" }).click()]);
+      expect(download.suggestedFilename()).toBe("q3 report.csv");
+      await expect(f.locator("#status")).toHaveText("saved");
+    },
+  },
+  "who.html": {
+    caps: { user: { scopes: ["profile"] } },
+    async check(f) {
+      await expect(f.locator("#facts")).toContainText('"isOwner":true');
+      await expect(f.locator("#facts")).toContainText('"idShape":true');
+    },
+  },
+  "gallery.html": {
+    caps: { assets: {}, db: {} },
+    async check(f) {
+      await expect(f.locator("#status")).toHaveText("ready");
+      await f.locator("#upload").click();
+      await expect(f.locator("#status")).toContainText('"loaded":40');
+    },
+  },
+  "board.html": {
+    caps: { comments: { customAnchors: true } },
+    async check(f, page, id) {
+      await f.locator(".comment").click();
+      await expect(f.locator("#status")).toContainText('"opened":true');
+      const post = page.getByRole("button", { name: "Post comment" });
+      await expect(post).toBeVisible();
+      await page.locator("textarea").fill("Split this card in two.");
+      await post.click();
+      await expect.poll(async () => {
+        const body = await (await fetch(`${d.base}/api/artifacts/${id}/threads`)).json() as { threads: { anchor: { quote?: string | null }; comments: { body: string }[] }[] };
+        return body.threads.map(t => [t.anchor.quote ?? "", t.comments.map(c => c.body)]);
+      }).toEqual([[expect.stringContaining("Quarterly goals"), ["Split this card in two."]]]);
+    },
+  },
+};
+
+test("every sample page is a plain claude.ai page with a case here", () => {
+  const files = readdirSync(dir).filter(n => n.endsWith(".html") && !MISUSE.includes(n)).sort();
+  expect(files).toEqual(Object.keys(CASES).sort());
+  for (const file of files) {
+    const src = html(file);
+    expect(src, file).not.toMatch(/clax/i);
+    expect(src, file).toMatch(/^<!doctype html>/);
+    expect(src, file).toMatch(/<title>[^<]+<\/title>/);
+    expect(src, file).toContain(':root:not([data-theme="light"])');
+    expect(src, file).toContain(':root[data-theme="dark"]');
+    expect(src, file).toContain("claude.use(");
+  }
+});
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const [file, c] of Object.entries(CASES)) {
+    test(`${mode}: ${file} runs unchanged`, async ({ page }) => {
+      const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, html(file), c.caps);
+      if (file === "tracker.html") {
+        expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
+        expect(await seed(artifact.id, "tasks/b", { title: "Seeded two", created: 2 })).toBe(200);
+      }
+      const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+      await c.check(f, page, artifact.id);
+    });
+  }
+}
+
+test("LAN: the tracker is readable, and writable only as far as the viewer's level allows", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Tracker LAN", html("tracker.html"), CASES["tracker.html"].caps);
+  expect(await seed(artifact.id, "tasks/a", { title: "Seeded one", created: 1 })).toBe(200);
+  // The token without a viewer cannot write a viewer's private subtree either.
+  expect(await seed(artifact.id, "data/users/u_ffffffffffffffffffffff/prefs", { note: "not yours" })).toBe(404);
+  const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
+  await expect(f.locator("#status")).toHaveText("tasks 1");
+  await f.getByRole("textbox", { name: "New task" }).fill("From the LAN");
+  await f.getByRole("button", { name: "Add" }).click();
+  await expect(f.locator("#status")).toHaveText("add invalid_argument");
+  await f.locator("#save-note").click();
+  await expect(f.locator("#status")).toHaveText("note invalid_argument");
+  const name = page.getByRole("textbox", { name: "Your name" });
+  await name.fill("Sam");
+  await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
+  // After input to the shell the viewer's next click in the page comes after
+  // a move onto it, as a hand's does (see `reach`).
+  await reach(page, f.getByRole("button", { name: "Add" }));
+  await f.getByRole("button", { name: "Add" }).click();
+  await expect(f.locator("#tasks li")).toHaveText(["Seeded one", "From the LAN"]);
+  await reach(page, f.locator("#save-note"));
+  await f.locator("#save-note").click();
+  await expect(f.locator("#status")).toHaveText("note saved");
+  await reach(page, f.locator("#lock"));
+  await f.locator("#lock").click();
+  await expect(f.locator("#status")).toHaveText("lock invalid_argument");
+});

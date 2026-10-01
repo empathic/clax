@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team Tracker</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; --line: #d4d4d4; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; --line: #3a3a3a; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; --line: #3a3a3a; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  input { font: inherit; max-width: 100%; }
+  li { border-bottom: 1px solid var(--line); padding: 4px 0; }
+</style>
+</head>
+<body>
+<h1>Team tracker</h1>
+<form id="new"><input id="title" aria-label="New task" placeholder="New task"> <button>Add</button></form>
+<ul id="tasks"></ul>
+<p><label>My private note <input id="note" aria-label="Private note"></label> <button id="save-note">Save note</button></p>
+<p><button id="lock">Lock the board</button></p>
+<p id="status" role="status">loading</p>
+<script>
+(async () => {
+  const [db, user] = await Promise.all([claude.use("db"), claude.use("user")]);
+  const status = document.getElementById("status");
+  if (!db) { status.textContent = "no db"; return; }
+  const me = user ? await user.id() : null;
+  const list = document.getElementById("tasks");
+  db.collection("tasks").orderBy("created").onSnapshot(s => {
+    list.replaceChildren(...s.docs.map(d => { const li = document.createElement("li"); li.textContent = d.data().title; return li; }));
+    status.textContent = "tasks " + s.size;
+  }, e => { status.textContent = "error " + e.code; });
+  document.getElementById("new").onsubmit = async ev => {
+    ev.preventDefault();
+    const title = document.getElementById("title").value.trim();
+    if (!title) return;
+    try { await db.collection("tasks").add({ title, created: Date.now() }); document.getElementById("title").value = ""; }
+    catch (e) { status.textContent = "add " + e.code; }
+  };
+  const noteRef = me ? db.doc("data/users/" + me + "/prefs") : null;
+  if (noteRef) { const snap = await noteRef.get(); if (snap.exists) document.getElementById("note").value = snap.data().note; }
+  document.getElementById("save-note").onclick = async () => {
+    if (!noteRef) { status.textContent = "note unavailable"; return; }
+    try { await noteRef.set({ note: document.getElementById("note").value }); status.textContent = "note saved"; }
+    catch (e) { status.textContent = "note " + e.code; }
+  };
+  document.getElementById("lock").onclick = async () => {
+    try { await db.doc("settings/board").set({ locked: true }); status.textContent = "locked"; }
+    catch (e) { status.textContent = "lock " + e.code; }
+  };
+})();
+</script>
+</body>
+</html>
