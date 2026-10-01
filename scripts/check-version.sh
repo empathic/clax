@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Checks that every place a Clax version is written agrees.
+# Checks that every place a Clax version is written agrees: the manifests,
+# Cargo.lock, the three copies of ensure-clax.sh and the skills' tool blocks.
 #   check-version.sh           exit 0 when they agree; print each one when not
 #   check-version.sh v1.2.3    also require the tag to be v<version>
 #   check-version.sh --print   print the version (after checking)
@@ -30,8 +31,11 @@ versions = {
     "plugins/pi/package.json": load("plugins/pi/package.json").get("version"),
     "plugins/pi/package-lock.json version": pi_lock.get("version"),
     'plugins/pi/package-lock.json packages[""]': pi_lock.get("packages", {}).get("", {}).get("version"),
-    "scripts/ensure-clax.sh CLAX_VERSION": first(r'^CLAX_VERSION="([^"]+)"', open("scripts/ensure-clax.sh").read()),
 }
+for path in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh"):
+    versions[f"{path} CLAX_VERSION"] = first(r'^CLAX_VERSION="([^"]+)"', open(path).read())
+for path in ("plugins/claude-code/skills/clax/SKILL.md", "plugins/clax/skills/clax/SKILL.md", "plugins/pi/skills/clax/SKILL.md"):
+    versions[f"{path} tool block"] = first(r'^This is Clax plugin (\S+?)\.(?:\s|$)', open(path).read())
 for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks"):
     versions[f"Cargo.lock {crate}"] = first(r'^name = "%s"\nversion = "([^"]+)"' % re.escape(crate), lock)
 

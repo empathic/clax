@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "clax",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Clax: local artifacts with comment-driven development. Publish HTML pages from your agent, view them in a browser, and get feedback back",
   "owner": {
     "name": "Empathic"
@@ -10,7 +10,7 @@
     {
       "name": "clax",
       "description": "Local artifacts with comment-driven development: publish HTML pages, view them, and get feedback back",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "author": {
         "name": "Empathic"
       },

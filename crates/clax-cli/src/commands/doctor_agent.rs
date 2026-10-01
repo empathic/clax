@@ -713,7 +713,7 @@ mod tests {
     fn a_current_codex_cache_copy_passes_plugin_and_skill() {
         let f = Fixture::new();
         let root = f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,
@@ -799,13 +799,13 @@ mod tests {
     fn a_copy_with_an_old_launcher_is_a_stale_plugin() {
         let f = Fixture::new();
         f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,
         );
         f.write(
-            ".codex/plugins/cache/clax/clax/0.2.0/scripts/ensure-clax.sh",
+            &format!(".codex/plugins/cache/clax/clax/{V}/scripts/ensure-clax.sh"),
             "#!/bin/sh\n",
         );
         let (p, _) = plugin_check(DoctorAgent::Codex, &f.dirs(), V);
@@ -829,7 +829,7 @@ mod tests {
             DoctorAgent::Codex,
         );
         let new = f.plugin(
-            ".codex/plugins/cache/clax/clax/0.2.0",
+            &format!(".codex/plugins/cache/clax/clax/{V}"),
             ".codex-plugin/plugin.json",
             V,
             DoctorAgent::Codex,

@@ -1,6 +1,6 @@
 {
   "name": "clax",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Local artifacts with comment-driven development: publish HTML pages, view them, and get feedback back",
   "author": {
     "name": "Empathic"

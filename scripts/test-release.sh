@@ -9,13 +9,14 @@ FAILED=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
-for f in Cargo.toml Cargo.lock .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json \
+FILES="Cargo.toml Cargo.lock .claude-plugin/marketplace.json plugins/claude-code/.claude-plugin/plugin.json \
     plugins/clax/.codex-plugin/plugin.json plugins/pi/package.json plugins/pi/package-lock.json \
     scripts/ensure-clax.sh plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh \
     scripts/check-version.sh scripts/bump-version.sh scripts/package-release.sh \
     scripts/sync-skill-tools.py plugins/pi/test/fixtures/contract.json docs/contract.md README.md \
     plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md \
-    plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md; do
+    plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md"
+for f in $FILES; do
     mkdir -p "$T/$(dirname "$f")"
     cp "$HERE/$f" "$T/$f"
 done
@@ -38,6 +39,37 @@ sed -i.bak 's/"version": "9.8.7"/"version": "9.8.6"/' "$T/plugins/clax/.codex-pl
 out="$(cd "$T" && scripts/check-version.sh 2>&1)"; rc=$?
 if [ "$rc" = 1 ] && echo "$out" | grep -q "plugins/clax/.codex-plugin/plugin.json: 9.8.6"; then pass "a stray version is named"
 else fail "a stray version is named ($out)"; fi
+
+# A fresh copy of the version files, for the cases below that need one.
+fresh() {
+    rm -rf "$1"; mkdir -p "$1"
+    (cd "$HERE" && for f in $FILES; do mkdir -p "$1/$(dirname "$f")"; cp "$f" "$1/$f"; done)
+}
+for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
+    fresh "$T/stray"
+    sed -i.bak "s/^CLAX_VERSION=\".*\"$/CLAX_VERSION=\"9.9.9\"/" "$T/stray/$f"
+    out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+    if [ "$rc" = 1 ] && echo "$out" | grep -q "$f CLAX_VERSION: 9.9.9"; then pass "a stray launcher copy is named ($f)"
+    else fail "a stray launcher copy is named ($f: $out)"; fi
+done
+for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md; do
+    fresh "$T/stray"
+    sed -i.bak "s/^This is Clax plugin [^ ]*\. /This is Clax plugin 9.9.9. /" "$T/stray/$f"
+    out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
+    if [ "$rc" = 1 ] && echo "$out" | grep -q "$f tool block: 9.9.9"; then pass "a stray skill block is named ($f)"
+    else fail "a stray skill block is named ($f: $out)"; fi
+done
+
+# A pattern that fails to match late in the list leaves every file as it was.
+fresh "$T/half"
+sed -i.bak 's/^CLAX_VERSION=/CLAX_VERSION_GONE=/' "$T/half/plugins/clax/scripts/ensure-clax.sh"
+rm "$T/half/plugins/clax/scripts/ensure-clax.sh.bak"
+before="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
+out="$(cd "$T/half" && scripts/bump-version.sh 9.8.7 2>&1)"; rc=$?
+after="$(cd "$T/half" && find . -type f | sort | xargs shasum)"
+if [ "$rc" != 0 ] && [ "$before" = "$after" ] && echo "$out" | grep -q "no file was changed"; then
+    pass "a bump that cannot match every version changes no file"
+else fail "a bump that cannot match every version changes no file (rc=$rc: $out)"; fi
 
 if out="$(cd "$T" && scripts/bump-version.sh not-a-version 2>&1)"; then fail "a bad version is refused"
 elif echo "$out" | grep -q "is not a release version"; then pass "a bad version is refused"
