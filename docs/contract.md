@@ -449,7 +449,8 @@ No arguments.
     "available": false,
     "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"
   },
-  "feedback": []
+  "feedback": [],
+  "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.2.0"}
 }
 ```
 
@@ -472,6 +473,21 @@ Codex, its working directory when that holds `.codex-plugin/plugin.json`. The
 daemon's `/mcp` and the Pi extension never report them. The shim also logs the
 comparison to stderr when it starts (a warning on skew).
 
+`binary` is the executable answering and its version: the `clax` the plugin
+ran (from `PATH`, or `CLAX_BIN`), the daemon itself for its `/mcp`, or, under
+Pi, the one the extension runs (`{"path": null, "version": null, "error":
+"<why>"}` when it finds none; `version` is `null` when that binary does not
+answer `--version` as clax within 3 s).
+
+`upgrade_held` is present only when a failed upgrade keeps the daemon at an
+older version (see "Version skew" below): `{version, exe, from_version,
+reason, failed_at, until, advice}`, where `version` and `exe` are the build
+that failed to start, `from_version` the daemon it was to replace, `reason`
+why it failed and what became of the previous daemon, `failed_at` and
+`until` RFC 3339 times, and `advice` what to do. The shim reports it, as do
+`clax status --json` and `clax serve --json`; the daemon's `/mcp` and the Pi
+extension do not.
+
 `watches` lists this session's watches (`[{session_id, artifact_id,
 replies_armed, created_at}]`; `[]` without a session). `push` says whether
 comments can be pushed into this session (tier 5) and why not:
@@ -485,10 +501,36 @@ under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
 Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
 
-Version skew: a shim that finds a daemon older than itself stops it and starts
-its own on the old daemon's bind address (the port is the shim's `--port`,
-7480 by default), logging the replacement. A newer daemon, or one whose
-version does not parse, is kept.
+Version skew: newer wins. A shim or CLI command that finds a daemon older
+than itself replaces it on the old daemon's port and bind address, holding
+the daemon's start lock (`daemon.lock`) throughout, so no other client
+starts one in the gap. Under the lock it reads `daemon.json` again and uses
+the daemon there if another client has already replaced it. It asks the
+daemon to shut down: SSE streams end (browsers reconnect to the same port)
+and long polls return what they have. In-flight requests get 5 s, and one
+that is cut off fails with a connection error the agent can retry. It then
+waits up to 7 s for the old daemon to exit (then sends SIGTERM and waits 3 s
+more), starts its own, and waits for `/healthz`. A newer daemon, one of the
+same version, or one whose version does not parse, is kept, with one warning.
+`daemon.json` records the daemon's `version` and `exe` (the canonical path of
+its executable). Every replacement is a line in `logs/daemon.log`. If the old
+port is taken during the swap, the new daemon binds one of the next 20 ports.
+
+Rollback: when the new daemon fails to start, the previous daemon's recorded
+executable is started again on the same port and bind address, and the error
+says so and names the log. When that executable is missing, was overwritten
+in place by the failed build (as `cargo install` and `just install` do), or
+fails too, no daemon is running, and the error says so and how to recover:
+`clax stop`, install a build that starts, run the command again.
+
+Failed-upgrade hold: a failed upgrade is recorded in
+`logs/failed-upgrade.json`, keyed by the target version, the canonical
+executable path and its modification time. For 10 minutes no client tries
+that same upgrade again; each keeps the running daemon and warns once, and
+`status` reports `upgrade_held`. A rebuilt or reinstalled executable (a new
+modification time) is tried at once. `clax stop`, then `clax serve`, tries
+the held build again now, with no older daemon to fall back to. After a
+deliberate downgrade, run `clax stop` once, since the newer daemon is kept.
 
 Errors: only those every tool can return.
 
@@ -1266,6 +1308,144 @@ Minimal skeleton:
 </html>
 ```
 
+## Installation and the wrapper
+
+### `clax init` and `clax uninit`
+
+`clax init` writes the plugins built into the binary to
+`~/.clax/marketplace/` (under `CLAX_HOME` when set) and registers them with
+each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
+`claude plugin install clax@clax`; `codex plugin marketplace add` and
+`codex plugin add clax@clax`; `pi install ~/.clax/marketplace/plugins/pi`.
+It first removes the existing Clax registrations and any under Clax's
+previous name, and records what it registered in
+`~/.clax/registrations.json`. `--agent` (repeatable) limits it to named
+harnesses. A harness whose CLI is missing or fails is reported, and the
+others still run. Re-running is safe: it reinstalls the plugin, which
+enables it again where it was disabled.
+
+`clax uninit` removes the registrations, then deletes `~/.clax/marketplace/`
+unless a harness's registry still refers to it or cannot be read. Both
+commands hold `~/.clax/init.lock` and run each harness CLI in the home
+directory, so a project's own harness settings are never edited. Neither
+touches Clax's data, nor the previous name's home.
+
+When in doubt, a registration is kept. Claude Code and Codex registrations
+are removed by name (`clax`, `clax@clax`, and the previous name's). A Pi
+package, which Pi names by its directory, is removed only when
+`registrations.json` records it, or its `package.json` names the Clax Pi
+package (`@empathic/clax-pi`) or the previous name's. A Pi package whose
+directory is missing or unreadable is left registered and named in the
+output, with the command that removes it. Known miss: `~user/` paths are not
+expanded, so a Pi entry written that way is left registered, and a
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR` written that way
+is taken relative to `HOME`.
+
+`just install` builds the web UI, runs `cargo install --locked --path
+crates/clax-cli` (into `~/.cargo/bin`) and then that binary's `clax init`,
+and warns when the first `clax` on `PATH` is another one. `just uninstall`
+runs `clax uninit`, then `cargo uninstall clax-cli`; it leaves
+`~/.local/bin/clax`, which comes from `install.sh`. `install.sh [version]`
+installs a release into `~/.local/bin` (or `CLAX_INSTALL_DIR`) after checking
+it against the release's `SHA256SUMS`, and refuses to run as root. It needs
+the GitHub repository to be public.
+
+### The wrapper
+
+The Claude Code and Codex plugins start `clax` through
+`scripts/ensure-clax.sh`, which runs `CLAX_BIN`, else the first `clax` on
+`PATH` whose `--version` names clax. It never downloads, builds, or looks
+anywhere else. A `clax` of another version than the plugin's (the wrapper's
+`CLAX_VERSION`) runs; MCP and CLI modes warn on stderr, hooks stay silent.
+
+For the MCP server, the wrapper first runs `clax mcp --agent <harness>
+--preflight`, which resolves the home, its `config.toml` and the port,
+starts and contacts no daemon, and exits 0, or prints `error: <reason>` and
+exits 1. It then execs `clax mcp`, so the harness is the shim's parent. A
+`clax mcp` that exits later in the session is not relayed: the client sees
+the connection close. When there is no usable `clax`, or the preflight
+fails:
+
+- The MCP server answers the MCP client itself. `initialize` succeeds, with
+  `instructions` that start `Clax is unavailable:`. `tools/list` offers one
+  tool, `status`, whose call returns the reason and the fix
+  (`isError: true`), or says to reconnect once a `clax` has appeared or the
+  preflight passes. `ping` answers `{}`. Any other request gets JSON-RPC
+  error -32601 with the same reason.
+- A hook prints one line to stderr and exits 0. A hook whose `clax` exits
+  non-zero also exits 0, with a log line.
+- Other commands print the reason and exit 1.
+
+Every MCP start adds a `launch mode=mcp agent=<harness> bin="<path>"
+version="<version>" warning="<text>"` line to `~/.clax/logs/hooks.log`
+(under `CLAX_HOME` when set). Every failure adds a `launcher mode=<mode>
+agent=<harness> exit=<status> reason="<why>" tried="<candidates>"
+argv="<arguments>"` line (`exit=fallback` when the MCP fallback server
+answers). The log rotates to `hooks.log.1` past 1 MiB.
+
+The Pi extension runs `CLAX_BIN`, else the first `clax` on `PATH`, and never
+downloads. With none, it cannot start a daemon: a tool that needs one fails
+with the reason and how to install `clax`, and `status` reports `binary`
+with the error.
+
+### The daemon's port
+
+A home's `config.toml` may set the port a daemon started for that home
+listens on:
+
+```toml
+[serve]
+port = 7481
+```
+
+Without it the port is 7480; `--port` overrides both. A `config.toml` that
+does not parse, or a port that is not an integer in 1..=65535, is an error
+naming the file (`bad_config`), never a silent fall back to 7480; the
+wrapper's preflight turns it into the fallback server's reason. Other keys
+in `[serve]` are logged and ignored. `just watch` and `just dev` write
+`port = 7481` into `~/.clax-dev/config.toml`, so every daemon for that home,
+whoever starts it, listens there.
+
+### `clax doctor --agent`
+
+`clax doctor --agent <claude|codex|pi>` runs one check per layer between a
+harness and the daemon, each `ok` or failed with the fix:
+
+- `binary`: this `clax`, the one the plugins run (`CLAX_BIN`, else the first
+  on `PATH`), and every `clax` on `PATH` with its version; failed when the
+  plugins run another one, or none.
+- `upgrade`: failed while a failed upgrade keeps the daemon at an older
+  version, with the build, the reason, when the hold ends, and what to do.
+- `plugin`: the harness's installed copy of the plugin; failed when none is
+  found, or its manifest version or its wrapper differs from this binary's.
+- `skill`: the installed skill's stated version and tool count, and whether
+  it is the skill this binary was built with.
+- `mcp`: whether the daemon has a live session of the harness.
+- `hooks`: the harness's latest lines in `hooks.log`; failed when the latest
+  is a `launcher` failure, or when no Claude Code hook has run (Pi runs no
+  hooks; Codex hooks are optional).
+- `feedback`: each live session's watches and push state, and for Codex
+  `codex_push` and `codex_sessions` (native push).
+
+### Other commands and scripts
+
+- `clax haiku` prints one of ten haiku about Clax, chosen at random
+  (`--json`: `{"haiku": "<text>"}`).
+- `scripts/verify-harnesses.sh` checks `clax init` and `clax uninit`
+  against the real `claude`, `codex` and `pi` CLIs inside a scratch root it
+  deletes on exit, and prints a PASS/FAIL table (exit 0, 1 when a check
+  failed, 2 when it refused to run). It tests `CLAX_BIN`, or a fresh
+  `cargo build`, and runs every command under `env -i` with an allowlist,
+  scratch harness directories and a scratch Clax port, each killed after
+  `VERIFY_TIMEOUT` seconds (default 120). It refuses to run when `HOME` is
+  `/` or the scratch root would fall inside `HOME`, and never reads or copies
+  an auth file. Its Pi session check runs only with `VERIFY_PI_SESSION=1`
+  and a provider key in the environment.
+- `scripts/quality_gates.sh` takes a lock per checkout
+  (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
+  a lock whose process has gone is taken over, and separate worktrees run in
+  parallel.
+
 ## Security model
 
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
@@ -1355,11 +1535,11 @@ Minimal skeleton:
   payload quotes it as a JSON string.
 - Published pages and uploaded files are untrusted content: Clax never
   executes them outside the browser.
-- No telemetry. The daemon makes no calls off the machine; the Claude Code
-  and Codex plugins' launcher script tries to download a release only when
-  no `clax` binary is found (installed, or built in a source checkout),
-  only for the MCP server (never for a hook), and no release has been
-  published yet.
+- No telemetry. The daemon makes no calls off the machine, and the plugins
+  never download anything. `install.sh`, which a person runs by hand,
+  downloads a release and checks it against the release's `SHA256SUMS`,
+  which comes from the same place, so the check protects integrity, not
+  authenticity.
 
 ## Browser caching
 
@@ -1375,7 +1555,7 @@ Minimal skeleton:
   release build that URL is immutable (`public, max-age=31536000,
   immutable`); the bare `/_clax/bridge.js`, a `?v=` naming another
   bundle, and every bridge URL of a debug build (which reads the bundle from
-  disk, where `just dev` rebuilds it) are `no-cache`.
+  disk, where `just watch` rebuilds it) are `no-cache`.
   A page republished from its served DOM keeps exactly one bridge tag, at
   the current URL, whichever form it carried; text in the page that merely
   contains the bridge URL is left alone.
@@ -1389,6 +1569,17 @@ Minimal skeleton:
   picked), and its area renders blank in comment clips.
 - CSS counters and list numbering inside a region clip restart, because the
   clip renders a copy of the region.
+- The plugins run the `clax` on the `PATH` their harness starts with. A
+  harness started from a desktop launcher may not have `~/.cargo/bin` on its
+  `PATH`; `status`, the fallback server and `clax doctor --agent` say so.
+- Sessions that were running when a daemon was replaced keep their shim's
+  binary until they restart.
+- If a replaced daemon's port is taken while it restarts, the new daemon
+  binds one of the next 20 ports and open browser tabs must be reloaded.
+- `install.sh` needs the repository to be public: GitHub serves a private
+  repository's release files only to authenticated requests.
+- Codex cannot load a plugin from a directory, so `just dev codex` runs the
+  installed Clax plugin; plugin changes reach Codex through `just install`.
 
 ## What is not yet available
 

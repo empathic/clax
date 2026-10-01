@@ -6,22 +6,49 @@ Clax is a local server for HTML artifacts that agents publish. It stores every v
 
 Rust 1.94 (pinned by `rust-toolchain.toml`), Node 22, and `just`.
 
-## Install from source
+## Install
 
-No release has been published yet, so a clone of this repository is the only
-way to install Clax:
+From a clone of this repository (see Prerequisites):
 
 ```
-just web                                  # build the web UI, which the binary embeds
-cargo build -p clax-cli                   # builds target/debug/clax
-cargo install --path crates/clax-cli      # optional: puts `clax` on PATH (~/.cargo/bin)
+just install
 ```
 
-The Codex plugin finds the checkout's `target/debug/clax` (or
-`target/release/clax`) itself. The Claude Code plugin does when Claude Code
-runs it from the checkout or `CLAX_SOURCE_DIR` names the checkout; otherwise
-use `cargo install` (see [plugins/claude-code/README.md](plugins/claude-code/README.md)).
-To run `clax` from a shell without installing it, use `target/debug/clax`.
+It builds the web UI and `clax`, installs `clax` into `~/.cargo/bin`
+(`cargo install --locked --path crates/clax-cli`), and runs `clax init`.
+`clax init` writes the Clax plugins built into that binary to
+`~/.clax/marketplace/` and registers them with each harness whose CLI is on
+your `PATH`: Claude Code, Codex and Pi. The registration replaces any older
+one, including registrations under Clax's previous name. Start a new session
+in each harness afterwards. The plugins run the `clax` on the `PATH` the
+harness starts with, so `~/.cargo/bin` must be on it; `just install` warns
+when the first `clax` on your `PATH` is another one. Nothing is downloaded,
+and moving or deleting the clone afterwards changes nothing.
+
+`just uninstall` reverses it: `clax uninit` removes the registrations (and
+`~/.clax/marketplace/` once no harness refers to it), then `cargo uninstall
+clax-cli` removes `~/.cargo/bin/clax`. It leaves `~/.local/bin/clax` alone,
+since that one comes from `install.sh`, and never touches your data in
+`~/.clax`.
+
+Without a clone, use the release installer:
+
+```
+curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash
+clax init
+```
+
+`install.sh` puts the release's `clax` in `~/.local/bin` (or
+`$CLAX_INSTALL_DIR`), after checking it against the release's `SHA256SUMS`.
+It works only once the repository is public: it is private today, and GitHub
+serves a private repository's release files only to authenticated requests,
+so until then `install.sh` gets a 404. When to make it public is the
+repository owner's decision.
+
+When a plugin half works, `clax doctor --agent <claude|codex|pi>` checks each
+layer. Its `binary` check shows which `clax` the plugins run and every `clax`
+on `PATH`. If the MCP server cannot find `clax` at all, its one tool,
+`status`, says why, and `~/.clax/logs/hooks.log` has the details.
 
 ## Use
 
@@ -37,9 +64,11 @@ clax doctor --fix                    # also remove stray temp files and stale ro
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex or pi
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
+clax init                            # register the plugins with each harness (clax uninit removes them)
+clax haiku                           # print one of ten haiku about Clax
 ```
 
-The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory.
+The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets (`--port` overrides both).
 
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
@@ -47,13 +76,15 @@ To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.
 
 ## Use from an agent
 
-Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill:
+Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. `clax init` registers the plugin with each harness (see Install); plugin details: [plugins/claude-code/README.md](plugins/claude-code/README.md), [plugins/clax/README.md](plugins/clax/README.md), [plugins/pi/README.md](plugins/pi/README.md).
 
-- Claude Code: `/plugin marketplace add /path/to/clax`, then `/plugin install clax@clax`. See [plugins/claude-code/README.md](plugins/claude-code/README.md).
-- Codex: `codex plugin marketplace add /path/to/clax`, then `codex plugin add clax@clax`. See [plugins/clax/README.md](plugins/clax/README.md).
-- Pi: `pi install /absolute/path/to/clax/plugins/pi`. See [plugins/pi/README.md](plugins/pi/README.md).
-
-Build the binary first (`cargo build -p clax-cli`, above). The Claude Code and Codex plugins run it through `scripts/ensure-clax.sh`, which uses `CLAX_BIN`, else `clax` on `PATH`, else `~/.local/bin/clax` or `~/.clax/bin/clax`, else the source checkout's `target/release/clax` or `target/debug/clax`, whichever is newer. Downloading a release is its last resort, and is not available until the first release is published. The Pi extension needs `clax` on `PATH` (`cargo install --path crates/clax-cli`) or `CLAX_BIN`. When a plugin half works, `clax doctor --agent <claude|codex|pi>` says which layer failed, and `~/.clax/logs/hooks.log` has a line for every hook run.
+The plugins run `clax` from `PATH` (or `CLAX_BIN`, for scripts) through
+`scripts/ensure-clax.sh`, which never downloads or builds anything. A `clax`
+whose version differs from the plugin's runs with a warning, and `status` and
+`clax doctor --agent` report the difference; `just install` (or `clax init`)
+brings them back in step. The Pi extension runs `CLAX_BIN`, else the `clax`
+on `PATH`, the same way. `~/.clax/logs/hooks.log` has a line for every hook
+run and every MCP start.
 
 ## Documentation
 
@@ -63,16 +94,110 @@ Build the binary first (`cargo build -p clax-cli`, above). The Claude Code and C
 
 Pages viewed before this version may still be cached by the browser (older daemons marked supporting HTML pages immutable, and Chrome can keep serving such a copy inside the artifact frame even after "Clear site data"). After upgrading from such a daemon, clear "Cached images and files" for "All time" once, at chrome://settings/clearBrowserData. From this version on, every HTML page is revalidated on each load and the bridge URL names its version, so upgrades never need this.
 
-## Development
+### From an earlier source install
+
+Earlier versions guessed which `clax` to run: from `PATH`, `~/.local/bin`,
+`~/.clax/bin`, or a checkout's `target/`. Now the plugins run the `clax` on
+`PATH`, and `clax init` registers them. In the checkout, run `just install`.
+It re-registers every harness from `~/.clax/marketplace/`, which replaces
+registrations that pointed at an old or moved checkout, and removes those
+under Clax's previous name. Then remove binaries that nothing should run:
+check `which -a clax`, and delete an old `~/.local/bin/clax` or
+`~/.clax/bin/clax`. The plugins no longer read `CLAX_SOURCE_DIR`; unset it
+wherever you set it. Check with `clax doctor --agent <claude|codex|pi>`.
+
+A newer daemon is never replaced by an older `clax`. After installing an
+older version, run `clax stop` once.
+
+## Developing Clax
+
+Two loops, both on a home of their own, `~/.clax-dev`, whose daemon listens on
+port 7481 (its `config.toml` says `[serve] port = 7481`, written on first
+use). Your agents' home, `~/.clax`, their daemon on 7480, and the `clax`
+they have installed are never touched.
+
+**The daemon and the web UI: `just watch`.** An auto-reloading server at
+http://localhost:7481, which can be left running. A Rust change rebuilds and
+restarts the daemon; a web change rebuilds `web/dist` (reload the browser).
+Extra arguments go to `serve` (`just watch --bind 0.0.0.0`). Ctrl-C stops
+everything. `CLAX_DEV_PORT=<port> just watch` uses another port, and a
+`CLAX_HOME` you set is used as the home. `just watch --shared` serves the
+agents' home, `~/.clax`, on 7480 instead: stop their daemon first with
+`clax stop`, and expect an agent to start its own daemon there while a Rust
+change rebuilds. `just dev` with no harness, or with an option first
+(`just dev --shared`), runs `just watch`. `just serve`, `just stop` and
+`just doctor` run the checkout's build on `~/.clax-dev` (`just serve` on
+7481). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
+
+**An agent on your working tree: `just dev claude|codex|pi`.** It builds
+`clax`, copies it into a temporary directory put first on `PATH` (removed
+when the session ends), and starts the harness on `~/.clax-dev`:
+
+```
+just dev claude
+just dev codex
+just dev pi
+just dev claude --resume  # extra arguments go to the harness
+```
+
+- Claude Code loads `plugins/claude-code` straight from the checkout
+  (`--plugin-dir`), and an installed `clax@clax` is disabled for that
+  session.
+- Pi loads `plugins/pi/src/clax.ts` and its skill from the checkout. It runs
+  with `-ne` so an installed Clax package does not load twice, which turns
+  off your other Pi extensions for that session too.
+- Codex cannot load a plugin from a directory, so `just dev codex` runs your
+  installed Clax plugin, with your own `~/.codex` as it is, on the fresh
+  build and `~/.clax-dev`. To try plugin, skill or hook changes in Codex, run
+  `just install`.
+
+Edit the plugin, skill or hooks, then start a new `just dev` session to pick
+them up. A dev-home daemon left by an earlier `just dev`, whose temporary
+binary is gone, is stopped at the next start; a `just watch` daemon is left
+alone. `just install` puts the working tree in front of your everyday agents,
+and `just uninstall` takes it away again.
 
 - `just help` (or bare `just`) lists every recipe with a description.
-- `just dev` runs an auto-reloading server on port 7480 and can be left running. A Rust change rebuilds and restarts the daemon; a web change rebuilds `web/dist` (reload the browser to see it). Extra arguments go to `serve`, for example `just dev --bind 0.0.0.0`. Ctrl-C stops everything. A daemon already on port 7480 must be stopped first (`just stop`). It needs `cargo-watch` (`cargo install cargo-watch`).
-  - It serves the home in `CLAX_HOME` (default `~/.clax`, the one your agents' plugins use) and prints which at start. Run `CLAX_HOME=<scratch dir> just dev` to keep development off the real home.
-  - While a Rust change rebuilds, no daemon is running. A plugin's MCP server or the Pi extension that calls the same home in that gap starts its own daemon from its own binary; when the dev daemon comes back the two contend for `daemon.json` and one of them exits, often the dev daemon. A scratch `CLAX_HOME` avoids this.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, installer, and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the installer's `MIN_VERSION` carry one version, that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh`, `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+
+One run of the gates at a time per checkout: a run holds
+`quality-gates.lock` in the checkout's git directory, a second run in the
+same checkout waits for it, and a lock whose process has gone is taken over.
+Separate worktrees still run in parallel.
+
+`scripts/verify-harnesses.sh` (manual) checks `clax init` and `clax uninit`
+against the real `claude`, `codex` and `pi` CLIs, entirely inside a scratch
+root it deletes on exit, and prints a PASS/FAIL table. It tests `CLAX_BIN`,
+or a fresh `cargo build`, never your installed `clax`; it refuses to run when
+a scratch directory would fall inside your home, never reads or copies an
+auth file, and runs Clax on a scratch port. The Pi session check, which needs
+a model, runs only with `VERIFY_PI_SESSION=1` and a provider key you export.
+
+## Releasing
+
+Releases are for people without a checkout. Only a person cuts one, and
+`install.sh` can fetch it only once the repository is public.
+
+```
+scripts/bump-version.sh 0.4.0   # every version, and the skills' tool blocks
+just ci
+git commit -am "Release 0.4.0"
+git tag -s v0.4.0 -m "Clax 0.4.0"
+git push origin main v0.4.0
+```
+
+The tag runs `.github/workflows/release.yml`. It checks that the tag matches
+every version, then builds macOS arm64 and x86_64 and Linux x86_64 and arm64
+(static musl) binaries on native runners, each with the web UI embedded. It
+smoke-tests each binary and packs `clax-<version>-<target>.tar.gz`. It
+installs one with `install.sh` from a local copy of the release, and
+publishes the archives, `install.sh` and `SHA256SUMS`. Running the workflow
+by hand (Actions, Release, Run workflow), or a pull request that touches the
+release path, does everything except publish, and keeps the result as the
+`release-dist` artifact.
 
 ## Security model
 
