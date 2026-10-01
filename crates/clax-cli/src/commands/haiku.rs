@@ -13,7 +13,7 @@ pub const HAIKU: [&str; 10] = [
     "Working, says the dot\na small green breath in the bar\nsomeone is building",
     "Brown ink, pink margin\ngreen for go, red for the pin\nthe palette of care",
     "Stop hook, end of turn\none more comment slipped in late\nthe work carries on",
-    "Old name in the dust\nArtifax becomes Clax now\nsame light, shorter word",
+    "Old name in the dust\nthe rename settled in now\nsame light, shorter word",
 ];
 
 /// A haiku chosen at random from [`HAIKU`].
