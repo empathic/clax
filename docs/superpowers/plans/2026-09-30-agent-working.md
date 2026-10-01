@@ -27,6 +27,8 @@
 
 **Provisional answers:** `.superpowers/sdd/2026-09-30-redesign/open-questions.md` lists design questions the brief does not settle, each with a recommended answer. This plan is written around those recommended answers. Every step that depends on one is marked **(provisional: Qn)**. Before starting such a task, the controller checks the file for the owner's answer. If the answer differs, the controller amends that task first.
 
+**Confirmed 2026-10-01:** the owner accepted every recommended answer (Q1–Q12). The "provisional: Qn" markers now only show where each decision lands.
+
 **Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`, on branch `worktree-agent-aee2e6203ca3d81ca`) are both merged to main. Check before Task 1:
 
 ```bash
