@@ -639,6 +639,9 @@ export class ArtifactController {
     this.cancelFlush();
     this.stream?.();
     this.stream = null;
+    // A deferred publish belongs to this artifact: dropped before the host is
+    // disposed, so the dispose's `settled` applies nothing.
+    this.deferredPublish = null;
     this.host?.dispose();
     this.host = null;
     this.clearPending();

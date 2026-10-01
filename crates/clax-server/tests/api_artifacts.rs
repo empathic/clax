@@ -166,7 +166,7 @@ async fn oversized_publish_is_413_body_too_large() {
     let mut body = br#"{"files":{"index.html":{"content":""#.to_vec();
     body.resize(body.len() + 97 * 1024 * 1024, b'x');
     body.extend_from_slice(br#""}}}"#);
-    let res = ts
+    let sent = ts
         .authed(
             ts.client
                 .post(format!("{}/api/artifacts", ts.base))
@@ -174,12 +174,31 @@ async fn oversized_publish_is_413_body_too_large() {
                 .body(reqwest::Body::from(body)),
         )
         .send()
-        .await
-        .unwrap();
-    assert_eq!(res.status(), 413);
+        .await;
+    // The daemon answers as soon as the body passes the cap and may close
+    // the connection before the client has sent the rest: then the client
+    // sees the reset while sending, not the answer.
+    match sent {
+        Ok(res) => {
+            assert_eq!(res.status(), 413);
+            assert_eq!(
+                res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
+                "body_too_large"
+            );
+        }
+        Err(e) => assert!(
+            e.is_request() || e.is_body(),
+            "the send failed for another reason: {e:?}"
+        ),
+    }
+    // Either way nothing was published.
+    let list = ts.get("/api/artifacts").await;
+    assert_eq!(list.status(), 200);
+    let list: serde_json::Value = list.json().await.unwrap();
     assert_eq!(
-        res.json::<serde_json::Value>().await.unwrap()["error"]["code"],
-        "body_too_large"
+        list["artifacts"].as_array().map(Vec::len),
+        Some(0),
+        "{list}"
     );
 }
 

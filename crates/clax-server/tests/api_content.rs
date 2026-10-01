@@ -571,3 +571,41 @@ async fn an_html_file_that_is_not_utf8_is_served_as_stored_and_remembered() {
         );
     }
 }
+
+#[tokio::test]
+async fn the_runtime_contract_type_definitions_are_served_as_text() {
+    let ts = TestServer::spawn().await;
+    let res = ts.get("/_clax/contract/0.2.61/db.d.ts").await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "text/plain; charset=utf-8");
+    let text = res.text().await.unwrap();
+    assert_eq!(text, include_str!("../../../web/contract/0.2.61/db.d.ts"));
+    // Clax's additions sit beside the unchanged files.
+    let res = ts.get("/_clax/contract/clax-extensions.d.ts").await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(res.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(
+        res.text().await.unwrap(),
+        include_str!("../../../web/contract/clax-extensions.d.ts")
+    );
+    for missing in [
+        "/_clax/contract/0.2.61/clax-extensions.d.ts",
+        "/_clax/contract/clax-extensions",
+        "/_clax/contract/0.2.61/nope.d.ts",
+        "/_clax/contract/0.2.61/",
+        "/_clax/contract/0.2.60/db.d.ts",
+    ] {
+        assert_eq!(ts.get(missing).await.status(), 404, "{missing}");
+    }
+    // An artifact's own origin reaches it too, like the other `/_clax` assets.
+    let created = ts.publish("R", &[("index.html", "<p>hi</p>")]).await;
+    let id = created["artifact"]["id"].as_str().unwrap();
+    let res = get_on(
+        &ts,
+        Some(&format!("{id}.localhost")),
+        "/_clax/contract/0.2.61/user.d.ts",
+        None,
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+}

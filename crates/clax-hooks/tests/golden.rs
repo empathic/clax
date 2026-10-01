@@ -266,7 +266,21 @@ fn no_daemon_prints_nothing_and_starts_none() {
         );
         assert_eq!(r.code, Some(0));
         assert_eq!(r.stdout, "");
-        assert!(r.elapsed < Duration::from_secs(5));
+    }
+    // Each run gave up at once on finding no daemon, rather than waiting
+    // out its deadline: its log line names that reason, not a timeout.
+    let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
+    let lines: Vec<&str> = log.lines().collect();
+    assert_eq!(lines.len(), 4, "{log}");
+    for (line, event) in lines
+        .iter()
+        .zip(["session-start", "session-end", "stop", "prompt"])
+    {
+        assert!(line.contains(&format!("event={event} ")), "{line}");
+        assert!(
+            line.ends_with("stderr=\"no clax daemon is running\""),
+            "{line}"
+        );
     }
     std::thread::sleep(Duration::from_millis(500));
     assert!(!home.join("daemon.json").exists());

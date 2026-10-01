@@ -166,8 +166,28 @@ describe("artifact.publish in the shell", () => {
     expect(e.reload).not.toHaveBeenCalled();
     expect(calls.filter(c => c.init.method === "POST")).toHaveLength(0);
     expect(e.ownPublish!.active).toBe(0);
-    expect(e.ownPublish!.settled).not.toHaveBeenCalled();
+    // The publish ended with the host: a publish deferred behind it is applied.
+    expect(e.ownPublish!.settled).toHaveBeenCalledTimes(1);
     await expect(h.call("publish", [DOC])).rejects.toHaveProperty("code");
+  });
+
+  it("dispose settles only when no other publish of this view is in flight", async () => {
+    const e = env();
+    let release!: () => void;
+    const gate = new Promise<void>(r => { release = r; });
+    stub(ok);
+    const inner = globalThis.fetch;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init: RequestInit = {}) => { await gate; return inner(url, init); }));
+    const h = artifactHandler(e, null as never);
+    const p = h.call("publish", [DOC]);
+    // Another host of the same view holds one too.
+    e.ownPublish!.active++;
+    h.dispose!();
+    expect(e.ownPublish!.active).toBe(1);
+    expect(e.ownPublish!.settled).not.toHaveBeenCalled();
+    release();
+    await expect(p).rejects.toHaveProperty("code");
+    expect(e.ownPublish!.settled).not.toHaveBeenCalled();
   });
 
   it("a timer scheduled before dispose is cleared by it", async () => {
@@ -179,6 +199,9 @@ describe("artifact.publish in the shell", () => {
     h.dispose!();
     vi.runAllTimers();
     expect(e.reload).not.toHaveBeenCalled();
+    // The cancelled reload no longer holds back a deferred publish.
+    expect(e.ownPublish!.active).toBe(0);
+    expect(e.ownPublish!.settled).toHaveBeenCalledTimes(1);
   });
 
   it("allows one publish per 2 s and 10 per minute, then rejects rate_limited with no request", async () => {

@@ -60,7 +60,9 @@ export interface CapEnv {
   /** How many of this view's own `artifact.publish` calls are in flight (a
    * publish that ends in a reload keeps its count), so the SSE `version` event
    * one causes does not reload the view before the page hears the result.
-   * `settled` runs when the count drops back to 0 without a reload. */
+   * `settled` runs when the count drops back to 0 without a reload, and when
+   * a disposed host's release brings it to 0 (its pending reload is
+   * cancelled with it). */
   ownPublish?: { active: number; settled?(): void };
   /** The files of the shown version, when known. */
   files?: Record<string, FileMeta>;

@@ -133,6 +133,36 @@ describe("ArtifactView", () => {
     expect(assign).toHaveBeenCalledWith(`/a/${ID}`);
   });
 
+  it("drops another view's held page publish when it unmounts during its own publish", async () => {
+    // An earlier test's activation would count as input before the shell's script ran.
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: false }, configurable: true });
+    const assign = vi.fn();
+    let answer!: (r: Response) => void;
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const view = await mountView(async (url, init) => {
+      if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
+      if (init?.method === "POST") return new Promise<Response>(r => { answer = r; });
+      return new Response(JSON.stringify(declared));
+    });
+    const root = view.root;
+    (await import("./nav")).nav.assign = assign;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    gestureIn(frame);
+    fromFrame(win, { type: "clax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
+    await waitFor(() => answer, "the publish request");
+    (await waitFor(() => FakeES.last, "event stream")).emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
+    // Leaving the artifact ends its own publish; the held reload belonged to it.
+    view.unmount();
+    answer(new Response(JSON.stringify({ error: { code: "internal", message: "down" } }), { status: 500 }));
+    await new Promise(r => setTimeout(r, 30));
+    expect(assign).not.toHaveBeenCalled();
+  });
+
   it("says not found only for a 404 status", async () => {
     const view = await mountView(async () => new Response(JSON.stringify({ error: { message: "nope" } }), { status: 404 }));
     const root = view.root;

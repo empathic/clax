@@ -33,14 +33,17 @@ const MAX_LEASE_MS = 600_000;
 const OPS = new Set(["==", "!=", "<", "<=", ">", ">=", "in", "not-in", "array-contains"]);
 
 /** A daemon error as the page sees it (db.d.ts `DbErrorCode`). A refused
- * write reads as not found in the daemon; the page gets `invalid_argument`. */
+ * write reads as not found in the daemon; the page gets `invalid_argument`.
+ * An artifact whose current declaration no longer includes `db` is
+ * `revoked`; a daemon timeout is transient (`unavailable`). */
 export function dbError(status: number, err: { code?: string; message?: string }, write: boolean): CapError {
   const message = err.message ?? `HTTP ${status}`;
   if (err.code === "quota_exceeded" || err.code === "resource_exhausted") return new CapError(err.code, message);
+  if (err.code === "not_declared") return new CapError("revoked", message);
   if (status === 413 || status === 414 || status === 431) return new CapError("invalid_argument", `the request is too large: ${message}`);
   if (status === 404 && write) return new CapError("invalid_argument", "this document does not exist, or this viewer cannot write it");
   if ([400, 403, 404, 409].includes(status)) return new CapError("invalid_argument", message);
-  if (status === 408 || status === 429) return new CapError("resource_exhausted", message);
+  if (status === 429) return new CapError("resource_exhausted", message);
   return new CapError("unavailable", message);
 }
 
@@ -128,7 +131,7 @@ function checkSubId(v: unknown): string {
  * to the daemon's bounds (absent or 0 is its default); `data` a body. */
 function checkAcquire(v: unknown): { holder: string; ttl_ms?: number; data?: Record<string, unknown> } {
   const o = (v !== null && typeof v === "object" ? v : {}) as Record<string, unknown>;
-  if (typeof o.holder !== "string" || !o.holder || o.holder.length > MAX_HOLDER) throw invalid(`holder is 1 to ${MAX_HOLDER} characters`);
+  if (typeof o.holder !== "string" || !o.holder || [...o.holder].length > MAX_HOLDER) throw invalid(`holder is 1 to ${MAX_HOLDER} characters`);
   const out: { holder: string; ttl_ms?: number; data?: Record<string, unknown> } = { holder: o.holder };
   if (o.ttlMs !== undefined) {
     if (typeof o.ttlMs !== "number" || !Number.isFinite(o.ttlMs) || o.ttlMs < 0) throw invalid("ttlMs is a finite number of milliseconds, 0 or more");
@@ -186,7 +189,8 @@ export const dbHandler: HandlerFactory = env => {
       if (spec.desc) q.set("direction", "desc");
     }
     if (spec.orderBy || spec.limit !== null) {
-      q.set("limit", String(spec.limit ?? 1000));
+      // Without a limit the daemon answers an ordered query with every match.
+      if (spec.limit !== null) q.set("limit", String(spec.limit));
       return (await request<{ docs: ApiDoc[] }>("GET", `${base}?${q}`))!.docs.map(wire);
     }
     const out: WireDoc[] = [];
