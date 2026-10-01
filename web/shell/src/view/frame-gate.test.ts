@@ -35,4 +35,18 @@ describe("FrameGate", () => {
     expect(g.open).toBe(false);
     expect(g.load()).toBe(true);
   });
+  it("closes on a bye, and the next document's load without a hello stays closed", () => {
+    const g = new FrameGate();
+    // A page that greeted after its own load, then leaves.
+    g.load();
+    g.hello(true);
+    g.bye();
+    expect(g.open).toBe(false);
+    // The next document loads without greeting: still closed, and stale.
+    expect(g.load()).toBe(true);
+    expect(g.open).toBe(false);
+    // A page that greets reopens it.
+    g.hello(true);
+    expect(g.open).toBe(true);
+  });
 });

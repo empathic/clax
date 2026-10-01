@@ -86,6 +86,12 @@ export type BridgeToShell =
   | { type: "clax:pick"; pickId: string; version: number; anchor: Anchor; clipPng?: ArrayBuffer; clipError?: string }
   | { type: "clax:anchors"; requestId: string | null; results: AnchorResult[] }
   | { type: "clax:cancel" }
+  /** The page is going away (`pagehide`): the shell closes the gate until the
+   * next document greets, so nothing it sends reaches whatever document the
+   * frame shows next. It may arrive once that document has replaced the page,
+   * with no `source` (see `acceptByeFromFrame`). The page can post this too,
+   * which only cuts off itself. */
+  | { type: "clax:bye" }
   /** A plain click on a link to another page of this version, cancelled in the
    * page and handed to the shell to follow (see `nav.ts`); `hash` is the
    * link's fragment, with its `#`. */
@@ -101,4 +107,4 @@ export type BridgeToShell =
   | CallRequest;
 
 export const SHELL_TYPES: ReadonlySet<string> = new Set(["clax:welcome", "clax:comment-mode", "clax:resolve-anchors", "clax:scroll-to", "clax:focus", "clax:key", "clax:pick-refused", "clax:composer-ready", "clax:use-result", "clax:call-result", "clax:event"]);
-export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);
+export const BRIDGE_TYPES: ReadonlySet<string> = new Set(["clax:hello", "clax:hover", "clax:pick-start", "clax:pick", "clax:anchors", "clax:cancel", "clax:bye", "clax:navigate", "clax:hash", "clax:degraded", "clax:use", "clax:call"]);

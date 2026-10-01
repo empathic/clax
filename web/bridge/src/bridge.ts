@@ -20,7 +20,9 @@
  * is cancelled and handed to the shell (`clax:navigate`), which follows it
  * with one history entry; a link to this page under another spelling of its
  * path (`index.html` for `/v/<n>/`) is followed in place (`followInPlace`). After the welcome and
- * on every `hashchange` it reports the page's fragment (`clax:hash`).
+ * on every `hashchange` it reports the page's fragment (`clax:hash`). On
+ * `pagehide` it says `clax:bye`, and the shell stops sending until the next
+ * document greets.
  * The daemon serves it right after the doctype (first in the skeleton's
  * `<head>` for a fragment), and only the document's first bridge tag runs, so
  * `window.claude` exists before any page script; shell
@@ -306,5 +308,10 @@ type PartName = keyof Parts;
       }
     }
   });
+  // Before the frame shows another document (a link to another site, say),
+  // so the shell sends this page's data to nothing that comes next. A page
+  // kept whole in the back/forward cache (`persisted`, with the shell around
+  // it) comes back as it was, so it says nothing.
+  addEventListener("pagehide", e => { if (!e.persisted) post({ type: "clax:bye" }); });
   post(helloFor(meta));
 })();

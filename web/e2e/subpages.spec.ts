@@ -1,3 +1,5 @@
+import { createServer, type ServerResponse } from "node:http";
+import type { AddressInfo } from "node:net";
 import { test, expect, type Frame, type Page } from "@playwright/test";
 import { api, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
 
@@ -147,6 +149,57 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await step(() => history.forward());
     await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
     await expect((await aboutFrame(page, id)).locator("h2")).toHaveText("Our team");
+  });
+
+  test(`${mode}: a page that moves the frame itself to another of its pages is heard there`, async ({ page }) => {
+    const go = `<button id="go" onclick="location.href='about.html'">Go</button>`;
+    const { artifact } = await publish(d.base, d.token, `Self move ${mode}`, { "index.html": go, "about.html": ABOUT });
+    const id = artifact.id;
+    const index = await openArtifact(page, d.base, id, 1, mode);
+    await index.locator("#go").click();
+    const about = await aboutFrame(page, id);
+    await expect(about.locator("h2")).toHaveText("Our team");
+    // It greeted: the address bar follows it, and comment mode reaches it.
+    await expect(page).toHaveURL(`${d.base}/a/${id}/about.html`);
+    await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await expect.poll(() => about.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+  });
+
+  test(`${mode}: another site's page the frame moves to hears nothing from the shell, even before its load`, async ({ page }) => {
+    // Another site on this machine: its page records every message it gets,
+    // and holds its own load open with an image that never arrives.
+    const hung: ServerResponse[] = [];
+    const spy = createServer((req, res) => {
+      if (req.url === "/hang") { hung.push(res); return; }
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end(`<script>window.got = []; addEventListener("message", e => window.got.push(e.data));</script><p id="spy">spy</p><img src="/hang">`);
+    });
+    await new Promise<void>(r => spy.listen(0, "127.0.0.1", r));
+    const spyUrl = `http://127.0.0.1:${(spy.address() as AddressInfo).port}/spy`;
+    try {
+      const { artifact } = await publish(d.base, d.token, `Leaves ${mode}`, { "index.html": `<a id="out" href="${spyUrl}">Elsewhere</a>` });
+      const index = await openArtifact(page, d.base, artifact.id, 1, mode);
+      // The page greeted: comment mode reaches it.
+      const toggle = page.getByRole("button", { name: "Comment", exact: true });
+      await toggle.click();
+      await expect.poll(() => index.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
+      await toggle.click();
+      await expect.poll(() => index.evaluate(() => document.documentElement.style.cursor)).not.toBe("crosshair");
+      await index.locator("#out").click();
+      await expect.poll(() => page.frame({ url: spyUrl }) !== null).toBe(true);
+      const other = page.frame({ url: spyUrl })!;
+      await expect(other.locator("#spy")).toHaveText("spy");
+      expect(await other.evaluate(() => document.readyState)).not.toBe("complete");
+      // The shell would send these to a page it still heard.
+      await toggle.click();
+      await toggle.click();
+      await page.waitForTimeout(500);
+      expect(await other.evaluate(() => (window as unknown as { got: unknown[] }).got)).toEqual([]);
+    } finally {
+      for (const r of hung) r.destroy();
+      spy.closeAllConnections();
+      spy.close();
+    }
   });
 }
 

@@ -799,6 +799,23 @@ are lazy parts (§8 Time to usable); the protocol gains `clax:degraded`
 failed attempt; `message` is for debugging, and the shell never shows it,
 since the page could post this itself).
 
+The bridge says `clax:bye` (bridge → shell, no fields) on `pagehide`, unless
+the page is kept in the back/forward cache (`persisted`). The shell then
+closes the page's gate, forgets its page, pins and failed parts, and sends
+nothing in sandbox mode until a document greets; a document after it that
+loads without greeting finds the gate closed. So when the frame moves to
+another site's document, which the frame's sandbox lets it do, that document
+gets none of the shell's messages, however long it delays its own `load`.
+The bye can arrive just after that document has replaced the page (Chromium
+delivers it then, with no `source`), so the shell takes it from the frame's
+window or from no window, at the frame's origin; until it arrives, sends may
+still reach the new document, for no longer than the old page's last message
+takes to arrive. A page that posts `clax:bye` itself only cuts itself off
+until it greets again, as `clax:cancel` only turns its own comment mode off;
+a bye with no source could also come from another opaque-origin document
+holding the shell's window (a frame of a page that opened the shell), which
+can do no more than that.
+
 Capability ownership by phase. Every name below is placed; nothing else
 exists in the surface.
 
@@ -1444,7 +1461,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   framed by another of its pages; framed elsewhere, such a page reaches
   nothing of the viewer's, since its bridge talks only to a parent at the
   shell's origin. Each is a policy of its own, so a page's `<meta>` policy
-  applies in full beside it.
+  applies in full beside it. So one artifact's page cannot frame another
+  artifact's content in subdomain mode (the other origin is not in its
+  list), and can in sandbox mode (`/c/...` names no ancestors).
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
   results render comment bodies only as JSON-escaped strings inside the
   labelled feedback block; `db_*` results return documents as JSON data
