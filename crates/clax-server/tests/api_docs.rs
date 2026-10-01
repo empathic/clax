@@ -603,6 +603,44 @@ async fn doc_events_follow_the_subscribers_level() {
 }
 
 #[tokio::test]
+async fn a_viewer_hears_changes_in_their_own_opened_self_subtree() {
+    // A secret ballot: `votes` is admin-only, but each viewer may write, and
+    // so read, their own `votes/<id>`.
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [
+            {"path": "votes", "read": "admin", "write": "admin"},
+            {"path": "votes/{self}", "write": "interact"}
+        ]}}),
+    )
+    .await;
+    let a = ts.viewer(Some("A")).await;
+    let b = ts.viewer(Some("B")).await;
+    let q = format!("?artifact={aid}");
+    let mut a_events = ts.events_as(&q, Some(&a.cookie)).await;
+    let mut b_events = ts.events_as(&q, Some(&b.cookie)).await;
+    let a_vote = format!("votes/{}", a.public_id);
+    let b_vote = format!("votes/{}", b.public_id);
+    for path in [a_vote.as_str(), b_vote.as_str(), "open/o"] {
+        send(
+            req(
+                &ts,
+                Method::PUT,
+                &format!("/api/artifacts/{aid}/docs/{path}"),
+                &Who::Token,
+            )
+            .json(&json!({"data": {}})),
+        )
+        .await;
+    }
+    assert_eq!(a_events.next_named("doc").await["path"], a_vote.as_str());
+    assert_eq!(a_events.next_named("doc").await["path"], "open/o");
+    assert_eq!(b_events.next_named("doc").await["path"], b_vote.as_str());
+    assert_eq!(b_events.next_named("doc").await["path"], "open/o");
+}
+
+#[tokio::test]
 async fn a_subscribers_level_is_fixed_when_its_stream_opens() {
     // The shell opens its stream only after the viewer lookup has set the
     // cookie (Task 5). A stream opened with the token but before the cookie
@@ -918,4 +956,91 @@ async fn rules_changed_by_patch_apply_to_the_next_call() {
         .unwrap();
     assert_eq!(res.status(), 200);
     assert_eq!(send(put()).await.0, 404);
+}
+
+#[tokio::test]
+async fn only_the_token_reaches_the_documents_of_an_artifact_without_db() {
+    let ts = TestServer::spawn().await;
+    let bare = artifact(&ts, json!({"comments": {}})).await;
+    let named = ts.viewer(Some("Sam")).await;
+    let doc = format!("/api/artifacts/{bare}/docs/tasks/t1");
+    // The token seeds data before a page declares db.
+    let (s, _) =
+        send(req(&ts, Method::PUT, &doc, &Who::Token).json(&json!({"data": {"n": 1}}))).await;
+    assert_eq!(s, 200);
+    for who in [Who::Viewer(&named), Who::Nobody] {
+        for r in [
+            req(&ts, Method::GET, &doc, &who),
+            req(&ts, Method::PUT, &doc, &who).json(&json!({"data": {"n": 2}, "lww": true})),
+            req(&ts, Method::PATCH, &doc, &who).json(&json!({"data": {"n": 2}, "lww": true})),
+            req(&ts, Method::DELETE, &format!("{doc}?lww=true"), &who),
+            req(
+                &ts,
+                Method::GET,
+                &format!("/api/artifacts/{bare}/docs?collection=tasks"),
+                &who,
+            ),
+            req(
+                &ts,
+                Method::POST,
+                &format!("/api/artifacts/{bare}/docs:batch"),
+                &who,
+            )
+            .json(&json!({"writes": [{"op": "set", "path": "tasks/t2", "data": {}}], "lww": true})),
+            req(
+                &ts,
+                Method::POST,
+                &format!("/api/artifacts/{bare}/docs:acquire"),
+                &who,
+            )
+            .json(&json!({"path": "tasks/t3", "holder": "h"})),
+        ] {
+            let (s, v) = send(r).await;
+            assert_eq!(
+                (s, v["error"]["code"].as_str()),
+                (403, Some("not_declared")),
+                "{v}"
+            );
+        }
+    }
+    let (s, v) = send(req(&ts, Method::GET, &doc, &Who::Token)).await;
+    assert_eq!((s, v["doc"]["data"]["n"].as_u64()), (200, Some(1)), "{v}");
+    // A declaring artifact admits the same viewer.
+    let declared = artifact(&ts, json!({"db": {}})).await;
+    let (s, _) = send(
+        req(
+            &ts,
+            Method::PUT,
+            &format!("/api/artifacts/{declared}/docs/tasks/t1"),
+            &Who::Viewer(&named),
+        )
+        .json(&json!({"data": {"n": 1}, "lww": true})),
+    )
+    .await;
+    assert_eq!(s, 200);
+}
+
+#[tokio::test]
+async fn the_token_with_a_cookie_naming_no_viewer_is_owner() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "secret", "read": "owner", "write": "owner"}]}}),
+    )
+    .await;
+    let url = format!("/api/artifacts/{aid}/docs/secret/s");
+    let put = |cookie: String| {
+        ts.client
+            .put(format!("{}{url}", ts.base))
+            .bearer_auth(&ts.token)
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .json(&json!({"data": {}, "lww": true}))
+    };
+    // A well-formed cookie with no viewer row behind it (a stray one).
+    let (s, v) = send(put("01J9Z3K4M5N6P7Q8R9S0T1V2W3".into())).await;
+    assert_eq!(s, 200, "{v}");
+    // With a real viewer's cookie the token is the owner shell: admin.
+    let shell = ts.viewer(Some("Owner")).await;
+    let (s, _) = send(put(shell.cookie.clone())).await;
+    assert_eq!(s, 404);
 }

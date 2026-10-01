@@ -100,21 +100,11 @@ declare namespace Claude {
      * - `not_found` — the thread does not exist (deleted, on another
      *   artifact, or never visible to this viewer — not distinguishable).
      * - `rate_limited` — writing too often; slow down.
-     * - `shell_input_recent` — (Clax extension, not a claude.ai code)
-     *   from {@link Comments.create}, {@link Comments.reply},
-     *   {@link Comments.resolve}, {@link Comments.delete} and
-     *   {@link Comments.sendToClaude}: the call came from the viewer's
-     *   click in the page, but within 5.5 s of their input to the Clax
-     *   window around it, so nothing was written. Keep the draft and tell
-     *   the viewer to click again. Not charged to any budget.
      * - `unavailable` — comments cannot be used from this view right now
      *   (the service is briefly degraded, commenting is switched off for
-     *   this artifact, or the consent prompt could not be shown). In
-     *   Clax, also the refusal of {@link Comments.create},
-     *   {@link Comments.reply}, {@link Comments.resolve} and
-     *   {@link Comments.delete} made without the viewer's own click or key
-     *   in the page. One retry from a fresh gesture is reasonable; if it
-     *   repeats, hide write affordances for this visit.
+     *   this artifact, or the consent prompt could not be shown). One
+     *   retry from a fresh gesture is reasonable; if it repeats, hide
+     *   write affordances for this visit.
      * - `upstream_error` — anything else: a transient fault, or a
      *   condition retrying cannot fix (the artifact's thread or reply
      *   limit — design for deliberate, viewer-initiated threads, not one
@@ -153,8 +143,6 @@ declare namespace Claude {
       | "invalid"
       | "not_found"
       | "rate_limited"
-      // Clax extension: not a claude.ai code.
-      | "shell_input_recent"
       | "unavailable"
       | "upstream_error"
       | "claude_unavailable"

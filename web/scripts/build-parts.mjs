@@ -8,8 +8,11 @@
 // Writes dist/_clax/bridge/.vite/manifest.json ({ <src>: { file, name,
 // isEntry } }), which the eager bridge build and the bundle gate read; the
 // daemon never serves it. `--watch` rebuilds each part on change; it needs
-// CLAX_DEV=1 (stable names), as `just watch` sets.
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+// CLAX_DEV=1 (stable names), as `just watch` sets. It keeps what the one-shot
+// build before it wrote (the same names), so the parts and the manifest the
+// bridge watcher reads are never missing, and it replaces the manifest
+// atomically.
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { build } from "vite";
 
@@ -19,7 +22,7 @@ const PARTS = ["comment", "clip", "caps"];
 const watch = process.argv.includes("--watch");
 if (watch && !process.env.CLAX_DEV) throw new Error("build-parts --watch needs CLAX_DEV=1, so the parts keep stable names");
 
-rmSync(out, { recursive: true, force: true });
+if (!watch) rmSync(out, { recursive: true, force: true });
 const manifest = {};
 for (const name of PARTS) {
   const src = `bridge/src/parts/${name}.ts`;
@@ -38,4 +41,5 @@ for (const name of PARTS) {
   manifest[src] = { file, name, isEntry: true };
 }
 mkdirSync(`${out}/.vite`, { recursive: true });
-writeFileSync(`${out}/.vite/manifest.json`, JSON.stringify(manifest, null, 2) + "\n");
+writeFileSync(`${out}/.vite/manifest.json.tmp`, JSON.stringify(manifest, null, 2) + "\n");
+renameSync(`${out}/.vite/manifest.json.tmp`, `${out}/.vite/manifest.json`);

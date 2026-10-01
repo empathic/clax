@@ -92,6 +92,7 @@ impl From<CoreError> for ApiError {
                 err
             }
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
+            e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {
                 tracing::error!(error = %e, "corrupt row");
                 ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "corrupt", e.to_string())

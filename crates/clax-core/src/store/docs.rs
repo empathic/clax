@@ -34,6 +34,12 @@ pub const MAX_IN_VALUES: usize = 30;
 pub const MAX_LIMIT: usize = 1000;
 /// Page size when a query names none.
 pub const DEFAULT_LIMIT: usize = 100;
+/// Most bytes of document bodies (as stored JSON) that an ordered query
+/// without a limit may return. 32 MiB is 128 documents at the 256 KiB cap,
+/// or thousands of typical ones: far above a collection a page renders,
+/// while keeping one response's memory and build time well inside the
+/// request timeout. Over it the query fails `resource_exhausted`.
+pub const MAX_UNLIMITED_QUERY_BYTES: usize = 32 * 1024 * 1024;
 /// Most writes in one batch.
 pub const MAX_BATCH: usize = 50;
 /// Lease length when none (or 0) is asked for.
@@ -71,13 +77,16 @@ pub struct Pin {
 
 /// A change to announce as the `doc` SSE event; `version: None` after a
 /// delete; `private_to` is the viewer whose private subtree holds the path;
-/// `read_level` is the least level that may read it.
+/// `read_level` is the least level that may read it. `self_read`, for a path
+/// in an opened `{self}` subtree, is that subtree's viewer and the least
+/// level at which they may read it (which `{self}` rules may lower).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DocChange {
     pub path: String,
     pub version: Option<u64>,
     pub private_to: Option<String>,
     pub read_level: crate::db::Level,
+    pub self_read: Option<(String, crate::db::Level)>,
 }
 
 /// A write's outcome; `change` is `None` when nothing changed. The written
@@ -171,7 +180,8 @@ pub struct Filter {
 
 /// A query of one collection. Without `order_by` results are in document ID
 /// order and page with `cursor` (the last ID of the previous page); with it,
-/// one page of at most `limit`, missing fields last in either direction.
+/// one page of at most `limit` (every match when `limit` is `None`), missing
+/// fields last in either direction.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct DocQuery {
     pub collection: String,
@@ -407,8 +417,9 @@ fn now_plus(ms: u64) -> String {
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
-/// The live artifact's rules; `NotFound` when it is missing or deleted.
-fn rules_in(c: &Connection, id: &ArtifactId) -> Result<Rules> {
+/// The live artifact's declared capabilities; `NotFound` when it is missing
+/// or deleted.
+fn caps_in(c: &Connection, id: &ArtifactId) -> Result<Value> {
     let caps: Option<String> = c
         .query_row(
             "SELECT capabilities_json FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0",
@@ -417,12 +428,16 @@ fn rules_in(c: &Connection, id: &ArtifactId) -> Result<Rules> {
         )
         .optional()?;
     let caps = caps.ok_or(CoreError::NotFound)?;
-    let v: Value = serde_json::from_str(&caps).map_err(|_| CoreError::Corrupt {
+    serde_json::from_str(&caps).map_err(|_| CoreError::Corrupt {
         artifact_id: id.as_str().to_string(),
         column: "capabilities_json",
         version: None,
-    })?;
-    Rules::from_capabilities(&v)
+    })
+}
+
+/// The live artifact's rules; `NotFound` when it is missing or deleted.
+fn rules_in(c: &Connection, id: &ArtifactId) -> Result<Rules> {
+    Rules::from_capabilities(&caps_in(c, id)?)
 }
 
 type Parts = (String, String, String, i64, String);
@@ -511,6 +526,10 @@ fn write_in(
     check_pin(&dp.path, current.as_ref().map(|d| d.version), pin)?;
     let private_to = rules.private_to(&dp.path);
     let read_level = rules.read_level(&dp.path, private_to.as_deref());
+    let self_read = rules.opened_self_owner(&dp.path).map(|owner| {
+        let level = rules.read_level(&dp.path, Some(&owner));
+        (owner, level)
+    });
     match next(current.as_ref())? {
         Some(body) => {
             check_body(&body, false)?;
@@ -545,6 +564,7 @@ fn write_in(
                     version: Some(version),
                     private_to,
                     read_level,
+                    self_read,
                 }),
             })
         }
@@ -566,6 +586,7 @@ fn write_in(
                     version: None,
                     private_to,
                     read_level,
+                    self_read,
                 }),
             })
         }
@@ -581,6 +602,12 @@ fn update_body(path: &str, cur: Option<&Doc>, patch: Value) -> Result<Option<Val
 }
 
 impl Store {
+    /// Whether the live artifact's current declaration names `db`;
+    /// `NotFound` when the artifact is missing or deleted.
+    pub fn doc_declared(&self, id: &ArtifactId) -> Result<bool> {
+        self.with_conn(|c| Ok(caps_in(c, id)?.get("db").is_some()))
+    }
+
     /// The document at `path`, or `None` when it is absent or `caller` may not read it.
     pub fn doc_get(&self, id: &ArtifactId, path: &str, caller: &Caller) -> Result<Option<Doc>> {
         let dp = doc_path(path)?;
@@ -690,6 +717,10 @@ impl Store {
 
     /// Runs `q` over the documents `caller` may read, returning the page and,
     /// for an unordered query with more results, the cursor for the next page.
+    /// An unordered query without a limit returns [`DEFAULT_LIMIT`] documents a
+    /// page; an ordered one without a limit returns every match (at most
+    /// [`MAX_DOCS`], the artifact's quota), or fails `resource_exhausted`
+    /// when their bodies pass [`MAX_UNLIMITED_QUERY_BYTES`].
     pub fn doc_query(
         &self,
         id: &ArtifactId,
@@ -697,8 +728,12 @@ impl Store {
         caller: &Caller,
     ) -> Result<(Vec<Doc>, Option<String>)> {
         let collection = collection_path(&q.collection)?;
-        let limit = q.limit.unwrap_or(DEFAULT_LIMIT);
-        if !(1..=MAX_LIMIT).contains(&limit) {
+        let limit = match (q.limit, &q.order_by) {
+            (Some(l), _) => l,
+            (None, Some(_)) => usize::MAX,
+            (None, None) => DEFAULT_LIMIT,
+        };
+        if q.limit.is_some_and(|l| !(1..=MAX_LIMIT).contains(&l)) {
             return Err(invalid_argument(format!("limit is 1 to {MAX_LIMIT}")));
         }
         if q.filters.len() > MAX_FILTERS {
@@ -720,14 +755,25 @@ impl Store {
                 .query_map(params![id.as_str(), collection, after], row_parts)?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let mut docs = Vec::new();
+            let mut bytes = 0;
             for parts in rows {
                 if !rules.allows(&parts.0, Op::Read, caller) {
                     continue;
                 }
+                let size = parts.2.len();
                 let d = to_doc(id, parts)?;
                 if q.filters.iter().all(|f| f.matches(&d.data)) {
+                    bytes += size;
                     docs.push(d);
                 }
+            }
+            if q.order_by.is_some() && q.limit.is_none() && bytes > MAX_UNLIMITED_QUERY_BYTES {
+                return Err(CoreError::invalid(
+                    "resource_exhausted",
+                    format!(
+                        "the matching documents hold {bytes} bytes, over the {MAX_UNLIMITED_QUERY_BYTES} an ordered query without a limit may return; add a limit or narrow the query"
+                    ),
+                ));
             }
             if let Some(field) = &q.order_by {
                 docs.sort_by(|a, b| {
@@ -958,7 +1004,8 @@ mod tests {
                 path: "tasks/t1".into(),
                 version: Some(1),
                 private_to: None,
-                read_level: Level::View
+                read_level: Level::View,
+                self_read: None,
             })
         );
         let d = st.doc_get(&id, "tasks/t1", &admin()).unwrap().unwrap();
@@ -1198,6 +1245,89 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn an_ordered_query_without_a_limit_returns_every_match() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        let n = MAX_LIMIT + 5;
+        for start in (0..n).step_by(MAX_BATCH) {
+            let chunk = (start..n.min(start + MAX_BATCH))
+                .map(|i| BatchWrite {
+                    path: format!("log/e{i:05}"),
+                    op: BatchOp::Set(json!({"at": n - i})),
+                    if_version: None,
+                })
+                .collect();
+            st.doc_batch(&id, chunk, true, &admin()).unwrap();
+        }
+        let q = DocQuery {
+            collection: "log".into(),
+            order_by: Some("at".into()),
+            ..Default::default()
+        };
+        let (docs, next) = st.doc_query(&id, &q, &admin()).unwrap();
+        assert_eq!((docs.len(), next), (n, None));
+        assert_eq!(docs[0].data["at"], 1);
+        // Unordered, the page is the default size and a cursor follows.
+        let (docs, next) = st
+            .doc_query(
+                &id,
+                &DocQuery {
+                    order_by: None,
+                    ..q
+                },
+                &admin(),
+            )
+            .unwrap();
+        assert_eq!((docs.len(), next.is_some()), (DEFAULT_LIMIT, true));
+    }
+
+    #[test]
+    fn an_ordered_query_without_a_limit_has_a_byte_budget() {
+        let (_d, st) = store();
+        let id = artifact_with_caps(&st, json!({}));
+        // Bodies just under the document cap; enough of them to pass the budget.
+        let big = "x".repeat(MAX_DOC_BYTES - 64);
+        let n = MAX_UNLIMITED_QUERY_BYTES / (MAX_DOC_BYTES - 64) + 1;
+        for i in 0..n {
+            st.doc_set(
+                &id,
+                &format!("big/d{i:04}"),
+                json!({"at": i, "s": big}),
+                page(),
+                &admin(),
+            )
+            .unwrap();
+        }
+        let q = DocQuery {
+            collection: "big".into(),
+            order_by: Some("at".into()),
+            ..Default::default()
+        };
+        let e = st.doc_query(&id, &q, &admin()).unwrap_err();
+        assert!(
+            matches!(
+                &e,
+                CoreError::Invalid {
+                    code: "resource_exhausted",
+                    ..
+                }
+            ),
+            "{e:?}"
+        );
+        // With a limit, or narrowed below the budget, it answers.
+        let limited = DocQuery {
+            limit: Some(3),
+            ..q.clone()
+        };
+        assert_eq!(st.doc_query(&id, &limited, &admin()).unwrap().0.len(), 3);
+        let narrowed = DocQuery {
+            filters: parse_where(&json!([["at", "<", 10]])).unwrap(),
+            ..q
+        };
+        assert_eq!(st.doc_query(&id, &narrowed, &admin()).unwrap().0.len(), 10);
     }
 
     #[test]

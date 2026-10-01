@@ -1291,9 +1291,9 @@ impl ClaxTools {
                 pairs.push(("direction".into(), "desc".into()));
             }
         }
-        if let Some(l) = q.limit {
-            pairs.push(("limit".into(), l.to_string()));
-        }
+        // The daemon returns every match of an ordered query without a
+        // limit; the tools keep their documented default page of 100.
+        pairs.push(("limit".into(), q.limit.unwrap_or(100).to_string()));
         if let Some(c) = &q.cursor {
             pairs.push(("cursor".into(), c.clone()));
         }

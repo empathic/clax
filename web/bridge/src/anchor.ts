@@ -336,7 +336,7 @@ interface Entry {
   res: Resolved | null;
   /** Consecutive misses of a detached anchor since the last `reset`. */
   misses: number;
-  /** When a change may next retry it (`Date.now()` milliseconds). */
+  /** When a change may next retry it (`performance.now()` milliseconds). */
   retryAt: number;
   /** The page changed since it last missed. */
   changed: boolean;
@@ -376,7 +376,7 @@ export class AnchorCache {
     if (hit && same && !hit.due) return hit.res;
     const res = resolveAnchor(this.doc, anchor, this.custom, this.file, () => this.index ??= textIndex(this.doc.body!), sameVersion);
     const misses = res ? 0 : (same ? hit.misses : 0) + 1;
-    this.entries.set(id, { anchor, res, misses, retryAt: Date.now() + retryDelay(misses), changed: false, due: false });
+    this.entries.set(id, { anchor, res, misses, retryAt: performance.now() + retryDelay(misses), changed: false, due: false });
     return res;
   }
 
@@ -410,7 +410,7 @@ export class AnchorCache {
    * `retry` when any fell due, and waits for the next one still waiting. */
   private releaseDue(): void {
     this.clearTimer();
-    const now = Date.now();
+    const now = performance.now();
     let fell = false;
     let next = Infinity;
     for (const e of this.entries.values()) {

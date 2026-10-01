@@ -197,6 +197,13 @@ export async function colorStats(page: Page, pickId: string, rgb: [number, numbe
   }, { id: pickId, want: rgb, near: tol, from: fromRow, to: Number.isFinite(toRow) ? toRow : 1e9 });
 }
 
+/** A viewer named `name`, made through the daemon's API; its public ID. */
+export async function namedViewer(base: string, name: string): Promise<string> {
+  const res = await fetch(`${base}/api/viewers/me`, { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: name }) });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return ((await res.json()) as { viewer: { public_id: string } }).viewer.public_id;
+}
+
 /** Moves the mouse onto `loc` in steps, as a hand does. After the viewer's
  * input to the shell over the page, the shell covers the page with bands
  * until it sees the pointer move (web/shell/src/caps/gesture.ts); a hand

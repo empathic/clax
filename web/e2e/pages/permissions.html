@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permission Check</title>
+<style>
+  :root { --bg: #ffffff; --fg: #1a1a1a; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #14161a; --fg: #ececec; } }
+  :root[data-theme="dark"] { --bg: #14161a; --fg: #ececec; }
+  body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; }
+  pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<h1>What this page may do</h1>
+<button id="ask">Ask for everything</button>
+<pre id="state">loading</pre>
+<script>
+(async () => {
+  const permissions = await claude.use("permissions");
+  const out = document.getElementById("state");
+  if (!permissions) { out.textContent = "unavailable"; return; }
+  out.textContent = JSON.stringify(await permissions.state());
+  document.getElementById("ask").onclick = async () => { out.textContent = JSON.stringify(await permissions.request()); };
+})();
+</script>
+</body>
+</html>

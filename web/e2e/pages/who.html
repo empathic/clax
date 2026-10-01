@@ -12,7 +12,7 @@
   img { width: 32px; height: 32px; border-radius: 50%; vertical-align: middle; }
 </style>
 </head>
-<body data-other="u_ffffffffffffffffffffff">
+<body data-other="u_ffffffffffffffffffffff" data-find="">
 <h1>Who is here</h1>
 <p><img id="avatar" alt=""> <span id="greeting">Hello</span></p>
 <button id="refresh">Refresh</button>
@@ -23,7 +23,8 @@
   const show = async () => {
     const me = user ? await user.me() : null;
     if (me) { document.getElementById("avatar").src = me.avatarUrl; document.getElementById("greeting").textContent = "Hello, " + (me.name || "you"); }
-    // The spec publishes this page with another viewer's public ID here.
+    // Another viewer's public ID: as published here it names nobody, and a
+    // test may publish the page with a real one in its place.
     const other = document.body.dataset.other;
     const ids = me && me.id ? [me.id, "u_ffffffffffffffffffffff", other] : [];
     const people = user ? await user.profiles(ids) : {};
@@ -38,7 +39,8 @@
       isMe: me && me.id ? people[me.id].isMe : null,
       stranger: people["u_ffffffffffffffffffffff"] ? people["u_ffffffffffffffffffffff"].name : null,
       other: other !== "u_ffffffffffffffffffffff" && people[other] ? people[other].name : null,
-      search: user ? (await user.search("")).length : 0,
+      // Names to search for: none as published; a test may name one.
+      search: user ? (await user.search(document.body.dataset.find)).length : 0,
     });
   };
   document.getElementById("refresh").onclick = show;
