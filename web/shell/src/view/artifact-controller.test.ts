@@ -183,6 +183,38 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("sends nothing, answers nothing and forgets the page after the frame's document says bye, until the next hello", async () => {
+    const { ctl, frame } = await started();
+    const win = frame.contentWindow!;
+    const posted: { type: string }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
+    hello(win);
+    expect(ctl.state.get().file).toBe("index.html");
+    // As it arrives in Chromium: once the next document replaced the page, with no source.
+    dispatchTrusted(window, new MessageEvent("message", { data: { type: "clax:bye" }, origin: "null", source: null }));
+    expect(ctl.state.get().file).toBeNull();
+    posted.length = 0;
+    // The frame now shows another site's document, which has not loaded yet.
+    ctl.toggleComment();
+    fromFrame(win, { type: "clax:use", id: "u1", name: "storage" });
+    await new Promise(r => setTimeout(r, 50));
+    expect(posted).toEqual([]);
+    hello(win);
+    expect(posted.map(m => m.type)).toContain("clax:welcome");
+    expect(ctl.state.get().file).toBe("index.html");
+    ctl.dispose();
+  });
+
+  it("ignores a bye that a script made rather than the browser delivered", async () => {
+    const { ctl, frame } = await started();
+    const win = frame.contentWindow!;
+    win.postMessage = (() => {}) as Window["postMessage"];
+    hello(win);
+    window.dispatchEvent(new MessageEvent("message", { data: { type: "clax:bye" }, origin: "null", source: win }));
+    expect(ctl.state.get().file).toBe("index.html");
+    ctl.dispose();
+  });
+
   it("maps anchor results through the handles of the page greeted when they arrive", async () => {
     const { ctl, frame } = await started();
     const win = frame.contentWindow!;

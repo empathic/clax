@@ -84,3 +84,13 @@ describe("bridge orders that arrive before <body>", () => {
     }
   });
 });
+
+describe("leaving the page", () => {
+  it("says clax:bye on pagehide, and nothing when the page is kept in the back/forward cache", () => {
+    const byes = () => posted.filter(m => m.type === "clax:bye").length;
+    dispatchEvent(new PageTransitionEvent("pagehide", { persisted: true }));
+    expect(byes()).toBe(0);
+    dispatchEvent(new PageTransitionEvent("pagehide", { persisted: false }));
+    expect(byes()).toBe(1);
+  });
+});

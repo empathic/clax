@@ -3,7 +3,7 @@
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
 import { ApiError, type Artifact, type Version, getArtifact, getToken } from "../api";
-import { acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
+import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
@@ -714,8 +714,20 @@ export class ArtifactController {
     });
   }
 
+  /** The frame's document said `clax:bye`: it is going away, perhaps to
+   * another site's document. Nothing more is sent in sandbox mode, nothing
+   * the frame asks is answered, and the page and its pins are forgotten,
+   * until the next document greets. A page that posts this itself only cuts
+   * itself off, as `clax:cancel` only turns its own comment mode off. */
+  private frameLeft(): void {
+    this.gate.bye();
+    this.failedParts.clear();
+    this.set({ file: null, resolved: {} });
+  }
+
   private onMessage(e: MessageEvent): void {
     if (this.disposed) return;
+    if (acceptByeFromFrame(e, this.frameWin(), this.s.origin ?? null)) { this.frameLeft(); return; }
     const m = acceptFromFrame(e, this.frameWin(), this.s.origin ?? null);
     if (!m) return;
     switch (m.type) {

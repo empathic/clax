@@ -12,6 +12,22 @@ export function acceptFromFrame(e: MessageEvent, frame: Window | null, frameOrig
   return d as BridgeToShell;
 }
 
+/** A `clax:bye` from the frame's document as it goes away. The document
+ * posts it on `pagehide`, and in Chromium it arrives once the next document
+ * has replaced it, so its `source` is null rather than the frame's window:
+ * it is taken from either, when the browser delivered it at the frame's
+ * origin. With no source, the origin is the only check: in sandbox mode any
+ * opaque-origin document that holds a reference to the shell's window (a
+ * sandboxed frame of a page that opened the shell, say) could post one. The
+ * most a forged bye does is close the gate until the frame's next hello,
+ * less than such an opener can do by navigating the shell. */
+export function acceptByeFromFrame(e: MessageEvent, frame: Window | null, frameOrigin: string | null): boolean {
+  if (!e.isTrusted || !frame || (e.source !== frame && e.source !== null)) return false;
+  if (frameOrigin ? e.origin !== frameOrigin : e.origin !== "null") return false;
+  const d = e.data;
+  return !!d && typeof d === "object" && d.type === "clax:bye";
+}
+
 /** Posts to the frame: to its origin in subdomain mode, to "*" for an opaque-origin sandbox. */
 export function sendToFrame(frame: Window | null, frameOrigin: string | null, m: ShellToBridge): void {
   frame?.postMessage(m, frameOrigin ?? "*");

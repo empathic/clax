@@ -35,6 +35,14 @@ export class FrameGate {
     return stale;
   }
 
+  /** The frame's document said it is going away (`clax:bye`): closed until
+   * a document greets, and its hello no longer counts for the next load, so
+   * a document after it that loads without greeting closes the gate too. */
+  bye(): void {
+    this.open = false;
+    this.helloSinceLoad = false;
+  }
+
   /** The shell sent the frame to another page: closed until that page greets. */
   close(): void {
     this.open = false;

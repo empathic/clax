@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { trusted } from "../../bridge/test/trusted";
-import { acceptFromFrame, helloMatches } from "./bridge-link";
+import { acceptByeFromFrame, acceptFromFrame, helloMatches } from "./bridge-link";
 
 /** A message as the browser delivers one. */
 const ev = (data: unknown, origin: string, source: Window | null) => trusted(new MessageEvent("message", { data, origin, source }));
@@ -28,5 +28,25 @@ describe("helloMatches", () => {
     expect(helloMatches(hello, "7q3k9mzx2b4t", 2)).toBe(true);
     expect(helloMatches(hello, "7q3k9mzx2b4t", 1)).toBe(false);
     expect(helloMatches(hello, "9zzzzzzzzzzz", 2)).toBe(false);
+  });
+});
+
+describe("acceptByeFromFrame", () => {
+  const bye = { type: "clax:bye" };
+  it("takes a bye from the frame, or from a document already gone (no source), at the frame's origin", () => {
+    expect(acceptByeFromFrame(ev(bye, "null", window), window, null)).toBe(true);
+    expect(acceptByeFromFrame(ev(bye, "null", null), window, null)).toBe(true);
+    expect(acceptByeFromFrame(ev(bye, "http://x.localhost:7480", null), window, "http://x.localhost:7480")).toBe(true);
+  });
+  it("refuses another origin, another window, another type, and a bye a script made", () => {
+    expect(acceptByeFromFrame(ev(bye, "http://localhost:7480", null), window, null)).toBe(false);
+    expect(acceptByeFromFrame(ev(bye, "null", null), window, "http://x.localhost:7480")).toBe(false);
+    const other = document.createElement("iframe");
+    document.body.append(other);
+    expect(acceptByeFromFrame(ev(bye, "null", other.contentWindow), window, null)).toBe(false);
+    other.remove();
+    expect(acceptByeFromFrame(ev({ type: "clax:cancel" }, "null", null), window, null)).toBe(false);
+    expect(acceptByeFromFrame(new MessageEvent("message", { data: bye, origin: "null", source: null }), window, null)).toBe(false);
+    expect(acceptByeFromFrame(ev(bye, "null", null), null, null)).toBe(false);
   });
 });
