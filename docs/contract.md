@@ -423,7 +423,7 @@ No arguments.
 ```json
 {
   "daemon_url": "http://localhost:7480",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "harness": "claude",
   "session": {
     "id": "01K6AB3Q9X7N2M4P5R6S8T0V1W",
@@ -450,7 +450,7 @@ No arguments.
     "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"
   },
   "feedback": [],
-  "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.2.0"}
+  "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.3.0"}
 }
 ```
 
@@ -485,8 +485,9 @@ reason, failed_at, until, advice}`, where `version` and `exe` are the build
 that failed to start, `from_version` the daemon it was to replace, `reason`
 why it failed and what became of the previous daemon, `failed_at` and
 `until` RFC 3339 times, and `advice` what to do. The shim reports it, as do
-`clax status --json` and `clax serve --json`; the daemon's `/mcp` and the Pi
-extension do not.
+`clax status --json` and `clax serve --json`, and the Pi extension, which
+asks the `clax` it runs (`clax status --json`, within 3 s); the daemon's
+`/mcp` does not.
 
 `watches` lists this session's watches (`[{session_id, artifact_id,
 replies_armed, created_at}]`; `[]` without a session). `push` says whether
