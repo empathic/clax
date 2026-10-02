@@ -489,6 +489,7 @@ impl Store {
                 stmt.query_map(params![thread_id], |r| r.get::<_, String>(0))?
                     .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?
             };
+            tx.execute("DELETE FROM version_threads WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM feedback WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;

@@ -40,6 +40,12 @@ pub struct Args {
     /// Expected current version; defaults to the artifact's current version.
     #[arg(long)]
     pub if_version: Option<u32>,
+    /// A short change note shown to people as this version's changelog.
+    #[arg(long)]
+    pub note: Option<String>,
+    /// IDs of comment threads this version addresses (comma-separated).
+    #[arg(long, value_delimiter = ',')]
+    pub addresses: Vec<String>,
 }
 
 /// Printed after the URL when no agent session owns the published artifact.
@@ -147,10 +153,14 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         ("description", &a.description),
         ("icon", &a.icon),
         ("label", &a.label),
+        ("note", &a.note),
     ] {
         if let Some(v) = v {
             body[k] = serde_json::json!(v);
         }
+    }
+    if !a.addresses.is_empty() {
+        body["addresses"] = serde_json::json!(a.addresses);
     }
     let res = match target {
         None => c.post("/api/artifacts", &body)?,
@@ -189,13 +199,25 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         .or(res["artifact"]["owner_session_id"].as_str());
     super::print(
         cli,
-        serde_json::json!({"id": id, "url": url, "version": res["version"]["n"], "session": session}),
+        serde_json::json!({
+            "id": id,
+            "url": url,
+            "version": res["version"]["n"],
+            "session": session,
+            "note": res["version"]["note"],
+            "addressed": res["version"]["addresses"],
+        }),
         |j| {
             let mut text = format!(
                 "published v{} at {}",
                 j["version"],
                 j["url"].as_str().unwrap_or_default()
             );
+            let addressed = j["addressed"].as_array().map_or(0, Vec::len);
+            if addressed > 0 {
+                let s = if addressed == 1 { "" } else { "s" };
+                text.push_str(&format!("\naddresses {addressed} comment{s}"));
+            }
             if j["session"].is_null() {
                 text.push('\n');
                 text.push_str(NO_SESSION_NOTE);

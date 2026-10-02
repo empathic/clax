@@ -2,6 +2,7 @@
 
 pub mod anchor;
 pub mod capabilities;
+pub mod changelog;
 pub mod config;
 pub mod db;
 pub mod error;

@@ -1450,3 +1450,58 @@ fn haiku_prints_one_of_ten() {
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["haiku"].as_str().unwrap().lines().count(), 3);
 }
+
+#[test]
+fn publish_takes_a_note_and_addresses() {
+    let e = Env::new();
+    let index = write(
+        e.dir.path(),
+        "n/index.html",
+        "<title>Noted</title><main><h2>Goals</h2></main>",
+    );
+    let v: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args(["publish", "--json", "--port", "0"])
+            .arg(&index)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    let id = v["id"].as_str().unwrap().to_string();
+    let bad = e
+        .cmd()
+        .args([
+            "publish",
+            "--json",
+            "--id",
+            &id,
+            "--addresses",
+            "01J9ZZZZZZZZZZZZZZZZZZZZZZ",
+        ])
+        .arg(&index)
+        .assert()
+        .failure();
+    assert!(String::from_utf8_lossy(&bad.get_output().stderr).contains("unknown_thread"));
+    let v2: serde_json::Value = serde_json::from_slice(
+        &e.cmd()
+            .args([
+                "publish",
+                "--json",
+                "--id",
+                &id,
+                "--note",
+                "Tighter spacing",
+            ])
+            .arg(&index)
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .unwrap();
+    assert_eq!(v2["version"], 2);
+    assert_eq!(v2["note"], "Tighter spacing");
+    assert_eq!(v2["addressed"], serde_json::json!([]));
+}

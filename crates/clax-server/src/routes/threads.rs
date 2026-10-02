@@ -55,7 +55,7 @@ pub fn mentions_agent(body: &str) -> bool {
 
 /// Broadcasts the `thread` event. `/api/events` needs no token, so the view is
 /// always built without `clip_path`, whoever made the change.
-fn publish_thread(
+pub(crate) fn publish_thread(
     ctx: &crate::feedback::FeedbackCtx,
     st: &Store,
     t: &Thread,
@@ -492,6 +492,9 @@ pub async fn resolve(
             };
             let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
             touched.merge(withdrawn);
+            if resolver.is_some() {
+                st.link_on_resolve(&tid)?;
+            }
             let changed = match &resolver {
                 Some(sid) => ctx.working.thread_done(sid, id.as_str(), &tid),
                 None => ctx.working.thread_gone(id.as_str(), &tid),

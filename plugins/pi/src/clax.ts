@@ -56,6 +56,8 @@ const PublishArgs = Type.Object({
   icon: opt(str("One generic word for the icon, such as chart or map.")),
   label: opt(str("Short label for this version.")),
   capabilities: opt(Type.Record(Type.String(), Type.Unknown(), { description: "Runtime capabilities the page declares." })),
+  note: opt(str("A short change note for the person, at most 280 characters.")),
+  addresses: opt(Type.Array(Type.String(), { description: "IDs of the comment threads this version addresses." })),
 }, strict);
 
 const ReadArgs = Type.Object({
@@ -664,8 +666,12 @@ class Tools {
     files[INDEX] = page;
     const body: Json = { files };
     if (title !== undefined) body.title = title;
-    for (const k of ["description", "icon", "label"] as const) if (a[k] !== undefined) body[k] = a[k];
+    for (const k of ["description", "icon", "label", "note"] as const) if (a[k] !== undefined) body[k] = a[k];
     if (a.capabilities !== undefined) body.capabilities = a.capabilities;
+    if (a.addresses) {
+      for (const t of a.addresses) checkThreadId(t);
+      body.addresses = a.addresses;
+    }
     const c = this.clientFor(ctx);
     const res = await this.call(async () => {
       if (target === undefined) return c.create(body);
@@ -684,6 +690,9 @@ class Tools {
       version: res.version?.n ?? null,
       title: res.artifact?.title ?? null,
       files: Object.keys(res.version?.files ?? {}),
+      note: res.version?.note ?? null,
+      note_truncated: res.note_truncated ?? false,
+      addressed: res.version?.addresses ?? [],
     };
   }
 
@@ -1170,7 +1179,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     };
 
     define("publish", "Clax publish",
-      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number.",
+      "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it.",
       "Publish an HTML page (artifact) to the local Clax server, or a new version of one",
       PublishArgs, (ctx, a) => tools.publish(ctx, a));
     define("read", "Clax read",
@@ -1210,7 +1219,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Reply to a Clax comment thread that was sent to you",
       CommentsReplyArgs, (ctx, a) => tools.commentsReply(ctx, a));
     define("comments_resolve", "Clax comments resolve",
-      "Resolve a comment thread that was sent to you, once you have acted on it and replied. Threads not sent to the agent are left alone (`resolved: false` with `guidance`).",
+      "Resolve a comment thread that was sent to you, once you have acted on it and replied. Threads not sent to the agent are left alone (`resolved: false` with `guidance`). A thread no version lists yet is listed as addressed in the artifact's current version.",
       "Resolve a Clax comment thread you have acted on",
       CommentsResolveArgs, (ctx, a) => tools.commentsResolve(ctx, a));
     define("watch", "Clax watch",

@@ -836,6 +836,19 @@ describe("comments", () => {
     const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
     expect(seen.working).toEqual([]);
   });
+
+  it("clax_publish carries a note and addresses, as the MCP tool does", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-note");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const v1 = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "N" }, ctx)).content[0].text!);
+    const form = new FormData();
+    form.set("anchor", JSON.stringify({ kind: "element", selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
+    form.set("body", "plain");
+    form.set("version", "1");
+    const tid = (await (await fetch(`${daemon.base}/api/artifacts/${v1.artifact_id}/threads`, { method: "POST", body: form })).json()).thread.id;
+    const v2 = JSON.parse((await pi.callTool("clax_publish", { id: v1.artifact_id, html: "<h2>Goals</h2>", note: "Done", addresses: [tid] }, ctx)).content[0].text!);
+    expect(v2).toMatchObject({ version: 2, note: "Done", note_truncated: false, addressed: [tid] });
+  });
 });
 
 /** The timer functions as they were before any test replaced them. */

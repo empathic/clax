@@ -119,11 +119,18 @@ Arguments:
   omitting it keeps the current title.
 - `description`, `icon` (one generic word such as `chart` or `map`), `label`
   (a short name for this version): all optional.
+- `note` (string, optional): a short change note for the person, at most 280
+  characters ("Two columns; third bullet dropped"). Shown as this version's
+  changelog.
+- `addresses` (array of thread IDs, optional): the comment threads this
+  version addresses. Threads you were marked working on are added for you.
+  Listing a thread does not resolve it.
 - `capabilities` (object, optional): the page's runtime capabilities
   declaration, as a full set (see "Runtime capabilities").
 
 Returns `artifact_id`, `url` (for the person), `version` (the new version
-number), `title`, and `files` (the published paths).
+number), `title`, `files` (the published paths), `note`, `note_truncated`, and
+`addressed` (the thread IDs linked to the new version).
 
 Update workflow: the `version` from the last `publish` or `read` of that artifact
 is the `if_version` for the next update. Pass it whenever you might not be the
@@ -249,7 +256,8 @@ When one arrives:
    whole conversation. Reading it also tells Clax you have seen it. Open
    the clip with your file-reading tool when the look of the region matters.
 2. Make the change, usually by publishing a new version of the same artifact
-   (`publish` with its `id` or `url`). The person's view places each thread
+   (`publish` with its `id` or `url`), with a `note` saying what changed and
+   `addresses` naming the threads it handles. The person's view places each thread
    on the new version by its anchor; one whose element is gone shows under
    Detached.
 3. Answer with `comments_reply`: what you changed, or why you did not.

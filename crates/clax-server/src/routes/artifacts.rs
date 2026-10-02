@@ -144,6 +144,7 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let p = validate(body_within(req, "the publish limit")?)?;
     require_title(p.title.as_deref())?;
+    let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let events = s.events.clone();
     let ctx = s.feedback_ctx();
@@ -168,7 +169,9 @@ pub async fn create(
     let url = format!("/a/{}", artifact.id);
     Ok((
         StatusCode::CREATED,
-        Json(json!({"artifact": artifact, "version": version, "url": url})),
+        Json(
+            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
+        ),
     ))
 }
 
@@ -279,7 +282,8 @@ pub async fn publish(
     req: Result<Json<PublishRequest>, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let p = validate(body_within(req, "the publish limit")?)?;
+    let mut p = validate(body_within(req, "the publish limit")?)?;
+    let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");
     let events = s.events.clone();
@@ -287,6 +291,11 @@ pub async fn publish(
     let (artifact, version) = s
         .store_call(move |st| {
             let session = publishing_session(st, &session)?;
+            // Read before the clear below: the threads this session was
+            // working on are linked to the new version.
+            if let Some(sid) = &session {
+                p.working_threads = ctx.working.threads_of(sid, id.as_str());
+            }
             let (artifact, version) = st.publish_version(&id, p, session.as_deref())?;
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
@@ -301,13 +310,20 @@ pub async fn publish(
                 n: version.n,
                 by_page,
             });
+            for tid in &version.addresses {
+                if let Some(t) = st.get_thread(tid)? {
+                    crate::routes::threads::publish_thread(&ctx, st, &t)?;
+                }
+            }
             Ok((artifact, version))
         })
         .await?;
     let url = format!("/a/{}", artifact.id);
     Ok((
         StatusCode::CREATED,
-        Json(json!({"artifact": artifact, "version": version, "url": url})),
+        Json(
+            json!({"artifact": artifact, "version": version, "url": url, "note_truncated": truncated}),
+        ),
     ))
 }
 

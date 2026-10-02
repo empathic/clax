@@ -44,6 +44,12 @@ pub struct PublishRequest {
     pub capabilities: Option<serde_json::Value>,
     #[serde(default)]
     pub files: BTreeMap<String, Option<FileInput>>,
+    /// A short change note for the version's changelog.
+    #[serde(default)]
+    pub note: Option<String>,
+    /// IDs of the artifact's threads this version addresses.
+    #[serde(default)]
+    pub addresses: Option<Vec<String>>,
 }
 
 /// A file's decoded bytes and resolved content type.
@@ -70,6 +76,15 @@ pub struct ValidatedPublish {
     pub if_version: Option<u32>,
     pub capabilities: Option<serde_json::Value>,
     pub files: BTreeMap<String, FileChange>,
+    /// The note after [`crate::working::clean_line`].
+    pub note: Option<String>,
+    /// The note was cut to [`crate::changelog::MAX_NOTE_CHARS`].
+    pub note_truncated: bool,
+    /// Thread IDs named explicitly; each must be a thread of the artifact.
+    pub addresses: Vec<String>,
+    /// Threads the publishing session was marked working on (empty from
+    /// [`validate`]; the caller fills it). Ones that no longer exist are skipped.
+    pub working_threads: Vec<String>,
 }
 
 /// Accepts a relative path of one or more non-empty segments, with no `.` or
@@ -250,6 +265,23 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
             ));
         }
     }
+    let (note, note_truncated) = match req.note.as_deref() {
+        Some(n) => crate::working::clean_line(n, crate::changelog::MAX_NOTE_CHARS),
+        None => (None, false),
+    };
+    let addresses = req.addresses.clone().unwrap_or_default();
+    if addresses.len() > crate::changelog::MAX_ADDRESSES {
+        return Err(CoreError::invalid(
+            "invalid_args",
+            format!("at most {} addresses", crate::changelog::MAX_ADDRESSES),
+        ));
+    }
+    if let Some(bad) = addresses.iter().find(|t| !crate::is_ulid(t)) {
+        return Err(CoreError::invalid(
+            "invalid_args",
+            format!("'{bad}' is not a thread ID"),
+        ));
+    }
     let mut total: u64 = 0;
     let mut files = BTreeMap::new();
     for (path, input) in req.files {
@@ -307,6 +339,10 @@ pub fn validate(req: PublishRequest) -> Result<ValidatedPublish> {
         if_version: req.if_version,
         capabilities: req.capabilities,
         files,
+        note,
+        note_truncated,
+        addresses,
+        working_threads: Vec::new(),
     })
 }
 
@@ -327,6 +363,7 @@ mod tests {
                 .iter()
                 .map(|(k, v)| (k.to_string(), v.clone()))
                 .collect::<BTreeMap<_, _>>(),
+            ..Default::default()
         }
     }
     fn utf8(s: &str) -> Option<FileInput> {

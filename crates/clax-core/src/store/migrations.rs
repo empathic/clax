@@ -158,6 +158,28 @@ pub const MIGRATIONS: &[&str] = &[
         COALESCE((SELECT MAX(version) FROM docs WHERE docs.artifact_id = artifacts.id), 0);",
     // 9: comments a page wrote through the `comments` capability, as the viewer.
     "ALTER TABLE comments ADD COLUMN via_page INTEGER NOT NULL DEFAULT 0;",
+    // 10: the version changelog: each version's note, the threads it
+    // addressed, and the latest version each viewer has viewed. No
+    // foreign key to `artifacts`: the doctor's hard deletes of broken artifact
+    // rows must not trip on them; artifact deletion removes them explicitly.
+    "ALTER TABLE versions ADD COLUMN note TEXT;
+    CREATE TABLE version_threads (
+        artifact_id TEXT NOT NULL,
+        version_n INTEGER NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        source TEXT NOT NULL CHECK (source IN ('working', 'explicit', 'resolve')),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, version_n, thread_id)
+    );
+    CREATE INDEX version_threads_by_thread ON version_threads(thread_id);
+    CREATE TABLE viewer_seen (
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        artifact_id TEXT NOT NULL,
+        seen_n INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (viewer_id, artifact_id)
+    );
+    CREATE INDEX viewer_seen_by_age ON viewer_seen(viewer_id, updated_at);",
 ];
 
 #[cfg(test)]

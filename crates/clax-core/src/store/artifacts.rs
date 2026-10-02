@@ -1,6 +1,7 @@
 //! Artifact metadata, creation, versions, and file lookup.
 
 use super::Store;
+use super::changelog::{fill_addresses, link_version};
 use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -188,6 +189,14 @@ impl Store {
                 "DELETE FROM leases WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
+            tx.execute(
+                "DELETE FROM viewer_seen WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM version_threads WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
@@ -371,6 +380,8 @@ impl Store {
                     }
                     None => {
                         for sql in [
+                            "DELETE FROM version_threads WHERE artifact_id = ?1",
+                            "DELETE FROM viewer_seen WHERE artifact_id = ?1",
                             "DELETE FROM feedback WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
@@ -470,11 +481,13 @@ fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         created_at: r.get("created_at")?,
         session_id: r.get("session_id")?,
         files,
+        note: r.get("note")?,
+        addresses: Vec::new(),
     }))
 }
 
 const SELECT_VERSION: &str =
-    "SELECT artifact_id, n, label, created_at, session_id, files_json FROM versions";
+    "SELECT artifact_id, n, label, created_at, session_id, files_json, note FROM versions";
 
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
@@ -496,6 +509,12 @@ impl Store {
         let caps = p.capabilities.clone().unwrap_or(serde_json::json!({}));
         // Reject before inserting, so a failed publish leaves no zero-version row.
         check_collisions(put_paths(&p))?;
+        if let Some(tid) = p.addresses.first() {
+            return Err(CoreError::invalid(
+                "unknown_thread",
+                format!("{tid} is not a thread of the new artifact"),
+            ));
+        }
         self.with_tx(|tx| {
             tx.execute(
                 "INSERT INTO artifacts (id, title, description, icon, created_at, updated_at, current_version,
@@ -612,10 +631,11 @@ impl Store {
                 return Err(CoreError::Conflict { current });
             }
             tx.execute(
-                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                params![id.as_str(), n, p.label, now, session_id, files_json],
+                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![id.as_str(), n, p.label, now, session_id, files_json, p.note],
             )?;
+            link_version(tx, id.as_str(), n, p)?;
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
                     title = COALESCE(?4, title), description = COALESCE(?5, description), icon = COALESCE(?6, icon),
@@ -636,11 +656,12 @@ impl Store {
                 params![id.as_str()],
                 row_to_artifact,
             )??;
-            let v = tx.query_row(
+            let mut v = tx.query_row(
                 &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
                 params![id.as_str(), n],
                 row_to_version,
             )??;
+            fill_addresses(tx, id, std::slice::from_mut(&mut v))?;
             std::fs::rename(&staging.0, &vdir)?;
             renamed.set(true);
             Ok((a, v))
@@ -659,13 +680,19 @@ impl Store {
     /// `Corrupt` when its `files_json` is malformed.
     pub fn get_version(&self, id: &ArtifactId, n: u32) -> Result<Option<Version>> {
         self.with_conn(|c| {
-            c.query_row(
-                &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
-                params![id.as_str(), n],
-                row_to_version,
-            )
-            .optional()?
-            .transpose()
+            let Some(mut v) = c
+                .query_row(
+                    &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
+                    params![id.as_str(), n],
+                    row_to_version,
+                )
+                .optional()?
+                .transpose()?
+            else {
+                return Ok(None);
+            };
+            fill_addresses(c, id, std::slice::from_mut(&mut v))?;
+            Ok(Some(v))
         })
     }
 
@@ -676,10 +703,12 @@ impl Store {
             let mut stmt = c.prepare(&format!(
                 "{SELECT_VERSION} WHERE artifact_id = ?1 ORDER BY n"
             ))?;
-            skip_corrupt(
+            let mut versions = skip_corrupt(
                 stmt.query_map(params![id.as_str()], row_to_version)?
                     .collect::<rusqlite::Result<Vec<_>>>()?,
-            )
+            )?;
+            fill_addresses(c, id, &mut versions)?;
+            Ok(versions)
         })
     }
 
@@ -975,6 +1004,7 @@ mod tests {
             if_version,
             capabilities: None,
             files,
+            ..Default::default()
         })
         .unwrap()
     }

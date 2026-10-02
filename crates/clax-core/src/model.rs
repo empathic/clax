@@ -32,6 +32,11 @@ pub struct Version {
     pub created_at: String,
     pub session_id: Option<String>,
     pub files: BTreeMap<String, FileMeta>,
+    /// The publisher's change note.
+    pub note: Option<String>,
+    /// Thread IDs this version addressed, in link order.
+    #[serde(default)]
+    pub addresses: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
