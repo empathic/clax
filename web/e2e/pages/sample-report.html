@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Checkout latency, week 39</title>
+<!-- A stand-in for an agent's page in the shell's screenshots. Clax never themes it. -->
+<style>
+body{margin:0}
+.art{background:#fdfcf8;color:#1d2433;font:15px/1.55 -apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;min-height:100%;padding:0 0 40px;position:relative}
+.art *{box-sizing:border-box}
+.a-hero{background:#14213d;color:#f1f3f8;padding:32px 40px 30px}
+.a-kick{font-size:12px;letter-spacing:.04em;color:#fca311;margin-bottom:6px}
+.a-h1{font:700 36px/1.1 Georgia,"Times New Roman",serif;margin:0 0 8px}
+.a-lede{margin:0;color:#c9d0e0;max-width:56ch}
+.a-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;padding:24px 40px 0}
+.a-kpi{position:relative;border-radius:8px;padding:16px 18px;color:#fff}
+.a-kpi b{display:block;font:700 30px/1.1 Georgia,serif}.a-kpi small{font-size:15px;margin-left:2px;font-weight:400}
+.a-kpi span{font-size:13px;opacity:.9}
+.a-k1{background:#2a9d8f}.a-k2{background:#e76f51}.a-k3{background:#8d99ae}.a-k4{background:#264653}
+.a-chart{position:relative;margin:24px 40px 0;padding:16px 18px 10px;background:#fff;border:1px solid #dde1ea;border-radius:8px}
+.a-chart-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap}
+.a-chart h2{font:700 17px Georgia,serif;margin:0 0 10px}
+.a-legend{font-size:12px;color:#5a6378}.a-sw{display:inline-block;width:10px;height:10px;margin:0 4px 0 10px;vertical-align:-1px}
+.a-sw1{background:#2a9d8f}.a-sw2{background:#e9a23b}.a-sw3{background:repeating-linear-gradient(45deg,#14213d55 0 2px,transparent 2px 5px);border:1px solid #14213d55}
+.a-bars{display:block;width:100%;height:150px}
+.a-days{display:grid;grid-template-columns:repeat(4,1fr);font-size:12px;color:#5a6378;border-top:1px solid #dde1ea;padding-top:4px;text-align:center}
+.a-cols{display:grid;grid-template-columns:1.6fr 1fr;gap:16px;margin:24px 40px 0}
+.a-tblwrap{position:relative}
+.a-tbl{width:100%;border-collapse:collapse;font-size:13.5px;background:#fff;border:1px solid #dde1ea}
+.a-tbl th{background:#eef1f6;text-align:left;font-weight:600;padding:8px 10px;color:#14213d}
+.a-tbl td{padding:7px 10px;border-top:1px solid #e7eaf0;font-variant-numeric:tabular-nums}
+.a-tbl td:first-child{font-family:Menlo,monospace;font-size:12.5px}
+.a-hot td{background:#fff3d6}.a-up{color:#b23a1d}.a-dn{color:#1d7a55}
+.a-note{background:#fff8e6;border-left:4px solid #fca311;padding:14px 16px;border-radius:0 8px 8px 0;font-size:14px}
+.a-note h3{margin:0 0 6px;font:700 16px Georgia,serif}.a-note p{margin:0 0 10px}
+.a-note pre{background:#14213d;color:#e8edf7;padding:10px;font:12px/1.5 Menlo,monospace;margin:0 0 10px;border-radius:4px;overflow:auto}
+.a-small{font-size:12.5px;color:#5a6378}
+.a-band{display:flex;align-items:center;gap:12px;margin:24px 40px 0;font-size:13px;color:#14213d}
+.a-band i{flex:1;height:22px;background:repeating-linear-gradient(-45deg,#2a9d8f 0 10px,#14213d 10px 20px,#fca311 20px 30px)}
+@media (max-width:700px){
+ .a-hero{padding:22px 16px}.a-h1{font-size:26px}
+ .a-kpis{grid-template-columns:1fr 1fr;gap:10px;padding:16px 16px 0}.a-kpi b{font-size:24px}
+ .a-chart,.a-cols,.a-band{margin-left:16px;margin-right:16px}.a-cols{grid-template-columns:1fr}
+ .a-tbl th:nth-child(4),.a-tbl td:nth-child(4){display:none}.a-legend{display:none}
+}
+.a-band{position:relative}
+.a-note{position:relative}
+</style>
+</head>
+<body>
+<main class="art">
+  <header class="a-hero">
+    <div class="a-kick">Incident review &middot; Payments platform</div>
+    <h1 class="a-h1">Checkout latency, week 39</h1>
+    <p class="a-lede">Why p95 doubled on Tuesday afternoon, what we changed, and what is still open.</p>
+  </header>
+  <section class="a-kpis">
+    <div class="a-kpi a-k1"><b>182<small>ms</small></b><span>p50 checkout</span></div>
+    <div class="a-kpi a-k2" id="tgt-p95"><b>640<small>ms</small></b><span>p95 checkout</span></div>
+    <div class="a-kpi a-k3"><b>0.4%</b><span>checkout errors</span></div>
+    <div class="a-kpi a-k4"><b>1,284</b><span>orders per minute</span></div>
+  </section>
+  <section class="a-chart" id="tgt-chart">
+    <div class="a-chart-head"><h2>p95 by four-hour window</h2><span class="a-legend"><i class="a-sw a-sw1"></i>under 500 ms <i class="a-sw a-sw2"></i>over 500 ms <i class="a-sw a-sw3"></i>deploy #4471</span></div>
+    <svg class="a-bars" viewBox="0 0 480 160" preserveAspectRatio="none" aria-hidden="true"><rect x="160.0" y="0" width="20.0" height="160" fill="url(#a-hatch)"/><defs><pattern id="a-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="3" height="6" fill="#14213D" opacity=".18"/></pattern></defs><rect x="2.0" y="112.0" width="16.0" height="48.0" fill="#2A9D8F"/><rect x="22.0" y="116.6" width="16.0" height="43.4" fill="#2A9D8F"/><rect x="42.0" y="100.6" width="16.0" height="59.4" fill="#2A9D8F"/><rect x="62.0" y="91.4" width="16.0" height="68.6" fill="#2A9D8F"/><rect x="82.0" y="96.0" width="16.0" height="64.0" fill="#2A9D8F"/><rect x="102.0" y="109.7" width="16.0" height="50.3" fill="#2A9D8F"/><rect x="122.0" y="107.4" width="16.0" height="52.6" fill="#2A9D8F"/><rect x="142.0" y="102.9" width="16.0" height="57.1" fill="#2A9D8F"/><rect x="162.0" y="13.7" width="16.0" height="146.3" fill="#E9A23B"/><rect x="182.0" y="20.6" width="16.0" height="139.4" fill="#E9A23B"/><rect x="202.0" y="64.0" width="16.0" height="96.0" fill="#2A9D8F"/><rect x="222.0" y="91.4" width="16.0" height="68.6" fill="#2A9D8F"/><rect x="242.0" y="109.7" width="16.0" height="50.3" fill="#2A9D8F"/><rect x="262.0" y="112.0" width="16.0" height="48.0" fill="#2A9D8F"/><rect x="282.0" y="96.0" width="16.0" height="64.0" fill="#2A9D8F"/><rect x="302.0" y="89.1" width="16.0" height="70.9" fill="#2A9D8F"/><rect x="322.0" y="93.7" width="16.0" height="66.3" fill="#2A9D8F"/><rect x="342.0" y="107.4" width="16.0" height="52.6" fill="#2A9D8F"/><rect x="362.0" y="114.3" width="16.0" height="45.7" fill="#2A9D8F"/><rect x="382.0" y="116.6" width="16.0" height="43.4" fill="#2A9D8F"/><rect x="402.0" y="102.9" width="16.0" height="57.1" fill="#2A9D8F"/><rect x="422.0" y="98.3" width="16.0" height="61.7" fill="#2A9D8F"/><rect x="442.0" y="100.6" width="16.0" height="59.4" fill="#2A9D8F"/><rect x="462.0" y="112.0" width="16.0" height="48.0" fill="#2A9D8F"/><line x1="0" x2="480" y1="91.4" y2="91.4" stroke="#14213D" stroke-dasharray="4 4" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>
+    <div class="a-days"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span></div>
+  </section>
+  <section class="a-cols">
+    <div class="a-tblwrap" id="tgt-tbl">
+      <table class="a-tbl">
+        <thead><tr><th>Endpoint</th><th>p50</th><th>p95</th><th>Calls/min</th><th>&Delta; p95</th></tr></thead>
+        <tbody>
+          <tr><td>/api/cart</td><td>96</td><td>310</td><td>4,210</td><td class="a-up">+12%</td></tr>
+          <tr class="a-hot"><td>/api/cart/apply-coupon</td><td>188</td><td>1,240</td><td>610</td><td class="a-up">+164%</td></tr>
+          <tr><td>/api/checkout/session</td><td>214</td><td>702</td><td>1,284</td><td class="a-up">+88%</td></tr>
+          <tr><td>/api/payments/authorize</td><td>160</td><td>488</td><td>1,270</td><td class="a-up">+9%</td></tr>
+          <tr><td>/api/shipping/quote</td><td>120</td><td>390</td><td>980</td><td class="a-dn">&minus;3%</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <aside class="a-note">
+      <h3>What changed</h3>
+      <p>Deploy #4471 at 14:10 on Tuesday moved coupon lookups to the primary database. The pool saturated within six minutes.</p>
+      <pre>db.pool.max      40  &rarr; 120
+coupons.reads    primary &rarr; replica</pre>
+      <p class="a-small">Rolled forward Wednesday 09:30. p95 back under 320 ms by noon.</p>
+    </aside>
+  </section>
+  <section class="a-band"><span>Rollout window</span><i></i><span>Wed 09:30 &ndash; 11:00</span></section>
+</main>
+</body>
+</html>

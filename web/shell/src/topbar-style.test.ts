@@ -23,7 +23,7 @@ function rulesFor(el: Element, pseudo?: "::before"): string[] {
 
 afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.head.replaceChildren(); document.body.replaceChildren(); });
 
-it("styles the topbar controls through the island: open raw and copy link bracketed, a pressed Comment in the pin colour", async () => {
+it("styles the topbar controls through the island: open raw and copy link as boxless text actions inside the island, a pressed Comment in the pin colour", async () => {
   vi.resetModules();
   history.replaceState(null, "", `/a/${ID}`);
   vi.stubGlobal("EventSource", FakeES);
@@ -41,8 +41,8 @@ it("styles the topbar controls through the island: open raw and copy link bracke
   const copy = buttons.find(b => b.textContent === "copy link")!;
   const comment = buttons.find(b => b.textContent === "Comment")!;
   for (const el of [raw, copy]) {
-    expect(rulesFor(el).some(b => /text-transform:\s*uppercase/.test(b)), el.textContent!).toBe(true);
-    expect(rulesFor(el, "::before").some(b => /content:\s*"\[/.test(b)), el.textContent!).toBe(true);
+    expect(el.closest(".topbar > .island"), el.textContent!).not.toBeNull();
+    expect(rulesFor(el).some(b => /color:\s*var\(--accent-ink\)/.test(b) && /border-color:\s*transparent/.test(b)), el.textContent!).toBe(true);
   }
   comment.click();
   while (comment.getAttribute("aria-pressed") !== "true" && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
