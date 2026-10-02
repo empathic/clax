@@ -34,6 +34,15 @@ describe("history-model", () => {
     ]);
   });
 
+  it("tags the opening comment with the version it was made on, even when a newer one was out", () => {
+    // v2 was published at 11:00; the viewer, still on v1, commented at 11:30.
+    const t = T({ version_n: 1, comments: [C("1", "viewer", "alex", "2026-09-30T11:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:40:00.000Z")] });
+    expect(historyOf(t, vs, names)).toEqual([
+      { v: 1, who: "alex", agent: false, verb: "commented" },
+      { v: 2, who: "Mia", agent: false, verb: "replied" },
+    ]);
+  });
+
   it("calls a thread outdated when a later version changed its element but still has it", () => {
     const found = (method: "exact" | "selector" | "quote" | "custom") => ({ id: "t", found: true, method, rect: null });
     expect(isOutdated(T({}), found("selector"), 2)).toBe(true);

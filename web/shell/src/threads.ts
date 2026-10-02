@@ -8,6 +8,8 @@ export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "
 export type Thread = {
   id: string; artifact_id: string; version_n: number; anchor: Anchor; status: "open" | "resolved"; sent_to_agent: boolean;
   has_clip: boolean; clip_url: string | null; created_at: string; resolved_at: string | null; resolved_by: string | null;
+  /** The display name of the viewer who resolved it, when they have one. */
+  resolved_by_name?: string | null;
   comments: Comment[]; feedback_state: FeedbackState | null;
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
@@ -129,13 +131,13 @@ export function upsert(threads: Thread[], t: Thread): Thread[] {
 }
 
 /** Who resolved a thread, from its `resolved_by` (`viewer:<public_id>`,
- * `viewer:anonymous`, or `agent:<harness>`): this viewer's own name when `me`
- * is the resolver and has one, "Viewer" for any other viewer, and
- * "Agent · via <harness>" for an agent. */
-export function resolvedByLabel(by: string, me?: Viewer | null): string {
-  if (by.startsWith("agent:")) return `Agent · via ${by.slice("agent:".length)}`;
+ * `viewer:anonymous`, or `agent:<harness>`): the agent's harness; this
+ * viewer's own name when `me` is the resolver and has one; else the
+ * resolver's display name the daemon sent (`resolved_by_name`); else "Viewer". */
+export function resolvedByLabel(by: string, me?: Viewer | null, name?: string | null): string {
+  if (by.startsWith("agent:")) return by.slice("agent:".length) || "agent";
   if (me?.display_name && by === `viewer:${me.public_id}`) return me.display_name;
-  return "Viewer";
+  return name || "Viewer";
 }
 
 /** A short label for an anchor: the quote in «», else `Area in <selector>

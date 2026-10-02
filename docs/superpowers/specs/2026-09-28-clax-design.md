@@ -597,8 +597,9 @@ file under `v/<digits>/` is reachable only through the versioned form):
   Threads with the open count, the version button (`v5 of 5`, a green dot
   while a version newer than this viewer's last view exists) opening the
   version menu, a menu with open raw and copy link, and the theme switch. At
-  phone width: the mark, the title, the roster (one per side) and Comment; a
-  Page | Threads switch sits at the foot.
+  phone width: the mark, the title, the roster (one per side), Comment and
+  the menu with open raw and copy link; a Page | Threads switch sits at the
+  foot.
 - Version menu: a panel listing every version newest first, each with who
   published it and when, the threads it addressed as numbered chips, what
   this viewer did about them, and its note; each a link to that version

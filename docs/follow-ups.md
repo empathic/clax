@@ -148,6 +148,29 @@ machine, so no agent runs them.
     bridge should report a part that loads after failing, and the shell then
     clear the failure and its notice and resolve the anchors again.
 
+- **A page can drop focus to the shell's body, and the viewer's next keys
+  walk the shell's buttons** (Echo Task 3 re-review 3, I6; Task 5 review, I1).
+  **Fixed in Task 5, pending re-review.** The page calls `parent.focus()` on
+  a key the viewer types in its form, and may keep the main thread busy so
+  the viewer's next keys reach the shell first. Focus falls to the shell's
+  `<body>`, and those keys, meant for the page, would walk the shell's
+  controls (a pin, a card head, then "Send to <agent>", which a Space
+  presses natively). The fix: once the window's blur saw the frame active,
+  a give-back is pending until the viewer presses in the shell or focus lands
+  on a shell control. While it is pending and focus is on `<body>`, a trusted
+  key is swallowed and focus goes back to the frame in that key's handler;
+  with no key, focus goes back a task after the window's focus. Tests: the
+  controller's give-back test, and the e2e tests of typing straight on after
+  the drop, with the page busy for 0 and 400 ms, in both frame modes.
+- **A pin that keeps moving never takes a press** (Echo Task 5 review,
+  Minor 7). A pin settles (takes no press) for `ALLOW_DELAY_MS` after it
+  appears or moves, so one whose place changes at least that often (an
+  element the page animates, a live chart, a layout that follows the scroll)
+  is never pressable; the viewer reaches the thread from its card. The
+  accepted limit beside it: a pin the page parks under a pointer that rests
+  longer than `ALLOW_DELAY_MS` takes the click, which costs a selection and
+  gives the shell's keys (C and ?) back.
+
 ## Tests
 
 These tests have failed intermittently under heavy machine load and passed

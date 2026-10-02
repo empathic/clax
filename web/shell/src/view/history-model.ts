@@ -1,7 +1,8 @@
 // A thread's history as version-tagged events (spec §8, "Thread sidebar"):
 // "v3 alex commented · v4 Mia replied · claude replied · v5 alex resolved".
-// A person's event carries the version current when it happened; an agent's
-// carries one only when it came with a version (Task 18 adds those).
+// The comment that opens the thread carries the version it was made on; a
+// person's later event carries the version current when it happened; an
+// agent's carries one only when it came with a version (Task 18 adds those).
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
 import type { Thread } from "../threads";
@@ -21,7 +22,8 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
   const out: HistoryEvent[] = [];
   t.comments.forEach((c, i) => {
     if (c.author_kind === "agent") out.push({ v: null, who: agentName(c.via_harness), agent: true, verb: "replied" });
-    else out.push({ v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: i === 0 ? "commented" : "replied" });
+    else if (i === 0) out.push({ v: t.version_n, who: c.author_name, agent: false, verb: "commented" });
+    else out.push({ v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: "replied" });
   });
   if (t.status === "resolved" && t.resolved_by && t.resolved_at) {
     const agent = t.resolved_by.startsWith("agent:");

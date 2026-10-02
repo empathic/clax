@@ -187,9 +187,10 @@ export class ArtifactController {
    * clears it again.
    *
    * Focus the page pushes out of its frame to the shell's body goes back to
-   * the frame (`listen`), so the viewer's next Tab, typed for the page, does
-   * not land on a shell control: it neither sets this nor reaches the shell's
-   * buttons, where a Space would press them natively. */
+   * the frame (`listen`): on the viewer's next key, which is swallowed, or a
+   * task later. Their next Tab, typed for the page, does not land on a shell
+   * control: it neither sets this nor reaches the shell's buttons, where a
+   * Space would press them natively. */
   private keysOwned = !keysHeldAtLoad();
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
@@ -729,33 +730,40 @@ export class ArtifactController {
     };
     // Who the keys belong to (`keysOwned`).
     // The page pushing focus out of its frame (`parent.focus()`): the window's
-    // blur saw the frame active, and a task after the window's focus (once the
-    // focus move has settled) focus is still on <body>, with no trusted press
-    // or key in the shell in between. Focus goes back to the frame, so the
-    // viewer's next Tab or Space, typed for the page, stays in the page. A
-    // viewer's own Tab out of the frame has reached a shell control by then.
-    let leftForFrame = false;
-    let shellInput = 0;
-    const onInput = (e: Event) => { if (e.isTrusted) shellInput++; };
-    const onPress = (e: PointerEvent) => { if (e.isTrusted) { this.keysOwned = true; leftForFrame = false; } };
+    // blur saw the frame active, and focus is now on <body>. A give-back is
+    // then pending until the viewer acts in the shell: a trusted press, or
+    // focus landing on a shell control (their own Tab out of the frame, whose
+    // keydown went to the frame). While it is pending and focus is on <body>,
+    // a trusted key is the viewer's typing for the page: it is swallowed (a
+    // Tab moves nothing, a Space presses nothing) and focus goes back to the
+    // frame at once. A page that keeps the main thread busy after
+    // `parent.focus()` so the viewer's keys arrive first gains nothing. With
+    // no key, focus goes back a task after the window's focus, once the focus
+    // move has settled and only if it is still on <body>.
+    let giveBack = false;
+    const handBack = () => {
+      const el = this.frame?.el;
+      if (el && !this.disposed && giveBack && document.activeElement === document.body) el.focus();
+    };
+    const onPress = (e: PointerEvent) => { if (e.isTrusted) { this.keysOwned = true; giveBack = false; } };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target;
-      if (e.isTrusted && t instanceof Element && t !== document.body && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true], .composer")) this.keysOwned = true;
+      if (e.isTrusted && t instanceof Element && t !== document.body && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true], .composer")) {
+        this.keysOwned = true;
+        giveBack = false;
+      }
     };
     // Only the window's own blur and focus reach these listeners: an element's do not bubble.
-    const onBlur = () => { this.keysOwned = false; const el = this.frame?.el; leftForFrame = !!el && document.activeElement === el; };
-    const onFocus = (e: FocusEvent) => {
-      if (!e.isTrusted || !leftForFrame) return;
-      leftForFrame = false;
-      const seen = shellInput;
-      setTimeout(() => {
-        const el = this.frame?.el;
-        if (el && !this.disposed && seen === shellInput && document.activeElement === document.body) el.focus();
-      }, 0);
+    const onBlur = () => { this.keysOwned = false; const el = this.frame?.el; giveBack = !!el && document.activeElement === el; };
+    const onFocus = (e: FocusEvent) => { if (e.isTrusted && giveBack) setTimeout(handBack, 0); };
+    const onPendingKey = (e: KeyboardEvent) => {
+      if (!e.isTrusted || !giveBack || document.activeElement !== document.body) return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      handBack();
     };
     addEventListener("pointerdown", onPress, true);
-    addEventListener("pointerdown", onInput, true);
-    addEventListener("keydown", onInput, true);
+    addEventListener("keydown", onPendingKey, true);
     addEventListener("focusin", onFocusIn, true);
     addEventListener("blur", onBlur);
     addEventListener("focus", onFocus);
@@ -783,8 +791,7 @@ export class ArtifactController {
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
       removeEventListener("pointerdown", onPress, true);
-      removeEventListener("pointerdown", onInput, true);
-      removeEventListener("keydown", onInput, true);
+      removeEventListener("keydown", onPendingKey, true);
       removeEventListener("focusin", onFocusIn, true);
       removeEventListener("blur", onBlur);
       removeEventListener("focus", onFocus);

@@ -48,14 +48,15 @@ describe("Sidebar", () => {
       resolved("b", "viewer:u_ffffffffffffffffffffff"),
       resolved("c", "viewer:anonymous"),
       resolved("d", "agent:codex"),
+      { ...resolved("e", "viewer:u_eeeeeeeeeeeeeeeeeeeeee"), resolved_by_name: "Mia" },
     ];
     const root = document.createElement("div");
     document.body.appendChild(root);
     const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, me, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".hist .ev:last-child")).map(e => e.textContent)).toEqual([
-      "v1Alex resolved", "v1Viewer resolved", "v1Viewer resolved", "codex resolved",
+      " · v1 Alex resolved", " · v1 Viewer resolved", " · v1 Viewer resolved", " · codex resolved", " · v1 Mia resolved",
     ]);
-    expect(root.querySelector(".hist")!.textContent).not.toContain("u_");
+    for (const h of root.querySelectorAll(".hist")) expect(h.textContent).not.toContain("u_");
     view.unmount();
     root.remove();
   });
@@ -144,11 +145,58 @@ describe("Sidebar", () => {
     const found = { a: { id: "a", found: true, method: "selector" as const, rect: null } };
     const props = { versions, shown: 2, agent: "claude", threads: [t], resolved: found, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
     const view = mount(Sidebar, props);
-    expect(Array.from(view.root.querySelectorAll(".hist .ev"), e => e.textContent)).toEqual(["v1alex commented", "v1Mia replied"]);
+    // A list named History, its events separated by a "·" that is read and copied.
+    const hist = view.root.querySelector("ul.hist")!;
+    expect(hist.getAttribute("aria-label")).toBe("History");
+    expect(Array.from(hist.querySelectorAll("li.ev"), e => e.textContent)).toEqual(["v1 alex commented", " · v1 Mia replied"]);
+    expect(hist.textContent).toBe("v1 alex commented · v1 Mia replied");
     expect(view.root.querySelector(".vt.out")!.textContent).toBe("outdated");
     view.update({ ...props, shown: 1 });
     expect(view.root.querySelector(".vt.out")).toBeNull();
     view.unmount();
+  });
+
+  it("heads every group, and opens a collapsed group that holds the selected card or the card just resolved", () => {
+    const threads: Thread[] = [
+      { ...base, id: "o", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "open")] },
+      { ...base, id: "d", anchor: { ...anchor, file: "gone.html" }, status: "open", sent_to_agent: false, comments: [comment("2", "viewer", "Alex", "gone")] },
+      { ...base, id: "r", anchor, status: "resolved", sent_to_agent: false, comments: [comment("3", "viewer", "Alex", "done")] },
+    ];
+    const props = { versions: [], shown: 1, agent: "claude", threads, resolved: {}, file: "index.html", holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), selected: null as string | null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
+    const view = mount(Sidebar, props);
+    expect(Array.from(view.root.querySelectorAll("h2"), h => h.querySelector(".t")!.textContent)).toEqual(["Open", "Detached", "Resolved"]);
+    const group = (cls: string) => view.root.querySelector<HTMLDetailsElement>(`details.${cls}`)!;
+    expect([group("section-detached").open, group("section-resolved").open]).toEqual([false, false]);
+    view.update({ ...props, selected: "d" });
+    expect(group("section-detached").open).toBe(true);
+    view.update({ ...props, selected: "r" });
+    expect(group("section-resolved").open).toBe(true);
+    view.unmount();
+    // Resolve on an open card: once the card is under Resolved, that group opens.
+    const second = mount(Sidebar, props);
+    const g = (cls: string) => second.root.querySelector<HTMLDetailsElement>(`details.${cls}`)!;
+    flush(() => Array.from(second.root.querySelectorAll<HTMLButtonElement>('[data-thread="o"] button')).find(b => b.textContent === "Resolve")!.click());
+    expect(props.onResolve).toHaveBeenCalledWith(threads[0]);
+    expect(g("section-resolved").open).toBe(false);
+    second.update({ ...props, threads: [{ ...threads[0], status: "resolved" }, threads[1], threads[2]] });
+    expect(g("section-resolved").open).toBe(true);
+    second.unmount();
+  });
+
+  it("keeps each card's time current while nothing is waiting", () => {
+    vi.useFakeTimers({ now: new Date(base.created_at) });
+    try {
+      const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+      const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+      const when = () => view.root.querySelector(".card-head")!.lastElementChild!.textContent;
+      expect(when()).toBe("just now");
+      flush(() => vi.advanceTimersByTime(5 * 60_000));
+      expect(when()).toBe("5 min ago");
+      view.unmount();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("ticks the elapsed time of a thread waiting for the agent each second", () => {

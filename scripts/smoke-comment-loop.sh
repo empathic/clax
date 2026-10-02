@@ -234,7 +234,7 @@ agent = t["comments"][-1]
 if not reply["replied"] or not resolved["resolved"] or t["status"] != "resolved" or agent["author_kind"] != "agent" \
         or agent["author_name"] != "claude" or t["feedback_state"]["state"] != "acknowledged":
     fail(f"reply/resolve: {reply} {resolved} {t}")
-ok(f"agent reply shown as 'Agent · via {agent['author_name']}', thread resolved, feedback acknowledged")
+ok(f"agent reply shown as '{agent['author_name']}', thread resolved, feedback acknowledged")
 plain = browser_thread(aid, "just a note for the team")
 g, _ = shim.call("comments_reply", {"url_or_id": aid, "thread_id": plain["id"], "text": "x"})
 if g["replied"] or "not sent to you" not in g["guidance"]:

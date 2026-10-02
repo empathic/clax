@@ -267,36 +267,48 @@ test("form typing with Tabs and a Space while the prompt is open presses nothing
 // The page drops focus to the shell's body mid-typing (`parent.focus()`), and
 // places its pin under the pointer just before a click meant for its input.
 // Neither turns the viewer's input into a press on the shell's controls.
-const FORM = `<!doctype html><html><head><title>Form</title></head><body><main><h2 id="t">Target</h2><input id="a"><input id="b"></main><script>
+/** A form whose page calls parent.focus() on the "m" typed in its first
+ * field, then keeps the main thread busy for `busy` ms, so the viewer's next
+ * keys queue up and reach the shell before any task it set. */
+const form = (busy = 0) => `<!doctype html><html><head><title>Form</title></head><body><main><h2 id="t">Target</h2><input id="a"><input id="b"></main><script>
 let done = false;
-document.getElementById("a").addEventListener("keydown", e => { if (!done && e.key === "m") { done = true; parent.focus(); } });
+document.getElementById("a").addEventListener("keydown", e => { if (!done && e.key === "m") { done = true; parent.focus(); const t = performance.now(); while (performance.now() - t < ${busy}); } });
 </script></body></html>`;
+const FORM = form();
 
 /** Whether the frame's own document has focus, so the viewer's keys reach the page. */
 const pageHasFocus = (frame: Frame) => frame.evaluate(() => document.hasFocus());
 
-test("focus the page drops to the shell's body goes back to the page, so the viewer's next Tab and typing stay in it", async ({ page }) => {
-  const { artifact } = await publishWith(d.base, d.token, "Dropped focus", FORM, {});
-  const t = await postThread(d.base, artifact.id, "Check this", "#t");
-  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
-  const comment = page.getByRole("button", { name: "Comment", exact: true });
-  await frame.locator("#a").click();
-  // The page calls parent.focus() on the "m".
-  await page.keyboard.type("Sm");
-  await expect.poll(() => pageHasFocus(frame)).toBe(true);
-  await page.keyboard.type("ith");
-  await page.keyboard.press("Tab");
-  await page.keyboard.type("Jones");
-  // The frame has focus again, but not its field: the page gave that up with
-  // the "m", so the "m" and "ith" reach no field. The Tab still moves on from
-  // the field, and nothing reaches the shell.
-  await expect(frame.locator("#b")).toHaveValue("Jones");
-  await expect(frame.locator("#a")).toHaveValue(/^S/);
-  await expect(page.locator(".thread-card.selected")).toHaveCount(0);
-  await expect(comment).toHaveAttribute("aria-pressed", "false");
-  const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
-  expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
-});
+for (const mode of ["subdomain", "sandbox"] as const) {
+  for (const busy of [0, 400]) {
+    test(`${mode}${busy ? `, page busy ${busy} ms` : ""}: the viewer typing straight on after the page drops focus to the shell's body keeps their Tab and text in the page`, async ({ page }) => {
+      const { artifact } = await publishWith(d.base, d.token, "Dropped focus", form(busy), {});
+      const t = await postThread(d.base, artifact.id, "Check this", "#t");
+      const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+      await page.locator(".thread-card").first().waitFor();
+      const comment = page.getByRole("button", { name: "Comment", exact: true });
+      await frame.locator("#a").click();
+      // A person typing: the keys go out on a schedule, none waiting for the
+      // last to be handled. The page calls parent.focus() on the "m".
+      const keys = ["S", "m", "i", "t", "h", "Tab", "J", "o", "n", "e", "s"];
+      const sent: Promise<void>[] = [];
+      for (const k of keys) {
+        sent.push(page.keyboard.press(k));
+        if (busy) await page.waitForTimeout(120);
+      }
+      await Promise.all(sent);
+      // The first key after the drop goes back with focus to the frame, whose
+      // field the page gave up with the "m": the "m" and "ith" reach no field.
+      // The Tab moves on from the field, and nothing reaches the shell.
+      await expect(frame.locator("#b")).toHaveValue("Jones");
+      expect(await frame.locator("#a").inputValue()).toBe("S");
+      await expect(page.locator(".thread-card.selected")).toHaveCount(0);
+      await expect(comment).toHaveAttribute("aria-pressed", "false");
+      const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+      expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+    });
+  }
+}
 
 test("the viewer's own Tab or Shift+Tab out of the page stays on the shell control it reached", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Tab out", FORM, {});

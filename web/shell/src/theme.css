@@ -137,8 +137,11 @@ input, select { line-height: 1.2; }
 .card-tools button:last-child { color: var(--muted); }
 .card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); border-color: transparent; }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
-/* A thread's number, on a pin over the frame and on its card. The sidebar's
-   own rules travel with its lazy chunk (Sidebar.svelte). */
+/* The sidebar's box, which holds its width from the first paint; the rest of
+   its rules travel with its lazy chunk (Sidebar.svelte). */
+.sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+@media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
+/* A thread's number, on a pin over the frame and on its card. */
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 12px/1 var(--mono); flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); background: var(--bg); }
 .composer .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }

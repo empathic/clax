@@ -32,6 +32,9 @@ let gesture: typeof import("./caps/gesture") | undefined;
  * until its `unwatchShell` runs. */
 const gestureModules = new Set<typeof import("./caps/gesture")>();
 afterEach(() => { for (const g of gestureModules) g.unwatchShell(); gestureModules.clear(); });
+/** Every view a test mounted and left mounted; each is unmounted after its test, so its timers stop. */
+const mountedViews = new Set<() => void>();
+afterEach(() => { for (const stop of mountedViews) stop(); mountedViews.clear(); });
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
@@ -50,7 +53,11 @@ async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise
   gestureModules.add(gesture);
   const root = document.createElement("div");
   document.body.appendChild(root);
-  return mountArtifactView(root, { id: ID, pinnedVersion: pinned, file });
+  const view = mountArtifactView(root, { id: ID, pinnedVersion: pinned, file });
+  let stopped = false;
+  const stop = () => { if (!stopped) { stopped = true; mountedViews.delete(stop); view.unmount(); } };
+  mountedViews.add(stop);
+  return { ...view, root: view.root, unmount: stop };
 }
 
 describe("ArtifactView", () => {

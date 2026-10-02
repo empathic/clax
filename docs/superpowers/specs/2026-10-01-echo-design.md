@@ -136,7 +136,8 @@ a menu (open raw, copy link) and the theme switch.
   open threads, plus idle agents when there is room.
 - The roster and its summary open the people panel.
 - At phone width the bar holds the mark, the title, the roster (one token per
-  side) and Comment; a Page | Threads switch sits at the foot.
+  side), Comment and the menu (open raw, copy link), so both stay reachable on
+  a phone; a Page | Threads switch sits at the foot.
 
 ### The version moment
 

@@ -92,7 +92,7 @@ const CommentsReadArgs = Type.Object({
 const CommentsReplyArgs = Type.Object({
   url_or_id: urlOrId,
   thread_id: threadId("The thread to reply to."),
-  text: str("The reply, shown to the person as `Agent · via <harness>`."),
+  text: str("The reply, shown to the person under its harness's name, such as `claude`."),
 }, strict);
 
 const CommentsResolveArgs = Type.Object({ url_or_id: urlOrId, thread_id: threadId("The thread to resolve.") }, strict);
@@ -1157,7 +1157,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read the comment threads on an Clax artifact, with anchors and screenshot clips",
       CommentsReadArgs, (ctx, a) => tools.commentsRead(ctx, a));
     define("comments_reply", "Clax comments reply",
-      "Reply to a comment thread as the agent; the person sees it as `Agent · via <harness>`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written.",
+      "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written.",
       "Reply to an Clax comment thread that was sent to you",
       CommentsReplyArgs, (ctx, a) => tools.commentsReply(ctx, a));
     define("comments_resolve", "Clax comments resolve",
