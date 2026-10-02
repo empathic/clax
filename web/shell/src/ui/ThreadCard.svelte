@@ -5,6 +5,7 @@
   import { authorLabel } from "../view/sidebar-model";
   import { guardedAction } from "../view/trail";
   import { waitingLabel } from "../waiting";
+  import { clock } from "../view/working-model";
 
   type Props = {
     t: Thread; n?: number; now: Date; me?: Viewer | null; selected: string | null; file: string | null;
@@ -16,9 +17,11 @@
     agent: string;
     /** When the thread was opened, relative to now. */
     when: string;
+    /** An agent working on the thread now: replaces the waiting line. */
+    marker?: { text: string; since: string } | null;
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, selected, file, history, outdated, agent, when, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
   let hint: string | null = $state(null);
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
@@ -42,7 +45,8 @@
       <p class="body">{c.body}</p>
     </div>
   {/each}
-  {#if label}<p class="st waiting">{label}</p>{/if}
+  {#if marker}<p class="st ag"><span class="tok a work sm" aria-hidden="true"></span>{marker.text}<small>{clock(marker.since, now)}</small></p>
+  {:else if label}<p class="st waiting">{label}</p>{/if}
   {#if history.length}
     <ul class="hist" aria-label="History">
       {#each history as e, i (i)}<li class={["ev", e.agent && "agent"]}>{#if i}{" "}<span class="sep">·</span>{" "}{/if}{#if e.v !== null}<span class="vt">v{e.v}</span>{" "}{/if}<b>{e.who}</b>{" "}{e.verb}</li>{/each}

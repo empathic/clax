@@ -1396,7 +1396,9 @@ changes.
 `working` tells the person you are acting on an artifact. The top bar
 shows `<agent> working on N` (or `<agent>: <message>`), its gallery card a
 chip, and each thread named in `thread_ids` `<agent> is working on it`,
-where `<agent>` is your harness (`claude`, `codex`, `pi`). Comments sent to you
+where `<agent>` is your harness (`claude`, `codex`, `pi`), followed by the
+first four hex digits of your agent handle when another agent of the same
+harness takes part in the artifact (`claude 1f3a`). Comments sent to you
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
 stored ones when given; `done: true` clears the record, or with `thread_ids`
@@ -1549,7 +1551,8 @@ the agent's harness. An agent comment carries `via_harness` (the replying
 session's harness, e.g. `claude`; `null` on viewer comments).
 
 An open thread a working record names shows "<agent> is working on it"
-(the agent's harness, such as "claude is working on it") instead of its
+(the agent's harness, such as "claude is working on it", with the first
+four hex digits of its handle when two agents share a harness) instead of its
 waiting indicator. A new version puts nothing over the page:
 the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that

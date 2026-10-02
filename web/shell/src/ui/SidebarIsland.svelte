@@ -42,6 +42,7 @@
   {:else if s.panel && Sidebar}
     <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
       versions={s.data.versions} shown={ctl.shown(s)} agent={agentName(s.data.artifact.owner_harness)}
+      working={s.working} commenting={s.commenting} agents={s.data.artifact.participants?.agents ?? []} mine={s.attention?.open_in ?? []}
       header={s.narrow ? nameField : undefined}
       onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}
       onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)} />

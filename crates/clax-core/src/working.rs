@@ -60,6 +60,8 @@ impl Clock for ManualClock {
 pub struct Actor {
     pub session_id: String,
     pub harness: String,
+    /// The session's opaque agent handle (`a_…`), safe to show anyone.
+    pub agent: String,
 }
 
 /// A record as anyone may read it: never names the session.
@@ -67,6 +69,8 @@ pub struct Actor {
 pub struct WorkingView {
     /// A ULID minted when the record was created.
     pub key: String,
+    /// The agent's handle: tells two sessions of one harness apart.
+    pub agent: String,
     pub harness: String,
     pub message: Option<String>,
     pub thread_ids: Vec<String>,
@@ -109,6 +113,7 @@ impl Changed {
 
 struct Record {
     key: String,
+    agent: String,
     harness: String,
     message: Option<String>,
     threads: Vec<String>,
@@ -126,6 +131,7 @@ impl Record {
     fn view(&self) -> WorkingView {
         WorkingView {
             key: self.key.clone(),
+            agent: self.agent.clone(),
             harness: self.harness.clone(),
             message: self.message.clone(),
             thread_ids: self.threads.clone(),
@@ -211,6 +217,7 @@ impl Working {
             .entry((who.session_id.clone(), aid.to_string()))
             .or_insert_with(|| Record {
                 key: crate::new_ulid(),
+                agent: who.agent.clone(),
                 harness: who.harness.clone(),
                 message: None,
                 threads: Vec::new(),
@@ -434,7 +441,12 @@ mod tests {
         Actor {
             session_id: sid.into(),
             harness: "claude".into(),
+            // Hex of the session ID, so no view text contains the ID itself.
+            agent: format!("a_{}", hex(sid)),
         }
+    }
+    fn hex(s: &str) -> String {
+        s.bytes().map(|b| format!("{b:02x}")).collect()
     }
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
@@ -541,6 +553,7 @@ mod tests {
             &Actor {
                 session_id: "s2".into(),
                 harness: "codex".into(),
+                agent: "a_c0de".into(),
             },
             "a1",
             &ids(&["t1", "t2"]),
@@ -586,6 +599,7 @@ mod tests {
             &Actor {
                 session_id: "s2".into(),
                 harness: "pi".into(),
+                agent: "a_beef".into(),
             },
             "a1",
             &[],
@@ -598,6 +612,8 @@ mod tests {
             "{json}"
         );
         assert_ne!(v[0].key, v[1].key);
+        assert!(v.iter().all(|x| x.agent.starts_with("a_")));
+        assert_eq!(v[0].agent, "a_beef");
         assert_eq!(w.for_session("s2")[0].session_id, "s2");
         assert_eq!(w.for_session("s2")[0].artifact_id, "a1");
     }

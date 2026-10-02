@@ -72,6 +72,16 @@ export async function api(base: string, token: string, path: string, init: Reque
   return res.status === 204 ? {} : res.json();
 }
 
+/** Sets session `sid`'s working record on artifact `aid` (`PUT /api/sessions/<sid>/working/<aid>`). */
+export async function setWorking(base: string, token: string, sid: string, aid: string, body: { thread_ids?: string[]; message?: string }) {
+  return api(base, token, `/api/sessions/${sid}/working/${aid}`, { method: "PUT", body: JSON.stringify(body) });
+}
+
+/** Moves the daemon's working clock `secs` forward and sweeps (debug builds only). */
+export async function skewWorking(base: string, token: string, secs: number) {
+  return api(base, token, "/api/_test/working/skew", { method: "POST", body: JSON.stringify({ secs }) });
+}
+
 export type FrameMode = "subdomain" | "sandbox";
 
 /** The content frame showing version `n` of artifact `id`, in either frame mode. */

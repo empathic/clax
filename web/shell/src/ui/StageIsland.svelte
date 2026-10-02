@@ -47,7 +47,7 @@
   {/if}
   {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
   {#if !s.deleted && !missing}
-    <Pins threads={s.threads} resolved={s.resolved} file={s.file} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />
+    <Pins threads={s.threads} resolved={s.resolved} file={s.file} onit={new Set(s.working.flatMap(w => w.thread_ids))} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />
   {/if}
   {#if s.draft}
     {@const draft = s.draft}

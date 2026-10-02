@@ -1,12 +1,12 @@
 <script lang="ts">
-  // The top bar island: the artifact view's controls (an empty slot for the
-  // roster and summary, Comment, Threads, the name field on wide screens, the
+  // The top bar island: the artifact view's controls (the roster and the
+  // working summary, loaded after the first paint; Comment, Threads, the name field on wide screens, the
   // version, the more menu with open raw and copy link, and the theme switch),
   // once the artifact is loaded and the frame mode decided. At phone width the
   // bar keeps the mark, the title, Comment and the more menu.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
-  import { moreMenu } from "./more-menu.svelte";
+  import { moreMenu, who } from "./more-menu.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import ViewerName from "./ViewerName.svelte";
 
@@ -16,12 +16,13 @@
   const view = fromStore(ctl.state);
   const s = $derived(view.current);
   const MoreMenu = $derived(moreMenu.current);
+  const Who = $derived(who.current);
 </script>
 
 {#if viewReady(s)}
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
-  <div class="who-slot"></div>
+  {#if Who}<Who {s} open={ctl.openCount(s)} />{/if}
   <button class="comment" aria-pressed={s.commenting} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
   <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
   {#if !s.narrow}<ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />{/if}

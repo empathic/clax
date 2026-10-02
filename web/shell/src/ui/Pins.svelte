@@ -17,8 +17,10 @@
     /** A fixed stage width (tests); without it the stage is measured. */
     width?: number;
     file?: string | null;
+    /** Threads an agent is working on: their pins are split, person and agent. */
+    onit?: Set<string>;
   };
-  let { threads, resolved, onSelect, onHover, width, file = INDEX_FILE }: Props = $props();
+  let { threads, resolved, onSelect, onHover, width, file = INDEX_FILE, onit }: Props = $props();
   let measured = $state(0);
   // The stage's width, followed while no fixed `width` is given.
   const measure = (el: HTMLElement) => {
@@ -63,7 +65,7 @@
 
 <div class="pins" {@attach measure}>
   {#each places as p (p.thread.id)}
-    <button class="thread-pin" class:settling={settling.has(p.thread.id)} title={p.thread.comments[0]?.body ?? ""} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
+    <button class="thread-pin" class:settling={settling.has(p.thread.id)} class:onit={onit?.has(p.thread.id)} title={p.thread.comments[0]?.body ?? ""} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
       onclick={() => onSelect(p.thread)} onmouseenter={() => onHover?.(p.thread)} onmouseleave={() => onHover?.(null)}>{p.n}</button>
   {/each}
 </div>

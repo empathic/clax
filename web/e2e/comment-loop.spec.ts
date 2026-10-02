@@ -48,11 +48,15 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   const clip = fb.feedback[0].clip_path as string;
   expect(existsSync(clip)).toBe(true);
   expect([...readFileSync(clip).subarray(0, 8)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  await expect(card.locator(".waiting")).toHaveText("seen by the agent");
+  // Taking the comment marks the agent working on it, which replaces the waiting line.
+  await expect(card.locator(".st.ag")).toContainText("claude is working on it");
+  await expect(card.locator(".waiting")).toHaveCount(0);
 
   // The agent replies and resolves; the browser shows both live.
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done: two columns.", author_kind: "agent" }) });
   await expect(card.locator(".msg.agent .author")).toContainText("claude");
+  // Replying to the only thread the record named ends it.
+  await expect(card.locator(".st.ag")).toHaveCount(0);
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/resolve`, { method: "POST", session: s.id, body: JSON.stringify({ as: "agent" }) });
   const done = page.locator(".section-resolved .thread-card");
   await expect(done).toHaveCount(1);

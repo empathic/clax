@@ -17,6 +17,8 @@ const html = (file: string) => readFileSync(new URL(file, dir), "utf8");
 /** Pages in web/e2e/pages that are not claude.ai sample pages but deliberate
  * misuse for artifact.spec.ts (publishing on load, publishing in a burst). */
 const MISUSE = ["publish-burst.html", "publish-on-load.html"];
+/** Pages that print a Clax extension's state (the `working()` capability); not plain claude.ai pages. */
+const EXTENSIONS = ["working-cap.html"];
 /** Pages in web/e2e/pages that stand in for an agent's page in the shell's
  * screenshots (scenes.ts): no capabilities, so no contract case. */
 const SHOTS = ["sample-report.html"];
@@ -167,7 +169,7 @@ const CASES: Record<string, Case> = {
 };
 
 test("every sample page is a plain claude.ai page with a case here", () => {
-  const files = readdirSync(dir).filter(n => n.endsWith(".html") && !MISUSE.includes(n) && !SHOTS.includes(n)).sort();
+  const files = readdirSync(dir).filter(n => n.endsWith(".html") && !MISUSE.includes(n) && !SHOTS.includes(n) && !EXTENSIONS.includes(n)).sort();
   expect(files).toEqual(Object.keys(CASES).sort());
   for (const file of files) {
     const src = html(file);
