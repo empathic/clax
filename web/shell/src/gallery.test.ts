@@ -33,6 +33,8 @@ function stubApi(tokenStatus: number = 200) {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body as string | undefined });
     if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: ARTIFACTS }));
+    if (url.includes("haiku")) return new Response(JSON.stringify(["one\ntwo\nthree"]));
+    if (url.endsWith("/api/viewers/me")) return new Response(JSON.stringify({ viewer: { public_id: "v1", display_name: "Ada", created_at: "2026-09-01T00:00:00Z" } }));
     if (url.endsWith("/api/token")) return tokenStatus === 200 ? new Response(JSON.stringify({ token: "t" })) : new Response("{}", { status: tokenStatus });
     if (init?.method === "PATCH") return new Response(JSON.stringify({ artifact: ARTIFACTS[0] }));
     if (init?.method === "DELETE") return new Response(null, { status: 204 });
@@ -41,30 +43,58 @@ function stubApi(tokenStatus: number = 200) {
   return calls;
 }
 
+// The mounted gallery's teardown: its footer haiku resolves a lazy import, so
+// each test unmounts its gallery before the next resets the module registry.
+let unmountGallery: (() => void) | null = null;
+
 async function mountGallery() {
   const { default: Gallery } = await import("./ui/Gallery.svelte");
   // From the same module registry as the gallery (each test resets it), so
   // both use one Svelte runtime.
   const { mount } = await import("./test/svelte");
-  const { root } = mount(Gallery, {});
-  await waitFor(() => root.querySelector("a.card, .empty"), "gallery to render");
+  const { root, unmount } = mount(Gallery, {});
+  unmountGallery = unmount;
+  await waitFor(() => root.querySelector("a.card, .empty, .empty-gallery"), "gallery to render");
   return root;
 }
 
 describe("Gallery", () => {
   beforeEach(() => { vi.resetModules(); });
-  afterEach(() => { vi.unstubAllGlobals(); document.body.replaceChildren(); });
+  afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); });
 
-  it("renders cards with title, version, and link in API order", async () => {
+  it("renders cards led by the version numeral, with title and link, and no description", async () => {
     stubApi();
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
     expect(cards.length).toBe(2);
     expect(cards[0].getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
     expect(cards[0].textContent).toContain("Pinned one");
-    expect(cards[0].textContent).toContain("v3");
-    expect(cards[0].querySelector(".pin")).not.toBeNull();
-    expect(root.textContent).toContain("published from the command line");
+    expect(cards[0].querySelector(".v")?.textContent).toBe("v3");
+    expect(cards[0].querySelector("p")).toBeNull();
+    // One star: the Pin button's once the token is known, not the title's too.
+    await waitFor(() => root.querySelector('.card-tools button[title="Unpin"]'), "the Unpin button");
+    expect(root.querySelectorAll(".card-wrap")[0].textContent!.match(/★/g)).toHaveLength(1);
+    expect(cards[0].querySelector(".pin")).toBeNull();
+    expect(cards[1].querySelector(".by")?.textContent).toContain("command line");
+    await waitFor(() => root.querySelector(".gbar .sub")?.textContent?.includes("seen as Ada"), "the viewer's name in the bar");
+    expect(root.querySelector(".gbar .sub")?.textContent).toBe("local artifacts · seen as Ada");
+  });
+
+  it("puts the pinned artifact first even when the API lists it second", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [ARTIFACTS[1], ARTIFACTS[0]] }));
+      return new Response("{}", { status: 404 });
+    }));
+    const root = await mountGallery();
+    const cards = root.querySelectorAll("a.card");
+    expect(cards[0].getAttribute("href")).toBe("/a/7q3k9mzx2b4t");
+    expect(cards[1].getAttribute("href")).toBe("/a/aaaaaaaaaaaa");  });
+
+  it("shows one three-line haiku in the footer once the list loads", async () => {
+    stubApi();
+    const root = await mountGallery();
+    const pre = await waitFor(() => root.querySelector(".gfoot pre"), "the footer haiku");
+    expect(pre.textContent!.split("\n")).toHaveLength(3);
   });
 
   it("labels agent-published cards with the harness and a green dot only while the session is live", async () => {
@@ -75,19 +105,31 @@ describe("Gallery", () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    expect(cards[0].querySelector(".publisher")?.textContent).toContain("published by claude-code");
+    expect(cards[0].querySelector(".by")?.textContent).toContain("claude-code");
     expect(cards[0].querySelector(".live-dot")).not.toBeNull();
-    expect(cards[1].querySelector(".publisher")?.textContent).toContain("published by claude-code");
+    expect(cards[1].querySelector(".by")?.textContent).toContain("claude-code");
     expect(cards[1].querySelector(".live-dot")).toBeNull();
-    expect(cards[2].querySelector(".publisher")).toBeNull();
-    expect(cards[2].textContent).toContain("published from the command line");
+    expect(cards[2].querySelector(".by")?.textContent).not.toContain("claude-code");
+    expect(cards[2].querySelector(".by")?.textContent).toContain("command line");
   });
 
-  it("shows an empty state", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ artifacts: [] }))));
+  it("shows the mark with its halves apart when the gallery is empty", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/api/artifacts") ? new Response(JSON.stringify({ artifacts: [] })) : new Response("{}", { status: 404 })));
     const root = await mountGallery();
-    expect(root.textContent).toContain("No artifacts yet");
+    expect(root.querySelector(".empty-gallery .mark[data-apart]")).not.toBeNull();
+    expect(root.textContent).toContain("When an agent publishes a page, it lands here.");
     expect(root.textContent).toContain("clax publish");
+  });
+
+  it("marks a tenth version with the rally chip", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [{ ...ARTIFACTS[0], current_version: 10 }, ARTIFACTS[1]] }));
+      return new Response("{}", { status: 404 });
+    }));
+    const root = await mountGallery();
+    const cards = root.querySelectorAll("a.card");
+    expect(cards[0].querySelector(".chip.rally")?.textContent).toBe("rally of 10");
+    expect(cards[1].querySelector(".chip.rally")).toBeNull();
   });
 
   it("search narrows cards by title and description", async () => {
@@ -114,6 +156,9 @@ describe("Gallery", () => {
     await new Promise(r => setTimeout(r, 0));
     expect(root.querySelectorAll(".card-wrap").length).toBe(2);
     expect(root.querySelectorAll(".card-tools button").length).toBe(0);
+    // Without the Pin button, the title carries the pinned star.
+    expect(root.querySelectorAll(".card-wrap")[0].querySelector(".pin")).not.toBeNull();
+    expect(root.querySelectorAll(".card-wrap")[0].textContent!.match(/★/g)).toHaveLength(1);
   });
 
   it("pin button sends PATCH with pinned true and refetches", async () => {
