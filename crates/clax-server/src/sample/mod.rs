@@ -4,14 +4,20 @@
 //! `sampling_disabled`.
 
 pub mod anthropic;
+pub mod flight;
+pub mod json_reply;
 pub mod provider;
+pub mod request;
 pub mod sse;
 pub mod stub;
 
 use clax_core::config::{HomeConfig, SampleConfig, SampleModels};
 use provider::SampleProvider;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::Duration;
+use tokio::sync::oneshot;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SampleSettings {
@@ -59,6 +65,8 @@ pub struct Sampler {
     /// The key variable the provider reads (named in reports, never its value).
     key_env: Option<String>,
     pub settings: SampleSettings,
+    /// Running calls and the tool results they wait for.
+    pending: Mutex<HashMap<String, PendingCall>>,
 }
 
 impl Sampler {
@@ -75,6 +83,7 @@ impl Sampler {
             reason,
             key_env,
             settings,
+            pending: Mutex::default(),
         }
     }
 
@@ -148,6 +157,82 @@ impl Sampler {
 
     pub fn provider_name(&self) -> Option<&'static str> {
         self.provider.as_ref().map(|p| p.name())
+    }
+}
+
+/// A page tool's answer to one tool call.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ToolOutput {
+    pub content: String,
+    pub is_error: bool,
+}
+
+/// Why a tool result was not delivered.
+#[derive(Debug, PartialEq)]
+pub enum Deliver {
+    /// No such running call, or it is not waiting for that tool call.
+    NotFound,
+    /// The call belongs to another viewer.
+    Forbidden,
+}
+
+#[derive(Default)]
+struct PendingCall {
+    /// The viewer cookie that started the call (memory only; never sent anywhere).
+    viewer: Option<String>,
+    tools: HashMap<String, oneshot::Sender<ToolOutput>>,
+}
+
+impl Sampler {
+    /// Registers a running call so its tool results can be delivered.
+    pub fn open_call(&self, call_id: &str, viewer: Option<String>) {
+        self.pending.lock().expect("pending lock").insert(
+            call_id.to_string(),
+            PendingCall {
+                viewer,
+                tools: HashMap::new(),
+            },
+        );
+    }
+
+    /// Waits for the result of tool call `tool_id` of `call_id`; `None` when the call is gone.
+    pub fn expect_tool(
+        &self,
+        call_id: &str,
+        tool_id: &str,
+    ) -> Option<oneshot::Receiver<ToolOutput>> {
+        let mut pending = self.pending.lock().expect("pending lock");
+        let call = pending.get_mut(call_id)?;
+        let (tx, rx) = oneshot::channel();
+        call.tools.insert(tool_id.to_string(), tx);
+        Some(rx)
+    }
+
+    /// Hands `out` to the round waiting on `tool_id`, if `viewer` started the call.
+    pub fn deliver(
+        &self,
+        call_id: &str,
+        viewer: Option<&str>,
+        tool_id: &str,
+        out: ToolOutput,
+    ) -> Result<(), Deliver> {
+        let mut pending = self.pending.lock().expect("pending lock");
+        let call = pending.get_mut(call_id).ok_or(Deliver::NotFound)?;
+        if call.viewer.as_deref() != viewer {
+            return Err(Deliver::Forbidden);
+        }
+        let tx = call.tools.remove(tool_id).ok_or(Deliver::NotFound)?;
+        tx.send(out).map_err(|_| Deliver::NotFound)
+    }
+
+    /// Drops a call and every tool wait it had.
+    pub fn forget(&self, call_id: &str) {
+        self.pending.lock().expect("pending lock").remove(call_id);
+    }
+
+    /// Calls still registered (tests).
+    pub fn open_calls(&self) -> usize {
+        self.pending.lock().expect("pending lock").len()
     }
 }
 
