@@ -6,6 +6,7 @@ pub mod events;
 pub mod feedback;
 pub mod health;
 pub mod mcp;
+pub mod room;
 pub mod sessions;
 pub mod shell;
 pub mod threads;
@@ -176,6 +177,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
+        .route("/api/artifacts/{aid}/room", get(room::room))
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
         .merge(api_fast)
         .merge(api_slow)

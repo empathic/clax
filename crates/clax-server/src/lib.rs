@@ -10,6 +10,7 @@ pub mod feedback;
 pub mod host;
 pub mod http_cache;
 pub mod push;
+pub mod room;
 pub mod routes;
 pub mod shell_route;
 pub mod state;

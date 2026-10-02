@@ -44,3 +44,4 @@ libc.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["full"] }
+tokio-tungstenite.workspace = true

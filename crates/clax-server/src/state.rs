@@ -30,4 +30,6 @@ pub struct AppState {
     pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
     pub codex: Arc<crate::push::CodexPush>,
+    /// The live rooms of the `room` capability (memory only).
+    pub rooms: Arc<crate::room::Rooms>,
 }
