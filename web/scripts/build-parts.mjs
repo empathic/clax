@@ -1,4 +1,4 @@
-// Builds the bridge's lazy parts (bridge/src/parts/{comment,clip,caps}.ts),
+// Builds the bridge's lazy parts (bridge/src/parts/{comment,clip,caps,room}.ts),
 // each on its own with vite.bridge-parts.config.ts, so no part imports
 // another: a browser keeps a failed module load for its URL, and a part that
 // imported another's file could not recover from that file failing once,
@@ -18,7 +18,7 @@ import { build } from "vite";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 const out = `${web}dist/_clax/bridge`;
-const PARTS = ["comment", "clip", "caps"];
+const PARTS = ["comment", "clip", "caps", "room"];
 const watch = process.argv.includes("--watch");
 if (watch && !process.env.CLAX_DEV) throw new Error("build-parts --watch needs CLAX_DEV=1, so the parts keep stable names");
 
