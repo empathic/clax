@@ -202,6 +202,26 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN agent_handle TEXT;
     UPDATE sessions SET agent_handle = 'a_' || lower(hex(randomblob(11)));
     CREATE UNIQUE INDEX sessions_by_handle ON sessions(agent_handle);",
+    // 12: batch sends: the batch (its note and who sent it), its threads, and
+    // the batch each feedback row came from.
+    "CREATE TABLE send_batches (
+        id TEXT PRIMARY KEY,
+        artifact_id TEXT NOT NULL,
+        note TEXT,
+        sent_by TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE batch_threads (
+        batch_id TEXT NOT NULL REFERENCES send_batches(id),
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        PRIMARY KEY (batch_id, thread_id)
+    );
+    CREATE INDEX batch_threads_by_thread ON batch_threads(thread_id);
+    ALTER TABLE feedback ADD COLUMN batch_id TEXT;",
+    // 13: the session a thread was last sent to with `to`. Later viewer
+    // comments on the thread follow it while it is live. Never served.
+    "ALTER TABLE threads ADD COLUMN target_session_id TEXT;",
 ];
 
 #[cfg(test)]

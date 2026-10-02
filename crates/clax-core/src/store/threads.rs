@@ -528,6 +528,7 @@ impl Store {
             )?;
             tx.execute("DELETE FROM viewer_threads WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM feedback WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM batch_threads WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             Ok((t, targets))
