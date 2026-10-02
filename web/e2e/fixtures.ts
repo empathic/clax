@@ -213,3 +213,14 @@ export async function reach(page: Page, loc: Locator) {
   const b = (await loc.boundingBox())!;
   await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
 }
+
+/** Creates a viewer thread on `aid` v1 anchored to `body > main > h2`, as the shell posts it (multipart); returns the thread. */
+export async function postThread(base: string, aid: string, body: string, selector = "body > main > h2") {
+  const form = new FormData();
+  form.set("anchor", JSON.stringify({ kind: "element", selector, quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  form.set("body", body);
+  form.set("version", "1");
+  const res = await fetch(`${base}/api/artifacts/${aid}/threads`, { method: "POST", body: form, headers: { origin: base } });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return (await res.json()).thread as { id: string };
+}
