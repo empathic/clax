@@ -1,6 +1,6 @@
 // The states every UI task photographs (light and dark, desktop and phone),
 // on one seeded scratch daemon. Tasks append scenes as they add UI.
-import type { Page } from "@playwright/test";
+import type { Cookie, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { api, contentFrame, postThread, publishAs, publishNext, registerSession, seenOf, setWorking } from "./fixtures";
 
@@ -47,6 +47,35 @@ const name = async (page: Page, who: string) => {
   await page.evaluate(n => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: n }) }), who);
 };
 
+/** The gallery with a card that needs the viewer's eyes: a viewer named
+ * "alex" posts a thread on the seeded artifact, views v1, and the claude
+ * session publishes v2 addressing that thread. Done once per run, which
+ * leaves the seeded artifact at v2 for the scenes after it; each later
+ * gallery shot takes the same viewer's cookie, so every shot shows one
+ * state. Ends on the gallery. */
+let eyes: Cookie[] | null = null;
+async function needsEyes(page: Page, s: Seeded): Promise<void> {
+  if (eyes) {
+    await page.context().addCookies(eyes);
+  } else {
+    await name(page, "alex");
+    const tid = await page.evaluate(async aid => {
+      const f = new FormData();
+      f.set("anchor", JSON.stringify({ kind: "element", selector: "#tgt-tbl", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+      f.set("body", "Add the week before, so the change shows.");
+      f.set("version", "1");
+      return (await (await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: f })).json()).thread.id as string;
+    }, s.aid);
+    await page.goto(`${s.base}/a/${s.aid}`);
+    await contentFrame(page, s.aid, 1);
+    for (let i = 0; i < 50 && (await seenOf(page, s.aid)) !== 1; i++) await page.waitForTimeout(100);
+    await publishNext(s.base, s.token, s.sid, s.aid, 1, { addresses: [tid] });
+    eyes = await page.context().cookies();
+  }
+  await page.goto(`${s.base}/`);
+  await page.locator(".grp.needs .card").waitFor();
+}
+
 const SEEDED = [
   ["Is p95 measured at the edge or at the app server? Say which in the label.", "#tgt-p95"],
   ["Mark the deploy on the chart itself.", "#tgt-chart"],
@@ -83,7 +112,8 @@ async function changelog(page: Page, s: Seeded): Promise<void> {
 }
 
 export const SCENES: Scene[] = [
-  { name: "gallery", path: () => "/", prepare: async page => { await name(page, "alex"); await page.reload(); } },
+  // The gallery with a card that needs the viewer's eyes, above everything else.
+  { name: "gallery", path: () => "/", prepare: needsEyes },
   { name: "view", path: s => `/a/${s.aid}` },
   { name: "comment", path: s => `/a/${s.aid}`, prepare: async page => { await page.getByRole("button", { name: /^Comment/ }).click(); } },
   { name: "keys", path: s => `/a/${s.aid}`, prepare: async page => { await page.locator("body").press("Shift+?"); await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor(); } },
@@ -114,14 +144,16 @@ export const SCENES: Scene[] = [
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     await page.locator(".section-addressed .thread-card").first().waitFor();
   } },
-  // The version menu open over the same state (the version button is not
-  // in the phone's bar, so the phone shot shows the bar without it).
+  // The version menu open over the same state; at phone width, where the
+  // version button is hidden, the more menu's Versions item opens it as a sheet.
   { name: "versions", path: () => "/", prepare: async (page, s) => {
     await changelog(page, s);
     const button = page.getByRole("button", { name: /^Version 2 of 2/ });
-    if (await button.isVisible()) {
-      await button.click();
-      await page.getByRole("dialog", { name: "Versions" }).locator(".vrow").first().waitFor();
+    if (await button.isVisible()) await button.click();
+    else {
+      await page.getByRole("button", { name: "More", exact: true }).click();
+      await page.getByRole("menuitem", { name: "Versions" }).click();
     }
+    await page.getByRole("dialog", { name: "Versions" }).locator(".vrow").first().waitFor();
   } },
 ];

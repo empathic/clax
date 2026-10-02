@@ -58,4 +58,36 @@ describe("working UI", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("the gallery's feed passes version and thread events to onChange at most once a second", () => {
+    let emit: ((t: string, data: unknown) => void) | null = null;
+    vi.stubGlobal("EventSource", class {
+      listeners = new Map<string, (e: MessageEvent) => void>();
+      constructor() { emit = (t, data) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
+      addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
+      close() {}
+    });
+    vi.useFakeTimers();
+    try {
+      const onChange = vi.fn();
+      const feed = new WorkingFeed();
+      feed.start(() => {}, onChange);
+      emit!("version", { type: "version", artifact_id: "a", n: 2 });
+      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      vi.advanceTimersByTime(0);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      vi.advanceTimersByTime(999);
+      expect(onChange).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
+      expect(onChange).toHaveBeenCalledTimes(2);
+      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      feed.stop();
+      vi.advanceTimersByTime(2000);
+      expect(onChange).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
 });

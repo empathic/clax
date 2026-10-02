@@ -5,7 +5,8 @@
   // button with its changelog menu and a Latest link beside it on an older
   // version, the more menu with open raw and copy link, and the theme switch),
   // once the artifact is loaded and the frame mode decided. At phone width the
-  // bar keeps the mark, the title, Comment and the more menu.
+  // bar keeps the mark, the title, Comment and the more menu, whose Versions
+  // item opens the version menu as a sheet.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { moreMenu, who } from "./more-menu.svelte";
@@ -35,7 +36,7 @@
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />
   {#if shown < latest && !s.newer && !s.deleted}<a class="latest hide-sm" href={ctl.here(null, s)}>Latest</a>{/if}
   {#if MoreMenu}
-    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} />
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} onVersions={() => ctl.openMenu("versions")} />
   {:else}
     <span class="more-slot"></span>
   {/if}

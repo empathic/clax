@@ -28,10 +28,15 @@ const ARTIFACTS = [
 ];
 
 type Call = { url: string; method: string; body?: string };
-function stubApi(tokenStatus: number = 200) {
+const ATTENTION = { artifacts: { aaaaaaaaaaaa: { addressed: [], addressed_v: null, new_replies: ["t"], open_in: ["t"], seen: 1 } } };
+function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = "none") {
   const calls: Call[] = [];
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, method: init?.method ?? "GET", body: init?.body as string | undefined });
+    if (url.endsWith("/api/viewers/me/attention")) {
+      if (attention === "fail") throw new Error("network");
+      if (attention === "ok") return new Response(JSON.stringify(ATTENTION));
+    }
     if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: ARTIFACTS }));
     if (url.includes("haiku")) return new Response(JSON.stringify(["one\ntwo\nthree"]));
     if (url.endsWith("/api/viewers/me")) return new Response(JSON.stringify({ viewer: { public_id: "v1", display_name: "Ada", created_at: "2026-09-01T00:00:00Z" } }));
@@ -128,6 +133,32 @@ describe("Gallery", () => {
     expect(cards[1].querySelector(".chip.ag")).toBeNull();
     expect(cards[1].querySelector(".mks")).toBeNull();
     expect(cards[0].querySelector(".ft .agt .tok.work")?.textContent).toBe("cl");
+  });
+
+  it("floats what needs this viewer's eyes above everything else, with its markers and the version last seen", async () => {
+    stubApi(200, "ok");
+    const root = await mountGallery();
+    const needs = await waitFor(() => root.querySelector(".grp.needs"), "the needs group");
+    expect(needs.querySelector("h2")?.textContent).toContain("Needs your eyes");
+    const other = needs.querySelector(".card-wrap")!;
+    expect(other.textContent).toContain("Other");
+    expect(other.querySelector(".chip.rep")?.textContent).toBe("1 new reply");
+    expect(other.querySelector(".chip.oth")?.textContent).toBe("1 open");
+    expect(other.querySelector(".ft .seen")?.textContent).toBe("seen v1");
+    const rest = root.querySelector(".grp.rest")!;
+    expect(rest.querySelector("h2")?.textContent).toContain("Everything else");
+    expect(rest.textContent).toContain("Pinned one");
+    expect(rest.textContent).not.toContain("Other");
+  });
+
+  it("without attention shows every card in one group and no needs group", async () => {
+    stubApi(200, "fail");
+    const root = await mountGallery();
+    // The grouping loads with the rosters, after the first paint.
+    await waitFor(() => root.querySelector(".ft .ros"), "the grouping to load");
+    expect(root.querySelector(".grp.needs")).toBeNull();
+    expect(root.querySelectorAll(".card-wrap").length).toBe(2);
+    expect(root.querySelector(".grp.rest h2")?.textContent).toContain("Artifacts");
   });
 
   it("shows the mark with its halves apart when the gallery is empty", async () => {

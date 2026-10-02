@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openArtifact, publishAs, registerSession, startDaemon } from "./fixtures";
+import { openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -34,7 +34,7 @@ test("at phone width the bar keeps the mark, title, Comment and the more menu in
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   await expect(page.locator(".topbar a.home")).toBeVisible();
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open raw or copy link" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "More", exact: true })).toBeVisible();
   await expect(page.locator(".topbar .vbtn")).toBeHidden();
   expect((await page.locator(".topbar").boundingBox())!.height).toBe(56);
   const tabs = page.getByRole("group", { name: "Page or threads" });
@@ -56,7 +56,7 @@ test("on a phone the more menu still opens raw and copies the link, and the gall
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   const home = (await page.locator(".topbar a.home").boundingBox())!;
   expect(Math.min(home.width, home.height)).toBeGreaterThanOrEqual(44);
-  await page.getByRole("button", { name: "Open raw or copy link" }).click();
+  await page.getByRole("button", { name: "More", exact: true }).click();
   const raw = page.getByRole("menuitem", { name: "Open raw" });
   await expect(raw).toBeVisible();
   expect(await raw.getAttribute("href")).toBe(await page.locator("iframe.frame").getAttribute("src"));
@@ -65,11 +65,31 @@ test("on a phone the more menu still opens raw and copies the link, and the gall
   await context.close();
 });
 
+test("at phone width the more menu's Versions item opens the version menu as a sheet", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "echo-phone-versions");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Phone versions", { "index.html": "<main><h2>Goals</h2></main>" });
+  await publishNext(d.base, d.token, s.id, artifact.id, 1, {});
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openArtifact(page, d.base, artifact.id, 2, "subdomain");
+  await expect(page.locator(".topbar .vbtn")).toBeHidden();
+  await page.getByRole("button", { name: "More", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Versions" }).click();
+  const sheet = page.getByRole("dialog", { name: "Versions" });
+  await expect(sheet).toBeVisible();
+  await expect(sheet.locator(".vrow")).toHaveCount(2);
+  const box = (await sheet.boundingBox())!;
+  expect(box.x).toBe(0);
+  expect(box.width).toBe(390);
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
 test("the more menu opens raw and copies the link, and Escape closes it with focus back on its button", async ({ page, context }) => {
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
   const { artifact } = await publishAs(d.base, d.token, (await registerSession(d.base, d.token, "claude", "echo-more")).id, "Echo more", { "index.html": "<main><h2>Goals</h2></main>" });
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
-  const more = page.getByRole("button", { name: "Open raw or copy link" });
+  const more = page.getByRole("button", { name: "More", exact: true });
   await more.click();
   const raw = page.getByRole("menuitem", { name: "Open raw" });
   await expect(raw).toBeFocused();
