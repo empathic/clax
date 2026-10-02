@@ -100,6 +100,21 @@ impl Daemon {
         s["session"]["id"].as_str().unwrap().to_string()
     }
 
+    /// Registers a Claude Code session with harness session ID `hsid`;
+    /// returns its ID.
+    fn claude_session(&self, hsid: &str) -> String {
+        let s: Value = self
+            .http()
+            .post(format!("{}/api/sessions", self.base()))
+            .bearer_auth(self.token())
+            .json(&json!({"harness": "claude", "harness_session_id": hsid, "cwd": "/tmp/project"}))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        s["session"]["id"].as_str().unwrap().to_string()
+    }
+
     /// Publishes as `sid`, which watches the artifact with replies armed;
     /// returns the artifact ID.
     fn publish_as(&self, sid: &str) -> String {
@@ -369,4 +384,85 @@ fn without_a_session_it_is_a_usage_error() {
     ] {
         assert!(err.contains(name), "{err}");
     }
+}
+
+const ONCE_C1: [&str; 7] = [
+    "--once",
+    "--agent",
+    "claude",
+    "--harness-session",
+    "c1",
+    "--poll-secs",
+    "2",
+];
+
+/// Every line a follower that has exited printed.
+fn all_lines(f: &Follower) -> Vec<String> {
+    let mut out = Vec::new();
+    while let Ok(line) = f.lines.recv_timeout(Duration::from_secs(2)) {
+        out.push(line);
+    }
+    out
+}
+
+#[test]
+fn once_exits_after_the_first_poll_that_printed() {
+    let d = Daemon::start();
+    let sid = d.claude_session("c1");
+    let aid = d.publish_as(&sid);
+    let mut f = Follower::spawn(&d, &ONCE_C1, &[]);
+    std::thread::sleep(Duration::from_millis(500));
+    let t1 = d.sent_thread(&aid, "first");
+    let t2 = d.sent_thread(&aid, "second");
+    assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
+    let mut lines = all_lines(&f);
+    assert!((1..=2).contains(&lines.len()), "{lines:?}");
+    assert_eq!(f.stderr(), "");
+    if lines.len() == 1 {
+        let mut g = Follower::spawn(&d, &ONCE_C1, &[]);
+        assert_eq!(g.exit(Duration::from_secs(5)), Some(0));
+        lines.extend(all_lines(&g));
+        assert_eq!(g.stderr(), "");
+    }
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    for line in &lines {
+        assert!(line.starts_with("[clax] New comment on "), "{line}");
+    }
+    assert!(lines.iter().any(|l| l.contains(&t1)), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains(&t2)), "{lines:?}");
+}
+
+#[test]
+fn once_exits_cleanly_when_the_session_ends() {
+    let d = Daemon::start();
+    let sid = d.claude_session("c1");
+    d.publish_as(&sid);
+    let mut f = Follower::spawn(&d, &[&ONCE_C1[..], &["--grace-secs", "1"]].concat(), &[]);
+    std::thread::sleep(Duration::from_millis(500));
+    d.end(&sid);
+    assert_eq!(f.exit(Duration::from_secs(5)), Some(0));
+    assert!(all_lines(&f).is_empty(), "printed nothing");
+}
+
+#[test]
+fn once_does_not_exit_on_an_empty_poll() {
+    let d = Daemon::start();
+    let sid = d.claude_session("c1");
+    d.publish_as(&sid);
+    let mut f = Follower::spawn(
+        &d,
+        &[
+            "--once",
+            "--agent",
+            "claude",
+            "--harness-session",
+            "c1",
+            "--poll-secs",
+            "1",
+        ],
+        &[],
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(f.child.try_wait().unwrap().is_none(), "still running");
+    f.quiet_for(Duration::from_millis(100));
 }

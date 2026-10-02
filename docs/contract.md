@@ -448,7 +448,17 @@ No arguments.
   "push": {
     "tier": null,
     "available": false,
-    "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"
+    "reason": "nothing wakes this session while it is idle: launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax`, or run follow_command in the background after publishing; meanwhile comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback",
+    "follow_command": "'/Users/alex/.cargo/bin/clax' feedback follow --once --agent claude --harness-session '6b1f0c2e-9d4a-4c1e-8f3b-2a7d5e9c0b14'",
+    "channel": {
+      "declared": true,
+      "launch_flag": "absent",
+      "flag": null,
+      "entry": null,
+      "registered": null,
+      "launch": "claude --dangerously-load-development-channels plugin:clax@clax",
+      "note": "Claude Code does not tell the server whether it registered the channel; its startup screen says so"
+    }
   },
   "feedback": [],
   "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.3.0"}
@@ -502,6 +512,20 @@ daemon's reason for having no `codex` (see "Delivery tiers per harness");
 under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
 Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
+
+Under Claude Code, `push.tier` is `"channel"` (`available: true`) when the
+launch flag names the Clax channel and the shim forwards notices,
+`"follow"` (`available: true`) while a `clax feedback follow` polls for the
+session, and otherwise `null`, with `follow_command` (the shell-quoted
+command the skill runs in the background; absent when the session has no
+harness session ID). `channel` reports `declared` (always `true` under
+Claude Code), `launch_flag` (`present`, `absent`, or `unknown` when the
+parent's command line could not be read), the `flag` and `entry` seen,
+`registered` (always `null`: Claude Code does not say), `launch` (the
+command that enables the channel), and `note`. The daemon's own `push` for
+a Claude Code session is `{"tier": "notice", "available": true, "reason":
+null}` while any notice follower polls, else `tier: null` with the reason
+above. The shim refines it.
 
 Version skew: newer wins. The MCP shim (`clax mcp`) and `clax serve`, when
 either finds a daemon older than itself, replace it on the old daemon's port
@@ -1333,13 +1357,21 @@ Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
 | 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | end of the turn: the same shape continues the turn; the hook acts only on `reason` `end_turn` | none |
 | 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none: an allowing `UserPromptSubmit` hook's output is discarded and `SessionStart` output is ignored | none |
 | 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting; Grok's tool timeout defaults to 6000 s | immediate while waiting |
-| 5, native push | none: an idle Claude Code session is not woken | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
+| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
 
 Tier 1 applies to every successful tool result of a session-bound shim or Pi
 extension, except `wait_for_feedback`, whose result is tier 4. Tiers 2 and 5
 apply only to watches with `replies_armed`. While `stop_hook_active` is set,
 the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
+
+Tier 5 for Claude Code announces and never delivers (see "Notices"). The
+shim forwards notices only when its parent's command line names a
+`plugin:clax@<marketplace>` entry of `--dangerously-load-development-channels`
+or `--channels`. It supports MCP revisions up to `2025-11-25`, because
+Claude Code does not register a channel server that negotiates
+`2026-07-28` (under `MCP_PROTOCOL_NEGOTIATION=auto`). It never declares
+`claude/channel/permission`.
 
 Tier 5 for Codex needs the Codex session ID (from the `SessionStart` hook, so
 hooks must be enabled and trusted), `codex` from `CLAX_CODEX_BIN` when it
@@ -1408,6 +1440,25 @@ across daemon restarts, and exits 0 once the session has ended (at once
 for `--session`; after 60 s with no live Clax session for a harness
 session). `status`'s `push` for a Grok session is `{"tier": "monitor",
 "available": <a follower polled within 15 s>, "reason": …}`.
+
+With `--once`, it exits 0 after the first poll that printed at least one
+line, or when the session ends.
+
+Claude Code receives notices in one of two ways. When the session was
+launched with `--dangerously-load-development-channels
+plugin:clax@<marketplace>` (or `--channels`, with an organization
+allowlist entry), the shim, which declares `claude/channel`, polls the
+notices route and sends each line as a `notifications/claude/channel`
+event, with `meta` `{artifact_id, thread_id, comment_id}`. Otherwise the
+skill has the agent run `clax feedback follow --once` in the background
+after it publishes, and restart it after each exit. Claude Code wakes an
+idle session when a background command exits.
+
+Claude Code tells a channel server nothing about registration, and drops
+events it does not accept. The shim polls only when its parent's command
+line names a Clax channel entry. It reports `registered: null` because it
+cannot know more. It never declares `claude/channel/permission`, so
+nobody who comments can approve tool use.
 
 The line:
 
@@ -1780,6 +1831,11 @@ harness and the daemon, each `ok` or failed with the fix:
   hooks; Codex hooks are optional).
 - `feedback`: each live session's watches and push state, and for Codex
   `codex_push` and `codex_sessions` (native push).
+- `channel` (Claude Code only): whether the installed plugin's manifest
+  declares the channel (failed when it does not: the plugin predates it),
+  and how the latest Claude Code session was launched, from the shim's
+  `channel` line in `hooks.log`, with the launch command. The channel is
+  opt-in, so a session launched without it passes.
 - `grok` (Grok only): `grok --version`; failed when `grok` is not on
   `PATH` or reports a version older than 1.0.45.
 - `claude_copy` (Grok only, never failed): whether the Claude Code plugin
@@ -1986,6 +2042,22 @@ harness and the daemon, each `ok` or failed with the fix:
   `/new` or `/resume` within one process is not yet measured; until it
   is, a resumed Grok session may keep the Clax session of its first
   conversation.
+- Claude Code channels are a research preview: CLI only, with claude.ai or
+  Console authentication (not Bedrock, Google Cloud or Foundry). Clax is
+  not on the `--channels` allowlist, so it needs
+  `--dangerously-load-development-channels plugin:clax@clax` (with a warning
+  screen at every launch) or an organization `allowedChannelPlugins` entry.
+  On claude.ai Team and Enterprise an Owner must turn on `channelsEnabled`.
+  Claude Code never tells Clax whether the channel registered. When the
+  flag is given but policy blocks the channel, comments still arrive
+  through tiers 1, 2 and 4, but an idle session is not woken. Relaunch
+  without the flag to use the background fallback.
+- The background fallback needs the agent to start `clax feedback follow
+  --once` after a publish and to restart it after each wake-up. A session
+  that has not published or watched anything in this run is not woken.
+- `just dev claude` loads the checkout's plugin with `--plugin-dir`, which
+  has no `plugin:<name>@<marketplace>` entry, so dev sessions use the
+  background fallback.
 
 Open follow-ups, and the checks that still need a real harness or GitHub,
 are listed in [`docs/follow-ups.md`](follow-ups.md).

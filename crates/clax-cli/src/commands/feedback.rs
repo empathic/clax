@@ -21,7 +21,9 @@ pub enum Cmd {
     /// tool call, its Stop hook, or wait_for_feedback. The session is
     /// --session (a Clax session ID), or --agent with --harness-session (the
     /// harness's own ID), or, inside Grok Build, GROK_SESSION_ID. Exits 0
-    /// once the session has ended.
+    /// once the session has ended. With --once, it exits after the first
+    /// comment, for a harness that wakes when a background command exits
+    /// (Claude Code).
     Follow(FollowArgs),
 }
 
@@ -61,6 +63,12 @@ pub struct FollowArgs {
     /// before the command exits.
     #[arg(long, hide = true, default_value_t = 60)]
     pub grace_secs: u64,
+    /// Exit 0 after the first poll that printed at least one line, so a
+    /// harness that wakes when a background command exits (Claude Code) is
+    /// woken by the first comment. The agent starts it again after handling
+    /// the comment.
+    #[arg(long)]
+    pub once: bool,
 }
 
 /// What to follow.
@@ -162,6 +170,9 @@ pub fn run(_cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                     writeln!(stdout, "{line}")?;
                 }
                 stdout.flush()?;
+                if a.once && v["lines"].as_array().is_some_and(|l| !l.is_empty()) {
+                    return Ok(());
+                }
             }
             Err(e) if session_gone(&e) => {
                 if let Target::Session(_) = target {
