@@ -10,6 +10,7 @@ use std::time::Duration;
 pub enum Agent {
     Claude,
     Codex,
+    Grok,
 }
 
 #[derive(clap::Args)]
@@ -47,6 +48,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let harness = match a.agent {
         Agent::Claude => Harness::Claude,
         Agent::Codex => Harness::Codex,
+        Agent::Grok => Harness::Grok,
     };
     let (refresh_home, port) = (home.clone(), cli.port_for(home)?);
     let refresh: shim::Refresh = Arc::new(move || {

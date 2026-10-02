@@ -95,7 +95,7 @@ fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> T
     match (harness, armed) {
         ("codex", true) if has_hsid && codex_push => Tier::Queue,
         ("pi", true) => Tier::Inject,
-        ("claude" | "codex", true) => Tier::StopHook,
+        ("claude" | "codex" | "grok", true) => Tier::StopHook,
         _ => Tier::Piggyback,
     }
 }
@@ -1016,6 +1016,25 @@ mod tests {
         st.retarget_untargeted(&aid, &next).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
         assert_eq!(targets(&st, &tid), vec![Some(next)]);
+    }
+
+    #[test]
+    fn an_armed_grok_watch_waits_on_the_stop_hook() {
+        let (_d, st) = store();
+        let grok = session(&st, "grok", "g1");
+        let aid = artifact(&st, Some(&grok));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap().unwrap().tier,
+            Some(Tier::Piggyback),
+            "unarmed: the next tool call"
+        );
+        st.ensure_watch(&grok, &aid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap().unwrap().tier,
+            Some(Tier::StopHook)
+        );
     }
 
     #[test]

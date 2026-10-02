@@ -356,12 +356,38 @@ async fn register_accepts_only_known_harnesses() {
         assert_eq!(body["error"]["code"], "invalid_args", "{harness:?}");
         assert_eq!(
             body["error"]["message"],
-            "harness must be one of claude, codex, pi"
+            "harness must be one of claude, codex, grok, pi"
         );
     }
-    for harness in ["claude", "codex", "pi"] {
+    for harness in ["claude", "codex", "grok", "pi"] {
         register(&ts, json!({"harness": harness, "cwd": "/"})).await;
     }
+}
+
+#[tokio::test]
+async fn a_grok_session_has_no_native_push() {
+    let ts = TestServer::spawn().await;
+    let s = register(
+        &ts,
+        json!({"harness": "grok", "harness_session_id": "019a-grok", "cwd": "/w", "pid": 10, "parent_pid": 5}),
+    )
+    .await;
+    assert_eq!(s["harness_session_id"], "019a-grok");
+    let sess: Value = ts
+        .get_authed(&format!("/api/sessions/{}", s["id"].as_str().unwrap()))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(sess["push"]["tier"], Value::Null);
+    assert_eq!(sess["push"]["available"], false);
+    assert!(
+        sess["push"]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("Grok Build has no native push"),
+        "{sess}"
+    );
 }
 
 #[tokio::test]
