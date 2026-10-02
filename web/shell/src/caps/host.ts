@@ -3,10 +3,10 @@
 // through one handler per capability, and relays SSE events to handlers that
 // follow the stream. Every call is answered, with a value or `{code, message}`.
 import type { Anchor, Box, BridgeToShell, ShellToBridge } from "../../../bridge/src/protocol";
-import type { FileMeta } from "../api";
+import type { FileMeta, SampleStatus } from "../api";
 import type { ArtifactEvent } from "../events";
 import type { Thread } from "../threads";
-import { type Declared, declaredConfig, isAvailable } from "./availability";
+import { type Declared, type Served, declaredConfig, isAvailable } from "./availability";
 import { CapError } from "./errors";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
 import { REGISTRY } from "./registry";
@@ -71,6 +71,11 @@ export interface CapEnv {
   page?(): string | null;
   /** The shell's comment UI, when this view has one. */
   comments?: CommentsUi;
+  /** `GET /api/artifacts/<aid>/sample` with the token: set only for the owner
+   * shell; called at most once per host, and only once the page names `sample`. */
+  sampleStatus?(): Promise<SampleStatus | null>;
+  /** The artifact's calls to Claude today, and the cap: the top bar's count. */
+  onSampleCalls?(n: number, cap: number | null): void;
 }
 
 export interface Handler {
@@ -105,6 +110,9 @@ export class CapabilityHost {
   private readonly handlers = new Map<string, Handler>();
   private readonly ready: Promise<{ env: CapEnv; grants: Grants }>;
   private dead = false;
+  /** What the daemon serves beyond the declaration; filled by `checkServed`. */
+  private readonly served: Served = {};
+  private servedChecked: Promise<void> | null = null;
 
   constructor(env: Promise<CapEnv>, private readonly factories: Record<string, HandlerFactory> = REGISTRY, storage: Storage | null = localStore()) {
     // Without a viewer (its lookup failed) grants are kept for this page load
@@ -113,7 +121,7 @@ export class CapabilityHost {
       // After dispose nothing reaches the frame, whatever resolves late.
       const e: CapEnv = { ...given, post: m => { if (!this.dead) given.post(m); } };
       const viewer = await e.viewer().then(v => v.publicId, () => null);
-      const grants = new Grants(grantsKey(e.aid, viewer ?? ""), viewer === null ? null : storage, e.declared, e.token !== null, e.prompt);
+      const grants = new Grants(grantsKey(e.aid, viewer ?? ""), viewer === null ? null : storage, e.declared, e.token !== null, e.prompt, this.served);
       return { env: e, grants };
     });
   }
@@ -122,14 +130,18 @@ export class CapabilityHost {
     if (this.dead || (m.type !== "clax:use" && m.type !== "clax:call")) return;
     const { env, grants } = await this.ready;
     if (this.dead) return;
+    const named = m.type === "clax:use" ? m.name : m.ns;
+    // Only a request about sample (or permissions, which lists it) waits for the daemon's answer.
+    if (named === "sample" || named === "permissions") await this.checkServed(env);
+    if (this.dead) return;
     const owner = env.token !== null;
     if (m.type === "clax:use") {
-      const granted = typeof m.name === "string" && isAvailable(m.name, env.declared, owner);
+      const granted = typeof m.name === "string" && isAvailable(m.name, env.declared, owner, this.served);
       env.post({ type: "clax:use-result", id: m.id, granted, config: granted ? declaredConfig(m.name, env.declared) : null });
       return;
     }
     try {
-      if (!isAvailable(m.ns, env.declared, owner)) throw new CapError("not_granted", `${m.ns} is not available to this view`);
+      if (!isAvailable(m.ns, env.declared, owner, this.served)) throw new CapError("not_granted", `${m.ns} is not available to this view`);
       const value = await this.handler(m.ns, env, grants).call(m.method, Array.isArray(m.args) ? m.args : []);
       env.post({ type: "clax:call-result", id: m.id, ok: true, value });
     } catch (e) {
@@ -138,6 +150,16 @@ export class CapabilityHost {
         : { code: "upstream_error", message: e instanceof Error ? e.message : String(e) };
       env.post({ type: "clax:call-result", id: m.id, ok: false, error });
     }
+  }
+
+  /** Asks the daemon once whether it samples for this view, only for the
+   * owner shell of an artifact that declares `sample`. */
+  private checkServed(env: CapEnv): Promise<void> {
+    if (env.token === null || !env.sampleStatus || !Object.hasOwn(env.declared, "sample")) return Promise.resolve();
+    return this.servedChecked ??= env.sampleStatus().then(s => {
+      this.served.sample = s?.available === true;
+      if (s?.available) env.onSampleCalls?.(s.calls_today, s.daily_call_cap);
+    }, () => {});
   }
 
   private handler(ns: string, env: CapEnv, grants: Grants): Handler {

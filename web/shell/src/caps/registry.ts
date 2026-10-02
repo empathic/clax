@@ -17,5 +17,6 @@ export const REGISTRY: Record<string, HandlerFactory> = {
   downloads: downloadsHandler,
   permissions: permissionsHandler,
   room: lazyHandler(() => import("./room").then(m => m.roomHandler)),
+  sample: lazyHandler(() => import("./sample").then(m => m.sampleHandler)),
   user: userHandler,
 };
