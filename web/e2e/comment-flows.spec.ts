@@ -213,7 +213,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await clickShell(page, reply);
     await page.keyboard.type("A reply by shortcut.");
     await page.keyboard.press("Meta+Enter");
-    await expect(page.locator(".thread-card").first().locator(".comment", { hasText: "A reply by shortcut." })).toHaveCount(1);
+    await expect(page.locator(".thread-card").first().locator(".msg", { hasText: "A reply by shortcut." })).toHaveCount(1);
     await expect(reply).toHaveValue("");
     await clickIn(page, f, "#p2");
     await expect(quote(page)).toContainText("Second paragraph");

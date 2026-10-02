@@ -21,7 +21,7 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
 }
 
 const ID = "7q3k9mzx2b4t";
-const artifact = (n: number, files: Record<string, unknown> = {}) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files }] });
+const artifact = (n: number, files: Record<string, unknown> = {}) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false, owner_harness: "claude" }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files }] });
 const page = { content_type: "text/html", size: 1 };
 
 const viewer = { viewer: { public_id: "u_0123456789abcdef012345", display_name: null, created_at: "x" } };
@@ -875,7 +875,7 @@ describe("ArtifactView", () => {
     const lastMode = () => posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)?.data;
     await waitFor(() => lastMode()?.on === true && lastMode()?.canArea === true, "areas on in comment mode");
     const card = await waitFor(() => root.querySelector('[data-thread="tS"]'), "the thread");
-    buttonNamed(card, "Send to agent").click();
+    buttonNamed(card, "Send to claude").click();
     await waitFor(() => lastMode()?.canArea === false, "areas off while the send is in flight");
     answerSend(new Response(JSON.stringify({ thread: { ...thread, sent_to_agent: true } })));
     await waitFor(() => lastMode()?.canArea === true, "areas on again");
@@ -1038,7 +1038,7 @@ describe("ArtifactView", () => {
     buttonNamed(root, "Post comment").click();
     await waitFor(() => !root.querySelector(".composer") && pressed() && lastMode() === true, "comment mode back after Post");
     // Sending the posted thread to the agent from its card leaves it on.
-    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to agent").click();
+    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").click();
     await waitFor(() => sends === 1, "the send");
     await settle();
     expect(pressed()).toBe(true);

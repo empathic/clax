@@ -34,7 +34,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   await composer.locator("textarea").fill("Make this a two-column layout and drop the third bullet.");
   await composer.getByRole("button", { name: "Post comment" }).click();
   const card = page.locator(".section-open .thread-card").first();
-  await card.getByRole("button", { name: "Send to agent" }).click();
+  await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
   await expect(card.locator(".waiting")).toContainText("waiting on the end of its turn");
   const tid = (await card.getAttribute("data-thread"))!;
@@ -52,11 +52,11 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
 
   // The agent replies and resolves; the browser shows both live.
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done: two columns.", author_kind: "agent" }) });
-  await expect(card).toContainText("Agent · via claude");
+  await expect(card.locator(".msg.agent .author")).toContainText("claude");
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/resolve`, { method: "POST", session: s.id, body: JSON.stringify({ as: "agent" }) });
   const done = page.locator(".section-resolved .thread-card");
   await expect(done).toHaveCount(1);
   await expect(done).toContainText("Done: two columns.");
-  await expect(done.locator(".resolved-by")).toHaveText("Resolved by Agent · via claude");
+  await expect(done.locator(".hist")).toContainText("claude resolved");
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });

@@ -18,14 +18,14 @@ describe("Sidebar", () => {
     const found = { a: { id: "a", found: true, method: "exact" as const, rect: null }, b: { id: "b", found: false, method: null, rect: null } };
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads, resolved: found, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: found, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(root.querySelectorAll(".section-open .thread-card")).toHaveLength(1);
     expect(root.querySelectorAll(".section-detached .thread-card")).toHaveLength(1);
     expect(root.querySelectorAll(".section-resolved .thread-card")).toHaveLength(1);
-    expect(root.querySelector(".comment.agent .author")!.textContent).toBe("Agent · via claude");
+    expect(root.querySelector(".msg.agent .author")!.textContent).toBe("claude");
     expect(root.querySelector(".section-open .waiting")!.textContent).toBe("seen by the agent");
     // Only thread b is open and unsent; a was sent and c is resolved.
-    expect(Array.from(root.querySelectorAll("button")).filter(b => b.textContent === "Send to agent")).toHaveLength(1);
+    expect(Array.from(root.querySelectorAll("button")).filter(b => b.textContent === "Send to claude")).toHaveLength(1);
     view.unmount();
     root.remove();
   });
@@ -34,13 +34,13 @@ describe("Sidebar", () => {
     const t: Thread = { ...base, id: "p", anchor, status: "open", sent_to_agent: false, comments: [{ ...comment("1", "viewer", "Alex", "from the page"), via_page: true }, comment("2", "viewer", "Alex", "by hand")] };
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
-    expect(Array.from(root.querySelectorAll(".comment .author"), a => a.textContent)).toEqual(["Alex · via the page", "Alex"]);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    expect(Array.from(root.querySelectorAll(".msg .author"), a => a.textContent)).toEqual(["Alex · via the page", "Alex"]);
     view.unmount();
     root.remove();
   });
 
-  it("names who resolved a thread without exposing identifiers", () => {
+  it("names who resolved a thread in its history without exposing identifiers", () => {
     const me = { public_id: "u_0123456789abcdef012345", display_name: "Alex", created_at: base.created_at };
     const resolved = (id: string, by: string): Thread => ({ ...base, id, anchor, status: "resolved", sent_to_agent: false, resolved_at: base.created_at, resolved_by: by, comments: [comment(id, "viewer", "Viewer", "x")] });
     const threads = [
@@ -51,10 +51,11 @@ describe("Sidebar", () => {
     ];
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads, resolved: {}, me, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
-    expect(Array.from(root.querySelectorAll(".resolved-by")).map(e => e.textContent)).toEqual([
-      "Resolved by Alex", "Resolved by Viewer", "Resolved by Viewer", "Resolved by Agent · via codex",
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, me, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    expect(Array.from(root.querySelectorAll(".hist .ev:last-child")).map(e => e.textContent)).toEqual([
+      "v1Alex resolved", "v1Viewer resolved", "v1Viewer resolved", "codex resolved",
     ]);
+    expect(root.querySelector(".hist")!.textContent).not.toContain("u_");
     view.unmount();
     root.remove();
   });
@@ -70,7 +71,7 @@ describe("Sidebar", () => {
     const found = { a: { id: "a", found: false, method: null, rect: null }, b: { id: "b", found: false, method: null, rect: null } };
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads, resolved: found, file: "index.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: found, file: "index.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".section-detached .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["a"]);
     const open = Array.from(root.querySelectorAll<HTMLElement>(".section-open .thread-card"));
     expect(open.map(c => c.getAttribute("data-thread"))).toEqual(["b"]);
@@ -89,7 +90,7 @@ describe("Sidebar", () => {
     ];
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads, resolved: {}, file: "index.html", holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, file: "index.html", holds: (f: string) => f !== "gone.html", now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".section-detached .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["g"]);
     expect(Array.from(root.querySelectorAll(".section-open .thread-card")).map(c => c.getAttribute("data-thread"))).toEqual(["b"]);
     view.unmount();
@@ -101,7 +102,7 @@ describe("Sidebar", () => {
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
     const root = document.createElement("div");
     document.body.appendChild(root);
-    const view = mount(Sidebar, { threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect, onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect, onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     const head = root.querySelector<HTMLButtonElement>(".thread-card button.card-head")!;
     expect(head.type).toBe("button");
     head.click();
@@ -115,7 +116,7 @@ describe("Sidebar", () => {
     const onReply = vi.fn();
     const onSelect = vi.fn();
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
-    const view = mount(Sidebar, { threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect, onSend: vi.fn(), onResolve: vi.fn(), onReply });
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect, onSend: vi.fn(), onResolve: vi.fn(), onReply });
     const input = view.root.querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
     const key = (init: KeyboardEventInit) => flush(() => input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true, ...init })));
     flush(() => input.click());
@@ -135,12 +136,27 @@ describe("Sidebar", () => {
     view.unmount();
   });
 
+  it("reads each thread's history as version-tagged events, and tags a thread whose element changed in a later version", () => {
+    const v = (n: number, at: string) => ({ artifact_id: base.artifact_id, n, label: null, created_at: at, files: {} });
+    const versions = [v(1, "2026-09-29T09:00:00.000Z"), v(2, "2026-09-29T11:00:00.000Z")];
+    const t: Thread = { ...base, id: "a", anchor: { ...anchor, html_hash: "h1" }, status: "open", sent_to_agent: false,
+      comments: [comment("1", "viewer", "alex", "two columns"), { ...comment("2", "viewer", "Mia", "agreed"), created_at: "2026-09-29T10:30:00.000Z" }] };
+    const found = { a: { id: "a", found: true, method: "selector" as const, rect: null } };
+    const props = { versions, shown: 2, agent: "claude", threads: [t], resolved: found, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
+    const view = mount(Sidebar, props);
+    expect(Array.from(view.root.querySelectorAll(".hist .ev"), e => e.textContent)).toEqual(["v1alex commented", "v1Mia replied"]);
+    expect(view.root.querySelector(".vt.out")!.textContent).toBe("outdated");
+    view.update({ ...props, shown: 1 });
+    expect(view.root.querySelector(".vt.out")).toBeNull();
+    view.unmount();
+  });
+
   it("ticks the elapsed time of a thread waiting for the agent each second", () => {
     vi.useFakeTimers({ now: new Date(base.created_at) });
     try {
       const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "note")],
         feedback_state: { thread_id: "a", state: "sent", tier: "stop_hook", since: base.created_at, resends: 0, exhausted: false } };
-      const view = mount(Sidebar, { threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+      const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
       const waiting = () => view.root.querySelector(".waiting")!.textContent;
       expect(waiting()).toContain("· 0 s ·");
       flush(() => vi.advanceTimersByTime(2000));

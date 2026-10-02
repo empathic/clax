@@ -1,6 +1,7 @@
 import { type AnchorResult, INDEX_FILE } from "../../../bridge/src/protocol";
 import type { Comment, Thread } from "../threads";
 import { hasElapsedLabel } from "../waiting";
+import { agentName } from "./history-model";
 
 export type SidebarSections = { open: Thread[]; detached: Thread[]; resolved: Thread[]; numbers: Map<string, number>; file: string | null };
 
@@ -31,7 +32,7 @@ export function needsTicking(threads: Thread[]): boolean {
   return threads.some(t => t.status === "open" && t.sent_to_agent && hasElapsedLabel(t.feedback_state));
 }
 
-/** A comment's author line: the agent with its harness, else the viewer's name. */
+/** A comment's author line: an agent's name (its harness), else the person's name. */
 export function authorLabel(c: Comment): string {
-  return c.author_kind === "agent" ? `Agent · via ${c.via_harness ?? c.author_name}` : c.author_name;
+  return c.author_kind === "agent" ? agentName(c.via_harness) : c.author_name;
 }

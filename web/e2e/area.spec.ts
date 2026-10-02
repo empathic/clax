@@ -130,7 +130,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Nothing is selected after the reload: hovering the card outlines the
     // area dashed where it now is; leaving hides it.
     expect((await focus(v2)).shown).toBe(false);
-    await page.locator(`[data-thread="${tid}"] .comment`).first().hover();
+    await page.locator(`[data-thread="${tid}"] .msg`).first().hover();
     await expect.poll(async () => (await focus(v2)).shown).toBe(true);
     const f2 = await focus(v2);
     expect(Math.abs(f2.y - (want.y - 2))).toBeLessThan(3);

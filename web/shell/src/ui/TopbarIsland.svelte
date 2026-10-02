@@ -2,11 +2,11 @@
   // The top bar island: the artifact view's controls (an empty slot for the
   // roster and summary, Comment, Threads, the name field on wide screens, the
   // version, the more menu with open raw and copy link, and the theme switch),
-  // and the phone tab bar, once the artifact is loaded and the frame mode decided.
+  // once the artifact is loaded and the frame mode decided. At phone width the
+  // bar keeps the mark, the title, Comment and the more menu.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { moreMenu } from "./more-menu.svelte";
-  import PhoneTabs from "./PhoneTabs.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import ViewerName from "./ViewerName.svelte";
 
@@ -33,8 +33,7 @@
   {#if MoreMenu}
     <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} />
   {:else}
-    <span class="more-slot hide-sm"></span>
+    <span class="more-slot"></span>
   {/if}
   <span class="hide-sm"><ThemeSwitch /></span>
-  <PhoneTabs panel={s.panel} open={ctl.openCount(s)} onPage={() => { if (s.panel) ctl.togglePanel(); }} onThreads={() => { if (!s.panel) ctl.togglePanel(); }} />
 {/if}
