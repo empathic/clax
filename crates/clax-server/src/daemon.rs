@@ -235,6 +235,7 @@ pub async fn serve(
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
         codex: Arc::new(cfg.codex.clone()),
+        rooms: Arc::new(crate::room::Rooms::default()),
     };
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     let fctx = state.feedback_ctx();

@@ -60,6 +60,7 @@ impl TestServer {
             feedback_waiters: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
+            rooms: Arc::new(crate::room::Rooms::default()),
         };
         f(&mut state);
         let events = state.events.clone();
