@@ -166,6 +166,13 @@ export class ArtifactController {
   /** The host the latest reaction pass told of the UI. */
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
+  /** Whether the viewer's keys are meant for the shell, so shell keys may act.
+   * Focus that the page moved or took (into its frame, or onto a prompt or
+   * composer it raised) clears it, and stays cleared when that UI closes and
+   * focus falls to the body while the viewer is still typing for the page.
+   * Only the viewer's own act in the shell sets it again: a trusted press,
+   * or Tab or Shift+Tab moving focus to a shell control outside a dialog. */
+  private keysOwned = true;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
@@ -303,6 +310,10 @@ export class ArtifactController {
     if (this.disposed) return;
     const prev = this.s;
     this.state.set(patch);
+    // A prompt or composer opening comes from the page (a capability, or the
+    // bridge's pick): the keys are the shell's again only after the viewer's
+    // own act in it (`keysOwned`).
+    if ((!prev.ask && this.s.ask) || (!prev.draft && this.s.draft)) this.keysOwned = false;
     // Comment mode cannot come on in a page whose comment part did not load,
     // however it was asked for: the viewer is told again instead.
     if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
@@ -696,6 +707,23 @@ export class ArtifactController {
         if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
       }
     };
+    // Who the keys belong to (`keysOwned`): the page once focus enters its
+    // frame; the shell again on the viewer's press in it, or their Tab to one
+    // of its controls. A Tab that lands in a dialog (a page's prompt) does
+    // not count, nor does focus that a script moved.
+    let tabbed = false;
+    const onPress = (e: PointerEvent) => { if (e.isTrusted) this.keysOwned = true; };
+    const onTab = (e: KeyboardEvent) => { tabbed = e.isTrusted && e.key === "Tab"; };
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target;
+      if (tabbed && t instanceof Element && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true]")) this.keysOwned = true;
+      tabbed = false;
+    };
+    const onBlur = () => { if (document.activeElement?.localName === "iframe") this.keysOwned = false; };
+    addEventListener("pointerdown", onPress, true);
+    addEventListener("keydown", onTab, true);
+    addEventListener("focusin", onFocusIn, true);
+    addEventListener("blur", onBlur);
     const unforward = setForwardedKeys(forwards);
     addEventListener("mouseover", onOver);
     addEventListener("keydown", onKey);
@@ -719,6 +747,10 @@ export class ArtifactController {
       removeEventListener("mouseover", onOver);
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
+      removeEventListener("pointerdown", onPress, true);
+      removeEventListener("keydown", onTab, true);
+      removeEventListener("focusin", onFocusIn, true);
+      removeEventListener("blur", onBlur);
       removeEventListener("popstate", onPop);
       mq?.removeEventListener?.("change", onNarrow);
     });
@@ -984,7 +1016,7 @@ export class ArtifactController {
    * Escape (handled in `listen`) is their only shell key. */
   shortcut(a: KeyAction): boolean {
     const s = this.s;
-    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft) return false;
+    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !this.keysOwned) return false;
     const sel = s.threads.find(t => t.id === s.selected) ?? null;
     switch (a) {
       case "help": this.set({ sheet: "keys" }); return true;
