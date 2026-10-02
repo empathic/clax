@@ -131,6 +131,7 @@ code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px;
 @media (max-width: 700px) {
   .topbar { gap: 8px; padding: 0 10px; height: 56px; }
   .topbar .hide-sm, .gbar .hide-sm, .ttl .by, .topbar .kc { display: none; }
+  .topbar .version-menu { display: contents; }
   .ttl h1 { font-size: 17px; }
   /* Above the home indicator on a phone with no bottom bezel. */
   .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 12; padding-bottom: env(safe-area-inset-bottom); background: var(--card); border-top: 1px solid var(--border-strong); }
@@ -208,3 +209,6 @@ button.mark { background: none; border: 0; padding: 0; min-width: 44px; min-heig
 .thread-pin.addressed { background: #fff; border-color: #457d26; color: #2f0b04; }
 .thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--grot); background: #fff; color: #2f0b04; border: 1px solid #457d26; padding: 0 3px; white-space: nowrap; }
 .topbar a.latest { font: 600 14px var(--grot); color: var(--accent-ink); }
+/* Needs your eyes (spec §8): the rest group's swatch; the needs group's
+   and the markers' styles load with them (ui/NeedsGroup.svelte, ui/Markers.svelte). */
+.rest h2 .sw { border-radius: 50%; width: 14px; height: 14px; background: var(--border-strong); }

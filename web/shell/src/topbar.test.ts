@@ -8,7 +8,7 @@ describe("Echo top bar parts", () => {
     const onCopy = vi.fn();
     const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy });
     const b = m.root.querySelector("button.icon") as HTMLButtonElement;
-    expect(b.getAttribute("aria-label")).toBe("Open raw or copy link");
+    expect(b.getAttribute("aria-label")).toBe("More");
     expect(b.getAttribute("aria-expanded")).toBe("false");
     flush(() => b.click());
     const menu = m.root.querySelector("[role=menu]")!;
@@ -56,6 +56,27 @@ describe("Echo top bar parts", () => {
     expect(m.root.querySelector("[role=menu]")).toBeNull();
     expect(document.activeElement).toBe(b);
     m.unmount();
+  });
+
+  it("at phone width the more menu leads with Versions, which closes it and opens the version menu; wider, it has no Versions item", async () => {
+    let phone = true;
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: phone && q === "(max-width: 700px)" }));
+    const onVersions = vi.fn();
+    const m = mount(MoreMenu, { rawHref: "/c/x/v/1/", canCopy: true, onCopy: vi.fn(), onVersions });
+    const b = m.root.querySelector<HTMLButtonElement>("button.icon")!;
+    flush(() => b.click());
+    await new Promise(r => setTimeout(r));
+    const items = Array.from(m.root.querySelectorAll<HTMLElement>("[role=menuitem]"));
+    expect(items.map(i => i.textContent)).toEqual(["Versions", "Open raw", "Copy link"]);
+    expect(document.activeElement).toBe(items[0]);
+    flush(() => items[0].click());
+    expect(onVersions).toHaveBeenCalledTimes(1);
+    expect(m.root.querySelector("[role=menu]")).toBeNull();
+    phone = false;
+    flush(() => b.click());
+    expect(Array.from(m.root.querySelectorAll("[role=menuitem]")).map(i => i.textContent)).toEqual(["Open raw", "Copy link"]);
+    m.unmount();
+    vi.unstubAllGlobals();
   });
 
   it("C and ? typed in the open more menu do not reach the shell's keys", async () => {

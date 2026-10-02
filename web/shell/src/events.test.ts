@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { subscribe } from "./events";
-import { subscribeWorking } from "./working-events";
+import { subscribeGallery } from "./working-events";
 
 class FakeES {
   static last: FakeES;
@@ -71,22 +71,26 @@ describe("subscribe", () => {
     expect(seen).toEqual([d, { type: "stream_down" }]);
   });
 
-  it("subscribeWorking opens the gallery's working stream and forwards parsed events", () => {
+  it("subscribeGallery opens the gallery's stream and forwards parsed working, version and thread events", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    const off = subscribeWorking(e => seen.push(e));
-    expect(FakeES.last.url).toBe("/api/events?types=working");
+    const off = subscribeGallery(e => seen.push(e));
+    expect(FakeES.last.url).toBe("/api/events?types=working,version,thread");
     const w = { type: "working", artifact_id: "7q3k9mzx2b4t", working: [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" }] };
+    const v = { type: "version", artifact_id: "7q3k9mzx2b4t", n: 2 };
+    const t = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "t1" } };
     FakeES.last.emit("working", w);
+    FakeES.last.emit("version", v);
+    FakeES.last.emit("thread", t);
     FakeES.last.emit("ready", {});
     FakeES.last.emit("resync", { dropped: 2 });
-    expect(seen).toEqual([w, { type: "ready" }, { type: "resync", dropped: 2 }]);
+    expect(seen).toEqual([w, v, t, { type: "ready" }, { type: "resync", dropped: 2 }]);
     off();
     expect(FakeES.last.closed).toBe(true);
   });
 
-  it("subscribeWorking is a no-op without EventSource", () => {
+  it("subscribeGallery is a no-op without EventSource", () => {
     vi.stubGlobal("EventSource", undefined);
-    expect(() => subscribeWorking(() => {})()).not.toThrow();
+    expect(() => subscribeGallery(() => {})()).not.toThrow();
   });
 });

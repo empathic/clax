@@ -1,7 +1,9 @@
 <svelte:options css="injected" />
 
 <script lang="ts">
-  // The top bar's ⋯ menu: open raw and copy link. A menu button: opening
+  // The top bar's ⋯ menu: open raw and copy link, and Versions at phone width,
+  // where the version button is hidden; Versions closes the menu and opens
+  // the version menu (`onVersions`). A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
   // press outside, or Tab or focus leaving it, closes it. The items are out of
@@ -10,12 +12,15 @@
   // handles, and every printable key (so C and ? do nothing there).
   import { tick } from "svelte";
 
-  let { rawHref, canCopy, onCopy }: { rawHref: string | null; canCopy: boolean; onCopy(): void } = $props();
+  let { rawHref, canCopy, onCopy, onVersions }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void } = $props();
   let open = $state(false);
+  // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
+  let phone = $state(false);
   let button: HTMLButtonElement | undefined = $state();
   let menu: HTMLDivElement | undefined = $state();
   async function toggle() {
     open = !open;
+    phone = !!onVersions && typeof matchMedia === "function" && matchMedia("(max-width: 700px)").matches;
     if (open) { await tick(); menu?.querySelector<HTMLElement>("a, button")?.focus(); }
   }
   function close() { open = false; button?.focus(); }
@@ -49,11 +54,12 @@
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="more" onkeydown={key} onfocusout={leave}>
-  <button type="button" class="icon" bind:this={button} aria-label="Open raw or copy link" aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
+  <button type="button" class="icon" bind:this={button} aria-label="More" aria-haspopup="menu" aria-expanded={open} onclick={toggle}>
     <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="3" cy="8" r="1.4" fill="currentColor"/><circle cx="8" cy="8" r="1.4" fill="currentColor"/><circle cx="13" cy="8" r="1.4" fill="currentColor"/></svg>
   </button>
   {#if open}
     <div class="more-menu" role="menu" bind:this={menu}>
+      {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>Versions</button>{/if}
       {#if rawHref}
         <a role="menuitem" tabindex="-1" href={rawHref} target="_blank" rel="noopener" onclick={close}>Open raw</a>
       {:else}
