@@ -622,6 +622,7 @@ pub struct ClaxTools {
     log_path: PathBuf,
     plugin_version: Option<String>,
     upgrade_hold: Option<UpgradeHoldProbe>,
+    channel: Option<crate::channel::ChannelState>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -647,6 +648,7 @@ impl ClaxTools {
             log_path,
             plugin_version: None,
             upgrade_hold: None,
+            channel: None,
             tool_router: Self::tool_router(),
         }
     }
@@ -663,6 +665,14 @@ impl ClaxTools {
     /// upgrade keeps the daemon at its version.
     pub fn with_upgrade_hold(mut self, probe: UpgradeHoldProbe) -> ClaxTools {
         self.upgrade_hold = Some(probe);
+        self
+    }
+
+    /// Declares the Claude Code channel: the `claude/channel` capability, the
+    /// channel instructions, protocol revisions up to 2025-11-25, and the
+    /// channel state in `status.push`.
+    pub fn with_channel(mut self, channel: crate::channel::ChannelState) -> ClaxTools {
+        self.channel = Some(channel);
         self
     }
 
@@ -1050,6 +1060,14 @@ impl ClaxTools {
             },
             None => Value::Null,
         };
+        if let Some(ch) = &self.channel {
+            let bin = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let hs = session.as_ref().and_then(|s| s.harness_session_id.clone());
+            out["push"] =
+                crate::channel::push_for_status(ch, out["push"].take(), hs.as_deref(), &bin);
+        }
         // Version skew between these tools and the daemon they call.
         if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
             out["daemon_version"] = h["version"].clone();
@@ -1695,10 +1713,38 @@ impl ClaxTools {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ClaxTools {
     fn get_info(&self) -> ServerConfig {
-        let mut config = ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
-            .with_instructions(INSTRUCTIONS);
+        let mut caps = ServerCapabilities::builder().enable_tools().build();
+        let mut instructions = INSTRUCTIONS.to_string();
+        if self.channel.is_some() {
+            // Only `claude/channel`; never the permission relay capability.
+            caps.experimental = Some(std::collections::BTreeMap::from([(
+                crate::channel::CAPABILITY.to_string(),
+                serde_json::Map::new(),
+            )]));
+            instructions.push_str("\n\n");
+            instructions.push_str(crate::channel::INSTRUCTIONS);
+        }
+        let mut config = ServerConfig::new(caps).with_instructions(instructions);
         config.server_info = Implementation::new("clax", env!("CARGO_PKG_VERSION"));
         config
+    }
+
+    /// Up to 2025-11-25 with a channel: Claude Code does not register a
+    /// channel server that negotiates 2026-07-28.
+    fn supported_protocol_versions(
+        &self,
+    ) -> std::borrow::Cow<'static, [rmcp::model::ProtocolVersion]> {
+        use rmcp::model::ProtocolVersion;
+        const WITH_CHANNEL: &[ProtocolVersion] = &[
+            ProtocolVersion::V_2024_11_05,
+            ProtocolVersion::V_2025_03_26,
+            ProtocolVersion::V_2025_06_18,
+            ProtocolVersion::V_2025_11_25,
+        ];
+        std::borrow::Cow::Borrowed(match self.channel {
+            Some(_) => WITH_CHANNEL,
+            None => ProtocolVersion::KNOWN_VERSIONS,
+        })
     }
 }
 

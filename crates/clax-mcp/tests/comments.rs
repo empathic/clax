@@ -356,7 +356,7 @@ async fn status_reports_the_sessions_push() {
         s["push"]["reason"]
             .as_str()
             .unwrap()
-            .starts_with("Claude Code has no native push"),
+            .starts_with("nothing wakes this session while it is idle"),
         "{s}"
     );
 }

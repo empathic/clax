@@ -10,7 +10,9 @@
 //!
 //! When in doubt, a registration is kept. Claude Code and Codex
 //! registrations are removed by name (`clax`, `clax@clax`, and the previous
-//! name's). A Pi package, which Pi names by its directory, is removed only
+//! name's). A Grok registration is removed by the name `clax-grok` only: in Grok,
+//! `clax` names the Claude Code plugin that Grok discovers in
+//! `~/.claude/plugins`, and no `grok` command here ever names it. A Pi package, which Pi names by its directory, is removed only
 //! when `registrations.json` records it, or its `package.json` names the
 //! Clax Pi package or the previous name's. A Pi package whose directory is
 //! missing or unreadable is left registered and named in the output, with
@@ -79,6 +81,14 @@ const HARNESSES: &[Harness] = &[
         record: name_record,
         uses: codex_uses,
         by_hand: |_| "codex plugin remove clax@clax; codex plugin marketplace remove clax".into(),
+    },
+    Harness {
+        name: "grok",
+        removals: grok_removals,
+        additions: grok_additions,
+        record: |root| json!({"plugin": GROK_PLUGIN, "source": grok_plugin_dir(root)}),
+        uses: grok_uses,
+        by_hand: |_| format!("grok plugin uninstall {GROK_PLUGIN} --confirm"),
     },
     Harness {
         name: "pi",
@@ -306,6 +316,65 @@ fn codex_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
     let d = &ctx.dirs.codex_home;
     Ok(load_toml(&d.join("config.toml"))?
         .is_some_and(|t| toml_mentions(&toml::Value::Table(t), root, d, &ctx.home)))
+}
+
+/// The Grok plugin's name. Never `clax`: that is the Claude Code plugin,
+/// which Grok also discovers.
+const GROK_PLUGIN: &str = "clax-grok";
+
+/// The Grok plugin's directory inside the marketplace at `root`.
+fn grok_plugin_dir(root: &Path) -> PathBuf {
+    lexical(&root.join("plugins").join(GROK_PLUGIN))
+}
+
+fn grok_removals(_ctx: &Ctx) -> Actions {
+    Actions {
+        steps: vec![step(
+            false,
+            &["plugin", "uninstall", GROK_PLUGIN, "--confirm"],
+        )],
+        notes: Vec::new(),
+    }
+}
+
+fn grok_additions(root: &Path) -> Vec<Step> {
+    let dir = grok_plugin_dir(root).display().to_string();
+    vec![step(true, &["plugin", "install", dir.as_str(), "--trust"])]
+}
+
+/// Whether Grok still lists a plugin from under `root`: `grok plugin list
+/// --json`, run in the home directory. Without `grok` on PATH, true when
+/// `registrations.json` still records a Grok registration under `root`,
+/// since Grok's own files are not read.
+fn grok_uses(ctx: &Ctx, root: &Path) -> Result<bool, String> {
+    if on_path("grok").is_none() {
+        return Ok(ctx.recorded.get("grok").is_some_and(|r| {
+            r["source"]
+                .as_str()
+                .is_some_and(|s| Path::new(s).starts_with(root))
+        }));
+    }
+    let mut cmd = std::process::Command::new("grok");
+    cmd.args(["plugin", "list", "--json"])
+        .stdin(std::process::Stdio::null());
+    if ctx.home.is_dir() {
+        cmd.current_dir(&ctx.home);
+    }
+    let out = cmd
+        .output()
+        .map_err(|e| format!("could not run `grok plugin list --json`: {e}"))?;
+    if !out.status.success() {
+        return Err(format!(
+            "`grok plugin list --json` failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+                .lines()
+                .next()
+                .unwrap_or_default()
+        ));
+    }
+    let v: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("could not parse `grok plugin list --json` ({e})"))?;
+    Ok(json_mentions(&v, root, &ctx.home, &ctx.home))
 }
 
 /// The Pi package directory inside the marketplace at `root`.

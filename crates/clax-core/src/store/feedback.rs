@@ -4,7 +4,7 @@
 use super::Store;
 use super::threads::{AUTHOR_VIEWER, thread_in};
 use crate::anchor::Anchor;
-use crate::feedback::{FeedbackItem, FeedbackPhase, FeedbackState, Tier, Touched};
+use crate::feedback::{FeedbackItem, FeedbackPhase, FeedbackState, Notice, Tier, Touched};
 use crate::model::{Feedback, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, Transaction, params};
@@ -66,7 +66,7 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str) -> Result<Touched
             tx.execute("DELETE FROM feedback WHERE id = ?1", params![id])?;
         } else {
             tx.execute(
-                "UPDATE feedback SET target_session_id = NULL, untargeted_at = ?2 WHERE id = ?1",
+                "UPDATE feedback SET target_session_id = NULL, untargeted_at = ?2, notified_at = NULL WHERE id = ?1",
                 params![id, now],
             )?;
         }
@@ -95,7 +95,7 @@ fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> T
     match (harness, armed) {
         ("codex", true) if has_hsid && codex_push => Tier::Queue,
         ("pi", true) => Tier::Inject,
-        ("claude" | "codex", true) => Tier::StopHook,
+        ("claude" | "codex" | "grok", true) => Tier::StopHook,
         _ => Tier::Piggyback,
     }
 }
@@ -401,7 +401,7 @@ impl Store {
                     tx.execute("DELETE FROM feedback WHERE id = ?1", params![fid])?;
                 } else {
                     tx.execute(
-                        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL, push_failed_at = NULL WHERE id = ?1",
+                        "UPDATE feedback SET target_session_id = ?2, untargeted_at = NULL, push_failed_at = NULL, notified_at = NULL WHERE id = ?1",
                         params![fid, session_id],
                     )?;
                     touched.targets.insert(session_id.to_string());
@@ -411,6 +411,64 @@ impl Store {
             Ok(())
         })?;
         Ok(touched)
+    }
+
+    /// Announces the session's rows that no tier has delivered and no
+    /// follower has announced, on open threads of live artifacts that the
+    /// session watches with replies armed: stamps `notified_at` and returns
+    /// one notice per row, oldest first. A row is announced at most once per
+    /// target; the stamp is set only where it is still unset, so concurrent
+    /// followers never announce the same row twice. Delivery is unaffected:
+    /// the rows still wait for tiers 1, 2 and 4.
+    pub fn take_notices(&self, session_id: &str, browser_base: &str) -> Result<Vec<Notice>> {
+        let base = browser_base.trim_end_matches('/').to_string();
+        let now = Store::now();
+        self.with_tx(|tx| {
+            let rows = {
+                let mut stmt = tx.prepare(
+                    "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id, a.title
+                     FROM feedback f
+                     JOIN threads t ON t.id = f.thread_id
+                     JOIN artifacts a ON a.id = t.artifact_id
+                     WHERE f.target_session_id = ?1
+                       AND f.delivered_at IS NULL AND f.notified_at IS NULL
+                       AND a.deleted_at IS NULL AND t.status = 'open'
+                       AND EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
+                                   AND w.artifact_id = t.artifact_id AND w.replies_armed = 1)
+                     ORDER BY f.created_at, f.id",
+                )?;
+                stmt.query_map(params![session_id], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, String>(4)?,
+                    ))
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let mut out = Vec::new();
+            for (feedback_id, comment_id, thread_id, artifact_id, title) in rows {
+                let changed = tx.execute(
+                    "UPDATE feedback SET notified_at = ?2
+                     WHERE id = ?1 AND notified_at IS NULL AND delivered_at IS NULL",
+                    params![feedback_id, now],
+                )?;
+                if changed == 1 {
+                    let url = format!("{base}/a/{artifact_id}");
+                    out.push(Notice {
+                        feedback_id,
+                        comment_id,
+                        thread_id,
+                        artifact_id,
+                        title,
+                        url,
+                    });
+                }
+            }
+            Ok(out)
+        })
     }
 
     /// Every feedback row of the thread, oldest first.
@@ -576,6 +634,59 @@ mod tests {
             include_resends: true,
         };
         st.take_feedback(&q, BASE).unwrap().0
+    }
+
+    #[test]
+    fn notices_announce_each_armed_undelivered_row_once() {
+        let (_d, st) = store();
+        let grok = session(&st, "grok", "g1");
+        let aid = artifact(&st, Some(&grok));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert!(
+            st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
+            "unarmed: no notice"
+        );
+        st.ensure_watch(&grok, &aid).unwrap();
+        let n = st.take_notices(&grok, "http://h:1").unwrap();
+        assert_eq!(n.len(), 1);
+        assert_eq!(n[0].thread_id, tid);
+        assert_eq!(n[0].url, format!("http://h:1/a/{}", aid.as_str()));
+        assert!(
+            st.take_notices(&grok, "http://h:1").unwrap().is_empty(),
+            "announced once"
+        );
+        // The notice delivered nothing: the Stop hook still hands the row over, once.
+        assert_eq!(take(&st, &grok, Tier::StopHook).len(), 1);
+        assert!(take(&st, &grok, Tier::StopHook).is_empty());
+    }
+
+    #[test]
+    fn a_delivered_row_is_never_announced() {
+        let (_d, st) = store();
+        let grok = session(&st, "grok", "g1");
+        let aid = artifact(&st, Some(&grok));
+        st.ensure_watch(&grok, &aid).unwrap();
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        take(&st, &grok, Tier::Piggyback);
+        assert!(st.take_notices(&grok, "http://h:1").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_retargeted_row_is_announced_to_its_new_session() {
+        let (_d, st) = store();
+        let first = session(&st, "grok", "g1");
+        let aid = artifact(&st, Some(&first));
+        st.ensure_watch(&first, &aid).unwrap();
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(st.take_notices(&first, "http://h:1").unwrap().len(), 1);
+        st.end_session(&first).unwrap();
+        let next = session(&st, "grok", "g2");
+        st.watch(&next, &aid, true).unwrap();
+        st.retarget_untargeted(&aid, &next).unwrap();
+        assert_eq!(st.take_notices(&next, "http://h:1").unwrap().len(), 1);
     }
 
     fn targets(st: &Store, tid: &str) -> Vec<Option<String>> {
@@ -1016,6 +1127,25 @@ mod tests {
         st.retarget_untargeted(&aid, &next).unwrap();
         st.retarget_untargeted(&aid, &next).unwrap();
         assert_eq!(targets(&st, &tid), vec![Some(next)]);
+    }
+
+    #[test]
+    fn an_armed_grok_watch_waits_on_the_stop_hook() {
+        let (_d, st) = store();
+        let grok = session(&st, "grok", "g1");
+        let aid = artifact(&st, Some(&grok));
+        let tid = thread(&st, &aid, "hi");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap().unwrap().tier,
+            Some(Tier::Piggyback),
+            "unarmed: the next tool call"
+        );
+        st.ensure_watch(&grok, &aid).unwrap();
+        assert_eq!(
+            st.feedback_state(&tid, false).unwrap().unwrap().tier,
+            Some(Tier::StopHook)
+        );
     }
 
     #[test]

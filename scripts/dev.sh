@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# `just dev [claude|codex|pi] [harness arguments...]`: builds clax, puts the
+# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax, puts the
 # build first on PATH from a temporary directory (removed on exit), and starts
 # the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
 # listens on $CLAX_DEV_PORT, else 7481). The agents' own home, daemon and
@@ -14,6 +14,10 @@
 #   codex   runs the installed Clax plugin with the fresh build. Codex's own
 #           home and config are used as they are; to try plugin changes in
 #           Codex, run `just install`.
+#   grok    runs the installed clax-grok plugin with the fresh build, like
+#           codex: Grok's TUI has no flag that loads a plugin from a
+#           directory for one run. Grok's own home and config are used as
+#           they are; to try plugin changes in Grok, run `just install`.
 # Without a harness, or when the first argument is an option (`just dev`,
 # `just dev --shared`), it runs `just watch` with those arguments instead.
 # CLAX_DEV_BIN=<binary> uses that binary instead of building (tests).
@@ -23,7 +27,7 @@ ROOT="$(pwd -P)"
 
 case "${1:-}" in
     "" | -*)
-        echo "clax dev: no harness given, so running \`just watch\` (\`just dev claude|codex|pi\` starts a harness)" >&2
+        echo "clax dev: no harness given, so running \`just watch\` (\`just dev claude|codex|grok|pi\` starts a harness)" >&2
         exec scripts/watch.sh "$@"
         ;;
 esac
@@ -32,10 +36,8 @@ esac
 harness="$1"
 shift
 case "$harness" in
-    claude | codex | pi) ;;
-    # grok: not built yet. When it is, it runs like codex: the fresh build on
-    # PATH and the dev home, with the installed plugin.
-    *) echo "usage: just dev [claude|codex|pi] [harness arguments...]" >&2; exit 2 ;;
+    claude | codex | grok | pi) ;;
+    *) echo "usage: just dev [claude|codex|grok|pi] [harness arguments...]" >&2; exit 2 ;;
 esac
 command -v "$harness" >/dev/null 2>&1 || { echo "clax dev: $harness is not on PATH" >&2; exit 1; }
 
@@ -66,5 +68,9 @@ case "$harness" in
     codex)
         echo "clax dev: Codex runs its installed Clax plugin; run \`just install\` to try plugin changes"
         codex "$@"
+        ;;
+    grok)
+        echo "clax dev: Grok runs its installed Clax plugin (clax-grok); run \`just install\` to try plugin changes"
+        grok "$@"
         ;;
 esac

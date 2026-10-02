@@ -237,6 +237,7 @@ pub async fn serve(
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
+        followers: Arc::new(Default::default()),
         codex: Arc::new(cfg.codex.clone()),
         rooms: Arc::new(crate::room::Rooms::default()),
         sample: cfg.sample.clone(),
@@ -289,6 +290,7 @@ pub async fn serve(
                 crate::feedback::apply(&ctx, &store, &r.touched);
                 for id in &r.ended {
                     ctx.waiters.forget(id);
+                    ctx.followers.forget(id);
                 }
                 Ok::<_, clax_core::CoreError>(r)
             })

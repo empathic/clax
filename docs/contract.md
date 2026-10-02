@@ -22,7 +22,7 @@ Twenty-two tools: `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
 `db_batch` (see "Runtime capabilities"). The MCP implementation lives in
 `crates/clax-mcp` and is served two ways:
 
-- the stdio shim `clax mcp --agent <claude|codex>`, which a harness
+- the stdio shim `clax mcp --agent <claude|codex|grok>`, which a harness
   starts once per session and which attributes publishes to that session
   (Pi does not use it; `--agent pi` is a usage error). The plugins start it
   through `scripts/ensure-clax.sh`, which first runs `clax mcp --preflight`
@@ -47,6 +47,7 @@ Names as the model sees them:
 | Claude Code, plugin install | `mcp__plugin_clax_clax__<tool>` |
 | Claude Code, plain `.mcp.json` entry named `clax` | `mcp__clax__<tool>` |
 | Codex | `mcp__clax__<tool>` |
+| Grok Build | `clax_grok__<tool>`, through `search_tool` and `use_tool` |
 | Pi | `clax_<tool>` |
 
 The command line covers the same operations for scripts and harnesses
@@ -447,7 +448,17 @@ No arguments.
   "push": {
     "tier": null,
     "available": false,
-    "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"
+    "reason": "nothing wakes this session while it is idle: launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax`, or run follow_command in the background after publishing; meanwhile comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback",
+    "follow_command": "'/Users/alex/.cargo/bin/clax' feedback follow --once --agent claude --harness-session '6b1f0c2e-9d4a-4c1e-8f3b-2a7d5e9c0b14'",
+    "channel": {
+      "declared": true,
+      "launch_flag": "absent",
+      "flag": null,
+      "entry": null,
+      "registered": null,
+      "launch": "claude --dangerously-load-development-channels plugin:clax@clax",
+      "note": "Claude Code does not tell the server whether it registered the channel; its startup screen says so"
+    }
   },
   "feedback": [],
   "binary": {"path": "/Users/alex/.cargo/bin/clax", "version": "0.3.0"}
@@ -501,6 +512,20 @@ daemon's reason for having no `codex` (see "Delivery tiers per harness");
 under Pi it is `{"tier": "inject", "available": true, "reason": null}`; under
 Claude Code it is as shown above. `push` is `null` without a session, or when
 the daemon could not be asked.
+
+Under Claude Code, `push.tier` is `"channel"` (`available: true`) when the
+launch flag names the Clax channel and the shim forwards notices,
+`"follow"` (`available: true`) while a `clax feedback follow` polls for the
+session, and otherwise `null`, with `follow_command` (the shell-quoted
+command the skill runs in the background; absent when the session has no
+harness session ID). `channel` reports `declared` (always `true` under
+Claude Code), `launch_flag` (`present`, `absent`, or `unknown` when the
+parent's command line could not be read), the `flag` and `entry` seen,
+`registered` (always `null`: Claude Code does not say), `launch` (the
+command that enables the channel), and `note`. The daemon's own `push` for
+a Claude Code session is `{"tier": "notice", "available": true, "reason":
+null}` while any notice follower polls, else `tier: null` with the reason
+above. The shim refines it.
 
 Version skew: newer wins. The MCP shim (`clax mcp`) and `clax serve`, when
 either finds a daemon older than itself, replace it on the old daemon's port
@@ -672,13 +697,14 @@ and the artifact records it as `owner_session_id`; the gallery shows which
 session published each artifact and whether that session is live.
 
 The shim takes `harness_session_id` from `CLAUDE_CODE_SESSION_ID` under Claude
-Code, else from `CLAX_SESSION_ID` for any harness, else sends none.
+Code and from `GROK_SESSION_ID` under Grok Build, else from `CLAX_SESSION_ID`
+for any harness, else sends none.
 
-A session row has `harness` (`claude`, `codex`, `pi`), `harness_session_id`
+A session row has `harness` (`claude`, `codex`, `grok`, `pi`), `harness_session_id`
 (the harness's own ID, when known), `cwd`, `pid` (the shim or Pi process),
-`parent_pid`, and timestamps. Registration and join accept only those three
+`parent_pid`, and timestamps. Registration and join accept only those four
 harness names (anything else is 400 `invalid_args` `harness must be one of
-claude, codex, pi`); an empty `harness_session_id` on registration counts as
+claude, codex, grok, pi`); an empty `harness_session_id` on registration counts as
 none. The daemon matches registrations to existing
 live rows so that a shim and a hook for the same conversation share one row:
 
@@ -711,7 +737,8 @@ publishes or watches the artifact (see "Comments and feedback").
 
 The hooks give up rather than hold up the harness: `session-start` after 4 s
 (3 s per daemon request), `session-end` after 2.5 s (2 s per request, inside
-Codex's 3 s `SessionEnd` cap), `stop` after 8 s and `prompt` after 4 s (3 s
+Codex's 3 s `SessionEnd` cap) (under Grok, 1.2 s with 1 s per request, inside
+Grok's 1.5 s default), `stop` after 8 s and `prompt` after 4 s (3 s
 per request; the plugins give the Stop hook 10 s and the prompt hook 5 s). A
 hook that gives up, or finds no daemon, exits 0 with no output. The `stop` and
 `prompt` hooks find the live row by the harness session ID in their input and
@@ -767,6 +794,24 @@ the same `(harness, parent_pid)`, several conversations hosted by one Codex
 process (one shim each) share the first conversation's session: all of them
 publish as that session, and a later conversation's `SessionStart` hook joins
 a hook-only row that no shim adopts.
+
+### Grok Build
+
+Grok passes `GROK_SESSION_ID` to the MCP servers it starts for a session.
+The shim registers with `harness_session_id` set to it and `cwd` set to its
+own working directory (Grok starts servers in its own). The `SessionStart`
+hook (`clax hook --agent grok session-start`) joins by the `sessionId` in
+its input, fills an empty `cwd`, and prints nothing, because Grok ignores
+`SessionStart` output. The `Stop` hook (`clax hook --agent grok stop`) hands
+comments over at the end of a turn. It reads `stopHookActive` (Grok has no
+snake_case alias for it), and does nothing when `reason` is present and is
+not `end_turn`, which skips the Stop that Grok fires at session end. The
+`SessionEnd` hook ends the row by ID. There is no prompt hook: Grok discards
+an allowing `UserPromptSubmit` hook's output.
+
+Grok also loads the Clax Claude Code plugin when the person enables it in
+Grok. That copy stands down: see "The wrapper". Exactly one Clax MCP server
+and one set of Clax hooks act in a Grok session.
 
 ### Pi
 
@@ -1303,21 +1348,30 @@ capability.
 ### Delivery tiers per harness
 
 Measured on 2026-09-29 with Codex CLI 0.158.0 and Claude Code 2.1.284; Pi
-0.73.1 from its source.
+0.73.1 from its source; Grok Build 1.0.45 from its source (not yet run live;
+`scripts/smoke-grok.sh` records the measured version).
 
-| Tier | Claude Code | Codex | Pi |
-|---|---|---|---|
-| 1, tool result | next clax tool call (shim) | next clax tool call (shim) | next `clax_*` tool call (`tool_result` handler) |
-| 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | none |
-| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none |
-| 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting |
-| 5, native push | none: an idle Claude Code session is not woken | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
+| Tier | Claude Code | Codex | Grok Build | Pi |
+|---|---|---|---|---|
+| 1, tool result | next clax tool call (shim) | next clax tool call (shim) | next clax tool call (shim) | next `clax_*` tool call (`tool_result` handler) |
+| 2, Stop hook | end of the turn: `{"decision":"block","reason":...}` continues the turn with the payload | same shape and behaviour, measured with `codex exec` | end of the turn: the same shape continues the turn; the hook acts only on `reason` `end_turn` | none |
+| 3, prompt hook | the person's next message (`UserPromptSubmit` `additionalContext`); also at session start (`SessionStart` `additionalContext`) | only at session start: the `SessionStart` hook adds waiting comments to its `additionalContext`; no `UserPromptSubmit` hook is wired | none: an allowing `UserPromptSubmit` hook's output is discarded and `SessionStart` output is ignored | none |
+| 4, `wait_for_feedback` | immediate while waiting | immediate while waiting; one call stays under Codex's 60 s tool limit | immediate while waiting; Grok's tool timeout defaults to 6000 s | immediate while waiting |
+| 5, native push | channel (opt-in launch flag, research preview) or follow fallback: a notice, never the payload. Launched with `--dangerously-load-development-channels plugin:clax@clax`, the shim sends a `notifications/claude/channel` event per comment, which starts a turn when idle and joins the next turn when busy. Otherwise the skill runs `clax feedback follow --once` in the background, and its exit wakes the session. Either way the comment is then delivered by tier 1, 2 or 4 | `codex queue`: an idle attached TUI starts a turn in about 0.2 s; a busy one runs it as its next turn; with no client attached (an exited TUI, a `codex exec` thread) it is held until `codex resume`, and `codex queue` still exits 0 | once the agent has started the monitor (`clax feedback follow`): a notice line wakes an idle session at once and a busy one after its turn; it points at the comment, which then arrives through tier 1, 2 or 4 (from source; not run live) | the extension long-polls and calls `sendUserMessage(..., {deliverAs: "followUp"})`: a turn starts at once when idle, after the current work when busy (from source; not run live) |
 
 Tier 1 applies to every successful tool result of a session-bound shim or Pi
 extension, except `wait_for_feedback`, whose result is tier 4. Tiers 2 and 5
 apply only to watches with `replies_armed`. While `stop_hook_active` is set,
 the Stop hook blocks only for comments never handed over before, so each
 comment blocks a stop at most once.
+
+Tier 5 for Claude Code announces and never delivers (see "Notices"). The
+shim forwards notices only when its parent's command line names a
+`plugin:clax@<marketplace>` entry of `--dangerously-load-development-channels`
+or `--channels`. It supports MCP revisions up to `2025-11-25`, because
+Claude Code does not register a channel server that negotiates
+`2026-07-28` (under `MCP_PROTOCOL_NEGOTIATION=auto`). It never declares
+`claude/channel/permission`.
 
 Tier 5 for Codex needs the Codex session ID (from the `SessionStart` hook, so
 hooks must be enabled and trusted), `codex` from `CLAX_CODEX_BIN` when it
@@ -1366,6 +1420,52 @@ another live session is a target of the same comment, and otherwise waits
 untargeted. Untargeted rows (also those of a comment sent while no target
 session was live) go to the next session that publishes a version of the
 artifact or watches it.
+
+### Notices (Grok's monitor)
+
+`clax feedback follow` long-polls `GET /api/sessions/<sid>/notices` and
+prints one line per comment sent to the session, naming the artifact and
+thread and saying to call `comments_read`. It never prints the comment.
+The daemon announces a row only when no tier has delivered it, no
+follower has announced it to this session (`notified_at` unset), and the
+session watches the artifact with replies armed, and it sets
+`notified_at` as it announces. A notice is not a delivery: the row still
+waits for tiers 1, 2 and 4, which deliver it once under the rules above,
+so a monitor never causes a second delivery. Retargeting a row clears
+`notified_at`. While the session is inside `wait_for_feedback`, the
+notices poll answers empty at once and announces nothing. The command
+finds the session by `--session`, by `--agent` and `--harness-session`,
+or by `GROK_SESSION_ID`; it never starts a daemon, follows the session
+across daemon restarts, and exits 0 once the session has ended (at once
+for `--session`; after 60 s with no live Clax session for a harness
+session). `status`'s `push` for a Grok session is `{"tier": "monitor",
+"available": <a follower polled within 15 s>, "reason": …}`.
+
+With `--once`, it exits 0 after the first poll that printed at least one
+line, or when the session ends.
+
+Claude Code receives notices in one of two ways. When the session was
+launched with `--dangerously-load-development-channels
+plugin:clax@<marketplace>` (or `--channels`, with an organization
+allowlist entry), the shim, which declares `claude/channel`, polls the
+notices route and sends each line as a `notifications/claude/channel`
+event, with `meta` `{artifact_id, thread_id, comment_id}`. Otherwise the
+skill has the agent run `clax feedback follow --once` in the background
+after it publishes, and restart it after each exit. Claude Code wakes an
+idle session when a background command exits.
+
+Claude Code tells a channel server nothing about registration, and drops
+events it does not accept. The shim polls only when its parent's command
+line names a Clax channel entry. It reports `registered: null` because it
+cannot know more. It never declares `claude/channel/permission`, so
+nobody who comments can approve tool use.
+
+The line:
+
+    [clax] New comment on "<title>" (<url>), thread <thread ID>. Call comments_read with url_or_id "<artifact ID>" and thread_id "<thread ID>" to read it; if you have already handled it, do nothing.
+
+The title is put on one line, double quotes become single quotes, and it is
+cut to 80 characters.
 
 ### What the person sees
 
@@ -1583,7 +1683,9 @@ plan for:
 `~/.clax/marketplace/` (under `CLAX_HOME` when set) and registers them with
 each harness whose CLI is on `PATH`: `claude plugin marketplace add` and
 `claude plugin install clax@clax`; `codex plugin marketplace add` and
-`codex plugin add clax@clax`; `pi install ~/.clax/marketplace/plugins/pi`.
+`codex plugin add clax@clax`; `pi install ~/.clax/marketplace/plugins/pi`;
+`grok plugin uninstall clax-grok --confirm` (failure ignored) and
+`grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust`.
 It first removes the existing Clax registrations and any under Clax's
 previous name, and records what it registered in
 `~/.clax/registrations.json`. `--agent` (repeatable) limits it to named
@@ -1608,6 +1710,13 @@ expanded, so a Pi entry written that way is left registered, and a
 `CODEX_HOME`, `CLAUDE_CONFIG_DIR` or `PI_CODING_AGENT_DIR` written that way
 is taken relative to `HOME`.
 
+Grok registrations are removed by the name `clax-grok` only. In Grok, the
+name `clax` is the Claude Code plugin that Grok discovers in
+`~/.claude/plugins`, and Clax never runs a `grok` command that names it.
+`clax uninit` keeps the marketplace while `grok plugin list --json` still
+names a path under it, and also when `grok` is not on `PATH` but
+`registrations.json` records a Grok registration.
+
 `just install` builds the web UI, runs `cargo install --locked --root
 "$CARGO_HOME" --path crates/clax-cli` (into `$CARGO_HOME/bin`, by default
 `~/.cargo/bin`), then stops the agents' daemon (`CLAX_HOME`, else `~/.clax`)
@@ -1625,7 +1734,7 @@ the GitHub repository to be public.
 
 ### The wrapper
 
-The Claude Code and Codex plugins start `clax` through
+The Claude Code, Codex and Grok plugins start `clax` through
 `scripts/ensure-clax.sh`, which runs `CLAX_BIN`, else the first `clax` on
 `PATH` whose `--version` names clax. It never downloads, builds, or looks
 anywhere else. A `clax` of another version than the plugin's (the wrapper's
@@ -1661,6 +1770,26 @@ downloads. With none, it cannot start a daemon: a tool that needs one fails
 with the reason and how to install `clax`, and `status` reports `binary`
 with the error.
 
+In a Grok session the wrapper stands the Claude Code copy down before it
+looks for `clax`. A run with `--agent claude` counts as started by Grok
+when it is a hook with `GROK_HOOK_EVENT` set, or the MCP server with
+`GROK_SESSION_ID` set and a `CLAUDE_PID` that is not its parent process.
+Such a hook reads its stdin and exits 0 with no output. Such an MCP server
+answers `initialize` (with `instructions` stating the same text),
+`tools/list` with one tool, `status`, whose call returns the text below
+with `isError: false`, and `ping`; any other request gets JSON-RPC error
+-32601. `clax mcp --agent claude` and `clax hook --agent claude` apply the
+same rule themselves (a hook also counts as Grok's when its input has
+`hookEventName`), so a stale wrapper or a stale binary still stands down.
+Either layer appends `standdown mode=<hook|mcp> agent=claude host=grok` to
+`hooks.log`. The text:
+
+> This is the Clax plugin for Claude Code, which Grok Build also loads. In
+> Grok, Clax runs from the clax-grok plugin, whose tools are named
+> `clax_grok__<tool>` (for example `clax_grok__publish`); this server does
+> nothing. If no `clax_grok` tools are listed, run `clax init --agent
+> grok`. To remove this server from Grok, run `grok plugin disable clax`.
+
 ### The daemon's port
 
 A home's `config.toml` may set the port a daemon started for that home
@@ -1684,7 +1813,7 @@ dev` left behind); they never stop one in `~/.clax`.
 
 ### `clax doctor --agent`
 
-`clax doctor --agent <claude|codex|pi>` runs one check per layer between a
+`clax doctor --agent <claude|codex|grok|pi>` runs one check per layer between a
 harness and the daemon, each `ok` or failed with the fix:
 
 - `binary`: this `clax`, the one the plugins run (`CLAX_BIN`, else the first
@@ -1698,10 +1827,20 @@ harness and the daemon, each `ok` or failed with the fix:
   it is the skill this binary was built with.
 - `mcp`: whether the daemon has a live session of the harness.
 - `hooks`: the harness's latest lines in `hooks.log`; failed when the latest
-  is a `launcher` failure, or when no Claude Code hook has run (Pi runs no
+  is a `launcher` failure, or when no Claude Code or Grok hook has run (Pi runs no
   hooks; Codex hooks are optional).
 - `feedback`: each live session's watches and push state, and for Codex
   `codex_push` and `codex_sessions` (native push).
+- `channel` (Claude Code only): whether the installed plugin's manifest
+  declares the channel (failed when it does not: the plugin predates it),
+  and how the latest Claude Code session was launched, from the shim's
+  `channel` line in `hooks.log`, with the launch command. The channel is
+  opt-in, so a session launched without it passes.
+- `grok` (Grok only): `grok --version`; failed when `grok` is not on
+  `PATH` or reports a version older than 1.0.45.
+- `claude_copy` (Grok only, never failed): whether the Claude Code plugin
+  has stood down in a Grok session (its `standdown` lines in `hooks.log`),
+  with `grok plugin disable clax` to remove its idle server.
 
 ### Other commands and scripts
 
@@ -1717,6 +1856,16 @@ harness and the daemon, each `ok` or failed with the fix:
   `/` or the scratch root would fall inside `HOME`, and never reads or copies
   an auth file. Its Pi session check runs only with `VERIFY_PI_SESSION=1`
   and a provider key in the environment.
+- `clax feedback follow` prints one line per comment sent to a session,
+  for an agent-started monitor (see "Notices (Grok's monitor)"); it
+  delivers nothing, so the comment still arrives through tier 1, 2 or 4,
+  and it exits 0 once the session has ended.
+- `scripts/smoke-grok.sh` (manual; the owner runs it, never an agent) runs
+  real `grok -p` sessions, and one interactive TUI step, against this
+  working tree's `clax`, with scratch `HOME`, `GROK_HOME` and `CLAX_HOME`
+  and a scratch port, and prints a PASS/FAIL line for each live check
+  (install and uninstall, session and hooks, the Stop hand-over, both
+  plugins enabled, the monitor wake, and `grok --version`).
 - `scripts/quality_gates.sh` takes a lock per checkout
   (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
   a lock whose process has gone is taken over, and separate worktrees run in
@@ -1886,6 +2035,39 @@ harness and the daemon, each `ok` or failed with the fix:
   uses only Pi or the CLI keeps an older daemon after an upgrade from
   `install.sh` until `clax stop`; Pi's `status` shows it as
   `daemon_version`. `just install` stops the agents' daemon itself.
+- Grok Build's sandbox, when turned on, covers the shim, the hooks and a
+  daemon the shim starts. Under the `workspace`, `read-only` and `strict`
+  profiles that daemon cannot write `~/.clax`; on Linux, `read-only` and
+  `strict` may block loopback too. Start the daemon outside Grok
+  (`clax serve`) or use a custom profile with `read_write = ["~/.clax"]`.
+- A Grok session started from a Claude Code shell inherits `CLAUDE_PID`;
+  that is not its MCP server's parent, so the Claude Code copy stands down
+  there as it should. A Claude Code session whose `CLAUDE_PID` is unset
+  but that inherits `GROK_SESSION_ID` from a Grok shell would stand its
+  own Clax down.
+- Grok's tier 5 needs the agent to start the monitor; a session whose agent
+  never publishes, or skips the skill's step, is woken by nothing. Headless
+  `grok -p` sessions end with the process, so they have no monitor.
+- Whether Grok starts a new MCP server with the new `GROK_SESSION_ID` on
+  `/new` or `/resume` within one process is not yet measured; until it
+  is, a resumed Grok session may keep the Clax session of its first
+  conversation.
+- Claude Code channels are a research preview: CLI only, with claude.ai or
+  Console authentication (not Bedrock, Google Cloud or Foundry). Clax is
+  not on the `--channels` allowlist, so it needs
+  `--dangerously-load-development-channels plugin:clax@clax` (with a warning
+  screen at every launch) or an organization `allowedChannelPlugins` entry.
+  On claude.ai Team and Enterprise an Owner must turn on `channelsEnabled`.
+  Claude Code never tells Clax whether the channel registered. When the
+  flag is given but policy blocks the channel, comments still arrive
+  through tiers 1, 2 and 4, but an idle session is not woken. Relaunch
+  without the flag to use the background fallback.
+- The background fallback needs the agent to start `clax feedback follow
+  --once` after a publish and to restart it after each wake-up. A session
+  that has not published or watched anything in this run is not woken.
+- `just dev claude` loads the checkout's plugin with `--plugin-dir`, which
+  has no `plugin:<name>@<marketplace>` entry, so dev sessions use the
+  background fallback.
 
 Open follow-ups, and the checks that still need a real harness or GitHub,
 are listed in [`docs/follow-ups.md`](follow-ups.md).

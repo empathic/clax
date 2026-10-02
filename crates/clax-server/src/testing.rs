@@ -58,6 +58,7 @@ impl TestServer {
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
             feedback_waiters: Arc::new(Default::default()),
+            followers: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
             rooms: Arc::new(crate::room::Rooms::default()),

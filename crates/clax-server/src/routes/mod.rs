@@ -190,6 +190,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(sample::tool_result),
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
+        .route("/api/sessions/{id}/notices", get(feedback::notices))
         .merge(api_fast)
         .merge(api_slow)
         .route("/", get(shell::gallery_page))

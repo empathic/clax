@@ -15,7 +15,9 @@ FILES="Cargo.toml Cargo.lock .claude-plugin/marketplace.json plugins/claude-code
     scripts/check-version.sh scripts/bump-version.sh scripts/package-release.sh \
     scripts/sync-skill-tools.py plugins/pi/test/fixtures/contract.json docs/contract.md README.md \
     plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md \
-    plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md"
+    plugins/claude-code/README.md plugins/clax/README.md plugins/pi/README.md \
+    plugins/clax-grok/.grok-plugin/plugin.json plugins/clax-grok/scripts/ensure-clax.sh \
+    plugins/clax-grok/skills/clax/SKILL.md plugins/clax-grok/README.md"
 for f in $FILES; do
     mkdir -p "$T/$(dirname "$f")"
     cp "$HERE/$f" "$T/$f"
@@ -29,6 +31,8 @@ if [ "$rc" = 1 ] && echo "$out" | grep -q "does not match the version $V"; then 
 
 if (cd "$T" && scripts/bump-version.sh 9.8.7 >/dev/null) && [ "$(cd "$T" && scripts/check-version.sh --print)" = 9.8.7 ] \
     && grep -q '^CLAX_VERSION="9.8.7"$' "$T/plugins/clax/scripts/ensure-clax.sh" \
+    && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/clax-grok/scripts/ensure-clax.sh" \
+    && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/clax-grok/skills/clax/SKILL.md" \
     && cmp -s "$T/scripts/ensure-clax.sh" "$T/plugins/claude-code/scripts/ensure-clax.sh" \
     && grep -q '^This is Clax plugin 9.8.7\.' "$T/plugins/pi/skills/clax/SKILL.md" \
     && python3 "$T/scripts/sync-skill-tools.py" --check >/dev/null; then
@@ -45,14 +49,14 @@ fresh() {
     rm -rf "$1"; mkdir -p "$1"
     (cd "$HERE" && for f in $FILES; do mkdir -p "$1/$(dirname "$f")"; cp "$f" "$1/$f"; done)
 }
-for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
+for f in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh; do
     fresh "$T/stray"
     sed -i.bak "s/^CLAX_VERSION=\".*\"$/CLAX_VERSION=\"9.9.9\"/" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
     if [ "$rc" = 1 ] && echo "$out" | grep -q "$f CLAX_VERSION: 9.9.9"; then pass "a stray launcher copy is named ($f)"
     else fail "a stray launcher copy is named ($f: $out)"; fi
 done
-for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md; do
+for f in plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md; do
     fresh "$T/stray"
     sed -i.bak "s/^This is Clax plugin [^ ]*\. /This is Clax plugin 9.9.9. /" "$T/stray/$f"
     out="$(cd "$T/stray" && scripts/check-version.sh 2>&1)"; rc=$?
