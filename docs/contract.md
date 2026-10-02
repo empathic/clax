@@ -1800,6 +1800,16 @@ harness and the daemon, each `ok` or failed with the fix:
   `/` or the scratch root would fall inside `HOME`, and never reads or copies
   an auth file. Its Pi session check runs only with `VERIFY_PI_SESSION=1`
   and a provider key in the environment.
+- `clax feedback follow` prints one line per comment sent to a session,
+  for an agent-started monitor (see "Notices (Grok's monitor)"); it
+  delivers nothing, so the comment still arrives through tier 1, 2 or 4,
+  and it exits 0 once the session has ended.
+- `scripts/smoke-grok.sh` (manual; the owner runs it, never an agent) runs
+  real `grok -p` sessions, and one interactive TUI step, against this
+  working tree's `clax`, with scratch `HOME`, `GROK_HOME` and `CLAX_HOME`
+  and a scratch port, and prints a PASS/FAIL line for each live check
+  (install and uninstall, session and hooks, the Stop hand-over, both
+  plugins enabled, the monitor wake, and `grok --version`).
 - `scripts/quality_gates.sh` takes a lock per checkout
   (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
   a lock whose process has gone is taken over, and separate worktrees run in

@@ -98,6 +98,18 @@ wake an idle session, so nothing arrives between turns unless the agent is
 waiting. The thread in the browser shows which of these it is waiting on.
 `docs/contract.md` ("Comments and feedback") has the details.
 
+## In Grok Build
+
+Grok Build discovers the plugins Claude Code has installed, this one
+included. Clax runs in Grok from its own plugin, clax-grok (`clax init
+--agent grok`), whose server is `clax_grok`. When Grok runs this plugin, it
+stands down: its MCP server offers only `status`, which points at the
+`clax_grok__*` tools and at `clax init --agent grok` when they are missing,
+and its hooks read their input and exit without acting. It never acts as
+Grok's Clax, whether or not clax-grok is loaded. To drop it from Grok, run
+`grok plugin disable clax`; `clax doctor --agent grok` reports it as
+`claude_copy`.
+
 ## Maintaining
 
 `scripts/ensure-clax.sh` here is a copy of `scripts/ensure-clax.sh` at the
