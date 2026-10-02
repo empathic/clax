@@ -24,6 +24,7 @@ const END_TIMEOUT: Duration = Duration::from_secs(3);
 pub enum Harness {
     Claude,
     Codex,
+    Grok,
 }
 
 impl Harness {
@@ -32,6 +33,7 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Grok => "grok",
         }
     }
 }
@@ -39,11 +41,12 @@ impl Harness {
 /// The session registration for `harness`, from the environment variable lookup
 /// `env`, the process's working directory `current_dir`, and the parent
 /// process's working directory `parent_cwd`. The harness session ID is
-/// `CLAUDE_CODE_SESSION_ID` under Claude Code, else `CLAX_SESSION_ID`. The
-/// working directory is `CLAUDE_PROJECT_DIR` under Claude Code, else
-/// `current_dir`; under Codex it is `parent_cwd`, else empty, because Codex
-/// starts the shim in the plugin's own directory. Empty variables count as
-/// unset.
+/// `CLAUDE_CODE_SESSION_ID` under Claude Code and `GROK_SESSION_ID` under
+/// Grok Build, else `CLAX_SESSION_ID`. The working directory is
+/// `CLAUDE_PROJECT_DIR` under Claude Code, else `current_dir`; under Codex it
+/// is `parent_cwd`, else empty, because Codex starts the shim in the plugin's
+/// own directory; under Grok it is `current_dir`, because Grok starts servers
+/// in its own working directory. Empty variables count as unset.
 pub fn registration(
     harness: Harness,
     env: impl Fn(&str) -> Option<String>,
@@ -53,14 +56,16 @@ pub fn registration(
     parent_pid: u32,
 ) -> RegisterSession {
     let var = |name: &str| env(name).filter(|v| !v.is_empty());
-    let claude = harness == Harness::Claude;
-    let harness_session_id = claude
-        .then(|| var("CLAUDE_CODE_SESSION_ID"))
-        .flatten()
-        .or_else(|| var("CLAX_SESSION_ID"));
+    let own_id = match harness {
+        Harness::Claude => var("CLAUDE_CODE_SESSION_ID"),
+        Harness::Grok => var("GROK_SESSION_ID"),
+        Harness::Codex => None,
+    };
+    let harness_session_id = own_id.or_else(|| var("CLAX_SESSION_ID"));
     let dir = match harness {
         Harness::Claude => var("CLAUDE_PROJECT_DIR").map(PathBuf::from).or(current_dir),
         Harness::Codex => parent_cwd,
+        Harness::Grok => current_dir,
     };
     let cwd = dir
         .map(|d| d.to_string_lossy().into_owned())
@@ -249,6 +254,40 @@ mod tests {
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
         move |k| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn grok_uses_its_session_id_and_working_directory() {
+        let r = registration(
+            Harness::Grok,
+            env(&[
+                ("GROK_SESSION_ID", "019a-g"),
+                ("CLAUDE_CODE_SESSION_ID", "cc-1"),
+                ("CLAUDE_PROJECT_DIR", "/claude"),
+                ("CLAX_SESSION_ID", "ax-1"),
+            ]),
+            Some(PathBuf::from("/work")),
+            Some(PathBuf::from("/parent")),
+            7,
+            3,
+        );
+        assert_eq!(r.harness, "grok");
+        assert_eq!(r.harness_session_id.as_deref(), Some("019a-g"));
+        assert_eq!(r.cwd, "/work");
+    }
+
+    #[test]
+    fn grok_without_its_session_id_falls_back_to_clax_session_id() {
+        let r = registration(
+            Harness::Grok,
+            env(&[("GROK_SESSION_ID", ""), ("CLAX_SESSION_ID", "ax-1")]),
+            None,
+            None,
+            7,
+            3,
+        );
+        assert_eq!(r.harness_session_id.as_deref(), Some("ax-1"));
+        assert_eq!(r.cwd, "");
     }
 
     #[test]

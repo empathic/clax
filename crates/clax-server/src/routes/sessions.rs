@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// The harness names a session may carry.
-pub const HARNESSES: [&str; 3] = ["claude", "codex", "pi"];
+pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
 
 /// `invalid_args` unless `harness` is one of [`HARNESSES`].
 fn check_harness(harness: &str) -> Result<(), ApiError> {
@@ -192,6 +192,9 @@ fn push_info(
                 "last_error": last_error, "last_error_at": last_error_at})
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
+        "grok" => {
+            json!({"tier": null, "available": false, "reason": "Grok Build has no native push; comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback"})
+        }
         _ => {
             json!({"tier": null, "available": false, "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"})
         }
