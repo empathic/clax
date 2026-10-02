@@ -3,6 +3,7 @@
 mod client;
 mod commands;
 mod hooklog;
+mod host;
 mod plugins;
 
 use clap::error::ErrorKind;

@@ -5,6 +5,7 @@ pub mod client;
 pub mod plugin;
 pub mod render;
 pub mod shim;
+pub mod standdown;
 pub mod tools;
 
 pub use client::{ClientError, DaemonClient};
