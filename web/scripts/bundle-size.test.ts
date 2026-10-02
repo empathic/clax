@@ -26,19 +26,20 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   dist("_clax/shell/a.js", "a");
   dist(".vite/manifest.json", JSON.stringify({ "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" } }));
   // The parts: clip and caps import the comment part's file.
-  for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
+  for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js", "sample-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
   dist("_clax/bridge/.vite/manifest.json", JSON.stringify({
     "c.ts": { file: "comment-1.js", name: "comment", isEntry: true },
     "k.ts": { file: "clip-1.js", name: "clip", isEntry: true, imports: ["c.ts"] },
     "p.ts": { file: "caps-1.js", name: "caps", isEntry: true, imports: ["c.ts"] },
     "r.ts": { file: "room-1.js", name: "room", isEntry: true },
+    "s.ts": { file: "sample-1.js", name: "sample", isEntry: true },
   }));
   writeFileSync(join(web, "perf/bundle-budget.json"), JSON.stringify(budget));
   return spawnSync(process.execPath, [join(web, "scripts/bundle-size.mjs"), ...args], { encoding: "utf8" });
 }
 
 describe("bundle-size.mjs", () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -85,7 +86,7 @@ describe("bundle-size.mjs", () => {
     expect(run(noBaseline, ENTRY, ["--record"]).status).toBe(1);
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);

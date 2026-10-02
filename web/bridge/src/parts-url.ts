@@ -25,5 +25,5 @@ export function loadParts(bridgeSrc: string): Parts {
     const u = href[name];
     return u ? import(/* @vite-ignore */ attempt ? `${u}?retry=${attempt}` : u) : Promise.reject(new Error(`no URL for the ${name} part`));
   };
-  return { comment: load("comment"), clip: load("clip"), caps: load("caps"), room: load("room") } as Parts;
+  return { comment: load("comment"), clip: load("clip"), caps: load("caps"), room: load("room"), sample: load("sample") } as Parts;
 }

@@ -29,6 +29,24 @@ describe("CapabilityHost", () => {
     expect(posted[0]).toMatchObject({ config: {} });
   });
 
+  it("tells every handler the frame's document left, and nothing after dispose", async () => {
+    const { e } = env();
+    const leave = vi.fn();
+    const host = new CapabilityHost(Promise.resolve(e), { db: () => ({ call: async () => 1, leave }) }, null);
+    await host.handle({ type: "clax:call", id: "1", ns: "db", method: "get", args: [] });
+    host.leave();
+    expect(leave).toHaveBeenCalledTimes(1);
+    host.dispose();
+    host.leave();
+    expect(leave).toHaveBeenCalledTimes(1);
+  });
+
+  it("grants room to any view of an artifact that declares it", async () => {
+    const { e, posted } = env({ declared: { room: {} }, token: null });
+    await new CapabilityHost(Promise.resolve(e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "room" });
+    expect(posted[0]).toMatchObject({ granted: true, config: {} });
+  });
+
   it("answers artifact declared under its legacy name self", async () => {
     const { e, posted } = env({ declared: { self: { note: 1 } } });
     await new CapabilityHost(Promise.resolve(e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "artifact" });

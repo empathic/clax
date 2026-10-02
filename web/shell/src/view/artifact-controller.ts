@@ -484,7 +484,7 @@ export class ArtifactController {
   frameLoaded(): void {
     if (this.disposed) return;
     if (this.held) { this.held.push(LOADED); return; }
-    if (this.gate.load()) { this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
+    if (this.gate.load()) { this.leaveDocument(); this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
   }
 
   private resolveAll(): void {
@@ -515,6 +515,7 @@ export class ArtifactController {
     if (!frame) return;
     this.frameHash = hash;
     this.gate.close();
+    this.leaveDocument();
     this.failedParts.clear();
     this.set({ file: null, resolved: {} });
     const url = pageSrc(this.id, this.shown(), this.s.origin ?? null, target) + hash;
@@ -721,8 +722,15 @@ export class ArtifactController {
    * itself off, as `clax:cancel` only turns its own comment mode off. */
   private frameLeft(): void {
     this.gate.bye();
+    this.leaveDocument();
     this.failedParts.clear();
     this.set({ file: null, resolved: {} });
+  }
+
+  /** The frame's document is gone, or is not the page: what serves it live
+   * (the room socket, sample streams) ends now, not at the next hello. */
+  private leaveDocument(): void {
+    this.host?.leave();
   }
 
   private onMessage(e: MessageEvent): void {
@@ -740,7 +748,7 @@ export class ArtifactController {
         this.failedParts.clear();
         this.set({ resolved: {} });
         this.anchorIds.forget();
-        if (!this.gate.open) { this.set({ file: null }); break; }
+        if (!this.gate.open) { this.leaveDocument(); this.set({ file: null }); break; }
         this.host?.reset();
         this.set({ file: greeted });
         // The address bar follows the frame to another page. A link the page

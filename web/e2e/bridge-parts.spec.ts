@@ -70,7 +70,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(seen).toContain("comment.js?retry=1");
   });
 
-  test(`a capability loads only its own part: db the caps part, room never caps (${mode})`, async ({ page }) => {
+  test(`a capability loads only its own part: db the caps part, room its own part and never caps (${mode})`, async ({ page }) => {
     const parts: string[] = [];
     page.on("request", r => { const m = new URL(r.url()).pathname.match(/^\/_clax\/bridge\/([a-z]+)[-.][^/]*$/); if (m) parts.push(m[1]); });
     const pageFor = (name: string) => `<!doctype html><html><head><title>${name}</title></head><body><button id="use">Use</button><p id="out">waiting</p>
@@ -87,10 +87,9 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     const room = await publishWith(d.base, d.token, "Room part", pageFor("room"), { room: {} });
     frame = await openArtifact(page, d.base, room.artifact.id, 1, mode);
     await frame.locator("#use").click();
-    // The shell does not serve room yet (availability.ts), so use() resolves
-    // null and no part loads for it; once it is served, this page loads the
-    // room part and still never caps.
-    await expect(frame.locator("#out")).toHaveText("null");
+    // A granted room loads the room part, and never the caps part.
+    await expect(frame.locator("#out")).toHaveText("ready");
+    expect(parts).toContain("room");
     expect(parts).not.toContain("caps");
   });
 

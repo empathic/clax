@@ -27,6 +27,12 @@ describe("Grants", () => {
     expect(make("allow", new MemoryStorage(), false).g.state("assets")).toBe("unavailable");
   });
 
+  it("grants a declared room with no consent and lists it", () => {
+    const g = new Grants(grantsKey("7q3k9mzx2b4t", "u_00000000000000000000aa"), new MemoryStorage() as unknown as Storage, { room: {} }, false, vi.fn(async () => "deny" as const));
+    expect(g.state("room")).toBe("granted");
+    expect(g.all()).toMatchObject({ room: "granted" });
+  });
+
   it("asks once, batches names, and persists a grant per viewer and artifact", async () => {
     const { g, ask, storage } = make("allow");
     await Promise.all([g.request(["comments", "db"]), g.request(["comments"])]);

@@ -44,7 +44,6 @@
 import { loadParts } from "clax-bridge-parts";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
-import type { CapabilityName } from "./capabilities";
 import { commentsContext } from "./comments-context";
 import { hashFor, helloFor, isFirstBridge, readMeta } from "./meta";
 import { followInPlace, linkToHandOver } from "./nav";
@@ -102,7 +101,7 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : whenDone.then(next);
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room) };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample) };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
@@ -110,7 +109,9 @@ type PartName = keyof Parts;
     rpc,
     locals: (name, r, config) => name === "room"
       ? parts.room().then(p => p.roomNamespace(r))
-      : parts.caps().then(c => c.localsFor(name as CapabilityName, r, config, { ctx: commentsContext, clip: clips })),
+      : name === "sample"
+        ? parts.sample().then(p => p.sampleNamespace(r))
+        : parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
   });
 
   try {
