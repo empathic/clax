@@ -1,9 +1,10 @@
 <script lang="ts">
   // The topbar island: the artifact view's controls (Comment, Threads, the
-  // name field on wide screens, the version, open raw and copy link), once the
-  // artifact is loaded and the frame mode decided.
+  // name field on wide screens, the version, open raw, copy link and the theme
+  // switch), once the artifact is loaded and the frame mode decided.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import ThemeSwitch from "./ThemeSwitch.svelte";
   import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
@@ -29,5 +30,6 @@
   {:else}
     <a class="hide-sm" href={ctl.rawHref(s)} target="_blank" rel="noopener">open raw</a>
   {/if}
-  {#if navigator.clipboard}<button disabled={s.deleted} onclick={() => ctl.copyLink()}>copy link</button>{/if}
+  {#if navigator.clipboard}<button class="copy-link" disabled={s.deleted} onclick={() => ctl.copyLink()}>copy link</button>{/if}
+  <ThemeSwitch />
 {/if}

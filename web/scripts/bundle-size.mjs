@@ -44,7 +44,9 @@ const woffs = readdirSync(fontDir).filter(f => f.endsWith(".woff2"));
 if (woffs.length > 3) throw new Error(`dist/_clax/fonts holds ${woffs.length} WOFF2 files; at most 3`);
 for (const html of ["index.html", "artifact.html"]) {
   const text = read(html).toString();
-  if (/<link[^>]+rel="?preload"?[^>]+\.woff2/.test(text)) throw new Error(`dist/${html} preloads a font; fonts must never block or jump the queue`);
+  // Each <link> tag on its own, so attribute order and quoting do not matter.
+  const preloadsFont = [...text.matchAll(/<link\b[^>]*>/gi)].some(([tag]) => /\brel\s*=\s*["']?[^"'>]*\bpreload\b/i.test(tag) && /\.woff2\b/i.test(tag));
+  if (preloadsFont) throw new Error(`dist/${html} preloads a font; fonts must never block or jump the queue`);
   for (const face of text.matchAll(/@font-face\s*\{([^}]*)\}/g)) {
     if (/url\(/.test(face[1]) && !/font-display:\s*swap/.test(face[1])) throw new Error(`dist/${html}: an @font-face without font-display: swap`);
   }

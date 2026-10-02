@@ -89,6 +89,20 @@ describe("bundle-size.mjs", () => {
     expect(r.stderr).toContain("preloads a font");
   });
 
+  it("finds a font preload whatever the attribute order and quoting, and lets a module preload through", () => {
+    for (const link of [
+      `<link href="/_clax/fonts/x.woff2" rel="preload" as="font">`,
+      `<link rel='preload' href='/_clax/fonts/x.woff2' as='font'>`,
+      `<link as=font href=/_clax/fonts/x.woff2 rel=preload crossorigin>`,
+    ]) {
+      const r = run(full, ENTRY, [], { index: `${link}<p>gallery</p>` });
+      expect(r.status, link).toBe(1);
+      expect(r.stderr).toContain("preloads a font");
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg"><p>gallery</p>` }).status).toBe(0);
+  });
+
   it("fails when an @font-face with a URL lacks font-display: swap, and passes a local-only face", () => {
     const face = (body: string) => ENTRY.replace("</head>", `<style>@font-face { ${body} }</style></head>`);
     const r = run(full, face(`font-family: P; src: url("/_clax/fonts/a.woff2");`));

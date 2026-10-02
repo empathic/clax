@@ -9,7 +9,10 @@ export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page
 
 const REPORT = readFileSync(new URL("./pages/sample-report.html", import.meta.url), "utf8");
 
-/** One artifact by a claude session, three threads by "alex", two quieter artifacts. */
+/** One artifact by a claude session with three threads, two quieter
+ * artifacts. The threads are posted without a viewer cookie, so each one's
+ * author is an unnamed viewer and shows as "Viewer"; the gallery scene's
+ * name is its own browser's viewer, not theirs. */
 export async function seed(base: string, token: string): Promise<Seeded> {
   const s = await registerSession(base, token, "claude", "shots");
   const { artifact } = await publishAs(base, token, s.id, "Checkout latency, week 39", { "index.html": REPORT });
@@ -36,4 +39,5 @@ export const SCENES: Scene[] = [
   { name: "gallery", path: () => "/", prepare: async page => { await name(page, "alex"); await page.reload(); } },
   { name: "view", path: s => `/a/${s.aid}` },
   { name: "comment", path: s => `/a/${s.aid}`, prepare: async page => { await page.getByRole("button", { name: /^Comment/ }).click(); } },
+  { name: "keys", path: s => `/a/${s.aid}`, prepare: async page => { await page.locator("body").press("Shift+?"); await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor(); } },
 ];

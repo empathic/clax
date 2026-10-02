@@ -1,5 +1,11 @@
 import { afterAll, expect, vi } from "vitest";
 
+// Node 25 and later define a global `localStorage` that is undefined unless
+// Node runs with --localstorage-file, and it shadows jsdom's. Tests get the
+// page's storage, as a browser has.
+const page = (globalThis as { jsdom?: { window: Window } }).jsdom?.window;
+if (page && globalThis.localStorage === undefined) Object.defineProperty(globalThis, "localStorage", { value: page.localStorage, configurable: true, writable: true });
+
 // Every interval a test file starts must be stopped by the file's end: one
 // left running fires after the test environment is torn down, where the DOM
 // globals it reads no longer exist, and the run fails on an unhandled error.

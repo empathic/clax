@@ -5,6 +5,8 @@
   import { type Artifact, deleteArtifact, getToken, listArtifacts, patchArtifact } from "../api";
   import { relativeTime } from "../format";
   import { filterArtifacts, publisherText } from "../view/gallery-model";
+  import Mark from "./Mark.svelte";
+  import ThemeSwitch from "./ThemeSwitch.svelte";
 
   let artifacts = $state<Artifact[] | null>(null);
   let error = $state<string | null>(null);
@@ -18,8 +20,9 @@
 </script>
 
 <header class="topbar">
-  <h1>Clax</h1><span class="muted hide-sm">local artifacts</span>
+  <Mark playful /><h1>Clax</h1><span class="muted hide-sm">local artifacts</span>
   <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" bind:value={query} />
+  <ThemeSwitch />
 </header>
 <main class="wrap">
   {#if error}<p class="empty">Could not load artifacts: {error}</p>{/if}

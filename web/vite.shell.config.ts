@@ -27,6 +27,15 @@ function inlineCss(): Plugin {
         for (const i of chunks.get(name)?.imports ?? []) visit(i);
       };
       for (const c of chunks.values()) if (c.isDynamicEntry) visit(c.fileName);
+      // A chunk an entry also imports statically has its CSS inlined already.
+      const eager = new Set<string>();
+      const walk = (name: string) => {
+        if (eager.has(name)) return;
+        eager.add(name);
+        for (const i of chunks.get(name)?.imports ?? []) walk(i);
+      };
+      for (const c of chunks.values()) if (c.isEntry) walk(c.fileName);
+      for (const name of eager) lazy.delete(name);
       for (const name of lazy) {
         if (chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} is loaded lazily and imports CSS; the shell's CSS must come from its HTML entries`);
       }
@@ -41,6 +50,8 @@ function inlineCss(): Plugin {
         if (html.includes(`<link rel="stylesheet"`)) throw new Error(`${f.fileName} still links a stylesheet`);
         f.source = html;
       }
+      // No chunk may name a sheet deleted below (a dynamic import's preload list would).
+      for (const c of chunks.values()) for (const css of sheets) if (c.code.includes(css.fileName)) throw new Error(`${c.fileName} names ${css.fileName}, which is inlined and deleted`);
       for (const css of sheets) delete bundle[css.fileName];
       // So the manifest names no deleted file.
       for (const c of chunks.values()) c.viteMetadata?.importedCss.clear();
