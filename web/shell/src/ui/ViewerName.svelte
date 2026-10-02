@@ -10,6 +10,6 @@
   onMount(() => saver.load(n => { name = n; }));
 </script>
 
-<input class="viewer-name" aria-label="Your name" placeholder="Your name" maxlength="60" bind:value={name}
-  oninput={() => saver.edit()} onblur={() => saver.save(name)}
+<input class="viewer-name" aria-label="Your name" placeholder="Your name" maxlength="60" value={name}
+  oninput={e => { name = e.currentTarget.value; saver.edit(); }} onblur={() => saver.save(name)}
   onkeydown={e => { if (e.key === "Enter") { e.preventDefault(); saver.save(name); } }} />

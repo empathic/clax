@@ -1,3 +1,4 @@
+import type { PresenceView } from "./view/presence-model";
 import type { Working } from "./view/working-model";
 
 export type Artifact = {
@@ -69,6 +70,24 @@ export async function putSeen(aid: string, n: number): Promise<void> {
   try {
     await fetch("/api/viewers/me/seen", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, version: n }) });
   } catch { /* the next load writes again */ }
+}
+
+/** Reports this viewer here or away on `aid`, with where they look; answers
+ * the artifact's presence, or null on failure (the next report writes again). */
+export async function putPresence(aid: string, state: "here" | "away", where: string | null, keepalive = false): Promise<PresenceView[] | null> {
+  try {
+    const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify(where ? { artifact_id: aid, state, where } : { artifact_id: aid, state }) });
+    const people = r.ok ? (await r.json()).people : null;
+    return Array.isArray(people) ? people : null;
+  } catch { return null; }
+}
+/** The artifact's presence, or null on failure. */
+export async function getPresence(aid: string): Promise<PresenceView[] | null> {
+  try {
+    const r = await fetch(`/api/artifacts/${aid}/presence`);
+    const people = r.ok ? (await r.json()).people : null;
+    return Array.isArray(people) ? people : null;
+  } catch { return null; }
 }
 
 let tokenPromise: Promise<string | null> | null = null;

@@ -12,6 +12,7 @@ pub mod home;
 pub mod ids;
 pub mod mentions;
 pub mod model;
+pub mod presence;
 pub mod publish;
 pub mod store;
 pub mod working;

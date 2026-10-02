@@ -1,7 +1,8 @@
 <script lang="ts">
   // The top bar island: the artifact view's controls (the roster and the
-  // working summary, loaded after the first paint; Reload when a newer version
-  // is out; Comment, Threads, the name field on wide screens, the version
+  // working summary, loaded after the first paint, which opens the people
+  // panel (its own lazy chunk, holding the viewer's name); Reload when a newer
+  // version is out; Comment, Threads, the version
   // button with its changelog menu and a Latest link beside it on an older
   // version, the more menu with open raw and copy link, and the theme switch),
   // once the artifact is loaded and the frame mode decided. At phone width the
@@ -12,7 +13,6 @@
   import { moreMenu, who } from "./more-menu.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
-  import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
   let { ctl }: { ctl: ArtifactController } = $props();
@@ -26,11 +26,10 @@
 {#if viewReady(s)}
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
-  {#if Who}<Who {s} open={ctl.openCount(s)} />{/if}
+  {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
   <button class="comment" aria-pressed={s.commenting} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
   <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
-  {#if !s.narrow}<ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />{/if}
   <VersionMenu {shown} {latest} dot={s.decided?.dot ?? false} open={s.menu === "versions"} onToggle={() => ctl.openMenu("versions")}
     input={() => ({ versions: s.data.versions, latest, shown, now: new Date(), threads: s.threads, numbers: ctl.numbers(s), me: s.me?.public_id ?? null })}
     hrefFor={n => ctl.here(n === latest ? null : n, s)} onChoose={n => { ctl.closeMenu(); ctl.chooseVersion(n); }} />

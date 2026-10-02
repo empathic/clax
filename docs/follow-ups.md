@@ -199,6 +199,9 @@ on rerun; each is parked for a fix:
 - `web/e2e/artifact.spec.ts`, "sandbox: a second viewer's vote 2 s after
   another viewer's vote reloaded it publishes": the reloaded frame did not
   appear within 30 s once in a full gates run; passed 10 of 10 alone.
+- `web/e2e/echo-chrome.spec.ts`, "subdomain: the artifact deleted while the
+  viewer types in it leaves the keyboard free: Tab reaches the shell's
+  controls": took 6.2 min in one gates run; passed 5 of 5 alone.
 
 `scripts/quality_gates.sh` takes a lock per checkout and is read whole before
 it runs, so concurrent runs and mid-run edits no longer break it.

@@ -2,6 +2,7 @@
 //! cookie; `GET/PUT /api/viewers/me/seen`: its version seen marks;
 //! `GET /api/viewers/me/attention` and `PUT /api/viewers/me/looked`: its
 //! attention per artifact and its looked-at marks on threads;
+//! `PUT /api/viewers/me/presence`: its presence on an artifact;
 //! `GET /api/viewers`: other viewers by public ID or name. All refuse
 //! a request with a foreign `Origin` ([`SameOrigin`]).
 
@@ -273,4 +274,65 @@ pub async fn set_looked(
         })
         .await?;
     Ok(Json(json!({"looked": looked})))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReportedState {
+    Here,
+    Away,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PresenceBody {
+    artifact_id: String,
+    state: ReportedState,
+    #[serde(default)]
+    r#where: Option<String>,
+}
+
+/// `PUT /api/viewers/me/presence`: reports this viewer here or away on an
+/// artifact, with where they look when they share it (spec §10, "Presence");
+/// `{people}`, the artifact's presence. Announces a `presence` event when the
+/// report changed what others see. 400 `no_viewer` without a viewer cookie.
+pub async fn set_presence(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    req: Result<Json<PresenceBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    use clax_core::presence::State as P;
+    let b = body(req)?;
+    let id = parse_id(&b.artifact_id)?;
+    let Some(vid) = viewer.0 else {
+        return Err(ApiError::bad_request(
+            "no_viewer",
+            "open /api/viewers/me first",
+        ));
+    };
+    let v = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.get_viewer(&vid)?
+                .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))
+        })
+        .await?;
+    let state = match b.state {
+        ReportedState::Here => P::Here,
+        ReportedState::Away => P::Away,
+    };
+    let changed = s.presence.report(
+        &b.artifact_id,
+        &v.public_id,
+        v.display_name.as_deref(),
+        state,
+        b.r#where.as_deref(),
+    );
+    if changed {
+        crate::presence::announce(&s.events, &s.presence, &b.artifact_id);
+    }
+    Ok(Json(
+        json!({"people": s.presence.for_artifact(&b.artifact_id)}),
+    ))
 }

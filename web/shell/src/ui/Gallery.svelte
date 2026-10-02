@@ -55,7 +55,7 @@
 
 <header class="gbar">
   <Mark playful /><h1>Clax</h1><span class="sub hide-sm">local artifacts{#if me}{` · seen as ${me}`}{/if}</span>
-  <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" bind:value={query} />
+  <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" value={query} oninput={e => { query = e.currentTarget.value; }} />
   <ThemeSwitch />
 </header>
 <main class="gal">

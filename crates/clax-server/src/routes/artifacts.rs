@@ -276,6 +276,23 @@ pub struct PatchBody {
     capabilities: Option<Value>,
 }
 
+/// `GET /api/artifacts/<aid>/presence` (no token): `{people}`, the viewers
+/// here, away or recently gone (spec §10, "Presence"), never a cookie.
+pub async fn presence(
+    State(s): State<AppState>,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_id(&path(p)?)?;
+    let reg = s.presence.clone();
+    let people = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            Ok(reg.for_artifact(id.as_str()))
+        })
+        .await?;
+    Ok(Json(json!({"people": people})))
+}
+
 pub async fn patch(
     State(s): State<AppState>,
     _t: RequireToken,

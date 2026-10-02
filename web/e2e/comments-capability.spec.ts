@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { reach, contentFrame, openArtifact, publishWith, startDaemon, nameField } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -73,7 +73,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(f.locator("#status")).toContainText("opened");
     // The viewer types in the shell while the page polls.
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     await name.click();
     await name.pressSequentially("Sam", { delay: 120 });
     const seen = Number((await f.locator("#status").textContent())!.split(" ")[0]);

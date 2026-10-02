@@ -1,6 +1,6 @@
 <script lang="ts">
-  // The sidebar island: the comment threads, and the "Your name" field on
-  // narrow screens, once the artifact is loaded and the frame mode decided;
+  // The sidebar island: the comment threads, once the artifact is loaded and
+  // the frame mode decided;
   // then the phone's Page | Threads switch, after them so the Tab order
   // follows the screen. The thread list's code and styles load after the first
   // paint (`loadSidebar`); until then an empty sidebar holds its width, so the
@@ -11,7 +11,6 @@
   import PhoneTabs from "./PhoneTabs.svelte";
   import type SidebarT from "./Sidebar.svelte";
   import { loadSidebar, sidebarPrefetch } from "./sidebar-chunk";
-  import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
   let { ctl }: { ctl: ArtifactController } = $props();
@@ -31,10 +30,6 @@
   $effect(() => () => cancel?.());
 </script>
 
-{#snippet nameField()}
-  <ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />
-{/snippet}
-
 {#if viewReady(s)}
   {#if s.panel && !Sidebar}
     <aside class="sidebar" aria-label="Comment threads" aria-busy="true"></aside>
@@ -42,7 +37,7 @@
     <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
       versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_harness || "agent"}
       working={s.working} commenting={s.commenting} agents={s.agents} mine={s.attention?.open_in ?? []}
-      header={s.narrow ? nameField : undefined} decided={s.decided} onSeen={t => ctl.look(t)}
+      decided={s.decided} onSeen={t => ctl.look(t)}
       onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}
       onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)}
       selection={s.selection} batchNote={s.batchNote} batchBusy={s.batchBusy} sendTo={s.sendTo}

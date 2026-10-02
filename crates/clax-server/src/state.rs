@@ -32,4 +32,6 @@ pub struct AppState {
     pub codex: Arc<crate::push::CodexPush>,
     /// Working records (spec §10 "Working"), in memory.
     pub working: Arc<clax_core::working::Working>,
+    /// Viewer presence (spec §10 "Presence"), in memory.
+    pub presence: Arc<clax_core::presence::Presence>,
 }

@@ -1,6 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync, existsSync } from "node:fs";
-import { api, publishAs, registerSession, startDaemon } from "./fixtures";
+import { api, publishAs, registerSession, startDaemon, setName } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -19,8 +19,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   });
   if (mode === "sandbox") await page.addInitScript(() => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage blocked */ } });
   await page.goto(`${d.base}/a/${artifact.id}`);
-  await page.getByLabel("Your name").fill("Alex");
-  await page.getByLabel("Your name").press("Enter");
+  await setName(page, "Alex");
 
   // Browser side, for real: comment mode, pick, compose, send.
   const frame = await contentFrame(page, artifact.id, 1);

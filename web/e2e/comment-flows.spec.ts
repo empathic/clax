@@ -1,5 +1,5 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, registerSession, startDaemon } from "./fixtures";
+import { api, openArtifact, registerSession, startDaemon, nameField } from "./fixtures";
 
 // Commenting several times in a row, as a viewer does it: each flow is driven
 // with page.mouse in steps (so the shell sees realistic moves) and ends either
@@ -222,7 +222,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: flow 6, the page's buttons after the name field: openComposer works; sendToClaude asks to click again within 5.5 s, then sends`, async ({ page }) => {
     const id = await publishLive(`Flow 6 ${mode}`);
     const f = await open(page, id, mode);
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     await clickShell(page, name);
     await page.keyboard.type("Sam");
     await page.keyboard.press("Enter");
@@ -279,7 +279,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: flow 6 variant, then a hand's ease-in move (1, 1, 2 px) after the hint: works (N12)`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 6b ease ${mode}`), mode);
-    await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+    await clickShell(page, await nameField(page));
+    await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }));
     const c = await whole(f.locator("#open"));
     await page.mouse.move(c.x, c.y, { steps: 10 });
     await page.keyboard.type("Sam", { delay: 120 });
@@ -295,7 +296,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: flow 6 variant, then a wheel on a band: the page's button works after it (N12)`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 6b wheel ${mode}`), mode);
-    await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+    await clickShell(page, await nameField(page));
+    await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }));
     const c = await whole(f.locator("#open"));
     await page.mouse.move(c.x, c.y, { steps: 10 });
     await page.keyboard.type("Sam", { delay: 120 });
@@ -322,7 +324,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await clickShell(page, composer(page).getByRole("button", { name: "Post comment" }));
         await expect(composer(page)).toHaveCount(0);
       } else {
-        await clickShell(page, page.getByRole("textbox", { name: "Your name" }));
+        await clickShell(page, await nameField(page));
+    await clickShell(page, page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }));
         const b = await centre(f, "#open");
         await page.mouse.move(b.x + 150, b.y + 200, { steps: 10 });
         await page.keyboard.type("Sam", { delay: 120 });
@@ -345,7 +348,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   for (const delay of [30, 120]) {
     test(`${mode}: flow 6 variant, typing in the name field at ${delay} ms a key with the pointer resting on the page: a click without moving shows the hint; after a move it works`, async ({ page }) => {
       const f = await open(page, await publishLive(`Flow 6b ${delay} ${mode}`), mode);
-      const name = page.getByRole("textbox", { name: "Your name" });
+      const name = await nameField(page);
       await clickShell(page, name);
       const c = await centre(f, "#open");
       await page.mouse.move(c.x, c.y, { steps: 10 });

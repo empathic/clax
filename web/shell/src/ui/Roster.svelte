@@ -3,13 +3,15 @@
 <script lang="ts">
   // Participants as Echo draws them (spec §8): people open toward the centre
   // from the left in red-orange, agents from the right in green, the page a
-  // dot between. The viewer is nearest the centre and underlined. Props are
+  // dot between. The viewer is nearest the centre and underlined. A person
+  // present (`presence`, by public ID) carries a here dot, or is dimmed when
+  // away or gone (spec §10, "Presence"). Props are
   // read off `p` and every class is static, so the gallery's lazy working
   // module shares no prop or class runtime with the artifact entry.
   import type { Participants } from "../api";
   import type { Working } from "../view/working-model";
 
-  type Props = { people: Participants["people"]; agents: Participants["agents"]; working: Working[]; me: string | null; max: number; small?: boolean };
+  type Props = { people: Participants["people"]; agents: Participants["agents"]; working: Working[]; me: string | null; max: number; small?: boolean; presence?: Map<string, "here" | "away" | "gone"> };
   const p: Props = $props();
   const initials = (n: string | null) => {
     const w = (n ?? "?").trim().split(/\s+/);
@@ -23,7 +25,13 @@
 {#snippet roster()}
   <span class="side ppl">
     {#each ordered.slice(0, p.max) as v (v.public_id)}
-      {#if v.public_id === p.me}<span class="tok p me" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+      {@const at = p.presence?.get(v.public_id)}
+      {#if v.public_id === p.me}
+        {#if at === "here"}<span class="tok p me here" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+        {:else if at}<span class="tok p me away" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+        {:else}<span class="tok p me" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
+      {:else if at === "here"}<span class="tok p here" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
+      {:else if at}<span class="tok p away" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>
       {:else}<span class="tok p" title={v.display_name ?? "Viewer"}>{initials(v.display_name)}</span>{/if}
     {/each}
     {#if ordered.length > p.max}<span class="tok more">+{ordered.length - p.max}</span>{/if}
@@ -50,6 +58,9 @@
     .ros .hub { width: 7px; height: 7px; border-radius: 50%; background: var(--fg); margin: 0 4px; flex: none; }
     .tok { display: inline-grid; place-items: center; height: 26px; min-width: 30px; padding: 0 6px; font: 600 12px/1 var(--grot); flex: none; position: relative; }
     .tok.p { border-radius: 0 13px 13px 0; padding-right: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--you); color: var(--fg); }
+    .tok.p.away { opacity: .5; }
+    .tok.p.here::before { content: ""; position: absolute; right: 2px; top: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--agent); box-shadow: 0 0 0 1.5px var(--card); }
+    .ros.sm .tok.p.here::before, .tok.sm.p.here::before { width: 4px; height: 4px; }
     .tok.p.me::after { content: ""; position: absolute; left: 4px; right: 8px; bottom: 3px; height: 1.5px; background: currentColor; }
     .tok.a { border-radius: 13px 0 0 13px; padding-left: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--agent); color: var(--agent-ink); }
     .tok.a.work { background: var(--agent); color: var(--on-accent); box-shadow: none; padding-left: 13px; }

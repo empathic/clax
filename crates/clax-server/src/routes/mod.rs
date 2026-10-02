@@ -133,6 +133,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/viewers/me/looked",
             axum::routing::put(viewers::set_looked),
         )
+        .route(
+            "/api/viewers/me/presence",
+            axum::routing::put(viewers::set_presence),
+        )
         .route("/api/viewers/me", get(viewers::me).put(viewers::set_me))
         .route("/api/sessions/{id}/watches", get(watches::list))
         .route(
@@ -158,6 +162,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
         .route("/api/artifacts/{aid}/working", get(working::for_artifact))
+        .route("/api/artifacts/{aid}/presence", get(artifacts::presence))
         .route("/api/sessions/{id}/working", get(working::for_session))
         .route("/api/sessions/{id}/working/renew", post(working::renew))
         .route("/api/sessions/{id}/working/end", post(working::end))

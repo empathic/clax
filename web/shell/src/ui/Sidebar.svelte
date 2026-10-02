@@ -5,7 +5,6 @@
   // then those on other pages of the version (labelled "on <file>"). Below,
   // collapsed into a tail: open threads on the page shown and not found, or on
   // a page the version does not hold (Detached); then resolved threads.
-  import type { Snippet } from "svelte";
   import type { AnchorResult } from "../../../bridge/src/protocol";
   import type { Participants, Version } from "../api";
   import type { Decided } from "../view/changelog-model";
@@ -34,8 +33,6 @@
     onHover?(t: Thread | null): void;
     /** This viewer, to show its own name on threads it resolved. */
     me?: Viewer | null;
-    /** Rendered above the sections (the "Your name" field on narrow screens). */
-    header?: Snippet;
     /** The page the frame shows (the index by default; null when the frame shows
      * a document that did not greet); threads on other pages are labelled with theirs. */
     file?: string | null;
@@ -134,7 +131,6 @@
 {/snippet}
 
 <aside class="sidebar" aria-label="Comment threads">
-  {@render p.header?.()}
   {#each newestFirst(p.working ?? []) as w (w.key)}
     {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
