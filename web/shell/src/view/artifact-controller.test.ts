@@ -502,4 +502,95 @@ describe("ArtifactController", () => {
     removeEventListener("keydown", heard);
     ctl.dispose();
   });
+
+  it("taints the keyboard trail when focus enters the shell from the frame or the body without a press, and clears it on a press or an Escape on a control", async () => {
+    const { ctl, frame } = await started();
+    const { keyboardTrail } = await import("./trail");
+    const button = document.body.appendChild(document.createElement("button"));
+    const other = document.body.appendChild(document.createElement("button"));
+    const land = (el: Element, from: Element | null) => { (el as HTMLElement).focus(); dispatchTrusted(el, new FocusEvent("focusin", { bubbles: true, relatedTarget: from })); };
+    expect(keyboardTrail.tainted).toBe(false);
+    // From the frame (the viewer's Tab out, or the page running out of fields).
+    land(button, frame);
+    expect(keyboardTrail.tainted).toBe(true);
+    // A Tab on to another control keeps it.
+    land(other, button);
+    expect(keyboardTrail.tainted).toBe(true);
+    // An Escape with focus on <body> does not clear it; on a control it does.
+    other.blur();
+    dispatchTrusted(document.body, new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(keyboardTrail.tainted).toBe(true);
+    other.focus();
+    dispatchTrusted(other, new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(keyboardTrail.tainted).toBe(false);
+    // An untrusted Escape never clears it.
+    land(button, null);
+    expect(keyboardTrail.tainted).toBe(true);
+    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    expect(keyboardTrail.tainted).toBe(true);
+    // A press clears it, and the focus that press gives a control does not taint it.
+    dispatchTrusted(window, new Event("pointerdown"));
+    land(other, null);
+    expect(keyboardTrail.tainted).toBe(false);
+    await new Promise(r => setTimeout(r, 0));
+    // Focus the browser puts back when the window regains focus changes nothing.
+    dispatchTrusted(window, new FocusEvent("blur"));
+    land(other, null);
+    expect(keyboardTrail.tainted).toBe(false);
+    // Focus arriving from <body> after that taints it again.
+    land(button, null);
+    expect(keyboardTrail.tainted).toBe(true);
+    ctl.dispose();
+  });
+
+  it("lets keys through when the frame a give-back waits for is gone or replaced, and when the viewer types in the composer", async () => {
+    const { ctl, frame } = await started();
+    const pushOut = () => {
+      ctl.frame!.el!.focus();
+      dispatchTrusted(window, new FocusEvent("blur"));
+      (document.activeElement as HTMLElement).blur();
+      dispatchTrusted(window, new FocusEvent("focus"));
+    };
+    const key = (k: string, at: Element = document.body) => { const e = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true }); dispatchTrusted(at, e); return e; };
+    pushOut();
+    frame.remove();
+    expect(key("Tab").defaultPrevented).toBe(false);
+    expect(key("Tab").defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    // A replaced frame: the give-back was for the old one.
+    const stage = document.body.appendChild(document.createElement("div"));
+    stage.append(frame);
+    pushOut();
+    const next = document.createElement("iframe");
+    frame.replaceWith(next);
+    ctl.frame!.el = next;
+    expect(key("Tab").defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(document.body);
+    // The viewer's own keys in the composer end the give-back: the Escape that
+    // closes it, then the next Escape, reach the shell.
+    pushOut();
+    const composer = document.body.appendChild(document.createElement("div"));
+    composer.className = "composer";
+    const ta = composer.appendChild(document.createElement("textarea"));
+    ta.focus();
+    key("Escape", ta);
+    composer.remove();
+    expect(document.activeElement).toBe(document.body);
+    expect(key("Escape").defaultPrevented).toBe(false);
+    ctl.dispose();
+  });
+
+  it("after a load the page caused, starts with the trail tainted and a give-back pending to the new frame", async () => {
+    const { holdKeysAcrossLoad } = await import("./keys");
+    holdKeysAcrossLoad();
+    const { ctl, frame } = await started();
+    const { keyboardTrail } = await import("./trail");
+    expect(keyboardTrail.tainted).toBe(true);
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    const e = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    dispatchTrusted(document.body, e);
+    expect(e.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(frame);
+    ctl.dispose();
+  });
 });

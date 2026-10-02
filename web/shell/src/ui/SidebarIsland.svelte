@@ -11,7 +11,7 @@
   import { agentName } from "../view/history-model";
   import PhoneTabs from "./PhoneTabs.svelte";
   import type SidebarT from "./Sidebar.svelte";
-  import { loadSidebar } from "./sidebar-chunk";
+  import { loadSidebar, sidebarPrefetch } from "./sidebar-chunk";
   import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
@@ -23,7 +23,7 @@
   let asked = false;
   let cancel: (() => void) | undefined;
   $effect(() => {
-    if (asked || !viewReady(s) || !s.panel) return;
+    if (asked || !viewReady(s) || !(s.panel || (sidebarPrefetch() && !s.deleted))) return;
     asked = true;
     cancel = afterPaint(() => {
       loadSidebar().then(m => { Sidebar = m.default; }, () => ctl.setNotice("The threads could not load. Reload to try again."));

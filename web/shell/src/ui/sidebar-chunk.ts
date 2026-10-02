@@ -1,7 +1,8 @@
 // The thread list's code and styles (Sidebar.svelte and what it imports) are
-// not needed for the first paint. The artifact entry prefetches them once the
-// page has painted, and the sidebar island loads them when the threads show;
-// both share one load.
+// not needed for the first paint. The sidebar island loads them after the
+// first paint when the threads show, or, once the artifact entry has allowed
+// prefetching, as soon as the view is ready on an artifact that is not
+// deleted, so the first Threads tap shows them at once. Every load is one.
 type SidebarModule = typeof import("./Sidebar.svelte");
 
 let pending: Promise<SidebarModule> | null = null;
@@ -11,3 +12,11 @@ export function loadSidebar(): Promise<SidebarModule> {
   pending ??= import("./Sidebar.svelte").catch((e: unknown) => { pending = null; throw e; });
   return pending;
 }
+
+let prefetch = false;
+
+/** Lets the sidebar island fetch the chunk before the threads show (the artifact entry). */
+export function allowSidebarPrefetch(): void { prefetch = true; }
+
+/** Whether the chunk may be fetched before the threads show. */
+export const sidebarPrefetch = (): boolean => prefetch;

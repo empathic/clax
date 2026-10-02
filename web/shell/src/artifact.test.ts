@@ -1045,7 +1045,8 @@ describe("ArtifactView", () => {
     buttonNamed(root, "Post comment").click();
     await waitFor(() => !root.querySelector(".composer") && pressed() && lastMode() === true, "comment mode back after Post");
     // Sending the posted thread to the agent from its card leaves it on.
-    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").click();
+    // A pointer's click (detail 1): the composer's focus tainted the keyboard trail (`keyboardTrail`).
+    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
     await waitFor(() => sends === 1, "the send");
     await settle();
     expect(pressed()).toBe(true);

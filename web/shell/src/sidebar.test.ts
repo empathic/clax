@@ -169,6 +169,11 @@ describe("Sidebar", () => {
     expect([group("section-detached").open, group("section-resolved").open]).toEqual([false, false]);
     view.update({ ...props, selected: "d" });
     expect(group("section-detached").open).toBe(true);
+    // The viewer collapses it: a thread update with the same card selected leaves it collapsed.
+    flush(() => { group("section-detached").open = false; group("section-detached").dispatchEvent(new Event("toggle")); });
+    view.update({ ...props, selected: "d", threads: threads.map(x => ({ ...x })) });
+    expect(group("section-detached").open).toBe(false);
+    expect(group("section-detached").getAttribute("aria-label")).toBe("Detached 1");
     view.update({ ...props, selected: "r" });
     expect(group("section-resolved").open).toBe(true);
     view.unmount();
@@ -181,6 +186,36 @@ describe("Sidebar", () => {
     second.update({ ...props, threads: [{ ...threads[0], status: "resolved" }, threads[1], threads[2]] });
     expect(g("section-resolved").open).toBe(true);
     second.unmount();
+  });
+
+  it("refuses Send and Resolve from the keyboard on a tainted trail, says how to act, and takes a click", async () => {
+    const { keyboardTrail } = await import("./view/trail");
+    const onSend = vi.fn();
+    const onResolve = vi.fn();
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
+    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend, onResolve, onReply: vi.fn() });
+    const button = (name: string) => Array.from(view.root.querySelectorAll("button")).find(b => b.textContent === name)!;
+    const hint = view.root.querySelector(".act-hint")!;
+    expect(hint.getAttribute("role")).toBe("status");
+    keyboardTrail.taint();
+    try {
+      // Enter or Space on a button is a click with detail 0.
+      flush(() => button("Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      expect(onSend).not.toHaveBeenCalled();
+      expect(hint.textContent).toBe("Click to send, or press Esc first");
+      flush(() => button("Resolve").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      expect(onResolve).not.toHaveBeenCalled();
+      expect(hint.textContent).toBe("Click to resolve, or press Esc first");
+      flush(() => button("Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
+      expect(onSend).toHaveBeenCalledOnce();
+      expect(hint.textContent).toBe("");
+      keyboardTrail.clear();
+      flush(() => button("Resolve").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      expect(onResolve).toHaveBeenCalledOnce();
+    } finally {
+      keyboardTrail.clear();
+      view.unmount();
+    }
   });
 
   it("keeps each card's time current while nothing is waiting", () => {
