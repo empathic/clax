@@ -22,6 +22,11 @@ const STOP_DEADLINE: Duration = Duration::from_secs(8);
 const PROMPT_DEADLINE: Duration = Duration::from_secs(4);
 /// Each daemon request of the Stop and prompt hooks is abandoned after this long.
 const FEEDBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// Grok Build gives `SessionEnd` hooks 1.5 s by default, so `session-end
+/// --agent grok` gives up after this long.
+const GROK_END_DEADLINE: Duration = Duration::from_millis(1200);
+/// Each Grok `session-end` daemon request is abandoned after this long.
+const GROK_END_REQUEST_TIMEOUT: Duration = Duration::from_millis(1000);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
 
@@ -55,17 +60,17 @@ fn ancestors(pid: u32) -> Vec<u32> {
 pub enum Agent {
     Claude,
     Codex,
+    Grok,
 }
 
-impl Event {
-    /// The deadline for the whole invocation and for each daemon request.
-    fn budget(self) -> (Duration, Duration) {
-        match self {
-            Event::SessionStart => (START_DEADLINE, START_REQUEST_TIMEOUT),
-            Event::SessionEnd => (END_DEADLINE, END_REQUEST_TIMEOUT),
-            Event::Stop => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
-            Event::Prompt => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
-        }
+/// The deadline for the whole invocation and for each daemon request.
+fn budget(agent: Agent, event: Event) -> (Duration, Duration) {
+    match (agent, event) {
+        (Agent::Grok, Event::SessionEnd) => (GROK_END_DEADLINE, GROK_END_REQUEST_TIMEOUT),
+        (_, Event::SessionStart) => (START_DEADLINE, START_REQUEST_TIMEOUT),
+        (_, Event::SessionEnd) => (END_DEADLINE, END_REQUEST_TIMEOUT),
+        (_, Event::Stop) => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
+        (_, Event::Prompt) => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
     }
 }
 
@@ -86,6 +91,7 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::Grok => "grok",
         }
     }
 }
@@ -159,7 +165,7 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     std::thread::spawn(move || {
         let _ = tx.send(handle(agent, event, parent_pid, &worker_home));
     });
-    let (deadline, _) = event.budget();
+    let (deadline, _) = budget(agent, event);
     let error = match rx.recv_timeout(deadline) {
         Ok(Ok(out)) => {
             if let Some(line) = out.to_line() {
@@ -188,15 +194,28 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
+    // Grok Build discards an allowing prompt hook's output, and a
+    // prompt_hook request marks comments delivered, so Grok's prompt hook
+    // does nothing (the plugin does not wire it).
+    if matches!((agent, event), (Agent::Grok, Event::Prompt)) {
+        return Ok(HookOutput::none());
+    }
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
-        .with_timeout(event.budget().1);
+        .with_timeout(budget(agent, event).1);
     // Codex's `codex queue` finds its app-server socket under CODEX_HOME, which
     // the daemon's own environment may lack.
     let codex_home = std::env::var("CODEX_HOME")
         .ok()
         .filter(|v| !v.is_empty() && matches!(agent, Agent::Codex));
     match event {
+        Event::SessionStart if matches!(agent, Agent::Grok) => events::session_start_quiet(
+            agent.harness(),
+            parent_pid,
+            &ancestors(parent_pid),
+            &input,
+            &client,
+        ),
         Event::SessionStart => events::session_start(
             agent.harness(),
             parent_pid,
