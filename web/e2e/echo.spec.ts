@@ -98,3 +98,35 @@ test("the more menu opens raw and copies the link, and Escape closes it with foc
   await expect(page.getByRole("menu")).toHaveCount(0);
   await expect(more).toBeFocused();
 });
+
+test("the sidebar holds its width from the first paint, so the frame is laid out once, however late the thread list's code arrives", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "echo-reserve");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Echo reserve", { "index.html": "<main><h2>Goals</h2></main>" });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  // The thread list's chunk arrives 300 ms late.
+  await page.route("**/Sidebar-*.js", async r => { await new Promise(f => setTimeout(f, 300)); await r.continue(); });
+  await page.addInitScript(() => {
+    const widths: number[] = [];
+    (window as unknown as { frameWidths: number[] }).frameWidths = widths;
+    new MutationObserver((_, o) => {
+      const f = document.querySelector("iframe.frame");
+      if (!f) return;
+      o.disconnect();
+      new ResizeObserver(() => widths.push(Math.round(f.getBoundingClientRect().width))).observe(f);
+    }).observe(document, { childList: true, subtree: true });
+  });
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await expect(page.locator("aside.sidebar .gh")).toHaveCount(3);
+  expect(new Set(await page.evaluate(() => (window as unknown as { frameWidths: number[] }).frameWidths)).size).toBe(1);
+  expect((await page.locator("aside.sidebar").boundingBox())!.width).toBe(392);
+});
+
+test("at phone width the thread list's code is fetched after the first paint, before the first Threads tap", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "echo-prefetch");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Echo prefetch", { "index.html": "<main><h2>Goals</h2></main>" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  const fetched = page.waitForRequest(/\/Sidebar-[^/]*\.js$/);
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  await fetched;
+  await expect(page.locator("aside.sidebar")).toHaveCount(0);
+});

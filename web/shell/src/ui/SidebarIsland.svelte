@@ -2,15 +2,16 @@
   // The sidebar island: the comment threads, and the "Your name" field on
   // narrow screens, once the artifact is loaded and the frame mode decided;
   // then the phone's Page | Threads switch, after them so the Tab order
-  // follows the screen. The thread list's code and styles are not needed for
-  // the first paint: they load once the view has painted and the threads are
-  // first shown.
+  // follows the screen. The thread list's code and styles load after the first
+  // paint (`loadSidebar`); until then an empty sidebar holds its width, so the
+  // frame is laid out once at its final size.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { afterPaint } from "../view/after-paint";
   import { agentName } from "../view/history-model";
   import PhoneTabs from "./PhoneTabs.svelte";
   import type SidebarT from "./Sidebar.svelte";
+  import { loadSidebar } from "./sidebar-chunk";
   import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
@@ -25,7 +26,7 @@
     if (asked || !viewReady(s) || !s.panel) return;
     asked = true;
     cancel = afterPaint(() => {
-      import("./Sidebar.svelte").then(m => { Sidebar = m.default; }, () => ctl.setNotice("The threads could not load. Reload to try again."));
+      loadSidebar().then(m => { Sidebar = m.default; }, () => ctl.setNotice("The threads could not load. Reload to try again."));
     });
   });
   $effect(() => () => cancel?.());
@@ -36,7 +37,9 @@
 {/snippet}
 
 {#if viewReady(s)}
-  {#if s.panel && Sidebar}
+  {#if s.panel && !Sidebar}
+    <aside class="sidebar" aria-label="Comment threads" aria-busy="true"></aside>
+  {:else if s.panel && Sidebar}
     <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
       versions={s.data.versions} shown={ctl.shown(s)} agent={agentName(s.data.artifact.owner_harness)}
       header={s.narrow ? nameField : undefined}

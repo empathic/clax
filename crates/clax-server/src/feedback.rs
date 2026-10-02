@@ -144,7 +144,9 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 
 /// The thread as routes return it: the stored fields plus `clip_url`,
 /// `clip_path` (only when `with_path`, that is the caller presented the
-/// token), and `feedback_state`.
+/// token), `feedback_state`, and `resolved_by_name`: the display name of the
+/// viewer named by `resolved_by`, or `null` when that viewer has none or the
+/// thread was not resolved by a viewer.
 pub fn thread_view(
     st: &Store,
     t: &Thread,
@@ -167,6 +169,17 @@ pub fn thread_view(
         Value::Null
     };
     v["feedback_state"] = json!(st.feedback_state(&t.id, codex_push)?);
+    let resolver = match t
+        .resolved_by
+        .as_deref()
+        .and_then(|by| by.strip_prefix("viewer:"))
+    {
+        Some(public_id) => st
+            .viewer_by_public_id(public_id)?
+            .and_then(|v| v.display_name),
+        None => None,
+    };
+    v["resolved_by_name"] = json!(resolver);
     Ok(v)
 }
 

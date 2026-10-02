@@ -18,7 +18,7 @@
   type Props = {
     threads: Thread[];
     resolved: Record<string, AnchorResult>;
-    /** Fixed clock for tests; without it the sidebar ticks each second while a label shows elapsed time. */
+    /** Fixed clock for tests; without it the sidebar ticks each second while a label shows elapsed time, else every 30 s. */
     now?: Date;
     selected: string | null;
     onSelect(t: Thread): void;
@@ -44,16 +44,28 @@
     agent: string;
   };
   let p: Props = $props();
-  const clock = ticker(() => needsTicking(p.threads), () => p.now);
+  // Each second while a waiting label counts; otherwise often enough for "N min ago".
+  const clock = ticker(() => needsTicking(p.threads), () => p.now, 30_000);
   const s = $derived(sidebarSections(p.threads, p.resolved, p.file, p.holds));
-  const names = (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me);
+  const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me, t.resolved_by_name);
+  // A collapsed group opens when it holds the selected card, or the card the
+  // viewer just resolved, so that card is never hidden.
+  let detachedOpen = $state(false);
+  let resolvedOpen = $state(false);
+  let justResolved: string | null = $state(null);
+  const has = (list: Thread[], id: string | null) => !!id && list.some(t => t.id === id);
+  $effect(() => {
+    if (has(s.detached, p.selected)) detachedOpen = true;
+    if (has(s.resolved, p.selected) || has(s.resolved, justResolved)) { resolvedOpen = true; justResolved = null; }
+  });
+  const resolve = (t: Thread) => { justResolved = t.id; p.onResolve(t); };
 </script>
 
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
     <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
-      history={historyOf(t, p.versions, names)} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
-      onSelect={p.onSelect} onSend={p.onSend} onResolve={p.onResolve} onReply={p.onReply} onHover={p.onHover} />
+      history={historyOf(t, p.versions, names(t))} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
+      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover} />
   {/each}
 {/snippet}
 
@@ -64,12 +76,12 @@
     {#if s.open.length === 0}<p class="muted small empty-open">Nothing open. Press C and click anything to comment on it.</p>{:else}{@render cards(s.open)}{/if}
   </section>
   <div class="tail">
-    <details class="section-detached">
-      <summary class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{s.detached.length}</span></summary>
+    <details class="section-detached" bind:open={detachedOpen}>
+      <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{s.detached.length}</span></h2></summary>
       {@render cards(s.detached)}
     </details>
-    <details class="section-resolved">
-      <summary class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{s.resolved.length}</span></summary>
+    <details class="section-resolved" bind:open={resolvedOpen}>
+      <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{s.resolved.length}</span></h2></summary>
       {@render cards(s.resolved)}
     </details>
   </div>
@@ -77,13 +89,15 @@
 
 <!-- The sidebar's styles (spec §8, "Thread sidebar") travel with its lazy
      chunk (injected on mount), so the artifact entry's eager CSS does not
-     carry them. The thread number's rule is the theme's, shared with the pins. -->
+     carry them. The sidebar's box and the thread number's rule are the theme's: the
+     box holds the sidebar's width before this chunk loads, and the number is
+     shared with the pins. -->
 <style>
   :global {
-    .sidebar { width: 392px; flex: none; overflow: auto; border-left: 1px solid var(--border); background: var(--bg); padding: 12px 14px 18px; display: flex; flex-direction: column; gap: 10px; }
     .gh { display: flex; align-items: center; gap: 8px; margin: 6px 2px 8px; font: 600 19px/1.1 var(--grot); list-style: none; cursor: default; }
-    summary.gh { cursor: pointer; font-size: 16px; color: var(--muted); }
-    summary.gh::-webkit-details-marker { display: none; }
+    .tail summary { list-style: none; cursor: pointer; }
+    .tail summary::-webkit-details-marker { display: none; }
+    summary .gh { font-size: 16px; color: var(--muted); cursor: pointer; }
     .gh .t { flex: 1; } .gh .c { font: 400 12px var(--mono); color: var(--muted); }
     .gh .sw { width: 7px; height: 16px; flex: none; }
     .gh.you .sw { border-radius: 0 8px 8px 0; background: var(--you); }
@@ -109,13 +123,13 @@
     .msg.agent .author { color: var(--agent-ink); }
     .msg.agent .body { text-align: left; }
     .st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
-    .hist { display: flex; flex-wrap: wrap; gap: 4px 10px; margin: 9px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
-    .hist .ev { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+    .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+    .hist .sep { margin-right: 2px; }
+    .hist .ev { white-space: nowrap; }
     .hist .ev b { font-weight: 600; color: var(--fg); }
     .hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
     .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
     .reply { display: flex; gap: 6px; margin-top: 8px; }
     .reply input { flex: 1; min-width: 0; }
-    @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
   }
 </style>

@@ -175,7 +175,7 @@ pub struct CommentsReplyArgs {
     pub url_or_id: String,
     /// The thread to reply to.
     pub thread_id: String,
-    /// The reply, shown to the person as `Agent · via <harness>`.
+    /// The reply, shown to the person under its harness's name, such as `claude`.
     pub text: String,
 }
 
@@ -1572,7 +1572,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a comment thread as the agent; the person sees it as `Agent · via <harness>`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written."
+        description = "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written."
     )]
     pub async fn comments_reply(
         &self,

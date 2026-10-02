@@ -42,9 +42,9 @@
   {/each}
   {#if label}<p class="st waiting">{label}</p>{/if}
   {#if history.length}
-    <p class="hist" aria-label="History">
-      {#each history as e, i (i)}<span class={["ev", e.agent && "agent"]}>{#if e.v !== null}<span class="vt">v{e.v}</span>{/if}<b>{e.who}</b> {e.verb}</span>{/each}
-    </p>
+    <ul class="hist" aria-label="History">
+      {#each history as e, i (i)}<li class={["ev", e.agent && "agent"]}>{#if i}{" "}<span class="sep">·</span>{" "}{/if}{#if e.v !== null}<span class="vt">v{e.v}</span>{" "}{/if}<b>{e.who}</b>{" "}{e.verb}</li>{/each}
+    </ul>
   {/if}
   {#if t.status === "open"}
     <!-- Only stops a click on these controls from also selecting the card. -->

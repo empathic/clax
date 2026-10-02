@@ -837,6 +837,56 @@ async fn resolving_as_a_viewer_records_the_public_id() {
 }
 
 #[tokio::test]
+async fn a_resolved_thread_names_its_resolver_when_the_viewer_has_a_name() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = setup(&ts).await;
+    let named = ts.viewer(Some("Mia")).await;
+    let unnamed = ts.viewer(None).await;
+    let resolve = |tid: String, cookie: Option<String>| {
+        let mut req = ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+            ts.base
+        ));
+        if let Some(c) = cookie {
+            req = req.header("cookie", format!("clax_viewer={c}"));
+        }
+        async move { req.send().await.unwrap().json::<Value>().await.unwrap() }
+    };
+    let id = |t: &Value| t["id"].as_str().unwrap().to_string();
+    let a = ts.thread(&aid, 1, "by Mia").await;
+    let b = ts.thread(&aid, 1, "by someone").await;
+    let c = ts.thread(&aid, 1, "anonymous").await;
+    let open = ts.thread(&aid, 1, "still open").await;
+    assert_eq!(
+        resolve(id(&a), Some(named.cookie.clone())).await["thread"]["resolved_by_name"],
+        "Mia"
+    );
+    assert!(
+        resolve(id(&b), Some(unnamed.cookie.clone())).await["thread"]["resolved_by_name"].is_null()
+    );
+    assert!(resolve(id(&c), None).await["thread"]["resolved_by_name"].is_null());
+    let listed: Value = ts
+        .get(&format!(
+            "/api/artifacts/{aid}/threads?include_resolved=true"
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let named_in_list = |tid: String| {
+        listed["threads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["id"] == tid.as_str())
+            .unwrap()["resolved_by_name"]
+            .clone()
+    };
+    assert_eq!(named_in_list(id(&a)), "Mia");
+    assert!(named_in_list(id(&open)).is_null());
+}
+
+#[tokio::test]
 async fn threads_are_anchored_on_any_file_of_their_version() {
     let ts = TestServer::spawn().await;
     let a = ts

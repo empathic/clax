@@ -437,7 +437,7 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
-  it("hands focus the page pushed out to the shell's body back to the frame a task later, unless the viewer acted in the shell or Tabbed onto a control", async () => {
+  it("hands focus the page pushed out to the shell's body back to the frame: at once on the viewer's next key, which is swallowed, or a task later", async () => {
     const { ctl, frame } = await started();
     const tick = () => new Promise(r => setTimeout(r, 0));
     // The frame has focus; the page calls parent.focus(): the window's blur, focus on <body>, the window's focus.
@@ -449,29 +449,57 @@ describe("ArtifactController", () => {
       expect(document.activeElement).toBe(document.body);
       dispatchTrusted(window, new FocusEvent("focus"));
     };
+    const heard = vi.fn();
+    addEventListener("keydown", heard);
+    // No key: a task later.
     pushOut();
     expect(document.activeElement).toBe(document.body);
     await tick();
     expect(document.activeElement).toBe(frame);
-    // A trusted key or press in the shell between the focus and that task keeps focus on the body.
-    for (const input of [new KeyboardEvent("keydown", { key: "x", bubbles: true }), new Event("pointerdown")]) {
+    // The viewer's keys arrive first (a page busy after parent.focus()): the
+    // first is swallowed, reaches none of the shell's listeners, and focus is
+    // back on the frame before it returns. Tab, Space and letters alike.
+    for (const key of ["Tab", " ", "c"]) {
       pushOut();
-      dispatchTrusted(window, input);
+      const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+      dispatchTrusted(document.body, e);
+      expect(e.defaultPrevented, key).toBe(true);
+      expect(document.activeElement, key).toBe(frame);
       await tick();
-      expect(document.activeElement, input.type).toBe(document.body);
     }
-    // The viewer's own Tab out of the frame has reached a shell control by then: it stays there.
+    expect(heard).not.toHaveBeenCalled();
+    expect(ctl.state.get().commenting).toBe(false);
+    // An untrusted key does nothing.
+    pushOut();
+    const fake = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    document.body.dispatchEvent(fake);
+    expect(fake.defaultPrevented).toBe(false);
+    await tick();
+    // A trusted press in the shell cancels it: focus stays on the body, and keys are the shell's again.
+    pushOut();
+    dispatchTrusted(window, new Event("pointerdown"));
+    const after = new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true });
+    dispatchTrusted(document.body, after);
+    expect(after.defaultPrevented).toBe(false);
+    await tick();
+    expect(document.activeElement).toBe(document.body);
+    // The viewer's own Tab out of the frame lands on a shell control: that cancels it, and it stays there.
     const button = document.body.appendChild(document.createElement("button"));
     pushOut();
     button.focus();
+    dispatchTrusted(button, new FocusEvent("focusin", { bubbles: true }));
     await tick();
     expect(document.activeElement).toBe(button);
-    // A blur while a shell control had focus is not the frame's: no give-back.
+    // A blur while a shell control had focus is not the frame's: no give-back, and keys pass.
     dispatchTrusted(window, new FocusEvent("blur"));
     button.blur();
     dispatchTrusted(window, new FocusEvent("focus"));
+    const own = new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true });
+    dispatchTrusted(document.body, own);
+    expect(own.defaultPrevented).toBe(false);
     await tick();
     expect(document.activeElement).toBe(document.body);
+    removeEventListener("keydown", heard);
     ctl.dispose();
   });
 });

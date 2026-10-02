@@ -1280,8 +1280,8 @@ sent. `note` says that comment text comes from people viewing the page.
 Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
-`comments_reply` posts the reply as the agent; the person sees
-`Agent · via <harness>`. Replying to or resolving a thread acknowledges its
+`comments_reply` posts the reply as the agent; the person sees it under the
+harness's name (`claude`). Replying to or resolving a thread acknowledges its
 comments for the session. Resolving a thread withdraws its comments that no
 session has been handed yet. When a later viewer comment reopens a sent
 thread, the comments a viewer resolve withdrew are sent again with it (no
@@ -1456,10 +1456,12 @@ The thread's waiting indicator follows the `feedback_state` event:
 
 A resolved thread's `resolved_by` is `viewer:<public ID>`, `viewer:anonymous`
 (a resolve without a viewer cookie), or `agent:<harness>`; it never carries a
-viewer cookie or a session ID. The card reads "Resolved by" and the viewer's
-own name when it resolved the thread and has one, "Viewer" for any other
-viewer, or "Agent · via <harness>". An agent comment carries `via_harness`
-(the replying session's harness, e.g. `claude`; `null` on viewer comments).
+viewer cookie or a session ID. Its `resolved_by_name` is that viewer's
+display name, or `null` when the viewer has none or an agent resolved it.
+The card's history line ends with the resolve: the viewer's own name when it
+resolved the thread and has one, else `resolved_by_name`, else "Viewer"; or
+the agent's harness. An agent comment carries `via_harness` (the replying
+session's harness, e.g. `claude`; `null` on viewer comments).
 
 An open thread a working record names shows "<agent> is working on it"
 (the agent's harness, such as "claude is working on it") instead of its
