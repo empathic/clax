@@ -4,9 +4,11 @@
 //! `sampling_disabled`.
 
 pub mod anthropic;
+pub mod cache;
 pub mod flight;
 pub mod json_reply;
 pub mod provider;
+pub mod quota;
 pub mod request;
 pub mod sse;
 pub mod stub;
@@ -67,6 +69,12 @@ pub struct Sampler {
     pub settings: SampleSettings,
     /// Running calls and the tool results they wait for.
     pending: Mutex<HashMap<String, PendingCall>>,
+    /// Stored answers and running flights, per viewer and artifact.
+    pub cache: cache::AnswerCache,
+    /// Calls per artifact per day.
+    pub counts: quota::CallCounts,
+    /// Running and waiting calls per viewer.
+    pub queues: quota::ViewerQueues,
 }
 
 impl Sampler {
@@ -84,6 +92,9 @@ impl Sampler {
             key_env,
             settings,
             pending: Mutex::default(),
+            cache: Default::default(),
+            counts: Default::default(),
+            queues: Default::default(),
         }
     }
 
