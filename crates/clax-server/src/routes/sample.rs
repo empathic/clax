@@ -11,7 +11,10 @@
 use crate::auth::{RequireToken, has_token};
 use crate::error::ApiError;
 use crate::routes::artifacts::parse_id;
+use crate::sample::cache::AnswerCache;
+use crate::sample::flight::Done;
 use crate::sample::flight::{self, Flight, Out};
+use crate::sample::request::CachePolicy;
 use crate::sample::request::{self, MAX_TOOL_RESULT_BYTES, SampleBody};
 use crate::sample::{Deliver, ToolOutput};
 use crate::state::AppState;
@@ -22,13 +25,31 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
+use chrono::NaiveDate;
 use futures::{Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::convert::Infallible;
+use std::time::Instant;
 
 /// Body limit of the call route: five downsized images, base64, with room to spare.
 pub const SAMPLE_BODY_LIMIT: usize = 48 * 1024 * 1024;
+
+/// What a call does with its answer when it ends (`None`: it failed or was aborted).
+type OnFinish = Box<dyn FnOnce(Option<&Done>) + Send>;
+
+/// The daemon's local date, for the daily cap.
+pub fn today() -> NaiveDate {
+    chrono::Local::now().date_naive()
+}
+
+fn rate_limited(message: impl Into<String>) -> ApiError {
+    ApiError::new(StatusCode::TOO_MANY_REQUESTS, "rate_limited", message)
+}
+
+fn start_json(call_id: &str, cached: bool, calls_today: u32, cap: Option<u32>) -> Value {
+    json!({"call_id": call_id, "cached": cached, "calls_today": calls_today, "daily_call_cap": cap})
+}
 
 async fn declared(s: &AppState, aid: &str) -> Result<String, ApiError> {
     let id = parse_id(aid)?;
@@ -66,6 +87,7 @@ pub async fn status(
     headers: axum::http::HeaderMap,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&aid)?;
+    let canonical = id.as_str().to_string();
     s.store_call(move |st| st.get_artifact(&id))
         .await?
         .ok_or_else(ApiError::not_found)?;
@@ -79,7 +101,7 @@ pub async fn status(
         "available": s.sample.available(),
         "provider": s.sample.provider_name(),
         "limits": request::limits_json(images),
-        "calls_today": 0,
+        "calls_today": s.sample.counts.today(&canonical, today()),
         "daily_call_cap": s.sample.settings.daily_call_cap,
     })))
 }
@@ -117,7 +139,7 @@ pub async fn sample(
 ) -> Result<Response, ApiError> {
     // `Some` from here on: the per-viewer APIs below take the cookie as an option.
     let cookie = Some(owner_browser(cookie)?);
-    let _aid = declared(&s, &aid).await?;
+    let aid = declared(&s, &aid).await?;
     let Some(provider) = s.sample.provider().cloned() else {
         return Err(ApiError::forbidden(
             "sampling_disabled",
@@ -126,19 +148,73 @@ pub async fn sample(
     };
     let Json(body) = body.map_err(|e| ApiError::bad_request("invalid_request", e.body_text()))?;
     let prepared = request::prepare(body, &s.sample.settings, provider.supports_images())?;
+    let cap = s.sample.settings.daily_call_cap;
+    let key = AnswerCache::key(&aid, cookie.as_deref(), &prepared.input_key);
+    if let CachePolicy::Window { gc, refresh: false } = prepared.cache {
+        if let Some(done) = s.sample.cache.get(&key, gc, Instant::now()) {
+            let start = start_json(
+                &clax_core::new_ulid(),
+                true,
+                s.sample.counts.today(&aid, today()),
+                cap,
+            );
+            return Ok(stream_response(
+                &s,
+                start,
+                futures::stream::iter([Out::Done(done)]),
+            ));
+        }
+        if let Some(f) = s.sample.cache.flight(&key) {
+            let start = start_json(
+                &clax_core::new_ulid(),
+                true,
+                s.sample.counts.today(&aid, today()),
+                cap,
+            );
+            return Ok(stream_response(&s, start, f.reader()));
+        }
+    }
+    let permit = s
+        .sample
+        .queues
+        .enter(cookie.as_deref().unwrap_or("anonymous"))
+        .await
+        .ok_or_else(|| {
+            rate_limited("too many calls from this viewer at once; try again when one has finished")
+        })?;
+    let calls_today =
+        s.sample.counts.try_take(&aid, today(), cap).map_err(|n| {
+            rate_limited(format!("this artifact reached its daily cap of {n} calls"))
+        })?;
     let call_id = clax_core::new_ulid();
     let f = Flight::new();
     s.sample.open_call(&call_id, cookie);
-    let task = tokio::spawn(flight::drive(
-        s.sample.clone(),
-        call_id.clone(),
-        prepared,
-        f.clone(),
-        |_| {},
-    ));
+    let on_finish: OnFinish = match prepared.cache {
+        CachePolicy::Window { gc, .. } => {
+            s.sample.cache.begin(key.clone(), f.clone());
+            let (sampler, flight) = (s.sample.clone(), f.clone());
+            Box::new(move |done: Option<&Done>| {
+                if let Some(d) = done {
+                    sampler
+                        .cache
+                        .put(key.clone(), d.clone(), gc, Instant::now());
+                }
+                sampler.cache.end(&key, &flight);
+            })
+        }
+        CachePolicy::Off => Box::new(|_: Option<&Done>| {}),
+    };
+    let (sampler, id, flight) = (s.sample.clone(), call_id.clone(), f.clone());
+    let task = tokio::spawn(async move {
+        let _running = permit;
+        flight::drive(sampler, id, prepared, flight, on_finish).await;
+    });
     f.set_abort(task.abort_handle());
-    let start = json!({"call_id": call_id, "cached": false, "calls_today": 0, "daily_call_cap": s.sample.settings.daily_call_cap});
-    Ok(stream_response(&s, start, f.reader()))
+    Ok(stream_response(
+        &s,
+        start_json(&call_id, false, calls_today, cap),
+        f.reader(),
+    ))
 }
 
 #[derive(Deserialize)]

@@ -591,3 +591,255 @@ async fn the_daemon_reports_its_sampler_to_the_token_only_and_never_the_key() {
         (json!(false), json!("no_key"))
     );
 }
+
+async fn done_of(
+    ts: &TestServer,
+    aid: &str,
+    body: Value,
+    cookie: Option<&str>,
+) -> (Value, Vec<(String, Value)>) {
+    let mut c = start(ts, aid, body, cookie).await.expect("a stream");
+    let started = c.next().await.1;
+    (started, c.rest().await)
+}
+
+#[tokio::test]
+async fn a_repeat_is_replayed_without_asking_the_provider() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let v = ts.viewer(None).await;
+    let (s1, f1) = done_of(&ts, &aid, json!({"input": "hello"}), Some(&v.cookie)).await;
+    let (s2, f2) = done_of(&ts, &aid, json!({"input": "hello"}), Some(&v.cookie)).await;
+    assert_eq!(
+        (s1["cached"].clone(), s2["cached"].clone()),
+        (json!(false), json!(true))
+    );
+    assert_eq!(f2, vec![("done".to_string(), f1.last().unwrap().1.clone())]);
+    assert_eq!(stub.requests().len(), 1);
+    done_of(
+        &ts,
+        &aid,
+        json!({"input": "hello", "model_tier": "quick"}),
+        Some(&v.cookie),
+    )
+    .await;
+    done_of(
+        &ts,
+        &aid,
+        json!({"input": "hello", "verb": "json"}),
+        Some(&v.cookie),
+    )
+    .await;
+    let (s, _) = done_of(
+        &ts,
+        &aid,
+        json!({"input": "hello", "cache": false}),
+        Some(&v.cookie),
+    )
+    .await;
+    assert_eq!(s["cached"], false);
+    assert_eq!(stub.requests().len(), 4);
+    let (s, _) = done_of(&ts, &aid, json!({"input": "hello"}), Some(&v.cookie)).await;
+    assert_eq!(s["cached"], true);
+}
+
+#[tokio::test]
+async fn answers_are_cached_per_viewer() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let (owner, lan) = (ts.viewer(Some("Owner")).await, ts.viewer(None).await); // two of the owner's browsers
+    done_of(
+        &ts,
+        &aid,
+        json!({"input": "same question"}),
+        Some(&owner.cookie),
+    )
+    .await;
+    let (s, _) = done_of(
+        &ts,
+        &aid,
+        json!({"input": "same question"}),
+        Some(&lan.cookie),
+    )
+    .await;
+    assert_eq!(s["cached"], false);
+    let (s, _) = done_of(&ts, &aid, json!({"input": "same question"}), None).await;
+    assert_eq!(s["cached"], false);
+    assert_eq!(stub.requests().len(), 3);
+    let other = artifact(&ts, json!({"sample": {}})).await;
+    let (s, _) = done_of(
+        &ts,
+        &other,
+        json!({"input": "same question"}),
+        Some(&owner.cookie),
+    )
+    .await;
+    assert_eq!(s["cached"], false);
+}
+
+#[tokio::test]
+async fn a_short_window_expires_and_refresh_asks_again_and_overwrites() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    done_of(
+        &ts,
+        &aid,
+        json!({"input": "q", "cache": {"gc_time_ms": 50}}),
+        None,
+    )
+    .await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let (s, _) = done_of(&ts, &aid, json!({"input": "q"}), None).await;
+    assert_eq!(s["cached"], false);
+    let (s, _) = done_of(
+        &ts,
+        &aid,
+        json!({"input": "q", "cache": {"gc_time_ms": 60000, "refresh": true}}),
+        None,
+    )
+    .await;
+    assert_eq!(s["cached"], false);
+    let (s, _) = done_of(
+        &ts,
+        &aid,
+        json!({"input": "q", "cache": {"gc_time_ms": 60000}}),
+        None,
+    )
+    .await;
+    assert_eq!(s["cached"], true);
+    assert_eq!(stub.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn failures_and_invalid_json_are_never_stored() {
+    let (ts, stub, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    for body in [
+        json!({"input": "[[error:upstream_error]]"}),
+        json!({"input": "[[say:nope]]", "verb": "json"}),
+    ] {
+        for _ in 0..2 {
+            let (s, _) = done_of(&ts, &aid, body.clone(), None).await;
+            assert_eq!(s["cached"], false, "{body}");
+        }
+    }
+    assert_eq!(stub.requests().len(), 4);
+}
+
+#[tokio::test]
+async fn identical_calls_in_flight_share_one_answer_even_if_the_first_leaves() {
+    let (ts, stub, _) =
+        stub_server_with(false, SampleSettings::default(), Duration::from_millis(200)).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let mut first = start(&ts, &aid, json!({"input": "shared"}), None)
+        .await
+        .unwrap();
+    first.next().await;
+    first.next().await;
+    let mut second = start(&ts, &aid, json!({"input": "shared"}), None)
+        .await
+        .unwrap();
+    assert_eq!(second.next().await.1["cached"], true);
+    drop(first);
+    let frames = second.rest().await;
+    assert_eq!(text_of(&frames), "echo: shared");
+    assert_eq!(frames.last().unwrap().1["text"], "echo: shared");
+    assert_eq!(stub.requests().len(), 1);
+}
+
+#[tokio::test]
+async fn the_daily_cap_counts_calls_that_reach_the_provider() {
+    let settings = SampleSettings {
+        daily_call_cap: Some(2),
+        ..SampleSettings::default()
+    };
+    let (ts, _, _) = stub_server(false, settings).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let (s, _) = done_of(&ts, &aid, json!({"input": "a"}), None).await;
+    assert_eq!(
+        (s["calls_today"].clone(), s["daily_call_cap"].clone()),
+        (json!(1), json!(2))
+    );
+    let (s, _) = done_of(&ts, &aid, json!({"input": "b", "cache": false}), None).await;
+    assert_eq!(s["calls_today"], 2);
+    let (status, e) = start(&ts, &aid, json!({"input": "c"}), None)
+        .await
+        .err()
+        .expect("capped");
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (429, "rate_limited")
+    );
+    let (s, _) = done_of(&ts, &aid, json!({"input": "a"}), None).await;
+    assert_eq!(
+        (s["cached"].clone(), s["calls_today"].clone()),
+        (json!(true), json!(2))
+    );
+    let v: Value = ts
+        .get_authed(&format!("/api/artifacts/{aid}/sample"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        (v["calls_today"].clone(), v["daily_call_cap"].clone()),
+        (json!(2), json!(2))
+    );
+    let other = artifact(&ts, json!({"sample": {}})).await;
+    let (s, _) = done_of(&ts, &other, json!({"input": "c"}), None).await;
+    assert_eq!(s["calls_today"], 1);
+}
+
+#[tokio::test]
+async fn a_flood_from_one_viewer_is_rate_limited() {
+    let (ts, _, _) = stub_server(false, SampleSettings::default()).await;
+    let aid = artifact(&ts, json!({"sample": {}})).await;
+    let (flooder, other) = (ts.viewer(None).await, ts.viewer(None).await);
+    let url = format!("{}/api/artifacts/{aid}/sample", ts.base);
+    let mut held = Vec::new();
+    for _ in 0..6 {
+        let (client, url, cookie, token) = (
+            ts.client.clone(),
+            url.clone(),
+            flooder.cookie.clone(),
+            ts.token.clone(),
+        );
+        held.push(tokio::spawn(async move {
+            let res = client
+                .post(url)
+                .bearer_auth(token)
+                .header("cookie", format!("clax_viewer={cookie}"))
+                .json(&json!({"input": "[[slow]]", "cache": false}))
+                .send()
+                .await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+            drop(res);
+        }));
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let (status, e) = start(
+        &ts,
+        &aid,
+        json!({"input": "[[slow]]", "cache": false}),
+        Some(&flooder.cookie),
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert_eq!(
+        (status, e["error"]["code"].as_str().unwrap()),
+        (429, "rate_limited")
+    );
+    let mut fine = start(
+        &ts,
+        &aid,
+        json!({"input": "hi", "cache": false}),
+        Some(&other.cookie),
+    )
+    .await
+    .expect("another viewer still runs");
+    assert_eq!(fine.next().await.0, "start");
+    for h in &held {
+        h.abort();
+    }
+}
