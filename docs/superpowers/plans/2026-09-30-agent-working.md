@@ -6,11 +6,11 @@
 - **Echo.** Plex Sans Condensed for structure and Plex Mono for what people and agents write, the Echo symbol, sentence case, plain-verb buttons, a red-orange Comment button with a 3px rule under the top bar, a gallery that floats what needs your eyes, a `?` sheet with the C keycap, haiku in the gallery footer and while an agent works, and two easter eggs ("rally of 10", the mark's halves meeting).
 - **Agent working signal.** An agent says, through Clax, that it is working on an artifact and on named threads. The signal is set automatically when comment feedback reaches the agent, and explicitly through a new `working` tool. A heartbeat lapses it after 2 minutes. It shows in the top bar's roster and summary, on gallery cards, on thread cards and pins, and to the page (a Clax extension of the `comments` capability).
 - **Version changelog.** Every version records the threads it addressed and a short note from the agent. The changelog shows as an "Addressed in vN" group at the top of the sidebar, as version-tagged history on each thread ("v3 alex commented · claude worked on it · v5 claude addressed it"), as a quiet dot on the version button, and in a version menu that reads as a changelog. Nothing covers or moves the artifact. What is new is decided per viewer.
-- **Batch send.** The viewer ticks several threads, or presses "Send N unsent", and they go to one agent as one batch with an optional note. The agent receives them as one grouped delivery, led by the note, on every tier. Send goes to the agent you last sent to, falling back to the latest publisher.
+- **Batch send.** The viewer ticks several threads, or presses "Send N unsent", and they go to one agent as one batch with an optional note. The agent receives them as one grouped delivery, led by the note, on every tier. Send goes to the agent you last sent to if it is live, else the most recently active live agent receiving the artifact's comments; with none live it goes untargeted, as today. A send that names an agent reaches only that agent, and later comments on the thread follow it.
 
 **Architecture:**
 - **Shell.** The Svelte 5 shell from `docs/superpowers/plans/2026-09-29-svelte-port.md`. View state lives in `ArtifactController` (`web/shell/src/view/artifact-controller.ts`). The logic lives in framework-free `view/*-model.ts` modules, and the components are `web/shell/src/ui/*.svelte` islands that read the controller's store with `fromStore` and `$derived`. Echo is a rewrite of `web/shell/src/theme.css` (tokens, two type voices, components), a new skeleton for the artifact view's top bar, and new components.
-- **Time to usable.** Everything not needed for first paint loads by dynamic `import()`: the `?` sheet, the people panel, the version menu's panel, the Addressed group, the haiku, and the hand-off bar.
+- **Time to usable.** Everything not needed for first paint loads by dynamic `import()`: the `?` sheet, the people panel, the version menu's panel, the Addressed group, the haiku, and the selection bar.
 - **Working.** An in-memory registry in the daemon (`clax_core::working::Working`), keyed by (session, artifact), with an injected clock and a 2 minute heartbeat expiry. The daemon marks work whenever it hands feedback to a session, since every delivery tier runs through `take_feedback`. Changes go out as one SSE event, `working`, and ride along on `GET /api/artifacts` and `GET /api/artifacts/<id>`, which the bootstrap block embeds.
 - **Changelog.** Persisted: a nullable `versions.note`, a `version_threads` link table, and `viewer_seen` (the latest version each viewer has viewed).
 - **Participants.** Comments record their author's viewer public ID, which drives "threads you're in". @mentions are parsed from comment text. `viewer_threads` holds per-viewer looked-at marks. Sessions gain an opaque public handle (`agent_handle`), so the shell can name and target an agent without ever seeing a session ID. A viewer's per-artifact attention (addressed and not looked at, new version, new replies, open threads you're in) is computed in the daemon. The artifact view gets it in the bootstrap block, and the gallery fetches it once, beside the artifact list.
@@ -21,11 +21,11 @@
 
 **Spec:**
 - The design spec: `docs/superpowers/specs/2026-09-28-clax-design.md`. On the Svelte branch and on main after the port merges it has this name. Task 1 amends it and `docs/contract.md`.
-- The redesign brief: `.superpowers/sdd/2026-09-30-redesign/brief.md`, all of it, including its corrections. Where the brief and anything older disagree, the brief wins.
+- The design record: `docs/superpowers/specs/2026-10-01-echo-design.md` (Task 1) states the Echo design, the thread model, the three features' decisions and Q1–Q12 as contract. Where it and anything older disagree, it wins, and the spec and contract it amends state the details.
 - The approved mockup: `.superpowers/sdd/2026-09-30-redesign/concept-3-echo/index.html` and its `shots/`, with `concepts.md` §7 "Echo v2" and `marks/1-echo.svg`.
-- The feature decisions: `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, read with the brief. The brief removes the changelog banner ("Don't get in my way": no band over the page). The returning-viewer summary moves to the top bar's summary line and the version button's dot.
+- The feature decisions are in the design record (§4–§7). There is no changelog banner: no band over the page. The returning viewer's summary is in the top bar's summary line and on the version button's dot.
 
-**Decisions Q1–Q12:** `.superpowers/sdd/2026-09-30-redesign/open-questions.md` lists twelve design questions the brief did not settle. The owner accepted every recommended answer on 2026-10-01, so they are decisions. Each step that rests on one is marked **(decided: Qn)**, to show where the decision lands.
+**Decisions Q1–Q12:** twelve design questions the brief did not settle, all decided on 2026-10-01. They are recorded as contract in `docs/superpowers/specs/2026-10-01-echo-design.md` §8 (Task 1), which also records the Echo design and the three features' decisions, and which committed docs cite in place of any working file. Each step that rests on one is marked **(decided: Qn)**, to show where the decision lands.
 
 **Precondition:** the rename plan (`docs/superpowers/plans/2026-09-29-clax-rename.md`) and the Svelte port (`docs/superpowers/plans/2026-09-29-svelte-port.md`) are both merged to main (the port merged before this plan runs). Check before Task 1:
 
@@ -107,7 +107,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
 10. **Batch atomicity, grouping and the target.**
     - A batch with any unknown, foreign or resolved thread, or an unknown agent handle, writes nothing.
     - A written batch wakes each target once.
-    - With `to`, only that agent's session gets rows.
+    - With `to`, only that agent's session gets rows, and the thread's later comments follow it while it is live.
     - Tests: `api_batch.rs`, `api_push.rs` "a batch reaches codex as one queued message", and the hook, MCP and Pi goldens.
 11. **Selection and keyboard state.**
     - Selection lives only in the controller and is pruned whenever threads change.
@@ -129,7 +129,7 @@ Rust:
 | `crates/clax-core/src/store/attention.rs` | Comment authors, mentions, looked-at marks, attention, agent handles (Task 15) |
 | `crates/clax-core/src/mentions.rs` | `@name` parsing (Task 15) |
 | `crates/clax-core/src/presence.rs` | The in-memory presence registry (Task 24) |
-| `crates/clax-core/src/store/migrations.rs` | Migration 10 (Task 12), 11 (Task 15), 12 (Task 20) |
+| `crates/clax-core/src/store/migrations.rs` | Migration 10 (Task 12), 11 (Task 15), 12 (Task 20), 13 (Task 21) |
 | `crates/clax-server/src/working.rs` | `announce`, `sweep_and_announce`, `mark_items`, `renew_for_tier` (Tasks 8–9) |
 | `crates/clax-server/src/routes/working.rs` | Working routes, and the debug-build clock skew route (Task 8) |
 | `crates/clax-server/src/routes/viewers.rs` | Seen routes (Task 13), looked-at and attention routes (Task 15), presence routes (Task 24) |
@@ -161,7 +161,7 @@ Web (the Svelte port's layout):
 | `web/shell/src/caps/comments.ts`, `caps/host.ts`, `web/bridge/src/caps/comments.ts`, `web/bridge/src/capabilities.ts`, `web/contract/clax-extensions.d.ts` | `working()` and `onWorking(fn)` (Task 17) |
 | `web/shell/src/view/changelog-model.ts`, `version-rows.ts` (lazy, with the panel), `web/shell/src/ui/AddressedGroup.svelte` (lazy), `VersionMenu.svelte`, `VersionPanel.svelte` (lazy) | Changelog in Echo (Task 18) |
 | `web/shell/src/view/attention-model.ts` | Needs your eyes and card markers (Task 19) |
-| `web/shell/src/view/batch-model.ts`, `web/shell/src/ui/HandoffBar.svelte` (lazy), `SendButton.svelte` | Batch send and the agent picker (Task 23) |
+| `web/shell/src/view/batch-model.ts`, `send-target.ts`, `web/shell/src/ui/SelectionBar.svelte` (lazy), `SendButton.svelte` | Batch send, the selection bar and the agent picker (Task 23) |
 | `web/shell/src/view/presence-model.ts`, `web/shell/src/ui/PeoplePanel.svelte` (lazy) | Presence and the people panel (Task 24) |
 | `web/e2e/echo.spec.ts`, `working.spec.ts`, `changelog.spec.ts`, `attention.spec.ts`, `batch.spec.ts`, `presence.spec.ts` | Browser tests |
 
@@ -306,25 +306,31 @@ Comments written before migration 11 have no author ID and count for nobody. An 
 
 - An artifact **needs your eyes** when any of these holds: `addressed` is non-empty, `seen` is non-null and less than `current_version`, or `new_replies` is non-empty. A never-viewed artifact (`seen` null) does not need your eyes for its version alone.
 - **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card, its pin, or J and K) (decided: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
-- **Viewing** a version unpinned writes `viewer_seen`. Resolving is a separate act, and it is never needed to clear anything.
+- **Viewing** the latest version at `/a/<aid>` (not a `/v/<n>` URL) writes `viewer_seen`. Resolving is a separate act, and it is never needed to clear anything.
 - The Addressed in vN group is decided when the view loads, and again when a new version arrives. Looking at a thread writes the mark at once, so the gallery clears, but the thread stays in the group until the view is decided again (decided: Q4).
 
 ### Agents
 
-A session gets `agent_handle` (`a_` and 22 lowercase hex digits from 11 random bytes) when it registers. The handle is never derived from the session ID. The **agents on an artifact** are the live owner session, the live sessions watching it, and the sessions that published any of its versions, as `{handle, harness, live}` (newest first, at most 10). The shell names an agent by its harness (`claude`, `codex`, `pi`). When two agents share a harness, it adds a short suffix from the handle (`claude 7f3a`).
+A session gets `agent_handle` (`a_` and 22 lowercase hex digits from 11 random bytes) when it registers. The handle is never derived from the session ID. The **agents on an artifact** are its owner session, the sessions watching it, and the sessions that published any of its versions, as `{handle, harness, live}`, at most 10.
+- `live` means a send can reach the agent: its session is live and is the owner or a watcher (`Store::live_agent` accepts exactly these).
+- The list is ordered live first, then most recently active first. An agent's activity on the artifact is the newest of its versions of it, its comments on its threads (`comments.via_session_id`), and its watch's `created_at`, else its session's `started_at`.
+- The shell names an agent by its harness (`claude`, `codex`, `pi`). When two agents on the artifact share a harness, each gains the first four hex digits of its handle (`claude 7f3a`).
+- `participants.people[]` carries `seen`, the person's `viewer_seen` on the artifact: public, so the people panel can show it (decided: Q7).
 
 ### Send target
 
-- Send, the bulk bar and Send N unsent all go to one agent. The default is the agent this viewer last sent to on this artifact, kept in `localStorage` under `clax.sendTo.<artifact ID>`. If that agent is no longer live, the default is the latest publisher's agent.
+- Send, the selection bar and Send N unsent all go to one agent. The default is the agent this viewer last sent to on this artifact, kept in `localStorage` under `clax.sendTo.<artifact ID>`, if it is live. Otherwise it is the first live agent in the participants list, which is the most recently active live owner or watcher. With no live agent the default is none, and the shell sends without `to`.
 - The `▾` caret lists the other live agents on the artifact. With one live agent there is no caret.
-- The routes take an optional `to` (an agent handle). Without `to`, they fan out as they do today, to the owner and the watchers.
+- The routes take an optional `to` (an agent handle). With `to`, only that agent's session gets rows, and it becomes the thread's target (`threads.target_session_id`, migration 13, Task 21). A `to` naming no live agent is 400 `unknown_agent`; the shell sends one only when it names a live agent from the list, so this is the error of an explicit, stale `to`.
+- Without `to` (no live agent, `@agent` on a thread never sent, the capability's `sendToClaude`), rows go to the live owner and every live watcher, or wait untargeted when none is live, and the thread's target is cleared.
+- A later viewer comment on a sent thread goes to the thread's target while that session is live; once it has ended, the comment goes as a send without `to`.
 
 ### Presence (decided: Q5)
 
 - A viewer with the artifact open reports `here` while its tab is visible, and `away` when the tab is hidden or there has been no input for 5 minutes. A 30-second heartbeat keeps the report fresh. It may also report `where`: the anchor label of the thread it has selected, or of the composer it is writing in, at most 80 characters.
 - The daemon keeps presence in memory, keyed by (artifact, viewer public ID). An entry lapses 90 s after its last report: it becomes "last here <time>" and is dropped after 10 minutes. Changes go out as the `presence` event, `{artifact_id, people: [{public_id, display_name, state, where, since}]}`.
 - The roster shows here and away. The people panel shows the location. A per-person switch in the panel, "Share where I'm looking", stops sending `where`.
-- Another viewer's last seen version (`seen vK`) is shown in the panel. Their per-thread marks are never shown (decided: Q7).
+- Another viewer's last seen version (`seen vK`) is shown in the panel, from `participants.people[].seen` (Task 15). Their per-thread marks are never shown (decided: Q7).
 
 ## Design: the working record
 
@@ -440,7 +446,7 @@ Decisions: "Batch send to agent" in the decisions file. The labels follow Echo.
 
 ### Route and access
 
-`POST /api/artifacts/<aid>/threads:send` takes `{thread_ids, note?, to?}`. Access is exactly the single send's (`POST .../threads/<tid>/send`, `routes/threads.rs::send`): no token, a foreign `Origin` refused (403 `forbidden_origin`), usable by LAN viewers. The viewer cookie names the sender (`viewer::author_name`: the display name, else `Viewer`). `to` is an agent handle (Task 15). With it, only that agent's live session gets rows. The single send gains the same optional `to` (`{to}` body).
+`POST /api/artifacts/<aid>/threads:send` takes `{thread_ids, note?, to?}`. Access is exactly the single send's (`POST .../threads/<tid>/send`, `routes/threads.rs::send`): no token, a foreign `Origin` refused (403 `forbidden_origin`), usable by LAN viewers. The viewer cookie names the sender (`viewer::author_name`: the display name, else `Viewer`). `to` is an agent handle (Task 15). With it, only that agent's live session gets rows and each sent thread takes it as its target; without it, the batch fans out to the owner and watchers and clears the threads' targets (see "Send target" above). The single send gains the same optional `to` (`{to}` body).
 
 ### All or nothing
 
@@ -467,9 +473,9 @@ Every tier renders through `render_items`. A run of items from one batch is led 
 
 ### What the person sees
 
-- Each open thread card has a checkbox, and Shift-click ticks a range. While any card is ticked, a hand-off bar sits at the sidebar's foot. Its parts:
+- Each open thread card has a checkbox, and Shift-click ticks a range. While any card is ticked, a selection bar sits at the top of the sidebar, under the working strip and above the groups. Its parts:
   - the converging dots (red ones meeting a green one; still under reduced motion);
-  - `3 selected` over `handed off together`;
+  - `3 selected` over `sent together`;
   - Clear;
   - `Send 3 to claude ▾`;
   - an optional one-line note (Cmd+Enter or Ctrl+Enter sends).
@@ -488,6 +494,8 @@ The viewer's batch is the sidebar's. The spec and the contract say so in Task 1.
 ---
 
 ### Task 1: Spec, contract and design amendments
+
+Task 1's review amended its text: the committed design record `docs/superpowers/specs/2026-10-01-echo-design.md`, the public `seen` in participants, the send target and its later comments, and the selection bar at the top of the sidebar. Where the steps below differ from the committed spec and contract, the committed text is the contract the later tasks build.
 
 Docs only. This task writes down everything the later tasks build: Echo, the working signal, the changelog without a banner, participants and attention, presence, the send target, and batch send. Where this plan extends the spec, the amendment is here. The owner's decisions Q1–Q12 (open-questions.md) are written into the spec, and listed together as one row of §2 Decisions. The tool-count lists (`Twenty-two tools:` in `docs/contract.md` and the READMEs) are not touched here: `scripts/sync-skill-tools.py --check` compares them with the fixture, which gains `working` only in Task 10.
 
@@ -891,7 +899,7 @@ Spec §5: in the `feedback(...)` bullet, add `batch_id` to the column list, and 
 
 Spec §6: after the `.../threads/<tid>/send` sentence in the Comments bullet, add: ``POST .../threads:send`` (no token; foreign `Origin` refused, as the single send) takes `{thread_ids, note?, to?}` and sends 1 to 20 threads as one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`, or 400 `invalid_args` / `note_too_long` / `unknown_agent` / `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes nothing on any error. Thread views carry `sends`, the batches that sent them. The single send takes an optional JSON body `{to}` (an agent handle; 400 `unknown_agent` when it names no live agent on the artifact).``
 
-Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click ticks a range; X ticks the selected thread). While any is ticked, a hand-off bar at the sidebar's foot reads `N selected · handed off together`, with Clear, `Send N to <agent> ▾` and an optional one-line note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to <agent>` button sits at the sidebar top whenever open threads have not been sent. A sent thread's history shows the send and its note. A thread that disappears leaves the selection.``
+Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click ticks a range; X ticks the selected thread). While any is ticked, a selection bar at the top of the sidebar reads `N selected · sent together`, with Clear, `Send N to <agent> ▾` and an optional one-line note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to <agent>` button sits at the sidebar top whenever open threads have not been sent. A sent thread's history shows the send and its note. A thread that disappears leaves the selection.``
 
 Spec §9: append to the **comments** bullet: ``There is no batch form of `sendToClaude`: a page sends threads it created one call at a time, each in the strict gesture tier; batches are the viewer's, from the sidebar.`` In the Clax extension sentence from Step 4, after `under either declaration form`, insert ``(for `composer_only`, a Clax extension to that form, which otherwise grants only `openComposer` and `anchorFor`)``.
 
@@ -925,7 +933,7 @@ and in `### The comments capability`, add: ``Clax adds no batch `sendToClaude`; 
 Append to the §2 Decisions table, as one row:
 
 ```markdown
-| D-Echo | Decided by the owner on 2026-10-01 (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`, every recommended answer accepted): gallery cards without thumbnails (Q1); the theme switch's return to the
+| D-Echo | Decided on 2026-10-01 (`2026-10-01-echo-design.md`): gallery cards without thumbnails (Q1); the theme switch's return to the
   system (Q2); @mention matching (Q3); what counts as looking, and the
   Addressed group holding still until the view is decided again (Q4);
   presence built now, with location from the selected thread (Q5); keys only
@@ -5768,7 +5776,10 @@ It all rides on the responses the shell already loads and on the bootstrap block
 - `NewThread` and `NewComment` gain `author_public_id: Option<String>`. Comment views gain `author_public_id` (null for agents and anonymous viewers).
 - `Session` gains `agent_handle: String`. Version views gain `agent: Option<String>` (the publishing session's handle) and `agent_harness: Option<String>`.
 - The `Store` gains:
-  - `participants(aid) -> Result<Participants>`, where `Participants { people: Vec<Person { public_id, display_name }>, agents: Vec<AgentView { handle, harness, live }> }`. Agents are the live owner, the live watchers and the version publishers, live first, then newest, at most 10.
+  - `participants(aid) -> Result<Participants>`, where `Participants { people: Vec<Person { public_id, display_name, seen }>, agents: Vec<AgentView { handle, harness, live }> }`.
+    - `Person.seen: Option<u32>` is the person's `viewer_seen` on this artifact. It is public (decided: Q7): anyone who can read the artifact sees it, without a cookie.
+    - Agents are the owner, the watchers and the version publishers, at most 10. `live` is true when the session is live and is the owner or a watcher, exactly the sessions `live_agent` accepts, so a send can reach every agent shown live.
+    - The order is live first, then most recently active on the artifact (the newest of its versions, its comments on the artifact's threads and its watch, else its registration), so the shell's default target is the first live agent.
   - `live_agent(aid, handle) -> Result<Option<String>>`: the session ID of the live owner or watcher whose handle this is, for the send target in Task 21.
   - `mark_looked(viewer_id, aid, &[String]) -> Result<BTreeMap<String, String>>`: only threads of `aid`. It answers the marks after the write.
   - `attention(viewer_id, aid) -> Result<Attention { addressed, new_replies, open_in: Vec<String>, addressed_v: Option<u32> (the newest version among those links), seen: Option<u32>, looked: BTreeMap<String, String> }>`.
@@ -5900,7 +5911,7 @@ async fn participants_name_agents_by_handle_only() {
     ts.thread_as(&aid, &alex.cookie, "Two columns").await;
     let v: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
     let p = &v["artifact"]["participants"];
-    assert_eq!(p["people"], json!([{"public_id": alex.public_id, "display_name": "Alex"}]));
+    assert_eq!(p["people"], json!([{"public_id": alex.public_id, "display_name": "Alex", "seen": null}]));
     let agent = &p["agents"][0];
     assert_eq!(agent["harness"], "claude");
     assert_eq!(agent["live"], true);
@@ -5911,6 +5922,41 @@ async fn participants_name_agents_by_handle_only() {
     let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
     assert_eq!(list["artifacts"][0]["participants"]["agents"][0]["handle"], handle);
     assert!(!list.to_string().contains(&sid));
+}
+
+#[tokio::test]
+async fn the_last_version_a_person_viewed_is_public_and_their_looks_are_not() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = artifact(&ts).await;
+    let alex = ts.viewer(Some("Alex")).await;
+    let tid = ts.thread_as(&aid, &alex.cookie, "Two columns").await["id"].as_str().unwrap().to_string();
+    let res = ts.client.put(format!("{}/api/viewers/me/seen", ts.base)).header("cookie", format!("clax_viewer={}", alex.cookie))
+        .json(&json!({"artifact_id": aid, "version": 1})).send().await.unwrap();
+    assert_eq!(res.status(), 200);
+    look(&ts, &aid, &alex.cookie, &[&tid]).await;
+    let anon: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    assert_eq!(anon["artifact"]["participants"]["people"][0]["seen"], 1, "another viewer, or no viewer, reads Alex's last seen version");
+    assert!(!anon.to_string().contains("looked"), "Alex's looked-at marks stay Alex's");
+    let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
+    assert_eq!(list["artifacts"][0]["participants"]["people"][0]["seen"], 1);
+}
+
+#[tokio::test]
+async fn agents_are_live_only_when_a_send_can_reach_them_and_the_most_recently_active_comes_first() {
+    let ts = TestServer::spawn().await;
+    let (owner, aid) = artifact(&ts).await;
+    let w = ts.register_session("codex", "att-watch").await;
+    let watcher = w["id"].as_str().unwrap().to_string();
+    let res = ts.authed(ts.client.put(format!("{}/api/sessions/{watcher}/watches/{aid}", ts.base))).send().await.unwrap();
+    assert!(res.status().is_success());
+    let agents = |v: &Value| v["artifact"]["participants"]["agents"].as_array().unwrap().iter()
+        .map(|a| (a["harness"].as_str().unwrap().to_string(), a["live"].as_bool().unwrap())).collect::<Vec<_>>();
+    let v: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    assert_eq!(agents(&v), [("codex".to_string(), true), ("claude".to_string(), true)], "the newest watch is the most recent activity");
+    let res = ts.authed(ts.client.patch(format!("{}/api/sessions/{owner}", ts.base))).json(&json!({"ended": true})).send().await.unwrap();
+    assert!(res.status().is_success());
+    let v: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    assert_eq!(agents(&v), [("codex".to_string(), true), ("claude".to_string(), false)], "an ended publisher stays listed, not live");
 }
 
 #[tokio::test]
@@ -6062,7 +6108,12 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 
 #[derive(Serialize, Debug, Clone, PartialEq)]
-pub struct Person { pub public_id: String, pub display_name: Option<String> }
+pub struct Person {
+    pub public_id: String,
+    pub display_name: Option<String>,
+    /// The latest version this person viewed at the artifact's latest URL. Public (spec §14).
+    pub seen: Option<u32>,
+}
 #[derive(Serialize, Debug, Clone, PartialEq)]
 pub struct AgentView { pub handle: String, pub harness: String, pub live: bool }
 #[derive(Serialize, Debug, Clone, PartialEq, Default)]
@@ -6087,19 +6138,33 @@ const IN_THREAD: &str = "SELECT t.id, t.status FROM threads t WHERE t.artifact_i
 impl Store {
     pub fn participants(&self, aid: &ArtifactId) -> Result<Participants> {
         self.with_conn(|c| {
+            // `seen` is public by design (decided: Q7); looked-at marks are not read here.
             let people = c.prepare(
-                "SELECT v.public_id, v.display_name FROM viewers v WHERE v.public_id IN
+                "SELECT v.public_id, v.display_name, s.seen_n FROM viewers v
+                   LEFT JOIN viewer_seen s ON s.viewer_id = v.id AND s.artifact_id = ?1
+                  WHERE v.public_id IN
                    (SELECT c.author_public_id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1 AND c.author_public_id IS NOT NULL)
                  ORDER BY v.created_at",
-            )?.query_map(params![aid.as_str()], |r| Ok(Person { public_id: r.get(0)?, display_name: r.get(1)? }))?
+            )?.query_map(params![aid.as_str()], |r| Ok(Person { public_id: r.get(0)?, display_name: r.get(1)?, seen: r.get(2)? }))?
               .collect::<rusqlite::Result<Vec<_>>>()?;
+            // `live`: a send can reach it (live, and the owner or a watcher), as `live_agent` checks.
+            // Activity: the newest of its versions, its comments on this artifact's threads and its
+            // watch, else its registration. SQLite's many-argument MAX is NULL when any argument is,
+            // hence the COALESCEs.
             let agents = c.prepare(
-                "SELECT s.agent_handle, s.harness, s.ended_at IS NULL AS live, MAX(COALESCE(v.created_at, s.started_at)) AS at
-                   FROM sessions s LEFT JOIN versions v ON v.session_id = s.id AND v.artifact_id = ?1
+                "SELECT s.agent_handle, s.harness,
+                        (s.ended_at IS NULL AND (s.id = (SELECT owner_session_id FROM artifacts WHERE id = ?1)
+                           OR s.id IN (SELECT session_id FROM watches WHERE artifact_id = ?1))) AS live,
+                        MAX(COALESCE((SELECT MAX(created_at) FROM versions WHERE session_id = s.id AND artifact_id = ?1), ''),
+                            COALESCE((SELECT MAX(c.created_at) FROM comments c JOIN threads t ON t.id = c.thread_id
+                                       WHERE c.via_session_id = s.id AND t.artifact_id = ?1), ''),
+                            COALESCE((SELECT created_at FROM watches WHERE session_id = s.id AND artifact_id = ?1), ''),
+                            s.started_at) AS active_at
+                   FROM sessions s
                   WHERE s.id = (SELECT owner_session_id FROM artifacts WHERE id = ?1)
                      OR s.id IN (SELECT session_id FROM watches WHERE artifact_id = ?1)
                      OR s.id IN (SELECT session_id FROM versions WHERE artifact_id = ?1)
-                  GROUP BY s.id ORDER BY live DESC, at DESC LIMIT ?2",
+                  ORDER BY live DESC, active_at DESC, s.id LIMIT ?2",
             )?.query_map(params![aid.as_str(), MAX_AGENTS as i64], |r| Ok(AgentView { handle: r.get(0)?, harness: r.get(1)?, live: r.get(2)? }))?
               .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(Participants { people, agents })
@@ -6253,7 +6318,8 @@ Use the file's existing helpers for parsing the body and the ID; their names may
 `web/shell/src/api.ts` and `threads.ts`: add the types from Interfaces, and:
 
 ```ts
-export type Participants = { people: { public_id: string; display_name: string | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
+/** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
+export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
 
@@ -7949,7 +8015,7 @@ git status --short   # staged; the controller commits ("Float what needs each vi
 
 ### Task 20: Batch send in the store: one transaction, one batch, grouped payload
 
-Decisions: `.superpowers/sdd/2026-09-30-agent-working/decisions.md`, "Batch send to agent". The rules this task implements are in "Design: batch send to agent" above.
+Decisions: the design record, §6 "Batch send" and §7 "Where a send goes". The rules this task implements are in "Design: batch send to agent" above.
 
 **Files:**
 - Create: `crates/clax-core/src/store/batches.rs`
@@ -8289,17 +8355,22 @@ git status --short   # staged; the controller commits ("Send several threads to 
 
 ### Task 21: The batch send route, and the send target
 
-The batch route from "Design: batch send to agent", plus the optional `to` (an agent handle, Task 15) on both the batch and the single send. With `to`, only that agent's live session gets rows. Without it, the fan-out is as before.
+The batch route from "Design: batch send to agent", plus the optional `to` (an agent handle, Task 15) on both the batch and the single send, and the thread's target (spec §10, "Data flow"):
+- With `to`, only that agent's live session gets rows, and the session becomes the thread's target (`threads.target_session_id`).
+- Without `to`, the rows fan out to the live owner and every live watcher (or wait untargeted when none is live), and the thread's target is cleared.
+- A later viewer comment on a sent thread follows the thread's target while that session is live, and fans out once it has ended.
 
 **Files:**
-- Modify: `crates/clax-server/src/routes/threads.rs` (new `send_batch` handler; `send` takes an optional `{to}`), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/feedback.rs` (`thread_view` gains `sends`), `crates/clax-core/src/store/feedback.rs` (`send_to`), `crates/clax-core/src/store/batches.rs` (`SendBatch.to`)
+- Modify: `crates/clax-server/src/routes/threads.rs` (new `send_batch` handler; `send` takes an optional `{to}`), `crates/clax-server/src/routes/mod.rs`, `crates/clax-server/src/feedback.rs` (`thread_view` gains `sends`), `crates/clax-core/src/store/migrations.rs` (migration 13), `crates/clax-core/src/store/feedback.rs` (`SendTarget`, `send_to`), `crates/clax-core/src/store/batches.rs` (`SendBatch.to`), `crates/clax-core/src/lib.rs`
 - Create: `crates/clax-server/tests/api_batch.rs`
 
 **Interfaces:**
 - `POST /api/artifacts/<aid>/threads:send` with body `{thread_ids: [ULID], note?: string, to?: agent handle}` (`deny_unknown_fields`). Auth is exactly that of `POST .../threads/<tid>/send`: no token, `SameOrigin` (a foreign `Origin` is 403 `forbidden_origin`), and the optional viewer cookie names the sender (`crate::viewer::author_name`). This is the route the sidebar calls, as its single send does. The capability's `sendToClaude` keeps calling the single route (see "Design: batch send to agent").
 - `200 {batch: {id, size, note, sent_by}, sent: [ID], unchanged: [ID], threads: [thread view]}`. Errors: 400 `invalid_args`, 400 `note_too_long`, 400 `unknown_agent`, 400 `unknown_thread`, 400 `thread_resolved`, 409 `nothing_to_send`, 404 `not_found` (unknown or deleted artifact). In every error case nothing is written.
 - Thread views gain `sends: [{batch_id, size, note, sent_by, sent_at}]`.
-- `POST .../threads/<tid>/send` takes an optional JSON body `{to}` (an agent handle); 400 `unknown_agent` when it names no live owner or watcher of the artifact.
+- `POST .../threads/<tid>/send` takes an optional JSON body `{to}` (an agent handle); 400 `unknown_agent` when it names no live owner or watcher of the artifact. Without a body, or without `to`, it sends to everyone and clears the thread's target.
+- `clax_core::store::feedback::SendTarget<'a> { Agent(&'a str) /* a session ID */, Everyone, Thread }`, re-exported from `lib.rs`. `Store::send_to(tid, SendTarget) -> Result<(Thread, Touched)>`. `send_to_agent(tid)` stays, as `send_to(tid, SendTarget::Thread)`: the path for later comments and for `@agent`.
+- Migration 13: `threads.target_session_id TEXT`, stored and never served (no thread view, event or capability answer carries it).
 - After the commit: one `feedback::apply` for the whole batch's `touched` (one wake-up, one `codex queue` dispatch per target), then a `thread` event per sent thread.
 
 - [ ] **Step 1: Failing tests**
@@ -8501,7 +8572,7 @@ async fn to_sends_only_to_that_agent_and_an_unknown_handle_writes_nothing() {
     let (owner, aid, tids) = setup(&ts).await;
     let w = ts.register_session("codex", "batch-watch").await;
     let watcher = w["id"].as_str().unwrap().to_string();
-    let res = ts.authed(ts.client.post(format!("{}/api/sessions/{watcher}/watches", ts.base))).json(&json!({"artifact": aid})).send().await.unwrap();
+    let res = ts.authed(ts.client.put(format!("{}/api/sessions/{watcher}/watches/{aid}", ts.base))).send().await.unwrap();
     assert!(res.status().is_success());
     let a: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
     let handle = a["artifact"]["participants"]["agents"].as_array().unwrap().iter()
@@ -8521,16 +8592,121 @@ async fn to_sends_only_to_that_agent_and_an_unknown_handle_writes_nothing() {
     let again: Value = ts.get_authed(&format!("/api/sessions/{owner}/feedback?tier=piggyback")).await.json().await.unwrap();
     assert_eq!(again["feedback"].as_array().unwrap().len(), 0, "the single send with to skips the owner too");
 }
-```
 
-Write the watch request as `api_watches.rs` writes it, if its body differs from `{artifact}`.
+async fn watcher_of(ts: &TestServer, aid: &str, hsid: &str) -> (String, String) {
+    let w = ts.register_session("codex", hsid).await;
+    let sid = w["id"].as_str().unwrap().to_string();
+    let res = ts.authed(ts.client.put(format!("{}/api/sessions/{sid}/watches/{aid}", ts.base))).send().await.unwrap();
+    assert!(res.status().is_success());
+    let a: Value = ts.get(&format!("/api/artifacts/{aid}")).await.json().await.unwrap();
+    let handle = a["artifact"]["participants"]["agents"].as_array().unwrap().iter()
+        .find(|x| x["harness"] == "codex").unwrap()["handle"].as_str().unwrap().to_string();
+    (sid, handle)
+}
+
+async fn taken(ts: &TestServer, sid: &str) -> Vec<String> {
+    let v: Value = ts.get_authed(&format!("/api/sessions/{sid}/feedback?tier=piggyback")).await.json().await.unwrap();
+    v["feedback"].as_array().unwrap().iter().map(|f| f["body"].as_str().unwrap().to_string()).collect()
+}
+
+async fn reply(ts: &TestServer, aid: &str, tid: &str, body: &str) {
+    let res = ts.client.post(format!("{}/api/artifacts/{aid}/threads/{tid}/comments", ts.base)).json(&json!({"body": body})).send().await.unwrap();
+    assert_eq!(res.status(), 201);
+}
+
+#[tokio::test]
+async fn later_comments_follow_the_agent_the_thread_was_sent_to() {
+    let ts = TestServer::spawn().await;
+    let (owner, aid, tids) = setup(&ts).await;
+    let (watcher, handle) = watcher_of(&ts, &aid, "follow-watch").await;
+    assert_eq!(send(&ts, &aid, json!({"thread_ids": [tids[0]], "to": handle})).await.status(), 200);
+    assert_eq!(taken(&ts, &watcher).await, ["one"]);
+    reply(&ts, &aid, &tids[0], "and the footer").await;
+    reply(&ts, &aid, &tids[0], "@agent also the header").await;
+    assert_eq!(taken(&ts, &watcher).await, ["and the footer", "@agent also the header"], "later comments, @agent or not, follow the target");
+    assert!(taken(&ts, &owner).await.is_empty(), "the owner never gets a comment sent to another agent");
+    let t: Value = ts.get(&format!("/api/artifacts/{aid}/threads/{}", tids[0])).await.json().await.unwrap();
+    assert!(!t.to_string().contains(&watcher), "the target is never served");
+}
+
+#[tokio::test]
+async fn once_the_target_ends_later_comments_go_to_everyone_and_a_send_without_to_clears_it() {
+    let ts = TestServer::spawn().await;
+    let (owner, aid, tids) = setup(&ts).await;
+    let (watcher, handle) = watcher_of(&ts, &aid, "ended-watch").await;
+    send(&ts, &aid, json!({"thread_ids": [tids[0], tids[1]], "to": handle})).await;
+    taken(&ts, &watcher).await;
+    let res = ts.authed(ts.client.patch(format!("{}/api/sessions/{watcher}", ts.base))).json(&json!({"ended": true})).send().await.unwrap();
+    assert!(res.status().is_success());
+    reply(&ts, &aid, &tids[0], "still there?").await;
+    assert_eq!(taken(&ts, &owner).await, ["still there?"], "the target ended: the comment fans out");
+    let (second, _) = watcher_of(&ts, &aid, "second-watch").await;
+    let res = ts.client.post(format!("{}/api/artifacts/{aid}/threads/{}/send", ts.base, tids[1])).send().await.unwrap();
+    assert_eq!(res.status(), 200, "a send without to");
+    reply(&ts, &aid, &tids[1], "for everyone").await;
+    assert_eq!(taken(&ts, &owner).await, ["for everyone"]);
+    assert_eq!(taken(&ts, &second).await, ["for everyone"], "no target: the owner and every live watcher");
+}
+```
 
 Run: `cargo test -p clax-server --test api_batch to_sends`
 Expected: FAIL.
 
 Implement:
-- `store/feedback.rs`: `send_in(tx, thread_id, batch_id, to: Option<&str>, touched)`. With `to = Some(sid)`, the targets are `[sid]` when `sid` is among `live_targets`. Otherwise it is `CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle")`. Add `pub fn send_to(&self, thread_id: &str, to: Option<&str>) -> Result<(Thread, Touched)>`, and keep `send_to_agent(tid)` as `send_to(tid, None)`. Other callers keep it: `@agent` and the capability's `sendToClaude`.
-- `store/batches.rs`: `SendBatch` gains `pub to: Option<String>` (a session ID). `send_batch` checks it before any thread, as the first validation after the bounds, and passes it to every `send_in`. Existing `SendBatch { … }` literals (Task 20's tests) add `to: None`.
+- Migration 13, appended to `MIGRATIONS`:
+
+```rust
+    // 13: the session a thread was last sent to with `to`. Later viewer
+    // comments on the thread follow it while it is live. Never served.
+    "ALTER TABLE threads ADD COLUMN target_session_id TEXT;",
+```
+
+- `store/feedback.rs`, beside `live_targets`:
+
+```rust
+/// Where a send's rows go (spec §10, "Data flow").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendTarget<'a> {
+    /// This live owner or watcher only (a session ID); it becomes the thread's target.
+    Agent(&'a str),
+    /// Every live owner and watcher, or untargeted when none is live; clears the thread's target.
+    Everyone,
+    /// A later comment, or `@agent`: the thread's target while it is live, else as `Everyone`
+    /// (the stored target is kept, and simply no longer matches a live session).
+    Thread,
+}
+
+/// The sessions `target` names for a thread of `aid`, writing the thread's
+/// target when the send sets or clears it.
+fn targets_for(tx: &Transaction<'_>, thread_id: &str, aid: &str, owner: Option<&str>, target: SendTarget<'_>) -> Result<Vec<String>> {
+    let live = live_targets(tx, aid, owner)?;
+    match target {
+        SendTarget::Agent(sid) => {
+            if !live.iter().any(|s| s == sid) {
+                return Err(CoreError::invalid("unknown_agent", "no live agent on this artifact has that handle"));
+            }
+            tx.execute("UPDATE threads SET target_session_id = ?2 WHERE id = ?1", params![thread_id, sid])?;
+            Ok(vec![sid.to_string()])
+        }
+        SendTarget::Everyone => {
+            tx.execute("UPDATE threads SET target_session_id = NULL WHERE id = ?1", params![thread_id])?;
+            Ok(live)
+        }
+        SendTarget::Thread => {
+            let stored: Option<String> =
+                tx.query_row("SELECT target_session_id FROM threads WHERE id = ?1", params![thread_id], |r| r.get(0))?;
+            Ok(match stored {
+                Some(sid) if live.contains(&sid) => vec![sid],
+                _ => live,
+            })
+        }
+    }
+}
+```
+
+  `send_in` becomes `send_in(tx, thread_id, batch_id, target: SendTarget<'_>, touched)` and takes its targets from `targets_for` in place of `live_targets`; the rest (one row per viewer comment without a row, untargeted when the list is empty) is unchanged. Add `pub fn send_to(&self, thread_id: &str, target: SendTarget<'_>) -> Result<(Thread, Touched)>`, and keep `send_to_agent(tid)` as `send_to(tid, SendTarget::Thread)`. Its callers keep it: the thread create route's `@agent` (a new thread has no target, so it fans out) and the comment route's forwarding of later comments (`routes/threads.rs`, where `t.sent_to_agent || mentions_agent(..)` calls it), which now follow the thread's target.
+- `store/batches.rs`: `SendBatch` gains `pub to: Option<String>` (a session ID). `send_batch` checks it before any thread, as the first validation after the bounds (`unknown_agent` when it is not among the artifact's live targets), and passes `to.as_deref().map_or(SendTarget::Everyone, SendTarget::Agent)` to every `send_in`. Existing `SendBatch { … }` literals (Task 20's tests) add `to: None`.
+- Add a store test in `store/feedback.rs`, beside `send_is_idempotent_and_later_viewer_comments_are_forwarded`: a thread sent with `SendTarget::Agent(watcher)` gets its later viewer comment's row for the watcher only; after the watcher's session ends, the next one goes to the owner; `SendTarget::Everyone` clears the stored target.
 - `routes/threads.rs`: `BatchBody` gains `#[serde(default)] to: Option<String>`. A single-send body is `#[derive(Deserialize, Default)] #[serde(deny_unknown_fields)] struct SendBody { #[serde(default)] to: Option<String> }`, read as `resolve` reads its optional `ResolveBody`. In both handlers, inside the store call:
 
 ```rust
@@ -8541,7 +8717,8 @@ Implement:
             };
 ```
 
-  The batch passes `to` in `SendBatch`. The single send calls `st.send_to(&tid, to.as_deref())`.
+  The batch passes `to` in `SendBatch`. The single send calls `st.send_to(&tid, to.as_deref().map_or(SendTarget::Everyone, SendTarget::Agent))`: a single send without `to` is an explicit send to everyone, which clears the target. The capability's `sendToClaude` posts no body, so it fans out, as before this task.
+- Thread views gain nothing for the target: `target_session_id` is a session ID, and `tests/api_batch.rs` asserts it is never served.
 
 Run: `cargo test -p clax-server --test api_batch && cargo test -p clax-core`
 Expected: PASS.
@@ -8550,13 +8727,13 @@ Expected: PASS.
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
-git add crates/clax-core/src/store/feedback.rs crates/clax-core/src/store/batches.rs crates/clax-server/src/routes/threads.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/feedback.rs crates/clax-server/src/error.rs crates/clax-server/tests/api_batch.rs
+git add crates/clax-core/src/store/feedback.rs crates/clax-core/src/store/batches.rs crates/clax-core/src/store/migrations.rs crates/clax-core/src/lib.rs crates/clax-server/src/routes/threads.rs crates/clax-server/src/routes/mod.rs crates/clax-server/src/feedback.rs crates/clax-server/src/error.rs crates/clax-server/tests/api_batch.rs
 git add -u crates/clax-server/tests
-git status --short   # staged; the controller commits ("Add the batch send route, all or nothing, and an optional agent target for every send")
+git status --short   # staged; the controller commits ("Add the batch send route, all or nothing, and an agent target that a thread's later comments follow")
 ```
 ### Task 22: One grouped delivery on every harness: goldens, skills, smoke
 
-Every tier renders through `render_items` (Task 20), so there is nothing new to build per tier. This task proves the grouped delivery on each path an agent reads, and teaches the skills what a batch looks like.
+Every tier renders through `render_items` (Task 20), so there is nothing new to build per tier. This task proves the grouped delivery on each path an agent reads, proves on a real hook that a send naming an agent reaches only that agent and that the thread's later comments follow it (Task 21), and teaches the skills what a batch looks like and that a watch does not mean every comment.
 
 **Files:**
 - Modify: `crates/clax-server/tests/api_push.rs`, `crates/clax-hooks/tests/golden.rs`, `crates/clax-mcp/tests/comments.rs`, `plugins/pi/test/clax.test.ts`, `plugins/claude-code/skills/clax/SKILL.md`, `plugins/clax/skills/clax/SKILL.md`, `plugins/pi/skills/clax/SKILL.md`, `scripts/smoke-comment-loop.sh`
@@ -8615,7 +8792,46 @@ fn a_batch_blocks_the_stop_once_with_every_thread() {
     stop_in["stop_hook_active"] = true.into();
     assert_eq!(hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes()).stdout, "");
 }
+
+#[test]
+fn a_send_to_one_agent_blocks_only_its_stop_and_later_comments_follow_it() {
+    let d = Daemon::start();
+    let (_owner, aid) = d.session_with_artifact("claude", "cc-owner");
+    let w: Value = d.http().post(format!("{}/api/sessions", d.base())).bearer_auth(d.token())
+        .json(&serde_json::json!({"harness": "claude", "harness_session_id": "cc-watcher", "cwd": "/tmp/project"}))
+        .send().unwrap().json().unwrap();
+    let watcher = w["session"]["id"].as_str().unwrap().to_string();
+    let res = d.http().put(format!("{}/api/sessions/{watcher}/watches/{aid}", d.base())).bearer_auth(d.token()).send().unwrap();
+    assert!(res.status().is_success());
+    let a: Value = d.http().get(format!("{}/api/artifacts/{aid}", d.base())).send().unwrap().json().unwrap();
+    // The watcher watched last, so it is the most recently active live agent and leads the list (Task 15).
+    let first = &a["artifact"]["participants"]["agents"][0];
+    assert_eq!(first["live"], true);
+    let handle = first["handle"].as_str().unwrap().to_string();
+    let form = reqwest::blocking::multipart::Form::new()
+        .text("anchor", r#"{"kind":"element","selector":"body > h2","quote":"Goals"}"#)
+        .text("body", "two columns").text("version", "1");
+    let t: Value = d.http().post(format!("{}/api/artifacts/{aid}/threads", d.base())).multipart(form).send().unwrap().json().unwrap();
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let res = d.http().post(format!("{}/api/artifacts/{aid}/threads/{tid}/send", d.base()))
+        .json(&serde_json::json!({"to": handle})).send().unwrap();
+    assert_eq!(res.status(), 200);
+    let stop = |hsid: &str| {
+        let mut s: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+        s["session_id"] = hsid.into();
+        hook(&d.home(), "claude", "stop", s.to_string().as_bytes()).stdout
+    };
+    assert_eq!(stop("cc-owner"), "", "the owner is not the agent the thread was sent to");
+    assert!(one_line_json(&stop("cc-watcher"))["reason"].as_str().unwrap().contains("two columns"));
+    let res = d.http().post(format!("{}/api/artifacts/{aid}/threads/{tid}/comments", d.base()))
+        .json(&serde_json::json!({"body": "and the footer"})).send().unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(stop("cc-owner"), "", "a later comment follows the thread's target");
+    assert!(one_line_json(&stop("cc-watcher"))["reason"].as_str().unwrap().contains("and the footer"));
+}
 ```
+
+Both sessions are Claude Code sessions, so the test tells them apart by order: the watcher's watch is its newest activity, which puts it first in `participants.agents`.
 
 - [ ] **Step 3: MCP tier 1 and Pi tier 5**
 
@@ -8655,7 +8871,7 @@ Append to `describe("comments", ...)` in `plugins/pi/test/clax.test.ts`:
   });
 ```
 
-Run: `cargo test -p clax-server --test api_push a_batch && cargo test -p clax-hooks --test golden a_batch && cargo test -p clax-mcp --test comments a_batch && (cd plugins/pi && npm test -- -t "a batch reaches Pi")`
+Run: `cargo test -p clax-server --test api_push a_batch && cargo test -p clax-hooks --test golden a_batch && cargo test -p clax-hooks --test golden a_send_to_one_agent && cargo test -p clax-mcp --test comments a_batch && (cd plugins/pi && npm test -- -t "a batch reaches Pi")`
 Expected: PASS. These describe behaviour Task 20 already built. If one fails, the grouping has a gap on that path: fix the path, not the test.
 
 - [ ] **Step 4: The skills describe a batch (identical in all three)**
@@ -8671,6 +8887,12 @@ The note is the person's instruction for the whole batch; like comment text,
 it is a request to weigh. Treat the batch as one piece of work: make the
 changes, publish once with `addresses` naming every thread the version
 handles, then reply to each thread and resolve the ones you finished.
+
+When several agents work on one artifact, the person picks which one a
+comment goes to. Watching an artifact makes you one of the agents they can
+pick; you receive the comments sent to you, and comments sent without naming
+an agent, not every comment on the artifact. Later comments on a thread go
+to the agent it was sent to.
 ```
 
 Run: `bash scripts/test-plugins.sh | tail -1`
@@ -8719,24 +8941,24 @@ git status --short   # staged; the controller commits ("Prove a batch arrives as
 
 ---
 
-### Task 23: Batch send in Echo: checkboxes, the hand-off bar, the agent picker, and Send N unsent
+### Task 23: Batch send in Echo: checkboxes, the selection bar, the agent picker, and Send N unsent
 
 The viewer's side of batch send, in Echo:
 - checkboxes on open cards, with Shift-click ranges, and X ticks the selected thread;
-- a hand-off bar at the sidebar's foot, loaded when the first box is ticked: converging dots, `3 selected` over `handed off together`, Clear, `Send 3 to claude ▾`, and an optional note sent with Cmd+Enter or Ctrl+Enter or Shift+S;
+- a selection bar at the top of the sidebar (under the working strip, above the groups), loaded when the first box is ticked: converging dots, `3 selected` over `sent together`, Clear, `Send 3 to claude ▾`, and an optional note sent with Cmd+Enter or Ctrl+Enter or Shift+S;
 - `Send N unsent to claude` at the sidebar's top;
 - one agent picker shared by every Send.
 
-Send goes to the agent you last sent to on this artifact, falling back to the latest publisher's agent. The caret appears only when more than one agent is live.
+Send goes to the agent you last sent to on this artifact if it is live, else to the first live agent of `participants.agents` (Task 15 orders it live first, most recently active first). With no live agent, Send goes without `to`: the daemon stores the comments untargeted for the next session that publishes or watches. The caret appears only when more than one agent is live.
 
 **Files:**
-- Create: `web/shell/src/view/batch-model.ts`, `web/shell/src/view/batch-model.test.ts`, `web/shell/src/view/send-target.ts`, `web/shell/src/view/send-target.test.ts`, `web/shell/src/ui/HandoffBar.svelte`, `web/shell/src/ui/SendButton.svelte`, `web/e2e/batch.spec.ts`
+- Create: `web/shell/src/view/batch-model.ts`, `web/shell/src/view/batch-model.test.ts`, `web/shell/src/view/send-target.ts`, `web/shell/src/view/send-target.test.ts`, `web/shell/src/ui/SelectionBar.svelte`, `web/shell/src/ui/SendButton.svelte`, `web/e2e/batch.spec.ts`
 - Modify: `web/shell/src/threads.ts` (`sendBatch`, `sendToAgent(…, to)`, `Thread.sends`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
 
 **Interfaces:**
 - `threads.ts`:
   - `sendToAgent(aid, tid, to: string | null = null)` posts `{to}` when set;
-  - `sendBatch(aid, threadIds, note, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }>` calls `POST /api/artifacts/<aid>/threads:send` with no token, and throws `ApiError` with the daemon's message;
+  - `sendBatch(aid, threadIds, note, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }>` (the body has no `to` key when `to` is null) calls `POST /api/artifacts/<aid>/threads:send` with no token, and throws `ApiError` with the daemon's message;
   - `Thread` gains `sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[]`.
 - `view/batch-model.ts`:
   - `type Selection = { ids: string[]; anchor: string | null }` and `EMPTY_SELECTION`;
@@ -8747,7 +8969,7 @@ Send goes to the agent you last sent to on this artifact, falling back to the la
   - `countLabel(n)`, `unsentLabel(n, agent)` and `sendLabel(n, agent)`.
 - `view/send-target.ts`:
   - `liveAgents(agents: AgentView[]): AgentView[]`;
-  - `defaultTarget(aid: string, agents: AgentView[], versions: Version[]): string | null`, which picks the remembered handle if it is live, else the latest version's `agent` if it is live, else the first live agent, else null;
+  - `defaultTarget(aid: string, agents: AgentView[]): string | null`, which picks the remembered handle if it is live, else the first live agent in `agents` (the daemon orders them live first, most recently active first), else null. Null means the shell sends without `to`;
   - `rememberTarget(aid, handle)`, kept in `localStorage` `clax.sendTo.<aid>` with every access guarded.
 - `history-model.ts`: each send in `t.sends` adds `{ v: versionAt(sent_at), who: sent_by, agent: false, verb: "sent it" + (size > 1 ? ` with ${size - 1} other${size - 1 === 1 ? "" : "s"}` : "") + (note ? ` · “${note}”` : "") }`, so a batch of three reads "sent it with 2 others".
 - `keys.ts`: `x` maps to `tick`. `S` (Shift+S) has mapped to `sendTicked` since Task 3. Rows `{ keys: ["X"], what: "Tick the selected thread", action: "tick" }` and `{ keys: ["⇧", "S"], what: "Send every ticked thread together", action: "sendTicked" }` go after `R`.
@@ -8758,7 +8980,7 @@ Send goes to the agent you last sent to on this artifact, falling back to the la
   - `shortcut("tick")` toggles the selected thread, and `shortcut("sendTicked")` calls `sendSelection()`.
 - Components:
   - `SendButton` `{ label: string; agents: AgentView[]; names: Map<string, string>; target: string | null; disabled?: boolean; onSend(): void; onChoose(handle: string): void }`. Its caret is a menu button, and it is shown only with more than one live agent.
-  - `HandoffBar` (lazy) `{ count; note; busy; send: Snippet; onNote; onClear; onSend }`.
+  - `SelectionBar` (lazy) `{ count; note; busy; send: Snippet; onNote; onClear; onSend }`.
   - `ThreadCard` gains `checked?: boolean`, `onToggle?(t, shift)` and `send?: Snippet` (it renders the shared Send button).
 
 - [ ] **Step 1: Models, tests first**
@@ -8802,22 +9024,25 @@ describe("batch-model", () => {
 
 ```ts
 import { afterEach, describe, expect, it } from "vitest";
-import type { Version } from "../api";
 import { defaultTarget, liveAgents, rememberTarget } from "./send-target";
 
-const agents = [{ handle: "a_cl", harness: "claude", live: true }, { handle: "a_cx", harness: "codex", live: true }, { handle: "a_old", harness: "pi", live: false }];
-const V = (n: number, agent: string | null) => ({ artifact_id: "x", n, label: null, created_at: "x", files: {}, agent } as Version);
+// As the daemon lists them: live first, most recently active first.
+const agents = [{ handle: "a_cx", harness: "codex", live: true }, { handle: "a_cl", harness: "claude", live: true }, { handle: "a_old", harness: "pi", live: false }];
 afterEach(() => localStorage.clear());
 
 describe("send-target", () => {
-  it("prefers the agent you last sent to, then the latest publisher, then any live agent", () => {
-    expect(defaultTarget("x", agents, [V(1, "a_cl"), V(2, "a_cx")])).toBe("a_cx");
+  it("prefers the agent you last sent to while it is live, then the most recently active live agent", () => {
+    expect(defaultTarget("x", agents)).toBe("a_cx");
     rememberTarget("x", "a_cl");
-    expect(defaultTarget("x", agents, [V(1, "a_cl"), V(2, "a_cx")])).toBe("a_cl");
+    expect(defaultTarget("x", agents)).toBe("a_cl");
     rememberTarget("x", "a_old");
-    expect(defaultTarget("x", agents, [V(1, "a_old")])).toBe("a_cl");
-    expect(defaultTarget("x", [], [])).toBeNull();
-    expect(liveAgents(agents).map(a => a.handle)).toEqual(["a_cl", "a_cx"]);
+    expect(defaultTarget("x", agents)).toBe("a_cx"); // the agent you last sent to has ended
+    expect(liveAgents(agents).map(a => a.handle)).toEqual(["a_cx", "a_cl"]);
+  });
+  it("names no target when no agent is live, so the send goes without to", () => {
+    rememberTarget("x", "a_old");
+    expect(defaultTarget("x", [{ handle: "a_old", harness: "pi", live: false }])).toBeNull();
+    expect(defaultTarget("x", [])).toBeNull();
   });
 });
 ```
@@ -8865,9 +9090,9 @@ export const sendLabel = (n: number, agent: string) => (n > 1 ? `Send ${n} to ${
 
 ```ts
 // Which agent a Send goes to (spec §10, "Participants and attention"): the
-// one this viewer last sent to on the artifact, else the latest publisher's,
-// else any live agent. Remembered per browser; storage may throw.
-import type { Version } from "../api";
+// one this viewer last sent to on the artifact while it is live, else the
+// most recently active live agent (the daemon's list order), else none, and
+// the send goes without `to`. Remembered per browser; storage may throw.
 import type { AgentView } from "./working-model";
 
 const key = (aid: string) => `clax.sendTo.${aid}`;
@@ -8877,14 +9102,12 @@ export function rememberTarget(aid: string, handle: string): void {
   try { localStorage.setItem(key(aid), handle); } catch { /* this page only */ }
 }
 
-export function defaultTarget(aid: string, agents: AgentView[], versions: Version[]): string | null {
-  const live = new Set(liveAgents(agents).map(a => a.handle));
+export function defaultTarget(aid: string, agents: AgentView[]): string | null {
+  const live = liveAgents(agents);
   let last: string | null = null;
   try { last = localStorage.getItem(key(aid)); } catch { /* none */ }
-  if (last && live.has(last)) return last;
-  const latest = [...versions].sort((a, b) => b.n - a.n)[0]?.agent ?? null;
-  if (latest && live.has(latest)) return latest;
-  return liveAgents(agents)[0]?.handle ?? null;
+  if (last && live.some(a => a.handle === last)) return last;
+  return live[0]?.handle ?? null;
 }
 ```
 
@@ -8898,7 +9121,7 @@ Use Task 3's seeded `started()` in `view/artifact-controller.test.ts`, with this
 - `artifact: { participants: { people: [], agents: [{ handle: "a_cl", harness: "claude", live: true }] } }`;
 - `routes`: a `POST` to a URL ending `/threads:send` answers `{ threads: [thread("t1", { sent_to_agent: true }), thread("t2", { sent_to_agent: true })], sent: ["t1", "t2"], unchanged: [] }`.
 
-Then add:
+Then add the two tests below, and a third with `participants.agents` empty: `sendTo` is `null`, and `sendSelection()` posts `{ thread_ids: ["t1", "t2"], note: null }` with no `to` key.
 
 ```ts
   it("ticks a range, sends it as one batch to the default agent with the note, then clears", async () => {
@@ -8931,17 +9154,19 @@ Then add:
 
 Implement in `view/artifact-controller.ts`:
 - Fields: `selection: EMPTY_SELECTION`, `batchNote: ""`, `batchBusy: false` and `sendTo: null`.
-- When `data` is first set, set `sendTo: defaultTarget(this.id, d.artifact.participants?.agents ?? [], d.versions)`.
+- When `data` is first set, set `sendTo: defaultTarget(this.id, d.artifact.participants?.agents ?? [])`. Whenever `participants` change afterwards (a refetch after `working` or `version`), recompute it the same way unless `sendTo` still names a live agent, so a target whose session ended is replaced, and is replaced by none when no agent is live.
 - `chooseTarget(h)`: `rememberTarget(this.id, h); this.set({ sendTo: h });`.
 - `toggleSelect(t, shift)`: `this.set(s => ({ selection: toggle(s.selection, t.id, shift, this.order(s).map(x => x.id)) }))`.
 - `clearSelection()` and `setBatchNote(v)`, as their names say.
 - `private async sendIds(ids)`:
   - returns when `ids` is empty or a send is busy;
   - otherwise sets `batchBusy`, and calls `sendBatch(this.id, ids, note || null, this.s.sendTo)` inside `report(…, SEND_FAILED, this.noticeFor(SEND_FAILED))`;
-  - on success, upserts the returned threads, clears the selection and note, and calls `rememberTarget` for `sendTo`;
+  - on success, upserts the returned threads, clears the selection and note, and calls `rememberTarget` for `sendTo` when it is set;
+  - when `sendTo` is null the request carries no `to` (`sendBatch` and `sendToAgent` drop a null `to`), and the daemon stores the comments untargeted;
   - always ends with `batchBusy: false`.
 - `sendSelection()` sends `this.s.selection.ids`. `sendUnsent()` sends `unsent(this.s.threads)`.
-- `sendThread(t)` becomes `this.saveThread(sendToAgent(this.id, t.id, this.s.sendTo), SEND_FAILED)`, and remembers the target.
+- `sendThread(t)` becomes `this.saveThread(sendToAgent(this.id, t.id, this.s.sendTo), SEND_FAILED)`, and remembers the target when there is one.
+- An `unknown_agent` answer (the target ended between the last refetch and the send) refetches the artifact, recomputes `sendTo`, and shows the send failure; it never retries without `to` on its own.
 - In `react()`, when `prev.threads !== s.threads || prev.deleted !== s.deleted`, prune the selection, and set it only if it changed.
 - `shortcut("tick")`: `if (sel && selectable(sel, s.deleted)) this.toggleSelect(sel, false)`. `shortcut("sendTicked")`: `void this.sendSelection()`.
 
@@ -8982,10 +9207,11 @@ Expected: PASS.
 </span>
 ```
 
-`web/shell/src/ui/HandoffBar.svelte`:
+`web/shell/src/ui/SelectionBar.svelte`:
 
 ```svelte
 <script lang="ts">
+  // The selection bar (spec §8): the ticked threads, sent together to one agent.
   import type { Snippet } from "svelte";
   import { countLabel } from "../view/batch-model";
   import { isSubmitKey } from "../view/composer-model";
@@ -8993,14 +9219,14 @@ Expected: PASS.
   let { count, note, busy, send, onNote, onClear, onSend }: { count: number; note: string; busy: boolean; send: Snippet; onNote(v: string): void; onClear(): void; onSend(): void } = $props();
 </script>
 
-<div class="handoff" role="region" aria-label="Selected comments">
-  <div class="handoff-row">
+<div class="selbar" role="region" aria-label="Selected comments">
+  <div class="selbar-row">
     <span class="converge" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
-    <span class="txt"><b role="status">{countLabel(count)}</b>handed off together</span>
+    <span class="txt"><b role="status">{countLabel(count)}</b>sent together</span>
     <button type="button" class="ghost" onclick={onClear}>Clear</button>
     {@render send()}
   </div>
-  <input class="handoff-note" aria-label="Note for the agent (optional)" placeholder="Note for the agent (optional)" maxlength="280" value={note} disabled={busy}
+  <input class="selbar-note" aria-label="Note for the agent (optional)" placeholder="Note for the agent (optional)" maxlength="280" value={note} disabled={busy}
     oninput={e => onNote(e.currentTarget.value)} onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); onSend(); } }} />
 </div>
 ```
@@ -9017,15 +9243,17 @@ Expected: PASS.
 - Every open card gets `checked`, `onToggle` and a `send` snippet rendering `SendButton` with `label={`Send to ${names.get(p.sendTo ?? "") ?? p.agent}`}` and `onSend={() => p.onSend(t)}`.
 - In the script, name the target once: `const target = $derived(names.get(p.sendTo ?? "") ?? p.agent);` (the same expression the card's Send uses), and pass it to every label below.
 - At the top of the aside, after the strip: `{#if unsent(p.threads).length}<button class="send-unsent" onclick={p.onSendUnsent}>{unsentLabel(unsent(p.threads).length, target)}</button>{/if}`.
-- At the end of the aside, when `p.selection.ids.length`, the lazy bar:
+- Directly after it, still above the groups, when `p.selection.ids.length`, the lazy bar:
 
 ```svelte
-    {#await import("./HandoffBar.svelte") then { default: HandoffBar }}
-      <HandoffBar count={p.selection.ids.length} note={p.batchNote} busy={p.batchBusy} onNote={p.onNote} onClear={p.onClear} onSend={p.onSendSelection}>
+    {#await import("./SelectionBar.svelte") then { default: SelectionBar }}
+      <SelectionBar count={p.selection.ids.length} note={p.batchNote} busy={p.batchBusy} onNote={p.onNote} onClear={p.onClear} onSend={p.onSendSelection}>
         {#snippet send()}<SendButton label={sendLabel(p.selection.ids.length, target)} agents={p.agents ?? []} {names} target={p.sendTo} disabled={p.batchBusy} onSend={p.onSendSelection} onChoose={p.onChoose} />{/snippet}
-      </HandoffBar>
+      </SelectionBar>
     {/await}
 ```
+
+  The bar sits at the top, where the viewer's eyes are when they start ticking, and it stays in view while they scroll the list (`position: sticky; top: 0`).
 
 `ui/SidebarIsland.svelte` wires all of these to the controller.
 
@@ -9047,19 +9275,19 @@ Append to `web/shell/src/theme.css`:
 .thread-card:has(.thread-check:checked) { box-shadow: inset 0 0 0 1px var(--accent); }
 .send { display: inline-flex; position: relative; }
 .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
-.send-menu { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); display: flex; flex-direction: column; padding: 4px 0; }
+.send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); display: flex; flex-direction: column; padding: 4px 0; }
 .send-menu button { justify-content: flex-start; border: 0; min-height: 32px; }
 .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
 .send-unsent { width: 100%; }
-.handoff { position: sticky; bottom: 0; margin: auto -14px -18px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--raised); border-top: 1px solid var(--border-strong); box-shadow: 0 -8px 24px var(--shadow); }
-.handoff-row { display: flex; align-items: center; gap: 12px; }
-.handoff .txt { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.35; }
-.handoff .txt b { display: block; color: var(--fg); font: 600 16px/1.1 var(--grot); }
+.selbar { position: sticky; top: 0; z-index: 5; margin: 0 -14px 8px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--raised); border-bottom: 1px solid var(--border-strong); box-shadow: 0 8px 24px var(--shadow); }
+.selbar-row { display: flex; align-items: center; gap: 12px; }
+.selbar .txt { flex: 1; font-size: 12px; color: var(--muted); line-height: 1.35; }
+.selbar .txt b { display: block; color: var(--fg); font: 600 16px/1.1 var(--grot); }
 .converge { position: relative; width: 46px; height: 24px; flex: none; }
 .converge i { position: absolute; top: 5px; width: 14px; height: 14px; border-radius: 50%; background: var(--you); border: 1.5px solid var(--raised); transition: left .4s cubic-bezier(.4,0,.2,1); }
 .converge i:nth-child(1) { left: 0; } .converge i:nth-child(2) { left: 8px; } .converge i:nth-child(3) { left: 16px; }
 .converge i:nth-child(4) { left: 28px; top: 2px; width: 20px; height: 20px; background: var(--agent); }
-@media (max-width: 700px) { .handoff-row { flex-wrap: wrap; } .handoff button { min-height: 40px; } }
+@media (max-width: 700px) { .selbar-row { flex-wrap: wrap; } .selbar button { min-height: 40px; } }
 @media (prefers-reduced-motion: reduce) { .converge i { transition: none; } }
 ```
 
@@ -9096,6 +9324,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await box(ids[2]).click({ modifiers: ["Shift"] });
     const bar = page.getByRole("region", { name: "Selected comments" });
     await expect(bar.getByRole("status")).toHaveText("3 selected");
+    await expect(bar).toContainText("sent together");
+    const [barTop, firstCardTop] = await Promise.all([bar.boundingBox(), page.locator(".thread-card").first().boundingBox()]);
+    expect(barTop!.y, "the selection bar sits at the top of the sidebar").toBeLessThan(firstCardTop!.y);
     await expect(bar.getByRole("button", { name: "Send 3 to claude" })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Send 4 unsent to claude" })).toBeVisible();
@@ -9113,7 +9344,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
     const { sid, aid, ids } = await fresh(`Pick ${mode}`, 1);
     const other = await registerSession(d.base, d.token, "codex", `pick-${mode}`);
-    await api(d.base, d.token, `/api/sessions/${other.id}/watches`, { method: "POST", body: JSON.stringify({ artifact: aid }) });
+    await api(d.base, d.token, `/api/sessions/${other.id}/watches/${aid}`, { method: "PUT" });
     await openArtifact(page, d.base, aid, 1, mode);
     await panel(page);
     const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
@@ -9125,6 +9356,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.reload();
     await panel(page);
     expect(await page.evaluate(id => localStorage.getItem(`clax.sendTo.${id}`), aid)).toMatch(/^a_/);
+  });
+
+  test(`${mode}: with no live agent Send goes without to, and the comment waits for the next session`, async ({ page }) => {
+    const { sid, aid, ids } = await fresh(`Nobody ${mode}`, 1);
+    await api(d.base, d.token, `/api/sessions/${sid}`, { method: "PATCH", body: JSON.stringify({ ended: true }) });
+    await openArtifact(page, d.base, aid, 1, mode);
+    await panel(page);
+    const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
+    await expect(card.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
+    const sent = page.waitForRequest(r => r.url().endsWith(`/threads/${ids[0]}/send`));
+    await card.getByRole("button", { name: /^Send to / }).click();
+    expect((await sent).postData() ?? "").not.toContain("\"to\"");
+    const next = await registerSession(d.base, d.token, "codex", `nobody-next-${mode}`);
+    await api(d.base, d.token, `/api/sessions/${next.id}/watches/${aid}`, { method: "PUT" });
+    expect((await api(d.base, d.token, `/api/sessions/${next.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
   });
 
   test(`${mode}: a ticked thread that disappears leaves the selection; X and Shift+S work from the keyboard`, async ({ page }) => {
@@ -9146,7 +9392,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 ```
 
 Run: `cd web && npx vitest run && npm run lint && npm run typecheck && npm run build && node scripts/bundle-size.mjs && npx playwright test e2e/batch.spec.ts; echo "exit=$?"`
-Expected: `exit=0`. `HandoffBar` is outside `artifact.html`'s closure. If the `artifact` budget fails, lazy-load `SendButton`'s menu next. Do not raise the budget.
+Expected: `exit=0`. `SelectionBar` is outside `artifact.html`'s closure. If the `artifact` budget fails, lazy-load `SendButton`'s menu next. Do not raise the budget.
 
 - [ ] **Step 6: Screenshots and a look**
 
@@ -9155,11 +9401,11 @@ Append a `bulk` scene to `web/e2e/scenes.ts`: open the panel, tick the first and
 Run: `cd web && CLAX_SHOTS=task-23 CLAX_SCENES=bulk,threads npx playwright test e2e/shots.spec.ts`
 Expected: PASS.
 
-The hand-off bar sits at the sidebar's foot, as the Echo mockup has it; `decisions.md` had put the bulk bar at the top. The brief wins under this plan's rule. Say so in the task report.
+The selection bar sits at the top of the sidebar, as the batch decision records (spec §8); the Echo mockup's bar at the foot is superseded. Compare everything else with the mockup.
 
 Report, against `concept-3-echo/shots/*-bulk.png`:
 - the checkboxes beside each card head;
-- the hand-off bar at the foot with its dots, `2 selected` over `handed off together`, Clear, and `Send 2 to claude`;
+- the selection bar at the top, under `Send N unsent`, with its dots, `2 selected` over `sent together`, Clear, and `Send 2 to claude`, staying in view while the list scrolls;
 - the note field;
 - `Send N unsent to claude` at the top;
 - the phone layout, with buttons at least 40px and no sideways scroll.
@@ -9177,9 +9423,9 @@ Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.j
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add web/shell/src/view/batch-model.ts web/shell/src/view/batch-model.test.ts web/shell/src/view/send-target.ts web/shell/src/view/send-target.test.ts \
-  web/shell/src/ui/HandoffBar.svelte web/shell/src/ui/SendButton.svelte web/e2e/batch.spec.ts web/e2e/scenes.ts
+  web/shell/src/ui/SelectionBar.svelte web/shell/src/ui/SendButton.svelte web/e2e/batch.spec.ts web/e2e/scenes.ts
 git add -u web/shell/src
-git status --short   # staged; the controller commits ("Send several threads at once in Echo: checkboxes, the hand-off bar with a note, and an agent picker")
+git status --short   # staged; the controller commits ("Send several threads at once in Echo: checkboxes, the selection bar with a note, and an agent picker")
 ```
 
 ---
@@ -9195,7 +9441,7 @@ Presence lives in memory in the daemon, like working: a restart starts with none
 
 **Files:**
 - Create: `crates/clax-core/src/presence.rs`, `crates/clax-server/tests/api_presence.rs`, `web/shell/src/view/presence-model.ts`, `web/shell/src/view/presence-model.test.ts`, `web/shell/src/ui/PeoplePanel.svelte`, `web/e2e/presence.spec.ts`
-- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/events.rs` (`Event::Presence`), `crates/clax-core/src/store/attention.rs` (`Person.seen`), `crates/clax-server/src/state.rs`, `crates/clax-server/src/daemon.rs` (sweeper), `crates/clax-server/src/testing.rs`, `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/artifacts.rs`, `crates/clax-server/src/routes/mod.rs`, `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, and every e2e spec that fills `Your name` (`grep -rln "Your name" web/e2e`)
+- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/events.rs` (`Event::Presence`), `crates/clax-server/src/state.rs`, `crates/clax-server/src/daemon.rs` (sweeper), `crates/clax-server/src/testing.rs`, `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/artifacts.rs`, `crates/clax-server/src/routes/mod.rs`, `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, and every e2e spec that fills `Your name` (`grep -rln "Your name" web/e2e`)
 
 **Interfaces:**
 - `clax_core::presence`:
@@ -9205,7 +9451,7 @@ Presence lives in memory in the daemon, like working: a restart starts with none
   - `Presence::new(clock: Arc<dyn Clock>)`, `report(aid, public_id, display_name, state, where_) -> bool` (whether the visible view changed), `sweep() -> Vec<String>` (the artifacts that changed), and `for_artifact(aid) -> Vec<PresenceView>`.
   - `Gone` means a report has lapsed: `since` is the last report, and the shell shows "last here <time>".
 - `Event::Presence { artifact_id: String, people: Vec<PresenceView> }`, with the SSE name `presence`.
-- `Person` gains `seen: Option<u32>`, the person's `viewer_seen` on this artifact (decided: Q7).
+- The panel reads each person's last viewed version from `participants.people[].seen`, which Task 15 serves publicly (decided: Q7). This task adds no field for it, and serves no looked-at mark of anyone's.
 - HTTP:
   - `PUT /api/viewers/me/presence` (`SameOrigin`, a cookie is required) takes `{artifact_id, state: "here" | "away", where?}` and answers `{people}`;
   - `GET /api/artifacts/<aid>/presence` answers `{people}`;
@@ -9330,8 +9576,7 @@ Implement, following Task 8's working wiring:
 - the 5 s sweeper (Task 8) also calls `crate::presence::sweep_and_announce`;
 - `routes/viewers.rs::set_presence`, which reads the viewer (400 `no_viewer` without one), checks that the artifact exists (404), takes the viewer's `public_id` and `display_name`, reports, and announces when the report changed something;
 - `routes/artifacts.rs::presence` for the GET;
-- in `routes/mod.rs`, the PUT before `/api/viewers/me`, and `.route("/api/artifacts/{aid}/presence", get(artifacts::presence))`;
-- `participants`' people SQL left-joins `viewer_seen` for `seen`.
+- in `routes/mod.rs`, the PUT before `/api/viewers/me`, and `.route("/api/artifacts/{aid}/presence", get(artifacts::presence))`.
 
 Run: `cargo test --workspace`
 Expected: PASS.
@@ -9423,11 +9668,12 @@ The top bar's roster shows everyone present, not only comment authors. In `Topba
 `ui/SidebarIsland.svelte`: remove the narrow `nameField` header, because the name now lives in the panel.
 
 `web/shell/src/ui/PeoplePanel.svelte` (lazy) is a `role="dialog" aria-label="People and agents"` panel, 420px wide, a full sheet at phone width. Escape and an outside click close it and return focus to the `.who` button. It holds:
-- **People · N**: one row per participant and present viewer (the union of `participants.people` and `presence`). Each row has its token, the name (with `you` for this viewer), `personLine`, and a muted line: `In N threads.` (open threads whose comments carry their `author_public_id`), then `Seen vK.` from `Person.seen`.
+- **People · N**: one row per participant and present viewer (the union of `participants.people` and `presence`). Each row has its token, the name (with `you` for this viewer), `personLine`, and a muted line: `In N threads.` (open threads whose comments carry their `author_public_id`), then `Seen vK.` from `participants.people[].seen` (Task 15; public, decided: Q7), or nothing when it is null. A viewer who is present but never commented has no participants row, so no `Seen` line.
 - **Agents · N**: one row per agent. Each row has its token, the name, and one of these:
   - the threads it works on (`On #1 (yours) and #3`, from `stripText`) with the clock, and a `HaikuLine` seeded by the record key, hidden in comment mode;
   - or `Idle`, plus `Addressed #2 in v5` for the newest version it published that addressed threads.
-- **The name row**: `You are <name>` with the port's `ViewerName` field. Under it, a checkbox `Share where I'm looking` bound to `ctl.setShareWhere`.
+- **The name row**: `You are <name>` with the port's `ViewerName` field. Under it, a checkbox `Share where I'm looking` bound to `ctl.setShareWhere` (on by default, stored per browser).
+- Agent names follow Task 16's rule: the harness, with the handle's first four hex digits when two agents on the artifact share one (`claude 7f3a`).
 
 Styles, appended to `theme.css` (the mockup's `.pop` and `.prow`):
 
@@ -9504,11 +9750,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await setName(mia, "Mia");
     if (!(await mia.locator("aside.sidebar").isVisible())) await mia.getByRole("button", { name: /Threads/ }).first().click();
     await mia.locator(`.thread-card[data-thread="${t.id}"] .card-head`).click();
+    // Mia replies, so she is a participant whose last viewed version (v1, public) Alex can read.
+    await mia.request.post(`${d.base}/api/artifacts/${artifact.id}/threads/${t.id}/comments`, { headers: { origin: d.base }, data: { body: "Agreed" } });
+    await alex.reload();
     await expect(alex.locator(".who .ppl .tok.here")).toHaveCount(2);
     await expect(alex.locator(".who")).not.toContainText("looking at");
     await alex.locator("body").press("p");
     const panel = alex.getByRole("dialog", { name: "People and agents" });
     await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("here, looking at");
+    await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("Seen v1.");
     await mia.evaluate(() => { Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true }); document.dispatchEvent(new Event("visibilitychange")); });
     await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("away");
     await alex.context().close();

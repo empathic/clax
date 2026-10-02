@@ -154,7 +154,9 @@ one rather than merging with it, and `{}` clears it.
 
 The result also carries `note` and `addressed` (every thread linked to the
 new version: those named, plus those this session was marked working on for
-the artifact).
+the artifact). `addresses` may name resolved threads. A thread ID in
+`addresses` that is not a thread of the artifact fails the call with
+`unknown_thread`, and nothing is published.
 
 The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
@@ -831,8 +833,9 @@ within it to that size. Clips are stored at `<CLAX_HOME>/artifacts/<aid>/clips/<
 thread is plain until the person presses **Send to <agent>** (the button
 names the agent it sends to, for example **Send to claude**) or writes `@agent`
 (as a word, not inside an address) in a comment; from then on, every later
-viewer comment on it is sent too. A viewer comment on a resolved thread
-reopens it.
+viewer comment on it is sent too, to the agent the thread was last sent to
+while that agent's session is live (see below). A viewer comment on a
+resolved thread reopens it.
 
 A drag in comment mode that starts where no text is under the pointer (empty
 space, padding, an image, a canvas, an inline SVG), or any drag with Shift
@@ -959,8 +962,16 @@ labelled "on <file>", and opening one takes the frame to that page and scrolls
 to the thread. A thread detaches only when its anchor is not found on its own
 page.
 
-A sent comment goes to every live target session: the session that created
-the artifact, and every session that watches it. Publishing (a new artifact or
+A sent comment goes to one agent or to all of them. The person's Send names
+an agent (the one they last sent to on the artifact, else the most recently
+active live agent receiving its comments, and they can pick another), and
+the comment goes to that agent's session only; later comments on the thread
+follow it while that session is live. A comment sent without naming an
+agent (no live agent was there to name, `@agent` on a thread never sent, or
+the page's `sendToClaude`), or a later comment once the named agent's
+session has ended, goes to every live target session: the session that
+created the artifact, and every session that watches it. Watching makes you
+a possible target; it does not mean you receive every comment. Publishing (a new artifact or
 a new version) makes the publishing session watch the artifact with replies
 on (an existing watch keeps its setting); the `watch` tool adds or removes a watch. Agent replies and resolves need
 a live session and work only on sent threads.
@@ -1203,7 +1214,10 @@ Clax extension (not in claude.ai's contract; declared in
 `onWorking(fn)` report which agents are working on this artifact:
 `{working: boolean, agents: [{harness, label, message, since, threads,
 otherThreads}]}`. `threads` are handles of threads this document created;
-`otherThreads` counts the rest. Available under either declaration form,
+`otherThreads` counts the rest. `harness` is `claude`, `codex` or `pi`;
+`label` is its product name (`Claude Code`, `Codex`, `Pi`); `message` is
+the agent's message or `null`; `since` is when the work started. Available
+under either declaration form,
 without consent or gesture.
 
 Clax adds no batch `sendToClaude`; the batch send is the viewer's, from the
@@ -1297,8 +1311,9 @@ changes.
 ### Working
 
 `working` tells the person you are acting on an artifact. The top bar
-shows `claude working on N` (or `claude: <message>`), its gallery card a
-chip, and each thread named in `thread_ids` `claude is working on it`. Comments sent to you
+shows `<agent> working on N` (or `<agent>: <message>`), its gallery card a
+chip, and each thread named in `thread_ids` `<agent> is working on it`,
+where `<agent>` is your harness (`claude`, `codex`, `pi`). Comments sent to you
 mark you working automatically; call `working` for work that did not start
 from a comment, or to add a message. `thread_ids` and `message` replace the
 stored ones when given; `done: true` clears the record, or with `thread_ids`
@@ -1307,14 +1322,15 @@ not a ULID, more than 20), `not_found` (no such artifact), `unknown_thread`
 (not a thread of the artifact), `thread_not_open`, `no_session` (the
 daemon's `/mcp`), `unknown_session`, `daemon_unreachable`.
 
-It clears when you reply to or resolve the last thread it names, publish the
+Replying to or resolving a thread it names takes that thread out of it. It
+clears when you reply to or resolve the last thread it names, publish the
 artifact, end your turn, or go 120 s without renewing it, and when your
 session ends. Renewal is automatic:
 
 | Harness | Renewed by | Not automatic |
 |---|---|---|
-| Claude Code | tool calls, at most once a minute (`PostToolUse` hook), every hook, clax tool calls | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
-| Codex | clax tool calls, the Stop hook; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
+| Claude Code | tool calls, at most once a minute (`PostToolUse` hook); clax tool calls; each message the person sends (the prompt hook); a Stop hook that hands you comments (a Stop hook that allows the stop ends the turn instead) | work asked for in the terminal (call `working`); a turn you interrupt with Esc runs no Stop hook, so its mark lapses within 2 minutes |
+| Codex | clax tool calls; a Stop hook that hands you comments; tool calls through the `PostToolUse` hook: not yet measured (`scripts/smoke-codex.sh --hooks`) | a `codex queue` delivery to a session with no TUI marks it for up to 2 minutes; `codex exec` without trusted hooks never ends the turn; terminal requests |
 | Pi | tool calls (at most every 15 s) | terminal requests; a Pi process killed without `session_shutdown` |
 
 ### Payload
@@ -1445,11 +1461,12 @@ own name when it resolved the thread and has one, "Viewer" for any other
 viewer, or "Agent · via <harness>". An agent comment carries `via_harness`
 (the replying session's harness, e.g. `claude`; `null` on viewer comments).
 
-An open thread a working record names shows "claude is working on it"
-instead of its waiting indicator. A new version puts nothing over the page:
+An open thread a working record names shows "<agent> is working on it"
+(the agent's harness, such as "claude is working on it") instead of its
+waiting indicator. A new version puts nothing over the page:
 the version button gets a dot, the top bar's summary reads "v5 addressed 3",
 the sidebar's "Addressed in v5" group lists the threads it addressed that
-the viewer is in, with your reply shown as "claude · addressed in v5", and
+the viewer is in, with your reply shown as "<agent> · addressed in v5", and
 the version menu lists every version's note. Each thread's history line
 shows what happened on which version. When the person sends several
 threads, or several agents work on one artifact, the person picks the agent;
