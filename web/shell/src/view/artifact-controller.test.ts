@@ -272,31 +272,7 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
-  it("acts on shell keys: C, T, J and K, ?, and Escape closes the sheet before leaving comment mode", async () => {
-    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
-    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
-    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
-    key("c");
-    expect(ctl.state.get().commenting).toBe(true);
-    const panel = ctl.state.get().panel;
-    key("t");
-    expect(ctl.state.get().panel).toBe(!panel);
-    key("j");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
-    key("j");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[1].id);
-    key("k");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
-    key("?", { shiftKey: true });
-    expect(ctl.state.get().sheet).toBe("keys");
-    key("Escape");
-    expect(ctl.state.get()).toMatchObject({ sheet: null, commenting: true });
-    key("Escape");
-    expect(ctl.state.get().commenting).toBe(false);
-    ctl.dispose();
-  });
-
-  it("acts on Enter, S and R for the selected thread, and leaves keys that do nothing to the browser", async () => {
+  it("acts on C and ?, Escape closes the sheet before leaving comment mode, and every other key is left to the browser", async () => {
     const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
     const key = (k: string, init: KeyboardEventInit = {}) => {
@@ -305,33 +281,31 @@ describe("ArtifactController", () => {
       return e.defaultPrevented;
     };
     const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
-    // Nothing selected: Enter, S and R do nothing and keep their default.
-    expect([key("Enter"), key("s"), key("r")]).toEqual([false, false, false]);
-    expect(ctl.state.get().replyFocus).toBe(0);
-    // A key with no action yet (Shift+S, ticked threads) is not swallowed.
+    const before = ctl.state.get();
+    for (const k of ["t", "j", "k", "s", "r", "x", "v", "p", "Enter"]) expect(key(k), k).toBe(false);
     expect(key("S", { shiftKey: true })).toBe(false);
-    expect(key("j")).toBe(true);
-    expect(key("Enter")).toBe(true);
-    expect(ctl.state.get()).toMatchObject({ panel: true, replyFocus: 1 });
-    expect(key("s")).toBe(true);
-    expect(key("R")).toBe(true);
-    await vi.waitFor(() => expect(posted()).toEqual([`/api/artifacts/${ID}/threads/t1/send`, `/api/artifacts/${ID}/threads/t1/resolve`]));
+    expect(ctl.state.get()).toMatchObject({ commenting: before.commenting, panel: before.panel, selected: before.selected, sheet: null });
+    expect(key("c")).toBe(true);
+    expect(ctl.state.get().commenting).toBe(true);
+    expect(key("?", { shiftKey: true })).toBe(true);
+    expect(ctl.state.get().sheet).toBe("keys");
+    key("Escape");
+    expect(ctl.state.get()).toMatchObject({ sheet: null, commenting: true });
+    key("Escape");
+    expect(ctl.state.get().commenting).toBe(false);
+    expect(posted()).toEqual([]);
     ctl.dispose();
   });
 
-  it("ignores every shell key while the sheet, a page's prompt or the composer is open", async () => {
-    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
-    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+  it("ignores C and ? while the sheet, a page's prompt or the composer is open", async () => {
+    const { ctl } = await started();
     const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
-    key("j");
-    const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
     const still = () => {
       const before = ctl.state.get();
-      for (const k of ["s", "r", "c", "t", "j", "k", "Enter"]) key(k);
+      key("c");
       key("?", { shiftKey: true });
       const after = ctl.state.get();
-      expect({ commenting: after.commenting, panel: after.panel, selected: after.selected, replyFocus: after.replyFocus })
-        .toEqual({ commenting: before.commenting, panel: before.panel, selected: before.selected, replyFocus: before.replyFocus });
+      expect({ commenting: after.commenting, sheet: after.sheet }).toEqual({ commenting: before.commenting, sheet: before.sheet });
     };
     // The sheet: only Escape acts, and it closes the sheet.
     key("?", { shiftKey: true });
@@ -346,14 +320,12 @@ describe("ArtifactController", () => {
     await vi.waitFor(() => expect(ctl.state.get().ask).not.toBeNull());
     expect(ctl.state.get().sheet).toBeNull();
     still();
-    expect(ctl.state.get().sheet).toBeNull();
     ctl.state.get().ask!.answer("deny");
     await vi.waitFor(() => expect(ctl.state.get().ask).toBeNull());
     // The composer.
     ctl.state.set({ draft: { pickId: "p1" } as unknown as NonNullable<ReturnType<typeof ctl.state.get>["draft"]> });
     still();
     expect(ctl.state.get().sheet).toBeNull();
-    expect(posted()).toEqual([]);
     ctl.dispose();
   });
 
@@ -368,22 +340,16 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
-  it("holds the shell's keys after a page's prompt or composer closes, until the viewer presses or Tabs in the shell", async () => {
-    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
-    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+  it("holds the shell's keys after a page's prompt or composer closes, until the viewer presses or Tabs onto a shell control", async () => {
+    const { ctl } = await started();
     const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
-    const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
     const inert = () => {
       const before = ctl.state.get();
-      for (const k of ["s", "r", "c", "t", "j"]) key(k);
+      key("c");
       key("?", { shiftKey: true });
       const after = ctl.state.get();
-      expect({ commenting: after.commenting, panel: after.panel, selected: after.selected, sheet: after.sheet })
-        .toEqual({ commenting: before.commenting, panel: before.panel, selected: before.selected, sheet: before.sheet });
-      expect(posted()).toEqual([]);
+      expect({ commenting: after.commenting, sheet: after.sheet }).toEqual({ commenting: before.commenting, sheet: before.sheet });
     };
-    key("j");
-    expect(ctl.state.get().selected).toBe("t1");
     // The page's prompt opens and is answered by a key: focus falls to the body.
     const prompt = (ctl as unknown as { prompt(p: { title: string; body: string; allow: string; deny: string }): Promise<string> }).prompt;
     void prompt({ title: "T", body: "B", allow: "Allow", deny: "Don't allow" });
@@ -406,8 +372,9 @@ describe("ArtifactController", () => {
     document.body.append(control);
     dispatchTrusted(window, new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
     dispatchTrusted(control, new FocusEvent("focusin", { bubbles: true }));
-    key("j");
-    expect(ctl.state.get().selected).toBe("t2");
+    key("c");
+    expect(ctl.state.get().commenting).toBe(true);
+    key("c");
     // A composer the page opened holds them too, until a trusted press.
     expect(ctl.commentsUi.openComposer({ kind: "element", selector: "h2", file: "index.html" } as never, {} as never)).toBe(true);
     ctl.cancelDraft();
@@ -416,6 +383,25 @@ describe("ArtifactController", () => {
     key("c");
     expect(ctl.state.get().commenting).toBe(true);
     ctl.dispose();
+  });
+
+  it("starts with the keys held, once, after a load the page caused", async () => {
+    const { holdKeysAcrossLoad } = await import("./keys");
+    holdKeysAcrossLoad();
+    const { ctl } = await started();
+    const key = (k: string) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+    key("c");
+    expect(ctl.state.get().commenting).toBe(false);
+    expect(sessionStorage.getItem("clax.keys-held")).toBeNull();
+    dispatchTrusted(window, new Event("pointerdown"));
+    key("c");
+    expect(ctl.state.get().commenting).toBe(true);
+    ctl.dispose();
+    // The mark is used up: the next view starts with the keys live.
+    const next = (await started()).ctl;
+    key("c");
+    expect(next.state.get().commenting).toBe(true);
+    next.dispose();
   });
 
   it("gives the keys up on every close of a page's prompt and on any loss of window focus, and takes them back only on the viewer's own act", async () => {

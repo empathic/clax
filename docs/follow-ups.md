@@ -1,8 +1,9 @@
 # Known issues and follow-ups
 
 Open items from the stable-install work (plan
-`docs/superpowers/plans/2026-09-30-stable-install.md`) and the Svelte port
-(plan `docs/superpowers/plans/2026-09-29-svelte-port.md`), with where each was
+`docs/superpowers/plans/2026-09-30-stable-install.md`), the Svelte port
+(plan `docs/superpowers/plans/2026-09-29-svelte-port.md`) and Echo (plan
+`docs/superpowers/plans/2026-09-30-agent-working.md`), with where each was
 found. Remove an entry when it is fixed or decided.
 
 ## Checks only the repository owner can run
@@ -53,6 +54,14 @@ machine, so no agent runs them.
   proposals, not decisions. Grok support is queued after the stable install.
 
 ## Known issues
+
+- **A subdomain-mode page can navigate the whole shell window.** In subdomain
+  mode the content frame has no `sandbox`, so a page with the viewer's
+  activation can set `top.location` to any URL: another site, or a fresh
+  Clax load where C and ? start live. Options: sandbox the subdomain frame
+  (`allow-scripts allow-same-origin allow-forms allow-popups`, no
+  `allow-top-navigation`) after checking every capability still works, or
+  hold the keys on every load. Sandbox mode is not affected.
 
 - **The daemon's own `/mcp` `status` does not report `upgrade_held`.** The
   shim, the CLI and Pi report it; the daemon-served MCP endpoint has no hold
@@ -126,6 +135,33 @@ machine, so no agent runs them.
     threads whose anchors went unanswered while it failed stay unplaced. The
     bridge should report a part that loads after failing, and the shell then
     clear the failure and its notice and resolve the anchors again.
+- **A page can drop focus to the shell's body, and the viewer's next Tabs
+  walk the shell's buttons** (Echo Task 3 re-review 3, I6; in every shell
+  version). The page calls `parent.focus()` on a key the viewer types in its
+  form. Focus falls to the shell's `<body>`, and the viewer's next Tabs,
+  meant for the page's next field, walk the shell's controls from the frame:
+  a pin, the card head, then "Send to agent", which a Space presses
+  natively. It needs no capability, only comments on. The same Tab landing
+  on a shell control also gives the shell's keys (C and ?) back. Proposed
+  fix: recognise the page pushing focus out (the window's `blur` saw the
+  frame active, then a window `focus` arrives with focus on `<body>`, with
+  no trusted press in the shell between) and hand focus back to the frame
+  (`frame.focus()`). Echo Task 5, which owns the thread-card buttons and
+  pins, does this, with an e2e test of `parent.focus()` mid-typing, then
+  Tab, Tab, Tab and Space.
+- **A pin the page places under the pointer takes the viewer's click** (Echo
+  Task 3 re-review 3, I8; in every shell version). With `customAnchors`,
+  `placed()` moves the shell's pin buttons anywhere over the frame, with no
+  rate limit or settle time, once the viewer has used comment mode. The page
+  moves its pin under the pointer just before a click meant for its own
+  input; the trusted press lands on the pin, which selects the thread and
+  gives the shell's keys back. `gesture.ts` already treats a pin scrolled
+  under the resting pointer as a known trick (A2) for the gesture tiers.
+  Proposed fix: a pin that appeared or moved less than `ALLOW_DELAY_MS` ago
+  takes no press (`pointer-events: none` until it settles), as Allow is
+  armed; or a press on a pin selects but does not give the keys back. Echo
+  Task 5 does the first, with an e2e test of a page that places its pin
+  under the pointer on `mousemove`.
 
 ## Tests
 

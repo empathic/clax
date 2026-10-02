@@ -18,7 +18,7 @@
 {/snippet}
 
 {#if viewReady(s) && s.panel}
-  <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me} focusReply={s.replyFocus}
+  <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
     header={s.narrow ? nameField : undefined}
     onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}
     onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)} />

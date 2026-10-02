@@ -19,9 +19,8 @@ import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
 import type { FrameHost } from "./frame-host";
-import { type KeyAction, keyAction } from "./keys";
+import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 import { type Ask, promptQueue } from "./prompt-queue";
-import { sidebarSections } from "./sidebar-model";
 import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
@@ -68,8 +67,6 @@ export type ViewState = {
   file: string | null;
   /** The sheet over the view: the keys (spec §8), or none. */
   sheet: "keys" | null;
-  /** Bumped to move focus to the selected thread's reply field. */
-  replyFocus: number;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -166,17 +163,30 @@ export class ArtifactController {
   /** The host the latest reaction pass told of the UI. */
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
-  /** Whether the viewer's keys are meant for the shell, so shell keys may act.
-   * It is cleared when the shell window loses focus (to the page's frame or
-   * anywhere else), and when a prompt or composer the page raised opens or
-   * closes, so focus that falls to the body while the viewer is still typing
-   * for the page never makes their keys the shell's. Only the viewer's own
-   * act sets it again: a trusted press in the shell, or focus landing on a
-   * specific shell control (their Tab or Shift+Tab, or a press). The page
-   * cannot put focus there (its `parent.focus()` reaches only the body), and
-   * the shell moves focus by script only onto the prompt and composer, which
-   * do not count, and in answer to its own keys. */
-  private keysOwned = true;
+  /** Whether the viewer's keys are meant for the shell, so the shell's keys
+   * (C and ?) may act.
+   *
+   * It starts set on a fresh load, and clear on a load the page caused (its
+   * publish reloading the shell, `holdKeysAcrossLoad`), since the viewer may
+   * still be typing for the page. It is cleared when the shell window loses
+   * focus (to the page's frame or anywhere else), and when a prompt or
+   * composer the page raised opens or closes, so focus that falls to the body
+   * while the viewer is still typing for the page never makes their keys the
+   * shell's.
+   *
+   * It is set again on a trusted press in the shell, or on focus landing on a
+   * specific shell control: not the body, the frame, a dialog or the
+   * composer. The page cannot put focus on such a control by script (its
+   * `parent.focus()` reaches only the body), but it can choose when focus
+   * reaches the body, so the viewer's next Tab, typed for the page, lands on
+   * a shell control and sets it; that costs only C and ?. The shell's own
+   * script focus lands on the prompt and the composer, which do not count;
+   * on the keys sheet's Close, inside its dialog; and, when the sheet
+   * closes, back where focus was before it opened, which may be a shell
+   * control. The sheet also closes when a page's prompt opens, and that
+   * give-back sets it while the prompt is open, but the prompt's close
+   * clears it again. */
+  private keysOwned = !keysHeldAtLoad();
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
@@ -194,14 +204,14 @@ export class ArtifactController {
       data: null, error: null, origin: undefined, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
-      notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, replyFocus: 0,
+      notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
       const n = this.deferredPublish;
       this.deferredPublish = null;
       if (n === null) return;
-      if (this.pinnedVersion === null) nav.assign(this.here(null));
+      if (this.pinnedVersion === null) { holdKeysAcrossLoad(); nav.assign(this.here(null)); }
       else if (n > this.latestKnown) { this.latestKnown = n; this.set({ newer: n }); }
     };
     // The comment UI as the `comments` capability drives it; it reads the
@@ -480,7 +490,7 @@ export class ArtifactController {
         declared: (data.artifact.capabilities ?? {}) as Declared,
         prompt: this.prompt,
         post: m => { if (this.gate.open) this.send(m); },
-        reload: () => nav.assign(this.here(null)),
+        reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
         ownPublish: this.ownPublish,
         page: () => this.s.file,
         comments: this.commentsUi,
@@ -967,6 +977,7 @@ export class ArtifactController {
       if (this.ownPublish.active > 0) { this.deferredPublish = Math.max(this.deferredPublish ?? 0, e.n); return; }
       if (this.pinnedVersion === null) {
         this.latestKnown = Math.max(this.latestKnown, e.n);
+        holdKeysAcrossLoad();
         nav.assign(this.here(null));
         return;
       }
@@ -998,12 +1009,6 @@ export class ArtifactController {
   toggleComment(): void { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); }
   togglePanel(): void { this.set(s => ({ panel: !s.panel })); }
 
-  /** The sidebar's order: open threads, then detached ones (J, K, ranges). */
-  private order(s: ViewState = this.s): Thread[] {
-    const sec = sidebarSections(s.threads, s.resolved, s.file, f => this.holds(f, s));
-    return [...sec.open, ...sec.detached];
-  }
-
   closeSheet(): void { this.set({ sheet: null }); }
 
   /** The sheet's code did not load: close it, so the keys act again, and say so. */
@@ -1011,39 +1016,14 @@ export class ArtifactController {
 
   /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. Returns
    * whether it acted, so a key that does nothing is left to the browser.
-   * Nothing acts while the sheet, a page's prompt or the composer is open:
-   * Escape (handled in `listen`) is their only shell key. */
+   * Nothing acts while the sheet, a page's prompt or the composer is open,
+   * or while the keys are held (`keysOwned`): Escape (handled in `listen`)
+   * is their only shell key. */
   shortcut(a: KeyAction): boolean {
     const s = this.s;
     if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !this.keysOwned) return false;
-    const sel = s.threads.find(t => t.id === s.selected) ?? null;
-    switch (a) {
-      case "help": this.set({ sheet: "keys" }); return true;
-      case "comment": this.toggleComment(); return true;
-      case "threads": this.togglePanel(); return true;
-      case "next": case "prev": {
-        const list = this.order(s);
-        if (!list.length) return false;
-        const i = sel ? list.findIndex(t => t.id === sel.id) : -1;
-        const j = a === "next" ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
-        this.set({ panel: true });
-        this.selectThread(list[j]);
-        return true;
-      }
-      case "reply":
-        if (!sel) return false;
-        this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 }));
-        return true;
-      case "send":
-        if (!sel || sel.status !== "open" || sel.sent_to_agent) return false;
-        this.sendThread(sel);
-        return true;
-      case "resolve":
-        if (!sel || sel.status !== "open") return false;
-        this.resolveThread(sel);
-        return true;
-      default: return false; // added with their features (versions, tick, sendTicked, people)
-    }
+    if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
+    return true;
   }
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }

@@ -31,8 +31,6 @@
     file?: string | null;
     /** Whether the shown version holds a page; a thread on a page it lacks is detached. */
     holds?: (file: string) => boolean;
-    /** Grows to move focus to the selected thread's reply field. */
-    focusReply?: number;
   };
   let p: Props = $props();
   const clock = ticker(() => needsTicking(p.threads), () => p.now);
@@ -46,7 +44,7 @@
       <p class="muted small">None.</p>
     {:else}
       {#each list as t (t.id)}
-        <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file} focusReply={p.focusReply}
+        <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
           onSelect={p.onSelect} onSend={p.onSend} onResolve={p.onResolve} onReply={p.onReply} onHover={p.onHover} />
       {/each}
     {/if}

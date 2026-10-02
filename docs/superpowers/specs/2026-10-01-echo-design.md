@@ -79,12 +79,16 @@ top bar. The C keycap shows on the Comment button only.
 
 ### Keys
 
-A `?` sheet lists the keys: C comment mode; Esc leaves it or closes a menu;
-T threads; J and K next and previous thread; Enter reply; S send; R resolve;
-X tick; Shift+S send the ticked threads; V versions; P people. The keys act
-only while focus is in the shell's own chrome and not in a text field. While
-focus is in the artifact, keys belong to the page. Escape keeps its existing
-behaviour.
+The shell has three keys: C toggles comment mode, `?` opens a sheet listing
+the keys, and Esc leaves comment mode or closes a menu or the sheet. No key
+acts on a thread; threads, versions and people are reached by pointer or by
+Tab. The keys act only while focus is in the shell's own chrome and not in a
+text field or a dialog. While focus is in the artifact, keys belong to the
+page, and C and `?` stay held while the viewer may still be typing for it:
+after focus leaves the shell window, after a prompt or composer the page
+raised opens or closes, and after a reload the page's publish caused, until
+the viewer presses in the shell or focus lands on one of its controls.
+Escape keeps its existing behaviour.
 
 ### Motion
 
@@ -257,7 +261,7 @@ own name is edited here, with a "Share where I'm looking" switch.
   needs both words (`@Mia Kovač`). There is no autocomplete. Comments written
   before authors were recorded stay unattributed.
 - **Q4. Looking at a thread** is its card being at least half visible for one
-  second, or selecting it (by card, pin, or J and K). The mark is written at
+  second, or selecting it (by card or pin). The mark is written at
   once, so the gallery clears. The thread stays in Addressed in vN until the
   view is decided again: on the next load, or when a new version arrives. The
   group never empties itself while the viewer reads it.

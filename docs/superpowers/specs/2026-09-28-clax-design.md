@@ -603,7 +603,7 @@ file under `v/<digits>/` is reachable only through the versioned form):
   published it and when, the threads it addressed as numbered chips, what
   this viewer did about them, and its note; each a link to that version
   (older versions read-only). A full sheet at phone width.
-- People panel (P, or the roster): one row per person (threads they are in,
+- People panel (the roster): one row per person (threads they are in,
   presence and location, and the last version they viewed, which is public:
   `participants.people[].seen`) and per agent (the threads it is working on
   and whose, elapsed time with a haiku, or idle), and the viewer's own name,
@@ -611,10 +611,14 @@ file under `v/<digits>/` is reachable only through the versioned form):
   stored per browser) that stops reporting `where`. An agent is named by its
   harness (`claude`); when two agents on the artifact share a harness, each
   name gains the first four hex digits of its handle (`claude 7f3a`).
-- Keys: `?` opens a sheet listing them; C comment mode; Esc leaves it or
-  closes a menu; T threads; J and K next and previous thread; Enter reply;
-  S send; R resolve; X tick; Shift+S send the ticked threads; V versions;
-  P people. Keys act only when focus is in the shell and not in a text field.
+- Keys: C comment mode; `?` opens a sheet listing the keys; Esc leaves
+  comment mode or closes a menu or the sheet. There are no others. Keys act
+  only when focus is in the shell and not in a text field or a dialog, and
+  C and `?` are held while the viewer may still be typing for the page
+  (after the shell window loses focus, after a prompt or composer the page
+  raised opens or closes, and after a reload the page's publish caused)
+  until the viewer presses in the shell or focus lands on one of its
+  controls.
 - Theme: follows the system; the switch flips light and dark, and a choice
   equal to the system's clears back to following it.
 - Nothing Clax draws covers or moves the artifact, except pins and the
@@ -664,10 +668,10 @@ file under `v/<digits>/` is reachable only through the versioned form):
   green while an agent works on the thread; white with a green ring and a
   `vN` flag when addressed and not looked at; a green ring when selected;
   dashed while being written. Open thread cards carry a checkbox
-  (Shift-click ticks a range; X ticks the selected thread). While any is
+  (Shift-click ticks a range). While any is
   ticked, a selection bar at the top of the sidebar reads `N selected · sent
   together`, with Clear, `Send N to <agent> ▾` and an optional one-line note
-  (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to
+  (Cmd+Enter or Ctrl+Enter sends). A `Send N unsent to
   <agent>` button sits at the sidebar top whenever open threads have not
   been sent. A sent thread's history shows the send and its note. A thread
   that disappears leaves the selection.
