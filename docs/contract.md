@@ -1457,7 +1457,9 @@ The thread's waiting indicator follows the `feedback_state` event:
 A resolved thread's `resolved_by` is `viewer:<public ID>`, `viewer:anonymous`
 (a resolve without a viewer cookie), or `agent:<harness>`; it never carries a
 viewer cookie or a session ID. Its `resolved_by_name` is that viewer's
-display name, or `null` when the viewer has none or an agent resolved it.
+display name now (a rename shows on every thread they resolved, while each
+comment keeps the `author_name` it was posted with), or `null` when the
+viewer has none or an agent resolved it.
 The card's history line ends with the resolve: the viewer's own name when it
 resolved the thread and has one, else `resolved_by_name`, else "Viewer"; or
 the agent's harness. An agent comment carries `via_harness` (the replying

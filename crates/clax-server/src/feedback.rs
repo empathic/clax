@@ -144,9 +144,10 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 
 /// The thread as routes return it: the stored fields plus `clip_url`,
 /// `clip_path` (only when `with_path`, that is the caller presented the
-/// token), `feedback_state`, and `resolved_by_name`: the display name of the
-/// viewer named by `resolved_by`, or `null` when that viewer has none or the
-/// thread was not resolved by a viewer.
+/// token), `feedback_state`, and `resolved_by_name`: the current display name
+/// of the viewer named by `resolved_by` (not the name at the resolve), or
+/// `null` when that viewer has none or the thread was not resolved by a
+/// viewer.
 pub fn thread_view(
     st: &Store,
     t: &Thread,

@@ -48,17 +48,26 @@
   const clock = ticker(() => needsTicking(p.threads), () => p.now, 30_000);
   const s = $derived(sidebarSections(p.threads, p.resolved, p.file, p.holds));
   const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me, t.resolved_by_name);
-  // A collapsed group opens when it holds the selected card, or the card the
-  // viewer just resolved, so that card is never hidden.
+  // A collapsed group opens when the selected card newly enters it (a new
+  // selection, or the selected card moving there), or when the card the
+  // viewer just resolved arrives there within RESOLVE_OPEN_MS. A group the
+  // viewer collapsed stays collapsed while the same card stays in it.
+  const RESOLVE_OPEN_MS = 5000;
   let detachedOpen = $state(false);
   let resolvedOpen = $state(false);
-  let justResolved: string | null = $state(null);
+  let justResolved: { id: string; until: number } | null = null;
+  const openedFor = { detached: null as string | null, resolved: null as string | null };
   const has = (list: Thread[], id: string | null) => !!id && list.some(t => t.id === id);
   $effect(() => {
-    if (has(s.detached, p.selected)) detachedOpen = true;
-    if (has(s.resolved, p.selected) || has(s.resolved, justResolved)) { resolvedOpen = true; justResolved = null; }
+    const sel = p.selected;
+    if (has(s.detached, sel)) { if (openedFor.detached !== sel) { detachedOpen = true; openedFor.detached = sel; } } else openedFor.detached = null;
+    if (has(s.resolved, sel)) { if (openedFor.resolved !== sel) { resolvedOpen = true; openedFor.resolved = sel; } } else openedFor.resolved = null;
+    if (justResolved && has(s.resolved, justResolved.id)) {
+      if (Date.now() <= justResolved.until) resolvedOpen = true;
+      justResolved = null;
+    }
   });
-  const resolve = (t: Thread) => { justResolved = t.id; p.onResolve(t); };
+  const resolve = (t: Thread) => { justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
 </script>
 
 {#snippet cards(list: Thread[])}
@@ -76,11 +85,11 @@
     {#if s.open.length === 0}<p class="muted small empty-open">Nothing open. Press C and click anything to comment on it.</p>{:else}{@render cards(s.open)}{/if}
   </section>
   <div class="tail">
-    <details class="section-detached" bind:open={detachedOpen}>
+    <details class="section-detached" aria-label={`Detached ${s.detached.length}`} bind:open={detachedOpen}>
       <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{s.detached.length}</span></h2></summary>
       {@render cards(s.detached)}
     </details>
-    <details class="section-resolved" bind:open={resolvedOpen}>
+    <details class="section-resolved" aria-label={`Resolved ${s.resolved.length}`} bind:open={resolvedOpen}>
       <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{s.resolved.length}</span></h2></summary>
       {@render cards(s.resolved)}
     </details>
@@ -129,6 +138,8 @@
     .hist .ev b { font-weight: 600; color: var(--fg); }
     .hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
     .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+    .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
+    .act-hint:empty { margin: 0; }
     .reply { display: flex; gap: 6px; margin-top: 8px; }
     .reply input { flex: 1; min-width: 0; }
   }

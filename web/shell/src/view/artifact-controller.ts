@@ -20,6 +20,7 @@ import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withC
 import { FrameGate } from "./frame-gate";
 import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
+import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
 import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
@@ -163,6 +164,8 @@ export class ArtifactController {
   /** The host the latest reaction pass told of the UI. */
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
+  /** Whether this load was one the page caused (`holdKeysAcrossLoad`), read once. */
+  private readonly heldAtLoad = keysHeldAtLoad();
   /** Whether the viewer's keys are meant for the shell, so the shell's keys
    * (C and ?) may act.
    *
@@ -191,7 +194,7 @@ export class ArtifactController {
    * task later. Their next Tab, typed for the page, does not land on a shell
    * control: it neither sets this nor reaches the shell's buttons, where a
    * Space would press them natively. */
-  private keysOwned = !keysHeldAtLoad();
+  private keysOwned = !this.heldAtLoad;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
@@ -730,40 +733,83 @@ export class ArtifactController {
     };
     // Who the keys belong to (`keysOwned`).
     // The page pushing focus out of its frame (`parent.focus()`): the window's
-    // blur saw the frame active, and focus is now on <body>. A give-back is
-    // then pending until the viewer acts in the shell: a trusted press, or
-    // focus landing on a shell control (their own Tab out of the frame, whose
-    // keydown went to the frame). While it is pending and focus is on <body>,
-    // a trusted key is the viewer's typing for the page: it is swallowed (a
-    // Tab moves nothing, a Space presses nothing) and focus goes back to the
-    // frame at once. A page that keeps the main thread busy after
-    // `parent.focus()` so the viewer's keys arrive first gains nothing. With
-    // no key, focus goes back a task after the window's focus, once the focus
-    // move has settled and only if it is still on <body>.
-    let giveBack = false;
-    const handBack = () => {
+    // blur saw the frame active, and focus is now on <body>. A give-back to
+    // that frame is then pending until the viewer acts in the shell: a
+    // trusted press, focus landing on a shell control, or their own keys in
+    // the composer. While it is pending and focus is on <body>, a trusted key
+    // is the viewer's typing for the page: it is swallowed (a Tab moves
+    // nothing, a Space presses nothing) and focus goes back to the frame at
+    // once. A page that keeps the main thread busy after `parent.focus()` so
+    // the viewer's keys arrive first gains nothing. With no key, focus goes
+    // back a task after the window's focus, once the focus move has settled
+    // and only if it is still on <body>. A frame removed or replaced since
+    // ends the give-back: with no frame to return to, keys pass. After a load
+    // the page caused, a give-back to the new frame starts pending.
+    let giveBackTo: HTMLIFrameElement | "any" | null = this.heldAtLoad ? "any" : null;
+    const giveBackFrame = (): HTMLIFrameElement | null => {
       const el = this.frame?.el;
-      if (el && !this.disposed && giveBack && document.activeElement === document.body) el.focus();
+      if (!el || !el.isConnected || this.disposed) return null;
+      return giveBackTo === "any" || giveBackTo === el ? el : null;
     };
-    const onPress = (e: PointerEvent) => { if (e.isTrusted) { this.keysOwned = true; giveBack = false; } };
+    const handBack = () => {
+      if (document.activeElement !== document.body) return;
+      const el = giveBackFrame();
+      if (el) el.focus(); else giveBackTo = null;
+    };
+    // The keyboard trail (`keyboardTrail`): focus that enters the shell from
+    // the frame or from <body>, with no press of the viewer's, taints it, so
+    // a card's consequential actions ignore the keyboard until the viewer
+    // presses in the shell or presses Escape on a shell control. Focus the
+    // browser puts back where it was when the window regains focus changes
+    // nothing. After a load the page caused, it starts tainted.
+    if (this.heldAtLoad) keyboardTrail.taint(); else keyboardTrail.clear();
+    let pressing = false;
+    let restoreTo: Element | null = null;
+    const isControl = (t: EventTarget | null): t is Element => t instanceof Element && t !== document.body && t.localName !== "iframe";
+    const onPress = (e: PointerEvent) => {
+      if (!e.isTrusted) return;
+      this.keysOwned = true;
+      giveBackTo = null;
+      keyboardTrail.clear();
+      // The focus this press gives a control comes in the same task.
+      pressing = true;
+      setTimeout(() => { pressing = false; }, 0);
+    };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target;
-      if (e.isTrusted && t instanceof Element && t !== document.body && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true], .composer")) {
+      if (!e.isTrusted || !isControl(t)) return;
+      const restored = t === restoreTo;
+      restoreTo = null;
+      if (!restored && !pressing && (e.relatedTarget === null || (e.relatedTarget instanceof Element && e.relatedTarget.localName === "iframe"))) keyboardTrail.taint();
+      if (!t.closest("[role=dialog], [aria-modal=true], .composer")) {
         this.keysOwned = true;
-        giveBack = false;
+        giveBackTo = null;
       }
     };
     // Only the window's own blur and focus reach these listeners: an element's do not bubble.
-    const onBlur = () => { this.keysOwned = false; const el = this.frame?.el; giveBack = !!el && document.activeElement === el; };
-    const onFocus = (e: FocusEvent) => { if (e.isTrusted && giveBack) setTimeout(handBack, 0); };
-    const onPendingKey = (e: KeyboardEvent) => {
-      if (!e.isTrusted || !giveBack || document.activeElement !== document.body) return;
+    const onBlur = () => {
+      this.keysOwned = false;
+      const a = document.activeElement;
+      const el = this.frame?.el;
+      giveBackTo = el && a === el ? el : null;
+      restoreTo = isControl(a) ? a : null;
+    };
+    const onFocus = (e: FocusEvent) => { if (e.isTrusted && giveBackTo) setTimeout(handBack, 0); };
+    const onShellKey = (e: KeyboardEvent) => {
+      if (!e.isTrusted) return;
+      const a = document.activeElement;
+      // The viewer's own keys in the composer: their typing is the shell's.
+      if (a instanceof Element && a.closest(".composer")) giveBackTo = null;
+      if (e.key === "Escape" && isControl(a)) keyboardTrail.clear();
+      if (!giveBackTo || a !== document.body) return;
+      const el = giveBackFrame();
+      if (!el) { giveBackTo = null; return; }
       e.preventDefault();
       e.stopImmediatePropagation();
-      handBack();
+      el.focus();
     };
     addEventListener("pointerdown", onPress, true);
-    addEventListener("keydown", onPendingKey, true);
+    addEventListener("keydown", onShellKey, true);
     addEventListener("focusin", onFocusIn, true);
     addEventListener("blur", onBlur);
     addEventListener("focus", onFocus);
@@ -791,7 +837,7 @@ export class ArtifactController {
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
       removeEventListener("pointerdown", onPress, true);
-      removeEventListener("keydown", onPendingKey, true);
+      removeEventListener("keydown", onShellKey, true);
       removeEventListener("focusin", onFocusIn, true);
       removeEventListener("blur", onBlur);
       removeEventListener("focus", onFocus);

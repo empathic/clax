@@ -328,6 +328,91 @@ test("the viewer's own Tab or Shift+Tab out of the page stays on the shell contr
   }
 });
 
+/** A thread's state as the daemon has it. */
+async function threadState(aid: string, tid: string) {
+  const { threads: list } = await api(d.base, d.token, `/api/artifacts/${aid}/threads?include_resolved=true`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+  return list.find(x => x.id === tid);
+}
+
+/** Presses `keys` on a schedule, like a person typing: none waits for the last to be handled. */
+async function typeOn(page: Page, keys: string[], spacing: number) {
+  const sent: Promise<void>[] = [];
+  for (const k of keys) { sent.push(page.keyboard.press(k)); if (spacing) await page.waitForTimeout(spacing); }
+  await Promise.all(sent);
+}
+
+// The page decides when the viewer's Tab leaves it: it disables its other
+// fields on the viewer's first Tab, so that Tab lands on the shell's pin.
+const SHRINK = `<!doctype html><html><head><title>Shrink</title></head><body><main><h2 id="t">Target</h2><input id="a"><input id="b"><input id="c"><input id="e"></main><script>
+document.getElementById("a").addEventListener("keydown", e => { if (e.key === "Tab") for (const id of ["b","c","e"]) document.getElementById(id).disabled = true; });
+</script></body></html>`;
+
+// The page pushes focus out on every key it hears, and keeps the main thread busy.
+const EVERY = `<!doctype html><html><head><title>Every</title></head><body><main><h2 id="t">Target</h2><input id="a"></main><script>
+addEventListener("keydown", () => { parent.focus(); const t = performance.now(); while (performance.now() - t < 150); }, true);
+</script></body></html>`;
+
+for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: a page that runs out of fields on the viewer's Tab cannot have their typing send or resolve a thread`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Shrink", SHRINK, {});
+    const t = await postThread(d.base, artifact.id, "Check this", "#t");
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await page.locator(".thread-card").first().waitFor();
+    await frame.locator("#a").click();
+    // What looks like a five-field form: Smith, Jones, Main, Lot, New York.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."New", "Space", ..."York"], 0);
+    await expect(page.locator(".act-hint").filter({ hasText: /^Click to send, or press Esc first$/ })).toHaveCount(1);
+    expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+  });
+
+  for (const spacing of [0, 60]) {
+    test(`${mode}, keys ${spacing} ms apart: a page that pushes focus out on every key cannot have the viewer's typing send or resolve a thread`, async ({ page }) => {
+      const { artifact } = await publishWith(d.base, d.token, "Every", EVERY, {});
+      const t = await postThread(d.base, artifact.id, "Check this", "#t");
+      const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+      await page.locator(".thread-card").first().waitFor();
+      await frame.locator("#a").click();
+      await typeOn(page, ["a", "b", "Tab", "c", "Tab", "Tab", "Tab", "Space", "?", "Space"], spacing);
+      await page.waitForTimeout(600);
+      expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+    });
+  }
+
+  test(`${mode}: a keyboard-only viewer who Tabs out of the page presses Esc, then sends from the keyboard`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Keyboard send", FORM, {});
+    const t = await postThread(d.base, artifact.id, "Check this", "#t");
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await page.locator(".thread-card").first().waitFor();
+    await frame.locator("#b").click();
+    await page.keyboard.press("Tab");
+    await expect(page.locator("button.thread-pin")).toBeFocused();
+    const send = page.getByRole("button", { name: /^Send to / });
+    for (let i = 0; i < 3; i++) await page.keyboard.press("Tab");
+    await expect(send).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect(page.locator(".act-hint")).toHaveText("Click to send, or press Esc first");
+    expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(send).toBeFocused();
+    await page.keyboard.press("Space");
+    await expect.poll(async () => (await threadState(artifact.id, t.id))?.sent_to_agent).toBe(true);
+  });
+
+  test(`${mode}: the artifact deleted while the viewer types in it leaves the keyboard free: Tab reaches the shell's controls`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Gone", FORM, {});
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await frame.locator("#a").click();
+    await page.keyboard.type("hi");
+    await api(d.base, d.token, `/api/artifacts/${artifact.id}`, { method: "DELETE" });
+    await expect(page.locator("iframe.frame")).toHaveCount(0);
+    expect(await page.evaluate(() => document.activeElement?.localName)).toBe("body");
+    await page.keyboard.press("Tab");
+    expect(await page.evaluate(() => document.activeElement?.localName)).not.toBe("body");
+  });
+}
+
 const PLACED = `<!doctype html><html><head><title>Placed</title></head><body><main><h2 id="t">Target</h2><input id="i" style="position:absolute;left:200px;top:120px;width:200px"></main><script>
 claude.use("comments").then(c => c.customAnchors({ mode(on) { document.body.dataset.mode = on; }, threads(l) { window.list = l; document.body.dataset.n = l.length; }, reveal() {} })).then(reg => {
   const h = () => window.list && window.list[0] && window.list[0].id;

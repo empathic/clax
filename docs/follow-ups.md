@@ -148,20 +148,30 @@ machine, so no agent runs them.
     bridge should report a part that loads after failing, and the shell then
     clear the failure and its notice and resolve the anchors again.
 
-- **A page can drop focus to the shell's body, and the viewer's next keys
-  walk the shell's buttons** (Echo Task 3 re-review 3, I6; Task 5 review, I1).
-  **Fixed in Task 5, pending re-review.** The page calls `parent.focus()` on
-  a key the viewer types in its form, and may keep the main thread busy so
-  the viewer's next keys reach the shell first. Focus falls to the shell's
-  `<body>`, and those keys, meant for the page, would walk the shell's
-  controls (a pin, a card head, then "Send to <agent>", which a Space
-  presses natively). The fix: once the window's blur saw the frame active,
-  a give-back is pending until the viewer presses in the shell or focus lands
-  on a shell control. While it is pending and focus is on `<body>`, a trusted
-  key is swallowed and focus goes back to the frame in that key's handler;
-  with no key, focus goes back a task after the window's focus. Tests: the
-  controller's give-back test, and the e2e tests of typing straight on after
-  the drop, with the page busy for 0 and 400 ms, in both frame modes.
+- **A page decides when the viewer's keys leave its frame for the shell**
+  (Echo Task 3 re-review 3, I6; Task 5 review, I1; Task 5 re-review 1, R2).
+  **Open: the fix is pending re-review.** The page can push focus out with
+  `parent.focus()` on any key (and keep the main thread busy so the viewer's
+  next keys reach the shell first), or make the viewer's own Tab leave the
+  frame by running out of fields (disabling them on that Tab). Either way the
+  viewer's typing, meant for the page, walks the shell's controls (a pin, a
+  card head, Resolve, "Send to <agent>"), and a Space presses them natively.
+  Two rules stand against it:
+  - the give-back: once the window's blur saw the frame active, a give-back
+    to that frame is pending until the viewer presses in the shell, focus
+    lands on a shell control, or they type in the composer; while it is
+    pending and focus is on `<body>`, a trusted key is swallowed and focus
+    returns to the frame in that key's handler (or a task after the window's
+    focus, with no key). It ends when that frame is removed or replaced.
+  - the tainted keyboard trail (`view/trail.ts`): focus that enters the shell
+    from the frame or from `<body>` without a press of the viewer's taints
+    it, and a card's consequential actions (Send, Resolve, and later ones)
+    ignore keyboard activation and say "Click to send, or press Esc first".
+    A trusted press in the shell, or a trusted Escape on a shell control,
+    clears it. Both start set after a load the page caused.
+
+  The shell keys C and ? still follow `keysOwned`, which focus landing on a
+  shell control sets even on a tainted trail.
 - **A pin that keeps moving never takes a press** (Echo Task 5 review,
   Minor 7). A pin settles (takes no press) for `ALLOW_DELAY_MS` after it
   appears or moves, so one whose place changes at least that often (an

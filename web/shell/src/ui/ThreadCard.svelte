@@ -3,6 +3,7 @@
   import { type Thread, type Viewer, anchorLabel } from "../threads";
   import type { HistoryEvent } from "../view/history-model";
   import { authorLabel } from "../view/sidebar-model";
+  import { guardedAction } from "../view/trail";
   import { waitingLabel } from "../waiting";
 
   type Props = {
@@ -19,6 +20,7 @@
   };
   let { t, n, now, selected, file, history, outdated, agent, when, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
+  let hint: string | null = $state(null);
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
 </script>
@@ -50,9 +52,11 @@
     <!-- Only stops a click on these controls from also selecting the card. -->
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="actions" onclick={e => e.stopPropagation()}>
-      <button onclick={() => onResolve(t)}>Resolve</button>
-      {#if !t.sent_to_agent}<button class="primary" onclick={() => onSend(t)}>Send to {agent}</button>{/if}
+      <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
+      {#if !t.sent_to_agent}<button class="primary" onclick={e => { hint = guardedAction(e, "send", () => onSend(t)); }}>Send to {agent}</button>{/if}
     </div>
+    <!-- Said when the keyboard asked for an action on a trail the page may have steered (`keyboardTrail`). -->
+    <p class="act-hint" role="status">{hint ?? ""}</p>
   {/if}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
   <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => { e.preventDefault(); send(); }}>
