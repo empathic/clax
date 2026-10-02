@@ -367,4 +367,54 @@ describe("ArtifactController", () => {
     expect(ctl.state.get().commenting).toBe(true);
     ctl.dispose();
   });
+
+  it("holds the shell's keys after a page's prompt or composer closes, until the viewer presses or Tabs in the shell", async () => {
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
+    const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
+    const inert = () => {
+      const before = ctl.state.get();
+      for (const k of ["s", "r", "c", "t", "j"]) key(k);
+      key("?", { shiftKey: true });
+      const after = ctl.state.get();
+      expect({ commenting: after.commenting, panel: after.panel, selected: after.selected, sheet: after.sheet })
+        .toEqual({ commenting: before.commenting, panel: before.panel, selected: before.selected, sheet: before.sheet });
+      expect(posted()).toEqual([]);
+    };
+    key("j");
+    expect(ctl.state.get().selected).toBe("t1");
+    // The page's prompt opens and is answered by a key: focus falls to the body.
+    const prompt = (ctl as unknown as { prompt(p: { title: string; body: string; allow: string; deny: string }): Promise<string> }).prompt;
+    void prompt({ title: "T", body: "B", allow: "Allow", deny: "Don't allow" });
+    await vi.waitFor(() => expect(ctl.state.get().ask).not.toBeNull());
+    ctl.state.get().ask!.answer("dismiss");
+    await vi.waitFor(() => expect(ctl.state.get().ask).toBeNull());
+    inert();
+    // An untrusted press, and a Tab that lands in a dialog, do not count.
+    dispatchEvent(new Event("pointerdown"));
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const inDialog = document.createElement("button");
+    dialog.append(inDialog);
+    document.body.append(dialog);
+    dispatchTrusted(window, new KeyboardEvent("keydown", { key: "Tab", bubbles: true }));
+    dispatchTrusted(inDialog, new FocusEvent("focusin", { bubbles: true }));
+    inert();
+    // Tab to a shell control gives the keys back.
+    const control = document.createElement("button");
+    document.body.append(control);
+    dispatchTrusted(window, new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true }));
+    dispatchTrusted(control, new FocusEvent("focusin", { bubbles: true }));
+    key("j");
+    expect(ctl.state.get().selected).toBe("t2");
+    // A composer the page opened holds them too, until a trusted press.
+    expect(ctl.commentsUi.openComposer({ kind: "element", selector: "h2", file: "index.html" } as never, {} as never)).toBe(true);
+    ctl.cancelDraft();
+    inert();
+    dispatchTrusted(window, new Event("pointerdown"));
+    key("c");
+    expect(ctl.state.get().commenting).toBe(true);
+    ctl.dispose();
+  });
 });

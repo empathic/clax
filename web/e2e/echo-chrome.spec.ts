@@ -97,3 +97,41 @@ test("a consent prompt raised while the viewer types takes the keys: S, R, C, T 
   await dialog.getByRole("button", { name: "Don't allow" }).click();
   await expect(dialog).toHaveCount(0);
 });
+
+// The same attack one key later: the viewer's next key for the page closes
+// the prompt (Space or Enter press its focused button, Escape dismisses it)
+// and focus falls to the shell's body. The keys after it must still do
+// nothing, until the viewer presses in the shell.
+for (const closer of ["Space", "Enter", "Escape"]) {
+  test(`after a page's prompt closes by ${closer}, the viewer's typing stays inert until they press in the shell`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, `Consent close ${closer}`, CONSENT, { comments: {} });
+    const t = await postThread(d.base, artifact.id, "Check this", "#t");
+    const other = await postThread(d.base, artifact.id, "And this", "#t");
+    const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+    const card = page.locator(`[data-thread="${t.id}"]`);
+    await card.locator(".card-head").click();
+    await expect(card).toHaveClass(/selected/);
+    const comment = page.getByRole("button", { name: "Comment", exact: true });
+    const threads = page.getByRole("button", { name: /^Threads/ });
+    const panel = await threads.getAttribute("aria-pressed");
+    await frame.locator("p").click();
+    await page.keyboard.type("h");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog.getByRole("button", { name: "Don't allow" })).toBeFocused();
+    await page.keyboard.press(closer);
+    await expect(dialog).toHaveCount(0);
+    for (const k of ["s", "r", "c", "Shift+?", "j", "t"]) await page.keyboard.press(k);
+    await page.waitForTimeout(300);
+    await expect(dialog).toHaveCount(0);
+    await expect(comment).toHaveAttribute("aria-pressed", "false");
+    await expect(threads).toHaveAttribute("aria-pressed", panel!);
+    await expect(card).toHaveClass(/selected/);
+    await expect(page.locator(`[data-thread="${other.id}"]`)).not.toHaveClass(/selected/);
+    const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+    expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+    // The viewer's own press in the shell gives the keys back.
+    await page.locator(".topbar h1").click();
+    await page.keyboard.press("c");
+    await expect(comment).toHaveAttribute("aria-pressed", "true");
+  });
+}
