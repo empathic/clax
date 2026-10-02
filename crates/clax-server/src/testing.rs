@@ -61,6 +61,8 @@ impl TestServer {
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
             rooms: Arc::new(crate::room::Rooms::default()),
+            // Sampling off; tests that sample set their own with `spawn_with`.
+            sample: Arc::new(crate::sample::Sampler::disabled()),
         };
         f(&mut state);
         let events = state.events.clone();
