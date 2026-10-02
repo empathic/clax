@@ -18,13 +18,15 @@ pub struct EventsQuery {
     /// When set, only events whose `artifact_id` equals this value are sent.
     /// `resync` is sent regardless, since dropped events cannot be filtered.
     artifact: Option<String>,
+    /// When set, only events whose name is in this comma list are sent; `ready` and `resync` always are.
+    types: Option<String>,
 }
 
 /// `GET /api/events`: a Server-Sent Events stream of the event bus.
 ///
 /// The stream opens with `event: ready` (`data: {}`), then carries `version`,
 /// `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
-/// `thread_deleted`, `feedback_state`, and `doc` events whose data is the JSON-serialised
+/// `thread_deleted`, `feedback_state`, `working`, and `doc` events whose data is the JSON-serialised
 /// [`clax_core::Event`]. A `doc` event carries the path and version only;
 /// one for a private `data/users/<id>/` path reaches only that viewer, and
 /// any other reaches only subscribers whose level may read the path (for a
@@ -55,6 +57,13 @@ pub async fn events(
         });
     let rx = s.events.subscribe();
     let filter = q.artifact;
+    let types: Option<std::collections::BTreeSet<String>> = q.types.map(|t| {
+        t.split(',')
+            .map(str::trim)
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect()
+    });
     let ready = tokio_stream::once(Ok(SseEvent::default().event("ready").data("{}")));
     let live = BroadcastStream::new(rx).filter_map(move |item| {
         let ev = match item {
@@ -67,6 +76,11 @@ pub async fn events(
         };
         if let Some(f) = &filter
             && ev.artifact_id() != f
+        {
+            return None;
+        }
+        if let Some(t) = &types
+            && !t.contains(ev.name())
         {
             return None;
         }

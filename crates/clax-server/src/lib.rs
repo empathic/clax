@@ -16,6 +16,7 @@ pub mod state;
 #[cfg(feature = "test-support")]
 pub mod testing;
 pub mod viewer;
+pub mod working;
 pub mod wrap_cache;
 
 pub use state::AppState;

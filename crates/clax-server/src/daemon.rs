@@ -235,9 +235,13 @@ pub async fn serve(
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
         codex: Arc::new(cfg.codex.clone()),
+        working: Arc::new(clax_core::working::Working::new(Arc::new(
+            clax_core::working::SystemClock,
+        ))),
     };
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     let fctx = state.feedback_ctx();
+    let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -283,6 +287,11 @@ pub async fn serve(
                 crate::feedback::apply(&ctx, &store, &r.touched);
                 for id in &r.ended {
                     ctx.waiters.forget(id);
+                    crate::working::announce(
+                        &ctx.events,
+                        &ctx.working,
+                        &ctx.working.end_session(id),
+                    );
                 }
                 Ok::<_, clax_core::CoreError>(r)
             })
@@ -293,6 +302,15 @@ pub async fn serve(
                 Ok(Err(e)) => tracing::warn!(error = %e, "session reaper failed"),
                 Err(e) => tracing::warn!(error = %e, "session reaper task failed"),
             }
+        }
+    });
+
+    let (sweep_working, sweep_events) = (state_working, state_events);
+    let sweeper = tokio::spawn(async move {
+        let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
+        loop {
+            every.tick().await;
+            crate::working::sweep_and_announce(&sweep_working, &sweep_events);
         }
     });
 
@@ -333,6 +351,7 @@ pub async fn serve(
         _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
     }
     reaper.abort();
+    sweeper.abort();
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }

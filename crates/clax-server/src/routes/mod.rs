@@ -12,6 +12,7 @@ pub mod threads;
 pub mod token;
 pub mod viewers;
 pub mod watches;
+pub mod working;
 
 use crate::auth::RequireToken;
 use crate::error::ApiError;
@@ -142,11 +143,21 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/docs:str_replace",
             post(docs::str_replace),
         )
-        .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire));
+        .route("/api/artifacts/{aid}/docs:acquire", post(docs::acquire))
+        .route("/api/artifacts/{aid}/working", get(working::for_artifact))
+        .route("/api/sessions/{id}/working", get(working::for_session))
+        .route("/api/sessions/{id}/working/renew", post(working::renew))
+        .route("/api/sessions/{id}/working/end", post(working::end))
+        .route(
+            "/api/sessions/{id}/working/{aid}",
+            axum::routing::put(working::put).delete(working::delete),
+        );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
         .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+    #[cfg(debug_assertions)]
+    let api_fast = api_fast.route("/api/_test/working/skew", post(working::skew));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = with_timeout(api_fast, state.request_timeout);
