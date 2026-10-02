@@ -167,6 +167,11 @@ describe("Sidebar", () => {
     expect(document.activeElement).toBe(document.body);
     view.update({ ...props, focusReply: 2, selected: "b" });
     expect(document.activeElement).toBe(reply("b"));
+    // Escape gives focus back to the card, where the shell's keys act again; the text stays.
+    (reply("b") as HTMLInputElement).value = "draft";
+    flush(() => reply("b")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+    expect(document.activeElement).toBe(root.querySelector('[data-thread="b"] .card-head'));
+    expect((reply("b") as HTMLInputElement).value).toBe("draft");
     view.unmount();
     root.remove();
   });

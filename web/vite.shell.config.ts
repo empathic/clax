@@ -9,35 +9,45 @@ const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** Replaces each entry's stylesheet link with the stylesheet itself, so no
  * request blocks the first render, and drops the separate CSS files. */
-function inlineCss(): Plugin {
+export function inlineCss(): Plugin {
   return {
     name: "clax-inline-css",
     apply: "build",
     enforce: "post",
     generateBundle(_options, bundle) {
       const sheets = Object.values(bundle).filter((f): f is OutputAsset => f.type === "asset" && f.fileName.endsWith(".css"));
-      // The CSS of chunks an entry imports statically is linked from its HTML,
-      // so it is inlined below. A lazily loaded chunk's CSS would be fetched by
-      // Vite's preload helper from a file this plugin deletes: refuse it.
+      // An entry's HTML links the CSS of the chunks it imports statically, so
+      // that CSS is inlined below. A chunk an entry loads only lazily would
+      // have its CSS fetched by Vite's preload helper from a file this plugin
+      // deletes, or not at all: refuse it. The check is per entry, since a
+      // chunk one entry imports statically has its CSS only in that entry's
+      // HTML.
       const chunks = new Map(Object.values(bundle).flatMap(c => (c.type === "chunk" ? [[c.fileName, c] as const] : [])));
-      const lazy = new Set<string>();
-      const visit = (name: string) => {
-        if (lazy.has(name)) return;
-        lazy.add(name);
-        for (const i of chunks.get(name)?.imports ?? []) visit(i);
+      const closure = (from: string[], into: Set<string>) => {
+        const walk = (name: string) => {
+          if (into.has(name)) return;
+          into.add(name);
+          for (const i of chunks.get(name)?.imports ?? []) walk(i);
+        };
+        for (const f of from) walk(f);
+        return into;
       };
-      for (const c of chunks.values()) if (c.isDynamicEntry) visit(c.fileName);
-      // A chunk an entry also imports statically has its CSS inlined already.
-      const eager = new Set<string>();
-      const walk = (name: string) => {
-        if (eager.has(name)) return;
-        eager.add(name);
-        for (const i of chunks.get(name)?.imports ?? []) walk(i);
-      };
-      for (const c of chunks.values()) if (c.isEntry) walk(c.fileName);
-      for (const name of eager) lazy.delete(name);
-      for (const name of lazy) {
-        if (chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} is loaded lazily and imports CSS; the shell's CSS must come from its HTML entries`);
+      for (const entry of [...chunks.values()].filter(c => c.isEntry)) {
+        const eager = closure([entry.fileName], new Set());
+        // Every chunk a dynamic import reaches, with what it imports, at any depth.
+        const lazy = new Set<string>();
+        const queue = [...eager].flatMap(n => chunks.get(n)?.dynamicImports ?? []);
+        for (let n = queue.pop(); n !== undefined; n = queue.pop()) {
+          if (lazy.has(n)) continue;
+          for (const m of closure([n], new Set())) {
+            if (lazy.has(m)) continue;
+            lazy.add(m);
+            queue.push(...(chunks.get(m)?.dynamicImports ?? []));
+          }
+        }
+        for (const name of lazy) {
+          if (!eager.has(name) && chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} is loaded lazily by ${entry.fileName} and imports CSS that ${entry.fileName}'s HTML does not carry; the shell's CSS must come from its HTML entries`);
+        }
       }
       for (const f of Object.values(bundle)) {
         if (f.type !== "asset" || !f.fileName.endsWith(".html")) continue;
@@ -50,8 +60,6 @@ function inlineCss(): Plugin {
         if (html.includes(`<link rel="stylesheet"`)) throw new Error(`${f.fileName} still links a stylesheet`);
         f.source = html;
       }
-      // No chunk may name a sheet deleted below (a dynamic import's preload list would).
-      for (const c of chunks.values()) for (const css of sheets) if (c.code.includes(css.fileName)) throw new Error(`${c.fileName} names ${css.fileName}, which is inlined and deleted`);
       for (const css of sheets) delete bundle[css.fileName];
       // So the manifest names no deleted file.
       for (const c of chunks.values()) c.viteMetadata?.importedCss.clear();

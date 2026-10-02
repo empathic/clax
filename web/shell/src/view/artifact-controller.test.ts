@@ -295,4 +295,76 @@ describe("ArtifactController", () => {
     expect(ctl.state.get().commenting).toBe(false);
     ctl.dispose();
   });
+
+  it("acts on Enter, S and R for the selected thread, and leaves keys that do nothing to the browser", async () => {
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string, init: KeyboardEventInit = {}) => {
+      const e = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
+      dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
+    // Nothing selected: Enter, S and R do nothing and keep their default.
+    expect([key("Enter"), key("s"), key("r")]).toEqual([false, false, false]);
+    expect(ctl.state.get().replyFocus).toBe(0);
+    // A key with no action yet (Shift+S, ticked threads) is not swallowed.
+    expect(key("S", { shiftKey: true })).toBe(false);
+    expect(key("j")).toBe(true);
+    expect(key("Enter")).toBe(true);
+    expect(ctl.state.get()).toMatchObject({ panel: true, replyFocus: 1 });
+    expect(key("s")).toBe(true);
+    expect(key("R")).toBe(true);
+    await vi.waitFor(() => expect(posted()).toEqual([`/api/artifacts/${ID}/threads/t1/send`, `/api/artifacts/${ID}/threads/t1/resolve`]));
+    ctl.dispose();
+  });
+
+  it("ignores every shell key while the sheet, a page's prompt or the composer is open", async () => {
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
+    key("j");
+    const posted = () => vi.mocked(fetch).mock.calls.map(c => String(c[0])).filter(u => /\/(send|resolve)$/.test(u));
+    const still = () => {
+      const before = ctl.state.get();
+      for (const k of ["s", "r", "c", "t", "j", "k", "Enter"]) key(k);
+      key("?", { shiftKey: true });
+      const after = ctl.state.get();
+      expect({ commenting: after.commenting, panel: after.panel, selected: after.selected, replyFocus: after.replyFocus })
+        .toEqual({ commenting: before.commenting, panel: before.panel, selected: before.selected, replyFocus: before.replyFocus });
+    };
+    // The sheet: only Escape acts, and it closes the sheet.
+    key("?", { shiftKey: true });
+    expect(ctl.state.get().sheet).toBe("keys");
+    still();
+    key("Escape");
+    expect(ctl.state.get().sheet).toBeNull();
+    // A page's prompt: it also closes an open sheet.
+    key("?", { shiftKey: true });
+    const prompt = (ctl as unknown as { prompt(p: { title: string; body: string; allow: string; deny: string }): Promise<string> }).prompt;
+    void prompt({ title: "T", body: "B", allow: "Allow", deny: "Don't allow" });
+    await vi.waitFor(() => expect(ctl.state.get().ask).not.toBeNull());
+    expect(ctl.state.get().sheet).toBeNull();
+    still();
+    expect(ctl.state.get().sheet).toBeNull();
+    ctl.state.get().ask!.answer("deny");
+    await vi.waitFor(() => expect(ctl.state.get().ask).toBeNull());
+    // The composer.
+    ctl.state.set({ draft: { pickId: "p1" } as unknown as NonNullable<ReturnType<typeof ctl.state.get>["draft"]> });
+    still();
+    expect(ctl.state.get().sheet).toBeNull();
+    expect(posted()).toEqual([]);
+    ctl.dispose();
+  });
+
+  it("closes the sheet with a notice when its code cannot load, so the keys act again", async () => {
+    const { ctl } = await started();
+    dispatchEvent(new KeyboardEvent("keydown", { key: "?", shiftKey: true, bubbles: true }));
+    expect(ctl.state.get().sheet).toBe("keys");
+    ctl.sheetFailed();
+    expect(ctl.state.get()).toMatchObject({ sheet: null, notice: "Could not open the keyboard shortcuts." });
+    dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    expect(ctl.state.get().commenting).toBe(true);
+    ctl.dispose();
+  });
 });

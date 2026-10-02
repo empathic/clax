@@ -10,7 +10,7 @@
 </script>
 
 {#if p.playful}
-  <button type="button" class="mark" data-size={p.size ?? "bar"} data-apart={p.apart || undefined} aria-label="Clax" aria-pressed={meet} onclick={() => { meet = !meet; }}><svg class="mk" viewBox="0 0 30 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M28 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="15" cy="12" r="2.6"/></svg></button>
+  <button type="button" class="mark" data-size={p.size ?? "bar"} data-apart={p.apart || undefined} aria-label="Clax mark" aria-pressed={meet} onclick={() => { meet = !meet; }}><svg class="mk" viewBox="0 0 30 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M28 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="15" cy="12" r="2.6"/></svg></button>
 {:else}
   <span class="mark" data-size={p.size ?? "bar"} data-apart={p.apart || undefined} role="img" aria-label="Clax"><svg class="mk" viewBox="0 0 30 24" aria-hidden="true" focusable="false"><path class="l" d="M2 2.5a9.5 9.5 0 0 1 0 19" fill="none" stroke-width="4.2"/><path class="r" d="M28 2.5a9.5 9.5 0 0 0 0 19" fill="none" stroke-width="4.2"/><circle cx="15" cy="12" r="2.6"/></svg></span>
 {/if}

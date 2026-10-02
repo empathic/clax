@@ -20,6 +20,7 @@
   let { t, n, now, me, selected, file, focusReply = 0, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
   let replyInput: HTMLInputElement | undefined = $state();
+  let head: HTMLButtonElement | undefined = $state();
   $effect(() => {
     if (focusReply < consumed) consumed = 0;
     if (focusReply > consumed && selected === t.id && replyInput) { consumed = focusReply; replyInput.focus(); }
@@ -33,7 +34,7 @@
 <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)}
   onmouseenter={() => onHover?.(t)} onmouseleave={() => onHover?.(null)}>
   <header>
-    <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
+    <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
       >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
       >{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">v{t.version_n}</span
     ></button>
@@ -58,7 +59,7 @@
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
   <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => { e.preventDefault(); send(); }}>
     <input aria-label="Reply" placeholder="Reply…" bind:value={reply} bind:this={replyInput}
-      onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } }} />
+      onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } else if (e.key === "Escape") head?.focus(); }} />
     <button type="submit">Reply</button>
   </form>
 </article>
