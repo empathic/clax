@@ -24,9 +24,9 @@ since clients keep a daemon of their own version. A daemon of any other
 executable, such as `just watch --shared`'s, is left running and named.
 `clax init` writes the Clax plugins built into that binary to
 `~/.clax/marketplace/` and registers them with each harness whose CLI is on
-your `PATH`: Claude Code, Codex and Pi. The registration replaces any older
-one, including registrations under Clax's previous name. Start a new session
-in each harness afterwards. The plugins run the `clax` on the `PATH` the
+your `PATH`: Claude Code, Codex, Pi and Grok Build. The registration replaces
+any older one, including registrations under Clax's previous name. Start a
+new session in each harness afterwards. The plugins run the `clax` on the `PATH` the
 harness starts with, so `~/.cargo/bin` must be on it; `clax init` warns
 when the first `clax` on your `PATH` is another one. Nothing is downloaded,
 and moving or deleting the clone afterwards changes nothing.
@@ -83,7 +83,7 @@ To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.
 
 ## Use from an agent
 
-Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. `clax init` registers the plugin with each harness (see Install); plugin details: [plugins/claude-code/README.md](plugins/claude-code/README.md), [plugins/clax/README.md](plugins/clax/README.md), [plugins/pi/README.md](plugins/pi/README.md).
+Each harness gets the same twenty-two tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. `clax init` registers the plugin with each harness (see Install); plugin details: [plugins/claude-code/README.md](plugins/claude-code/README.md), [plugins/clax/README.md](plugins/clax/README.md), [plugins/pi/README.md](plugins/pi/README.md), [plugins/clax-grok/README.md](plugins/clax-grok/README.md).
 
 The plugins run `clax` from `PATH` (or `CLAX_BIN`, for scripts) through
 `scripts/ensure-clax.sh`, which never downloads or builds anything. A `clax`
@@ -175,7 +175,7 @@ uninstall` takes it away again.
 - `just check` formats the Rust code, then runs every quality gate.
 - `just ci` runs the same gates CI runs, without formatting.
 
-`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the three skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, both plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
+`scripts/quality_gates.sh` runs every check CI runs: the justfile, plugin wrapper (`scripts/test-ensure-clax.sh`, `just wrapper-test`), release script, release installer and dev script tests (`scripts/test-release.sh`, `scripts/test-install.sh` (`just install-test`), `scripts/test-dev.sh`), and plugin structure tests (`scripts/test-plugins.sh`, which also checks that the four skill copies and `docs/contract.md` share the page contract word for word, that the skill copies share the comment loop word for word, that the plugins wire their Stop and prompt hooks, that the workspace, the plugin manifests, the Pi package and the plugins' wrapper's `CLAX_VERSION` carry one version (`scripts/check-version.sh`), that the Rust and Pi tool descriptions match `plugins/pi/test/fixtures/contract.json`, and, through `scripts/sync-skill-tools.py --check`, that each skill's generated tool block and the tool lists in `docs/contract.md` and the READMEs name exactly that fixture's tools), the web lint (`oxlint`, configured in `web/.oxlintrc.json`), web typecheck and unit tests, the web build (before the Rust gates, which serve or embed it), `cargo fmt`, clippy with `-D warnings`, `cargo check` without test features, `cargo test`, the comment-loop smoke (`scripts/smoke-comment-loop.sh`: a scripted Claude Code session, no model, through tiers 1, 2, 4 and 5 with a fake `codex`), the Pi extension's typecheck and tests, and the Playwright end-to-end tests. `just web-test` runs the web lint, typecheck, and unit tests.
 
 One run of the gates at a time per checkout: a run holds
 `quality-gates.lock` in the checkout's git directory, a second run in the

@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 const DIRS: &[&str] = &[
     "plugins/claude-code",
     "plugins/clax",
+    "plugins/clax-grok",
     "plugins/pi/src",
     "plugins/pi/skills",
 ];
@@ -18,6 +19,7 @@ const FILES: &[&str] = &[
     "plugins/pi/README.md",
     ".claude-plugin/marketplace.json",
     ".agents/plugins/marketplace.json",
+    ".grok-plugin/marketplace.json",
 ];
 
 fn walk(repo: &Path, rel: PathBuf, out: &mut Vec<PathBuf>) {
