@@ -22,6 +22,9 @@ for example `mcp__plugin_clax_clax__publish`. The plugin's commands
 `/clax:comments`, `/clax:watch` and `/clax:wait` drive the comment
 loop below.
 
+Grok Build also loads this plugin when it is enabled there; in Grok it does
+nothing, and Clax runs from the clax-grok plugin instead.
+
 ## When to publish
 
 Publish when the result is something the person should look at or interact with
@@ -229,7 +232,7 @@ Sent comments reach you in one of these ways:
   array, plus a trailing text block starting with `---` and
   `[clax] N comments sent to you:`.
 - At the end of your turn, from the Stop hook, where the harness has one and
-  the watch has replies on (Claude Code, Codex).
+  the watch has replies on (Claude Code, Codex, Grok Build).
 - With the person's next message, from the prompt hook (Claude Code).
 - From `wait_for_feedback`, which returns as soon as a comment arrives.
 - Pushed into an idle session where the harness allows it and the watch has

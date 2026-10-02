@@ -52,21 +52,60 @@ impl Shim {
         Shim::start_in(tempfile::tempdir().unwrap(), heartbeat_ms).await
     }
 
-    /// Starts a shim whose `CLAX_HOME` is `<dir>/ax`.
+    /// Starts a Claude Code shim whose `CLAX_HOME` is `<dir>/ax`.
     async fn start_in(dir: tempfile::TempDir, heartbeat_ms: Option<u64>) -> Shim {
+        Shim::spawn(
+            dir,
+            heartbeat_ms,
+            "claude",
+            ("CLAUDE_CODE_SESSION_ID", "test-sess"),
+        )
+        .await
+    }
+
+    /// Starts a Grok Build shim whose `GROK_SESSION_ID` is `session_id`.
+    async fn start_grok(session_id: &str) -> Shim {
+        Shim::spawn(
+            tempfile::tempdir().unwrap(),
+            None,
+            "grok",
+            ("GROK_SESSION_ID", session_id),
+        )
+        .await
+    }
+
+    /// Starts `clax mcp --agent <agent>` with the inherited harness
+    /// environment cleared and only `session_var` set.
+    async fn spawn(
+        dir: tempfile::TempDir,
+        heartbeat_ms: Option<u64>,
+        agent: &str,
+        session_var: (&str, &str),
+    ) -> Shim {
         std::fs::create_dir_all(dir.path().join("work")).unwrap();
         let home = dir.path().join("ax");
         let work = dir.path().join("work");
         let cmd = tokio::process::Command::new(clax_bin()).configure(|c| {
-            c.args(["--port", "0", "mcp", "--agent", "claude"])
+            for var in [
+                "GROK_SESSION_ID",
+                "GROK_HOOK_EVENT",
+                "GROK_PLUGIN_ROOT",
+                "GROK_HOME",
+                "CLAUDE_PID",
+                "CLAUDE_CODE_SESSION_ID",
+                "CLAUDE_PLUGIN_ROOT",
+                "CLAUDE_PROJECT_DIR",
+                "CLAX_SESSION_ID",
+            ] {
+                c.env_remove(var);
+            }
+            c.args(["--port", "0", "mcp", "--agent", agent])
                 .env("CLAX_HOME", &home)
                 .env("CLAX_CODEX_BIN", "")
                 .env("HOME", dir.path())
-                .env("CLAUDE_CODE_SESSION_ID", "test-sess")
+                .env(session_var.0, session_var.1)
                 .env("CLAX_NO_OPEN", "1")
                 .env("RUST_LOG", "error")
-                .env_remove("CLAX_SESSION_ID")
-                .env_remove("CLAUDE_PROJECT_DIR")
                 .current_dir(&work);
             if let Some(ms) = heartbeat_ms {
                 c.args(["--heartbeat-interval-ms", &ms.to_string()]);
@@ -492,5 +531,15 @@ async fn piggyback_and_wait_through_the_shim() {
         .call("wait_for_feedback", json!({"timeout_s": 1}))
         .await);
     assert_eq!(v["call_again"], true);
+    shim.finish().await;
+}
+
+#[tokio::test]
+async fn a_grok_shim_registers_by_its_session_id() {
+    let shim = Shim::start_grok("019a-shim").await;
+    let live = shim.live_sessions().await;
+    assert_eq!(live.len(), 1, "{live:?}");
+    assert_eq!(live[0]["harness"], "grok");
+    assert_eq!(live[0]["harness_session_id"], "019a-shim");
     shim.finish().await;
 }

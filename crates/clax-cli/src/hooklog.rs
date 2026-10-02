@@ -65,7 +65,8 @@ fn try_append(home: &Home, line: &str) -> std::io::Result<()> {
 }
 
 /// The last `n` lines of hooks.log (then hooks.log.1) naming `agent=<agent>`,
-/// oldest first.
+/// oldest first. Stand-down lines (`standdown … host=grok`) are left out:
+/// they are not that harness's hooks.
 pub fn tail_for(home: &Home, agent: &str, n: usize) -> Vec<String> {
     let path = home.hooks_log_path();
     let needle = format!(" agent={agent} ");
@@ -73,7 +74,7 @@ pub fn tail_for(home: &Home, agent: &str, n: usize) -> Vec<String> {
         .iter()
         .filter_map(|p| std::fs::read_to_string(p).ok())
         .flat_map(|t| t.lines().map(str::to_string).collect::<Vec<_>>())
-        .filter(|l| l.contains(&needle))
+        .filter(|l| l.contains(&needle) && !l.contains(" standdown "))
         .collect();
     let skip = lines.len().saturating_sub(n);
     lines.drain(..skip);
@@ -178,5 +179,20 @@ mod tests {
         );
         assert_eq!(tail_for(&home, "codex", 9).len(), 3);
         assert!(tail_for(&home, "pi", 5).is_empty());
+    }
+
+    #[test]
+    fn tail_leaves_out_standdown_lines() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().to_path_buf());
+        append(
+            &home,
+            "2026-10-01T00:00:00Z standdown mode=hook agent=claude host=grok",
+        );
+        append(&home, "2026-10-01T00:00:01Z hook agent=claude event=stop x");
+        assert_eq!(
+            tail_for(&home, "claude", 5),
+            vec!["2026-10-01T00:00:01Z hook agent=claude event=stop x"]
+        );
     }
 }

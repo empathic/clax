@@ -158,6 +158,9 @@ pub const MIGRATIONS: &[&str] = &[
         COALESCE((SELECT MAX(version) FROM docs WHERE docs.artifact_id = artifacts.id), 0);",
     // 9: comments a page wrote through the `comments` capability, as the viewer.
     "ALTER TABLE comments ADD COLUMN via_page INTEGER NOT NULL DEFAULT 0;",
+    // 10: when `clax feedback follow` announced the row to its target session
+    // (a notice, not a delivery); cleared when the row is retargeted.
+    "ALTER TABLE feedback ADD COLUMN notified_at TEXT;",
 ];
 
 #[cfg(test)]

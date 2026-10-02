@@ -7,7 +7,7 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex uses the installed one); with no harness, `just watch`
+# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
 [positional-arguments]
 dev *ARGS:
     ./scripts/dev.sh "$@"
