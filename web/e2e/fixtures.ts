@@ -1,16 +1,23 @@
 import { expect, type Frame, type Locator, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
-export async function startDaemon() {
+/** The default config.toml: the sample key comes from a variable nobody sets, so no test reaches a real provider. */
+export const NO_KEY_CONFIG = '[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n';
+/** The stub provider: canned, deterministic answers (see crates/clax-server/src/sample/stub.rs). */
+export const STUB_CONFIG = '[sample]\nprovider = "stub"\nstub_delay_ms = 150\n';
+
+/** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default). */
+export async function startDaemon(opts: { config?: string } = {}) {
   const home = mkdtempSync(join(tmpdir(), "clax-e2e-"));
+  writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: ["ignore", "inherit", "inherit"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";

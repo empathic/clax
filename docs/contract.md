@@ -1546,14 +1546,14 @@ exactly as on claude.ai. The type definitions of contract 0.2.61 are the
 contract: before writing a page, fetch the one you use from your daemon,
 `<daemon_url>/_clax/contract/0.2.61/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
-`db`, `downloads`, `user`, `comments`, `assets`).
+`db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
 Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files`, `mcp`, `room`, and `sample`, and outside the Clax viewer, so
-render without the capability first and light features up when it resolves.
+for `files` and `mcp`, and outside the Clax viewer, so render without the
+capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
@@ -1575,6 +1575,17 @@ render without the capability first and light features up when it resolves.
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
 - `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
+  and `onConnection` reach every view of the artifact that is open now;
+  nothing is stored. Presence works for every viewer. A topic declared
+  `{"room": {"topics": {"<topic>": "interact"}}}` may be sent on by a viewer
+  on another machine who entered a name; every other topic only by the
+  person's browser.
+- `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
+  Claude with the API key configured on the person's machine, and only in
+  the person's own browser: everywhere else, and when no key is configured,
+  `use("sample")` resolves `null`. The first call in each view asks the
+  person to allow it.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -1629,15 +1640,25 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   otherwise). Page-written comments show "via the page", and an `@agent` in
   them sends nothing. Per tab, composer opens are limited to 5 per 10
   seconds, page writes to 10 a minute, and gesture refusals to 20 a minute.
+- `room`: there are no agent peers (`kind` is always `"viewer"`);
+  `sendToClaudeSession` rejects `claude_unavailable` and
+  `canSendToClaudeSession` answers `"off"`. A new version does not empty
+  the room: each view stays on its version until it reloads. A viewer's
+  level is fixed per connection; entering a name reconnects at the new level.
+- `sample`: the person's own API key pays for every call, not the viewer's
+  account, so only their browser can call it. Allowing lasts for the view,
+  not for the artifact. Answers are cached per browser in the daemon and
+  forgotten, with the day's call counts, when it restarts. A daemon
+  restart under an open tab ends its calls with `session_expired`.
 
 ## Runtime capabilities in detail
 
 Further differences from the 0.2.61 contract, which a page rarely needs to
 plan for:
 
-- Everywhere: `files`, `mcp`, `room`, and `sample` resolve `null`. `use()`
-  resolves `null` at once in a page that is not framed, and after 10 seconds
-  in a frame that is not the Clax viewer. A call the shell never answers
+- Everywhere: `files` and `mcp` resolve `null`. `use()` resolves `null` at
+  once in a page that is not framed, and after 10 seconds in a frame that is
+  not the Clax viewer. A call the shell never answers
   stays pending; it does not reject `upstream_error`.
 - The viewer's gesture is judged by the Clax window from its own events (see
   "The viewer's gesture" under "The `comments` capability" for the exact
@@ -1674,6 +1695,146 @@ plan for:
   `<name> (written by the page): "…"`. A compose `label` is shown in the
   composer but never stored, and `detail` is dropped. Pins cannot be
   dragged, so `move` is never called.
+
+## Room protocol
+
+A page's `room` is relayed by the shell: the frame never reaches the
+daemon's socket itself, in either frame mode.
+
+**The socket.** `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
+upgrades to a WebSocket. `<label>` is 16 characters of `[0-9a-z]`, picked by
+the shell once per open document and reused on reconnect. A WebSocket cannot
+send an `Authorization` header, so the shell appends `token` when it holds
+the token; the query string is never logged. The level is fixed when the
+socket opens: a valid token with a viewer cookie is `admin`, a valid token
+without one is `owner`, a cookie alone is `interact` for a named viewer and
+`view` otherwise, and anything else is `view`. The shell reconnects under the
+same label when the viewer's name changes.
+
+Refused before the upgrade: 403 `forbidden_origin` (a foreign `Origin`), 403
+`forbidden_host` (the `/api` host rule), 400 `invalid_argument` (a bad label
+or artifact ID). After the upgrade, a socket for a missing or undeclared
+artifact is closed at once. Frames are JSON text with a `t` field.
+
+Client to daemon:
+
+```json
+{"t": "presence", "room": null, "state": {"cursor": [0.4, 0.3]}}
+{"t": "emit", "id": 7, "room": "table-1", "topic": "reaction", "data": {"kind": "wave"}}
+{"t": "join", "id": 8, "room": "table-1"}
+{"t": "leave", "room": "table-1"}
+```
+
+`room: null` is the lobby. `state` is the whole merged presence object (the
+bridge merges patches). `data` is omitted when the page passed none.
+
+Daemon to client:
+
+```json
+{"t": "welcome", "peer": "k3v6q2rt7wacd4fn"}
+{"t": "peers", "room": null, "peers": [WirePeer, ...]}
+{"t": "peer", "room": null, "peer": WirePeer}
+{"t": "left", "room": null, "peer": "k3v6q2rt7wacd4fn"}
+{"t": "msg", "room": null, "msg": {"peer": "…", "by": null, "isMe": false, "sameTab": false, "kind": "viewer", "guest": false, "topic": "reaction", "data": {"kind": "wave"}}}
+{"t": "ack", "id": 7}
+{"t": "ack", "id": 7, "dropped": true}
+{"t": "nack", "id": 7, "code": "not_permitted", "message": "…"}
+```
+
+`WirePeer` is `{peer, by, isMe, sameTab, kind, guest, presence}`. `kind` is
+always `"viewer"` and `guest` always `false`. `by` is the sender's viewer
+public ID when the artifact declares `user`, else `null`. `peers` replaces the
+room's list: it is sent on connect, after a join, and after the socket fell
+behind, and it lists at most 256 peers, the receiver always among them.
+`peer` is an upsert. Presence and message `data` are relayed as given and
+never interpreted by the daemon or the shell; nothing about a room is stored,
+and rooms are not carried on `/api/events`.
+
+**Who may send.** A topic declared `"interact"` in
+`capabilities.room.topics` admits `interact` and above; every other topic
+admits `admin` and above; presence admits everyone. A refused emit answers
+`nack` with `not_permitted`.
+
+**Close codes.** 4403 with reason `not_granted` (the artifact is missing or
+does not declare `room`) or `revoked` (the artifact was deleted, or a new
+version stopped declaring `room`, while the socket was open); 4409 `replaced`
+(a newer socket took this label; it is never refused); 1001 on shutdown.
+
+**Budget and bounds.** Emits and presence share 40 a second, burst 80; an
+emit past it answers `ack` with `dropped: true`; presence past it waits and is
+sent latest-wins. A topic matches `^[a-z][a-z0-9_.-]{0,47}$` and a room name
+`^[a-z0-9][a-z0-9_.-]{0,47}$`. `data` and the merged presence are at most 4096
+bytes of JSON and 8 levels deep. Presence keys match
+`^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and are never `prototype` or a name
+`Object.prototype` carries. A socket joins at most 16 named rooms, and an
+artifact declares at most 16 topics.
+
+**The relay (bridge and shell, namespace `room`).** Calls: `connect()`,
+`presence(room: string | null, state)`, `emit(room, topic[, data]) →
+{dropped: boolean}`, `join(name)`, `leave(name)`. Pushes (`clax:event`,
+namespace `room`): `connection {connected}`, `welcome {peer}`,
+`peers {room, peers}`, `peer {room, peer}`, `left {room, peer}`,
+`msg {room, msg}`, and `error {room: string | null, code, message}`
+(`room: null` ends the page's room; a name ends that room only).
+
+The shell closes a document's socket as soon as the document leaves: on its
+`clax:bye`, on a load without a hello, and before any navigation the shell
+starts. The peer then leaves every other view at once, and no room event
+reaches the next document.
+
+## Sample protocol
+
+`sample` spends the API key configured on the person's machine, so only the
+person's own browser (the token and a viewer cookie) can call it. The shell
+offers `sample` only when it holds the token, so `use("sample")` resolves
+`null` for a viewer on another machine, and every call waits on the consent
+given in that view. The frame never reaches these routes itself.
+
+| Route | Caller | Body | Answer |
+|---|---|---|---|
+| `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap}`; without the token `available: false`, `provider: null` |
+| `POST /api/artifacts/<aid>/sample` | SameOrigin, token, viewer cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
+| `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, viewer cookie | `{id, content, is_error}` | 204 |
+| `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
+
+`input` is a string or `[{role, content}]`; `verb` is `text` or `json`;
+`model_tier` is `quick`, `default` or `complex`; `tools` is
+`[{name, description, input_schema?}]`; `images` is
+`[{media_type, data}]` (base64); `cache` is `true`, `false`, or
+`{gc_time_ms?, refresh?}`. `limits` is `sample.d.ts`'s `SampleLimits`:
+`{maxPromptBytes: 65536, tools: {maxCount: 16}}`, plus
+`images: {maxCount: 5, maxInputBytes: 20000000, mediaTypes: ["image/jpeg",
+"image/png", "image/webp", "image/gif"]}` only when the provider takes images.
+
+**Refusals** come before the stream, as the JSON error shape: 401
+`unauthorized` (no token), 403 `forbidden` (no viewer cookie), 403
+`forbidden_origin`, 404 `not_found`, 403 `not_declared`, 403
+`sampling_disabled` (no provider), 400 `invalid_request`, 400
+`prompt_too_large`, 400 `images_unavailable`, 400 `image_rejected`, and 429
+`rate_limited` (the browser's queue is full, or the artifact reached
+`daily_call_cap`).
+
+**SSE frames**, in order: one `start` `{call_id, cached, calls_today,
+daily_call_cap}`; then any number of `text` `{delta}` and `tool_call`
+`{id, name, input}`; then exactly one `done` `{text, truncated,
+model_tier_applied, value?}` (`value` on `verb: "json"`) or `error`
+`{code, message}`. The text of consecutive tool rounds is joined by a `text`
+frame whose `delta` is `"\n\n"`. Closing the stream (the tab closes or
+navigates, or the page calls Stop) drops the provider request at once and
+forgets the pending call.
+
+**The relay (bridge and shell, namespace `sample`).** Calls:
+`run(call, request)`, which resolves `null` when the stream ends and rejects
+`{code, message}` when the daemon refused before streaming or the person did
+not allow the call; `cancel(call)`; `toolResult(call, id, content, isError)`;
+`limits()`. Pushes: `clax:event` `{ns: "sample", topic: "frame", data:
+{call, event, data}}`, where `event` and `data` are one SSE frame.
+
+The shell maps every refusal into `sample.d.ts`'s `SampleErrorCode`: 401 to
+`session_expired` (the daemon restarted and no longer takes the page's
+session), 404 to `not_declared`, 413 to `prompt_too_large`, a code that is
+one of `SampleErrorCode`'s to itself, and any other code (such as `forbidden`,
+`forbidden_origin` or `timeout`) to `upstream_error`.
 
 ## Installation and the wrapper
 
@@ -1790,7 +1951,7 @@ Either layer appends `standdown mode=<hook|mcp> agent=claude host=grok` to
 > nothing. If no `clax_grok` tools are listed, run `clax init --agent
 > grok`. To remove this server from Grok, run `grok plugin disable clax`.
 
-### The daemon's port
+### `config.toml`
 
 A home's `config.toml` may set the port a daemon started for that home
 listens on:
@@ -1810,6 +1971,41 @@ when it has no `[serve]` table, so every daemon for that home, whoever
 starts it, listens there. Outside `--shared`, both first stop a daemon of
 the dev home whose recorded `exe` no longer exists (one an earlier `just
 dev` left behind); they never stop one in `~/.clax`.
+
+The `[sample]` table configures the key that `sample` spends. Every key is
+optional:
+
+```toml
+[sample]
+provider = "anthropic"          # or "stub" (tests and demos only)
+api_key_env = "ANTHROPIC_API_KEY"
+base_url = "https://api.anthropic.com"
+max_tokens = 16000
+daily_call_cap = 200            # optional; per artifact, per local day
+stub_images = false             # stub only
+stub_delay_ms = 40              # stub only
+
+[sample.models]
+quick = "claude-haiku-4-5"
+default = "claude-sonnet-5-5"
+complex = "claude-opus-5-5"
+```
+
+Without the table, the provider is `anthropic` with the key in
+`ANTHROPIC_API_KEY`, and there is no daily cap. A `[sample]` table that is
+invalid (not a table, an unknown key, another provider, `max_tokens = 0`, an
+empty model ID, or a `base_url` that is not `https://`, or `http://` on
+`localhost`, `127.0.0.1` or `[::1]`) turns sample off and the daemon starts anyway; `clax doctor` prints it as a
+`warn` line. The key is read from the named environment variable once, when
+the daemon starts, and is sent only to `base_url`, in the `x-api-key` header;
+it never appears in a response, an SSE frame, a log line or an error message.
+When the variable is unset, sample is off and `use("sample")` resolves `null`.
+
+`clax doctor` prints a `sample` line: the daemon's provider (for `anthropic`,
+the variable its key came from) and its daily cap, or why sample is off.
+With no daemon running it reads the home's `[sample]` table instead. An
+invalid table is a `warn` line (`"ok": true, "warn": true` under `--json`),
+which does not fail the run.
 
 ### `clax doctor --agent`
 
@@ -2076,7 +2272,6 @@ are listed in [`docs/follow-ups.md`](follow-ups.md).
 
 - The `files` and `mcp` capabilities: `claude.use("files")` and
   `claude.use("mcp")` resolve `null` in every version of Clax.
-- Rooms and `sample()` (phase 5): not available.
 - Pi: the extension, its session handling and its tools are tested against a
   real daemon, but no model-driven Pi session has been run end to end, because
   no model provider key exists on the build machine.

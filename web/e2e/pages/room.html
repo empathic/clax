@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who's here</title>
+<style>
+:root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --accent: #0a66c2; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #161618; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --accent: #4ea1ff; } }
+:root[data-theme="dark"] { --bg: #161618; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --accent: #4ea1ff; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+.muted { color: var(--muted); }
+ul, ol { padding-left: 20px; }
+</style>
+</head>
+<body>
+<h1>Who's here</h1>
+<p><span id="status" class="muted">offline</span> · <span id="count">0</span> here</p>
+<p><button id="pick-a">Pick A</button> <button id="pick-b">Pick B</button> <button id="wave">Wave</button></p>
+<ul id="peers"></ul>
+<h2>Table</h2>
+<p><button id="join">Join the table</button> <button id="leave">Leave the table</button> <span id="table-count">0</span> at the table</p>
+<ol id="log"></ol>
+<script>
+(async () => {
+  const room = await claude.use("room");
+  const status = document.getElementById("status");
+  if (!room) { status.textContent = "unavailable"; return; }
+  const who = p => (p.sameTab ? "this tab" : p.isMe ? "your other tab" : "someone else");
+  const log = text => { const li = document.createElement("li"); li.textContent = text; document.getElementById("log").append(li); };
+  room.onConnection(c => { status.textContent = c ? "connected" : "offline"; });
+  room.onPeers(change => {
+    document.getElementById("count").textContent = String(change.peers.length);
+    document.getElementById("peers").replaceChildren(...change.peers.map(p => {
+      const li = document.createElement("li");
+      li.dataset.peer = p.peer;
+      li.textContent = who(p) + ": " + (typeof p.presence.pick === "string" ? p.presence.pick : "nothing");
+      return li;
+    }));
+  });
+  room.on("reaction", m => log("wave from " + who(m)));
+  document.getElementById("pick-a").onclick = () => room.presence({ pick: "A" });
+  document.getElementById("pick-b").onclick = () => room.presence({ pick: "B" });
+  document.getElementById("wave").onclick = () => room.emit("reaction", { kind: "wave" }).catch(e => log("refused: " + e.code));
+  let table = null;
+  document.getElementById("join").onclick = async () => {
+    table = await room.join("table-1");
+    table.onPeers(change => { document.getElementById("table-count").textContent = String(change.peers.length); });
+  };
+  document.getElementById("leave").onclick = async () => {
+    await table?.leave();
+    table = null;
+    document.getElementById("table-count").textContent = "0";
+  };
+})();
+</script>
+</body>
+</html>

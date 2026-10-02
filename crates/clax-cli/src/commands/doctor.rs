@@ -25,6 +25,54 @@ fn check(name: &str, ok: bool, detail: impl Into<String>) -> serde_json::Value {
     serde_json::json!({"name": name, "ok": ok, "detail": detail.into()})
 }
 
+/// A passing check that the person should still read: printed `warn`.
+fn warn(name: &str, detail: impl Into<String>) -> serde_json::Value {
+    serde_json::json!({"name": name, "ok": true, "warn": true, "detail": detail.into()})
+}
+
+/// `sample`: the daemon's `GET /api/sample` when one answers, else the home's
+/// `[sample]` table read here (`local`: the provider, or why the table is
+/// invalid). A bad table warns: the daemon starts with sample() off.
+fn sample_check(
+    daemon: Option<&serde_json::Value>,
+    local: Option<Result<String, String>>,
+) -> serde_json::Value {
+    if let Some(d) = daemon {
+        let key = d["key_env"].as_str().unwrap_or("its key variable");
+        return match (d["provider"].as_str(), d["reason"].as_str()) {
+            (Some(p), _) => {
+                let mut detail = if p == "anthropic" {
+                    format!("anthropic, key from {key}")
+                } else {
+                    p.to_string()
+                };
+                if let Some(cap) = d["daily_call_cap"].as_u64() {
+                    detail.push_str(&format!(", at most {cap} calls per artifact a day"));
+                }
+                check("sample", true, detail)
+            }
+            (None, Some("bad_config")) => warn(
+                "sample",
+                format!(
+                    "sample() is off: {}",
+                    d["detail"].as_str().unwrap_or("config.toml is invalid")
+                ),
+            ),
+            (None, Some("no_key")) => check(
+                "sample",
+                true,
+                format!("sample() is off: {key} is not set in the daemon's environment"),
+            ),
+            _ => check("sample", true, "sample() is off"),
+        };
+    }
+    match local {
+        Some(Ok(p)) => check("sample", true, format!("{p} (no daemon is running)")),
+        Some(Err(e)) => warn("sample", format!("sample() will be off: {e}")),
+        None => check("sample", true, "no daemon is running"),
+    }
+}
+
 /// `codex_push` ([`codex_push_check`]); `codex_sessions`: whether
 /// every live Codex session has its Codex session ID (joined by the
 /// SessionStart hook), without which push is off for it.
@@ -414,6 +462,17 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             "UI not built or daemon down; run `just web`"
         },
     ));
+    let local = clax_core::config::HomeConfig::load(home.root())
+        .and_then(|c| c.sample())
+        .map(|s| s.provider)
+        .map_err(|e| e.to_string());
+    checks.push(sample_check(
+        client
+            .as_ref()
+            .and_then(|c| c.get("/api/sample").ok())
+            .as_ref(),
+        Some(local),
+    ));
     if let Some(agent) = args.agent {
         checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
     }
@@ -434,7 +493,9 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
                 .chain(j["checks"].as_array().unwrap().iter().map(|c| {
                     format!(
                         "{} {:<18} {}",
-                        if c["ok"].as_bool().unwrap() {
+                        if c["warn"].as_bool() == Some(true) {
+                            "warn"
+                        } else if c["ok"].as_bool().unwrap() {
                             "ok  "
                         } else {
                             "FAIL"
@@ -456,7 +517,63 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::codex_push_check;
-    use serde_json::json;
+    use serde_json::{Value, json};
+    #[test]
+    fn the_sample_line_reports_the_daemon_or_the_file_and_warns_on_a_bad_table() {
+        use super::sample_check;
+        let on = sample_check(
+            Some(
+                &json!({"available": true, "provider": "anthropic", "reason": null, "detail": null, "key_env": "ANTHROPIC_API_KEY", "daily_call_cap": 200}),
+            ),
+            None,
+        );
+        assert_eq!(
+            (on["ok"].clone(), on["warn"].clone()),
+            (json!(true), Value::Null)
+        );
+        assert_eq!(
+            on["detail"],
+            "anthropic, key from ANTHROPIC_API_KEY, at most 200 calls per artifact a day"
+        );
+        let off = sample_check(
+            Some(
+                &json!({"available": false, "provider": null, "reason": "no_key", "detail": null, "key_env": "ANTHROPIC_API_KEY", "daily_call_cap": null}),
+            ),
+            None,
+        );
+        assert_eq!(off["ok"], true);
+        assert!(
+            off["detail"]
+                .as_str()
+                .unwrap()
+                .contains("ANTHROPIC_API_KEY is not set in the daemon's environment")
+        );
+        let bad = sample_check(
+            Some(
+                &json!({"available": false, "provider": null, "reason": "bad_config", "detail": "config.toml: [sample] provider is \"anthropic\" or \"stub\", not \"openai\"", "key_env": null, "daily_call_cap": null}),
+            ),
+            None,
+        );
+        assert_eq!(
+            (bad["ok"].clone(), bad["warn"].clone()),
+            (json!(true), json!(true))
+        );
+        assert!(
+            bad["detail"]
+                .as_str()
+                .unwrap()
+                .starts_with("sample() is off: config.toml: [sample]")
+        );
+        let local = sample_check(
+            None,
+            Some(Err(
+                "config.toml: [sample] max_tokens must be at least 1".into()
+            )),
+        );
+        assert_eq!(local["warn"], true);
+        let local = sample_check(None, Some(Ok("stub".into())));
+        assert_eq!(local["detail"], "stub (no daemon is running)");
+    }
 
     #[test]
     fn codex_push_is_ok_when_off_on_purpose_and_names_version_skew() {

@@ -17,16 +17,23 @@ function inlineCss(): Plugin {
     generateBundle(_options, bundle) {
       const sheets = Object.values(bundle).filter((f): f is OutputAsset => f.type === "asset" && f.fileName.endsWith(".css"));
       // The CSS of chunks an entry imports statically is linked from its HTML,
-      // so it is inlined below. A lazily loaded chunk's CSS would be fetched by
-      // Vite's preload helper from a file this plugin deletes: refuse it.
+      // so it is inlined below. A chunk only a lazy load brings in would have
+      // its CSS fetched by Vite's preload helper from a file this plugin
+      // deletes: refuse it. A lazy chunk may import a chunk an entry already
+      // loads statically: that chunk's CSS is in the entry's HTML.
       const chunks = new Map(Object.values(bundle).flatMap(c => (c.type === "chunk" ? [[c.fileName, c] as const] : [])));
-      const lazy = new Set<string>();
-      const visit = (name: string) => {
-        if (lazy.has(name)) return;
-        lazy.add(name);
-        for (const i of chunks.get(name)?.imports ?? []) visit(i);
+      const reach = (roots: string[]) => {
+        const seen = new Set<string>();
+        const visit = (name: string) => {
+          if (seen.has(name)) return;
+          seen.add(name);
+          for (const i of chunks.get(name)?.imports ?? []) visit(i);
+        };
+        for (const r of roots) visit(r);
+        return seen;
       };
-      for (const c of chunks.values()) if (c.isDynamicEntry) visit(c.fileName);
+      const eager = reach([...chunks.values()].filter(c => c.isEntry).map(c => c.fileName));
+      const lazy = [...reach([...chunks.values()].filter(c => c.isDynamicEntry).map(c => c.fileName))].filter(n => !eager.has(n));
       for (const name of lazy) {
         if (chunks.get(name)?.viteMetadata?.importedCss.size) throw new Error(`${name} is loaded lazily and imports CSS; the shell's CSS must come from its HTML entries`);
       }

@@ -13,7 +13,8 @@ fn bad(message: impl Into<String>) -> CoreError {
 /// Accepts a JSON object whose every value is an object. `db.rules` must pass
 /// [`Rules::from_capabilities`]; `comments.composer_only` and
 /// `comments.customAnchors` are booleans; `user.scopes` is an array of
-/// `"profile"` and `"email"`. Other names are stored as given.
+/// `"profile"` and `"email"`; `room.topics` must pass
+/// [`Topics::from_capabilities`](crate::room::Topics::from_capabilities). Other names are stored as given.
 ///
 /// # Errors
 /// `invalid_capabilities` naming the first problem.
@@ -29,6 +30,7 @@ pub fn validate(caps: &Value) -> Result<()> {
         }
     }
     Rules::from_capabilities(caps)?;
+    crate::room::Topics::from_capabilities(caps)?;
     if let Some(c) = obj.get("comments") {
         for k in ["composer_only", "customAnchors"] {
             if c.get(k).is_some_and(|v| !v.is_boolean()) {
@@ -78,6 +80,9 @@ mod tests {
             json!({"user": {"scopes": ["profile", "phone"]}}),
             json!({"user": {"scopes": "profile"}}),
             json!({"db": {"rules": [{"path": "x", "write": "view"}]}}),
+            json!({"room": {"topics": {"Bad:topic": "interact"}}}),
+            json!({"room": {"topics": {"chat": "view"}}}),
+            json!({"room": {"topics": ["chat"]}}),
         ] {
             let e = validate(&bad).unwrap_err();
             assert!(

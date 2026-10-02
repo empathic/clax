@@ -1,7 +1,9 @@
 // Per-viewer, per-artifact permission state (permissions.d.ts). Grants persist
-// in localStorage under `clax.grants.v1:<aid>:<viewer public ID>`; a denial
-// or a dismissed prompt lasts for the page load only. One dialog at a time.
-import { CAPABILITIES, type Declared, consentGated, isAvailable } from "./availability";
+// in localStorage under `clax.grants.v1:<aid>:<viewer public ID>`, except
+// `sample`'s, which lasts for the view (sample.d.ts: the first call in a view
+// asks); a denial or a dismissed prompt lasts for the page load only. One
+// dialog at a time.
+import { CAPABILITIES, type Declared, type Served, consentGated, isAvailable } from "./availability";
 
 export type PermissionState = "granted" | "prompt" | "denied" | "unavailable";
 export type Prompt = { title: string; body: string; allow: string; deny: string };
@@ -9,7 +11,23 @@ export type PromptAnswer = "allow" | "deny" | "dismiss";
 
 export const grantsKey = (aid: string, viewer: string) => `clax.grants.v1:${aid}:${viewer}`;
 
-const ASKS: Record<string, string> = { comments: "post comments on this artifact under your name" };
+const ASKS: Record<string, string> = {
+  comments: "post comments on this artifact under your name",
+  sample: "send requests to Claude, paid for by this machine's Anthropic API key",
+};
+
+/** The dialog of a capability asked on its own. */
+const ALONE: Record<string, Prompt> = {
+  sample: {
+    title: "Let this page ask Claude?",
+    body: "Each request this page sends to Claude is paid for by this machine's Anthropic API key. Clax asks again the next time this page loads.",
+    allow: "Allow",
+    deny: "Don't allow",
+  },
+};
+
+/** Capabilities whose "Allow" lasts for this view only: never stored. */
+const VIEW_ONLY = new Set(["sample"]);
 
 function read(storage: Storage | null, key: string): string[] {
   try {
@@ -40,12 +58,13 @@ export class Grants {
     private readonly declared: Declared,
     private readonly owner: boolean,
     private readonly ask: (p: Prompt) => Promise<PromptAnswer>,
+    private readonly served: Served = {},
   ) {
-    this.granted = new Set(read(storage, key));
+    this.granted = new Set(read(storage, key).filter(n => !VIEW_ONLY.has(n)));
   }
 
   state(name: string): PermissionState {
-    if (name === "permissions" || !isAvailable(name, this.declared, this.owner)) return "unavailable";
+    if (name === "permissions" || !isAvailable(name, this.declared, this.owner, this.served)) return "unavailable";
     if (!consentGated(name, this.declared) || this.granted.has(name)) return "granted";
     if (this.denied.has(name) || this.dismissed.has(name)) return "denied";
     return "prompt";
@@ -75,7 +94,8 @@ export class Grants {
     const run = async () => {
       const askable = [...new Set(names)].filter(n => this.state(n) === "prompt");
       if (!askable.length) return;
-      const answer = await this.ask({
+      const alone = askable.length === 1 ? ALONE[askable[0]] : undefined;
+      const answer = await this.ask(alone ?? {
         title: "Allow this page to act as you?",
         body: `This page asks to ${askable.map(n => ASKS[n] ?? `use ${n}`).join(" and ")}.`,
         allow: "Allow",
@@ -86,7 +106,7 @@ export class Grants {
         else if (answer === "deny") this.denied.add(n);
         else this.dismissed.add(n);
       }
-      if (answer === "allow") write(this.storage, this.key, [...this.granted]);
+      if (answer === "allow") write(this.storage, this.key, [...this.granted].filter(n => !VIEW_ONLY.has(n)));
     };
     const p = this.chain.then(run, run);
     this.chain = p.catch(() => {});
