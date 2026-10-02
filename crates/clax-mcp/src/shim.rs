@@ -94,18 +94,32 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
 /// names the directory.
 #[cfg(not(target_os = "linux"))]
 fn process_cwd(pid: u32) -> Option<PathBuf> {
+    let out = run_with_timeout(
+        std::process::Command::new("lsof").args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]),
+        LSOF_TIMEOUT,
+    )?;
+    parse_lsof_cwd(&out)
+}
+
+/// Runs `cmd` with no stdin and no stderr and returns its stdout, or `None`
+/// when it fails to start, exits non-zero, or runs past `timeout` (then it
+/// is killed).
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+pub(crate) fn run_with_timeout(
+    cmd: &mut std::process::Command,
+    timeout: Duration,
+) -> Option<String> {
     use std::io::Read;
-    let mut child = std::process::Command::new("lsof")
-        .args(["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"])
+    let mut child = cmd
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    let deadline = std::time::Instant::now() + LSOF_TIMEOUT;
-    loop {
+    let deadline = std::time::Instant::now() + timeout;
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if std::time::Instant::now() < deadline => {
                 std::thread::sleep(Duration::from_millis(20))
             }
@@ -115,10 +129,13 @@ fn process_cwd(pid: u32) -> Option<PathBuf> {
                 return None;
             }
         }
+    };
+    if !status.success() {
+        return None;
     }
     let mut out = String::new();
     child.stdout.take()?.read_to_string(&mut out).ok()?;
-    parse_lsof_cwd(&out)
+    Some(out)
 }
 
 /// The directory named by the first `n` line of `lsof -Fn` output.
@@ -138,7 +155,9 @@ fn parse_lsof_cwd(out: &str) -> Option<PathBuf> {
 /// answering, and the session is then registered again. When no daemon can be reached the shim serves anyway, and tool calls
 /// retry and report `daemon_unreachable` until one can. The session is marked
 /// seen every `heartbeat`. `status` reports what `upgrade_hold` says about
-/// the daemon's version, when given.
+/// the daemon's version, when given. With `channel`, the tools declare the
+/// Claude Code channel, and when its launch flag is present the shim
+/// forwards the session's comment notices as channel events.
 pub async fn run(
     harness: Harness,
     home: &Home,
@@ -146,6 +165,7 @@ pub async fn run(
     discover: Refresh,
     heartbeat: Duration,
     upgrade_hold: Option<UpgradeHoldProbe>,
+    channel: Option<crate::channel::ChannelState>,
 ) -> anyhow::Result<()> {
     // SAFETY: getppid has no preconditions and cannot fail.
     let parent_pid = unsafe { libc::getppid() } as u32;
@@ -194,6 +214,12 @@ pub async fn run(
     if let Some(probe) = upgrade_hold {
         tools = tools.with_upgrade_hold(probe);
     }
+    let forward = channel
+        .as_ref()
+        .is_some_and(crate::channel::ChannelState::forwards);
+    if let Some(ch) = channel {
+        tools = tools.with_channel(ch);
+    }
 
     let beat = {
         let client = client.clone();
@@ -219,7 +245,7 @@ pub async fn run(
         })
     };
 
-    let served = serve(tools).await;
+    let served = serve(tools, client.clone(), forward).await;
     beat.abort();
     match tokio::time::timeout(END_TIMEOUT, client.end_session()).await {
         Ok(Ok(_)) => {}
@@ -229,10 +255,59 @@ pub async fn run(
     served
 }
 
-/// Serves `tools` over stdin/stdout until the transport closes or SIGTERM arrives.
-async fn serve(tools: ClaxTools) -> anyhow::Result<()> {
+/// How long each notices poll waits.
+const NOTICE_WAIT_S: u64 = 50;
+
+/// Forwards the session's comment notices as Claude Code channel events
+/// until the transport closes. Each poll stamps the notices it returns, so
+/// no other follower announces them again. Daemon errors back off from 1 s
+/// to 30 s. An empty answer that came back at once (the daemon answers so
+/// while the session is inside `wait_for_feedback`, or while it shuts down)
+/// is followed by a 1 s pause before the next poll. The loop never starts a
+/// daemon.
+async fn forward_notices(client: DaemonClient, peer: rmcp::Peer<rmcp::RoleServer>) {
+    use rmcp::model::{CustomNotification, ServerNotification};
+    let mut backoff = Duration::from_secs(1);
+    loop {
+        let polled = tokio::time::Instant::now();
+        match client.notices(NOTICE_WAIT_S).await {
+            Ok(v) => {
+                backoff = Duration::from_secs(1);
+                let notices = v["notices"].as_array().cloned().unwrap_or_default();
+                let lines = v["lines"].as_array().cloned().unwrap_or_default();
+                if notices.is_empty() && polled.elapsed() < Duration::from_secs(1) {
+                    tokio::time::sleep_until(polled + Duration::from_secs(1)).await;
+                }
+                for (n, line) in notices.iter().zip(lines.iter().filter_map(|l| l.as_str())) {
+                    let event = CustomNotification::new(
+                        crate::channel::METHOD,
+                        Some(crate::channel::event_params(n, line)),
+                    );
+                    if let Err(e) = peer
+                        .send_notification(ServerNotification::CustomNotification(event))
+                        .await
+                    {
+                        tracing::info!("channel closed: {e}");
+                        return;
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::debug!("notices poll failed: {e}");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(30));
+            }
+        }
+    }
+}
+
+/// Serves `tools` over stdin/stdout until the transport closes or SIGTERM
+/// arrives; when `forward`, forwards `client`'s comment notices as channel
+/// events meanwhile.
+async fn serve(tools: ClaxTools, client: DaemonClient, forward: bool) -> anyhow::Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let service = tools.serve(stdio()).await.context("MCP initialization")?;
+    let forward = forward.then(|| tokio::spawn(forward_notices(client, service.peer().clone())));
     let cancel = service.cancellation_token();
     let signalled = tokio::spawn(async move {
         term.recv().await;
@@ -240,6 +315,9 @@ async fn serve(tools: ClaxTools) -> anyhow::Result<()> {
     });
     let quit = service.waiting().await;
     signalled.abort();
+    if let Some(f) = forward {
+        f.abort();
+    }
     tracing::info!("transport closed: {quit:?}");
     Ok(())
 }

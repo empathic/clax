@@ -163,6 +163,22 @@ sys.exit(0 if ok else 1)
 PY
 then pass "plugins/clax/.codex-plugin/plugin.json has the pinned fields"; else fail "plugins/clax/.codex-plugin/plugin.json is missing pinned fields"; fi
 
+# The Claude Code manifest declares the clax channel; no plugin or crate ever
+# declares the channel permission relay (comment authors never approve tool use).
+if python3 - plugins/claude-code/.claude-plugin/plugin.json <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+sys.exit(0 if m.get("channels") == [{"server": "clax"}] else 1)
+PY
+then pass "the Claude Code manifest declares the clax channel"; else fail "plugins/claude-code/.claude-plugin/plugin.json lacks channels: [{\"server\": \"clax\"}]"; fi
+
+relay='claude/channel'"/permission"
+if grep -rqF "$relay" crates plugins; then
+    fail "permission relay must never be declared: $(grep -rlF "$relay" crates plugins | tr '\n' ' ')"
+else
+    pass "no permission relay"
+fi
+
 for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
     if cmp -s scripts/ensure-clax.sh "$wrapper"; then
         pass "$wrapper matches scripts/ensure-clax.sh"

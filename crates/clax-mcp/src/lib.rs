@@ -1,6 +1,7 @@
 //! MCP tools for Clax: an rmcp tool set that calls the daemon's REST API,
 //! served by the stdio shim and by the daemon's `/mcp` endpoint.
 
+pub mod channel;
 pub mod client;
 pub mod plugin;
 pub mod render;
