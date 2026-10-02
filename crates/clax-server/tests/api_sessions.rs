@@ -365,7 +365,7 @@ async fn register_accepts_only_known_harnesses() {
 }
 
 #[tokio::test]
-async fn a_grok_session_has_no_native_push() {
+async fn a_grok_session_without_a_follower_has_no_push() {
     let ts = TestServer::spawn().await;
     let s = register(
         &ts,
@@ -379,13 +379,13 @@ async fn a_grok_session_has_no_native_push() {
         .json()
         .await
         .unwrap();
-    assert_eq!(sess["push"]["tier"], Value::Null);
+    assert_eq!(sess["push"]["tier"], "monitor");
     assert_eq!(sess["push"]["available"], false);
     assert!(
         sess["push"]["reason"]
             .as_str()
             .unwrap()
-            .starts_with("Grok Build has no native push"),
+            .starts_with("no clax feedback follow is running"),
         "{sess}"
     );
 }

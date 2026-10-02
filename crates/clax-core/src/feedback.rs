@@ -218,6 +218,42 @@ pub fn short_quote(q: &str) -> String {
     cap(&collapse(q), SHORT_QUOTE_CHARS)
 }
 
+/// A comment announced to a session's follower (`clax feedback follow`):
+/// where it is, not what it says. Announcing is not delivering.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Notice {
+    pub feedback_id: String,
+    pub comment_id: String,
+    pub thread_id: String,
+    pub artifact_id: String,
+    pub title: String,
+    /// The artifact's browser URL.
+    pub url: String,
+}
+
+/// Longest title a notice line quotes, in characters.
+const NOTICE_TITLE_CHARS: usize = 80;
+
+/// The one line `clax feedback follow` prints for `n`: the artifact, the
+/// thread, and the tool call that reads it. It never includes the comment.
+pub fn render_notice(n: &Notice) -> String {
+    let title: String = n
+        .title
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .replace('"', "'")
+        .chars()
+        .take(NOTICE_TITLE_CHARS)
+        .collect();
+    format!(
+        "[clax] New comment on \"{title}\" ({url}), thread {tid}. Call comments_read with url_or_id \"{aid}\" and thread_id \"{tid}\" to read it; if you have already handled it, do nothing.",
+        url = n.url,
+        tid = n.thread_id,
+        aid = n.artifact_id,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +451,22 @@ mod tests {
         );
         assert!(
             Tier::Piggyback.resends() && Tier::StopHook.resends() && !Tier::PromptHook.resends()
+        );
+    }
+
+    #[test]
+    fn a_notice_is_one_line_and_carries_no_comment_text() {
+        let n = Notice {
+            feedback_id: "f".into(),
+            comment_id: "c".into(),
+            thread_id: "01J9T".into(),
+            artifact_id: "7q3k9mzx2b4t".into(),
+            title: "Quarterly\nReview".into(),
+            url: "http://localhost:7480/a/7q3k9mzx2b4t".into(),
+        };
+        assert_eq!(
+            render_notice(&n),
+            "[clax] New comment on \"Quarterly Review\" (http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9T. Call comments_read with url_or_id \"7q3k9mzx2b4t\" and thread_id \"01J9T\" to read it; if you have already handled it, do nothing."
         );
     }
 }
