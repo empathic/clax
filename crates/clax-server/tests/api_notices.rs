@@ -9,6 +9,12 @@ async fn grok_session(ts: &TestServer) -> String {
     s["id"].as_str().unwrap().to_string()
 }
 
+/// Registers a Claude Code session and returns its ID.
+async fn claude_session(ts: &TestServer) -> String {
+    let s = ts.register_session("claude", "c1").await;
+    s["id"].as_str().unwrap().to_string()
+}
+
 /// Publishes as `sid` (which watches with replies armed); returns the artifact ID.
 async fn published(ts: &TestServer, sid: &str) -> String {
     let a = ts.publish_as(sid, "T", "<h2>x</h2>").await;
@@ -181,4 +187,38 @@ async fn notices_of_an_unknown_or_ended_session_are_errors() {
     assert_eq!(body["error"]["code"], "unknown_session", "{body}");
     let unauthed = ts.get(&format!("/api/sessions/{sid}/notices")).await;
     assert_eq!(unauthed.status(), 401);
+}
+
+#[tokio::test]
+async fn claude_push_reports_a_notice_follower() {
+    let ts = TestServer::spawn().await;
+    let sid = claude_session(&ts).await;
+    let push = |ts: &TestServer, sid: &str| {
+        let path = format!("/api/sessions/{sid}");
+        let req = ts.authed(ts.client.get(format!("{}{path}", ts.base)));
+        async move { req.send().await.unwrap().json::<Value>().await.unwrap()["push"].clone() }
+    };
+    let idle = push(&ts, &sid).await;
+    assert_eq!(idle["tier"], Value::Null);
+    assert_eq!(idle["available"], false);
+    assert!(
+        idle["reason"]
+            .as_str()
+            .unwrap()
+            .contains("--dangerously-load-development-channels plugin:clax@clax"),
+        "{idle}"
+    );
+    // A notices poll in progress counts as a follower.
+    let req = ts.authed(
+        ts.client
+            .get(format!("{}/api/sessions/{sid}/notices?wait=3", ts.base)),
+    );
+    let poll = tokio::spawn(async move { req.send().await.unwrap().status() });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let following = push(&ts, &sid).await;
+    assert_eq!(
+        following,
+        json!({"tier": "notice", "available": true, "reason": null})
+    );
+    assert_eq!(poll.await.unwrap(), 200);
 }

@@ -14,6 +14,8 @@
 //! - Grok Build only: `grok`, the installed Grok's version, and
 //!   `claude_copy`, whether the Claude Code plugin has stood down in a Grok
 //!   session.
+//! - `channel` (Claude Code): whether the installed plugin declares the Clax
+//!   channel, and how the latest session was launched.
 
 use crate::client::Client;
 use clax_core::Home;
@@ -734,6 +736,45 @@ pub fn feedback_check(sessions: &Result<Vec<SessionFeedback>, String>) -> Value 
     check("feedback", ok, lines.join("\n"))
 }
 
+/// `channel` (Claude Code): whether the installed plugin declares the Clax
+/// channel, and how the latest Claude Code session was launched (the
+/// shim's `channel` line in hooks.log). The channel is opt-in, so only a
+/// manifest without it fails.
+pub fn channel_check(root: Option<&Path>, home: &Home) -> Value {
+    let declared = root
+        .and_then(|r| read_json(&r.join(".claude-plugin/plugin.json")))
+        .is_some_and(|m| m["channels"] == json!([{"server": "clax"}]));
+    if !declared {
+        return check(
+            "channel",
+            false,
+            "the installed plugin does not declare the clax channel; run `clax init` to install the current plugin",
+        );
+    }
+    let launch = clax_mcp::channel::LAUNCH;
+    let last = crate::hooklog::tail_for(home, "claude", 200)
+        .into_iter()
+        .rev()
+        .find(|l| {
+            l.split_once(' ')
+                .is_some_and(|(_, rest)| rest.starts_with("channel "))
+        });
+    let detail = match last {
+        None => format!(
+            "no Claude Code session has started the shim yet. To wake idle sessions through the channel, launch `{launch}`; without it the skill runs `clax feedback follow --once` in the background"
+        ),
+        Some(l) if l.contains("launch_flag=present") => format!(
+            "the latest session ({}) was launched with the channel: {l}. Claude Code does not tell Clax whether the channel registered; its startup screen says so. If it says the channel was blocked, relaunch without the flag to use the background fallback",
+            l.split(' ').next().unwrap_or_default()
+        ),
+        Some(l) => format!(
+            "the latest session ({}) was launched without the channel ({l}); idle sessions wake through the skill's background `clax feedback follow --once`. For the channel, launch `{launch}` (research preview, CLI only, claude.ai or Console login; on Team and Enterprise an Owner must turn channels on)",
+            l.split(' ').next().unwrap_or_default()
+        ),
+    };
+    check("channel", true, detail)
+}
+
 /// Every layered check for `agent`.
 pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<Value> {
     let version = env!("CARGO_PKG_VERSION");
@@ -742,11 +783,14 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let clax_bin = std::env::var("CLAX_BIN").ok();
     let mut out = vec![binary_check(&exe, version, clax_bin.as_deref(), &on_path)];
     out.push(upgrade_check(home, client.map(|c| c.info.version.as_str())));
+    // The installed plugin's root; `None` when HOME is unset.
+    let mut plugin_root: Option<PathBuf> = None;
     match Dirs::from_env(|k| std::env::var(k).ok()) {
         Some(dirs) => {
             let (plugin, root) = plugin_check(agent, &dirs, version);
             out.push(plugin);
             out.push(skill_check(agent, root.as_deref(), ClaxTools::tool_count()));
+            plugin_root = root;
         }
         None => {
             out.push(check("plugin", false, "HOME is not set"));
@@ -779,6 +823,9 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
             .collect()
     });
     out.push(feedback_check(&feedback));
+    if agent == DoctorAgent::Claude {
+        out.push(channel_check(plugin_root.as_deref(), home));
+    }
     out
 }
 
@@ -820,6 +867,18 @@ mod tests {
             self.write(&format!("{rel}/scripts/ensure-clax.sh"), LAUNCHER);
             self.write(&format!("{rel}/skills/clax/SKILL.md"), agent.built_skill());
             self.home().join(rel)
+        }
+        /// The Clax home under this HOME.
+        fn clax_home(&self) -> Home {
+            Home::at(self.home().join("ax"))
+        }
+        /// Adds `channels: [{"server": "clax"}]` to the Claude Code manifest
+        /// of the plugin copy at `root`.
+        fn write_manifest_channels(&self, root: &Path) {
+            let path = root.join(".claude-plugin/plugin.json");
+            let mut m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            m["channels"] = json!([{"server": "clax"}]);
+            std::fs::write(&path, m.to_string()).unwrap();
         }
     }
 
@@ -1255,6 +1314,81 @@ mod tests {
         }
         let none = mcp_check(DoctorAgent::Grok, &Ok(vec![]));
         assert!(none["detail"].as_str().unwrap().contains("grok mcp list"));
+    }
+
+    #[test]
+    fn channel_needs_the_manifest_entry_and_reports_the_last_launch() {
+        let f = Fixture::new();
+        let root = f.plugin(
+            "plugins/cache/clax/clax/0.3.0",
+            ".claude-plugin/plugin.json",
+            "0.3.0",
+            DoctorAgent::Claude,
+        );
+        // Without `channels` in the manifest: failed, says to reinstall.
+        let v = channel_check(Some(&root), &f.clax_home());
+        assert_eq!(v["ok"], false, "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("clax init"), "{v}");
+        assert_eq!(channel_check(None, &f.clax_home())["ok"], false);
+        // With it, and no channel line: ok, gives the launch command.
+        f.write_manifest_channels(&root);
+        let v = channel_check(Some(&root), &f.clax_home());
+        assert_eq!(v["ok"], true);
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("--dangerously-load-development-channels plugin:clax@clax"),
+            "{v}"
+        );
+        // The latest channel line decides the text.
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:00:00Z channel agent=claude launch_flag=absent flag=\"\" entry=\"\" parent_pid=1",
+        );
+        let d = channel_check(Some(&root), &f.clax_home())["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            d.contains("2026-10-01T10:00:00Z") && d.contains("without the channel"),
+            "{d}"
+        );
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:05:00Z channel agent=claude launch_flag=present flag=\"--dangerously-load-development-channels\" entry=\"plugin:clax@clax\" parent_pid=2",
+        );
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:05:01Z hook agent=claude event=stop bin=/b/clax duration_ms=3 exit=0 stderr=\"\"",
+        );
+        let d = channel_check(Some(&root), &f.clax_home())["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            d.contains("2026-10-01T10:05:00Z")
+                && d.contains("plugin:clax@clax")
+                && d.contains("startup screen"),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn a_latest_channel_line_leaves_hooks_ok() {
+        let f = Fixture::new();
+        let home = f.clax_home();
+        crate::hooklog::append(
+            &home,
+            "t1 hook agent=claude event=stop bin=/b/clax duration_ms=3 exit=0 stderr=\"\"",
+        );
+        crate::hooklog::append(
+            &home,
+            "t2 channel agent=claude launch_flag=absent flag=\"\" entry=\"\" parent_pid=1",
+        );
+        let h = hooks_check(DoctorAgent::Claude, &home);
+        assert_eq!(h["ok"], true, "{h}");
+        assert!(h["detail"].as_str().unwrap().contains("t2 channel"), "{h}");
     }
 
     #[test]

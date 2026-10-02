@@ -88,6 +88,18 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let upgrade_hold: clax_mcp::tools::UpgradeHoldProbe = Arc::new(move |daemon_version: &str| {
         crate::client::upgrade_hold_for(&hold_home, daemon_version).map(|h| h.to_json(&hold_home))
     });
+    let channel = matches!(a.agent, Agent::Claude).then(|| {
+        let ch = clax_mcp::channel::ChannelState::detect(parent_pid);
+        crate::hooklog::append(
+            home,
+            &format!(
+                "{} channel agent=claude {}",
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ch.log_fields(parent_pid)
+            ),
+        );
+        ch
+    });
     let rt = tokio::runtime::Runtime::new()?;
     let result = rt.block_on(shim::run(
         harness,
@@ -96,6 +108,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
         discover,
         Duration::from_millis(a.heartbeat_interval_ms.max(1)),
         Some(upgrade_hold),
+        channel,
     ));
     // The stdin reader may still be parked on a blocking thread; do not wait for it.
     rt.shutdown_timeout(Duration::from_millis(100));

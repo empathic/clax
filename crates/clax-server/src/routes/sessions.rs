@@ -171,12 +171,18 @@ pub async fn get(
     Ok(Json(json!({"session": session, "push": push})))
 }
 
+/// Why nothing wakes an idle Claude Code session that no notice follower
+/// polls for.
+const CLAUDE_NO_PUSH: &str = "nothing wakes this session while it is idle: launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax`, or run follow_command in the background after publishing; meanwhile comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback";
+
 /// How feedback can be pushed to this session (tier 5), and why not when it
 /// cannot. For Codex, `last_error` and `last_error_at` hold the latest
 /// `codex queue` failure (`null` after a success or before any run); a
 /// failure leaves push available, since the next comment is pushed again.
 /// For Grok, push is the monitor: available while `following` (a `clax
-/// feedback follow` of the session is connected).
+/// feedback follow` of the session is connected). For Claude Code, the
+/// daemon reports a notice follower (a `clax feedback follow --once` or the
+/// shim's channel) as tier `notice`; the shim refines it.
 fn push_info(
     s: &Session,
     codex: &CodexPush,
@@ -203,6 +209,8 @@ fn push_info(
             );
             json!({"tier": "monitor", "available": following, "reason": reason})
         }
+        "claude" if following => json!({"tier": "notice", "available": true, "reason": null}),
+        "claude" => json!({"tier": null, "available": false, "reason": CLAUDE_NO_PUSH}),
         _ => {
             json!({"tier": null, "available": false, "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"})
         }
