@@ -10,8 +10,8 @@ export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page
 const REPORT = readFileSync(new URL("./pages/sample-report.html", import.meta.url), "utf8");
 
 /** One artifact by a claude session with three threads (the agent has
- * answered the second), two quieter
- * artifacts. The threads are posted without a viewer cookie, so each one's
+ * answered the second), and two quieter artifacts: a pinned probe from the
+ * command line and a codex checklist at its tenth version. The threads are posted without a viewer cookie, so each one's
  * author is an unnamed viewer and shows as "Viewer"; the gallery scene's
  * name is its own browser's viewer, not theirs. */
 export async function seed(base: string, token: string): Promise<Seeded> {
@@ -32,8 +32,14 @@ export async function seed(base: string, token: string): Promise<Seeded> {
   if (!sent.ok) throw new Error(`send: ${sent.status}`);
   await api(base, token, `/api/artifacts/${artifact.id}/threads/${threads[1]}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Added a dashed line at the deploy, labelled with its time.", author_kind: "agent" }) });
   const other = await registerSession(base, token, "codex", "shots-codex");
-  await publishAs(base, token, other.id, "Onboarding checklist", { "index.html": "<main><h2>First week</h2><ul><li>Laptop</li><li>Access</li></ul></main>" });
-  await api(base, token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Permissions probe", files: { "index.html": { content: "<main><h2>Probe</h2></main>", encoding: "utf8" } } }) });
+  // The checklist reaches its tenth version, so the gallery shows the rally
+  // chip; the probe, published first, is pinned, so it leads the gallery.
+  const probe = (await api(base, token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Permissions probe", files: { "index.html": { content: "<main><h2>Probe</h2></main>", encoding: "utf8" } } }) })) as { artifact: { id: string } };
+  await api(base, token, `/api/artifacts/${probe.artifact.id}`, { method: "PATCH", body: JSON.stringify({ pinned: true }) });
+  const list = await publishAs(base, token, other.id, "Onboarding checklist", { "index.html": "<main><h2>First week</h2><ul><li>Laptop</li><li>Access</li></ul></main>" });
+  for (let v = 2; v <= 10; v++) {
+    await publishAs(base, token, other.id, "Onboarding checklist", { "index.html": `<main><h2>First week</h2><ul><li>Laptop</li><li>Access</li><li>Step ${v}</li></ul></main>` }, v - 1, list.artifact.id);
+  }
   return { base, token, aid: artifact.id, sid: s.id, threads };
 }
 

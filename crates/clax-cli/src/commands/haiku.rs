@@ -12,7 +12,7 @@ pub const HAIKU: [&str; 10] = [
     "The page cannot fake\nthe press of your own finger\nthe shell knows your touch",
     "Working, says the dot\na small green breath in the bar\nsomeone is building",
     "Brown ink, pink margin\ngreen for go, red for the pin\nthe palette of care",
-    "Stop hook, end of turn\none more comment slipped in late\nthe work carries on",
+    "Stop hook at the end\none more comment slipped in late\nthe work carries on",
     "Old name in the dust\nthe rename settled in now\nsame light, shorter word",
 ];
 
@@ -51,5 +51,19 @@ mod tests {
         let seen: std::collections::HashSet<&str> = (0..500).map(|_| pick()).collect();
         assert!(seen.iter().all(|h| HAIKU.contains(h)));
         assert!(seen.len() > 1, "500 picks gave only one haiku");
+    }
+
+    #[test]
+    fn the_shell_shows_the_same_haiku() {
+        let shell: Vec<String> = serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../web/shell/src/view/haiku.json"
+        )))
+        .expect("haiku.json is a JSON array of strings");
+        assert_eq!(
+            shell,
+            HAIKU.to_vec(),
+            "web/shell/src/view/haiku.json must match HAIKU"
+        );
     }
 }

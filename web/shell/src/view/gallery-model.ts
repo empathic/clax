@@ -11,3 +11,11 @@ export function filterArtifacts(list: Artifact[], query: string): Artifact[] {
 export function publisherText(a: Artifact): string {
   return a.owner_harness ? `published by ${a.owner_harness}` : "published from the command line";
 }
+
+/** Pinned first, then the most recently updated. */
+export function orderArtifacts(list: Artifact[]): Artifact[] {
+  return [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at));
+}
+
+/** The "rally of 10" easter egg: the artifact is at its tenth version. */
+export const rally = (a: Artifact): boolean => a.current_version === 10;

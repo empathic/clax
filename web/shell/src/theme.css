@@ -62,18 +62,6 @@ a { color: inherit; text-decoration: none; }
 /* Structure speaks in the condensed face (68 Display, 67 Title, 57 Label). */
 .g, h1, h2, h3 { font-family: var(--grot); font-weight: 600; letter-spacing: 0; }
 .kc { font: 600 10px/14px var(--mono); border: 1px solid currentColor; padding: 0 4px; opacity: .7; }
-.wrap { max-width: 1200px; margin: 0 auto; padding: 24px var(--gutter); }
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
-.card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; position: relative; transition: border-color var(--t), transform var(--t); }
-.card:hover { border-color: var(--border-strong); }
-@media (prefers-reduced-motion: no-preference) { .card:hover { transform: translateY(-1px); } }
-.card h2 { font-size: 14px; font-weight: 600; margin: 0 0 6px; padding-right: 20px; overflow-wrap: anywhere; }
-.card p { margin: 0 0 10px; color: var(--muted); font-size: 13px; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
-.card .meta { display: flex; flex-wrap: wrap; gap: 4px 12px; color: var(--muted); font-size: 11px; }
-.card .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); margin-right: 5px; vertical-align: 1px; }
-.card .pin { position: absolute; top: 12px; right: 12px; color: var(--fg); }
-.empty { text-align: center; color: var(--muted); padding: 64px 0; }
-.empty code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; color: var(--fg); }
 button { font: 600 14px/1.15 var(--grot); min-height: 32px; padding: 7px 12px; background: var(--card); color: var(--fg); border: 1px solid var(--border-strong); border-radius: 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; white-space: nowrap; transition: color var(--t), background-color var(--t), border-color var(--t); }
 button:not(:disabled):hover { border-color: var(--fg); }
 button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
@@ -83,9 +71,50 @@ button.ghost:not(:disabled):hover { border-color: var(--border-strong); }
 button.icon { width: 32px; padding: 0; flex: none; }
 button.icon svg { width: 16px; height: 16px; }
 button:disabled { opacity: .5; cursor: default; }
-/* The gallery's bar. */
+/* The gallery (spec §8, "Gallery"). */
 .gbar { height: 60px; display: flex; align-items: center; gap: 12px; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
 .gbar h1 { margin: 0; font-size: 22px; }
+.gbar .sub { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.search { margin-left: auto; width: 260px; min-width: 0; max-width: 50%; }
+.gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
+.grp { margin-bottom: 34px; min-width: 0; }
+.grp h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 26px; line-height: 1.1; padding-bottom: 10px; border-bottom: 2px solid var(--fg); }
+.grp h2 small { font: 400 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; }
+.grp h2 .sw { width: 12px; height: 24px; flex: none; }
+.grp .rule { font-size: 11.5px; color: var(--muted); margin: 6px 0 14px; line-height: 1.45; }
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
+.card-wrap { position: relative; }
+.card { background: var(--card); border: 1px solid var(--border); display: flex; flex-direction: column; height: 100%; transition: border-color var(--t); }
+.card:hover { border-color: var(--border-strong); }
+.card .cb2 { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; padding: 11px 14px 10px; align-items: baseline; }
+.card .v { font-size: 40px; line-height: .9; grid-row: span 2; }
+.card h3 { margin: 0; font-size: 17px; line-height: 1.15; overflow-wrap: break-word; }
+.card .by { font-size: 11.5px; color: var(--muted); }
+.card .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); margin-right: 5px; vertical-align: 1px; }
+.card .mks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
+.card .ft { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 8px 104px 8px 12px; margin-top: auto; min-height: 37px; flex-wrap: wrap; }
+.card .ft:empty { border-top-color: transparent; }
+.chip { display: inline-flex; align-items: center; gap: 6px; font: 600 13px/1 var(--grot); padding: 4px 8px; white-space: nowrap; }
+.chip.rally { font: 400 11px var(--mono); color: var(--muted); padding: 0; }
+.card-tools { position: absolute; right: 6px; bottom: 4px; display: flex; gap: 2px; }
+.card-tools button { min-height: 28px; padding: 2px 8px; color: var(--muted); }
+.card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); }
+.empty { text-align: center; color: var(--muted); padding: 64px 0; }
+.empty-gallery { display: grid; place-items: center; gap: 10px; padding: 80px 0 40px; text-align: center; }
+.empty-gallery p { margin: 0; font: 600 20px var(--grot); }
+.empty-gallery p.muted { font: 400 13px var(--mono); }
+code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; color: var(--fg); }
+.gfoot { margin-top: 4px; color: var(--muted); font-size: 12px; display: flex; gap: 24px; border-top: 1px solid var(--border); padding-top: 14px; }
+.gfoot pre { margin: 0; font: inherit; line-height: 1.7; color: var(--fg); }
+.hk { color: var(--muted); font-size: 11.5px; line-height: 1.5; }
+@media (max-width: 700px) {
+  .gbar .hide-sm { display: none; }
+  .gal { padding: 18px 16px 32px; }
+  .grp h2 { font-size: 22px; }
+  .cards { grid-template-columns: 1fr; gap: 12px; }
+  .card .v { font-size: 30px; } .card h3 { font-size: 15px; }
+  .gfoot { flex-direction: column; gap: 8px; }
+}
 /* The top bar (spec §8): 60px; the title over its by-line in the condensed
    face; Comment red-orange when on, with a 3px rule under the bar. */
 .topbar { position: relative; display: flex; align-items: center; gap: 12px; height: 60px; flex: none; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
@@ -129,13 +158,6 @@ input, select { line-height: 1.2; }
 .banner a:hover { text-decoration: underline; }
 .banner.notice { top: 56px; background: var(--danger-tint); border-color: var(--danger); }
 .muted { color: var(--muted); }
-.search { margin-left: auto; width: 220px; min-width: 0; max-width: 50%; }
-.card-wrap { position: relative; }
-.card-wrap .card { height: 100%; padding-bottom: 48px; }
-.card-tools { position: absolute; right: 8px; bottom: 6px; display: flex; gap: 2px; }
-.card-tools button { background: none; border-color: transparent; padding: 4px 8px; color: var(--fg); }
-.card-tools button:last-child { color: var(--muted); }
-.card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); border-color: transparent; }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
 /* The sidebar's box, which holds its width from the first paint; the rest of
    its rules travel with its lazy chunk (Sidebar.svelte). */

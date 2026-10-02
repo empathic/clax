@@ -15,7 +15,7 @@ async function contentFrame(page: Page, id: string, n: number) {
 // Must run first: it expects an empty daemon.
 test("gallery shows an empty state then a card", async ({ page }) => {
   await page.goto(`${d.base}/`);
-  await expect(page.getByText("No artifacts yet")).toBeVisible();
+  await expect(page.getByText("When an agent publishes a page, it lands here.")).toBeVisible();
   await publish(d.base, d.token, "Hello Report", { "index.html": "<title>Hello</title><h1>Hi</h1>" });
   await page.reload();
   await expect(page.locator("a.card")).toHaveCount(1);
