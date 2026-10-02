@@ -33,7 +33,8 @@ pub struct SampleConfig {
     pub provider: String,
     /// The environment variable the daemon reads the API key from, at start.
     pub api_key_env: String,
-    /// Where the Messages API is; the key is sent nowhere else.
+    /// Where the Messages API is; the key is sent nowhere else. `https://`,
+    /// or `http://` on a loopback host only ([`base_url_ok`]).
     pub base_url: String,
     pub models: SampleModels,
     /// Most calls per artifact per local day that reach the provider; none when absent.
@@ -141,8 +142,8 @@ impl HomeConfig {
     /// # Errors
     /// `Invalid { code: "bad_config" }` naming the file and `[sample]` when it
     /// is not a table, has an unknown key or a mistyped value, names a
-    /// provider other than `anthropic` or `stub`, sets `max_tokens = 0`, or
-    /// leaves a model ID empty. The caller turns sampling off; it never stops
+    /// provider other than `anthropic` or `stub`, sets `max_tokens = 0`,
+    /// leaves a model ID empty, or sets a `base_url` that [`base_url_ok`] refuses. The caller turns sampling off; it never stops
     /// the daemon.
     pub fn sample(&self) -> Result<SampleConfig> {
         let bad = |what: String| {
@@ -179,8 +180,51 @@ impl HomeConfig {
                 return Err(bad(format!("models.{tier} is empty")));
             }
         }
+        if !base_url_ok(&s.base_url) {
+            return Err(bad(format!(
+                "base_url must be https://, or http:// on localhost, 127.0.0.1 or [::1], not \"{}\"",
+                s.base_url
+            )));
+        }
         Ok(s)
     }
+}
+
+/// Whether `url` may receive the API key: `https://` with a host, or
+/// `http://` whose host is `localhost`, an IPv4 loopback address, or `[::1]`.
+/// A URL with user information (`user@host`) is refused.
+pub fn base_url_ok(url: &str) -> bool {
+    let lower = url.to_ascii_lowercase();
+    let (https, rest) = if let Some(r) = lower.strip_prefix("https://") {
+        (true, r)
+    } else if let Some(r) = lower.strip_prefix("http://") {
+        (false, r)
+    } else {
+        return false;
+    };
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.is_empty() || authority.contains('@') {
+        return false;
+    }
+    let host = if let Some(v6) = authority.strip_prefix('[') {
+        match v6.split_once(']') {
+            Some((h, tail)) if tail.is_empty() || tail.starts_with(':') => h,
+            _ => return false,
+        }
+    } else {
+        authority.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        return false;
+    }
+    if https {
+        return true;
+    }
+    host == "localhost"
+        || host == "::1"
+        || host
+            .parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 #[cfg(test)]
@@ -304,6 +348,7 @@ mod tests {
             "[sample]\ndaily_call_cap = -1\n",
             "[sample.models]\nquick = \"\"\n",
             "[sample.models]\nhuge = \"x\"\n",
+            "[sample]\nbase_url = \"http://api.anthropic.com\"\n",
             "sample = 3\n",
         ] {
             let c = with(&format!("{t}[serve]\nport = 7481\n"));
@@ -325,5 +370,37 @@ mod tests {
             );
             assert_eq!(c.serve_port().unwrap(), Some(7481), "{t}");
         }
+    }
+
+    #[test]
+    fn base_url_is_https_or_loopback_http() {
+        for ok in [
+            "https://api.anthropic.com",
+            "https://proxy.example:8443/x",
+            "http://127.0.0.1:9000",
+            "http://localhost:1234/",
+            "HTTP://LOCALHOST",
+            "http://[::1]:8080",
+        ] {
+            assert!(base_url_ok(ok), "{ok}");
+        }
+        for bad in [
+            "http://api.anthropic.com",
+            "http://192.168.1.5:8080",
+            "http://localhost.evil.example",
+            "http://127.0.0.1@evil.example",
+            "https://",
+            "ftp://x",
+            "api.anthropic.com",
+            "http://[::2]",
+            "",
+        ] {
+            assert!(!base_url_ok(bad), "{bad}");
+        }
+        assert!(
+            with("[sample]\nbase_url = \"http://127.0.0.1:9\"\n")
+                .sample()
+                .is_ok()
+        );
     }
 }
