@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask about this page</title>
+<style>
+:root { --bg: #ffffff; --fg: #1d1d1f; --muted: #6e6e73; --line: #d2d2d7; --accent: #0a66c2; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #161618; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --accent: #4ea1ff; } }
+:root[data-theme="dark"] { --bg: #161618; --fg: #f5f5f7; --muted: #a1a1a6; --line: #3a3a3c; --accent: #4ea1ff; }
+body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+textarea { width: 100%; box-sizing: border-box; min-height: 4em; font: inherit; color: var(--fg); background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+button { font: inherit; padding: 6px 12px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: var(--fg); cursor: pointer; }
+button:hover { border-color: var(--accent); }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+.muted { color: var(--muted); }
+</style>
+</head>
+<body>
+<h1>Ask about this page</h1>
+<p id="status" class="muted">loading</p>
+<textarea id="prompt" aria-label="Prompt">What is a haiku?</textarea>
+<p><button id="ask">Ask</button> <button id="stop">Stop</button> <button id="tool">Ask with a tool</button></p>
+<pre id="out"></pre>
+<p class="muted">updates <span id="updates">0</span> · tool runs <span id="tool-runs">0</span> · <span id="note"></span></p>
+<pre id="kept"></pre>
+<pre id="limits" class="muted"></pre>
+<script>
+(async () => {
+  const sample = await claude.use("sample");
+  const status = document.getElementById("status");
+  if (!sample) {
+    status.textContent = "unavailable";
+    for (const id of ["ask", "stop", "tool"]) document.getElementById(id).hidden = true;
+    return;
+  }
+  status.textContent = "ready";
+  document.getElementById("limits").textContent = JSON.stringify(await sample.limits().catch(() => null));
+  const out = document.getElementById("out"), note = document.getElementById("note"), kept = document.getElementById("kept"), updates = document.getElementById("updates");
+  let ctl = null, runs = 0;
+  document.getElementById("stop").onclick = () => ctl?.abort();
+  async function ask(options) {
+    ctl = new AbortController();
+    let n = 0;
+    updates.textContent = "0"; note.textContent = ""; kept.textContent = ""; out.textContent = "Thinking...";
+    try {
+      const { text } = await sample(document.getElementById("prompt").value, {
+        signal: ctl.signal,
+        onText: ({ text }) => { out.textContent = text; updates.textContent = String(++n); },
+        ...options,
+      });
+      out.textContent = text;
+      note.textContent = "done";
+    } catch (e) {
+      out.textContent = "";
+      note.textContent = e.code;
+      kept.textContent = e.text ?? "";
+    }
+  }
+  document.getElementById("ask").onclick = () => ask({});
+  document.getElementById("tool").onclick = () => ask({
+    tools: [{ name: "getColor", description: "Returns the page's accent colour name.", execute: () => { document.getElementById("tool-runs").textContent = String(++runs); return "teal"; } }],
+  });
+})();
+</script>
+</body>
+</html>

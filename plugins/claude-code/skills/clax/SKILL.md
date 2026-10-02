@@ -324,14 +324,14 @@ exactly as on claude.ai. The type definitions of contract 0.2.61 are the
 contract: before writing a page, fetch the one you use from your daemon,
 `<daemon_url>/_clax/contract/0.2.61/<name>.d.ts`, where `daemon_url`
 comes from the `status` tool (names: `claude`, `permissions`, `artifact`,
-`db`, `downloads`, `user`, `comments`, `assets`).
+`db`, `downloads`, `user`, `comments`, `assets`, `room`, `sample`).
 
 Declare what the page uses in `capabilities` on `publish`, for example
 `{"db": {}, "user": {"scopes": ["profile"]}}`. The object is the full set:
 passing it replaces the stored one, omitting it keeps it, and `{}` clears it.
 `use()` never rejects: it resolves `null` for a name the page did not declare,
-for `files`, `mcp`, `room`, and `sample`, and outside the Clax viewer, so
-render without the capability first and light features up when it resolves.
+for `files` and `mcp`, and outside the Clax viewer, so render without the
+capability first and light features up when it resolves.
 `permissions` and `user` need no declaration.
 
 - `artifact` (alias `self`): `publish(html)` saves a complete document
@@ -353,6 +353,17 @@ render without the capability first and light features up when it resolves.
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
   `{"customAnchors": true}` lets a canvas-like page place pins itself.
 - `assets`: `upload`, `list`, `delete`, in the person's browser only.
+- `room`: `emit`, `on`, `presence`, `peers`, `onPeers`, `join`, `connected`,
+  and `onConnection` reach every view of the artifact that is open now;
+  nothing is stored. Presence works for every viewer. A topic declared
+  `{"room": {"topics": {"<topic>": "interact"}}}` may be sent on by a viewer
+  on another machine who entered a name; every other topic only by the
+  person's browser.
+- `sample`: `sample(input, options)`, `sample.json`, and `sample.limits` ask
+  Claude with the API key configured on the person's machine, and only in
+  the person's own browser: everywhere else, and when no key is configured,
+  `use("sample")` resolves `null`. The first call in each view asks the
+  person to allow it.
 - `permissions`: `state()` and `request()`; the only prompt is the consent
   to the first page-written comment.
 
@@ -407,9 +418,18 @@ What a page written for claude.ai meets in Clax, beyond the gesture rules:
   otherwise). Page-written comments show "via the page", and an `@agent` in
   them sends nothing. Per tab, composer opens are limited to 5 per 10
   seconds, page writes to 10 a minute, and gesture refusals to 20 a minute.
+- `room`: there are no agent peers (`kind` is always `"viewer"`);
+  `sendToClaudeSession` rejects `claude_unavailable` and
+  `canSendToClaudeSession` answers `"off"`. A new version does not empty
+  the room: each view stays on its version until it reloads. A viewer's
+  level is fixed per connection; entering a name reconnects at the new level.
+- `sample`: the person's own API key pays for every call, not the viewer's
+  account, so only their browser can call it. Allowing lasts for the view,
+  not for the artifact. Answers are cached per browser in the daemon and
+  forgotten, with the day's call counts, when it restarts. A daemon
+  restart under an open tab ends its calls with `session_expired`.
 
 ## What is not yet available
 
 - The `files` and `mcp` capabilities: `claude.use("files")` and
   `claude.use("mcp")` resolve `null` in every version of Clax.
-- Rooms and `sample()` (phase 5): not available.

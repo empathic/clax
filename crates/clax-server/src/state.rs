@@ -32,4 +32,8 @@ pub struct AppState {
     pub followers: Arc<crate::feedback::Followers>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
     pub codex: Arc<crate::push::CodexPush>,
+    /// The live rooms of the `room` capability (memory only).
+    pub rooms: Arc<crate::room::Rooms>,
+    /// The `sample` capability's provider and settings.
+    pub sample: Arc<crate::sample::Sampler>,
 }

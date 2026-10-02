@@ -35,8 +35,9 @@
  * capabilities' page-side members are lazy parts (parts/*.ts) imported from
  * beside this script, never before the page has parsed: comment mode on the
  * first shell order that needs it (in practice right after the welcome),
- * clips when comment mode turns on, capability members on the first
- * claude.use() the shell grants. A part that cannot load is reported to the
+ * clips when comment mode turns on, a capability's members on the first
+ * claude.use() of it the shell grants (`room` and `sample` each in a part of
+ * its own, the rest in `caps`). A part that cannot load is reported to the
  * shell once (clax:degraded). Waiting for the parse keeps the parts' module
  * loads from ever coming before the page's own import maps.
  */
@@ -100,13 +101,17 @@ type PartName = keyof Parts;
     const next = retrying(name, load, failed(name), clock);
     return () => parsed ? next() : whenDone.then(next);
   };
-  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps) };
+  const parts = { comment: onNeed("comment", loaders.comment), clip: onNeed("clip", loaders.clip), caps: onNeed("caps", loaders.caps), room: onNeed("room", loaders.room), sample: onNeed("sample", loaders.sample) };
   const clips = () => parts.clip();
   const rpc = new Rpc(m => post(m));
   const use = makeUse({
     framed,
     rpc,
-    locals: (name, r, config) => parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
+    locals: (name, r, config) => name === "room"
+      ? parts.room().then(p => p.roomNamespace(r))
+      : name === "sample"
+        ? parts.sample().then(p => p.sampleNamespace(r))
+        : parts.caps().then(c => c.localsFor(name, r, config, { ctx: commentsContext, clip: clips })),
   });
 
   try {

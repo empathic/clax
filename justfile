@@ -96,6 +96,10 @@ stop:
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
 
+# Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
+demo-room-sample:
+    scripts/demo-room-sample.sh
+
 # Remove build output and web dependencies
 clean:
     cargo clean

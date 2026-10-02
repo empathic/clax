@@ -85,6 +85,17 @@ clax haiku                           # print one of ten haiku about Clax
 
 The daemon starts automatically on first use. Data lives in `~/.clax`; set `CLAX_HOME` to use a different directory. The daemon listens on port 7480, or on the `[serve] port` that the home's `config.toml` sets (`--port` overrides both).
 
+Pages that declare `sample` ask Claude with an Anthropic API key on your machine. The daemon reads the key from `ANTHROPIC_API_KEY` when it starts; the `[sample]` table in `config.toml` changes that:
+
+```toml
+[sample]
+provider = "anthropic"               # or "stub", which echoes the prompt (tests and demos)
+api_key_env = "ANTHROPIC_API_KEY"    # the environment variable that holds the key
+daily_call_cap = 200                 # optional: at most this many calls per artifact a day
+```
+
+Only your own browser spends the key: the page asks you to allow it once each time it loads, and the top bar counts today's calls. A viewer on another machine never can. Without a key, or with an invalid `[sample]` table, sample is off and pages hide the feature; `clax doctor` reports which on its `sample` line. In a checkout, `just demo-room-sample` publishes a room page and a sample page in a scratch daemon, with the stub provider unless `ANTHROPIC_API_KEY` is set.
+
 A new artifact needs a title: `--title`, or else the page's `<title>`. Updates keep the current title unless `--title` is given.
 
 To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.0.0.0`.

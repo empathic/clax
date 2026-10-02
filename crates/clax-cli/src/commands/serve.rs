@@ -39,6 +39,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 std::env::var_os("CLAX_CODEX_BIN"),
                 std::env::var_os("PATH").as_deref(),
             ),
+            sample: std::sync::Arc::new(clax_server::sample::Sampler::from_home(
+                home.root(),
+                |k| std::env::var(k).ok(),
+            )),
         };
         return rt.block_on(serve(cfg, None));
     }

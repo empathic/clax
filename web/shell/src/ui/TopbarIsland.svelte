@@ -4,6 +4,7 @@
   // artifact is loaded and the frame mode decided.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import SampleCount from "./SampleCount.svelte";
   import ViewerName from "./ViewerName.svelte";
 
   // An island's controller is fixed for its lifetime: the mount passes it once.
@@ -16,6 +17,7 @@
 {#if viewReady(s)}
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
+  <SampleCount {ctl} /><!-- align with Echo at merge: on Echo's bar, after the who-slot -->
   <button aria-pressed={s.commenting} class={s.commenting ? "primary" : ""} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment</button>
   <button aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads ({ctl.openCount(s)})</button>
   {#if !s.narrow}<ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />{/if}

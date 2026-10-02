@@ -184,7 +184,14 @@ Root: `~/.clax/` (override with `CLAX_HOME`).
     assets/<asset_id>.<ext>          asset store, shared across versions
     clips/<thread_id>.png            comment screenshot clips
   config.toml            [serve] port (a daemon started for this home listens there; default 7480);
-                         later: bind address, sample provider, key env var name
+                         [sample]: provider ("anthropic", or "stub" for tests and demos),
+                         api_key_env (default ANTHROPIC_API_KEY), base_url (default
+                         https://api.anthropic.com), max_tokens (16000), daily_call_cap
+                         (none), stub_images and stub_delay_ms (stub only), and
+                         [sample.models] quick|default|complex (claude-haiku-4-5,
+                         claude-sonnet-5-5, claude-opus-5-5). An invalid [sample]
+                         turns sample off and never stops the daemon; a file that
+                         does not parse stops `clax serve`.
   marketplace/           the plugins embedded in the binary, written and registered by `clax init`
   logs/daemon.log
 ```
@@ -399,12 +406,23 @@ Agent- and shell-facing JSON API under `/api`:
   (`thread_deleted` SSE event) for the `comments` capability, and
   `GET /api/viewers?ids=|q=` for `user.profiles()`/`search()`; a version
   created by a page's `artifact.publish` carries `by_page: true`.
-- Sample (phase 5): `GET /api/artifacts/<aid>/sample` (availability and
-  limits), `POST /api/artifacts/<aid>/sample` streams `text`, `tool_call`,
-  `done`, `error` over SSE, `POST /api/artifacts/<aid>/sample/<call_id>/tool_result`
-  returns a page tool's result for the round.
-- Room (phase 5): `GET /api/artifacts/<aid>/room` WebSocket, opened by the
-  shell in both frame modes (frames never reach `/api`).
+- Sample: `GET /api/artifacts/<aid>/sample` (SameOrigin; availability,
+  limits, `calls_today` and `daily_call_cap`, with `available: false` and
+  `provider: null` to a caller without the token); `POST
+  /api/artifacts/<aid>/sample` (SameOrigin, the token and a viewer cookie)
+  streams `start`, `text`, `tool_call`, and one `done` or `error` over SSE;
+  `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` (SameOrigin, the
+  token and a viewer cookie) returns a page tool's result for the round
+  (204); `GET /api/sample` (token) reports the provider, why sample is off,
+  the key's variable name and the daily cap, for `clax doctor`. Without the
+  token a call is 401 `unauthorized`, without a cookie 403 `forbidden`.
+  Closing the stream drops the provider request at once.
+- Room: `GET /api/artifacts/<aid>/room?peer=<label>[&token=<bearer>]`
+  upgrades to a WebSocket, opened by the shell in both frame modes (frames
+  never reach `/api`). `<label>` is 16 characters of `[0-9a-z]`, one per open
+  document, reused on reconnect; a newer socket for a label closes the older
+  one 4409 `replaced`. Frames are JSON with a `t` field; the full protocol is
+  in `docs/contract.md` "Room protocol".
 - Streams that cannot carry the bearer header (`/api/events`, the room
   WebSocket) accept it as a `?token=` query parameter, which is never
   logged; a valid token with a viewer cookie makes the subscriber `admin`
@@ -761,7 +779,11 @@ What makes it fast:
   first shell order that needs it, and also in a task of its own once the
   page has parsed after the welcome, so it is ready when the viewer presses
   **Comment**; clip rendering once comment mode is on; capability members on
-  the first `claude.use` the shell grants. A load that fails or takes longer
+  the first `claude.use` the shell grants: `caps` for most capabilities,
+  and `room` and `sample` each in a part of its own. The shell's `room` and
+  `sample` handlers are chunks loaded on their first use, outside the
+  artifact entry's static closure, so a page that uses neither loads
+  neither. A load that fails or takes longer
   than 15 s makes the bridge post `clax:degraded`; a later need tries again
   after a backoff (2 s, doubling to 60 s), under a query naming the attempt,
   since a browser keeps a failed module load for its URL. Each part is
@@ -808,7 +830,8 @@ records it on every anchor it builds, and never resolves an anchor whose
 
 The bridge's comment mode, clip rendering and page-side capability members
 are lazy parts (§8 Time to usable); the protocol gains `clax:degraded`
-(bridge → shell: `{ part: "comment" | "clip" | "caps", message }`, one per
+(bridge → shell: `{ part: "comment" | "clip" | "caps" | "room" | "sample",
+message }`, one per
 failed attempt; `message` is for debugging, and the shell never shows it,
 since the page could post this itself).
 
@@ -914,27 +937,41 @@ files kept in `web/contract/`:
   The shell renders all threads; the page never lists them.
 - **assets**: `upload(blob)`, `list()`, `delete(id)`; owner shell only,
   `null` otherwise. Served at `/_blob/<id>`.
-- **room** (phase 5): `emit`, `on`, `presence`, `onPeers`, `join(name)`
-  over one WebSocket per content frame, owned by the shell in both frame
-  modes and relayed to the frame over postMessage; nothing persisted;
-  bounded channels drop the oldest message; topics gated by level as
-  `room.d.ts` describes; peers are viewers only (`guest` is always `false`
-  and no agent joins a room in v1).
+- **room**: `emit`, `on`, `presence`, `onPeers`, `join(name)` over one
+  WebSocket per content frame's document, owned by the shell in both frame
+  modes and relayed to the frame over postMessage; nothing persisted, and
+  rooms are not carried on `/api/events`; bounded channels drop the oldest
+  message. A topic declared `"interact"` in `capabilities.room.topics`
+  admits `interact` and above, every other topic `admin` and above, and
+  presence everyone. Peers are viewers only (`kind` is `"viewer"`, `guest`
+  is always `false`, and no agent joins a room in v1). A `peers` snapshot
+  lists at most 256 peers, the receiver among them; a subscriber that fell
+  behind gets a fresh snapshot instead of the messages it missed. A version
+  that stops declaring `room`, or the artifact's deletion, closes its
+  sockets 4403 `revoked`. Rooms are keyed by artifact, not version: a view
+  stays on its version until it reloads. The socket closes as soon as the
+  frame's document leaves (its `clax:bye`, a load without a hello, or a
+  shell navigation), so the peer leaves every other view at once.
 - **sample** (phase 5): `sample(input, opts)` and `sample.json`, streaming
   `onText`, `tools` executed by round-tripping tool calls to the page,
   `modelTier` mapped to configured model IDs, `cache` as `sample.d.ts`
   describes (per viewer, `gcTime` up to 24 h, `refresh`, identical in-flight
   calls shared), errors `{code, message, text?}` with the `sample.d.ts`
   codes (`not_granted`, `rate_limited`, `cancelled`, `upstream_error`, …),
-  partial text returned on cancellation. First call asks consent in the
-  shell, which persists the grant per viewer per artifact (claude.ai asks
-  per view). Provider trait with an Anthropic implementation and a `stub`
+  partial text returned on cancellation. Only the owner's browser (the
+  token and a viewer cookie) spends the key: the shell offers `sample` only
+  when it holds the token, so a LAN viewer's `use("sample")` resolves
+  `null`. Every call waits on consent given in that view: the first call
+  asks, and the allow lasts until the tab reloads or shows another version
+  and is never stored. The shell shows a running count of the artifact's
+  calls today. Answers are cached per browser in the daemon, and each
+  browser's calls are queued. Provider trait with an Anthropic implementation and a `stub`
   provider for tests; key from `config.toml` (`sample.api_key_env`, default
   `ANTHROPIC_API_KEY`); `[sample.models] quick|default|complex`; an optional
   `daily_call_cap` per artifact answers `rate_limited` once spent. No key
   configured: `use("sample")` resolves `null`. `config.toml` also holds
-  `[server] bind` and `port`, used by `clax serve` when the flags are
-  absent.
+  `[serve] port`, used by `clax serve` when `--port` is absent; the bind
+  address comes from `--bind` only.
 - **files**, **mcp**: resolve `null`.
 
 The bridge also handles comment mode (hit testing, outline, text selection),
@@ -1555,8 +1592,8 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
 
 ## 14. Security model
 
-- Default bind `127.0.0.1`. `clax serve --bind 0.0.0.0` or
-  `config.toml` opts into LAN. The gallery header shows the LAN URL when
+- Default bind `127.0.0.1`. `clax serve --bind 0.0.0.0` opts into LAN
+  (`config.toml` sets no bind address). The gallery header shows the LAN URL when
   bound.
 - Write endpoints, and the session reads (`GET /api/sessions` and
   `GET /api/sessions/<id>`, whose rows carry working directories and process
@@ -1608,13 +1645,31 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   applies in full beside it. So one artifact's page cannot frame another
   artifact's content in subdomain mode (the other origin is not in its
   list), and can in sandbox mode (`/c/...` names no ancestors).
+- The frame gate in sandbox mode (§9). The shell posts to the frame with
+  target `*`, so `clax:bye`, the gate closing for a document that loaded
+  without greeting, and a hello that must name the shown artifact and
+  version are what keep live data (room messages, sample streams) from a
+  document the frame navigated to; there is no per-document welcome nonce.
+  What remains is the time from the next document's commit to the shell's
+  handling of the outgoing page's bye, in which a push already in flight
+  can reach the new document. Every such push carries data the outgoing
+  page was entitled to, and that page chose the navigation (the shell
+  closes the gate itself before any navigation it starts), so it could have
+  handed the same data over itself; a nonce would not narrow the window,
+  since a `*` post reaches whatever document holds the frame. Wherever the
+  gate closes, the capability host leaves: the room socket closes and
+  `sample` aborts its calls.
 - Comment bodies, doc contents, and room messages are untrusted data. Tool
   results render comment bodies only as JSON-escaped strings inside the
   labelled feedback block; `db_*` results return documents as JSON data
   beside an untrusted-text `note` (data cannot be wrapped without changing
   its shape); the skills say so.
-- `sample()` spends the configured key; consent is per viewer per artifact
-  and the shell shows a running count of calls.
+- `sample()` spends the configured key. Only the owner's browser (the
+  token and a viewer cookie) spends it, and every call waits on consent
+  given in that view; the shell shows a running count of calls. The key is
+  read from its environment variable once, when the daemon starts, is sent
+  only to `base_url` in the `x-api-key` header, and never appears in a
+  response, an SSE frame, a log line, an error message or a `Debug` string.
 - No telemetry, no outbound calls except `sample()`. The plugins never
   download anything. `install.sh`, which a person runs by hand, downloads
   a release and checks it against the release's `SHA256SUMS`, which comes
@@ -1761,6 +1816,19 @@ consent and spend counter, provider trait. Ship when: a two-tab room demo
 and a `sample()` demo work with a configured key, and `sample` resolves
 `null` cleanly without one.
 
+Shipped: the room socket with levels, declared `interact` topics, named
+rooms, a shared budget and bounds, and replacement by label; `room` and
+`sample` as lazy bridge parts with shell handlers loaded on first use; the
+`[sample]` table with an Anthropic provider and a stub, an invalid table
+turning sample off with a `warn` line in `clax doctor`; the sample routes
+behind the owner gate, streamed over SSE with page tool rounds and
+cancellation; per-browser answer caching, a per-browser queue and the
+optional daily cap; consent once per view in the owner's browser and the
+running count of today's calls; the socket and calls ending when the
+frame's document leaves; and `just demo-room-sample`, which runs both demo
+pages in a scratch daemon with the stub provider unless `ANTHROPIC_API_KEY`
+is set.
+
 ## 18. Open questions and decisions to revisit
 
 - **D5 `*.localhost` support.** Chrome and Firefox resolve `*.localhost` to
@@ -1793,7 +1861,8 @@ and a `sample()` demo work with a configured key, and `sample` resolves
   multiple sessions watch one artifact, the shell may need to show which
   session replied; the data model records it, the UI does not yet.
 - **`sample()` cost control.** Resolved: phase 5 builds the optional
-  per-artifact `daily_call_cap` in `config.toml` (section 9).
+  per-artifact `daily_call_cap` in `config.toml` (section 9). It is off by
+  default: only the owner's browser can spend, and every view asks first.
 - **Grok Build.** Resolved 2026-10-01: Clax does not write Grok's
   tool-approval rule (the plugin README documents it and `clax doctor
   --agent grok` prints it); sandboxed Grok is documented, not handled

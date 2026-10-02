@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { Grants, grantsKey, type PromptAnswer } from "./grants";
+import { Grants, grantsKey, type Prompt, type PromptAnswer } from "./grants";
 
 class MemoryStorage {
   data = new Map<string, string>();
@@ -25,6 +25,12 @@ describe("Grants", () => {
     expect(g.state("comments:thread")).toBe("unavailable");
     expect(g.all()).toEqual({ comments: "prompt", db: "granted", downloads: "granted", user: "granted", assets: "granted" });
     expect(make("allow", new MemoryStorage(), false).g.state("assets")).toBe("unavailable");
+  });
+
+  it("grants a declared room with no consent and lists it", () => {
+    const g = new Grants(grantsKey("7q3k9mzx2b4t", "u_00000000000000000000aa"), new MemoryStorage() as unknown as Storage, { room: {} }, false, vi.fn(async () => "deny" as const));
+    expect(g.state("room")).toBe("granted");
+    expect(g.all()).toMatchObject({ room: "granted" });
   });
 
   it("asks once, batches names, and persists a grant per viewer and artifact", async () => {
@@ -57,5 +63,20 @@ describe("Grants", () => {
     const g = new Grants("k", broken as unknown as Storage, declared, true, async () => "allow");
     await g.request(["comments"]);
     expect(g.state("comments")).toBe("granted");
+  });
+
+  it("sample: the owner's browser only, when served; asked in its own dialog; allowed for this view only", async () => {
+    const storage = new MemoryStorage();
+    const ask = vi.fn(async (_p: Prompt) => "allow" as const);
+    const key = grantsKey("7q3k9mzx2b4t", "u_00000000000000000000aa");
+    const g = new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask, { sample: true });
+    expect(g.state("sample")).toBe("prompt");
+    await g.request(["sample"]);
+    expect(ask.mock.calls[0][0]).toMatchObject({ title: "Let this page ask Claude?", body: expect.stringContaining("Anthropic API key") });
+    expect(g.state("sample")).toBe("granted");
+    // A new view asks again: the allow was never stored.
+    expect(new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask, { sample: true }).state("sample")).toBe("prompt");
+    expect(new Grants(key, storage as unknown as Storage, { sample: {} }, true, ask).state("sample")).toBe("unavailable");
+    expect(new Grants(key, storage as unknown as Storage, { sample: {} }, false, ask, { sample: true }).state("sample")).toBe("unavailable");
   });
 });
