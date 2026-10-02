@@ -9,24 +9,33 @@
 @font-face { font-family: "IBM Plex Sans Condensed"; font-weight: 600; font-style: normal; font-display: swap; src: url("/_clax/fonts/ibm-plex-sans-condensed-latin-600.woff2") format("woff2"); }
 @font-face { font-family: "Plex Fallback"; src: local("Menlo Regular"), local("Menlo-Regular"), local("DejaVu Sans Mono"), local("DejaVuSansMono"); size-adjust: 99.66%; ascent-override: 102.85%; descent-override: 27.59%; line-gap-override: 0%; }
 @font-face { font-family: "Plex Fallback C"; src: local("Consolas"); size-adjust: 109.13%; ascent-override: 93.92%; descent-override: 25.2%; line-gap-override: 0%; }
-/* Measured by web/scripts/measure-fallback.mjs against the shell's words. */
-@font-face { font-family: "Plex Condensed Fallback"; font-weight: 600; src: local("Avenir Next Condensed Demi Bold"), local("AvenirNextCondensed-DemiBold"), local("Helvetica Neue Condensed Bold"), local("HelveticaNeue-CondensedBold"); size-adjust: 111.69%; ascent-override: 91.77%; descent-override: 24.62%; line-gap-override: 0%; }
-@font-face { font-family: "Plex Condensed Fallback L"; font-weight: 600; src: local("DejaVu Sans Condensed Bold"), local("DejaVuSansCondensed-Bold"), local("Liberation Sans Narrow Bold"), local("LiberationSansNarrow-Bold"), local("Arial Narrow Bold"), local("ArialNarrow-Bold"); size-adjust: 107.34%; ascent-override: 95.49%; descent-override: 25.62%; line-gap-override: 0%; }
+/* One family per set of metrics, each measured by
+   web/scripts/measure-fallback.mjs against the shell's words (DejaVu and
+   Liberation from their font files). Liberation Sans Narrow is
+   metric-compatible with Arial Narrow, so they share a family. Every Apple
+   system with Helvetica Neue Condensed has Avenir Next Condensed, so it has
+   no family. */
+@font-face { font-family: "Plex Condensed Fallback"; font-weight: 600; src: local("Avenir Next Condensed Demi Bold"), local("AvenirNextCondensed-DemiBold"); size-adjust: 111.69%; ascent-override: 91.77%; descent-override: 24.62%; line-gap-override: 0%; }
+@font-face { font-family: "Plex Condensed Fallback D"; font-weight: 600; src: local("DejaVu Sans Condensed Bold"), local("DejaVuSansCondensed-Bold"); size-adjust: 82.35%; ascent-override: 124.48%; descent-override: 33.4%; line-gap-override: 0%; }
+@font-face { font-family: "Plex Condensed Fallback N"; font-weight: 600; src: local("Arial Narrow Bold"), local("ArialNarrow-Bold"), local("Liberation Sans Narrow Bold"), local("LiberationSansNarrow-Bold"); size-adjust: 107.34%; ascent-override: 95.49%; descent-override: 25.62%; line-gap-override: 0%; }
 /* Light ratios (WCAG 2.x): fg ≥15.8, muted ≥6.7, accent-ink ≥5.3, danger ≥6.8
    on every ground; border-strong ≥3.35 and focus ≥4.4 (UI); brown on
    red-orange 5.06. Red-orange is people, green is agents, brown is ink,
-   pink is an accent only. */
+   pink is an accent only. --you and --agent are fills (pins, marks, dots,
+   bars), never text: text on --you is --on-you, and agent text is
+   --agent-ink. The accent is the agents' green, so --accent, --accent-ink
+   and --focus alias the agent tokens and each theme sets the green once. */
 :root {
   --bg: #fbf4f1; --card: #ffffff; --raised: #ffffff; --fg: #2f0b04; --muted: #6f4b42;
   --border: #e8d6d1; --border-strong: #9e7b72;
-  --accent: #457d26; --accent-ink: #3d6f21; --accent-hover: #3d6f21; --on-accent: #ffffff; --accent-tint: #eef4ea;
-  --danger: #a3123a; --danger-tint: #f9eef1; --focus: #457d26;
+  --accent: var(--agent); --accent-ink: var(--agent-ink); --accent-hover: #3d6f21; --on-accent: #ffffff; --accent-tint: #eef4ea;
+  --danger: #a3123a; --danger-tint: #f9eef1; --focus: var(--agent);
   --you: #ed5439; --on-you: #2f0b04; --agent: #457d26; --agent-ink: #3d6f21; --pink: #f9c8bf;
   --pin: var(--you); --on-pin: var(--on-you); --pin-ring: #ffffff;
   --selection-bg: var(--pink); --selection-fg: #2f0b04; --comment-hl: #fceeea; --shadow: rgba(47,11,4,.16);
   --mono: "IBM Plex Mono", "Plex Fallback", "Plex Fallback C", ui-monospace, Menlo, Consolas, monospace;
   --font: var(--mono);
-  --grot: "IBM Plex Sans Condensed", "Plex Condensed Fallback", "Plex Condensed Fallback L", "Arial Narrow", sans-serif;
+  --grot: "IBM Plex Sans Condensed", "Plex Condensed Fallback", "Plex Condensed Fallback D", "Plex Condensed Fallback N", "Arial Narrow", sans-serif;
   --t: .12s cubic-bezier(.4,0,.2,1);
   --radius: 0; --gutter: 16px; color-scheme: light dark; font-synthesis: none;
 }
@@ -34,12 +43,12 @@
    border-strong ≥3.13, pin ≥4.18 (UI). */
 :root:not([data-theme="light"]) { @media (prefers-color-scheme: dark) {
   --bg: #1a0d09; --card: #261410; --raised: #331c16; --fg: #f7e8e4; --muted: #c4a49b; --border: #45291f; --border-strong: #94695e;
-  --accent: #8cc46b; --accent-ink: #8cc46b; --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e; --focus: #8cc46b;
+  --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e;
   --agent: #8cc46b; --agent-ink: #8cc46b; --comment-hl: #3e1e16; --shadow: rgba(0,0,0,.55);
 } }
 :root[data-theme="dark"] {
   --bg: #1a0d09; --card: #261410; --raised: #331c16; --fg: #f7e8e4; --muted: #c4a49b; --border: #45291f; --border-strong: #94695e;
-  --accent: #8cc46b; --accent-ink: #8cc46b; --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e; --focus: #8cc46b;
+  --accent-hover: #7db85b; --on-accent: #1a0d09; --accent-tint: #22291a; --danger: #ff8a9e; --danger-tint: #3c201e;
   --agent: #8cc46b; --agent-ink: #8cc46b; --comment-hl: #3e1e16; --shadow: rgba(0,0,0,.55); color-scheme: dark;
 }
 :root[data-theme="light"] { color-scheme: light; }
@@ -64,9 +73,9 @@ a { color: inherit; text-decoration: none; }
 .topbar button { white-space: nowrap; flex: none; }
 /* The bar's small text actions (open raw, copy link): no box. */
 /* The artifact view's controls sit in the topbar's island (`display: contents`); :where keeps these rules' specificity. */
-.topbar > :where(.island) > select ~ .hide-sm, .topbar > :where(.island) > button:last-child:not(:first-of-type) { font-size: 12px; white-space: nowrap; color: var(--accent-ink); background: none; border-color: transparent; padding: 6px 2px; }
+.topbar > :where(.island) > select ~ .hide-sm, .topbar > :where(.island) > button.copy-link { font-size: 12px; white-space: nowrap; color: var(--accent-ink); background: none; border-color: transparent; padding: 6px 2px; }
 .topbar > span.hide-sm, .topbar > :where(.island) > span.hide-sm { color: var(--muted); }
-.topbar > :where(.island) > a.hide-sm:hover, .topbar > :where(.island) > button:last-child:not(:first-of-type):not(:disabled):hover { text-decoration: underline; border-color: transparent; }
+.topbar > :where(.island) > a.hide-sm:hover, .topbar > :where(.island) > button.copy-link:not(:disabled):hover { text-decoration: underline; border-color: transparent; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; position: relative; transition: border-color var(--t), transform var(--t); }
 .card:hover { border-color: var(--border-strong); }
@@ -88,7 +97,8 @@ button.icon { width: 32px; padding: 0; flex: none; }
 button.icon svg { width: 16px; height: 16px; }
 button:disabled { opacity: .5; cursor: default; }
 /* Comment mode on: the colour of the pins it makes (brown on red-orange, 5.06:1). */
-.topbar button[aria-pressed="true"] { background: var(--comment-hl); border-color: var(--accent); }
+/* The theme switch and the mark show their state by themselves. */
+.topbar button[aria-pressed="true"]:not(.theme-switch, .mark) { background: var(--comment-hl); border-color: var(--accent); }
 .topbar > :where(.island) > button[aria-pressed="true"]:first-of-type { background: var(--pin); border-color: var(--pin); color: var(--on-pin); }
 input, select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 0; padding: 6px 8px; min-height: 32px; transition: border-color var(--t); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
@@ -123,9 +133,10 @@ input, select { line-height: 1.2; }
 .thread-card:hover, .thread-card.selected { background: var(--comment-hl); }
 .thread-card.selected { box-shadow: inset 2px 0 0 var(--accent); }
 .thread-card header { margin-bottom: 6px; min-width: 0; }
-.thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: inherit; text-align: left; font-size: 14px; font-weight: 400; letter-spacing: 0; text-transform: none; }
-.thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
-.thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--pin); color: var(--on-pin); font-size: 12px; font-weight: 600; letter-spacing: 0; flex: none; }
+.thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: inherit; text-align: left; font-size: 14px; font-weight: 400; }
+/* An anchor label is meta, so Mono; the thread number stays condensed. */
+.thread-card .anchor-label { font-family: var(--mono); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--pin); color: var(--on-pin); font-size: 12px; font-weight: 600; flex: none; }
 .thread-card .thumb, .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); background: var(--bg); }
 .thread-card .thumb { max-height: 120px; margin-bottom: 6px; }
 .comment { margin: 6px 0; }
@@ -148,7 +159,7 @@ input, select { line-height: 1.2; }
 .error { color: var(--danger); }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
 @media (max-width: 480px) {
-  .topbar { flex-wrap: wrap; gap: 8px; } .topbar h1 { font-size: 14px; flex-basis: calc(100% - 40px); } .topbar .hide-sm { display: none; }
+  .topbar { flex-wrap: wrap; gap: 8px; } .topbar h1 { font-size: 14px; flex-basis: calc(100% - 40px); } .topbar > .mark + h1 { flex-basis: auto; } .topbar .hide-sm { display: none; }
   .composer { left: 0; right: 0; bottom: 0; width: auto; border-width: 3px 0 0; }
 }
 .prompt-backdrop { position: fixed; inset: 0; background: rgba(26,13,9,.55); display: grid; place-items: center; z-index: 50; padding: var(--gutter); }
@@ -160,3 +171,13 @@ input, select { line-height: 1.2; }
 .composer .file-label { margin: 0; }
 .composer button[aria-disabled="true"] { opacity: .55; cursor: progress; }
 .island { display: contents; }
+/* The Echo mark (spec §8). Its halves meet when a playful mark is pressed. */
+.mark { display: inline-grid; place-items: center; flex: none; color: var(--fg); }
+button.mark { background: none; border: 0; padding: 4px; min-height: 0; width: auto; }
+.mk { display: block; width: 30px; height: 24px; overflow: visible; }
+.mark[data-size="hero"] .mk { width: 120px; height: 96px; }
+.mk path { transition: transform .3s cubic-bezier(.3,1.4,.5,1); }
+.mk .l { stroke: var(--you); } .mk .r { stroke: var(--agent); } .mk circle { fill: var(--fg); }
+.mark[aria-pressed="true"] .l { transform: translateX(3.5px); } .mark[aria-pressed="true"] .r { transform: translateX(-3.5px); }
+.mark[data-apart] .l { transform: translateX(-4px); } .mark[data-apart] .r { transform: translateX(4px); }
+@media (prefers-reduced-motion: reduce) { .mk path { transition: none; } }

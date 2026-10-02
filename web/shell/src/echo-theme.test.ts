@@ -31,6 +31,25 @@ describe("Echo theme", () => {
     expect(css).toMatch(/:root:not\(\[data-theme="light"\]\)\s*\{\s*@media \(prefers-color-scheme: dark\)\s*\{[^}]*--agent:\s*#8cc46b/);
   });
 
+  it("defines every interface token, and the accent greens alias the agent's", () => {
+    for (const t of ["--you", "--on-you", "--agent", "--agent-ink", "--accent-tint", "--pink", "--grot", "--mono"]) expect(block(":root")).toMatch(new RegExp(`${t}:`));
+    expect(block(":root")).toMatch(/--accent:\s*var\(--agent\)/);
+    expect(block(":root")).toMatch(/--accent-ink:\s*var\(--agent-ink\)/);
+    expect(block(":root")).toMatch(/--focus:\s*var\(--agent\)/);
+    // The dark paths set the green once, as --agent; the aliases follow it.
+    expect(block(':root[data-theme="dark"]')).not.toMatch(/--(accent|accent-ink|focus):/);
+    expect(css).not.toMatch(/:root:not\(\[data-theme="light"\]\)\s*\{\s*@media \(prefers-color-scheme: dark\)\s*\{[^}]*--(accent|accent-ink|focus):/);
+  });
+
+  it("gives each measured fallback face its own family, every one in --grot", () => {
+    const local = faces.filter(f => /local\(/.test(f) && /Condensed Fallback/.test(f));
+    const names = local.map(f => /font-family:\s*"([^"]+)"/.exec(f)![1]);
+    expect(new Set(names).size).toBe(names.length);
+    for (const n of names) expect(block(":root")).toMatch(new RegExp(`--grot:[^;]*"${n}"`));
+    const dejavu = local.find(f => /DejaVu/.test(f))!;
+    expect(dejavu).not.toMatch(/Arial Narrow/);
+  });
+
   it("sets buttons in the condensed face, sentence case, and stops faux bold", () => {
     expect(block("button")).toMatch(/font:\s*600 14px\/1(\.\d+)? var\(--grot\)/);
     expect(block(":root")).toMatch(/font-synthesis:\s*none/);

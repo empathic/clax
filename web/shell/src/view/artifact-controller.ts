@@ -19,7 +19,9 @@ import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
 import type { FrameHost } from "./frame-host";
+import { type KeyAction, keyAction } from "./keys";
 import { type Ask, promptQueue } from "./prompt-queue";
+import { sidebarSections } from "./sidebar-model";
 import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
@@ -64,6 +66,10 @@ export type ViewState = {
    * apply to its threads only, and the shell URL names it. Null while the
    * frame shows a document that did not greet: no pins are drawn over it. */
   file: string | null;
+  /** The sheet over the view: the keys (spec §8), or none. */
+  sheet: "keys" | null;
+  /** Bumped to move focus to the selected thread's reply field. */
+  replyFocus: number;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -176,7 +182,7 @@ export class ArtifactController {
       data: null, error: null, origin: undefined, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
-      notice: null, hint: null, me: null, ask: null, file: startFile,
+      notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, replyFocus: 0,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -681,9 +687,12 @@ export class ArtifactController {
       if (forwards(e)) {
         this.send({ type: "clax:key", key: e.key as "Alt" | "ArrowUp" | "ArrowDown" | "Escape", down: e.type === "keydown" });
         if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
+      } else if (e.type === "keydown" && e.key !== "Escape") {
+        const a = keyAction(e);
+        if (a) { e.preventDefault(); this.shortcut(a); }
       } else if (e.key === "Escape" && e.type === "keydown") {
-        // Escape anywhere else ends comment mode here.
-        this.set({ commenting: false });
+        // Escape anywhere else closes the sheet, or else ends comment mode here.
+        if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
       }
     };
     const unforward = setForwardedKeys(forwards);
@@ -956,6 +965,40 @@ export class ArtifactController {
   /** The Comment button. */
   toggleComment(): void { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); }
   togglePanel(): void { this.set(s => ({ panel: !s.panel })); }
+
+  /** The sidebar's order: open threads, then detached ones (J, K, ranges). */
+  private order(s: ViewState = this.s): Thread[] {
+    const sec = sidebarSections(s.threads, s.resolved, s.file, f => this.holds(f, s));
+    return [...sec.open, ...sec.detached];
+  }
+
+  closeSheet(): void { this.set({ sheet: null }); }
+
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. While
+   * the sheet is open, only Escape (handled in `listen`) acts. */
+  shortcut(a: KeyAction): void {
+    const s = this.s;
+    if (!viewReady(s) || s.deleted || s.sheet) return;
+    const sel = s.threads.find(t => t.id === s.selected) ?? null;
+    switch (a) {
+      case "help": this.set({ sheet: "keys" }); return;
+      case "comment": this.toggleComment(); return;
+      case "threads": this.togglePanel(); return;
+      case "next": case "prev": {
+        const list = this.order(s);
+        if (!list.length) return;
+        const i = sel ? list.findIndex(t => t.id === sel.id) : -1;
+        const j = a === "next" ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
+        this.set({ panel: true });
+        this.selectThread(list[j]);
+        return;
+      }
+      case "reply": if (sel) this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 })); return;
+      case "send": if (sel && sel.status === "open" && !sel.sent_to_agent) this.sendThread(sel); return;
+      case "resolve": if (sel && sel.status === "open") this.resolveThread(sel); return;
+      default: return; // added with their features (versions, tick, sendTicked, people)
+    }
+  }
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
+import type { Thread } from "../threads";
 
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
@@ -13,10 +14,24 @@ class FakeES {
   emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
 }
 
-async function started() {
+type Seed = { threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
+const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
+  id, artifact_id: ID, version_n: 1, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "2026-09-30T10:00:00.000Z",
+  resolved_at: null, resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "alex", via_harness: null, body: "x", created_at: "2026-09-30T10:00:00.000Z" }],
+  anchor: { kind: "element", selector: "h2", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }, ...over,
+});
+
+async function started(seed: Seed = {}) {
   vi.stubGlobal("EventSource", FakeES);
-  vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
-    url.includes("/threads") ? { threads: [], next_cursor: null } : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } } : url === "/api/token" ? { token: "tk" } : loaded))));
+  vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+    const own = seed.routes?.(url, init);
+    if (own !== undefined) return new Response(JSON.stringify(own));
+    return new Response(JSON.stringify(
+      url.includes("/threads") ? { threads: seed.threads ?? [], next_cursor: null }
+      : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } }
+      : url === "/api/token" ? { token: "tk" }
+      : { ...loaded, artifact: { ...loaded.artifact, ...seed.artifact }, versions: seed.versions ?? loaded.versions, ...(seed.attention ? { attention: seed.attention } : {}) }));
+  }));
   sessionStorage.setItem("clax.origin-ok", "0");
   const { ArtifactController } = await import("./artifact-controller");
   const { FrameHost } = await import("./frame-host");
@@ -171,9 +186,9 @@ describe("ArtifactController", () => {
     // load, with no hello since the previous one, closes the gate.
     frame.dispatchEvent(new Event("load"));
     posted.length = 0;
-    const thread = { id: "t1", status: "open", version_n: 2, anchor: { file: "index.html", kind: "text", quote: "q" } };
+    const t1 = { id: "t1", status: "open", version_n: 2, anchor: { file: "index.html", kind: "text", quote: "q" } };
     const { upsert } = await import("../threads");
-    ctl.commentsUi.upsert(thread as Parameters<typeof upsert>[1]);
+    ctl.commentsUi.upsert(t1 as Parameters<typeof upsert>[1]);
     ctl.toggleComment();
     await new Promise(r => setTimeout(r, 50));
     expect(posted).toEqual([]);
@@ -220,9 +235,9 @@ describe("ArtifactController", () => {
     const win = frame.contentWindow!;
     const posted: { type: string; anchors?: { id: string }[] }[] = [];
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
-    const thread = { id: "t1", status: "open", version_n: 2, anchor: { file: "index.html", kind: "text", quote: "q" } };
+    const t1 = { id: "t1", status: "open", version_n: 2, anchor: { file: "index.html", kind: "text", quote: "q" } };
     const { upsert } = await import("../threads");
-    ctl.commentsUi.upsert(thread as Parameters<typeof upsert>[1]);
+    ctl.commentsUi.upsert(t1 as Parameters<typeof upsert>[1]);
     hello(win);
     const handle = posted.filter(m => m.type === "clax:resolve-anchors").at(-1)!.anchors![0].id;
     fromFrame(win, { type: "clax:anchors", results: [{ id: handle, found: true, method: "quote" }] });
@@ -254,6 +269,30 @@ describe("ArtifactController", () => {
     fromFrame(win, { type: "clax:pick-start", pickId: "p1", anchor: { kind: "element", selector: "p", file: "index.html" }, version: 2 });
     await new Promise(r => setTimeout(r, 50));
     expect(posted).toEqual([]);
+    ctl.dispose();
+  });
+
+  it("acts on shell keys: C, T, J and K, ?, and Escape closes the sheet before leaving comment mode", async () => {
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
+    key("c");
+    expect(ctl.state.get().commenting).toBe(true);
+    const panel = ctl.state.get().panel;
+    key("t");
+    expect(ctl.state.get().panel).toBe(!panel);
+    key("j");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
+    key("j");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[1].id);
+    key("k");
+    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
+    key("?", { shiftKey: true });
+    expect(ctl.state.get().sheet).toBe("keys");
+    key("Escape");
+    expect(ctl.state.get()).toMatchObject({ sheet: null, commenting: true });
+    key("Escape");
+    expect(ctl.state.get().commenting).toBe(false);
     ctl.dispose();
   });
 });

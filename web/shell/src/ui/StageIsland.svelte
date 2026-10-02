@@ -56,4 +56,7 @@
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>
   {/if}
   {#if s.ask}<PromptDialog ask={s.ask} />{/if}
+  {#if s.sheet === "keys"}
+    {#await import("./KeysSheet.svelte") then { default: KeysSheet }}<KeysSheet onClose={() => ctl.closeSheet()} />{/await}
+  {/if}
 {/if}
