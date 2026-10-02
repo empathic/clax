@@ -154,7 +154,8 @@ pub fn log_run(home: &Home, agent: &str, event: &str, started: Instant, stderr: 
 
 /// Runs the hook. Never fails the harness: any error or timeout prints one
 /// line to stderr and leaves stdout empty. Never starts a daemon. Each run is
-/// logged to hooks.log.
+/// logged to hooks.log. A Claude Code hook that Grok Build runs stands down:
+/// it prints nothing and logs one standdown line.
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     // SAFETY: getppid has no preconditions.
@@ -167,7 +168,9 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     });
     let (deadline, _) = budget(agent, event);
     let error = match rx.recv_timeout(deadline) {
-        Ok(Ok(out)) => {
+        // Stood down: logged by `handle`, nothing to print or log here.
+        Ok(Ok(None)) => std::process::exit(0),
+        Ok(Ok(Some(out))) => {
             if let Some(line) = out.to_line() {
                 let _ = writeln!(std::io::stdout(), "{line}");
             }
@@ -190,15 +193,29 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     std::process::exit(0);
 }
 
-fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::Result<HookOutput> {
+/// Handles one hook run; `None` means it stood down.
+fn handle(
+    agent: Agent,
+    event: Event,
+    parent_pid: u32,
+    home: &Home,
+) -> anyhow::Result<Option<HookOutput>> {
     let mut stdin = String::new();
     let _ = std::io::stdin().read_to_string(&mut stdin);
     let input = HookInput::parse(&stdin);
+    if matches!(agent, Agent::Claude)
+        && crate::host::grok_runs_hook(|k| std::env::var(k).ok(), &input)
+    {
+        // Grok Build runs the Claude Code copy's hooks too; in a Grok
+        // session only clax-grok's hooks act (spec D17).
+        crate::host::log_standdown(home, "hook");
+        return Ok(None);
+    }
     // Grok Build discards an allowing prompt hook's output, and a
     // prompt_hook request marks comments delivered, so Grok's prompt hook
     // does nothing (the plugin does not wire it).
     if matches!((agent, event), (Agent::Grok, Event::Prompt)) {
-        return Ok(HookOutput::none());
+        return Ok(Some(HookOutput::none()));
     }
     let client = Client::discover(home)
         .ok_or_else(|| anyhow::anyhow!("no clax daemon is running"))?
@@ -208,7 +225,7 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
     let codex_home = std::env::var("CODEX_HOME")
         .ok()
         .filter(|v| !v.is_empty() && matches!(agent, Agent::Codex));
-    match event {
+    let out = match event {
         Event::SessionStart if matches!(agent, Agent::Grok) => events::session_start_quiet(
             agent.harness(),
             parent_pid,
@@ -227,5 +244,6 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
         Event::SessionEnd => events::session_end(agent.harness(), &input, &client),
         Event::Stop => events::stop(agent.harness(), &input, &client),
         Event::Prompt => events::prompt(agent.harness(), &input, &client),
-    }
+    };
+    out.map(Some)
 }
