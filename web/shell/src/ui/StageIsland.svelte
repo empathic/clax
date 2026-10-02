@@ -2,6 +2,7 @@
   // The stage island: the overlays over the frame (the empty states, the
   // gesture shield and hint, the pins, the composer, the banners and the
   // consent dialog), once the artifact is loaded and the frame mode decided.
+  import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
   import { registerShield } from "../caps/gesture";
@@ -19,6 +20,15 @@
   const shown = $derived(ctl.shown(s));
   const latest = $derived(ctl.latest(s));
   const missing = $derived(ctl.missing(s));
+  // The keys sheet's code loads the first time it is asked for; if it cannot
+  // load, the sheet closes with a notice rather than leaving the keys off.
+  let KeysSheet: Component<{ onClose(): void }> | null = $state(null);
+  let loading = false;
+  $effect(() => {
+    if (s.sheet !== "keys" || KeysSheet || loading) return;
+    loading = true;
+    import("./KeysSheet.svelte").then(m => { KeysSheet = m.default; }, () => ctl.sheetFailed()).finally(() => { loading = false; });
+  });
   // The shield is registered while it is shown, and unregistered as it goes.
   const shield = (el: HTMLElement) => {
     registerShield(el);
@@ -56,7 +66,5 @@
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>
   {/if}
   {#if s.ask}<PromptDialog ask={s.ask} />{/if}
-  {#if s.sheet === "keys"}
-    {#await import("./KeysSheet.svelte") then { default: KeysSheet }}<KeysSheet onClose={() => ctl.closeSheet()} />{/await}
-  {/if}
+  {#if s.sheet === "keys" && KeysSheet}<KeysSheet onClose={() => ctl.closeSheet()} />{/if}
 {/if}

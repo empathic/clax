@@ -173,7 +173,8 @@ input, select { line-height: 1.2; }
 .island { display: contents; }
 /* The Echo mark (spec §8). Its halves meet when a playful mark is pressed. */
 .mark { display: inline-grid; place-items: center; flex: none; color: var(--fg); }
-button.mark { background: none; border: 0; padding: 4px; min-height: 0; width: auto; }
+/* At least 44×44, a touch target. */
+button.mark { background: none; border: 0; padding: 0; min-width: 44px; min-height: 44px; width: auto; }
 .mk { display: block; width: 30px; height: 24px; overflow: visible; }
 .mark[data-size="hero"] .mk { width: 120px; height: 96px; }
 .mk path { transition: transform .3s cubic-bezier(.3,1.4,.5,1); }

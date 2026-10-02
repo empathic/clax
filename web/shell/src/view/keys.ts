@@ -1,13 +1,14 @@
 // The shell's keyboard layer (spec §8, "Keys"). A key acts only when focus is
-// in the shell, outside a text field, with no modifier but Shift, and not
-// while an input method composes. Keys pressed inside the artifact's frame
+// in the shell, outside a text field and outside any dialog, with no modifier
+// but Shift, and not while an input method composes. Letters act whatever
+// their case (Caps Lock), except that Shift+S is its own key. Keys pressed inside the artifact's frame
 // belong to the page and never reach here.
 export type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people";
 export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
 export type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" };
 
 const MAP: Record<string, KeyAction> = {
-  "?": "help", c: "comment", C: "comment", t: "threads", j: "next", k: "prev", Enter: "reply", s: "send", S: "sendTicked", r: "resolve",
+  "?": "help", c: "comment", t: "threads", j: "next", k: "prev", Enter: "reply", s: "send", r: "resolve",
 };
 
 /** The sheet's rows, in order. Tasks that add a key add its row and its MAP entry. */
@@ -29,6 +30,11 @@ function typing(t: EventTarget | null): boolean {
 
 export function keyAction(e: KeyLike): KeyAction | null {
   if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.repeat || typing(e.target)) return null;
+  // A dialog's keys are its own: a page's consent prompt takes focus while
+  // the viewer may still be typing for the page.
+  if (e.target instanceof Element && e.target.closest("[role=dialog], [aria-modal=true]")) return null;
   if (e.key === "Enter" && e.target instanceof Element && e.target.closest("button, a, summary, [role=button]")) return null;
-  return MAP[e.key] ?? null;
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  if (key === "s" && e.shiftKey) return "sendTicked";
+  return MAP[key] ?? null;
 }

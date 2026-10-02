@@ -7,6 +7,7 @@ export const NAME_FAILED = "Could not save your name";
 export const NAME_LOAD_FAILED = "Could not load your name";
 export const LOAD_FAILED = "Could not load comments";
 export const OPEN_FAILED = "Could not open";
+export const SHEET_FAILED = "Could not open the keyboard shortcuts";
 /** What the shell says when a lazy part of the bridge could not load in the page. */
 export const PART_FAILED: Record<"comment" | "clip" | "caps", string> = {
   comment: "Comment mode could not load in this page",

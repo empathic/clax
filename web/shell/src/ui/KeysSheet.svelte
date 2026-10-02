@@ -2,15 +2,27 @@
 
 <script lang="ts">
   // The `?` sheet (spec §8, "Keys"), loaded on first use. A modal dialog:
-  // focus moves to its Close button and Tab stays inside it; Escape, Close or
-  // a click outside the panel closes it, and focus returns to where it was.
+  // everything else in the document is inert while it is open, focus moves
+  // to its Close button and Tab stays inside it; Escape, Close or a click
+  // outside the panel closes it, and focus returns to where it was.
   import { KEY_ROWS } from "../view/keys";
 
   let { onClose }: { onClose(): void } = $props();
   const back = document.activeElement as HTMLElement | null;
   let panel: HTMLElement | undefined = $state();
   const focus = (el: HTMLElement) => { el.focus(); };
-  $effect(() => () => { if (back?.isConnected) back.focus?.(); });
+  // Makes every element outside the sheet inert (each sibling of the sheet
+  // and of its ancestors), and on close undoes that, then gives focus back.
+  const modal = (el: HTMLElement) => {
+    const made: Element[] = [];
+    for (let n: Element = el; n.parentElement && n !== document.body; n = n.parentElement) {
+      for (const sib of n.parentElement.children) if (sib !== n && !sib.hasAttribute("inert")) { sib.setAttribute("inert", ""); made.push(sib); }
+    }
+    return () => {
+      for (const sib of made) sib.removeAttribute("inert");
+      if (back?.isConnected) back.focus?.();
+    };
+  };
 
   function keydown(e: KeyboardEvent) {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
@@ -24,11 +36,11 @@
 </script>
 
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="keys-backdrop" onclick={e => { if (e.target === e.currentTarget) onClose(); }}>
+<div class="keys-backdrop" {@attach modal} onclick={e => { if (e.target === e.currentTarget) onClose(); }}>
   <!-- Escape closes the dialog; Tab cycles inside it. -->
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-  <div class="keys-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1" bind:this={panel} onkeydown={keydown}>
-    <h2>Keyboard</h2>
+  <div class="keys-panel" role="dialog" aria-modal="true" aria-labelledby="keys-title" tabindex="-1" bind:this={panel} onkeydown={keydown}>
+    <h2 id="keys-title">Keyboard shortcuts</h2>
     <p class="sub">Press ? to open this. Esc closes it. Keys work while the page does not have focus.</p>
     <dl>
       {#each KEY_ROWS as r (r.keys.join("+"))}

@@ -8,7 +8,7 @@ import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
 import { type ArtifactEvent, subscribe } from "../events";
-import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, report, scopedNotice } from "../failure";
+import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
@@ -166,7 +166,8 @@ export class ArtifactController {
   /** The host the latest reaction pass told of the UI. */
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
-  private readonly prompt = promptQueue(ask => this.set({ ask }));
+  // A prompt closes the keys sheet, so nothing covers or disables the prompt.
+  private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
   /** While a guessed subdomain frame awaits the probe (`decideOrigin`), the
    * messages to the shell and the frame's loads (`LOADED`), in order. */
   private held: (MessageEvent | typeof LOADED)[] | null = null;
@@ -689,7 +690,7 @@ export class ArtifactController {
         if (e.key === "ArrowUp" || e.key === "ArrowDown") e.preventDefault();
       } else if (e.type === "keydown" && e.key !== "Escape") {
         const a = keyAction(e);
-        if (a) { e.preventDefault(); this.shortcut(a); }
+        if (a && this.shortcut(a)) e.preventDefault();
       } else if (e.key === "Escape" && e.type === "keydown") {
         // Escape anywhere else closes the sheet, or else ends comment mode here.
         if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
@@ -974,29 +975,43 @@ export class ArtifactController {
 
   closeSheet(): void { this.set({ sheet: null }); }
 
-  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. While
-   * the sheet is open, only Escape (handled in `listen`) acts. */
-  shortcut(a: KeyAction): void {
+  /** The sheet's code did not load: close it, so the keys act again, and say so. */
+  sheetFailed(): void { this.set({ sheet: null, notice: `${SHEET_FAILED}.` }); }
+
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. Returns
+   * whether it acted, so a key that does nothing is left to the browser.
+   * Nothing acts while the sheet, a page's prompt or the composer is open:
+   * Escape (handled in `listen`) is their only shell key. */
+  shortcut(a: KeyAction): boolean {
     const s = this.s;
-    if (!viewReady(s) || s.deleted || s.sheet) return;
+    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft) return false;
     const sel = s.threads.find(t => t.id === s.selected) ?? null;
     switch (a) {
-      case "help": this.set({ sheet: "keys" }); return;
-      case "comment": this.toggleComment(); return;
-      case "threads": this.togglePanel(); return;
+      case "help": this.set({ sheet: "keys" }); return true;
+      case "comment": this.toggleComment(); return true;
+      case "threads": this.togglePanel(); return true;
       case "next": case "prev": {
         const list = this.order(s);
-        if (!list.length) return;
+        if (!list.length) return false;
         const i = sel ? list.findIndex(t => t.id === sel.id) : -1;
         const j = a === "next" ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
         this.set({ panel: true });
         this.selectThread(list[j]);
-        return;
+        return true;
       }
-      case "reply": if (sel) this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 })); return;
-      case "send": if (sel && sel.status === "open" && !sel.sent_to_agent) this.sendThread(sel); return;
-      case "resolve": if (sel && sel.status === "open") this.resolveThread(sel); return;
-      default: return; // added with their features (versions, tick, sendTicked, people)
+      case "reply":
+        if (!sel) return false;
+        this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 }));
+        return true;
+      case "send":
+        if (!sel || sel.status !== "open" || sel.sent_to_agent) return false;
+        this.sendThread(sel);
+        return true;
+      case "resolve":
+        if (!sel || sel.status !== "open") return false;
+        this.resolveThread(sel);
+        return true;
+      default: return false; // added with their features (versions, tick, sendTicked, people)
     }
   }
   /** The version menu: the latest is the unpinned URL. */
