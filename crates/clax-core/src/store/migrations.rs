@@ -180,6 +180,28 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (viewer_id, artifact_id)
     );
     CREATE INDEX viewer_seen_by_age ON viewer_seen(viewer_id, updated_at);",
+    // 11: participants. A comment's author (the viewer's public ID), the
+    // viewers a comment mentions, each viewer's last look at a thread, and an
+    // opaque handle per session so the shell can name and target an agent
+    // without a session ID. Existing sessions get a handle; existing comments
+    // stay unattributed.
+    "ALTER TABLE comments ADD COLUMN author_public_id TEXT;
+    CREATE INDEX comments_by_author ON comments(author_public_id);
+    CREATE TABLE mentions (
+        comment_id TEXT NOT NULL REFERENCES comments(id),
+        public_id TEXT NOT NULL,
+        PRIMARY KEY (comment_id, public_id)
+    );
+    CREATE INDEX mentions_by_viewer ON mentions(public_id);
+    CREATE TABLE viewer_threads (
+        viewer_id TEXT NOT NULL REFERENCES viewers(id),
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        looked_at TEXT NOT NULL,
+        PRIMARY KEY (viewer_id, thread_id)
+    );
+    ALTER TABLE sessions ADD COLUMN agent_handle TEXT;
+    UPDATE sessions SET agent_handle = 'a_' || lower(hex(randomblob(11)));
+    CREATE UNIQUE INDEX sessions_by_handle ON sessions(agent_handle);",
 ];
 
 #[cfg(test)]

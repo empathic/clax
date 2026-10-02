@@ -124,12 +124,6 @@ machine, so no agent runs them.
   - N4-N5: a second Ctrl-C during cleanup can leave the scratch root behind;
     ignore signals at the top of `cleanup`.
 
-- **`GET /api/artifacts/<ID>` names sessions to unauthenticated callers**
-  (Svelte port, Task 12; predates the port). The answer carries the
-  artifact's `owner_session_id` and each version's `session_id` to any caller
-  the host rule admits, token or not, LAN viewers included. Session IDs are
-  the agent's, not the viewer's, so the answer should leave them out without
-  the token, as the `/a/…` bootstrap already does.
 - **The daemon compresses no response** (Svelte port, Task 12). The shell's
   JavaScript, the bridge and its parts, and wrapped pages go out
   uncompressed. On loopback this costs little; on a LAN view it lengthens

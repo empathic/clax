@@ -357,4 +357,45 @@ impl TestServer {
             public_id: v["viewer"]["public_id"].as_str().unwrap().to_string(),
         }
     }
+
+    /// Creates a thread as the viewer whose cookie value is `cookie`; returns the thread view.
+    pub async fn thread_as(&self, aid: &str, cookie: &str, body: &str) -> serde_json::Value {
+        let form = reqwest::multipart::Form::new()
+            .text("anchor", element_anchor().to_string())
+            .text("body", body.to_string())
+            .text("version", "1");
+        let res = self
+            .client
+            .post(format!("{}/api/artifacts/{aid}/threads", self.base))
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .multipart(form)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+
+    /// Replies on `tid` as the viewer whose cookie value is `cookie`; returns the thread view.
+    pub async fn reply_as(
+        &self,
+        aid: &str,
+        tid: &str,
+        cookie: &str,
+        body: &str,
+    ) -> serde_json::Value {
+        let res = self
+            .client
+            .post(format!(
+                "{}/api/artifacts/{aid}/threads/{tid}/comments",
+                self.base
+            ))
+            .header("cookie", format!("clax_viewer={cookie}"))
+            .json(&serde_json::json!({"body": body}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 201);
+        res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
 }

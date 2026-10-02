@@ -79,14 +79,19 @@ pub fn set_cookie(id: &str) -> HeaderValue {
     .expect("ULIDs are header-safe")
 }
 
-/// The name a viewer comment is attributed to: the viewer's display name,
-/// sanitised, else `Viewer`.
-pub fn author_name(st: &Store, cookie: Option<&str>) -> clax_core::Result<String> {
-    let name = match cookie {
-        Some(id) => st.get_viewer(id)?.and_then(|v| v.display_name),
+/// The comment author for `cookie`: the viewer's display name, sanitised,
+/// else `Viewer`; and the viewer's public ID when the cookie names a viewer.
+pub fn author(st: &Store, cookie: Option<&str>) -> clax_core::Result<(String, Option<String>)> {
+    let v = match cookie {
+        Some(id) => st.get_viewer(id)?,
         None => None,
     };
-    Ok(display_name(name.as_deref().unwrap_or("")))
+    let name = display_name(
+        v.as_ref()
+            .and_then(|v| v.display_name.as_deref())
+            .unwrap_or(""),
+    );
+    Ok((name, v.map(|v| v.public_id)))
 }
 
 #[cfg(test)]

@@ -556,6 +556,7 @@ mod tests {
         st.create_thread(
             aid,
             NewThread {
+                author_public_id: None,
                 version_n: 1,
                 anchor: anchor(),
                 author_name: "Alex".into(),
@@ -669,6 +670,7 @@ mod tests {
         st.add_comment(
             &tid,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_VIEWER,
                 author_name: "Alex".into(),
                 via_session_id: None,
@@ -682,6 +684,7 @@ mod tests {
         st.add_comment(
             &tid,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_VIEWER,
                 author_name: "Alex".into(),
                 via_session_id: None,
@@ -711,6 +714,7 @@ mod tests {
         st.add_comment(
             &tid,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_AGENT,
                 author_name: "claude".into(),
                 via_session_id: Some(owner.clone()),
@@ -728,6 +732,7 @@ mod tests {
         st.add_comment(
             &tid,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_VIEWER,
                 author_name: "Alex".into(),
                 via_session_id: None,
@@ -889,6 +894,7 @@ mod tests {
             .add_comment(
                 &tid,
                 NewComment {
+                    author_public_id: None,
                     author_kind: AUTHOR_VIEWER,
                     author_name: "Alex".into(),
                     via_session_id: None,
@@ -1131,6 +1137,7 @@ mod tests {
             .create_thread(
                 &a1,
                 NewThread {
+                    author_public_id: None,
                     version_n: 1,
                     anchor: anchor(),
                     author_name: "A".into(),
@@ -1226,6 +1233,7 @@ mod tests {
             .create_thread(
                 &a1,
                 NewThread {
+                    author_public_id: None,
                     version_n: 1,
                     anchor: anchor(),
                     author_name: "".into(),

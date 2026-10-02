@@ -148,16 +148,10 @@ fn frame_origin(headers: &HeaderMap, id: &str) -> Option<Option<String>> {
 /// Removes the session IDs the artifact API carries (the owner session, and
 /// the session that published each version): the shell never reads them, and
 /// the bootstrap holds nothing that names a session.
-fn without_sessions(mut artifact: Value, mut versions: Value) -> Value {
-    if let Some(a) = artifact.as_object_mut() {
-        a.remove("owner_session_id");
-    }
-    for v in versions.as_array_mut().into_iter().flatten() {
-        if let Some(v) = v.as_object_mut() {
-            v.remove("session_id");
-        }
-    }
-    json!({"artifact": artifact, "versions": versions})
+fn without_sessions(artifact: Value, versions: Value) -> Value {
+    let mut v = json!({"artifact": artifact, "versions": versions});
+    crate::routes::artifacts::strip_sessions(&mut v);
+    v
 }
 
 /// Everything `artifact.html` gets for `route`, or `None` when it names no
@@ -177,6 +171,7 @@ pub async fn assemble(
     let viewer_id = crate::viewer::read(headers);
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
+    let working = s.working.for_artifact(id.as_str());
     let found = s
         .store_call(move |st| {
             let Some(a) = st.get_artifact(&lookup)? else {
@@ -199,14 +194,19 @@ pub async fn assemble(
                     None => break,
                 }
             }
-            let viewer = match viewer_id {
-                Some(v) => st.get_viewer(&v)?,
+            let viewer = match &viewer_id {
+                Some(v) => st.get_viewer(v)?,
                 None => None,
             };
-            Ok(Some((a, versions, owner, threads, viewer)))
+            let attention = match &viewer {
+                Some(v) => Some(st.attention(&v.id, &lookup)?),
+                None => None,
+            };
+            let artifact = with_owner(st, &a, owner.as_ref(), &working)?;
+            Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })
         .await?;
-    let Some((a, versions, owner, threads, viewer)) = found else {
+    let Some((a, artifact_json, versions, threads, viewer, attention)) = found else {
         return Ok(None);
     };
     let n = version.unwrap_or(u64::from(a.current_version));
@@ -225,16 +225,19 @@ pub async fn assemble(
         _ => (None, Value::Null),
     };
     let artifact = without_sessions(
-        with_owner(&a, owner.as_ref(), &s.working.for_artifact(id.as_str())),
+        artifact_json,
         serde_json::to_value(&versions).expect("versions serialise"),
     );
-    let boot = json!({
+    let mut boot = json!({
         "v": 1,
         "artifact": artifact,
         "threads": threads,
         "viewer": viewer,
         "frame": frame_json,
     });
+    if let Some(att) = attention {
+        boot["attention"] = json!(att);
+    }
     Ok(Some(Injected {
         boot: script_json(&boot),
         frame,

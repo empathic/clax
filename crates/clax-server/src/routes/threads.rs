@@ -7,7 +7,7 @@ use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view};
 use crate::state::AppState;
-use crate::viewer::{SameOrigin, ViewerCookie, author_name};
+use crate::viewer::{SameOrigin, ViewerCookie, author};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
@@ -265,12 +265,13 @@ pub async fn create(
     let with_path = has_token(&headers, &s.token);
     let view = s
         .store_call(move |st| {
-            let author = author_name(st, viewer.0.as_deref())?;
+            let (author, author_public_id) = author(st, viewer.0.as_deref())?;
             let body_text = text.unwrap_or_default();
             let mention = !via_page && mentions_agent(&body_text);
             let mut t = st.create_thread(
                 &id,
                 NewThread {
+                    author_public_id,
                     version_n,
                     anchor,
                     author_name: author,
@@ -371,6 +372,7 @@ pub async fn comment(
                 let c = st.add_comment(
                     &tid,
                     NewComment {
+                        author_public_id: None,
                         author_kind: AUTHOR_AGENT,
                         author_name: sess.harness,
                         via_session_id: Some(sess.id.clone()),
@@ -383,10 +385,11 @@ pub async fn comment(
                 crate::working::announce(&ctx.events, &ctx.working, &changed);
                 c
             } else {
-                let name = author_name(st, viewer.0.as_deref())?;
+                let (name, author_public_id) = author(st, viewer.0.as_deref())?;
                 let c = st.add_comment(
                     &tid,
                     NewComment {
+                        author_public_id,
                         author_kind: AUTHOR_VIEWER,
                         author_name: name,
                         via_session_id: None,

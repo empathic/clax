@@ -747,7 +747,7 @@ async fn a_publish_after_the_session_ended_registers_a_new_session() {
     assert_eq!(live[0]["id"], second.id.as_str());
     assert_eq!(live[0]["harness_session_id"], "cc-1");
     let got: Value = ts
-        .get(&format!(
+        .get_authed(&format!(
             "/api/artifacts/{}",
             p["artifact_id"].as_str().unwrap()
         ))

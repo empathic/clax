@@ -89,27 +89,49 @@ pub fn is_ulid(s: &str) -> bool {
 /// Length of the hex part of a public ID (11 random bytes).
 const PUBLIC_ID_HEX: usize = 22;
 
-/// A new public ID: `u_` and 22 lowercase hex digits from 11 random bytes.
-/// Public IDs name a viewer wherever others can see it; the viewer's cookie
-/// (its credential) never leaves the daemon.
-pub fn new_public_id() -> String {
+/// `prefix` and 22 lowercase hex digits from 11 random bytes.
+fn new_prefixed(prefix: &str) -> String {
     let mut b = [0u8; PUBLIC_ID_HEX / 2];
     rand::rng().fill_bytes(&mut b);
-    let mut out = String::with_capacity(2 + PUBLIC_ID_HEX);
-    out.push_str("u_");
+    let mut out = String::with_capacity(prefix.len() + PUBLIC_ID_HEX);
+    out.push_str(prefix);
     for x in b {
         out.push_str(&format!("{x:02x}"));
     }
     out
 }
 
-/// True when `s` has the form of [`new_public_id`]: `u_` and 22 lowercase hex digits.
-pub fn is_public_id(s: &str) -> bool {
-    s.strip_prefix("u_").is_some_and(|h| {
+/// True when `s` is `prefix` and 22 lowercase hex digits.
+fn is_prefixed(s: &str, prefix: &str) -> bool {
+    s.strip_prefix(prefix).is_some_and(|h| {
         h.len() == PUBLIC_ID_HEX
             && h.bytes()
                 .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     })
+}
+
+/// A new public ID: `u_` and 22 lowercase hex digits from 11 random bytes.
+/// Public IDs name a viewer wherever others can see it; the viewer's cookie
+/// (its credential) never leaves the daemon.
+pub fn new_public_id() -> String {
+    new_prefixed("u_")
+}
+
+/// A new agent handle: `a_` and 22 lowercase hex digits. A handle names a
+/// session wherever viewers can see it; the session ID never leaves the
+/// token-bearing routes.
+pub fn new_agent_handle() -> String {
+    new_prefixed("a_")
+}
+
+/// True when `s` has the form of [`new_agent_handle`]: `a_` and 22 lowercase hex digits.
+pub fn is_agent_handle(s: &str) -> bool {
+    is_prefixed(s, "a_")
+}
+
+/// True when `s` has the form of [`new_public_id`]: `u_` and 22 lowercase hex digits.
+pub fn is_public_id(s: &str) -> bool {
+    is_prefixed(s, "u_")
 }
 
 #[cfg(test)]
@@ -181,6 +203,16 @@ mod tests {
             assert!(!is_public_id(bad), "{bad}");
         }
         assert!(is_public_id("u_0123456789abcdef012345"));
+    }
+
+    #[test]
+    fn agent_handles_are_a_and_22_lowercase_hex() {
+        let h = new_agent_handle();
+        assert_eq!(h.len(), 24);
+        assert!(is_agent_handle(&h), "{h}");
+        assert!(!is_public_id(&h));
+        assert!(!is_agent_handle(&new_public_id()));
+        assert!(!is_agent_handle("a_0123456789ABCDEF012345"));
     }
 
     #[test]
