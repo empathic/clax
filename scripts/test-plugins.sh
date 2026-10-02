@@ -325,6 +325,17 @@ for f in "${skill_copies[@]}" docs/contract.md; do
     if [ -n "$(section "$f" "Runtime capabilities")" ]; then pass "$f has a Runtime capabilities section"; else fail "$f has no '## Runtime capabilities' section"; fi
 done
 same_section "Runtime capabilities" "${skill_copies[@]}" docs/contract.md
+# The section documents room and sample (phase 5), and no copy still says
+# they are not available.
+rc="$(section "${skill_copies[0]}" "Runtime capabilities")"
+if echo "$rc" | tr '\n' ' ' | grep -qF '`comments`, `assets`, `room`, `sample`)'; then pass "the Runtime capabilities contract list names room and sample"
+else fail "the Runtime capabilities contract list does not name \`room\` and \`sample\`"; fi
+if echo "$rc" | grep -q '^- `room`'; then pass "the Runtime capabilities section has a room bullet"
+else fail "the Runtime capabilities section has no '- \`room\`' bullet"; fi
+if echo "$rc" | grep -q '^- `sample`'; then pass "the Runtime capabilities section has a sample bullet"
+else fail "the Runtime capabilities section has no '- \`sample\`' bullet"; fi
+if grep -qF 'Rooms and `sample()` (phase 5)' "${skill_copies[0]}"; then fail "${skill_copies[0]} still says rooms and sample() are not available"
+else pass "${skill_copies[0]} no longer says rooms and sample() are not available"; fi
 if section docs/contract.md "Runtime capabilities" | grep -q '/_clax/contract/0.2.61/<name>.d.ts'; then pass "the Runtime capabilities section points at /_clax/contract/0.2.61/"; else fail "the Runtime capabilities section does not point at the daemon's /_clax/contract/0.2.61/<name>.d.ts"; fi
 for name in claude permissions artifact self assets comments db downloads user files mcp room sample; do
     if [ -f "web/contract/0.2.61/$name.d.ts" ]; then pass "web/contract/0.2.61/$name.d.ts exists"; else fail "web/contract/0.2.61/$name.d.ts is missing"; fi
