@@ -2,7 +2,7 @@
 // on one seeded scratch daemon. Tasks append scenes as they add UI.
 import type { Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { api, postThread, publishAs, registerSession } from "./fixtures";
+import { api, postThread, publishAs, registerSession, setWorking } from "./fixtures";
 
 export type Seeded = { base: string; token: string; aid: string; sid: string; threads: string[] };
 export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page, s: Seeded): Promise<void> };
@@ -55,5 +55,20 @@ export const SCENES: Scene[] = [
   { name: "threads", path: s => `/a/${s.aid}`, prepare: async page => {
     if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
     await page.locator(".thread-card").first().click();
+  } },
+  // The claude session works on the artifact and on its first thread: the
+  // roster's solid token, the summary, the sweep, the strip with its haiku,
+  // the split pin and the card's marker.
+  { name: "working", path: s => `/a/${s.aid}`, prepare: async (page, s) => {
+    await setWorking(s.base, s.token, s.sid, s.aid, { thread_ids: [s.threads[0]] });
+    await page.reload();
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    await page.locator(".strip .hk").waitFor();
+  } },
+  // The gallery while the claude session works: the card's chip and roster.
+  { name: "working-gallery", path: () => "/", prepare: async (page, s) => {
+    await setWorking(s.base, s.token, s.sid, s.aid, { thread_ids: [s.threads[0]] });
+    await page.reload();
+    await page.locator(".chip.ag").waitFor();
   } },
 ];

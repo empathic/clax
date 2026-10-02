@@ -7,11 +7,12 @@
   // a page the version does not hold (Detached); then resolved threads.
   import type { Snippet } from "svelte";
   import type { AnchorResult } from "../../../bridge/src/protocol";
-  import type { Version } from "../api";
+  import type { Participants, Version } from "../api";
   import { relativeTime } from "../format";
   import { type Thread, type Viewer, resolvedByLabel } from "../threads";
   import { agentName, historyOf, isOutdated } from "../view/history-model";
   import { needsTicking, sidebarSections } from "../view/sidebar-model";
+  import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
   import ThreadCard from "./ThreadCard.svelte";
   import { ticker } from "./ticker.svelte";
 
@@ -42,11 +43,20 @@
     shown: number;
     /** The publishing agent's name. */
     agent: string;
+    /** Who is working on the artifact now. */
+    working?: Working[];
+    /** The artifact's agents, which name the working ones. */
+    agents?: Participants["agents"];
+    /** Comment mode is on: the working strip leaves its haiku out. */
+    commenting?: boolean;
+    /** The open threads the viewer is in. */
+    mine?: string[];
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
-  const clock = ticker(() => needsTicking(p.threads), () => p.now, 30_000);
+  const clock = ticker(() => needsTicking(p.threads) || !!p.working?.length, () => p.now, 30_000);
   const s = $derived(sidebarSections(p.threads, p.resolved, p.file, p.holds));
+  const agentsByHandle = $derived(agentNames(p.working ?? [], p.agents ?? []));
   const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me, t.resolved_by_name);
   // A collapsed group opens when the selected card newly enters it (a new
   // selection, or the selected card moving there), or when the card the
@@ -73,13 +83,19 @@
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
     <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
-      history={historyOf(t, p.versions, names(t))} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
+      history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
+      marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover} />
   {/each}
 {/snippet}
 
 <aside class="sidebar" aria-label="Comment threads">
   {@render p.header?.()}
+  {#each newestFirst(p.working ?? []) as w (w.key)}
+    {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
+      <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
+    {/await}
+  {/each}
   <section class="section-open">
     <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{s.open.length}</span></h2>
     {#if s.open.length === 0}<p class="muted small empty-open">Nothing open. Press C and click anything to comment on it.</p>{:else}{@render cards(s.open)}{/if}
@@ -132,6 +148,7 @@
     .msg.agent .author { color: var(--agent-ink); }
     .msg.agent .body { text-align: left; }
     .st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
+    .st.ag { color: var(--agent-ink); font: 600 13.5px/1.2 var(--grot); } .st small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: auto; }
     .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
     .hist .sep { margin-right: 2px; }
     .hist .ev { white-space: nowrap; }

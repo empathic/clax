@@ -96,6 +96,7 @@ pub async fn put(
             let who = Actor {
                 session_id: sess.id,
                 harness: sess.harness,
+                agent: sess.agent_handle,
             };
             let (view, changed) = w.set(
                 &who,

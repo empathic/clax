@@ -69,6 +69,7 @@ async fn setting_needs_the_token_and_reading_does_not() {
         .unwrap();
     let w = &public["working"][0];
     assert_eq!(w["harness"], "claude");
+    assert!(w["agent"].as_str().unwrap().starts_with("a_"), "{w}");
     assert_eq!(w["thread_ids"], json!([tid]));
     assert!(!public.to_string().contains(&sid), "{public}");
     assert!(w.get("session_id").is_none());

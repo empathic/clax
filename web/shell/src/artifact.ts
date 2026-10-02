@@ -29,6 +29,7 @@ function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement): void {
   setText(sk.title, !s.error && s.data ? s.data.artifact.title : "Clax");
   setText(sk.by, !s.error && s.data ? publisherText(s.data.artifact) : "");
   if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
+  sk.topbar.classList.toggle("working", s.working.length > 0);
   if (ready) {
     if (status.isConnected) status.remove();
     if (sk.viewer.parentElement !== sk.page) sk.page.append(sk.viewer);

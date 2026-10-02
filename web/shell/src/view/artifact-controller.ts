@@ -2,7 +2,7 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type Version, getArtifact, getToken } from "../api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -26,10 +26,12 @@ import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
 import type { SetNotice } from "./viewer-name-model";
+import type { Working } from "./working-model";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
-export type Loaded = { artifact: Artifact; versions: Version[] };
+/** `attention` is the viewer's, when the request carried the viewer cookie. */
+export type Loaded = { artifact: Artifact; versions: Version[]; attention?: Attention };
 export type ViewState = {
   /** The version the shell URL pins, null for the latest (a prop). */
   pinnedVersion: number | null;
@@ -68,6 +70,10 @@ export type ViewState = {
   file: string | null;
   /** The sheet over the view: the keys (spec §8), or none. */
   sheet: "keys" | null;
+  /** Who is working on the artifact now, from its view and then its `working` events. */
+  working: Working[];
+  /** The viewer's attention on this artifact; null without a viewer. */
+  attention: Attention | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -212,7 +218,7 @@ export class ArtifactController {
       data: null, error: null, origin: undefined, newer: null, deleted: false, commenting: false,
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
-      notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null,
+      notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -595,7 +601,7 @@ export class ArtifactController {
     if (boot) {
       seedViewer(boot.viewer);
       this.set({ threads: boot.threads });
-      this.loaded(boot.artifact);
+      this.loaded(boot.artifact, boot.attention ?? null);
     } else {
       getArtifact(this.id).then(d => this.loaded(d), e => this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }));
     }
@@ -607,10 +613,10 @@ export class ArtifactController {
     this.openStream();
   }
 
-  private loaded(d: Loaded): void {
+  private loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
-    this.set(s => ({ data: d, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.set(s => ({ data: d, working: d.artifact.working ?? [], attention, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
     this.viewChanged();
   }
 
@@ -1065,6 +1071,7 @@ export class ArtifactController {
     }
     if (e.type === "version" && e.n > this.latestKnown) { this.latestKnown = e.n; this.set({ newer: e.n }); }
     if (e.type === "artifact_deleted") this.set({ deleted: true });
+    if (e.type === "working") this.set({ working: e.working });
     if (e.type === "thread") this.changeThreads(ts => upsert(ts, e.thread));
     if (e.type === "thread_deleted") { this.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); this.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
     if (e.type === "feedback_state") this.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
@@ -1075,6 +1082,7 @@ export class ArtifactController {
       this.loadThreads();
       getArtifact(this.id).then(d => {
         const n = d.artifact.current_version;
+        this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention }));
         if (n > this.latestKnown) { this.latestKnown = n; this.set({ newer: n }); }
       }, err => { if (err instanceof ApiError && err.status === 404) this.set({ deleted: true }); });
     }

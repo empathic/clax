@@ -1,3 +1,5 @@
+import type { Working } from "./view/working-model";
+
 export type Artifact = {
   id: string; title: string; description: string | null; icon: string | null;
   created_at?: string; updated_at: string; current_version: number; pinned: boolean;
@@ -8,6 +10,8 @@ export type Artifact = {
   owner_harness?: string | null;
   /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the artifact's people and agents. */
   participants?: Participants;
+  /** Who is working on it now (never a session ID). */
+  working?: Working[];
 };
 /** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
@@ -40,7 +44,8 @@ async function json<T>(res: Response): Promise<T> {
 export async function listArtifacts(): Promise<Artifact[]> {
   return (await json<{ artifacts: Artifact[] }>(await fetch("/api/artifacts"))).artifacts;
 }
-export async function getArtifact(id: string): Promise<{ artifact: Artifact; versions: Version[] }> {
+/** With the viewer cookie, the answer also carries the viewer's `attention`. */
+export async function getArtifact(id: string): Promise<{ artifact: Artifact; versions: Version[]; attention?: Attention }> {
   return json(await fetch(`/api/artifacts/${id}`));
 }
 

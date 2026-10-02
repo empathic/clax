@@ -250,4 +250,23 @@ describe("Sidebar", () => {
       vi.useRealTimers();
     }
   });
+
+  it("marks a thread a working record names, with its clock and a history event, and shows the waiting line again when the record drops it", () => {
+    const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: true, comments: [comment("1", "viewer", "Alex", "note")],
+      feedback_state: { thread_id: "a", state: "sent", tier: "stop_hook", since: base.created_at, resends: 0, exhausted: false } };
+    const w = { key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: ["a"], started_at: base.created_at, last_heartbeat: base.created_at };
+    const props = { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date("2026-09-29T10:00:42.000Z"), selected: null,
+      agents: [{ handle: "a_1111aaaa", harness: "claude", live: true }], onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
+    const view = mount(Sidebar, { ...props, working: [w] });
+    const st = view.root.querySelector(".thread-card .st.ag")!;
+    expect(st.firstChild!.nextSibling!.textContent).toBe("claude is working on it");
+    expect(st.querySelector("small")!.textContent).toBe("0:42");
+    expect(view.root.querySelector(".thread-card .waiting")).toBeNull();
+    expect(view.root.querySelector(".hist")!.textContent).toContain("claude working on it");
+    view.update({ ...props, working: [] });
+    expect(view.root.querySelector(".thread-card .st.ag")).toBeNull();
+    expect(view.root.querySelector(".thread-card .waiting")).not.toBeNull();
+    expect(view.root.querySelector(".hist")?.textContent ?? "").not.toContain("working on it");
+    view.unmount();
+  });
 });

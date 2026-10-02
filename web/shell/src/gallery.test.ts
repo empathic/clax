@@ -113,6 +113,23 @@ describe("Gallery", () => {
     expect(cards[2].querySelector(".by")?.textContent).toContain("command line");
   });
 
+  it("shows a working chip on a card an agent works on, none on the others, and the roster in the footer", async () => {
+    const working = [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-28T11:00:00Z", last_heartbeat: "2026-09-28T11:00:00Z" }];
+    const parts = { people: [{ public_id: "v1", display_name: "Ada", seen: null }], agents: [{ handle: "a_1111aaaa", harness: "claude", live: true }] };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [{ ...ARTIFACTS[0], working, participants: parts }, ARTIFACTS[1]] }));
+      return new Response("{}", { status: 404 });
+    }));
+    const root = await mountGallery();
+    const cards = root.querySelectorAll("a.card");
+    // The chips and rosters load after the first paint.
+    await waitFor(() => cards[0].querySelector(".chip.ag"), "the working chip");
+    expect(Array.from(cards[0].querySelectorAll(".chip.ag")).map(c => c.textContent)).toEqual(["claude working"]);
+    expect(cards[1].querySelector(".chip.ag")).toBeNull();
+    expect(cards[1].querySelector(".mks")).toBeNull();
+    expect(cards[0].querySelector(".ft .agt .tok.work")?.textContent).toBe("cl");
+  });
+
   it("shows the mark with its halves apart when the gallery is empty", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => url.endsWith("/api/artifacts") ? new Response(JSON.stringify({ artifacts: [] })) : new Response("{}", { status: 404 })));
     const root = await mountGallery();

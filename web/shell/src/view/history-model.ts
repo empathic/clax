@@ -17,8 +17,9 @@ export function versionAt(versions: Version[], iso: string): number {
   return n;
 }
 
-/** `names` turns a `resolved_by` value (`viewer:<public_id>`, `agent:<harness>`) into a name. */
-export function historyOf(t: Thread, versions: Version[], names: (by: string) => string): HistoryEvent[] {
+/** `names` turns a `resolved_by` value (`viewer:<public_id>`, `agent:<harness>`) into a name.
+ * `more.working` names the agent working on the open thread now: the line ends with it. */
+export function historyOf(t: Thread, versions: Version[], names: (by: string) => string, more: { working?: string | null } = {}): HistoryEvent[] {
   const out: HistoryEvent[] = [];
   t.comments.forEach((c, i) => {
     if (c.author_kind === "agent") out.push({ v: null, who: agentName(c.via_harness), agent: true, verb: "replied" });
@@ -29,6 +30,7 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
     const agent = t.resolved_by.startsWith("agent:");
     out.push({ v: agent ? null : versionAt(versions, t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" });
   }
+  if (more.working && t.status === "open") out.push({ v: null, who: more.working, agent: true, verb: "working on it" });
   return out;
 }
 

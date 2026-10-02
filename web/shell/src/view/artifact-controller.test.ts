@@ -250,6 +250,21 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("seeds the working list from the artifact, and a working event replaces it without touching the data", async () => {
+    const w = { key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: ["t1"], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z" };
+    const { ctl } = await started({ artifact: { working: [w] }, attention: { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: null, looked: {} } });
+    expect(ctl.state.get().working).toEqual([w]);
+    expect(ctl.state.get().attention?.open_in).toEqual(["t1"]);
+    const data = ctl.state.get().data;
+    const deadline = Date.now() + 2000;
+    while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+    const next = { ...w, key: "k2", message: "Two columns" };
+    FakeES.last!.emit("working", { type: "working", artifact_id: ID, working: [next] });
+    expect(ctl.state.get().working).toEqual([next]);
+    expect(ctl.state.get().data).toBe(data);
+    ctl.dispose();
+  });
+
   it("drops a deleted artifact's frame before the next paint, so nothing the page posts after the deletion is answered", async () => {
     const { ctl, frame } = await started();
     const win = frame.contentWindow!;

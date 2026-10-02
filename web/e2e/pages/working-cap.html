@@ -1,0 +1,12 @@
+<!doctype html><title>Working cap</title>
+<main><h2 id="h">Goals</h2><p id="state">none</p><button id="add">Add</button></main>
+<script>
+  (async () => {
+    const c = await window.claude.use("comments");
+    const out = document.getElementById("state");
+    const show = s => { out.textContent = s.working ? s.agents.map(a => `${a.label}|${a.message}|${a.threads.length}|${a.otherThreads}`).join(",") : "none"; };
+    show(await c.working());
+    await c.onWorking(show);
+    document.getElementById("add").onclick = async () => { const r = await c.create({ anchor: { path: "#h" }, text: "from the page" }); document.body.dataset.handle = r.threadId; };
+  })();
+</script>
