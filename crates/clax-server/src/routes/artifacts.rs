@@ -95,18 +95,25 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended)
 /// and `owner_harness` (the owner's harness, when it exists). The owner
-/// session itself is not exposed: these routes need no token.
-pub(crate) fn with_owner(a: &Artifact, owner: Option<&Session>) -> Value {
+/// session itself is not exposed: these routes need no token. `working` is
+/// the artifact's working list (spec §10 "Working"), which never names a session.
+pub(crate) fn with_owner(
+    a: &Artifact,
+    owner: Option<&Session>,
+    working: &[clax_core::working::WorkingView],
+) -> Value {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
+    v["working"] = json!(working);
     v
 }
 
 /// Each live artifact, with the owner fields of [`with_owner`].
 pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+    let all = s.working.all();
     let artifacts = s
-        .store_call(|st| {
+        .store_call(move |st| {
             let mut owners = std::collections::HashMap::new();
             let mut out = Vec::new();
             for a in st.list_artifacts()? {
@@ -119,7 +126,8 @@ pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
                     }
                     None => None,
                 };
-                out.push(with_owner(&a, owner.as_ref()));
+                let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
+                out.push(with_owner(&a, owner.as_ref(), working));
             }
             Ok(out)
         })
@@ -181,8 +189,9 @@ pub async fn get(
             Ok((a, v, owner))
         })
         .await?;
+    let working = s.working.for_artifact(&artifact.id);
     Ok(Json(
-        json!({"artifact": with_owner(&artifact, owner.as_ref()), "versions": versions}),
+        json!({"artifact": with_owner(&artifact, owner.as_ref(), &working), "versions": versions}),
     ))
 }
 

@@ -50,6 +50,12 @@ pub enum Event {
         resends: u32,
         exhausted: bool,
     },
+    /// The artifact's working list changed; `working` is the whole list
+    /// (spec §10 "Working"), never naming a session.
+    Working {
+        artifact_id: String,
+        working: Vec<crate::working::WorkingView>,
+    },
     /// A `db` document changed; `version` is `None` after a delete. The body
     /// is never carried (SSE needs no token). `private_to` names the viewer
     /// whose private subtree holds `path` (the event goes only to that viewer);
@@ -79,6 +85,7 @@ impl Event {
             | Event::ThreadResolved { artifact_id, .. }
             | Event::ThreadDeleted { artifact_id, .. }
             | Event::FeedbackState { artifact_id, .. }
+            | Event::Working { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
         }
     }
@@ -93,6 +100,7 @@ impl Event {
             Event::ThreadResolved { .. } => "thread_resolved",
             Event::ThreadDeleted { .. } => "thread_deleted",
             Event::FeedbackState { .. } => "feedback_state",
+            Event::Working { .. } => "working",
             Event::Doc { .. } => "doc",
         }
     }
@@ -186,6 +194,10 @@ mod tests {
                 thread_id: "t".into(),
             },
             Event::feedback_state("a".into(), s),
+            Event::Working {
+                artifact_id: "a".into(),
+                working: vec![],
+            },
             Event::Doc {
                 artifact_id: "a".into(),
                 path: "t/1".into(),

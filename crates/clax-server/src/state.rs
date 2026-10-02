@@ -30,4 +30,6 @@ pub struct AppState {
     pub feedback_waiters: Arc<crate::feedback::FeedbackWaiters>,
     /// Where the daemon's `codex` is; Codex tier 5 is off without it.
     pub codex: Arc<crate::push::CodexPush>,
+    /// Working records (spec §10 "Working"), in memory.
+    pub working: Arc<clax_core::working::Working>,
 }

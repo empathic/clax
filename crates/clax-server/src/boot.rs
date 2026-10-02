@@ -225,7 +225,7 @@ pub async fn assemble(
         _ => (None, Value::Null),
     };
     let artifact = without_sessions(
-        with_owner(&a, owner.as_ref()),
+        with_owner(&a, owner.as_ref(), &s.working.for_artifact(id.as_str())),
         serde_json::to_value(&versions).expect("versions serialise"),
     );
     let boot = json!({

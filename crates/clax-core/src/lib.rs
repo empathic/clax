@@ -12,6 +12,7 @@ pub mod ids;
 pub mod model;
 pub mod publish;
 pub mod store;
+pub mod working;
 pub mod wrap;
 
 pub use anchor::{Anchor, AnchorKind};

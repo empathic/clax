@@ -98,6 +98,7 @@ pub struct FeedbackCtx {
     pub browser_base: String,
     pub store: Arc<Store>,
     pub codex: Arc<crate::push::CodexPush>,
+    pub working: Arc<clax_core::working::Working>,
     /// The runtime `codex queue` runs on; dispatch may be called from blocking threads.
     pub handle: tokio::runtime::Handle,
 }
@@ -117,6 +118,7 @@ impl AppState {
             browser_base: self.browser_base.clone(),
             store: self.store.clone(),
             codex: self.codex.clone(),
+            working: self.working.clone(),
             handle: tokio::runtime::Handle::current(),
         }
     }

@@ -17,6 +17,8 @@ pub struct TestServer {
     pub client: reqwest::Client,
     /// The server's event bus, for publishing events directly.
     pub events: EventBus,
+    /// The server's working registry.
+    pub working: Arc<clax_core::working::Working>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
     pub addr: SocketAddr,
     _dir: tempfile::TempDir,
@@ -60,9 +62,13 @@ impl TestServer {
             feedback_waiters: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
+            working: Arc::new(clax_core::working::Working::new(Arc::new(
+                clax_core::working::SystemClock,
+            ))),
         };
         f(&mut state);
         let events = state.events.clone();
+        let working = state.working.clone();
         let app = build_router(state);
         tokio::spawn(async move {
             axum::serve(
@@ -78,6 +84,7 @@ impl TestServer {
             home,
             client: reqwest::Client::new(),
             events,
+            working,
             addr,
             _dir: dir,
         }
