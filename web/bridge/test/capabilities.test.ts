@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CAPABILITY_METHODS } from "../src/capabilities";
+import { ROOM_METHODS } from "../src/caps/room";
 
 /** A contract file (resolved from this file: under jsdom `import.meta.url` is
  * not a file URL) with its comments removed, so parentheses and braces in prose cannot confuse the scan. */
@@ -46,5 +47,9 @@ describe("the namespace method lists match the 0.2.61 contract", () => {
     ["db", members(contract("db"), "type DB = {")],
   ] as const)("%s", (name, expected) => {
     expect([...CAPABILITY_METHODS[name]].sort()).toEqual(expected);
+  });
+
+  it("room (its part's own list)", () => {
+    expect([...ROOM_METHODS].sort()).toEqual(functions(contract("room")));
   });
 });

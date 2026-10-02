@@ -70,6 +70,30 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(seen).toContain("comment.js?retry=1");
   });
 
+  test(`a capability loads only its own part: db the caps part, room never caps (${mode})`, async ({ page }) => {
+    const parts: string[] = [];
+    page.on("request", r => { const m = new URL(r.url()).pathname.match(/^\/_clax\/bridge\/([a-z]+)[-.][^/]*$/); if (m) parts.push(m[1]); });
+    const pageFor = (name: string) => `<!doctype html><html><head><title>${name}</title></head><body><button id="use">Use</button><p id="out">waiting</p>
+<script>document.getElementById("use").onclick = async () => { const c = await claude.use(${JSON.stringify(name)}); document.getElementById("out").textContent = c ? "ready" : "null"; };</script></body></html>`;
+
+    const db = await publishWith(d.base, d.token, "Db part", pageFor("db"), { db: {} });
+    let frame = await openArtifact(page, d.base, db.artifact.id, 1, mode);
+    await frame.locator("#use").click();
+    await expect(frame.locator("#out")).toHaveText("ready");
+    expect(parts).toContain("caps");
+    expect(parts).not.toContain("room");
+
+    parts.length = 0;
+    const room = await publishWith(d.base, d.token, "Room part", pageFor("room"), { room: {} });
+    frame = await openArtifact(page, d.base, room.artifact.id, 1, mode);
+    await frame.locator("#use").click();
+    // The shell does not serve room yet (availability.ts), so use() resolves
+    // null and no part loads for it; once it is served, this page loads the
+    // room part and still never caps.
+    await expect(frame.locator("#out")).toHaveText("null");
+    expect(parts).not.toContain("caps");
+  });
+
   // A smoke test only: Chromium honours an import map added after a module
   // load, so this passes with or without the bridge's wait for the parse.
   // bridge-parse-gate.test.ts guards that wait.
