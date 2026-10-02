@@ -71,7 +71,7 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D14 | Pi adapter is specified against the published extension API and clash-pi, and verified against Pi 0.73.1 in phase 2 (§13) | Pi was not installed when this was designed. |
 | D15 | The product is Clax: binary `clax`, crates `clax-*`, home `~/.clax`, variables `CLAX_*`, message prefix `clax:`, routes `/_clax/`, plugin and skill `clax`; renamed from its first name with a clean break (no aliases, no migration; see the name-history note); `clax init` and `clax uninit` do remove the harnesses' registrations of the first name's plugin and marketplace, which are harness settings, not Clax data | One name everywhere; nothing was released under the first name, so there is nothing to carry over. |
 | D16 | The plugins run the `clax` on `PATH` (or `$CLAX_BIN`) through a thin wrapper and never download or build; `just install` installs `clax` from the checkout and `clax init` registers the plugins embedded in the binary with each harness; `just dev <harness>` runs a fresh build from a temporary directory on `PATH`, on `~/.clax-dev` and port 7481, with the plugin loaded from the checkout for Claude Code and Pi (Codex runs its installed plugin; `just install` updates it); releases and `install.sh` serve people without a checkout | Local use never depends on a public repository or a release; a registered plugin always matches the installed binary; a moved checkout breaks nothing. |
-| D-Echo | Decided by the owner on 2026-10-01 (`.superpowers/sdd/2026-09-30-redesign/open-questions.md`, every recommended answer accepted): gallery cards without thumbnails (Q1); the theme switch's return to the system (Q2); @mention matching (Q3); what counts as looking, and the Addressed group holding still until the view is decided again (Q4); presence built now, with location from the selected thread (Q5); keys only while focus is in the shell (Q6); others' last seen version public, their per-thread marks private (Q7); agents named by harness, no "publishing" state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the returning-viewer summary in the top bar (Q11); the version bands moved into the top bar (Q12). | Settled before the Echo build so no task waits on a design question. |
+| D-Echo | The shell's look is Echo, and the agent working signal, the version changelog and batch send are built in it, as recorded in `2026-10-01-echo-design.md`: comment threads with version-tagged history and no turns; gallery cards without thumbnails (Q1); a theme switch that returns to the system (Q2); @mentions by whole display name (Q3); looking at a thread clears it, while the Addressed group holds still until the view is decided again (Q4); presence kept in memory, with the location from the selected thread (Q5); keys only while focus is in the shell (Q6); each person's last viewed version public, their per-thread marks private (Q7); agents named by harness, with no publishing state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the returning viewer's summary in the top bar (Q11); the version bands moved into the top bar (Q12); a send reaching only the agent it names (§10). | The artifact stays the star: nothing covers or moves it, people and agents keep fixed colours and places, and every screen shows the threads from the viewer's own point of view. |
 
 ## 3. Architecture
 
@@ -109,9 +109,9 @@ Components:
 - **Hooks** (`clax hook --agent <x> <event>`). Short-lived processes the
   harness runs at lifecycle points. They read the harness's JSON on stdin,
   call the daemon, and print the harness's expected JSON.
-- **Shell UI**. The page at `/a/<id>`: header, version picker, comment mode
-  toggle, thread sidebar, and an iframe holding the content. Also the
-  gallery at `/`.
+- **Shell UI**. The page at `/a/<id>`: top bar, version menu, comment mode
+  toggle, thread sidebar, people panel, and an iframe holding the content.
+  Also the gallery at `/`.
 - **Content + bridge**. The published HTML wrapped in the document skeleton
   with `/_clax/bridge.js` prepended. The bridge implements
   `window.claude.use`, comment-mode hit testing and highlighting, anchor
@@ -208,8 +208,11 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   shell, which never sees a session ID.
 - `watches(session_id, artifact_id, replies_armed, created_at)`
 - `threads(id, artifact_id, version_n, anchor_json, status, sent_to_agent,
-  has_clip, created_at, resolved_at, resolved_by)`; `has_clip` records
-  whether `clips/<thread_id>.png` was stored. `resolved_by` is
+  target_session_id, has_clip, created_at, resolved_at, resolved_by)`;
+  `has_clip` records whether `clips/<thread_id>.png` was stored.
+  `target_session_id` is the session the thread was last sent to with `to`
+  (null when it was last sent without one; §10 "Data flow"); it is stored and
+  never served. `resolved_by` is
   `viewer:<public_id>`, `viewer:anonymous` (no cookie), or
   `agent:<harness>`; it never holds a viewer cookie or a session ID, since
   thread views and events are unauthenticated.
@@ -252,13 +255,16 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   is `working`, `explicit` or `resolve`. Deleting a thread deletes its links.
   Linking never changes a thread's status.
 - `viewer_seen(viewer_id, artifact_id, seen_n, updated_at)`: the latest
-  version this viewer (the `clax_viewer` cookie's row) has viewed unpinned.
+  version this viewer (the `clax_viewer` cookie's row) has viewed at the
+  artifact's latest URL (`/a/<aid>`, not a `/v/<n>` URL).
   It only moves forward; at most 200 rows per viewer (the least recently
   updated are pruned on write); deleting an artifact deletes its rows.
 - `send_batches(id, artifact_id, note, sent_by, size, created_at)` and
   `batch_threads(batch_id, thread_id)`: batch sends to the agent (§10,
   "Batch send"); `sent_by` is the sender's display name as a comment author
-  gets it, never a cookie. Deleting a thread or its artifact deletes its rows.
+  gets it, never a cookie. Deleting a thread deletes its `batch_threads`
+  rows (the batch keeps its `size` as sent); deleting the artifact deletes
+  its batches and their `batch_threads` rows.
 - `viewer_threads(viewer_id, thread_id, looked_at)`: when this viewer last
   looked at the thread (§10, "Participants and attention"). Served only to
   that viewer. Deleting a thread deletes its rows.
@@ -379,8 +385,9 @@ Agent- and shell-facing JSON API under `/api`:
   `author_kind=agent`, and `X-Clax-Session` naming a live session), `POST
   .../threads/<tid>/send` (no token; sets `sent_to_agent`, creates feedback
   rows). `POST .../threads:send` (no token; foreign `Origin` refused, as the
-  single send) takes `{thread_ids, note?, to?}` and sends 1 to 20 threads as
-  one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`,
+  single send) takes `{thread_ids, note?, to?}` (`note` at most 280
+  characters after whitespace is collapsed, else `note_too_long`) and sends 1
+  to 20 threads as one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`,
   or 400 `invalid_args` / `note_too_long` / `unknown_agent` /
   `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes
   nothing on any error. Thread views carry `sends`, the batches that sent
@@ -426,7 +433,9 @@ Agent- and shell-facing JSON API under `/api`:
   cookie is 400 `no_viewer`).
 - Participants and attention (§10, "Participants and attention"): `GET
   /api/artifacts/<aid>` and the bootstrap block carry `participants`
-  (`{people: [{public_id, display_name}], agents: [{handle, harness, live}]}`)
+  (`{people: [{public_id, display_name, seen}], agents: [{handle, harness,
+  live}]}`; `seen` is the latest version that person has viewed, public by
+  design, §10)
   and, when the request's viewer cookie names a viewer, `attention`
   (`{addressed, addressed_v, new_replies, open_in, seen, looked}`); `GET /api/artifacts`
   carries `participants` per artifact. `GET /api/viewers/me/attention`
@@ -551,8 +560,11 @@ else** follows, pinned first, then by the latest version or reply. Each card
 leads with its version numeral, then the title, the publishing agent and
 time, markers (`N addressed in vK`, `vK new`, `N new replies`, `<agent>
 working on N`, `N open`), and a footer with the roster (people on the left,
-agents on the right, at most 3 a side) and `seen vK`. Search, open, pin and
-delete as before. The footer holds one haiku, a new one each visit.
+agents on the right, at most 3 a side) and `seen vK` (the last version this
+viewer viewed). Search filters by title and description; each card opens the
+artifact and can be pinned or deleted. An artifact at v10 shows a muted
+`rally of 10` chip. The footer holds one haiku, a new one each visit. There
+are no thumbnails.
 
 Artifact shell (`/a/<aid>`, `/a/<aid>/v/<n>`, either followed by
 `/<path>` of a published page; after `/a/<aid>`, `v` followed by an
@@ -577,9 +589,10 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `replaceState`. The version picker, the Reload button, and copy link keep
   the current page. `url` in tool results stays `/a/<aid>`.
 
-- Top bar: the Echo mark (a link to the gallery), the title over the
+- Top bar: the Echo mark (a plain link to the gallery), the title over the
   "published by" line, the roster and its two-line summary (who is working
-  on what; what is new for you; opens the people panel), Comment (red-orange
+  on what; what is new for you; opens the people panel; at an artifact's
+  tenth version it reads `rally of 10` once per browser), Comment (red-orange
   when on, with a 3px red-orange rule under the bar, and the C keycap),
   Threads with the open count, the version button (`v5 of 5`, a green dot
   while a version newer than this viewer's last view exists) opening the
@@ -591,9 +604,13 @@ file under `v/<digits>/` is reachable only through the versioned form):
   this viewer did about them, and its note; each a link to that version
   (older versions read-only). A full sheet at phone width.
 - People panel (P, or the roster): one row per person (threads they are in,
-  presence and location, the last version they viewed) and per agent (the
-  threads it is working on and whose, elapsed time with a haiku, or idle),
-  and the viewer's own name, edited here.
+  presence and location, and the last version they viewed, which is public:
+  `participants.people[].seen`) and per agent (the threads it is working on
+  and whose, elapsed time with a haiku, or idle), and the viewer's own name,
+  edited here, with a "Share where I'm looking" switch (on by default,
+  stored per browser) that stops reporting `where`. An agent is named by its
+  harness (`claude`); when two agents on the artifact share a harness, each
+  name gains the first four hex digits of its handle (`claude 7f3a`).
 - Keys: `?` opens a sheet listing them; C comment mode; Esc leaves it or
   closes a menu; T threads; J and K next and previous thread; Enter reply;
   S send; R resolve; X tick; Shift+S send the ticked threads; V versions;
@@ -626,16 +643,21 @@ file under `v/<digits>/` is reachable only through the versioned form):
   group fills.
 - Thread sidebar: groups **Addressed in vN** (open threads this viewer is
   in that the newest version addressed and they had not looked at when the
-  view was decided), **Open**, **Detached** (anchor not found on its own page
-  in this version) and **Resolved**. A card shows the anchor summary, an
+  view was decided; the view is decided when it loads and again when a new
+  version arrives, so looking at a thread marks it at once but leaves it in
+  the group until then), **Open** (also the threads earlier versions
+  addressed, their history line naming the version, and outdated threads,
+  with their tag), **Detached** (anchor not found on its own page in this
+  version) and **Resolved**. A card shows the anchor summary, an
   `outdated` tag when its element changed in a later version but still
   exists (resolved by selector or quote while its `html_hash` differs), the
   clip, the messages (people's with a red-orange rule on the left, an
   agent's with a green rule on the right, `<agent> · addressed in vN` when
   linked), one line of version-tagged history (`v3 alex commented · v4 Mia
   replied · claude worked on it · v5 claude addressed it · alex resolved`),
-  and Reply, Resolve and `Send to <agent> ▾`. Anyone may resolve; the
-  history records who. Clicking a thread scrolls the frame to its anchor and
+  and Reply, Resolve and `Send to <agent> ▾`. Any viewer may resolve a
+  thread, and an agent may resolve a thread sent to it; the history records
+  who. Clicking a thread scrolls the frame to its anchor and
   flashes it (a static outline under reduced motion); a thread on another
   page is labelled "on <file>" and clicking it navigates there first. Pins
   show only for the page in the frame: red-orange; split red-orange and
@@ -643,17 +665,20 @@ file under `v/<digits>/` is reachable only through the versioned form):
   `vN` flag when addressed and not looked at; a green ring when selected;
   dashed while being written. Open thread cards carry a checkbox
   (Shift-click ticks a range; X ticks the selected thread). While any is
-  ticked, a hand-off bar at the sidebar's foot reads `N selected · handed
-  off together`, with Clear, `Send N to <agent> ▾` and an optional one-line
-  note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to
+  ticked, a selection bar at the top of the sidebar reads `N selected · sent
+  together`, with Clear, `Send N to <agent> ▾` and an optional one-line note
+  (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to
   <agent>` button sits at the sidebar top whenever open threads have not
   been sent. A sent thread's history shows the send and its note. A thread
   that disappears leaves the selection.
 - Working: while an agent works on the artifact, the top bar's summary reads
-  `claude working on N` (or its message), the roster's agent token is solid
-  green with a breathing dot, a 2px green sweep runs under the bar, each
-  named thread shows `claude is working on it` with the elapsed time, and the
-  sidebar starts with a strip naming the threads and a haiku. The summary is
+  `<agent> working on N` (`claude, codex working on 5` for several;
+  `<agent>: <message>` when the record has a message; `<agent> working` when
+  it names no threads), the roster's agent token is solid green with a
+  breathing dot, a 2px green sweep runs under the bar, each named thread
+  shows `<agent> is working on it` with the elapsed time, and the sidebar
+  starts with a strip naming the threads and a haiku. `<agent>` is the
+  agent's name (its harness, as in the people panel). The summary is
   a polite live region that changes only when the records change.
 - Comment mode: works on every HTML page of the version (each is served
   with the bridge, which greets the shell with its `file`). Over an element
@@ -821,8 +846,10 @@ Plex Mono sets everything people and agents write. Red-orange is people,
 green is agents, brown is ink, pink is an accent only. Haiku appear in the
 gallery footer and under an agent's working line, never in comment mode,
 never animated. Buttons are plain verbs; playful words appear only in status
-lines, hints and empty states. The mark's halves meet when it is clicked; a
-"rally of 10" chip marks an artifact's tenth version.
+lines, hints and empty states. Clicking the gallery's mark makes its halves
+meet, and clicking again parts them; in the artifact view the mark is a
+plain link. "Rally of 10" marks an artifact's tenth version only. The design
+and its decisions are recorded in `2026-10-01-echo-design.md`.
 
 The shell is Svelte 5 (runes mode, no SvelteKit, no SSR) + TypeScript with
 CSS tokens on `:root`, dark mode via `prefers-color-scheme`, phone width
@@ -1052,9 +1079,12 @@ files kept in `web/contract/`:
   `0.2.61/` files stay claude.ai's, unchanged): `working()` resolves
   `{working, agents: [{harness, label, message, since, threads,
   otherThreads}]}`, and `onWorking(fn)` calls `fn` with that state now and
-  on every change and resolves an unsubscribe function. `threads` holds the
-  handles of the threads this document created that the agent names, and
-  `otherThreads` counts the rest. Both are available under either
+  on every change and resolves an unsubscribe function. `harness` is
+  `claude`, `codex` or `pi`; `label` is its product name as people read it
+  (`Claude Code`, `Codex`, `Pi`); `message` is the record's message or null;
+  `since` is when the record started. `threads` holds the handles of the
+  threads this document created that the agent names, and `otherThreads`
+  counts the rest. Both are available under either
   declaration form (for `composer_only`, a Clax extension to that form,
   which otherwise grants only `openComposer` and `anchorFor`), need no
   consent or gesture, and never carry a store ID, session ID or record key.
@@ -1202,11 +1232,22 @@ which still lets the viewer post, as for other clips.
    comes back on for the next pick. Everyone with the shell open sees the
    pin via SSE.
 2. Viewer presses **Send to <agent>** on the thread (or writes `@agent` in a
-   comment). The daemon sets `sent_to_agent`, then creates one `feedback`
-   row per target session: the artifact's owner session and every session
-   with a watch on the artifact, if that session has not ended. If no live
-   session exists, the feedback is stored with no target and is delivered to
-   the next session that publishes a version of, or watches, that artifact.
+   comment). The daemon sets `sent_to_agent`, then creates `feedback` rows
+   for the thread's viewer comments that have none yet:
+   - With `to` (an agent handle naming a live owner or watcher of the
+     artifact; the shell sends one whenever such an agent exists, see
+     "Participants and attention"), one row per comment for that agent's
+     session only, which becomes the thread's target
+     (`threads.target_session_id`).
+   - Without `to` (no live agent, `@agent` on a thread never sent, the
+     page's `sendToClaude`), one row per comment for each live session among
+     the artifact's owner session and every session with a watch on it, and
+     the thread has no target. If no live session exists, the feedback is
+     stored with no target and is delivered to the next session that
+     publishes a version of, or watches, that artifact.
+   - A later viewer comment on a sent thread (any comment, `@agent` or not)
+     goes where the thread was last sent: to its target while that session
+     is live; once it has ended, as a send without `to`.
 3. Delivery happens by the tiers below. A feedback row is marked delivered
    once, by whichever tier delivers it first.
 4. The agent calls `comments_reply` and `comments_resolve`. Replies appear
@@ -1346,8 +1387,11 @@ of its undelivered feedback rows is untargeted, or deleted when another live
 session already targets the same comment; untargeted rows go to the next
 session that publishes a version of or watches the artifact.
 `replies_armed` mirrors claude.ai's auto-reply arming and gates tier 2 and
-tier 5; tiers 1, 3 and 4 work for every target session (the artifact's owner
-session, watching or not, and every watcher).
+tier 5; tiers 1, 3 and 4 work for every target session. A watch makes a
+session a possible target, not a recipient of every comment: a send with
+`to` reaches only the named agent, and the owner and every watcher receive a
+comment only when it is sent without `to`, or when the agent its thread was
+sent to has ended (Data flow, step 2).
 
 ### Working
 
@@ -1368,6 +1412,9 @@ showing it at once, and a sweep every 5 s removes it and sends `working`.
   Pi's `tool_call`), by the `working` tool, and by the session's agent replies
   and resolves. The shim's session heartbeat, `wait` and `inject` polls and
   `codex queue` never renew.
+- Narrowed by the session's agent reply or resolve on a thread the record
+  names: that thread leaves the record. A record left with no threads, after
+  having named some, is cleared.
 - Cleared by: the session's agent reply or resolve on the last thread a
   record names; a publish of the artifact by the session; `done: true`; the
   turn ending (the Stop hook allowing the stop, Pi's `agent_end`); the
@@ -1383,7 +1430,10 @@ Each version may carry a `note` and a set of threads it addressed. A
 publish by a session links the threads of that session's working record on
 the artifact (then clears the record); `addresses` names more; an agent
 resolve links the thread to the current version when it has no link yet.
-Linking never resolves: a person does, from the Addressed group.
+Linking never resolves a thread; resolving stays a separate act (a viewer
+from any card, or an agent with `comments_resolve`). `addresses` may name
+resolved threads; a thread that is not the artifact's is 400
+`unknown_thread`.
 
 ### Batch send
 
@@ -1393,33 +1443,52 @@ the batch; one fan-out follows, so every tier hands the batch over together.
 The payload leads the batch's comments with `[clax] N comments on "<title>",
 sent together by <name>.` and ` Note: "<note>"` when there is one. Each
 thread keeps its own rows, sent state, working marker and changelog link.
+A batch holds 1 to 20 threads, its note at most 280 characters, and goes to
+one target as a single send does (`to`, or the owner and watchers without
+it).
 
 ### Participants and attention
 
 A viewer is in a thread when they wrote a comment in it (`author_public_id`),
-a comment in it @mentions them (`@` and their display name, any case, at a
-word boundary; `@agent` names no viewer), or they resolved it. For each
+a comment in it @mentions them (`@` and their whole display name, any case,
+not preceded by a letter or digit and followed by the end, whitespace or
+punctuation, so a two-word name needs both words: `@Mia Kovač`; `@agent`
+names no viewer), or they resolved it. For each
 artifact the daemon computes, per viewer: `addressed` (open threads they are
 in linked to a version after they last looked at the thread), `new_replies`
 (threads they are in with someone else's comment newer than their last
 look), `open_in`, and `seen` (`viewer_seen`). Looking at a thread is its card
 being at least half visible for a second, or selecting it; it writes
-`viewer_threads`. Viewing a version unpinned writes `viewer_seen`. Resolving
-is never needed to clear anything.
+`viewer_threads`. Viewing the latest version at the artifact's latest URL
+(`/a/<aid>`) writes `viewer_seen`; a `/v/<n>` view writes nothing. Resolving
+is never needed to clear anything. `seen` is public: `participants.people`
+carries each person's, for the people panel. Looked-at marks and attention
+stay private to their viewer.
 
-The agents on an artifact are its live owner session, the live sessions
-watching it, and the sessions that published its versions, named by
-`agent_handle`. Send, single or batch, takes an optional `to` (an agent
-handle): only that agent's session gets rows. Without `to`, rows go to the
-owner and the watchers, as before. The shell defaults `to` to the agent this
-viewer last sent to on the artifact, else the latest publisher's agent.
+The agents on an artifact are its owner session, the sessions watching it,
+and the sessions that published its versions, at most 10, each identified by
+`agent_handle` and named in the shell by its harness. An agent is `live` when
+its session is live and is the owner or a watcher, so a send can reach it.
+They are listed live first, then most recently active first: the newest of
+its versions of the artifact, its comments on the artifact's threads, and
+its watch, else its registration.
+
+Send, single or batch, takes an optional `to` (an agent handle); a `to` that
+names no live agent of the artifact is 400 `unknown_agent`, and nothing is
+written. The shell picks `to` for every send: the agent this viewer last
+sent to on the artifact (remembered per browser) if it is live, else the
+first live agent in the list above (the most recently active live owner or
+watcher). With no live agent the shell sends without `to`, and the comments
+wait untargeted for the next session that publishes or watches (Data flow,
+step 2).
 
 ### Presence
 
 A viewer with the artifact open reports `here` (tab visible) or `away`
 (hidden, or 5 minutes without input) every 30 s, and optionally `where` (the
 anchor label of the thread they have selected or are writing on, at most 80
-characters; a per-person switch stops it). The daemon keeps reports in
+characters; the people panel's "Share where I'm looking" switch, on by
+default and stored per browser, stops it). The daemon keeps reports in
 memory; one lapses 90 s after the last, shows as "last here" for 10 minutes,
 then goes. Changes go out as `presence`.
 
@@ -1728,7 +1797,9 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   carry a session ID, working directory or PID. Messages and version notes
   are agent text, rendered by the shell as text only.
 - Participants carry viewers' public IDs and display names (already public
-  through comments) and agents' handles and harnesses. Attention and
+  through comments), each person's last viewed version (`seen`, public by
+  design so the people panel can show it), and agents' handles and
+  harnesses. Attention and
   looked-at marks are served only to the viewer whose cookie the request
   carries. Presence carries public IDs, display names, here or away, and the
   optional location the person chose to share.
