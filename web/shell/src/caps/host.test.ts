@@ -126,4 +126,28 @@ describe("CapabilityHost", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("asks the daemon about sample only when the page names it, and offers it only to the owner's browser", async () => {
+    const status = { available: true, provider: "stub", limits: { maxPromptBytes: 65536 }, calls_today: 4, daily_call_cap: null };
+    const sampleStatus = vi.fn(async () => status);
+    const counts: number[] = [];
+    const { e, posted } = env({ declared: { db: {}, sample: {} }, sampleStatus, onSampleCalls: n => { counts.push(n); } });
+    const host = new CapabilityHost(Promise.resolve(e), REGISTRY, null);
+    await host.handle({ type: "clax:use", id: "u1", name: "db" });
+    expect(sampleStatus).not.toHaveBeenCalled();
+    await host.handle({ type: "clax:use", id: "u2", name: "sample" });
+    await host.handle({ type: "clax:use", id: "u3", name: "sample" });
+    expect(sampleStatus).toHaveBeenCalledTimes(1);
+    expect(posted.map(m => (m as { granted: boolean }).granted)).toEqual([true, true, true]);
+    expect(counts).toEqual([4]);
+
+    const lan = env({ declared: { sample: {} }, token: null, sampleStatus });
+    await new CapabilityHost(Promise.resolve(lan.e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "sample" });
+    expect(lan.posted[0]).toMatchObject({ granted: false });
+    expect(sampleStatus).toHaveBeenCalledTimes(1);
+
+    const off = env({ declared: { sample: {} }, sampleStatus: async () => ({ ...status, available: false }) });
+    await new CapabilityHost(Promise.resolve(off.e), REGISTRY, null).handle({ type: "clax:use", id: "u", name: "sample" });
+    expect(off.posted[0]).toMatchObject({ granted: false });
+  });
 });

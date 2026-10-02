@@ -116,6 +116,13 @@ const CASES: Record<string, Case> = {
       await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
     },
   },
+  "sample.html": {
+    caps: { sample: {} },
+    async check(f) {
+      await expect(f.locator("#status")).toHaveText("unavailable");
+      await expect(f.locator("#ask")).toBeHidden();
+    },
+  },
   "room.html": {
     caps: { room: { topics: { reaction: "interact" } } },
     async check(f) {
