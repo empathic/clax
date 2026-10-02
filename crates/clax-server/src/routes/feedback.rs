@@ -119,6 +119,10 @@ pub async fn poll(
             .store_call(move |st| {
                 let (items, touched) = st.take_feedback(&t, &ctx.browser_base)?;
                 apply(&ctx, st, &touched);
+                crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
+                if t.tier != Tier::Queue {
+                    crate::working::mark_items(&ctx, st, &t.session_id, &items)?;
+                }
                 Ok(items)
             })
             .await?;

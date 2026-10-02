@@ -22,6 +22,10 @@ const STOP_DEADLINE: Duration = Duration::from_secs(8);
 const PROMPT_DEADLINE: Duration = Duration::from_secs(4);
 /// Each daemon request of the Stop and prompt hooks is abandoned after this long.
 const FEEDBACK_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+/// The whole `tool` (PostToolUse) invocation is abandoned after this long.
+const TOOL_DEADLINE: Duration = Duration::from_secs(2);
+/// Each `tool` daemon request is abandoned after this long.
+const TOOL_REQUEST_TIMEOUT: Duration = Duration::from_secs(1);
 /// How many ancestors above the hook's parent are reported for session joining.
 const MAX_ANCESTORS: usize = 6;
 
@@ -65,6 +69,7 @@ impl Event {
             Event::SessionEnd => (END_DEADLINE, END_REQUEST_TIMEOUT),
             Event::Stop => (STOP_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
             Event::Prompt => (PROMPT_DEADLINE, FEEDBACK_REQUEST_TIMEOUT),
+            Event::Tool => (TOOL_DEADLINE, TOOL_REQUEST_TIMEOUT),
         }
     }
 }
@@ -77,6 +82,7 @@ impl Event {
             Event::SessionEnd => "session-end",
             Event::Stop => "stop",
             Event::Prompt => "prompt",
+            Event::Tool => "tool",
         }
     }
 }
@@ -100,6 +106,8 @@ pub enum Event {
     Stop,
     /// The person submitted a prompt; add pending feedback as context.
     Prompt,
+    /// A tool call finished; renew the session's working records.
+    Tool,
 }
 
 #[derive(clap::Args)]
@@ -205,8 +213,24 @@ fn handle(agent: Agent, event: Event, parent_pid: u32, home: &Home) -> anyhow::R
             codex_home.as_deref(),
             &client,
         ),
-        Event::SessionEnd => events::session_end(agent.harness(), &input, &client),
+        Event::SessionEnd => {
+            let out = events::session_end(agent.harness(), &input, &client);
+            if let Some(sid) = input.session_id.as_deref().filter(|s| {
+                !s.is_empty()
+                    && s.chars()
+                        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+            }) {
+                // The PostToolUse gate's stamp (scripts/tool-hook.sh).
+                let _ = std::fs::remove_file(
+                    home.root()
+                        .join("run/tool-hook")
+                        .join(format!("{}-{sid}", agent.harness())),
+                );
+            }
+            out
+        }
         Event::Stop => events::stop(agent.harness(), &input, &client),
         Event::Prompt => events::prompt(agent.harness(), &input, &client),
+        Event::Tool => events::tool(agent.harness(), &input, &client),
     }
 }

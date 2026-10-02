@@ -1,4 +1,4 @@
-// Finding, and when needed starting, the Clax daemon for an Clax home.
+// Finding, and when needed starting, the Clax daemon for a Clax home.
 import { execFile } from "node:child_process";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isIP, isIPv6 } from "node:net";

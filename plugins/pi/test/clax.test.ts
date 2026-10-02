@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, textPrefix } from "../src/clax.ts";
+import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, textPrefix } from "../src/clax.ts";
+import { DaemonClient } from "../src/client.ts";
 import { binaryVersion, discover, endpointOf, ensure, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
@@ -97,7 +98,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-two tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-three tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -404,6 +405,7 @@ describe("clax Pi extension", () => {
       clax_db_delete: [{ url_or_id: id, collection: "tasks", doc_id: "t1", if_version: 1 }],
       clax_db_str_replace: [{ url_or_id: id, collection: "tasks", doc_id: "t1", field: "html", old_str: "a", new_str: "b", replace_all: true, if_version: 1 }],
       clax_db_batch: [{ url_or_id: id, writes: [{ op: "set", collection: "tasks", doc_id: "t1", data: {} }, { op: "delete", collection: "tasks", doc_id: "t2", if_version: 1 }] }],
+      clax_working: [{ url_or_id: id }, { url_or_id: id, thread_ids: ["t1"], message: "m", done: true }],
     };
     const invalid: Record<string, Record<string, unknown>[]> = {
       clax_publish: [{ html: "x", bogus: 1 }, { html: "x", files: { "a.css": { content: "x", nope: 1 } } }, { html: "x", files: { "a.css": { content: "x", encoding: "hex" } } }],
@@ -420,6 +422,7 @@ describe("clax Pi extension", () => {
       clax_comments_resolve: [{ url_or_id: id }],
       clax_watch: [{ url_or_id: id, on: "yes" }],
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
+      clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
       clax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
       clax_db_set: [{ url_or_id: id, collection: "tasks", doc_id: "t1", data: { n: 1 }, if_version: 0 }, { url_or_id: id, collection: "tasks", doc_id: "t1", bogus: 1 }],
@@ -791,6 +794,47 @@ describe("comments", () => {
       };
       compare(ours, theirs, name);
     }
+  });
+
+  it("clax_working marks the artifact and done clears it, as the MCP tool does", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-working");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "W" }, ctx)).content[0].text!);
+    const set = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, message: "Two columns" }, ctx);
+    expect(set.isError).toBe(false);
+    expect(JSON.parse(set.content[0].text!)).toMatchObject({ working: true, message: "Two columns", expires_in_s: 120, message_truncated: false });
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    expect(seen.working[0]).toMatchObject({ harness: "pi", message: "Two columns" });
+    expect(JSON.stringify(seen)).not.toContain("session_id");
+    const done = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, done: true }, ctx);
+    expect(JSON.parse(done.content[0].text!)).toMatchObject({ working: false, cleared: true });
+    const bad = await pi.callTool("clax_working", { url_or_id: pub.artifact_id, thread_ids: ["x"] }, ctx);
+    expect(bad.isError).toBe(true);
+    expect(JSON.parse(bad.content[0].text!).error.code).toBe("invalid_args");
+  });
+
+  it("tool calls renew working records at most every 15 s, and agent_end ends them", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-renew");
+    await pi.emit("session_start", { type: "session_start", reason: "startup" }, ctx);
+    const pub = JSON.parse((await pi.callTool("clax_publish", { html: "<p>r</p>", title: "R" }, ctx)).content[0].text!);
+    await pi.callTool("clax_working", { url_or_id: pub.artifact_id, message: "m" }, ctx);
+    const renews: number[] = [];
+    const spy = vi.spyOn(DaemonClient.prototype, "renewWorking").mockImplementation(async function (this: DaemonClient) { renews.push(Date.now()); return { renewed: 1 }; });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await pi.emit("tool_call", { type: "tool_call", toolName: "bash", toolCallId: "1", input: {} }, ctx);
+      await pi.emit("tool_call", { type: "tool_call", toolName: "edit", toolCallId: "2", input: {} }, ctx);
+      expect(renews.length).toBe(1);
+      vi.setSystemTime(Date.now() + RENEW_EVERY_MS);
+      await pi.emit("tool_call", { type: "tool_call", toolName: "read", toolCallId: "3", input: {} }, ctx);
+      expect(renews.length).toBe(2);
+    } finally {
+      vi.useRealTimers();
+      spy.mockRestore();
+    }
+    await pi.emit("agent_end", { type: "agent_end", messages: [] }, ctx);
+    const seen = await (await fetch(`${daemon.base}/api/artifacts/${pub.artifact_id}/working`)).json();
+    expect(seen.working).toEqual([]);
   });
 });
 

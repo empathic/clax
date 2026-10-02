@@ -1,4 +1,4 @@
-//! The Clax MCP tool set: twenty-two tools that call the daemon's REST API.
+//! The Clax MCP tool set: twenty-three tools that call the daemon's REST API.
 
 use crate::client::{ClientError, DaemonClient};
 use crate::render;
@@ -206,6 +206,19 @@ pub struct WaitArgs {
     pub url_or_id: Option<String>,
     /// Seconds to wait, from 1 to 600 (default 50).
     pub timeout_s: Option<u64>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct WorkingArgs {
+    /// Artifact URL or ID.
+    pub url_or_id: String,
+    /// Threads of the artifact you are acting on (at most 20); replaces the ones named before.
+    pub thread_ids: Option<Vec<String>>,
+    /// What you are doing, in a few words (at most 140 characters).
+    pub message: Option<String>,
+    /// Clear it now (with `thread_ids`, only those threads).
+    pub done: Option<bool>,
 }
 
 /// An access level `as_level` narrows to.
@@ -1226,6 +1239,53 @@ impl ClaxTools {
         }
     }
 
+    async fn do_working(&self, a: WorkingArgs) -> Outcome {
+        let id = artifact_id(&a.url_or_id)?;
+        if let Some(t) = &a.thread_ids {
+            if t.len() > clax_core::working::MAX_WORKING_THREADS {
+                return Err(invalid("at most 20 thread_ids"));
+            }
+            for tid in t {
+                check_thread_id(tid)?;
+            }
+        }
+        self.require_session().await?;
+        if a.done.unwrap_or(false) {
+            let r = self
+                .client
+                .clear_working(&id, a.thread_ids.as_deref())
+                .await
+                .map_err(|e| self.fail(e))?;
+            let still = !r["working"].is_null();
+            return Ok(
+                json!({"artifact_id": id, "url": self.artifact_url(&id), "working": still, "cleared": r["cleared"]}),
+            );
+        }
+        let mut body = json!({});
+        if let Some(t) = &a.thread_ids {
+            body["thread_ids"] = json!(t);
+        }
+        if let Some(m) = &a.message {
+            body["message"] = json!(m);
+        }
+        let r = self
+            .client
+            .set_working(&id, &body)
+            .await
+            .map_err(|e| self.fail(e))?;
+        let w = &r["working"];
+        Ok(json!({
+            "artifact_id": id,
+            "url": self.artifact_url(&id),
+            "working": true,
+            "message": w["message"],
+            "thread_ids": w["thread_ids"],
+            "started_at": w["started_at"],
+            "expires_in_s": clax_core::working::WORKING_TTL_SECS,
+            "message_truncated": r["message_truncated"],
+        }))
+    }
+
     /// `data` or the JSON object in `file_path`: exactly one of them.
     fn db_body(
         &self,
@@ -1609,6 +1669,16 @@ impl ClaxTools {
         Parameters(args): Parameters<WaitArgs>,
     ) -> Result<CallToolResult, McpError> {
         Ok(self.do_wait(args).await)
+    }
+
+    #[tool(
+        description = "Tell the person you are working on an artifact: its page's top bar shows `<harness> working on N` (or `<harness>: <message>`), its gallery card a chip, and `<harness> is working on it` on each thread in `thread_ids`. Comments sent to you mark you working automatically; call this for other work or to add a short `message` (at most 140 characters). It clears when you reply to those threads, publish the artifact, end your turn, or go 2 minutes without a tool call; `done: true` clears it now."
+    )]
+    pub async fn working(
+        &self,
+        Parameters(args): Parameters<WorkingArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        self.finish(self.do_working(args).await).await
     }
 
     #[tool(

@@ -552,3 +552,53 @@ async fn a_queue_claim_is_announced_before_codex_queue_finishes() {
         started.elapsed()
     );
 }
+
+async fn working_on(ts: &TestServer, aid: &str) -> Vec<Value> {
+    let v: Value = ts
+        .get(&format!("/api/artifacts/{aid}/working"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    v["working"].as_array().unwrap().clone()
+}
+
+#[tokio::test]
+async fn a_queue_that_exits_0_marks_the_session_working() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
+    let (_sid, aid) = codex_owner(&ts, Some("cx-w1")).await;
+    let t = ts.thread(&aid, 1, "@agent two columns").await;
+    let tid = t["id"].as_str().unwrap();
+    ran(d.path()).await;
+    for _ in 0..100 {
+        let w = working_on(&ts, &aid).await;
+        if !w.is_empty() {
+            assert_eq!(w.len(), 1, "{w:?}");
+            assert_eq!(w[0]["harness"], "codex");
+            assert_eq!(w[0]["thread_ids"], json!([tid]));
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("the queued session was never marked working");
+}
+
+#[tokio::test]
+async fn a_failed_queue_marks_nothing() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 1, 0)), Duration::from_secs(10)).await;
+    let (_sid, aid) = codex_owner(&ts, Some("cx-w2")).await;
+    let mut ev = ts.events(&format!("?artifact={aid}")).await;
+    let t = ts.thread(&aid, 1, "@agent anyone?").await;
+    let tid = t["id"].as_str().unwrap();
+    // The release is announced as the failed queue settles.
+    loop {
+        let e = ev.next_named("feedback_state").await;
+        if e["state"] == "sent" && e["tier"] == "stop_hook" {
+            assert_eq!(e["thread_id"], tid);
+            break;
+        }
+    }
+    assert!(working_on(&ts, &aid).await.is_empty());
+}

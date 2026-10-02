@@ -135,7 +135,8 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// Tier 2. Blocks the stop with the pending feedback as the reason; allows it
 /// (prints nothing) when nothing is pending. Only watches with replies armed
 /// count. While `stop_hook_active` is set, only never-delivered rows can block,
-/// so a stop is blocked at most once per new comment.
+/// so a stop is blocked at most once per new comment. When it allows the
+/// stop, it ends the session's working records (the turn is over).
 ///
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
@@ -144,12 +145,25 @@ pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Re
         return Ok(HookOutput::none());
     };
     let resends = !input.stop_hook_active.unwrap_or(false);
-    Ok(
-        match feedback_text(daemon, &sid, &format!("tier=stop_hook&resends={resends}"))? {
-            Some(text) => HookOutput::block(&text),
-            None => HookOutput::none(),
-        },
-    )
+    match feedback_text(daemon, &sid, &format!("tier=stop_hook&resends={resends}"))? {
+        Some(text) => Ok(HookOutput::block(&text)),
+        None => {
+            // The turn really ends: its working records end with it.
+            daemon.post(&format!("/api/sessions/{sid}/working/end"), &json!({}))?;
+            Ok(HookOutput::none())
+        }
+    }
+}
+
+/// `PostToolUse`: renews the session's working records. Prints nothing.
+///
+/// # Errors
+/// When the input has no `session_id` or a daemon request fails.
+pub fn tool(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    if let Some(sid) = live_session(harness, input, daemon)? {
+        daemon.post(&format!("/api/sessions/{sid}/working/renew"), &json!({}))?;
+    }
+    Ok(HookOutput::none())
 }
 
 /// Tier 3. Adds pending feedback to the prompt as additional context.
@@ -255,6 +269,7 @@ mod tests {
     struct FeedbackFake {
         text: Option<&'static str>,
         seen: RefCell<Vec<String>>,
+        posts: RefCell<Vec<String>>,
     }
     impl Daemon for FeedbackFake {
         fn browser_url(&self, path: &str) -> String {
@@ -274,7 +289,8 @@ mod tests {
         fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
             self.get(path)
         }
-        fn post(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
+        fn post(&self, path: &str, _: &Value) -> anyhow::Result<Value> {
+            self.posts.borrow_mut().push(path.to_string());
             Ok(json!({"session": {"id": "S"}}))
         }
         fn patch(&self, _: &str, _: &Value) -> anyhow::Result<Value> {
@@ -285,7 +301,48 @@ mod tests {
         FeedbackFake {
             text,
             seen: RefCell::new(vec![]),
+            posts: RefCell::new(vec![]),
         }
+    }
+
+    #[test]
+    fn stop_ends_the_turn_only_when_it_allows_the_stop() {
+        let d = fake(Some("[clax] 1 comment sent to you:\nX"));
+        stop("claude", &HookInput::parse(r#"{"session_id":"s1"}"#), &d).unwrap();
+        assert!(
+            d.posts.borrow().is_empty(),
+            "a blocked stop continues the turn"
+        );
+        let d = fake(None);
+        assert_eq!(
+            stop(
+                "claude",
+                &HookInput::parse(r#"{"session_id":"s1","stop_hook_active":true}"#),
+                &d
+            )
+            .unwrap(),
+            HookOutput::none()
+        );
+        assert_eq!(*d.posts.borrow(), ["/api/sessions/S/working/end"]);
+    }
+
+    #[test]
+    fn tool_renews_and_prints_nothing() {
+        let d = fake(None);
+        assert_eq!(
+            tool("claude", &HookInput::parse(r#"{"session_id":"s1"}"#), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert_eq!(*d.posts.borrow(), ["/api/sessions/S/working/renew"]);
+        let d = fake(None);
+        assert_eq!(
+            tool("claude", &HookInput::parse(r#"{"session_id":"other"}"#), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert!(
+            d.posts.borrow().is_empty(),
+            "no live session: nothing to renew"
+        );
     }
 
     #[test]

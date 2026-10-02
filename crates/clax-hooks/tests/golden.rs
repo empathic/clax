@@ -219,10 +219,17 @@ fn lifecycle(agent: &str, harness_session_id: &str) {
     assert_eq!(d.sessions(true)[0]["id"], first_id);
     assert_eq!(d.sessions(true).len(), 1);
 
+    let stamp = d
+        .home()
+        .join("run/tool-hook")
+        .join(format!("{agent}-{harness_session_id}"));
+    std::fs::create_dir_all(stamp.parent().unwrap()).unwrap();
+    std::fs::write(&stamp, "").unwrap();
     let end = fixture(&format!("{agent}-session-end.json"));
     let r = hook(&d.home(), agent, "session-end", &end);
     assert_eq!(r.code, Some(0));
     assert_eq!(r.stdout, "");
+    assert!(!stamp.exists(), "session-end removes the PostToolUse stamp");
     assert!(d.sessions(true).is_empty());
     let all = d.sessions(false);
     assert_eq!(all.len(), 1);
@@ -243,7 +250,7 @@ fn codex_session_lifecycle() {
 fn unusable_stdin_prints_nothing() {
     let d = Daemon::start();
     for name in ["malformed.json", "empty.json"] {
-        for event in ["session-start", "session-end", "stop", "prompt"] {
+        for event in ["session-start", "session-end", "stop", "prompt", "tool"] {
             let r = hook(&d.home(), "claude", event, &fixture(name));
             assert_eq!(r.code, Some(0), "{name} {event}");
             assert_eq!(r.stdout, "", "{name} {event}");
@@ -257,7 +264,7 @@ fn unusable_stdin_prints_nothing() {
 fn no_daemon_prints_nothing_and_starts_none() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
-    for event in ["session-start", "session-end", "stop", "prompt"] {
+    for event in ["session-start", "session-end", "stop", "prompt", "tool"] {
         let r = hook(
             &home,
             "claude",
@@ -271,10 +278,11 @@ fn no_daemon_prints_nothing_and_starts_none() {
     // out its deadline: its log line names that reason, not a timeout.
     let log = std::fs::read_to_string(home.join("logs/hooks.log")).unwrap();
     let lines: Vec<&str> = log.lines().collect();
-    assert_eq!(lines.len(), 4, "{log}");
-    for (line, event) in lines
-        .iter()
-        .zip(["session-start", "session-end", "stop", "prompt"])
+    assert_eq!(lines.len(), 5, "{log}");
+    for (line, event) in
+        lines
+            .iter()
+            .zip(["session-start", "session-end", "stop", "prompt", "tool"])
     {
         assert!(line.contains(&format!("event={event} ")), "{line}");
         assert!(
@@ -542,4 +550,65 @@ fn codex_session_start_records_codex_home() {
         v["push"]["reason"], "Codex push is off: CLAX_CODEX_BIN is set empty",
         "the harness disables push"
     );
+}
+
+impl Daemon {
+    fn working(&self, aid: &str) -> Vec<Value> {
+        let v: Value = self
+            .http()
+            .get(format!("{}/api/artifacts/{aid}/working", self.base()))
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        v["working"].as_array().unwrap().clone()
+    }
+    fn skew(&self, secs: i64) {
+        let res = self
+            .http()
+            .post(format!("{}/api/_test/working/skew", self.base()))
+            .bearer_auth(self.token())
+            .json(&serde_json::json!({"secs": secs}))
+            .send()
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+}
+
+fn working_through_a_turn(agent: &str, hsid: &str) {
+    let d = Daemon::start();
+    let (_sid, aid) = d.session_with_artifact(agent, hsid);
+    d.sent_thread(&aid, "tighten the spacing");
+    let mut stop_in: Value =
+        serde_json::from_slice(&fixture(&format!("{agent}-stop.json"))).unwrap();
+    stop_in["session_id"] = hsid.into();
+    let r = hook(&d.home(), agent, "stop", stop_in.to_string().as_bytes());
+    assert_eq!(one_line_json(&r.stdout)["decision"], "block");
+    assert_eq!(
+        d.working(&aid).len(),
+        1,
+        "the blocked stop handed the comment over and marked the session"
+    );
+    d.skew(100);
+    let mut tool_in: Value =
+        serde_json::from_slice(&fixture(&format!("{agent}-post-tool-use.json"))).unwrap();
+    tool_in["session_id"] = hsid.into();
+    let r = hook(&d.home(), agent, "tool", tool_in.to_string().as_bytes());
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    d.skew(100);
+    assert_eq!(d.working(&aid).len(), 1, "the tool hook renewed at 100 s");
+    stop_in["stop_hook_active"] = true.into();
+    let r = hook(&d.home(), agent, "stop", stop_in.to_string().as_bytes());
+    assert_eq!(r.stdout, "");
+    assert!(d.working(&aid).is_empty(), "the turn ended");
+}
+
+#[test]
+fn claude_working_through_a_turn() {
+    working_through_a_turn("claude", "cc-work-1");
+}
+
+#[test]
+fn codex_working_through_a_turn() {
+    working_through_a_turn("codex", "cx-work-1");
 }

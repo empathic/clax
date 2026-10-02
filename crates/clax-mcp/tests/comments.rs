@@ -3,7 +3,7 @@
 use clax_core::model::Session;
 use clax_mcp::tools::{
     CommentsReadArgs, CommentsReplyArgs, CommentsResolveArgs, ListArgs, PublishArgs, StatusArgs,
-    WaitArgs, WatchArgs,
+    WaitArgs, WatchArgs, WorkingArgs,
 };
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_server::testing::{FAKE_PNG, TestServer};
@@ -583,4 +583,116 @@ async fn comments_read_describes_a_drawn_area() {
     assert_eq!(a["kind"], "area");
     assert_eq!(a["area"], area);
     assert_eq!(a["summary"], "area in body > main (42% × 18%)");
+}
+
+#[tokio::test]
+async fn working_marks_the_artifact_and_done_clears_it() {
+    let ts = TestServer::spawn().await;
+    let (tools, _sid) = session_tools(&ts).await;
+    let (pub_, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<h2>Goals</h2>".into()),
+                title: Some("T".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = pub_["artifact_id"].as_str().unwrap().to_string();
+    let tid = ts.thread(&aid, 1, "@agent columns").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let (v, _) = blocks(
+        &tools
+            .working(Parameters(WorkingArgs {
+                url_or_id: aid.clone(),
+                thread_ids: Some(vec![tid.clone()]),
+                message: Some("Two columns".into()),
+                done: None,
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v["working"], true);
+    assert_eq!(v["message"], "Two columns");
+    assert_eq!(v["thread_ids"], json!([tid]));
+    assert_eq!(v["expires_in_s"], 120);
+    assert_eq!(v["message_truncated"], false);
+    let public: Value = ts
+        .get(&format!("/api/artifacts/{aid}/working"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(public["working"][0]["message"], "Two columns");
+    let (v, _) = blocks(
+        &tools
+            .working(Parameters(WorkingArgs {
+                url_or_id: aid.clone(),
+                done: Some(true),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        v,
+        json!({"artifact_id": aid, "url": v["url"], "working": false, "cleared": true, "feedback": v["feedback"]})
+    );
+}
+
+#[tokio::test]
+async fn working_refuses_bad_threads_and_the_sessionless_endpoint() {
+    let ts = TestServer::spawn().await;
+    let (tools, _) = session_tools(&ts).await;
+    let (pub_, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<p>".into()),
+                title: Some("T".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = pub_["artifact_id"].as_str().unwrap().to_string();
+    let err = |r: CallToolResult| -> String {
+        assert_eq!(r.is_error, Some(true));
+        let v: Value = serde_json::from_str(&r.content[0].as_text().unwrap().text).unwrap();
+        v["error"]["code"].as_str().unwrap().to_string()
+    };
+    let r = tools
+        .working(Parameters(WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec!["x".into()]),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    assert_eq!(err(r), "invalid_args");
+    let r = tools
+        .working(Parameters(WorkingArgs {
+            url_or_id: aid.clone(),
+            thread_ids: Some(vec![clax_core::new_ulid()]),
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    assert_eq!(err(r), "unknown_thread");
+    let sessionless = ClaxTools::new(
+        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+        ts.base.clone(),
+        None,
+        ts.home.log_path(),
+    );
+    let r = sessionless
+        .working(Parameters(WorkingArgs {
+            url_or_id: aid,
+            ..Default::default()
+        }))
+        .await
+        .unwrap();
+    assert_eq!(err(r), "no_session");
 }

@@ -39,6 +39,7 @@ run "justfile"              scripts/test-justfile.sh
 run "plugin wrapper"        scripts/test-ensure-clax.sh
 run "release scripts"       scripts/test-release.sh
 run "release installer"     scripts/test-install.sh
+run "tool hook gate"          scripts/test-tool-hook.sh
 run "dev scripts"           scripts/test-dev.sh
 run "plugins"               scripts/test-plugins.sh
 # The web UI is built before the cargo gates: a debug build serves web/dist

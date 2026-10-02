@@ -241,6 +241,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         };
         let ids: Vec<String> = items.iter().map(|i| i.feedback_id.clone()).collect();
         let message = render_items(&items);
+        let marked = items.clone();
         let (ctx, bin, sid, timeout) = (ctx.clone(), bin.clone(), sid.clone(), ctx.codex.timeout);
         ctx.handle.clone().spawn(async move {
             let outcome = run_queue(&bin, timeout, &thread, &message, codex_home.as_deref()).await;
@@ -254,6 +255,11 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                         Ok(t) => touched.merge(t),
                         Err(e) => tracing::warn!(error = %e, "releasing feedback failed"),
                     }
+                }
+                if error.is_none()
+                    && let Err(e) = crate::working::mark_items(&ctx, &store, &sid, &marked)
+                {
+                    tracing::warn!(session = %sid, error = %e, "marking a queued session working failed");
                 }
                 if let Err(e) = store.set_push_error(&sid, error.as_deref()) {
                     tracing::warn!(session = %sid, error = %e, "recording the codex queue outcome failed");
