@@ -1,4 +1,4 @@
-// The theme's topbar rules reach the artifact view's controls, which render
+// The theme's top bar rules reach the artifact view's controls, which render
 // inside the topbar's island: a selector that stops matching through the
 // island would drop their style without failing anything else.
 import { readFileSync } from "node:fs";
@@ -23,7 +23,7 @@ function rulesFor(el: Element, pseudo?: "::before"): string[] {
 
 afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.head.replaceChildren(); document.body.replaceChildren(); });
 
-it("styles the topbar controls through the island: open raw and copy link as boxless text actions inside the island, a pressed Comment in the pin colour", async () => {
+it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in red-orange, and no case transform", async () => {
   vi.resetModules();
   history.replaceState(null, "", `/a/${ID}`);
   vi.stubGlobal("EventSource", FakeES);
@@ -35,17 +35,16 @@ it("styles the topbar controls through the island: open raw and copy link as box
   document.body.append(root);
   const view = (await import("./artifact")).mountArtifactView(root, { id: ID, pinnedVersion: null });
   const deadline = Date.now() + 2000;
-  while (!root.querySelector(".topbar a.hide-sm") && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
-  const raw = root.querySelector(".topbar a.hide-sm")!;
-  const buttons = Array.from(root.querySelectorAll<HTMLButtonElement>(".topbar button"));
-  const copy = buttons.find(b => b.textContent === "copy link")!;
-  const comment = buttons.find(b => b.textContent === "Comment")!;
-  for (const el of [raw, copy]) {
-    expect(el.closest(".topbar > .island"), el.textContent!).not.toBeNull();
-    expect(rulesFor(el).some(b => /color:\s*var\(--accent-ink\)/.test(b) && /border-color:\s*transparent/.test(b)), el.textContent!).toBe(true);
-  }
+  while (!root.querySelector(".topbar button.comment") && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  const topbar = root.querySelector<HTMLElement>(".topbar")!;
+  const comment = root.querySelector<HTMLButtonElement>(".topbar button.comment")!;
+  expect(comment.closest(".topbar > .island")).not.toBeNull();
   comment.click();
-  while (comment.getAttribute("aria-pressed") !== "true" && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
-  expect(rulesFor(comment).some(b => /background:\s*var\(--pin\)/.test(b))).toBe(true);
+  while ((comment.getAttribute("aria-pressed") !== "true" || !topbar.classList.contains("commenting")) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+  expect(rulesFor(topbar).some(b => /box-shadow:\s*inset 0 -3px 0 var\(--you\)/.test(b))).toBe(true);
+  expect(rulesFor(comment).some(b => /background:\s*var\(--you\)/.test(b))).toBe(true);
+  const inIsland = Array.from(topbar.querySelectorAll(".island *"));
+  expect(inIsland.length).toBeGreaterThan(0);
+  for (const el of inIsland) expect(rulesFor(el).some(b => /text-transform/.test(b)), el.outerHTML.slice(0, 60)).toBe(false);
   view.unmount();
 });

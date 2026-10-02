@@ -19,7 +19,7 @@
   onMount(() => { void refresh(); void getToken().then(t => { token = t; }); });
 </script>
 
-<header class="topbar">
+<header class="gbar">
   <Mark playful /><h1>Clax</h1><span class="muted hide-sm">local artifacts</span>
   <input type="search" class="search" placeholder="Search artifacts" aria-label="Search artifacts" bind:value={query} />
   <ThemeSwitch />
@@ -44,7 +44,7 @@
             <div class="meta">
               <span>v{a.current_version}</span>
               <span>{relativeTime(a.updated_at)}</span>
-              {#if by}
+              {#if a.owner_harness}
                 <span class="publisher">{#if a.owner_live}<span class="live-dot" role="img" aria-label="session is live" title="Session is live"></span>{/if}{by}</span>
               {:else}
                 <span>published from the command line</span>

@@ -444,7 +444,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await fetch(`${d.base}/api/artifacts/${id}/threads`, { method: "POST", body: form })).status).toBe(201);
     const f = await openArtifact(page, d.base, id, 1, mode);
     const threads = page.getByRole("button", { name: /^Threads/ });
-    await expect(threads).toHaveText("Threads (1)");
+    await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await threads.click();
     await page.locator(".sidebar .card-head").first().click();
     await page.keyboard.press("Shift+Tab");

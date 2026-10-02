@@ -1,9 +1,12 @@
 <script lang="ts">
-  // The topbar island: the artifact view's controls (Comment, Threads, the
-  // name field on wide screens, the version, open raw, copy link and the theme
-  // switch), once the artifact is loaded and the frame mode decided.
+  // The top bar island: the artifact view's controls (an empty slot for the
+  // roster and summary, Comment, Threads, the name field on wide screens, the
+  // version, the more menu with open raw and copy link, and the theme switch),
+  // and the phone tab bar, once the artifact is loaded and the frame mode decided.
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
+  import { moreMenu } from "./more-menu.svelte";
+  import PhoneTabs from "./PhoneTabs.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import ViewerName from "./ViewerName.svelte";
 
@@ -12,24 +15,26 @@
   // svelte-ignore state_referenced_locally
   const view = fromStore(ctl.state);
   const s = $derived(view.current);
+  const MoreMenu = $derived(moreMenu.current);
 </script>
 
 {#if viewReady(s)}
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
-  <button aria-pressed={s.commenting} class={s.commenting ? "primary" : ""} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment</button>
-  <button aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads ({ctl.openCount(s)})</button>
+  <div class="who-slot"></div>
+  <button class="comment" aria-pressed={s.commenting} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>
+  <button class="threads hide-sm" aria-pressed={s.panel} onclick={() => ctl.togglePanel()}>Threads <span class="cnt">{ctl.openCount(s)}</span></button>
   {#if !s.narrow}<ViewerName setNotice={ctl.setNotice} onViewer={v => ctl.setMe(v)} />{/if}
-  <select value={shown} disabled={s.deleted} onchange={e => ctl.chooseVersion(Number(e.currentTarget.value))}>
+  <select class="version hide-sm" value={shown} disabled={s.deleted} aria-label="Version" onchange={e => ctl.chooseVersion(Number(e.currentTarget.value))}>
     {#each s.data.versions as v (v.n)}
       <option value={v.n}>v{v.n}{v.n === latest ? ` of ${latest}` : ""}{v.label ? ` · ${v.label}` : ""}</option>
     {/each}
   </select>
-  {#if s.deleted}
-    <span class="hide-sm muted">open raw</span>
+  {#if MoreMenu}
+    <MoreMenu rawHref={s.deleted ? null : ctl.rawHref(s)} canCopy={!!navigator.clipboard && !s.deleted} onCopy={() => ctl.copyLink()} />
   {:else}
-    <a class="hide-sm" href={ctl.rawHref(s)} target="_blank" rel="noopener">open raw</a>
+    <span class="more-slot hide-sm"></span>
   {/if}
-  {#if navigator.clipboard}<button class="copy-link" disabled={s.deleted} onclick={() => ctl.copyLink()}>copy link</button>{/if}
-  <ThemeSwitch />
+  <span class="hide-sm"><ThemeSwitch /></span>
+  <PhoneTabs panel={s.panel} open={ctl.openCount(s)} onPage={() => { if (s.panel) ctl.togglePanel(); }} onThreads={() => { if (!s.panel) ctl.togglePanel(); }} />
 {/if}

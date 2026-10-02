@@ -75,9 +75,9 @@ describe("Gallery", () => {
     }));
     const root = await mountGallery();
     const cards = root.querySelectorAll("a.card");
-    expect(cards[0].querySelector(".publisher")?.textContent).toContain("published by claude-code session");
+    expect(cards[0].querySelector(".publisher")?.textContent).toContain("published by claude-code");
     expect(cards[0].querySelector(".live-dot")).not.toBeNull();
-    expect(cards[1].querySelector(".publisher")?.textContent).toContain("published by claude-code session");
+    expect(cards[1].querySelector(".publisher")?.textContent).toContain("published by claude-code");
     expect(cards[1].querySelector(".live-dot")).toBeNull();
     expect(cards[2].querySelector(".publisher")).toBeNull();
     expect(cards[2].textContent).toContain("published from the command line");

@@ -7,8 +7,7 @@ export function filterArtifacts(list: Artifact[], query: string): Artifact[] {
   return list.filter(a => a.title.toLowerCase().includes(q) || (a.description ?? "").toLowerCase().includes(q));
 }
 
-/** Who published the card: a harness session, an agent session, or null for the command line. */
-export function publisherText(a: Artifact): string | null {
-  if (!a.owner_session_id) return null;
-  return `published by ${a.owner_harness ? `${a.owner_harness} session` : "an agent session"}`;
+/** Who published the artifact: its owner session's harness, else the command line. */
+export function publisherText(a: Artifact): string {
+  return a.owner_harness ? `published by ${a.owner_harness}` : "published from the command line";
 }
