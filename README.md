@@ -93,6 +93,18 @@ brings them back in step. The Pi extension runs `CLAX_BIN`, else the `clax`
 on `PATH`, the same way. `~/.clax/logs/hooks.log` has a line for every hook
 run and every MCP start.
 
+Comments wake an idle Codex or Pi session on their own. An idle Claude Code
+session wakes in one of two ways. Launched with
+`claude --dangerously-load-development-channels plugin:clax@clax` (Claude
+Code channels, a research preview: CLI only, claude.ai or Console login,
+and on Team and Enterprise an Owner must turn channels on), Clax sends it
+a notice through the channel. Otherwise the skill keeps a background
+`clax feedback follow --once` running after a publish, and its exit wakes
+the session. A notice only points at the comment. The comment itself still
+arrives once, through the next clax tool call, the end of the turn, or
+`wait_for_feedback`. `status` and `clax doctor --agent claude` show which
+path a session uses.
+
 ## Documentation
 
 [docs/contract.md](docs/contract.md) is the contract for agents and integrators: every tool's arguments, results and error codes, how sessions are identified per harness, the page contract, the security model, and what is not yet available.
