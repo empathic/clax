@@ -186,8 +186,6 @@ These tests have failed intermittently under heavy machine load and passed
 on rerun; each is parked for a fix:
 
 - `clax-mcp` `open_status`: relies on a 1.5 s wait for the fake browser opener.
-- `api_docs::an_oversized_batch_names_the_docs_batch_limit`: a connection reset
-  under load.
 - `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
   `sendToClaude` case: a 120 s timeout under load. Suspected fix (frame
   load before click) in e5dfa42; confirm under a loaded full gates run.

@@ -833,16 +833,26 @@ async fn an_oversized_batch_names_the_docs_batch_limit() {
     let ts = TestServer::spawn().await;
     let aid = artifact(&ts, json!({"db": {}})).await;
     let big = "x".repeat(15 * 1024 * 1024);
-    let (s, v) = send(
-        req(
+    let body = json!({"writes": [{"op": "set", "path": "t/1", "data": {"s": big}}]});
+    // The daemon answers 413 before reading the whole body, so the client can
+    // see the connection reset while it is still sending. Ask again until an
+    // answer arrives; each attempt still proves nothing was written.
+    let mut answer = None;
+    for _ in 0..5 {
+        let r = req(
             &ts,
             Method::POST,
             &format!("/api/artifacts/{aid}/docs:batch"),
             &Who::Token,
         )
-        .json(&json!({"writes": [{"op": "set", "path": "t/1", "data": {"s": big}}]})),
-    )
-    .await;
+        .json(&body);
+        if let Ok(res) = r.send().await {
+            let status = res.status().as_u16();
+            answer = Some((status, res.json().await.unwrap_or(Value::Null)));
+            break;
+        }
+    }
+    let (s, v) = answer.expect("five attempts all reset while sending");
     assert_eq!(
         (s, v["error"]["code"].as_str()),
         (413, Some("body_too_large"))
