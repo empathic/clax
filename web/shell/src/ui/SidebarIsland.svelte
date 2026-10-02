@@ -8,7 +8,6 @@
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { afterPaint } from "../view/after-paint";
-  import { agentName } from "../view/history-model";
   import PhoneTabs from "./PhoneTabs.svelte";
   import type SidebarT from "./Sidebar.svelte";
   import { loadSidebar, sidebarPrefetch } from "./sidebar-chunk";
@@ -41,9 +40,9 @@
     <aside class="sidebar" aria-label="Comment threads" aria-busy="true"></aside>
   {:else if s.panel && Sidebar}
     <Sidebar threads={s.threads} resolved={s.resolved} selected={s.selected} file={s.file} holds={f => ctl.holds(f, s)} me={s.me}
-      versions={s.data.versions} shown={ctl.shown(s)} agent={agentName(s.data.artifact.owner_harness)}
+      versions={s.data.versions} shown={ctl.shown(s)} agent={s.data.artifact.owner_harness || "agent"}
       working={s.working} commenting={s.commenting} agents={s.data.artifact.participants?.agents ?? []} mine={s.attention?.open_in ?? []}
-      header={s.narrow ? nameField : undefined}
+      header={s.narrow ? nameField : undefined} decided={s.decided} onSeen={t => ctl.look(t)}
       onSelect={t => ctl.selectThread(t)} onHover={t => ctl.hover(t)} onSend={t => ctl.sendThread(t)}
       onResolve={t => ctl.resolveThread(t)} onReply={(t, body) => ctl.reply(t, body)} />
   {/if}

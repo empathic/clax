@@ -6,6 +6,7 @@ import type { Anchor, Box, BridgeToShell, ShellToBridge } from "../../../bridge/
 import type { FileMeta } from "../api";
 import type { ArtifactEvent } from "../events";
 import type { Thread } from "../threads";
+import type { Working } from "../view/working-model";
 import { type Declared, declaredConfig, isAvailable } from "./availability";
 import { CapError } from "./errors";
 import { Grants, type Prompt, type PromptAnswer, grantsKey } from "./grants";
@@ -71,6 +72,8 @@ export interface CapEnv {
   page?(): string | null;
   /** The shell's comment UI, when this view has one. */
   comments?: CommentsUi;
+  /** Who is working on the artifact now (the view's latest working list). */
+  working?(): Working[];
 }
 
 export interface Handler {

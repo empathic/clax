@@ -2,7 +2,7 @@
 // on one seeded scratch daemon. Tasks append scenes as they add UI.
 import type { Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { api, postThread, publishAs, registerSession, setWorking } from "./fixtures";
+import { api, contentFrame, postThread, publishAs, publishNext, registerSession, seenOf, setWorking } from "./fixtures";
 
 export type Seeded = { base: string; token: string; aid: string; sid: string; threads: string[] };
 export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page, s: Seeded): Promise<void> };
@@ -47,6 +47,41 @@ const name = async (page: Page, who: string) => {
   await page.evaluate(n => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: n }) }), who);
 };
 
+const SEEDED = [
+  ["Is p95 measured at the edge or at the app server? Say which in the label.", "#tgt-p95"],
+  ["Mark the deploy on the chart itself.", "#tgt-chart"],
+  ["Sort by p95, worst first.", "#tgt-tbl"],
+] as const;
+
+/** An artifact at v2 that addressed every thread, for the changelog scenes.
+ * Each scene gets its own (its viewer is new), so the menu reads `v2 of 2`:
+ * the sample report at v1 with the seeded threads, a thread by this page's
+ * viewer, named "alex", sent to the agent and answered, then v2 with the note
+ * `Two columns; units in ms`, after the viewer saw v1. Ends on v2's view. */
+async function changelog(page: Page, s: Seeded): Promise<void> {
+  const { artifact } = await publishAs(s.base, s.token, s.sid, "Checkout latency, week 39", { "index.html": REPORT });
+  const ids: string[] = [];
+  for (const [body, selector] of SEEDED) ids.push((await postThread(s.base, artifact.id, body, selector)).id);
+  await page.goto(`${s.base}/a/${artifact.id}`);
+  await contentFrame(page, artifact.id, 1);
+  await name(page, "alex");
+  const mine = await page.evaluate(async aid => {
+    const f = new FormData();
+    f.set("anchor", JSON.stringify({ kind: "element", selector: "#tgt-chart", quote: null, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+    f.set("body", "Put the two charts side by side, two columns.");
+    f.set("version", "1");
+    return (await (await fetch(`/api/artifacts/${aid}/threads`, { method: "POST", body: f })).json()).thread.id as string;
+  }, artifact.id);
+  const sent = await fetch(`${s.base}/api/artifacts/${artifact.id}/threads/${mine}/send`, { method: "POST", headers: { origin: s.base } });
+  if (!sent.ok) throw new Error(`send: ${sent.status}`);
+  await api(s.base, s.token, `/api/artifacts/${artifact.id}/threads/${mine}/comments`, { method: "POST", session: s.sid, body: JSON.stringify({ body: "Two columns now, and every duration in ms.", author_kind: "agent" }) });
+  for (let i = 0; i < 50 && (await seenOf(page, artifact.id)) !== 1; i++) await page.waitForTimeout(100);
+  await publishNext(s.base, s.token, s.sid, artifact.id, 1, { note: "Two columns; units in ms", addresses: [mine, ...ids] });
+  await page.reload();
+  await contentFrame(page, artifact.id, 2);
+  await page.locator(".thread-pin").first().waitFor();
+}
+
 export const SCENES: Scene[] = [
   { name: "gallery", path: () => "/", prepare: async page => { await name(page, "alex"); await page.reload(); } },
   { name: "view", path: s => `/a/${s.aid}` },
@@ -70,5 +105,23 @@ export const SCENES: Scene[] = [
     await setWorking(s.base, s.token, s.sid, s.aid, { thread_ids: [s.threads[0]] });
     await page.reload();
     await page.locator(".chip.ag").waitFor();
+  } },
+  // A returning viewer at v2, which addressed their thread: the dot, the
+  // summary line, the Addressed group, the agent's reply, the history and
+  // the addressed pins.
+  { name: "changelog", path: () => "/", prepare: async (page, s) => {
+    await changelog(page, s);
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    await page.locator(".section-addressed .thread-card").first().waitFor();
+  } },
+  // The version menu open over the same state (the version button is not
+  // in the phone's bar, so the phone shot shows the bar without it).
+  { name: "versions", path: () => "/", prepare: async (page, s) => {
+    await changelog(page, s);
+    const button = page.getByRole("button", { name: /^Version 2 of 2/ });
+    if (await button.isVisible()) {
+      await button.click();
+      await page.getByRole("dialog", { name: "Versions" }).locator(".vrow").first().waitFor();
+    }
   } },
 ];

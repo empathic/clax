@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
-import { historyOf, isOutdated, versionAt } from "./history-model";
+import { addressedNote, historyOf, isOutdated, versionAt } from "./history-model";
 
 const V = (n: number, at: string): Version => ({ artifact_id: "a", n, label: null, created_at: at, files: {} });
 const vs = [V(1, "2026-09-30T10:00:00.000Z"), V(2, "2026-09-30T11:00:00.000Z"), V(3, "2026-09-30T12:00:00.000Z")];
@@ -32,6 +32,19 @@ describe("history-model", () => {
       { v: null, who: "claude", agent: true, verb: "replied" },
       { v: 3, who: "alex", agent: false, verb: "resolved" },
     ]);
+  });
+
+  it("puts each version that addressed the thread in time order, and labels the agent's reply with it", () => {
+    const withAgent = vs.map(v => ({ ...v, agent: "a_1", agent_harness: "claude" }));
+    const reply = C("2", "agent", "Agent", "2026-09-30T11:20:00.000Z");
+    const t = T({ comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), reply], addressed_in: [3] });
+    expect(historyOf(t, withAgent, names)).toEqual([
+      { v: 1, who: "alex", agent: false, verb: "commented" },
+      { v: null, who: "claude", agent: true, verb: "replied" },
+      { v: 3, who: "claude", agent: true, verb: "addressed it" },
+    ]);
+    expect(addressedNote(t, reply, withAgent)).toBe(3);
+    expect(addressedNote(t, t.comments[0], withAgent)).toBeNull();
   });
 
   it("tags the opening comment with the version it was made on, even when a newer one was out", () => {

@@ -139,14 +139,15 @@ export class CommentMode {
     return !this.trustedOnly || e.isTrusted;
   }
 
-  /** Outlines `target` briefly (after a scroll-to). */
+  /** Outlines `target` briefly (after a scroll-to): a static tint for
+   * 1.2 s under reduced motion, else two pulses. */
   flash(target: Element | Range): void {
     this.place(target);
     this.outline.classList.add("flash");
     setTimeout(() => {
       this.outline.classList.remove("flash");
       if (!this.on) this.outline.style.display = "none";
-    }, 1800);
+    }, self.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? 1200 : 1800);
   }
 
   /** Draws the dashed outline of a thread's area at `box` (viewport pixels;

@@ -22,7 +22,7 @@ test("gallery shows an empty state then a card", async ({ page }) => {
   await expect(page.locator("a.card")).toContainText("Hello Report");
 });
 
-test("viewer renders content with the bridge, and shows a banner on republish", async ({ page }) => {
+test("viewer renders content with the bridge, and offers Reload on republish", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Live", { "index.html": `<link rel="stylesheet" href="style.css"><h1 id=h>v1</h1><script>document.title = typeof window.claude.use</script>`, "style.css": "#h{color:rgb(0,128,0)}" });
   await page.goto(`${d.base}/a/${artifact.id}`);
   const frame = await contentFrame(page, artifact.id, 1);
@@ -35,10 +35,11 @@ test("viewer renders content with the bridge, and shows a banner on republish", 
   else { console.log("frame mode: sandboxed fallback"); expect(sandbox).not.toBeNull(); }
   expect(src).toMatch(new RegExp(`(${artifact.id}\\.localhost:\\d+/v/1/|/c/${artifact.id}/v/1/)$`));
   await publish(d.base, d.token, "Live", { "index.html": "<h1 id=h>v2</h1>" }, 1, artifact.id);
-  await expect(page.getByText("v2 published")).toBeVisible();
+  await expect(page.locator(".who .sum b.l1")).toHaveText("v2 published");
   await page.getByRole("button", { name: "Reload" }).click();
   await expect((await contentFrame(page, artifact.id, 2)).locator("#h")).toHaveText("v2");
-  await page.selectOption("select", "1");
+  await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
+  await page.getByRole("dialog", { name: "Versions" }).getByRole("link", { name: /^v1\b/ }).click();
   await expect(page).toHaveURL(new RegExp(`/a/${artifact.id}/v/1$`));
   await expect((await contentFrame(page, artifact.id, 1)).locator("#h")).toHaveText("v1");
 });

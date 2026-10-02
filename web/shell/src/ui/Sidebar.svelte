@@ -8,6 +8,7 @@
   import type { Snippet } from "svelte";
   import type { AnchorResult } from "../../../bridge/src/protocol";
   import type { Participants, Version } from "../api";
+  import type { Decided } from "../view/changelog-model";
   import { relativeTime } from "../format";
   import { type Thread, type Viewer, resolvedByLabel } from "../threads";
   import { agentName, historyOf, isOutdated } from "../view/history-model";
@@ -51,11 +52,21 @@
     commenting?: boolean;
     /** The open threads the viewer is in. */
     mine?: string[];
+    /** This load's changelog: its threads lead the sidebar as "Addressed in vN". */
+    decided?: Decided | null;
+    /** A card has been looked at (decided: Q4). */
+    onSeen?(t: Thread): void;
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
   const clock = ticker(() => needsTicking(p.threads) || !!p.working?.length, () => p.now, 30_000);
   const s = $derived(sidebarSections(p.threads, p.resolved, p.file, p.holds));
+  // The group holds this load's decision, open or resolved since (decided: Q4).
+  const group = $derived(p.decided ? p.threads.filter(t => p.decided!.ids.includes(t.id)) : []);
+  const rest = (list: Thread[]) => (group.length ? list.filter(t => !p.decided!.ids.includes(t.id)) : list);
+  const open = $derived(rest(s.open));
+  const detached = $derived(rest(s.detached));
+  const resolvedRest = $derived(rest(s.resolved));
   const agentsByHandle = $derived(agentNames(p.working ?? [], p.agents ?? []));
   const names = (t: Thread) => (by: string) => by.startsWith("agent:") ? agentName(by.slice(6)) : resolvedByLabel(by, p.me, t.resolved_by_name);
   // A collapsed group opens when the selected card newly enters it (a new
@@ -70,9 +81,9 @@
   const has = (list: Thread[], id: string | null) => !!id && list.some(t => t.id === id);
   $effect(() => {
     const sel = p.selected;
-    if (has(s.detached, sel)) { if (openedFor.detached !== sel) { detachedOpen = true; openedFor.detached = sel; } } else openedFor.detached = null;
-    if (has(s.resolved, sel)) { if (openedFor.resolved !== sel) { resolvedOpen = true; openedFor.resolved = sel; } } else openedFor.resolved = null;
-    if (justResolved && has(s.resolved, justResolved.id)) {
+    if (has(detached, sel)) { if (openedFor.detached !== sel) { detachedOpen = true; openedFor.detached = sel; } } else openedFor.detached = null;
+    if (has(resolvedRest, sel)) { if (openedFor.resolved !== sel) { resolvedOpen = true; openedFor.resolved = sel; } } else openedFor.resolved = null;
+    if (justResolved && has(resolvedRest, justResolved.id)) {
       if (Date.now() <= justResolved.until) resolvedOpen = true;
       justResolved = null;
     }
@@ -85,6 +96,7 @@
     <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
+      versions={p.versions} onSeen={p.onSeen}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover} />
   {/each}
 {/snippet}
@@ -96,18 +108,23 @@
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
     {/await}
   {/each}
+  {#if group.length}
+    {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
+      <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
+    {/await}
+  {/if}
   <section class="section-open">
-    <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{s.open.length}</span></h2>
-    {#if s.open.length === 0}<p class="muted small empty-open">Nothing open. Press C and click anything to comment on it.</p>{:else}{@render cards(s.open)}{/if}
+    <h2 class="gh you"><span class="sw" aria-hidden="true"></span><span class="t">Open</span> <span class="c">{open.length}</span></h2>
+    {#if open.length === 0}<p class="muted small empty-open">{group.length ? "Nothing else open." : "Nothing open. Press C and click anything to comment on it."}</p>{:else}{@render cards(open)}{/if}
   </section>
   <div class="tail">
-    <details class="section-detached" aria-label={`Detached ${s.detached.length}`} bind:open={detachedOpen}>
-      <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{s.detached.length}</span></h2></summary>
-      {@render cards(s.detached)}
+    <details class="section-detached" aria-label={`Detached ${detached.length}`} bind:open={detachedOpen}>
+      <summary><h2 class="gh oth"><span class="sw" aria-hidden="true"></span><span class="t">Detached</span> <span class="c">{detached.length}</span></h2></summary>
+      {@render cards(detached)}
     </details>
-    <details class="section-resolved" aria-label={`Resolved ${s.resolved.length}`} bind:open={resolvedOpen}>
-      <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{s.resolved.length}</span></h2></summary>
-      {@render cards(s.resolved)}
+    <details class="section-resolved" aria-label={`Resolved ${resolvedRest.length}`} bind:open={resolvedOpen}>
+      <summary><h2 class="gh set"><span class="sw" aria-hidden="true"></span><span class="t">Resolved</span> <span class="c">{resolvedRest.length}</span></h2></summary>
+      {@render cards(resolvedRest)}
     </details>
   </div>
 </aside>

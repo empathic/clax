@@ -30,6 +30,30 @@ describe("Sidebar", () => {
     root.remove();
   });
 
+  it("leads with the threads the latest version addressed, apart from Open, and labels the agent's reply with that version", async () => {
+    const versions = [
+      { artifact_id: base.artifact_id, n: 1, label: null, created_at: "2026-09-29T09:00:00.000Z", files: {} },
+      { artifact_id: base.artifact_id, n: 2, label: null, created_at: "2026-09-29T11:00:00.000Z", files: {}, addresses: ["a"], agent: "a_1", agent_harness: "claude" },
+    ];
+    const threads: Thread[] = [
+      { ...base, id: "a", anchor, status: "open", sent_to_agent: true, addressed_in: [2], comments: [comment("1", "viewer", "Alex", "two columns"), comment("2", "agent", "claude", "done")] },
+      { ...base, id: "b", anchor, status: "open", sent_to_agent: false, comments: [comment("3", "viewer", "Alex", "units")] },
+    ];
+    const root = document.createElement("div");
+    document.body.appendChild(root);
+    const view = mount(Sidebar, { versions, shown: 2, agent: "claude", threads, resolved: {}, now: new Date(base.created_at), selected: null, decided: { n: 2, ids: ["a"], dot: true, line: "v2 addressed 1" },
+      onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
+    await vi.waitFor(() => expect(root.querySelector(".section-addressed")).not.toBeNull());
+    flush();
+    expect(root.querySelector(".section-addressed h2")!.textContent).toContain("Addressed in v2");
+    expect(Array.from(root.querySelectorAll(".section-addressed .thread-card"), c => c.getAttribute("data-thread"))).toEqual(["a"]);
+    expect(Array.from(root.querySelectorAll(".section-open .thread-card"), c => c.getAttribute("data-thread"))).toEqual(["b"]);
+    expect(root.querySelector(".section-addressed .msg.agent .author")!.textContent).toBe("claude · addressed in v2");
+    expect(root.querySelector(".section-addressed .hist")!.textContent).toContain("v2 claude addressed it");
+    view.unmount();
+    root.remove();
+  });
+
   it("says which comments the page wrote", () => {
     const t: Thread = { ...base, id: "p", anchor, status: "open", sent_to_agent: false, comments: [{ ...comment("1", "viewer", "Alex", "from the page"), via_page: true }, comment("2", "viewer", "Alex", "by hand")] };
     const root = document.createElement("div");

@@ -94,14 +94,14 @@ describe("ArtifactView", () => {
     expect(assign).toHaveBeenCalledWith(`/a/${ID}/about.html`);
     // The page caused the load, so the next view starts with the keys held.
     expect(sessionStorage.getItem("clax.keys-held")).toBe("1");
-    expect(root.querySelector(".banner")).toBeNull();
-    // An agent's publish still offers the banner.
+    expect(root.querySelector("button.reload")).toBeNull();
+    // An agent's publish still offers Reload in the top bar.
     es.emit("version", { type: "version", artifact_id: ID, n: 3 });
-    await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v3 published"), "banner");
+    await waitFor(() => root.querySelector("button.reload"), "the Reload button");
     expect(assign).toHaveBeenCalledTimes(1);
   });
 
-  it("a pinned view shows the banner for a page publish and does not reload", async () => {
+  it("a pinned view offers Reload for a page publish and does not reload", async () => {
     const assign = vi.fn();
     history.replaceState(null, "", `/a/${ID}/v/1`);
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1))), undefined, undefined, 1);
@@ -109,7 +109,7 @@ describe("ArtifactView", () => {
     (await import("./nav")).nav.assign = assign;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     (await waitFor(() => FakeES.last, "event stream")).emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
-    await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v2 published"), "banner");
+    await waitFor(() => root.querySelector("button.reload"), "the Reload button");
     expect(assign).not.toHaveBeenCalled();
     expect(sessionStorage.getItem("clax.keys-held")).toBeNull();
   });
@@ -216,18 +216,18 @@ describe("ArtifactView", () => {
     expect(root.textContent).not.toContain("Artifact not found");
   });
 
-  it("refetches on resync and shows the banner when a newer version exists", async () => {
+  it("refetches on resync and offers Reload when a newer version exists", async () => {
     let current = 1;
     const view = await mountView(async () => new Response(JSON.stringify(artifact(current))));
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    expect(root.querySelector(".banner")).toBeNull();
+    expect(root.querySelector("button.reload")).toBeNull();
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
     await new Promise(r => setTimeout(r, 30));
-    expect(root.querySelector(".banner")).toBeNull();
+    expect(root.querySelector("button.reload")).toBeNull();
     current = 4;
     (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
-    await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v4 published"), "banner");
+    await waitFor(() => root.querySelector("button.reload"), "the Reload button");
   });
 
   it("reloads the threads when the event stream (re)connects", async () => {

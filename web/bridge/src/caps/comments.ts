@@ -215,9 +215,36 @@ export function commentsLocals(rpc: Pick<Rpc, "call" | "on">, config: unknown, e
     };
   };
 
+  // Clax extensions (clax-extensions.d.ts): who is working, read-only, under
+  // either declaration form. One shell subscription serves every `onWorking`.
+  const workingFns = new Set<(s: unknown) => void>();
+  let offWorking: (() => void) | null = null;
+  const working = () => rpc.call("comments", "working", []);
+  const onWorking = async (fn: unknown) => {
+    if (typeof fn !== "function") throw invalid("onWorking takes a function");
+    const f = fn as (s: unknown) => void;
+    workingFns.add(f);
+    if (!offWorking) {
+      offWorking = rpc.on("comments", "working", d => { for (const g of workingFns) { try { g(d); } catch { /* the page's own error */ } } });
+      await rpc.call("comments", "watchWorking", []);
+    } else {
+      try { f(await working()); } catch { /* the page's own error */ }
+    }
+    return () => {
+      workingFns.delete(f);
+      if (workingFns.size === 0 && offWorking) {
+        offWorking();
+        offWorking = null;
+        void rpc.call("comments", "unwatchWorking", []).catch(() => {});
+      }
+    };
+  };
+
   return {
     openComposer,
     anchorFor,
+    working,
+    onWorking,
     create: async (opts: unknown) => {
       const o = (opts ?? {}) as { anchor?: unknown; text?: unknown };
       const a = checkAnchor(o.anchor);

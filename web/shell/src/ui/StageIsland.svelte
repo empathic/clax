@@ -1,7 +1,9 @@
 <script lang="ts">
   // The stage island: the overlays over the frame (the empty states, the
-  // gesture shield and hint, the pins, the composer, the banners and the
-  // consent dialog), once the artifact is loaded and the frame mode decided.
+  // gesture shield and hint, the pins, the composer, the failure notice and
+  // the consent dialog). Nothing else goes over the page: a newer version
+  // and an older one shown are said in the top bar (decided: Q12). Shown
+  // once the artifact is loaded and the frame mode decided.
   import type { Component } from "svelte";
   import { fromStore } from "svelte/store";
   import { INDEX_FILE } from "../../../bridge/src/protocol";
@@ -18,8 +20,14 @@
   const view = fromStore(ctl.state);
   const s = $derived(view.current);
   const shown = $derived(ctl.shown(s));
-  const latest = $derived(ctl.latest(s));
   const missing = $derived(ctl.missing(s));
+  // The group's threads, until this viewer looks at one after its version came out.
+  const addressed = $derived.by(() => {
+    const d = s.decided;
+    if (!d?.ids.length) return undefined;
+    const at = s.data?.versions.find(v => v.n === d.n)?.created_at ?? "";
+    return new Map(d.ids.filter(id => !(s.looked[id] > at)).map(id => [id, d.n]));
+  });
   // The keys sheet's code loads the first time it is asked for; if it cannot
   // load, the sheet closes with a notice rather than leaving the keys off.
   let KeysSheet: Component<{ onClose(): void }> | null = $state(null);
@@ -47,7 +55,7 @@
   {/if}
   {#if s.hint}<p class="gesture-hint" role="status">{s.hint}</p>{/if}
   {#if !s.deleted && !missing}
-    <Pins threads={s.threads} resolved={s.resolved} file={s.file} onit={new Set(s.working.flatMap(w => w.thread_ids))} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />
+    <Pins threads={s.threads} resolved={s.resolved} file={s.file} onit={new Set(s.working.flatMap(w => w.thread_ids))} {addressed} onSelect={t => ctl.openPin(t)} onHover={t => ctl.hover(t)} />
   {/if}
   {#if s.draft}
     {@const draft = s.draft}
@@ -55,12 +63,6 @@
       <Composer {draft} onText={v => ctl.composerInput(v)} onFocused={() => ctl.composerFocused(draft.pickId)}
         onCancel={() => ctl.cancelDraft()} onSubmit={body => ctl.submitDraft(body, draft)} />
     {/key}
-  {/if}
-  {#if s.newer && !s.deleted}
-    <div class="banner"><span>v{s.newer} published</span><button class="primary" onclick={() => ctl.reloadLatest()}>Reload</button></div>
-  {/if}
-  {#if shown < latest && !s.newer && !s.deleted}
-    <div class="banner"><span class="muted">viewing v{shown}; latest is v{latest}</span><a href={ctl.here(null, s)}>latest</a></div>
   {/if}
   {#if s.notice}
     <div class="banner notice" role="alert"><span>{s.notice}</span><button onclick={() => ctl.dismissNotice()}>Dismiss</button></div>

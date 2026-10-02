@@ -63,6 +63,25 @@ export async function publishAs(base: string, token: string, sessionId: string, 
   return res.json() as Promise<{ artifact: { id: string; current_version: number } }>;
 }
 
+/** Publishes the next version of `aid` as session `sid`, carrying every file
+ * forward (the index, which every publish names, from version `ifVersion`),
+ * with a change note and the threads it addresses. */
+export async function publishNext(base: string, token: string, sid: string, aid: string, ifVersion: number, extra: { note?: string; addresses?: string[]; files?: Record<string, string> }) {
+  const index = extra.files?.["index.html"] ?? await (await fetch(`${base}/api/artifacts/${aid}/versions/${ifVersion}/files/index.html`)).text();
+  const files = Object.fromEntries(Object.entries({ ...extra.files, "index.html": index }).map(([k, v]) => [k, { content: v, encoding: "utf8" }]));
+  const res = await fetch(`${base}/api/artifacts/${aid}/versions`, {
+    method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${token}`, "x-clax-session": sid },
+    body: JSON.stringify({ if_version: ifVersion, files, note: extra.note, addresses: extra.addresses }),
+  });
+  if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
+  return res.json() as Promise<{ artifact: { id: string; current_version: number } }>;
+}
+
+/** This page's viewer's version seen mark on `aid`, read from inside the page (its cookie). */
+export async function seenOf(page: Page, aid: string): Promise<number | null> {
+  return page.evaluate(async a => (await (await fetch(`/api/viewers/me/seen?artifact=${a}`)).json()).seen as number | null, aid);
+}
+
 /** A JSON API call with the token (and, when given, the session header). */
 export async function api(base: string, token: string, path: string, init: RequestInit & { session?: string } = {}) {
   const headers: Record<string, string> = { "content-type": "application/json", authorization: `Bearer ${token}` };

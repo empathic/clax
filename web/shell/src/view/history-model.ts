@@ -2,10 +2,11 @@
 // "v3 alex commented · v4 Mia replied · claude replied · v5 alex resolved".
 // The comment that opens the thread carries the version it was made on; a
 // person's later event carries the version current when it happened; an
-// agent's carries one only when it came with a version (Task 18 adds those).
+// agent's carries one only when it came with a version: "v3 claude addressed
+// it", for each version that addressed the thread. Events are in time order.
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
-import type { Thread } from "../threads";
+import type { Comment, Thread } from "../threads";
 
 export type HistoryEvent = { v: number | null; who: string; agent: boolean; verb: string };
 
@@ -20,18 +21,33 @@ export function versionAt(versions: Version[], iso: string): number {
 /** `names` turns a `resolved_by` value (`viewer:<public_id>`, `agent:<harness>`) into a name.
  * `more.working` names the agent working on the open thread now: the line ends with it. */
 export function historyOf(t: Thread, versions: Version[], names: (by: string) => string, more: { working?: string | null } = {}): HistoryEvent[] {
-  const out: HistoryEvent[] = [];
+  const out: { at: string; e: HistoryEvent }[] = [];
   t.comments.forEach((c, i) => {
-    if (c.author_kind === "agent") out.push({ v: null, who: agentName(c.via_harness), agent: true, verb: "replied" });
-    else if (i === 0) out.push({ v: t.version_n, who: c.author_name, agent: false, verb: "commented" });
-    else out.push({ v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: "replied" });
+    const e = c.author_kind === "agent" ? { v: null, who: agentName(c.via_harness), agent: true, verb: "replied" }
+      : i === 0 ? { v: t.version_n, who: c.author_name, agent: false, verb: "commented" }
+      : { v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: "replied" };
+    out.push({ at: c.created_at, e });
   });
+  for (const n of t.addressed_in ?? []) {
+    const v = versions.find(x => x.n === n);
+    out.push({ at: v?.created_at ?? "", e: { v: n, who: agentName(v?.agent_harness), agent: true, verb: "addressed it" } });
+  }
   if (t.status === "resolved" && t.resolved_by && t.resolved_at) {
     const agent = t.resolved_by.startsWith("agent:");
-    out.push({ v: agent ? null : versionAt(versions, t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" });
+    out.push({ at: t.resolved_at, e: { v: agent ? null : versionAt(versions, t.resolved_at), who: names(t.resolved_by), agent, verb: "resolved" } });
   }
-  if (more.working && t.status === "open") out.push({ v: null, who: more.working, agent: true, verb: "working on it" });
-  return out;
+  // "~" sorts after every timestamp: working ends the line.
+  if (more.working && t.status === "open") out.push({ at: "~", e: { v: null, who: more.working, agent: true, verb: "working on it" } });
+  // A stable sort: events at the same time keep their order.
+  return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).map(x => x.e);
+}
+
+/** The version an agent's reply is labelled with ("addressed in vN"): the
+ * first version that addressed the thread created at or after the reply. */
+export function addressedNote(t: Thread, c: Comment, versions: Version[]): number | null {
+  if (c.author_kind !== "agent") return null;
+  const at = (n: number) => versions.find(v => v.n === n)?.created_at ?? "";
+  return (t.addressed_in ?? []).find(n => at(n) >= c.created_at) ?? null;
 }
 
 /** The element changed in a later version but is still there: found by

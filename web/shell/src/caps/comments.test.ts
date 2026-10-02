@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ShellToBridge } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
+import type { Working } from "../view/working-model";
 import { forgetBudgets } from "./budget";
 import { REFUSED_RATE, WRITE_RATE, cleanLabel, commentsHandler, textProblem } from "./comments";
 import { forgetGestures, noteShellInput, notePointerAt, notePointerOver } from "./gesture";
@@ -33,6 +34,8 @@ const gesture = (on: boolean, quiet = true) => {
   if (on) { control.focus(); notePointerOver(control, 900, 10); notePointerAt(900, 10); notePointerOver(frame, 100, 100); frame.focus(); } else { notePointerOver(control, 900, 10); notePointerAt(900, 10); control.focus(); noteShellInput(); }
 };
 
+let workingList: Working[] = [];
+
 function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "dismiss" = "allow") {
   const posted: ShellToBridge[] = [];
   const state = { mode: false, composing: false, threads: [T("01J9A"), T("01J9B", { kind: "custom", selector: null, custom_name: "shape-1" }), T("01J9D", { file: "notes.html" })], selected: null as string | null, busy: false };
@@ -41,7 +44,7 @@ function setup(declared: Record<string, unknown>, answer: "allow" | "deny" | "di
     state: () => state, dismiss: vi.fn(() => true), attachClip: vi.fn(), enterMode: vi.fn(() => { state.mode = true; }),
   };
   const prompt = vi.fn(async () => answer);
-  const env = { aid: "7q3k9mzx2b4t", version: 1, token: "t", declared, prompt, post: (m: ShellToBridge) => posted.push(m), comments: ui, page: () => "index.html" } as unknown as CapEnv;
+  const env = { aid: "7q3k9mzx2b4t", version: 1, token: "t", declared, prompt, post: (m: ShellToBridge) => posted.push(m), comments: ui, page: () => "index.html", working: () => workingList } as unknown as CapEnv;
   const grants = new Grants("k", null, declared as never, true, prompt);
   return { h: commentsHandler(env, grants), ui, posted, prompt, state };
 }
@@ -57,13 +60,48 @@ const lastUrl = () => (fetch as unknown as Fetch).mock.calls.at(-1)![0] as strin
 const threadsPushed = (posted: ShellToBridge[]) => posted.filter(m => m.type === "clax:event" && m.topic === "threads") as unknown as { data: { list: { id: string; anchor: string }[] } }[];
 
 describe("comments in the shell", () => {
-  beforeEach(() => { vi.spyOn(performance, "now").mockImplementation(() => clock); gesture(true); });
+  beforeEach(() => { vi.spyOn(performance, "now").mockImplementation(() => clock); gesture(true); workingList = []; });
   afterEach(() => {
     vi.unstubAllGlobals();
     sessionStorage.clear();
     forgetBudgets();
     delete (navigator as unknown as { userActivation?: unknown }).userActivation;
     forgetGestures();
+  });
+
+  const rec = (over: Partial<Working> = {}): Working => ({ key: "k", agent: "a_x", harness: "codex", message: "Chart", thread_ids: [], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z", ...over });
+
+  it("working() names only this document's own threads, by handle", async () => {
+    const { h, posted } = setup({ comments: {} });
+    daemon(T("01J9C"));
+    const created = await h.call("create", [{ anchor: T("x").anchor, text: "hi", version: 1 }]) as { threadId: string };
+    workingList = [rec({ thread_ids: ["01J9C", "01J9Z"] })];
+    const s = await h.call("working", []);
+    expect(s).toEqual({ working: true, agents: [{ harness: "codex", label: "Codex", message: "Chart", since: "2026-09-30T10:00:00.000Z", threads: [created.threadId], otherThreads: 1 }] });
+    expect(JSON.stringify(s)).not.toContain("01J9C");
+    expect(JSON.stringify(s)).not.toContain("\"k\"");
+    expect(posted.filter(m => m.type === "clax:event" && m.topic === "working")).toEqual([]);
+  });
+
+  it("pushes working state to a watching page on every working event, until it stops watching", async () => {
+    const { h, posted } = setup({ comments: {} });
+    const pushes = () => posted.filter(m => m.type === "clax:event" && m.topic === "working") as unknown as { data: { working: boolean } }[];
+    await h.call("watchWorking", []);
+    expect(pushes().at(-1)!.data).toEqual({ working: false, agents: [] });
+    workingList = [rec({ harness: "pi", message: null })];
+    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: workingList });
+    expect(pushes().at(-1)!.data.working).toBe(true);
+    await h.call("unwatchWorking", []);
+    const n = pushes().length;
+    h.onEvent!({ type: "working", artifact_id: "7q3k9mzx2b4t", working: [] });
+    expect(pushes().length).toBe(n);
+  });
+
+  it("answers working() under the composer-only form, without consent or gesture", async () => {
+    const { h, prompt } = setup({ comments: { composer_only: true } });
+    gesture(false);
+    expect(await h.call("working", [])).toEqual({ working: false, agents: [] });
+    expect(prompt).not.toHaveBeenCalled();
   });
 
   it("text rule", () => {

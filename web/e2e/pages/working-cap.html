@@ -7,6 +7,6 @@
     const show = s => { out.textContent = s.working ? s.agents.map(a => `${a.label}|${a.message}|${a.threads.length}|${a.otherThreads}`).join(",") : "none"; };
     show(await c.working());
     await c.onWorking(show);
-    document.getElementById("add").onclick = async () => { const r = await c.create({ anchor: { path: "#h" }, text: "from the page" }); document.body.dataset.handle = r.threadId; };
+    document.getElementById("add").onclick = async () => { const r = await c.create({ anchor: await c.anchorFor(document.getElementById("h")), text: "from the page" }); document.body.dataset.handle = r.threadId; };
   })();
 </script>

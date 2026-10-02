@@ -31,7 +31,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     for (const p of [pa, pb]) {
       const f = await contentFrame(p, artifact.id, 2);
       await expect(f.locator("#count")).toHaveText("1");
-      await expect(p.locator(".banner")).toHaveCount(0);
+      await expect(p.locator(".topbar button.reload")).toHaveCount(0);
     }
     expect(await current(artifact.id)).toBe(2);
     const stored = await (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/2/files/index.html`)).text();
@@ -104,7 +104,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     for (const p of [pa, pb]) {
       await expect((await fileFrame(p, artifact.id, 2, "votes/poll.html")).locator("#count")).toHaveText("1");
       await expect(p).toHaveURL(new RegExp(`/a/${artifact.id}/votes/poll\\.html$`));
-      await expect(p.locator(".banner")).toHaveCount(0);
+      await expect(p.locator(".topbar button.reload")).toHaveCount(0);
     }
     expect(await current(artifact.id)).toBe(2);
     const file = async (n: number, f: string) => (await fetch(`${d.base}/api/artifacts/${artifact.id}/versions/${n}/files/${f}`)).text();
@@ -219,7 +219,7 @@ test("LAN: a view without the token is read-only", async ({ page }) => {
   expect(await current(artifact.id)).toBe(1);
 });
 
-test("an agent publish still offers the banner instead of reloading", async ({ page }) => {
+test("an agent publish still offers Reload in the top bar instead of reloading", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Poll agent", pageHtml("poll.html"), { artifact: {} });
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   const res = await fetch(`${d.base}/api/artifacts/${artifact.id}/versions`, {
@@ -228,7 +228,8 @@ test("an agent publish still offers the banner instead of reloading", async ({ p
     body: JSON.stringify({ if_version: 1, files: { "index.html": { content: "<p>agent</p>", encoding: "utf8" } } }),
   });
   expect(res.status).toBe(201);
-  await expect(page.locator(".banner")).toContainText("v2 published");
+  await expect(page.locator(".who .sum b.l1")).toHaveText("v2 published");
+  await expect(page.locator(".topbar button.reload")).toBeVisible();
   await contentFrame(page, artifact.id, 1);
 });
 

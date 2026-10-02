@@ -126,7 +126,6 @@ code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px;
 .topbar button.comment[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: var(--on-you); }
 .topbar button.threads[aria-pressed="true"] { background: var(--comment-hl); border-color: var(--accent); }
 .cnt { font: 600 11px/18px var(--mono); min-width: 18px; height: 18px; border-radius: 9px; background: var(--you); color: var(--on-you); text-align: center; padding: 0 4px; }
-.topbar select.version { font: 600 18px/1 var(--grot); height: 36px; max-width: 40vw; }
 .more-slot { flex: none; width: 32px; }
 .phone-tabs { display: none; }
 @media (max-width: 700px) {
@@ -152,9 +151,6 @@ input, select { line-height: 1.2; }
 .page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .viewer { position: relative; flex: 1; min-height: 0; display: flex; }
 .banner { position: absolute; left: 50%; transform: translateX(-50%); top: 12px; max-width: calc(100% - 32px); background: var(--raised); border: 1px solid var(--border-strong); border-left-width: 3px; padding: 8px 12px; display: flex; gap: 10px; align-items: center; box-shadow: 0 8px 24px var(--shadow); }
-.banner:has(> .primary) { border-left-color: var(--accent); }
-.banner a { color: var(--accent-ink); font-size: 12px; }
-.banner a:hover { text-decoration: underline; }
 .banner.notice { top: 56px; background: var(--danger-tint); border-color: var(--danger); }
 .muted { color: var(--muted); }
 .stage { position: relative; flex: 1; min-width: 0; min-height: 0; }
@@ -201,3 +197,14 @@ button.mark { background: none; border: 0; padding: 0; min-width: 44px; min-heig
 .mark[aria-pressed="true"] .l { transform: translateX(3.5px); } .mark[aria-pressed="true"] .r { transform: translateX(-3.5px); }
 .mark[data-apart] .l { transform: translateX(-4px); } .mark[data-apart] .r { transform: translateX(4px); }
 @media (prefers-reduced-motion: reduce) { .mk path { transition: none; } }
+
+/* The changelog (spec §8): no band over the page. The version menu's panel
+   and the Addressed group carry their own styles. */
+.version-menu { position: relative; }
+.vbtn { display: flex; align-items: baseline; gap: 4px; padding: 0 10px; height: 36px; position: relative; font: 600 22px/36px var(--grot); }
+.vbtn span { font: 400 12px var(--mono); color: var(--muted); }
+.vbtn .new { position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); }
+/* Pins sit over the artifact, whose colours Clax does not set: literal colours. */
+.thread-pin.addressed { background: #fff; border-color: #457d26; color: #2f0b04; }
+.thread-pin[data-v]::after { content: attr(data-v); position: absolute; left: 22px; top: 2px; font: 600 10.5px/14px var(--grot); background: #fff; color: #2f0b04; border: 1px solid #457d26; padding: 0 3px; white-space: nowrap; }
+.topbar a.latest { font: 600 14px var(--grot); color: var(--accent-ink); }
