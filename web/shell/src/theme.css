@@ -63,19 +63,6 @@ a { color: inherit; text-decoration: none; }
 .g, h1, h2, h3 { font-family: var(--grot); font-weight: 600; letter-spacing: 0; }
 .kc { font: 600 10px/14px var(--mono); border: 1px solid currentColor; padding: 0 4px; opacity: .7; }
 .wrap { max-width: 1200px; margin: 0 auto; padding: 24px var(--gutter); }
-.topbar { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 8px var(--gutter); border-bottom: 1px solid var(--border); background: var(--card); }
-.topbar h1 { font-size: 15px; margin: 0; font-weight: 600; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
-.topbar > h1:first-child { flex: none; font-size: 13px; }
-.topbar > h1:first-child + .muted { font-size: 11px; }
-.topbar > a:first-child { color: var(--muted); display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; transition: color var(--t); }
-.topbar > a:first-child:hover { color: var(--accent-ink); }
-.topbar select { min-width: 0; max-width: 40vw; }
-.topbar button { white-space: nowrap; flex: none; }
-/* The bar's small text actions (open raw, copy link): no box. */
-/* The artifact view's controls sit in the topbar's island (`display: contents`); :where keeps these rules' specificity. */
-.topbar > :where(.island) > select ~ .hide-sm, .topbar > :where(.island) > button.copy-link { font-size: 12px; white-space: nowrap; color: var(--accent-ink); background: none; border-color: transparent; padding: 6px 2px; }
-.topbar > span.hide-sm, .topbar > :where(.island) > span.hide-sm { color: var(--muted); }
-.topbar > :where(.island) > a.hide-sm:hover, .topbar > :where(.island) > button.copy-link:not(:disabled):hover { text-decoration: underline; border-color: transparent; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; }
 .card { display: block; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; position: relative; transition: border-color var(--t), transform var(--t); }
 .card:hover { border-color: var(--border-strong); }
@@ -96,10 +83,33 @@ button.ghost:not(:disabled):hover { border-color: var(--border-strong); }
 button.icon { width: 32px; padding: 0; flex: none; }
 button.icon svg { width: 16px; height: 16px; }
 button:disabled { opacity: .5; cursor: default; }
-/* Comment mode on: the colour of the pins it makes (brown on red-orange, 5.06:1). */
-/* The theme switch and the mark show their state by themselves. */
-.topbar button[aria-pressed="true"]:not(.theme-switch, .mark) { background: var(--comment-hl); border-color: var(--accent); }
-.topbar > :where(.island) > button[aria-pressed="true"]:first-of-type { background: var(--pin); border-color: var(--pin); color: var(--on-pin); }
+/* The gallery's bar. */
+.gbar { height: 60px; display: flex; align-items: center; gap: 12px; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
+.gbar h1 { margin: 0; font-size: 22px; }
+/* The top bar (spec §8): 60px; the title over its by-line in the condensed
+   face; Comment red-orange when on, with a 3px rule under the bar. */
+.topbar { position: relative; display: flex; align-items: center; gap: 12px; height: 60px; flex: none; padding: 0 var(--gutter); background: var(--card); border-bottom: 1px solid var(--border); }
+.topbar.commenting { box-shadow: inset 0 -3px 0 var(--you); }
+.topbar > .home { display: inline-grid; place-items: center; min-width: 32px; min-height: 32px; }
+.ttl { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.ttl h1 { margin: 0; font-size: 20px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ttl .by { font-size: 11.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.who-slot:empty { display: none; }
+.topbar button.comment[aria-pressed="true"] { background: var(--you); border-color: var(--you); color: var(--on-you); }
+.topbar button.threads[aria-pressed="true"] { background: var(--comment-hl); border-color: var(--accent); }
+.cnt { font: 600 11px/18px var(--mono); min-width: 18px; height: 18px; border-radius: 9px; background: var(--you); color: var(--on-you); text-align: center; padding: 0 4px; }
+.topbar select.version { font: 600 18px/1 var(--grot); height: 36px; max-width: 40vw; }
+.more-slot { flex: none; width: 32px; }
+.phone-tabs { display: none; }
+@media (max-width: 700px) {
+  .topbar { gap: 8px; padding: 0 10px; height: 56px; }
+  .topbar .hide-sm, .gbar .hide-sm, .ttl .by, .topbar .kc { display: none; }
+  .ttl h1 { font-size: 17px; }
+  .phone-tabs { display: flex; position: fixed; left: 0; right: 0; bottom: 0; height: 52px; z-index: 12; background: var(--card); border-top: 1px solid var(--border-strong); }
+  .phone-tabs button { flex: 1; border: 0; background: none; font-size: 16px; color: var(--muted); min-height: 52px; }
+  .phone-tabs button[aria-pressed="true"] { color: var(--fg); box-shadow: inset 0 3px 0 var(--fg); }
+  .viewer { margin-bottom: 52px; }
+}
 input, select, textarea { font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--border-strong); border-radius: 0; padding: 6px 8px; min-height: 32px; transition: border-color var(--t); }
 input:focus, select:focus, textarea:focus { border-color: var(--accent); }
 input, select { line-height: 1.2; }
@@ -159,7 +169,6 @@ input, select { line-height: 1.2; }
 .error { color: var(--danger); }
 @media (max-width: 700px) { .sidebar { position: absolute; inset: 0; width: auto; z-index: 10; border-left: 0; } }
 @media (max-width: 480px) {
-  .topbar { flex-wrap: wrap; gap: 8px; } .topbar h1 { font-size: 14px; flex-basis: calc(100% - 40px); } .topbar > .mark + h1 { flex-basis: auto; } .topbar .hide-sm { display: none; }
   .composer { left: 0; right: 0; bottom: 0; width: auto; border-width: 3px 0 0; }
 }
 .prompt-backdrop { position: fixed; inset: 0; background: rgba(26,13,9,.55); display: grid; place-items: center; z-index: 50; padding: var(--gutter); }

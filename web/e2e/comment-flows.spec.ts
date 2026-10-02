@@ -191,7 +191,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: flow 5, a reply in the sidebar, then a click in the page: works`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 5 ${mode}`, true), mode);
     const threads = page.getByRole("button", { name: /^Threads/ });
-    await expect(threads).toHaveText("Threads (1)");
+    await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
     await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
     const reply = page.getByRole("textbox", { name: "Reply" }).first();
@@ -206,7 +206,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: flow 5 with Cmd+Enter in the reply box, then a click in the page: works`, async ({ page }) => {
     const f = await open(page, await publishLive(`Flow 5 Cmd+Enter ${mode}`, true), mode);
     const threads = page.getByRole("button", { name: /^Threads/ });
-    await expect(threads).toHaveText("Threads (1)");
+    await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await clickShell(page, threads);
     await clickShell(page, page.getByRole("button", { name: "Comment", exact: true }));
     const reply = page.getByRole("textbox", { name: "Reply" }).first();

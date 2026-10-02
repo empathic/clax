@@ -15,6 +15,9 @@ describe("skeleton", () => {
     expect(a.stageIsland.parentElement).toBe(a.stage);
     expect(a.sidebarIsland.parentElement).toBe(a.viewer);
     expect(a.topbarIsland.parentElement?.classList.contains("topbar")).toBe(true);
+    expect(a.by.parentElement?.classList.contains("ttl")).toBe(true);
+    expect(a.topbar.querySelector("a.home svg.mk")).not.toBeNull();
+    expect(a.title.localName).toBe("h1");
   });
   it("adopts a page the server sent", () => {
     const root = document.createElement("div");

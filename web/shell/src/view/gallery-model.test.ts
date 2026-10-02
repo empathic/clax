@@ -10,9 +10,9 @@ describe("gallery model", () => {
     expect(filterArtifacts(list, "  review ").map(x => x.title)).toEqual(["Quarterly Review", "Notes"]);
     expect(filterArtifacts(list, "")).toBe(list);
   });
-  it("names the harness session, an agent session, or nothing for the command line", () => {
-    expect(publisherText(a("x", null, { owner_session_id: "s", owner_harness: "codex" }))).toBe("published by codex session");
-    expect(publisherText(a("x", null, { owner_session_id: "s", owner_harness: null }))).toBe("published by an agent session");
-    expect(publisherText(a("x", null))).toBeNull();
+  it("names the owner's harness, else the command line", () => {
+    expect(publisherText(a("x", null, { owner_session_id: "s", owner_harness: "codex" }))).toBe("published by codex");
+    expect(publisherText(a("x", null, { owner_harness: null }))).toBe("published from the command line");
+    expect(publisherText(a("x", null))).toBe("published from the command line");
   });
 });

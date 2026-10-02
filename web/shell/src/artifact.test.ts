@@ -235,9 +235,9 @@ describe("ArtifactView", () => {
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     await waitFor(() => listed === 1, "initial thread load");
-    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (0)");
+    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads 0");
     (await waitFor(() => FakeES.last, "event stream")).emit("ready", {});
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the reload");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread from the reload");
   });
 
   it("opens the event stream only after the viewer lookup answered, with the owner shell's token", async () => {
@@ -266,10 +266,10 @@ describe("ArtifactView", () => {
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     (await waitFor(() => FakeES.last, "event stream")).emit("thread", { type: "thread", artifact_id: ID, thread: t });
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread from the event");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread from the event");
     answerList();
     await new Promise(r => setTimeout(r, 30));
-    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads (1)");
+    expect(buttonNamed(root, /^Threads/).textContent).toBe("Threads 1");
   });
 
   it("shows a failed thread load in the notice banner", async () => {
@@ -530,7 +530,7 @@ describe("ArtifactView", () => {
     const win = frame.contentWindow!;
     const sent: { type: string; anchors?: { id: string }[] }[] = [];
     win.postMessage = ((m: (typeof sent)[number]) => { sent.push(m); }) as typeof win.postMessage;
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "thread loaded");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread loaded");
     fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
     const handle = (await waitFor(() => sent.filter(m => m.type === "clax:resolve-anchors").at(-1)?.anchors?.[0], "anchors sent")).id;
     expect(handle).not.toBe("tI");
@@ -694,18 +694,18 @@ describe("ArtifactView", () => {
     await new Promise(r => setTimeout(r, 20));
     // Answered: an event now is not replayed onto the next list, which no longer has it.
     es.emit("thread", { type: "thread", artifact_id: ID, thread: t("01JA") });
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "event thread");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "event thread");
     es.emit("ready", {});
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (0)", "the list replaces the answered event");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 0", "the list replaces the answered event");
     // Failed: the changes kept for it are dropped, so a later list does not replay them.
     failNext = true;
     es.emit("ready", {});
     await waitFor(() => root.querySelector(".banner.notice"), "failed load");
     es.emit("thread", { type: "thread", artifact_id: ID, thread: t("01JB") });
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (1)", "event after the failure");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "event after the failure");
     failNext = false;
     es.emit("ready", {});
-    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads (0)", "the next list is not patched with dropped changes");
+    await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 0", "the next list is not patched with dropped changes");
   });
 
   it("starts each pick with an empty composer and shows a failed post only in the banner", async () => {
@@ -1275,8 +1275,15 @@ function postReady(root: Element): boolean {
   return !b.disabled && b.getAttribute("aria-disabled") !== "true";
 }
 
+/** A button's text without its `aria-hidden` parts (a keycap), as its accessible name reads. */
+function nameOf(b: HTMLButtonElement): string {
+  const c = b.cloneNode(true) as HTMLElement;
+  for (const h of c.querySelectorAll("[aria-hidden=true]")) h.remove();
+  return (c.textContent ?? "").trim();
+}
+
 function buttonNamed(root: Element, name: string | RegExp): HTMLButtonElement {
-  const b = Array.from(root.querySelectorAll("button")).find(x => (typeof name === "string" ? x.textContent === name : name.test(x.textContent ?? "")));
+  const b = Array.from(root.querySelectorAll("button")).find(x => (typeof name === "string" ? nameOf(x) === name : name.test(nameOf(x))));
   if (!b) throw new Error(`no button ${name}`);
   return b;
 }

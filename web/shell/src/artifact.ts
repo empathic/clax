@@ -5,6 +5,7 @@ import { type ArtifactProps, ArtifactController, type ViewState } from "./view/a
 import { afterPaint } from "./view/after-paint";
 import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
+import { publisherText } from "./view/gallery-model";
 import { type Skeleton, skeleton } from "./view/skeleton";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";
@@ -17,8 +18,8 @@ function setText(el: HTMLElement, text: string): void {
   if (el.textContent !== text) el.textContent = text;
 }
 
-/** Keeps the page's own parts in step with the view: the title once the
- * artifact is known, and, until the frame mode is known too (or when the
+/** Keeps the page's own parts in step with the view: the title and its
+ * by-line once the artifact is known, the top bar's comment-mode rule, and, until the frame mode is known too (or when the
  * artifact could not be loaded), a message in the page in place of the
  * viewer. Touches the DOM only where something changed. A frame the daemon
  * served is never in a viewer this takes out: it comes with the bootstrap,
@@ -26,6 +27,8 @@ function setText(el: HTMLElement, text: string): void {
 function pageFollows(sk: Skeleton, s: ViewState, status: HTMLElement): void {
   const ready = !s.error && !!s.data && s.origin !== undefined;
   setText(sk.title, !s.error && s.data ? s.data.artifact.title : "Clax");
+  setText(sk.by, !s.error && s.data ? publisherText(s.data.artifact) : "");
+  if (sk.topbar.classList.contains("commenting") !== s.commenting) sk.topbar.classList.toggle("commenting", s.commenting);
   if (ready) {
     if (status.isConnected) status.remove();
     if (sk.viewer.parentElement !== sk.page) sk.page.append(sk.viewer);
