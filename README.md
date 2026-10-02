@@ -31,6 +31,14 @@ harness starts with, so `~/.cargo/bin` must be on it; `clax init` warns
 when the first `clax` on your `PATH` is another one. Nothing is downloaded,
 and moving or deleting the clone afterwards changes nothing.
 
+For Grok Build, `clax init` installs the clax-grok plugin (`grok plugin
+install <dir> --trust`) whenever `grok` is on your `PATH`, including when
+Grok is the only harness installed; `clax uninit` uninstalls it. Grok also
+discovers the Claude Code plugin from `~/.claude`; enabled there, that copy
+stands down and only clax-grok's tools (`clax_grok__publish` and the rest)
+act. Grok asks before each MCP tool call; for headless runs, pass
+`--always-approve` or `--allow 'MCPTool(clax_grok__*)'`.
+
 `just uninstall` reverses it: `clax uninit` removes the registrations (and
 `~/.clax/marketplace/` once no harness refers to it), the agents' daemon is
 stopped when it runs the installed `clax`, then `cargo uninstall clax-cli`
@@ -52,7 +60,7 @@ serves a private repository's release files only to authenticated requests,
 so until then `install.sh` gets a 404. When to make it public is the
 repository owner's decision.
 
-When a plugin half works, `clax doctor --agent <claude|codex|pi>` checks each
+When a plugin half works, `clax doctor --agent <claude|codex|pi|grok>` checks each
 layer. Its `binary` check shows which `clax` the plugins run and every `clax`
 on `PATH`. If the MCP server cannot find `clax` at all, its one tool,
 `status`, says why, and `~/.clax/logs/hooks.log` has the details.
@@ -68,7 +76,7 @@ clax asset upload <ID> photo.png     # upload assets; prints each asset URL
 clax status                          # show whether the daemon is running
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
-clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex or pi
+clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
 clax stop                            # stop the daemon
 clax serve --bind 0.0.0.0            # serve on the LAN (stop a running daemon first)
 clax init                            # register the plugins with each harness (clax uninit removes them)
@@ -111,7 +119,7 @@ registrations that pointed at an old or moved checkout, and removes those
 under Clax's previous name. Then remove binaries that nothing should run:
 check `which -a clax`, and delete an old `~/.local/bin/clax` or
 `~/.clax/bin/clax`. The plugins no longer read `CLAX_SOURCE_DIR`; unset it
-wherever you set it. Check with `clax doctor --agent <claude|codex|pi>`.
+wherever you set it. Check with `clax doctor --agent <claude|codex|pi|grok>`.
 
 A newer daemon is never replaced by an older `clax`. After installing an
 older version, run `clax stop` once. An older daemon is replaced by the
@@ -141,13 +149,14 @@ change rebuilds. `just dev` with no harness, or with an option first
 `just doctor` run the checkout's build on `~/.clax-dev` (`just serve` on
 7481). `just watch` needs `cargo-watch` (`cargo install cargo-watch`).
 
-**An agent on your working tree: `just dev claude|codex|pi`.** It builds
+**An agent on your working tree: `just dev claude|codex|grok|pi`.** It builds
 `clax`, copies it into a temporary directory put first on `PATH` (removed
 when the session ends), and starts the harness on `~/.clax-dev`:
 
 ```
 just dev claude
 just dev codex
+just dev grok
 just dev pi
 just dev claude --resume  # extra arguments go to the harness
 ```
@@ -162,6 +171,9 @@ just dev claude --resume  # extra arguments go to the harness
   installed Clax plugin, with your own `~/.codex` as it is, on the fresh
   build and `~/.clax-dev`. To try plugin, skill or hook changes in Codex, run
   `just install`.
+- Grok works like Codex: `just dev grok` runs your installed clax-grok
+  plugin, with your own `~/.grok`, on the fresh build and `~/.clax-dev`. To
+  try plugin, skill or hook changes in Grok, run `just install`.
 
 Edit the plugin, skill or hooks, then start a new `just dev` session to pick
 them up. A dev-home daemon left by an earlier `just dev`, whose temporary
