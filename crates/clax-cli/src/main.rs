@@ -35,7 +35,7 @@ pub enum Cmd {
     /// Show whether a daemon is running.
     Status(commands::status::Args),
     /// Publish a page (and files) as a new artifact or a new version.
-    Publish(commands::publish::Args),
+    Publish(Box<commands::publish::Args>),
     /// List artifacts, or the files of one.
     List(commands::list::Args),
     /// Read a published file of an artifact.

@@ -4,6 +4,7 @@
 
 pub mod artifacts;
 pub mod assets;
+pub mod changelog;
 pub mod docs;
 pub mod feedback;
 pub mod migrations;

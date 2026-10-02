@@ -143,11 +143,16 @@ impl Record {
     }
 }
 
+/// [`clean_line`] bounded by [`MAX_MESSAGE_CHARS`].
+pub fn clean_message(raw: &str) -> (Option<String>, bool) {
+    clean_line(raw, MAX_MESSAGE_CHARS)
+}
+
 /// `raw` as one line: whitespace runs (line and paragraph separators included)
 /// become one space, other control characters are dropped, the ends are
-/// trimmed. Empty is `None`. Past [`MAX_MESSAGE_CHARS`] it is cut to one
+/// trimmed. Empty is `None`. Past `max` characters it is cut to one
 /// character less plus `…`; the flag says so.
-pub fn clean_message(raw: &str) -> (Option<String>, bool) {
+pub fn clean_line(raw: &str, max: usize) -> (Option<String>, bool) {
     let kept: String = raw
         .chars()
         .filter(|c| c.is_whitespace() || !c.is_control())
@@ -156,10 +161,10 @@ pub fn clean_message(raw: &str) -> (Option<String>, bool) {
     if one.is_empty() {
         return (None, false);
     }
-    if one.chars().count() <= MAX_MESSAGE_CHARS {
+    if one.chars().count() <= max {
         return (Some(one), false);
     }
-    let mut cut: String = one.chars().take(MAX_MESSAGE_CHARS - 1).collect();
+    let mut cut: String = one.chars().take(max - 1).collect();
     cut.push('…');
     (Some(cut), true)
 }

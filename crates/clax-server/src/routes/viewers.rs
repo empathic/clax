@@ -1,8 +1,9 @@
 //! `GET/PUT /api/viewers/me`: the browser viewer behind the `clax_viewer`
-//! cookie; `GET /api/viewers`: other viewers by public ID or name. All refuse
+//! cookie; `GET/PUT /api/viewers/me/seen`: its version seen marks;
+//! `GET /api/viewers`: other viewers by public ID or name. All refuse
 //! a request with a foreign `Origin` ([`SameOrigin`]).
 
-use super::artifacts::body;
+use super::artifacts::{body, parse_id};
 use crate::error::ApiError;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, ViewerCookie, set_cookie};
@@ -13,9 +14,9 @@ use axum::extract::rejection::{JsonRejection, QueryRejection};
 use axum::http::HeaderMap;
 use axum::http::header::SET_COOKIE;
 use axum::response::{IntoResponse, Response};
-use clax_core::new_ulid;
+use clax_core::{CoreError, new_ulid};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{Value, json};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,4 +137,64 @@ pub async fn lookup(
             .map(|v| json!({"id": v.public_id, "display_name": v.display_name}))
             .collect::<Vec<_>>()
     })))
+}
+
+#[derive(Deserialize)]
+pub struct SeenQuery {
+    artifact: String,
+}
+
+/// `GET /api/viewers/me/seen?artifact=<aid>`: `{seen}`, the highest version
+/// this viewer has viewed unpinned; null for none or no cookie.
+pub async fn seen(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    q: Result<Query<SeenQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let id = parse_id(&q.artifact)?;
+    let n = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            match viewer.0.as_deref() {
+                Some(cookie) => match st.get_viewer(cookie)? {
+                    Some(v) => st.seen(&v.id, &id),
+                    None => Ok(None),
+                },
+                None => Ok(None),
+            }
+        })
+        .await?;
+    Ok(Json(json!({"seen": n})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SeenBody {
+    artifact_id: String,
+    version: u32,
+}
+
+/// `PUT /api/viewers/me/seen`: raises the mark (never lowers it); `{seen}`.
+/// 400 `no_viewer` without a viewer cookie.
+pub async fn set_seen(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    req: Result<Json<SeenBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let b = body(req)?;
+    let id = parse_id(&b.artifact_id)?;
+    let cookie = viewer
+        .0
+        .ok_or_else(|| ApiError::bad_request("no_viewer", "open /api/viewers/me first"))?;
+    let n = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            let v = st.upsert_viewer(&cookie, None)?;
+            st.mark_seen(&v.id, &id, b.version)
+        })
+        .await?;
+    Ok(Json(json!({"seen": n})))
 }

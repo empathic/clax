@@ -1261,7 +1261,7 @@ entry of the shell's own; copy link includes it.
 |---|---|---|
 | `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
-| `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}` |
+| `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |

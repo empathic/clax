@@ -696,3 +696,52 @@ async fn working_refuses_bad_threads_and_the_sessionless_endpoint() {
         .unwrap();
     assert_eq!(err(r), "no_session");
 }
+
+#[tokio::test]
+async fn publish_carries_a_note_and_links_addressed_and_working_threads() {
+    let ts = TestServer::spawn().await;
+    let (tools, sid) = session_tools(&ts).await;
+    let (v1, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<h2>Goals</h2>".into()),
+                title: Some("T".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = v1["artifact_id"].as_str().unwrap().to_string();
+    let t1 = ts.thread(&aid, 1, "@agent a").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let t2 = ts.thread(&aid, 1, "plain b").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.get_authed(&format!("/api/sessions/{sid}/feedback?tier=piggyback"))
+        .await;
+    let (v2, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                id: Some(aid.clone()),
+                html: Some("<h2>Goals</h2><p>2</p>".into()),
+                note: Some("Two columns".into()),
+                addresses: Some(vec![t2.clone()]),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(v2["note"], "Two columns");
+    assert_eq!(v2["note_truncated"], false);
+    assert_eq!(v2["addressed"], json!([t2, t1]));
+    let t: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{t1}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["thread"]["status"], "open");
+}

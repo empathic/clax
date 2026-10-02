@@ -88,6 +88,10 @@ pub struct PublishArgs {
     pub label: Option<String>,
     /// Runtime capabilities the page declares.
     pub capabilities: Option<Value>,
+    /// A short change note for the person, at most 280 characters.
+    pub note: Option<String>,
+    /// IDs of the comment threads this version addresses.
+    pub addresses: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -817,6 +821,15 @@ impl ClaxTools {
         if let Some(c) = a.capabilities {
             body["capabilities"] = c;
         }
+        if let Some(n) = a.note {
+            body["note"] = json!(n);
+        }
+        if let Some(t) = a.addresses {
+            for tid in &t {
+                check_thread_id(tid)?;
+            }
+            body["addresses"] = json!(t);
+        }
         let res = match target {
             None => self.client.create(&body).await,
             Some(id) => {
@@ -848,6 +861,9 @@ impl ClaxTools {
             "version": res["version"]["n"],
             "title": res["artifact"]["title"],
             "files": files,
+            "note": res["version"]["note"],
+            "note_truncated": res["note_truncated"],
+            "addressed": res["version"]["addresses"],
         }))
     }
 
@@ -1540,7 +1556,7 @@ pub fn open_in_browser(url: &str) -> bool {
 #[tool_router]
 impl ClaxTools {
     #[tool(
-        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number."
+        description = "Publish an HTML page as a new artifact, or as a new version of an existing one (pass `id` or `url`, with `if_version`). Give the page as `html` or `file_path`, plus optional supporting `files`. Returns the artifact ID, its URL for the person, and the new version number. Add a short `note` (at most 280 characters) saying what changed, and list the comment threads this version addresses in `addresses`; threads you were marked working on are added for you. The person sees both as the version's changelog; nothing is resolved by it."
     )]
     pub async fn publish(
         &self,
@@ -1642,7 +1658,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Resolve a comment thread that was sent to you, once you have acted on it and replied. Threads not sent to the agent are left alone (`resolved: false` with `guidance`)."
+        description = "Resolve a comment thread that was sent to you, once you have acted on it and replied. Threads not sent to the agent are left alone (`resolved: false` with `guidance`). A thread no version lists yet is listed as addressed in the artifact's current version."
     )]
     pub async fn comments_resolve(
         &self,

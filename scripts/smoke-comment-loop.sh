@@ -265,7 +265,20 @@ if len(http("GET", f"/api/artifacts/{aid}/threads/{plain['id']}")["thread"]["com
 ok("a reply on a plain thread returns guidance and writes nothing")
 
 # 6b. Every HTML page is commentable: a thread on a second page names it in the payload.
-v2, _ = shim.call("publish", {"id": aid, "html": page, "files": {"about.html": {"content": "<main><h2>Our team</h2></main>"}}})
+shim.call("working", {"url_or_id": aid, "thread_ids": [sent_at["thread"]]})
+v2, _ = shim.call("publish", {"id": aid, "html": page, "note": "Added the team page",
+                              "addresses": [plain["id"]],
+                              "files": {"about.html": {"content": "<main><h2>Our team</h2></main>"}}})
+if v2["note"] != "Added the team page" or v2["addressed"] != [plain["id"], sent_at["thread"]]:
+    fail(f"publish note and addresses: {v2}")
+for tid in (plain["id"], sent_at["thread"]):
+    linked = http("GET", f"/api/artifacts/{aid}/threads/{tid}")["thread"]
+    if linked["addressed_in"] != [v2["version"]] or linked["status"] != "open":
+        fail(f"addressed_in after publish: {linked}")
+ok(f"publish v{v2['version']} carried its note and listed the named thread and the one it was working on, both still open")
+if working(aid):
+    fail(f"working after the publish: {working(aid)}")
+ok("working: the publish cleared the session's working record")
 t4 = browser_thread(aid, "@agent name the team", file="about.html", quote="Our team", version=v2["version"])
 if t4["anchor"]["file"] != "about.html":
     fail(f"thread on about.html: {t4['anchor']}")
