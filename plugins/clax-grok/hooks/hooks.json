@@ -1,0 +1,37 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent grok session-start",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent grok stop",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent grok session-end",
+            "timeout": 2
+          }
+        ]
+      }
+    ]
+  }
+}

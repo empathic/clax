@@ -33,6 +33,8 @@ SKILLS = [
      "as the `clax` MCP server"),
     ("plugins/pi/skills/clax/SKILL.md", "plugins/pi/package.json", "clax_",
      "from the Clax Pi extension, named `clax_<tool>`"),
+    ("plugins/clax-grok/skills/clax/SKILL.md", "plugins/clax-grok/.grok-plugin/plugin.json", "",
+     "as the `clax_grok` MCP server"),
 ]
 
 
@@ -51,6 +53,7 @@ DOC_LISTS = [
     ("plugins/claude-code/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/clax/README.md", r"^- The `clax` MCP server [^\n]*?: ([a-z-]+) tools", ""),
     ("plugins/pi/README.md", r"^- ([A-Z][a-z-]+) tools: ", "clax_"),
+    ("plugins/clax-grok/README.md", r"^- The `clax_grok` MCP server [^\n]*?: ([a-z-]+) tools", ""),
 ]
 ONES = ("zero one two three four five six seven eight nine ten eleven twelve thirteen "
         "fourteen fifteen sixteen seventeen eighteen nineteen").split()
@@ -66,7 +69,8 @@ def number(word):
 
 
 def names(text, prefix=""):
-    found = set(re.findall(r"`([a-z_]+)`", text)) - {"clax"}
+    # Server names, and Grok's `use_tool`, which a list may name beside the tools.
+    found = set(re.findall(r"`([a-z_]+)`", text)) - {"clax", "clax_grok", "use_tool"}
     return {n[len(prefix):] for n in found if n.startswith(prefix)}
 
 

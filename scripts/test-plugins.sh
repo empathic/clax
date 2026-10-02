@@ -18,7 +18,7 @@ frontmatter() {
 
 json_files=()
 while IFS= read -r f; do json_files+=("$f"); done < <(find plugins -name node_modules -prune -o -type f -name '*.json' -print | sort)
-json_files+=(.claude-plugin/marketplace.json .agents/plugins/marketplace.json)
+json_files+=(.claude-plugin/marketplace.json .agents/plugins/marketplace.json .grok-plugin/marketplace.json)
 for f in "${json_files[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
     if python3 -m json.tool "$f" >/dev/null 2>&1; then pass "$f is valid JSON"; else fail "$f is not valid JSON"; fi
@@ -26,11 +26,13 @@ done
 
 for f in plugins/claude-code/.claude-plugin/plugin.json plugins/claude-code/.mcp.json plugins/claude-code/hooks/hooks.json \
     plugins/clax/.codex-plugin/plugin.json plugins/clax/.mcp.json plugins/clax/hooks/hooks.json \
-    plugins/clax/skills/clax/SKILL.md plugins/clax/README.md; do
+    plugins/clax/skills/clax/SKILL.md plugins/clax/README.md \
+    plugins/clax-grok/.grok-plugin/plugin.json plugins/clax-grok/.mcp.json plugins/clax-grok/hooks/hooks.json \
+    plugins/clax-grok/skills/clax/SKILL.md plugins/clax-grok/README.md; do
     [ -f "$f" ] || fail "$f is missing"
 done
 
-for plugin in plugins/claude-code plugins/clax; do
+for plugin in plugins/claude-code plugins/clax plugins/clax-grok; do
     # .mcp.json: a bare map of servers or a mcpServers wrapper, each with a command.
     if python3 - "$plugin/.mcp.json" 2>/dev/null <<'PY'
 import json, sys
@@ -71,6 +73,62 @@ ok = ok and server.get("env_vars") == ["CLAX_HOME", "CLAX_NO_OPEN", "CLAX_BIN", 
 sys.exit(0 if ok else 1)
 PY
 then pass "the Codex MCP server and hooks use --agent codex"; else fail "the Codex MCP server and hooks must run the shim with --agent codex"; fi
+
+# The Grok plugin: its own name (Grok also discovers the Claude Code plugin,
+# named clax), a server named clax_grok run as the grok agent, and hooks for
+# SessionStart, Stop and SessionEnd only, all through the quoted plugin root.
+if python3 - plugins/clax-grok "$(scripts/check-version.sh --print)" 2>/dev/null <<'PY'
+import json, os, sys
+root, version = sys.argv[1], sys.argv[2]
+m = json.load(open(os.path.join(root, ".grok-plugin/plugin.json")))
+servers = json.load(open(os.path.join(root, ".mcp.json")))["mcpServers"]
+hooks = json.load(open(os.path.join(root, "hooks/hooks.json")))["hooks"]
+ok = m.get("name") == "clax-grok" and m.get("version") == version
+ok = ok and list(servers) == ["clax_grok"]
+s = servers["clax_grok"]
+ok = ok and s["command"] == "${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh"
+ok = ok and s.get("args") == ["exec", "mcp", "--agent", "grok"]
+ok = ok and s.get("env") == {"GROK_PLUGIN_ROOT": "${GROK_PLUGIN_ROOT}"}
+ok = ok and sorted(hooks) == ["SessionEnd", "SessionStart", "Stop"]
+want = {"SessionStart": ("session-start", 5), "Stop": ("stop", 10), "SessionEnd": ("session-end", 2)}
+prefix = '"${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent grok '
+for event, (name, timeout) in want.items():
+    cmds = [h for e in hooks[event] for h in e["hooks"]]
+    ok = ok and len(cmds) == 1 and cmds[0]["command"] == prefix + name and cmds[0]["timeout"] == timeout
+sys.exit(0 if ok else 1)
+PY
+then pass "plugins/clax-grok: name clax-grok, server clax_grok as --agent grok, three hooks"
+else fail "plugins/clax-grok's manifest, .mcp.json or hooks.json is not as specified (spec §13, Grok Build)"; fi
+
+# No two plugins that Grok can load share an MCP server name: Grok keeps the
+# first definition of a name and drops the rest, so a shared name would let
+# one Clax copy hide the other.
+if python3 - plugins/claude-code/.mcp.json plugins/clax-grok/.mcp.json 2>/dev/null <<'PY'
+import json, sys
+names = []
+for p in sys.argv[1:]:
+    d = json.load(open(p))
+    names += list(d.get("mcpServers", d))
+sys.exit(0 if len(names) == len(set(names)) else 1)
+PY
+then pass "the Claude Code and Grok plugins' MCP server names differ"
+else fail "the Claude Code and Grok plugins declare the same MCP server name"; fi
+
+# The Grok marketplace index lists clax-grok at ./plugins/clax-grok.
+if python3 - .grok-plugin/marketplace.json 2>/dev/null <<'PY'
+import json, os, sys
+plugins = json.load(open(sys.argv[1])).get("plugins", [])
+ok = [p.get("name") for p in plugins] == ["clax-grok"] and plugins[0].get("source") == "./plugins/clax-grok" and os.path.isdir("plugins/clax-grok")
+sys.exit(0 if ok else 1)
+PY
+then pass ".grok-plugin/marketplace.json lists clax-grok"
+else fail ".grok-plugin/marketplace.json must list only clax-grok at ./plugins/clax-grok"; fi
+
+# The wrapper's stand-down text is the binary's, word for word.
+want="$(sed -n 's/^pub const GROK_STANDDOWN: &str = "\(.*\)";$/\1/p' crates/clax-mcp/src/standdown.rs)"
+got="$(sed -n 's/^GROK_STANDDOWN="\(.*\)"$/\1/p' scripts/ensure-clax.sh | sed 's/\\`/`/g')"
+if [ -n "$want" ] && [ "$want" = "$got" ]; then pass "the wrapper's GROK_STANDDOWN matches crates/clax-mcp/src/standdown.rs"
+else fail "the wrapper's GROK_STANDDOWN differs from crates/clax-mcp/src/standdown.rs"; fi
 
 # The Claude Code hooks quote the plugin root, which may contain spaces.
 if python3 - plugins/claude-code/hooks/hooks.json 2>/dev/null <<'PY'
@@ -163,7 +221,7 @@ sys.exit(0 if ok else 1)
 PY
 then pass "plugins/clax/.codex-plugin/plugin.json has the pinned fields"; else fail "plugins/clax/.codex-plugin/plugin.json is missing pinned fields"; fi
 
-for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh; do
+for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh; do
     if cmp -s scripts/ensure-clax.sh "$wrapper"; then
         pass "$wrapper matches scripts/ensure-clax.sh"
     else
@@ -189,10 +247,10 @@ for f in "${skills[@]}"; do
     done
 done
 
-# The three skill copies (Claude Code, Codex, Pi) share the page contract word
-# for word (docs/contract.md carries the same section), and "Comment loop" and
-# "What is not yet available" are the same in all three.
-skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md)
+# The four skill copies (Claude Code, Codex, Pi, Grok Build) share the page
+# contract word for word (docs/contract.md carries the same section), and
+# "Comment loop" and "What is not yet available" are the same in all four.
+skill_copies=(plugins/claude-code/skills/clax/SKILL.md plugins/clax/skills/clax/SKILL.md plugins/pi/skills/clax/SKILL.md plugins/clax-grok/skills/clax/SKILL.md)
 # The lines from "## <heading>" up to, not including, the next "## " heading.
 section() {
     awk -v h="## $2" '
@@ -201,6 +259,15 @@ section() {
         on { print }
     ' "$1"
 }
+# The Grok skill tells the agent to start one persistent monitor on
+# clax feedback follow, with the values from clax_grok__status.
+grok_skill=plugins/clax-grok/skills/clax/SKILL.md
+live="$(section "$grok_skill" "Live feedback in Grok")"
+if [ -n "$live" ] && echo "$live" | grep -qF 'feedback follow --agent grok --harness-session' \
+    && echo "$live" | grep -qF 'persistent: true' && echo "$live" | grep -qF 'push.available' \
+    && echo "$live" | grep -qF 'clax_grok__comments_read'; then
+    pass "$grok_skill has the Live feedback in Grok section"
+else fail "$grok_skill needs a '## Live feedback in Grok' section naming the monitor command, persistent: true, push.available and clax_grok__comments_read"; fi
 for f in "${skill_copies[@]}"; do
     if [ ! -f "$f" ]; then fail "$f is missing"; continue; fi
     if [ "$(frontmatter "$f" name)" = "clax" ]; then pass "$f is named clax"; else fail "$f frontmatter name is not clax"; fi
@@ -235,7 +302,7 @@ for f in "${skill_copies[@]}"; do
     if [ -n "$(section "$f" "Comment loop")" ]; then pass "$f has a Comment loop section"; else fail "$f has no '## Comment loop' section"; fi
 done
 same_section "Comment loop" "${skill_copies[@]}"
-# The runtime capabilities section is the same in the three skills and in
+# The runtime capabilities section is the same in the four skills and in
 # docs/contract.md, and it points at the contract files the daemon serves
 # (built in from web/contract/0.2.61/, which must hold all of them).
 for f in "${skill_copies[@]}" docs/contract.md; do
