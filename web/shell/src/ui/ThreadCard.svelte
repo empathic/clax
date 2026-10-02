@@ -1,10 +1,3 @@
-<script module lang="ts">
-  // The last reply-focus request a card acted on, shared by every card, so a
-  // request moves focus once, to the card selected when it is made (or when
-  // the sidebar opens for it), and selecting another card later does not.
-  let consumed = 0;
-</script>
-
 <script lang="ts">
   import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel, resolvedByLabel } from "../threads";
@@ -13,18 +6,10 @@
 
   type Props = {
     t: Thread; n?: number; now: Date; me?: Viewer | null; selected: string | null; file: string | null;
-    /** Grows to move focus to the selected card's reply field. */
-    focusReply?: number;
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, me, selected, file, focusReply = 0, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, me, selected, file, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
-  let replyInput: HTMLInputElement | undefined = $state();
-  let head: HTMLButtonElement | undefined = $state();
-  $effect(() => {
-    if (focusReply < consumed) consumed = 0;
-    if (focusReply > consumed && selected === t.id && replyInput) { consumed = focusReply; replyInput.focus(); }
-  });
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
 </script>
@@ -34,7 +19,7 @@
 <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)}
   onmouseenter={() => onHover?.(t)} onmouseleave={() => onHover?.(null)}>
   <header>
-    <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
+    <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
       >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
       >{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">v{t.version_n}</span
     ></button>
@@ -58,8 +43,8 @@
   {/if}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
   <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => { e.preventDefault(); send(); }}>
-    <input aria-label="Reply" placeholder="Reply…" bind:value={reply} bind:this={replyInput}
-      onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } else if (e.key === "Escape") head?.focus(); }} />
+    <input aria-label="Reply" placeholder="Reply…" bind:value={reply}
+      onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } }} />
     <button type="submit">Reply</button>
   </form>
 </article>

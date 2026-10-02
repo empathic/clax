@@ -151,28 +151,4 @@ describe("Sidebar", () => {
       vi.useRealTimers();
     }
   });
-
-  it("moves focus to the selected card's reply field when asked, once per request", () => {
-    const threads: Thread[] = ["a", "b"].map(id => ({ ...base, id, anchor, status: "open" as const, sent_to_agent: false, comments: [comment(`${id}1`, "viewer", "Alex", "note")] }));
-    const root = document.createElement("div");
-    document.body.append(root);
-    const props = { threads, resolved: {}, now: new Date(base.created_at), selected: "a", focusReply: 0, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
-    const view = mount(Sidebar, props, root);
-    const reply = (id: string) => root.querySelector(`[data-thread="${id}"] .reply input`);
-    expect(document.activeElement).not.toBe(reply("a"));
-    view.update({ ...props, focusReply: 1 });
-    expect(document.activeElement).toBe(reply("a"));
-    (document.activeElement as HTMLElement).blur();
-    view.update({ ...props, focusReply: 1, selected: "b" });
-    expect(document.activeElement).toBe(document.body);
-    view.update({ ...props, focusReply: 2, selected: "b" });
-    expect(document.activeElement).toBe(reply("b"));
-    // Escape gives focus back to the card, where the shell's keys act again; the text stays.
-    (reply("b") as HTMLInputElement).value = "draft";
-    flush(() => reply("b")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
-    expect(document.activeElement).toBe(root.querySelector('[data-thread="b"] .card-head'));
-    expect((reply("b") as HTMLInputElement).value).toBe("draft");
-    view.unmount();
-    root.remove();
-  });
 });

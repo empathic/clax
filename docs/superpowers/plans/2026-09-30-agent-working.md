@@ -111,7 +111,7 @@ Expected: `ok`. Anything else means the port is not merged: stop.
     - Tests: `api_batch.rs`, `api_push.rs` "a batch reaches codex as one queued message", and the hook, MCP and Pi goldens.
 11. **Selection and keyboard state.**
     - Selection lives only in the controller and is pruned whenever threads change.
-    - Shortcut keys never fire while focus is in a text field, and never reach into the frame (decided: Q6).
+    - Shortcut keys (C and `?` only) never fire while focus is in a text field or a dialog, never reach into the frame, and stay held while the viewer may still be typing for the page (decided: Q6).
 12. **No turn language anywhere.** The grep gate in Global Constraints, and the owner's model: comment threads with version-tagged history.
 
 ---
@@ -258,19 +258,12 @@ Plugins and scripts:
 - **Motion.**
   - The mark's halves meet over 300ms. The working dot breathes over 1.8s. A 2px green sweep runs along the top bar's bottom edge while an agent works.
   - Under `prefers-reduced-motion: reduce` nothing moves: no sweep, no breathing (the dot stays solid), and no transitions.
-- **Keys** (Task 3). `?` opens the sheet, and Esc closes it or leaves comment mode. The keys are:
+- **Keys** (Task 3). The shell has three keys, and no task adds one:
   - C: comment mode;
-  - T: threads;
-  - J and K: next and previous thread;
-  - Enter: reply to the selected thread;
-  - S: send it;
-  - R: resolve it;
-  - X: tick it;
-  - Shift+S: send the ticked threads;
-  - V: versions;
-  - P: people.
+  - `?`: the sheet listing the keys;
+  - Esc: leave comment mode, or close a menu or the sheet.
 
-  Keys act only when focus is in the shell and not in a text field (decided: Q6).
+  No key acts on a thread, a version or the people panel; those are reached by pointer or by Tab. Keys act only when focus is in the shell and not in a text field or a dialog (decided: Q6), and C and `?` stay held while the viewer may still be typing for the page (spec §8, "Keys").
 - **Easter eggs.**
   - "rally of 10": a muted chip on the gallery card of an artifact at v10, and once per viewer in the top bar summary when they first view v10 (decided: Q9).
   - Click the mark and its halves meet; click again and they part.
@@ -305,7 +298,7 @@ Comments written before migration 11 have no author ID and count for nobody. An 
 | `looked` | `{thread ID: looked_at}` for this artifact's threads (served only on the artifact view) |
 
 - An artifact **needs your eyes** when any of these holds: `addressed` is non-empty, `seen` is non-null and less than `current_version`, or `new_replies` is non-empty. A never-viewed artifact (`seen` null) does not need your eyes for its version alone.
-- **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card, its pin, or J and K) (decided: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
+- **Looking** at a thread is its card being at least half visible in the sidebar for 1 second, or the thread being selected (by its card or its pin) (decided: Q4). Looking writes `viewer_threads(viewer_id, thread_id, looked_at)`, which clears that thread from `addressed` and `new_replies`.
 - **Viewing** the latest version at `/a/<aid>` (not a `/v/<n>` URL) writes `viewer_seen`. Resolving is a separate act, and it is never needed to clear anything.
 - The Addressed in vN group is decided when the view loads, and again when a new version arrives. Looking at a thread writes the mark at once, so the gallery clears, but the thread stays in the group until the view is decided again (decided: Q4).
 
@@ -625,14 +618,18 @@ Replace the Header bullet with:
   published it and when, the threads it addressed as numbered chips, what
   this viewer did about them, and its note; each a link to that version
   (older versions read-only). A full sheet at phone width.
-- People panel (P, or the roster): one row per person (threads they are in,
+- People panel (the roster): one row per person (threads they are in,
   presence and location, the last version they viewed) and per agent (the
   threads it is working on and whose, elapsed time with a haiku, or idle),
   and the viewer's own name, edited here.
-- Keys: `?` opens a sheet listing them; C comment mode; Esc leaves it or
-  closes a menu; T threads; J and K next and previous thread; Enter reply;
-  S send; R resolve; X tick; Shift+S send the ticked threads; V versions;
-  P people. Keys act only when focus is in the shell and not in a text field.
+- Keys: C comment mode; `?` opens a sheet listing the keys; Esc leaves
+  comment mode or closes a menu or the sheet. There are no others. Keys act
+  only when focus is in the shell and not in a text field or a dialog, and
+  C and `?` are held while the viewer may still be typing for the page
+  (after the shell window loses focus, after a prompt or composer the page
+  raised opens or closes, and after a reload the page's publish caused)
+  until the viewer presses in the shell or focus lands on one of its
+  controls.
 - Theme: follows the system; the switch flips light and dark, and a choice
   equal to the system's clears back to following it.
 - Nothing Clax draws covers or moves the artifact, except pins and the
@@ -899,7 +896,7 @@ Spec §5: in the `feedback(...)` bullet, add `batch_id` to the column list, and 
 
 Spec §6: after the `.../threads/<tid>/send` sentence in the Comments bullet, add: ``POST .../threads:send`` (no token; foreign `Origin` refused, as the single send) takes `{thread_ids, note?, to?}` and sends 1 to 20 threads as one batch, all or nothing. It answers `{batch, sent, unchanged, threads}`, or 400 `invalid_args` / `note_too_long` / `unknown_agent` / `unknown_thread` / `thread_resolved`, or 409 `nothing_to_send`, and writes nothing on any error. Thread views carry `sends`, the batches that sent them. The single send takes an optional JSON body `{to}` (an agent handle; 400 `unknown_agent` when it names no live agent on the artifact).``
 
-Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click ticks a range; X ticks the selected thread). While any is ticked, a selection bar at the top of the sidebar reads `N selected · sent together`, with Clear, `Send N to <agent> ▾` and an optional one-line note (Cmd+Enter or Ctrl+Enter sends; Shift+S sends). A `Send N unsent to <agent>` button sits at the sidebar top whenever open threads have not been sent. A sent thread's history shows the send and its note. A thread that disappears leaves the selection.``
+Spec §8: in the Thread sidebar bullet, append: ``Open thread cards carry a checkbox (Shift-click ticks a range). While any is ticked, a selection bar at the top of the sidebar reads `N selected · sent together`, with Clear, `Send N to <agent> ▾` and an optional one-line note (Cmd+Enter or Ctrl+Enter sends). A `Send N unsent to <agent>` button sits at the sidebar top whenever open threads have not been sent. A sent thread's history shows the send and its note. A thread that disappears leaves the selection.``
 
 Spec §9: append to the **comments** bullet: ``There is no batch form of `sendToClaude`: a page sends threads it created one call at a time, each in the strict gesture tier; batches are the viewer's, from the sidebar.`` In the Clax extension sentence from Step 4, after `under either declaration form`, insert ``(for `composer_only`, a Clax extension to that form, which otherwise grants only `openComposer` and `anchorFor`)``.
 
@@ -1329,21 +1326,20 @@ Do not stage the screenshots. They are evidence for the report, not source.
 This task adds:
 - the Echo symbol, as a favicon, as a component and as markup the skeleton can carry;
 - a theme switch that follows the system until the viewer flips it, with no flash before first paint (decided: Q2);
-- the shell's keys, with a `?` sheet that loads only when asked for. Keys act only while focus is in the shell (decided: Q6).
+- the shell's three keys (C, `?` and Esc), with a `?` sheet that loads only when asked for. Keys act only while focus is in the shell (decided: Q6), and C and `?` stay held while the viewer may still be typing for the page.
 
-Each later task that adds a key also adds its row to the sheet.
+No later task adds a key.
 
 **Files:**
 - Create: `web/shell/public/_clax/mark.svg`, `web/shell/src/view/mark.ts`, `web/shell/src/ui/Mark.svelte`, `web/shell/src/view/theme-model.ts`, `web/shell/src/view/theme-model.test.ts`, `web/shell/src/ui/ThemeSwitch.svelte`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/ui/KeysSheet.svelte`, `web/shell/src/echo-chrome.test.ts`
-- Modify: `web/shell/index.html`, `web/shell/artifact.html`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
+- Modify: `web/shell/index.html`, `web/shell/artifact.html`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/Gallery.svelte`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
 
 **Interfaces:**
 - `view/mark.ts`: `export const MARK_SVG: string` (30×24, `class="mk"`, `aria-hidden="true"`).
 - `ui/Mark.svelte`: `{ size?: "bar" | "hero"; apart?: boolean; playful?: boolean }`. Only the gallery's mark is playful. The top bar's mark stays a plain link to the gallery, so a click there navigates (decided: Q9). With `playful`, it is a button whose click makes the halves meet, and a second click parts them (`aria-pressed`). Without it, the mark is decoration.
 - `view/theme-model.ts`: `type Scheme = "light" | "dark"`, `type Choice = Scheme | null`, `THEME_KEY = "clax.theme"`, `readChoice(): Choice`, `systemScheme(): Scheme`, `shownScheme(choice: Choice, system: Scheme): Scheme`, `flip(choice: Choice, system: Scheme): Choice`, `applyChoice(c: Choice, root?: HTMLElement): void`.
-- `view/keys.ts`: `type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" }`, `export const KEY_ROWS: KeyRow[]`.
-- `ArtifactController`: `ViewState.sheet: "keys" | null` (initially `null`) and `ViewState.replyFocus: number` (initially `0`). New methods: `shortcut(a: KeyAction): void`, `closeSheet(): void`, and `private order(s?: ViewState): Thread[]`, which returns the sidebar's order (`open`, then `detached`).
-- `ThreadCard` gains `focusReply?: number`. When the card is selected and the number grows, its reply field takes focus.
+- `view/keys.ts`: `type KeyAction = "help" | "comment"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" }`, `export const KEY_ROWS: KeyRow[]`, `holdKeysAcrossLoad(): void` and `keysHeldAtLoad(): boolean`.
+- `ArtifactController`: `ViewState.sheet: "keys" | null` (initially `null`). New methods: `shortcut(a: KeyAction): boolean`, `closeSheet(): void` and `sheetFailed(): void`. A private `keysOwned` holds C and `?` while the viewer may still be typing for the page.
 
 - [ ] **Step 1: Pure models, tests first**
 
@@ -1380,35 +1376,42 @@ describe("theme-model", () => {
 `web/shell/src/view/keys.test.ts`:
 
 ```ts
-import { describe, expect, it } from "vitest";
-import { KEY_ROWS, keyAction } from "./keys";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { KEY_ROWS, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 
 const k = (key: string, over: Partial<KeyboardEvent> = {}, target: Element = document.body) =>
   ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, isComposing: false, repeat: false, target, ...over }) as unknown as KeyboardEvent;
 
 describe("keys", () => {
-  it("maps the shell's keys", () => {
-    expect(["?", "c", "C", "t", "j", "k", "Enter", "s", "r"].map(x => keyAction(k(x)))).toEqual(["help", "comment", "comment", "threads", "next", "prev", "reply", "send", "resolve"]);
-    expect(keyAction(k("S", { shiftKey: true }))).toBe("sendTicked");
+  it("maps the shell's keys: C (either case) and ?", () => {
+    expect(["?", "c", "C"].map(x => keyAction(k(x)))).toEqual(["help", "comment", "comment"]);
   });
-  it("never acts while typing, composing, repeating, or with a modifier", () => {
+  it("has no other keys", () => {
+    for (const x of ["t", "j", "k", "s", "r", "x", "v", "p", "S", "Enter", " "]) expect(keyAction(k(x)), x).toBeNull();
+  });
+  it("never acts while typing, composing, repeating, with a modifier, or inside a dialog", () => {
     const input = document.createElement("input");
-    const area = document.createElement("textarea");
-    const edit = document.createElement("div");
-    edit.contentEditable = "true";
-    for (const t of [input, area, edit]) expect(keyAction(k("c", {}, t))).toBeNull();
-    expect(keyAction(k("c", { metaKey: true }))).toBeNull();
-    expect(keyAction(k("c", { ctrlKey: true }))).toBeNull();
-    expect(keyAction(k("c", { altKey: true }))).toBeNull();
-    expect(keyAction(k("c", { isComposing: true }))).toBeNull();
-    expect(keyAction(k("j", { repeat: true }))).toBeNull();
-  });
-  it("acts on Enter only outside buttons and links, which Enter already presses", () => {
-    expect(keyAction(k("Enter", {}, document.createElement("button")))).toBeNull();
-    expect(keyAction(k("Enter", {}, document.createElement("a")))).toBeNull();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    const inDialog = document.createElement("button");
+    dialog.append(inDialog);
+    for (const t of [input, inDialog]) expect(keyAction(k("c", {}, t))).toBeNull();
+    for (const over of [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { isComposing: true }, { repeat: true }]) expect(keyAction(k("c", over))).toBeNull();
   });
   it("lists every row the sheet shows, in order", () => {
-    expect(KEY_ROWS.map(r => r.keys.join("+"))).toEqual(["C", "Esc", "T", "J+K", "↵", "S", "R"]);
+    expect(KEY_ROWS.map(r => r.keys.join("+"))).toEqual(["C", "?", "Esc"]);
+  });
+});
+
+describe("keys held across a load the page caused", () => {
+  afterEach(() => { vi.restoreAllMocks(); sessionStorage.clear(); });
+  it("holds the next load once, and holds when storage cannot say", () => {
+    expect(keysHeldAtLoad()).toBe(false);
+    holdKeysAcrossLoad();
+    expect(keysHeldAtLoad()).toBe(true);
+    expect(keysHeldAtLoad()).toBe(false);
+    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("blocked"); });
+    expect(keysHeldAtLoad()).toBe(true);
   });
 });
 ```
@@ -1460,27 +1463,22 @@ export function applyChoice(c: Choice, root: HTMLElement = document.documentElem
 `web/shell/src/view/keys.ts`:
 
 ```ts
-// The shell's keyboard layer (spec §8, "Keys"). A key acts only when focus is
-// in the shell, outside a text field, with no modifier but Shift, and not
-// while an input method composes. Keys pressed inside the artifact's frame
-// belong to the page and never reach here.
-export type KeyAction = "help" | "comment" | "threads" | "next" | "prev" | "reply" | "send" | "resolve" | "versions" | "tick" | "sendTicked" | "people";
+// The shell's keyboard layer (spec §8, "Keys"): C toggles comment mode and ?
+// opens the sheet; Escape is handled where it is heard. A key acts only when
+// focus is in the shell, outside a text field and outside any dialog, with no
+// modifier but Shift, and not while an input method composes. Keys pressed
+// inside the artifact's frame belong to the page and never reach here.
+export type KeyAction = "help" | "comment";
 export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
 export type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" };
 
-const MAP: Record<string, KeyAction> = {
-  "?": "help", c: "comment", C: "comment", t: "threads", j: "next", k: "prev", Enter: "reply", s: "send", S: "sendTicked", r: "resolve",
-};
+const MAP: Record<string, KeyAction> = { "?": "help", c: "comment" };
 
-/** The sheet's rows, in order. Tasks that add a key add its row and its MAP entry. */
+/** The sheet's rows, in order. */
 export const KEY_ROWS: KeyRow[] = [
   { keys: ["C"], what: "Comment mode: click an element or drag an area", action: "comment" },
-  { keys: ["Esc"], what: "Leave comment mode, close a menu", action: "escape" },
-  { keys: ["T"], what: "Show or hide threads", action: "threads" },
-  { keys: ["J", "K"], what: "Next and previous thread; the page scrolls to its pin", action: "next" },
-  { keys: ["↵"], what: "Reply to the selected thread", action: "reply" },
-  { keys: ["S"], what: "Send the selected thread to an agent", action: "send" },
-  { keys: ["R"], what: "Resolve the selected thread", action: "resolve" },
+  { keys: ["?"], what: "This sheet", action: "help" },
+  { keys: ["Esc"], what: "Leave comment mode, close a menu or this sheet", action: "escape" },
 ];
 
 function typing(t: EventTarget | null): boolean {
@@ -1491,12 +1489,35 @@ function typing(t: EventTarget | null): boolean {
 
 export function keyAction(e: KeyLike): KeyAction | null {
   if (e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.repeat || typing(e.target)) return null;
-  if (e.key === "Enter" && e.target instanceof Element && e.target.closest("button, a, summary, [role=button]")) return null;
-  return MAP[e.key] ?? null;
+  // A dialog's keys are its own: a page's consent prompt takes focus while
+  // the viewer may still be typing for the page.
+  if (e.target instanceof Element && e.target.closest("[role=dialog], [aria-modal=true]")) return null;
+  return MAP[e.key.length === 1 ? e.key.toLowerCase() : e.key] ?? null;
+}
+
+const HELD_KEY = "clax.keys-held";
+
+/** Marks the shell load about to happen as the page's doing (its publish
+ * reloading the view), so the next view starts with the keys held. */
+export function holdKeysAcrossLoad(): void {
+  try { sessionStorage.setItem(HELD_KEY, "1"); } catch { /* read back as held */ }
+}
+
+/** Whether this view starts with the keys held: the load was the page's
+ * doing, or storage cannot say. The mark is used up. */
+export function keysHeldAtLoad(): boolean {
+  try {
+    const held = sessionStorage.getItem(HELD_KEY) !== null;
+    if (held) sessionStorage.removeItem(HELD_KEY);
+    return held;
+  } catch {
+    return true;
+  }
 }
 ```
 
 Run: `cd web && npx vitest run shell/src/view/theme-model.test.ts shell/src/view/keys.test.ts`
+Expected: PASS.Run: `cd web && npx vitest run shell/src/view/theme-model.test.ts shell/src/view/keys.test.ts`
 Expected: PASS.
 
 - [ ] **Step 2: The mark, the theme script and the favicon**
@@ -1658,7 +1679,7 @@ describe("Echo chrome", () => {
   <div class="keys-panel" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" tabindex="-1"
     onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(); } }}>
     <h2>Keyboard</h2>
-    <p class="sub">Press ? to open this. Esc closes it. Keys work while the page does not have focus.</p>
+    <p class="sub">Keys work while the page does not have focus.</p>
     <dl>
       {#each KEY_ROWS as r (r.keys.join("+"))}
         <dt>{#each r.keys as key (key)}<kbd>{key}</kbd>{/each}</dt><dd>{r.what}</dd>
@@ -1697,22 +1718,18 @@ async function started(seed: Seed = {}) {
 Import `type Thread` from `../threads`. Existing calls (`started()`) keep their behaviour. Then add:
 
 ```ts
-  it("acts on shell keys: C, T, J and K, ?, and Escape closes the sheet before leaving comment mode", async () => {
+  it("acts on C and ?, Escape closes the sheet before leaving comment mode, and every other key is left to the browser", async () => {
     const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
     await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
-    const key = (k: string, init: KeyboardEventInit = {}) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, ...init }));
-    key("c");
+    const key = (k: string, init: KeyboardEventInit = {}) => {
+      const e = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
+      dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    for (const k of ["t", "j", "k", "s", "r", "Enter"]) expect(key(k), k).toBe(false);
+    expect(key("c")).toBe(true);
     expect(ctl.state.get().commenting).toBe(true);
-    const panel = ctl.state.get().panel;
-    key("t");
-    expect(ctl.state.get().panel).toBe(!panel);
-    key("j");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
-    key("j");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[1].id);
-    key("k");
-    expect(ctl.state.get().selected).toBe(ctl.state.get().threads[0].id);
-    key("?", { shiftKey: true });
+    expect(key("?", { shiftKey: true })).toBe(true);
     expect(ctl.state.get().sheet).toBe("keys");
     key("Escape");
     expect(ctl.state.get()).toMatchObject({ sheet: null, commenting: true });
@@ -1722,58 +1739,41 @@ Import `type Thread` from `../threads`. Existing calls (`started()`) keep their 
   });
 ```
 
+The controller tests also cover the hold on the keys: C and `?` do nothing while the sheet, a page's prompt or the composer is open; after a page's prompt or composer opens or closes, after a window `blur`, and in a view whose load the page caused (`holdKeysAcrossLoad`), they do nothing until a trusted `pointerdown` in the shell or a trusted `focusin` on a shell control outside the body, the frame, any dialog and `.composer`.
+
 Run: `cd web && npx vitest run shell/src/echo-chrome.test.ts shell/src/view/artifact-controller.test.ts`
 Expected: FAIL.
 
 In `view/artifact-controller.ts`:
-- `ViewState` gains `/** The sheet over the view: the keys (spec §8), or none. */ sheet: "keys" | null;` and `/** Bumped to move focus to the selected thread's reply field. */ replyFocus: number;`. The initial values are `null` and `0`.
+- `ViewState` gains `/** The sheet over the view: the keys (spec §8), or none. */ sheet: "keys" | null;`, initially `null`.
 - Add, near `toggleComment`:
 
 ```ts
-  /** The sidebar's order: open threads, then detached ones (J, K, ranges). */
-  private order(s: ViewState = this.s): Thread[] {
-    const sec = sidebarSections(s.threads, s.resolved, s.file, f => this.holds(f, s));
-    return [...sec.open, ...sec.detached];
-  }
-
   closeSheet(): void { this.set({ sheet: null }); }
 
-  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. */
-  shortcut(a: KeyAction): void {
+  /** A shell key (spec §8, "Keys"); `keyAction` decided it applies. Returns
+   * whether it acted. Nothing acts while the sheet, a page's prompt or the
+   * composer is open, or while the keys are held (`keysOwned`). */
+  shortcut(a: KeyAction): boolean {
     const s = this.s;
-    if (!viewReady(s) || s.deleted) return;
-    const sel = s.threads.find(t => t.id === s.selected) ?? null;
-    switch (a) {
-      case "help": this.set({ sheet: "keys" }); return;
-      case "comment": this.toggleComment(); return;
-      case "threads": this.togglePanel(); return;
-      case "next": case "prev": {
-        const list = this.order(s);
-        if (!list.length) return;
-        const i = sel ? list.findIndex(t => t.id === sel.id) : -1;
-        const j = a === "next" ? (i + 1) % list.length : (i <= 0 ? list.length - 1 : i - 1);
-        this.set({ panel: true });
-        this.selectThread(list[j]);
-        return;
-      }
-      case "reply": if (sel) this.set(x => ({ panel: true, replyFocus: x.replyFocus + 1 })); return;
-      case "send": if (sel && sel.status === "open" && !sel.sent_to_agent) this.sendThread(sel); return;
-      case "resolve": if (sel && sel.status === "open") this.resolveThread(sel); return;
-      default: return; // added with their features (versions, tick, sendTicked, people)
-    }
+    if (!viewReady(s) || s.deleted || s.sheet || s.ask || s.draft || !this.keysOwned) return false;
+    if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
+    return true;
   }
 ```
 
+- `private keysOwned = !keysHeldAtLoad();`. It is cleared on every window `blur` and whenever `ask` or `draft` opens or closes (in `set()`), and set again on a trusted `pointerdown` in the shell or a trusted `focusin` on an element that is not `<body>`, not the frame, and not inside `[role=dialog], [aria-modal=true], .composer`.
+- Each `nav.assign` a page publish causes (the capability host's `reload`, the `by_page` SSE `version` event, and `ownPublish.settled`) calls `holdKeysAcrossLoad()` first.
 - In `listen()`'s `onKey`, before the `else if (e.key === "Escape" …)` branch, add a branch for keydown that is not forwarded:
 
 ```ts
       } else if (e.type === "keydown" && e.key !== "Escape") {
         const a = keyAction(e);
-        if (a) { e.preventDefault(); this.shortcut(a); }
+        if (a && this.shortcut(a)) e.preventDefault();
 ```
 
 - Change the Escape branch to close the sheet first: `if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });`.
-- Import `keyAction` and `type KeyAction` from `./keys`, and `sidebarSections` from `./sidebar-model`.
+- Import `keyAction`, `holdKeysAcrossLoad`, `keysHeldAtLoad` and `type KeyAction` from `./keys`.
 
 `ui/StageIsland.svelte`, at the end of the `{#if viewReady(s)}` block:
 
@@ -1782,14 +1782,6 @@ In `view/artifact-controller.ts`:
     {#await import("./KeysSheet.svelte") then { default: KeysSheet }}<KeysSheet onClose={() => ctl.closeSheet()} />{/await}
   {/if}
 ```
-
-`ui/ThreadCard.svelte`: add `focusReply?: number` to `Props`. Add `let replyInput: HTMLInputElement | undefined = $state();` and `bind:this={replyInput}` on the reply `<input>`, and:
-
-```ts
-  $effect(() => { if ((focusReply ?? 0) > 0 && selected === t.id) replyInput?.focus(); });
-```
-
-`ui/Sidebar.svelte` takes `focusReply?: number` and passes it to every `ThreadCard`. `ui/SidebarIsland.svelte` passes `focusReply={s.replyFocus}`.
 
 `ui/TopbarIsland.svelte`: add `<ThemeSwitch />` as the island's last control. Task 4 places it for good. `ui/Gallery.svelte`: add `<ThemeSwitch />` as the header's last child, and replace `<h1>Clax</h1>` with `<Mark playful /><h1>Clax</h1>`.
 
@@ -1832,8 +1824,7 @@ bash scripts/quality_gates.sh; echo "exit=$?"
 git add web/shell/public/_clax/mark.svg web/shell/src/view/mark.ts web/shell/src/ui/Mark.svelte web/shell/src/view/theme-model.ts web/shell/src/view/theme-model.test.ts \
   web/shell/src/ui/ThemeSwitch.svelte web/shell/src/view/keys.ts web/shell/src/view/keys.test.ts web/shell/src/ui/KeysSheet.svelte web/shell/src/echo-chrome.test.ts \
   web/shell/index.html web/shell/artifact.html web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/ui/StageIsland.svelte \
-  web/shell/src/ui/ThreadCard.svelte web/shell/src/ui/Sidebar.svelte web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/TopbarIsland.svelte web/shell/src/ui/Gallery.svelte \
-  web/shell/src/theme.css web/e2e/scenes.ts
+  web/shell/src/ui/TopbarIsland.svelte web/shell/src/ui/Gallery.svelte web/shell/src/theme.css web/e2e/scenes.ts
 git status --short   # staged; the controller commits ("Add the Echo mark, a light and dark switch that follows the system, and the shell's keys with a ? sheet")
 ```
 
@@ -2176,13 +2167,14 @@ Echo thread cards, built from data the shell already has:
 - an `outdated` tag when the element changed in a later version but still exists;
 - `Send to <agent>` named after the publishing agent;
 - group heads with half-disc swatches, with Detached and Resolved collapsed into a tail;
-- Echo pins.
+- Echo pins;
+- the card buttons and pins kept out of reach of input the viewer meant for the page: focus the page drops to the shell's body goes back to the frame, and a pin that just appeared or moved takes no press.
 
 Later tasks add events to the history line: working (Task 16), addressed (Task 18), sends (Task 23).
 
 **Files:**
 - Create: `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`
-- Modify: `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/view/sidebar-model.ts`, `web/shell/src/sidebar.test.ts`, `web/shell/src/artifact.test.ts`, `web/e2e/comments.spec.ts`, `web/e2e/comment-loop.spec.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`, and the e2e specs whose locators name `Send to agent`, or click a card in Resolved or Detached (`grep -rln "Send to agent\|section-resolved\|section-detached" web/e2e`)
+- Modify: `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/view/sidebar-model.ts`, `web/shell/src/sidebar.test.ts`, `web/shell/src/artifact.test.ts`, `web/e2e/comments.spec.ts`, `web/e2e/comment-loop.spec.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/comments.test.ts`, `web/e2e/echo-chrome.spec.ts`, `docs/follow-ups.md`, and the e2e specs whose locators name `Send to agent`, or click a card in Resolved or Detached (`grep -rln "Send to agent\|section-resolved\|section-detached" web/e2e`)
 
 **Interfaces:**
 - `view/history-model.ts` (no `svelte` import):
@@ -2343,7 +2335,7 @@ The `Resolved by …` paragraph goes, because the history line now records the r
 ```svelte
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
-    <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file} focusReply={p.focusReply}
+    <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names)} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       onSelect={p.onSelect} onSend={p.onSend} onResolve={p.onResolve} onReply={p.onReply} onHover={p.onHover} />
   {/each}
@@ -2470,14 +2462,139 @@ Report what the `threads` shots show against `concept-3-echo/shots/*-view.png`:
 Run: `cd web && npm run perf; echo "exit=$?"`
 Expected: `exit=0`. Stop rule: if any of the five measures in `web/perf/budget.json` is over budget (link to first paint `firstPaint`, link to comment ready `commentReady`, frame paint `framePaint`, ready latency `readyLatency`, cold ready latency `coldLatency`, in either frame mode), stop and report all five numbers against their budgets. Lazy-load first; never raise a budget.
 
-- [ ] **Step 5: Gates and staging**
+- [ ] **Step 5: The page cannot hand the viewer's input to the shell's buttons or pins**
+
+Two ways a page turns input the viewer meant for it into a press on the shell's own controls (`docs/follow-ups.md`, "Known issues"). Neither needs a shell key; both reach the buttons and pins this task restyles.
+
+1. **Focus pushed out of the frame.** The page calls `parent.focus()` on a key the viewer types in its form. Focus drops to the shell's `<body>`, and the viewer's next Tabs, meant for the page's next field, walk the shell's controls from the frame: a pin, the card head, then `Send to <agent>`, which a Space presses natively.
+2. **A pin placed under the pointer.** With `customAnchors`, the page moves its pin under the resting pointer just before a click meant for its own input. The trusted press lands on the pin, which selects the thread and gives the shell's keys back.
+
+The fixes:
+1. The shell recognises the page pushing focus out and hands focus back to the frame. It returns only what the page gave up: the window's `blur` saw the frame active, a window `focus` arrives with focus on `<body>`, and no trusted press in the shell came in between. A viewer's Tab out of the frame lands on a shell control, not on `<body>`, and a viewer's click in the shell is a press, so neither is undone.
+2. A pin that appeared or moved less than `ALLOW_DELAY_MS` ago takes no press (`.settling`, `pointer-events: none`), as Allow is armed. The press falls through to the page, the target the viewer aimed at.
+
+In `ArtifactController.listen()` (`web/shell/src/view/artifact-controller.ts`), replace `onPress` and `onBlur`, and listen for the window's `focus`:
+
+```ts
+    // The page pushing focus out of its frame (`parent.focus()`): the window's
+    // blur saw the frame active, and focus comes back to the shell's body with
+    // no trusted press in the shell between. Focus goes back to the frame, so
+    // the viewer's next Tab or Space, typed for the page, stays in the page.
+    let leftForFrame = false;
+    const onPress = (e: PointerEvent) => { if (e.isTrusted) { this.keysOwned = true; leftForFrame = false; } };
+    // Only the window's own blur and focus reach these listeners: an element's do not bubble.
+    const onBlur = () => { this.keysOwned = false; leftForFrame = !!this.frame && document.activeElement === this.frame.el; };
+    const onFocus = (e: FocusEvent) => {
+      if (!e.isTrusted || !leftForFrame) return;
+      leftForFrame = false;
+      if (document.activeElement === document.body) this.frame?.el.focus();
+    };
+```
+
+Add `addEventListener("focus", onFocus);` beside the `blur` listener, and `removeEventListener("focus", onFocus);` to the cleanup. Extend the `keysOwned` doc comment: focus the page pushes to the body goes back to the frame, so the viewer's next Tab no longer lands on a shell control.
+
+`web/shell/src/ui/Pins.svelte`: import `ALLOW_DELAY_MS` from `../view/prompt-queue`, and add after `places`:
+
+```ts
+  // A pin that appeared or moved less than ALLOW_DELAY_MS ago takes no press
+  // (`.settling`): a page that places its pin under the resting pointer just
+  // before the viewer's click cannot take that click, which reaches the page.
+  const seen = new Map<string, { left: number; top: number; at: number }>();
+  let tick = $state(0);
+  const settling = $derived.by(() => {
+    void tick;
+    const now = performance.now();
+    const out = new Set<string>();
+    for (const p of places) {
+      const was = seen.get(p.thread.id);
+      if (!was || was.left !== p.left || was.top !== p.top) seen.set(p.thread.id, { left: p.left, top: p.top, at: now });
+      if (now - seen.get(p.thread.id)!.at < ALLOW_DELAY_MS) out.add(p.thread.id);
+    }
+    return out;
+  });
+  $effect(() => {
+    if (!settling.size) return;
+    const t = setTimeout(() => { tick++; }, ALLOW_DELAY_MS);
+    return () => clearTimeout(t);
+  });
+```
+
+The pin button gains `class:settling={settling.has(p.thread.id)}`. In `theme.css`, after the `.thread-pin` rules: `.thread-pin.settling { pointer-events: none; }`. A pin also settles after the page scrolls, since its place follows the anchor; a press in that half second reaches the page.
+
+Tests:
+- `artifact-controller.test.ts`: after a trusted window `blur` with focus on the frame, a trusted window `focus` with focus on `<body>` moves focus to the frame; with a trusted `pointerdown` between them, or with focus on a shell button, it does not.
+- `comments.test.ts`, under `describe("Pins")`: with fake timers, a pin is `.settling` when it first renders and when its place changes, and is not after `ALLOW_DELAY_MS`.
+- `web/e2e/echo-chrome.spec.ts`:
+
+```ts
+// The page drops focus to the shell's body mid-typing (`parent.focus()`), and
+// places its pin under the pointer just before a click meant for its input.
+// Neither turns the viewer's input into a press on the shell's controls.
+const FORM = `<!doctype html><html><head><title>Form</title></head><body><main><h2 id="t">Target</h2><input id="a"><input id="b"></main><script>
+let done = false;
+document.getElementById("a").addEventListener("keydown", e => { if (!done && e.key === "m") { done = true; parent.focus(); } });
+</script></body></html>`;
+
+test("focus the page drops to the shell's body goes back to the page, so Tabs and a Space press nothing in the shell", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Dropped focus", FORM, {});
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  await frame.locator("#a").click();
+  await page.keyboard.type("Smith");
+  await expect.poll(() => page.evaluate(() => document.activeElement?.localName)).toBe("iframe");
+  for (const k of ["Tab", "Tab", "Tab", "Space", "c"]) await page.keyboard.press(k);
+  await page.waitForTimeout(300);
+  await expect(page.locator(".thread-card.selected")).toHaveCount(0);
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
+  const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+  expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+});
+
+const PLACED = `<!doctype html><html><head><title>Placed</title></head><body><main><h2 id="t">Target</h2><input id="i" style="position:absolute;left:200px;top:120px;width:200px"></main><script>
+claude.use("comments").then(c => c.customAnchors({ mode(on) { document.body.dataset.mode = on; }, threads(l) { window.list = l; document.body.dataset.n = l.length; }, reveal() {} })).then(reg => {
+  const h = () => window.list && window.list[0] && window.list[0].id;
+  addEventListener("mousemove", e => { if (h()) reg.placed({ [h()]: { x: e.clientX + scrollX + 1, y: e.clientY + scrollY + 1 } }); });
+});
+</script></body></html>`;
+
+test("a pin the page places under the pointer does not take the viewer's click", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Placed pin", PLACED, { comments: { customAnchors: true } });
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  // Comment mode once, so the page holds handles it may place.
+  await comment.click();
+  await expect(frame.locator("body")).toHaveAttribute("data-n", /[1-9]/);
+  await comment.click();
+  await expect(frame.locator("body")).toHaveAttribute("data-mode", "false");
+  const box = (await frame.locator("#i").boundingBox())!;
+  const x = box.x + 60, y = box.y + box.height / 2;
+  await page.mouse.move(x, y + 40, { steps: 3 });
+  await page.mouse.move(x, y, { steps: 6 });
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.type("is it c");
+  await expect(frame.locator("#i")).toHaveValue("is it c");
+  await expect(page.locator(`[data-thread="${t.id}"]`)).not.toHaveClass(/selected/);
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
+});
+```
+
+Run: `cd web && npx vitest run && npm run build && npx playwright test e2e/echo-chrome.spec.ts e2e/gesture.spec.ts e2e/comments.spec.ts e2e/comments-capability.spec.ts; echo "exit=$?"`
+Expected: `exit=0`. Both new e2e tests fail against the shell before this step: the first sends the thread, and the second selects it and leaves the input empty.
+
+Remove the two entries ("A page can drop focus to the shell's body…" and "A pin the page places under the pointer…") from `docs/follow-ups.md`.
+
+- [ ] **Step 6: Gates and staging**
 
 ```bash
 bash scripts/quality_gates.sh; echo "exit=$?"
 git add web/shell/src/view/history-model.ts web/shell/src/view/history-model.test.ts web/shell/src/ui/ThreadCard.svelte web/shell/src/ui/Sidebar.svelte \
-  web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/Pins.svelte web/shell/src/view/sidebar-model.ts web/shell/src/sidebar.test.ts web/shell/src/theme.css web/e2e/scenes.ts
+  web/shell/src/ui/SidebarIsland.svelte web/shell/src/ui/Pins.svelte web/shell/src/view/sidebar-model.ts web/shell/src/sidebar.test.ts web/shell/src/theme.css web/e2e/scenes.ts \
+  web/shell/src/view/artifact-controller.ts web/shell/src/view/artifact-controller.test.ts web/shell/src/comments.test.ts web/e2e/echo-chrome.spec.ts docs/follow-ups.md
 git add -u web/e2e web/shell/src
-git status --short   # staged; the controller commits ("Show threads in Echo: mirrored messages, a version-tagged history line, and an outdated tag")
+git status --short   # staged; the controller commits ("Show threads in Echo: mirrored messages, a version-tagged history line, and an outdated tag, and keep the page's input off the shell's buttons and pins")
 ```
 
 ---
@@ -7185,13 +7302,13 @@ The version changelog with no band over the page:
 - addressed pins (white, a green ring, a `vN` flag);
 - a version button with a green dot while a version newer than this viewer's last view exists;
 - `v5 addressed 3` (or `3 new versions · 7 addressed`) in the top bar summary;
-- a version menu that reads as a changelog (V opens it).
+- a version menu that reads as a changelog, opened by the version button. It adds no key: Esc closes the menu, and the `?` sheet keeps its rows.
 
 This task also writes the viewer's marks: the version seen, and each thread looked at.
 
 **Files:**
 - Create: `web/shell/src/view/changelog-model.ts`, `web/shell/src/view/version-rows.ts`, `web/shell/src/view/changelog-model.test.ts`, `web/shell/src/ui/AddressedGroup.svelte`, `web/shell/src/ui/VersionMenu.svelte`, `web/shell/src/ui/VersionPanel.svelte`, `web/e2e/changelog.spec.ts`
-- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`, `web/shell/src/view/working-model.ts` and `working-model.test.ts` (`summary` gains `published`), `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, `web/e2e/viewer.spec.ts`
+- Modify: `web/shell/src/api.ts` (`Version.note`, `Version.addresses`, `putSeen`), `web/shell/src/threads.ts` (`Thread.addressed_in`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/history-model.test.ts`, `web/shell/src/view/working-model.ts` and `working-model.test.ts` (`summary` gains `published`), `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/ui/Pins.svelte`, `web/shell/src/ui/StageIsland.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/bridge/src/comment-mode.ts`, `web/bridge/src/bridge.ts`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, `web/e2e/viewer.spec.ts`
 
 **Interfaces:**
 - `api.ts`: `Version` gains `note?: string | null` and `addresses?: string[]`. `putSeen(aid: string, n: number): Promise<void>` sends `PUT /api/viewers/me/seen`, and ignores failures.
@@ -7205,11 +7322,9 @@ This task also writes the viewer's marks: the version seen, and each thread look
   - `versionRows(i: RowInput): Row[]`;
   - `excerpt(t: Thread): string`.
 - `history-model.ts`: `historyOf` also emits `{ v: n, who: <agent of vN>, agent: true, verb: "addressed it" }` for each `n` in `t.addressed_in`. Events are ordered by time: comments by `created_at`, an address by its version's `created_at`, the resolve by `resolved_at`, and working last. `addressedNote(t: Thread, c: Comment): number | null` gives the version an agent reply is labelled with: the first version in `addressed_in` created at or after that reply, else null.
-- `keys.ts`: `v` maps to `versions`, with a row `{ keys: ["V"], what: "Versions, with what each one addressed", action: "versions" }` after `R`.
 - `ArtifactController`:
   - `ViewState` gains `decided: Decided | null`, `menu: "versions" | "people" | null`, and `looked: Record<string, string>` (this viewer's marks, seeded from `attention.looked`).
   - New methods: `look(t: Thread): void`, which queues a mark and flushes at most once a second through `putLooked`; `openMenu(m)`; `closeMenu()`.
-  - `shortcut("versions")` opens the menu.
   - A private `decideChangelog()` runs once the view is ready, and again when a new latest version is loaded. A separate private `writeSeen()` writes `seen` (unpinned latest only) once `me` is known, so a first visit, whose viewer arrives after the decision, still writes it.
 - Components:
   - `AddressedGroup` `{ n: number; agent: string; count: number; children: Snippet }`, lazy.
@@ -7426,7 +7541,6 @@ Implement in `view/artifact-controller.ts`:
 - `selectThread(t)` also calls `this.look(t)`.
 - `dispose` clears `lookTimer`.
 - The Escape branch closes `menu` before `sheet` and comment mode.
-- `shortcut("versions")` calls `this.openMenu("versions")`.
 - Import `decide` and `type Decided` from `./changelog-model`, and `putSeen` and `putLooked` from `../api`.
 
 - [ ] **Step 3: Components**
@@ -7563,8 +7677,6 @@ Implement in `view/artifact-controller.ts`:
   `ctl.numbers(s)` is the pin numbering the sidebar uses (`sidebarSections(...).numbers`). Expose it as a public method.
 - Pass `addressed: s.decided?.line ?? null` into `summary(...)`.
 
-`view/keys.ts`: add `v: "versions"` to `MAP`, and the `V` row after `R`. Update `keys.test.ts`'s row list.
-
 In `web/e2e/viewer.spec.ts`, replace `await page.selectOption("select", "1");` with:
 
 ```ts
@@ -7676,14 +7788,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".vbtn .new")).toHaveCount(0);
   });
 
-  test(`${mode}: the version menu reads as a changelog, opens with V, and closes with Escape`, async ({ page }) => {
+  test(`${mode}: the version menu reads as a changelog, opens from the version button, and closes with Escape`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `menu-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Menu ${mode}`, { "index.html": PAGE });
     await openArtifact(page, d.base, artifact.id, 1, mode);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid], note: "Two columns" });
     await openArtifact(page, d.base, artifact.id, 2, mode);
-    await page.locator("body").press("v");
+    await page.getByRole("button", { name: /^Version 2 of 2/ }).click();
     const dialog = page.getByRole("dialog", { name: "Versions" });
     await expect(dialog.locator(".vrow").first()).toContainText("Two columns");
     await expect(dialog.locator(".vrow").first().locator(".pc")).toHaveCount(1);
@@ -8944,8 +9056,8 @@ git status --short   # staged; the controller commits ("Prove a batch arrives as
 ### Task 23: Batch send in Echo: checkboxes, the selection bar, the agent picker, and Send N unsent
 
 The viewer's side of batch send, in Echo:
-- checkboxes on open cards, with Shift-click ranges, and X ticks the selected thread;
-- a selection bar at the top of the sidebar (under the working strip, above the groups), loaded when the first box is ticked: converging dots, `3 selected` over `sent together`, Clear, `Send 3 to claude ▾`, and an optional note sent with Cmd+Enter or Ctrl+Enter or Shift+S;
+- checkboxes on open cards, with Shift-click ranges (no key ticks or sends; the `?` sheet keeps its rows);
+- a selection bar at the top of the sidebar (under the working strip, above the groups), loaded when the first box is ticked: converging dots, `3 selected` over `sent together`, Clear, `Send 3 to claude ▾`, and an optional note sent with Cmd+Enter or Ctrl+Enter;
 - `Send N unsent to claude` at the sidebar's top;
 - one agent picker shared by every Send.
 
@@ -8953,7 +9065,7 @@ Send goes to the agent you last sent to on this artifact if it is live, else to 
 
 **Files:**
 - Create: `web/shell/src/view/batch-model.ts`, `web/shell/src/view/batch-model.test.ts`, `web/shell/src/view/send-target.ts`, `web/shell/src/view/send-target.test.ts`, `web/shell/src/ui/SelectionBar.svelte`, `web/shell/src/ui/SendButton.svelte`, `web/e2e/batch.spec.ts`
-- Modify: `web/shell/src/threads.ts` (`sendBatch`, `sendToAgent(…, to)`, `Thread.sends`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
+- Modify: `web/shell/src/threads.ts` (`sendBatch`, `sendToAgent(…, to)`, `Thread.sends`), `web/shell/src/view/history-model.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Sidebar.svelte`, `web/shell/src/ui/ThreadCard.svelte`, `web/shell/src/sidebar.test.ts`, `web/shell/src/theme.css`, `web/e2e/scenes.ts`
 
 **Interfaces:**
 - `threads.ts`:
@@ -8972,12 +9084,10 @@ Send goes to the agent you last sent to on this artifact if it is live, else to 
   - `defaultTarget(aid: string, agents: AgentView[]): string | null`, which picks the remembered handle if it is live, else the first live agent in `agents` (the daemon orders them live first, most recently active first), else null. Null means the shell sends without `to`;
   - `rememberTarget(aid, handle)`, kept in `localStorage` `clax.sendTo.<aid>` with every access guarded.
 - `history-model.ts`: each send in `t.sends` adds `{ v: versionAt(sent_at), who: sent_by, agent: false, verb: "sent it" + (size > 1 ? ` with ${size - 1} other${size - 1 === 1 ? "" : "s"}` : "") + (note ? ` · “${note}”` : "") }`, so a batch of three reads "sent it with 2 others".
-- `keys.ts`: `x` maps to `tick`. `S` (Shift+S) has mapped to `sendTicked` since Task 3. Rows `{ keys: ["X"], what: "Tick the selected thread", action: "tick" }` and `{ keys: ["⇧", "S"], what: "Send every ticked thread together", action: "sendTicked" }` go after `R`.
 - `ArtifactController`:
   - `ViewState` gains `selection: Selection`, `batchNote: string`, `batchBusy: boolean` and `sendTo: string | null`;
   - new methods: `toggleSelect(t, shift)`, `clearSelection()`, `setBatchNote(v)`, `sendSelection()`, `sendUnsent()`, `chooseTarget(handle)`;
-  - `sendThread(t)` passes `this.s.sendTo`;
-  - `shortcut("tick")` toggles the selected thread, and `shortcut("sendTicked")` calls `sendSelection()`.
+  - `sendThread(t)` passes `this.s.sendTo`.
 - Components:
   - `SendButton` `{ label: string; agents: AgentView[]; names: Map<string, string>; target: string | null; disabled?: boolean; onSend(): void; onChoose(handle: string): void }`. Its caret is a menu button, and it is shown only with more than one live agent.
   - `SelectionBar` (lazy) `{ count; note; busy; send: Snippet; onNote; onClear; onSend }`.
@@ -9168,7 +9278,6 @@ Implement in `view/artifact-controller.ts`:
 - `sendThread(t)` becomes `this.saveThread(sendToAgent(this.id, t.id, this.s.sendTo), SEND_FAILED)`, and remembers the target when there is one.
 - An `unknown_agent` answer (the target ended between the last refetch and the send) refetches the artifact, recomputes `sendTo`, and shows the send failure; it never retries without `to` on its own.
 - In `react()`, when `prev.threads !== s.threads || prev.deleted !== s.deleted`, prune the selection, and set it only if it changed.
-- `shortcut("tick")`: `if (sel && selectable(sel, s.deleted)) this.toggleSelect(sel, false)`. `shortcut("sendTicked")`: `void this.sendSelection()`.
 
 Run: `cd web && npx vitest run shell/src/view/artifact-controller.test.ts`
 Expected: PASS.
@@ -9257,7 +9366,7 @@ Expected: PASS.
 
 `ui/SidebarIsland.svelte` wires all of these to the controller.
 
-`history-model.ts` adds the send events. `keys.ts` adds `x` and the two rows. Update the row list in `keys.test.ts`.
+`history-model.ts` adds the send events.
 
 In `sidebar.test.ts`, add tests that:
 - a ticked card's checkbox reads `Select thread 1 …`;
@@ -9373,20 +9482,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await api(d.base, d.token, `/api/sessions/${next.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
   });
 
-  test(`${mode}: a ticked thread that disappears leaves the selection; X and Shift+S work from the keyboard`, async ({ page }) => {
+  test(`${mode}: a ticked thread that disappears leaves the selection, and the rest sends`, async ({ page }) => {
     const { aid, ids } = await fresh(`Prune ${mode}`, 2);
     await openArtifact(page, d.base, aid, 1, mode);
     await panel(page);
-    await page.locator("body").press("j");
-    await page.locator("body").press("x");
-    await page.locator("body").press("j");
-    await page.locator("body").press("x");
-    const count = page.getByRole("region", { name: "Selected comments" }).getByRole("status");
+    for (const id of ids) await page.locator(`.thread-card[data-thread="${id}"] .thread-check`).click();
+    const bar = page.getByRole("region", { name: "Selected comments" });
+    const count = bar.getByRole("status");
     await expect(count).toHaveText("2 selected");
     await page.request.post(`${d.base}/api/artifacts/${aid}/threads/${ids[0]}/resolve`, { headers: { origin: d.base } });
     await expect(count).toHaveText("1 selected");
-    await page.locator("body").press("Shift+S");
-    await expect(page.getByRole("region", { name: "Selected comments" })).toHaveCount(0);
+    await bar.getByRole("button", { name: /^Send 1 / }).click();
+    await expect(bar).toHaveCount(0);
   });
 }
 ```
@@ -9435,13 +9542,13 @@ git status --short   # staged; the controller commits ("Send several threads at 
 This task adds:
 - here or away in the roster;
 - the location, in the people panel only;
-- the people panel itself, opened from the roster or with P, which also holds the viewer's name.
+- the people panel itself, opened from the roster, which also holds the viewer's name. It adds no key: Esc closes the panel, and the `?` sheet keeps its rows.
 
 Presence lives in memory in the daemon, like working: a restart starts with none, and reports lapse 90 s after the last one. Multiplayer is coming later, so this is the light layer the brief describes, and it stays out of the way: it never moves or covers the page.
 
 **Files:**
 - Create: `crates/clax-core/src/presence.rs`, `crates/clax-server/tests/api_presence.rs`, `web/shell/src/view/presence-model.ts`, `web/shell/src/view/presence-model.test.ts`, `web/shell/src/ui/PeoplePanel.svelte`, `web/e2e/presence.spec.ts`
-- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/events.rs` (`Event::Presence`), `crates/clax-server/src/state.rs`, `crates/clax-server/src/daemon.rs` (sweeper), `crates/clax-server/src/testing.rs`, `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/artifacts.rs`, `crates/clax-server/src/routes/mod.rs`, `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/view/keys.ts`, `web/shell/src/view/keys.test.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, and every e2e spec that fills `Your name` (`grep -rln "Your name" web/e2e`)
+- Modify: `crates/clax-core/src/lib.rs`, `crates/clax-core/src/events.rs` (`Event::Presence`), `crates/clax-server/src/state.rs`, `crates/clax-server/src/daemon.rs` (sweeper), `crates/clax-server/src/testing.rs`, `crates/clax-server/src/routes/viewers.rs`, `crates/clax-server/src/routes/artifacts.rs`, `crates/clax-server/src/routes/mod.rs`, `web/shell/src/api.ts`, `web/shell/src/events.ts`, `web/shell/src/view/artifact-controller.ts`, `web/shell/src/view/artifact-controller.test.ts`, `web/shell/src/ui/TopbarIsland.svelte`, `web/shell/src/ui/SidebarIsland.svelte`, `web/shell/src/ui/Roster.svelte`, `web/shell/src/theme.css`, `web/e2e/fixtures.ts`, `web/e2e/scenes.ts`, and every e2e spec that fills `Your name` (`grep -rln "Your name" web/e2e`)
 
 **Interfaces:**
 - `clax_core::presence`:
@@ -9460,8 +9567,7 @@ Presence lives in memory in the daemon, like working: a restart starts with none
   - `ViewState.presence: PresenceView[]` and `ViewState.shareWhere: boolean` (from `localStorage` `clax.shareWhere`, default true);
   - `ctl.setShareWhere(on)`;
   - a private reporter: a report on start, on `visibilitychange`, when the selection or the composer's anchor changes, on input after an away period, and every 30 s;
-  - `shortcut("people")` calls `openMenu("people")`;
-  - the `.who` block becomes a button that does the same;
+  - the `.who` block becomes a button that calls `openMenu("people")`;
   - `presence-model.ts`: `stateFor(visible: boolean, idleMs: number): "here" | "away"` (away after 5 minutes idle), `whereLabel(s: ViewState): string | null`, and `personLine(p, now): string`.
 
 - [ ] **Step 1: The registry, test first**
@@ -9645,10 +9751,6 @@ Expected: PASS.
   - it runs on start, on `visibilitychange`, on a selection or draft change (in `react()`), on the first input after away, and every 30 s (an interval cleared in `dispose`);
   - it reports only when `this.s.me` is set (a viewer cookie exists).
 - `setShareWhere(on)` stores the choice, sets it, and reports.
-- `shortcut("people")` calls `this.openMenu("people")`.
-
-`view/keys.ts`: add `p: "people"`, and the row `{ keys: ["P"], what: "People and agents here", action: "people" }` last. Update `keys.test.ts`.
-
 `ui/Roster.svelte` gains `presence` (public ID → `"here" | "away" | "gone"`). The `here` and `away` classes come from it, and `gone` renders as `away`.
 
 The top bar's roster shows everyone present, not only comment authors. In `TopbarIsland.svelte`, pass `people` as the union of `parts.people` and the non-gone entries of `s.presence`, keyed by `public_id` (presence supplies `display_name` for viewers who have not commented), the same union the people panel lists. Put it in the model as `presence-model.ts` `roster(people, presence): Participants["people"]`, with a test: two viewers present who never commented give two people, and a gone entry adds no one.
@@ -9755,7 +9857,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await alex.reload();
     await expect(alex.locator(".who .ppl .tok.here")).toHaveCount(2);
     await expect(alex.locator(".who")).not.toContainText("looking at");
-    await alex.locator("body").press("p");
+    await alex.getByRole("button", { name: "People and agents" }).click();
     const panel = alex.getByRole("dialog", { name: "People and agents" });
     await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("here, looking at");
     await expect(panel.locator(".prow", { hasText: "Mia" })).toContainText("Seen v1.");
@@ -9775,7 +9877,7 @@ Expected: `exit=0`. The full suite runs, because the name field moved. `PeoplePa
 Append a `multiplayer` scene to `web/e2e/scenes.ts`:
 1. a second browser context names itself "Mia" and selects a thread;
 2. a working record runs on one thread;
-3. the main page opens the panel with P.
+3. the main page opens the panel from the roster.
 
 Run: `cd web && CLAX_SHOTS=task-24 CLAX_SCENES=multiplayer,view npx playwright test e2e/shots.spec.ts`
 Expected: PASS.
@@ -9877,7 +9979,7 @@ Then check by hand in a headed browser:
 - in comment mode, no haiku shows anywhere: the sidebar strip hides its haiku, and the gallery is not in view;
 - under reduced motion, nothing moves: the sweep, the breathing dot, the mark and the converging dots;
 - the theme switch and the system scheme work together as in Task 3;
-- the `?` sheet lists C, Esc, T, J and K, Enter, S, R, V, X, Shift+S and P, and each key works;
+- the `?` sheet lists C, `?` and Esc, each works, and no other letter does anything in the shell;
 - the tab's favicon is the Echo mark in light and dark tab strips.
 
 - [ ] **Step 3: Every gate**

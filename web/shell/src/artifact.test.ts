@@ -85,6 +85,8 @@ describe("ArtifactView", () => {
     es.emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
     await waitFor(() => assign.mock.calls.length === 1, "the reload");
     expect(assign).toHaveBeenCalledWith(`/a/${ID}/about.html`);
+    // The page caused the load, so the next view starts with the keys held.
+    expect(sessionStorage.getItem("clax.keys-held")).toBe("1");
     expect(root.querySelector(".banner")).toBeNull();
     // An agent's publish still offers the banner.
     es.emit("version", { type: "version", artifact_id: ID, n: 3 });
@@ -102,6 +104,7 @@ describe("ArtifactView", () => {
     (await waitFor(() => FakeES.last, "event stream")).emit("version", { type: "version", artifact_id: ID, n: 2, by_page: true });
     await waitFor(() => root.querySelector(".banner")?.textContent?.includes("v2 published"), "banner");
     expect(assign).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem("clax.keys-held")).toBeNull();
   });
 
   it("holds another view's page publish until this view's own publish settles", async () => {
@@ -132,6 +135,35 @@ describe("ArtifactView", () => {
     await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "p1" && m.ok === false), "the publish result");
     await waitFor(() => assign.mock.calls.length === 1, "the held reload");
     expect(assign).toHaveBeenCalledWith(`/a/${ID}`);
+    expect(sessionStorage.getItem("clax.keys-held")).toBe("1");
+  });
+
+  it("reloads after the page's own publish with the keys held for the next view", async () => {
+    // An earlier test's activation would count as input before the shell's script ran.
+    Object.defineProperty(navigator, "userActivation", { value: { isActive: false }, configurable: true });
+    const assign = vi.fn();
+    const declared = { ...artifact(1, { "index.html": page }), artifact: { ...artifact(1).artifact, capabilities: { artifact: {} } } };
+    const view = await mountView(async (url, init) => {
+      if (url === "/api/token") return new Response(JSON.stringify({ token: "tk" }));
+      if (init?.method === "POST") return new Response(JSON.stringify({ version: { n: 2 } }), { status: 201 });
+      return new Response(JSON.stringify(declared));
+    });
+    const root = view.root;
+    (await import("./nav")).nav.assign = assign;
+    const frame = await waitFor(() => root.querySelector<HTMLIFrameElement>("iframe.frame"), "viewer");
+    const win = frame.contentWindow!;
+    const posted: { type: string; id?: string; ok?: boolean }[] = [];
+    win.postMessage = ((m: { type: string }) => { posted.push(m); }) as typeof win.postMessage;
+    fromFrame(win, { type: "clax:hello", artifact: ID, version: 1, file: "index.html" });
+    await waitFor(() => posted.some(m => m.type === "clax:welcome"), "welcome");
+    gestureIn(frame);
+    fromFrame(win, { type: "clax:call", id: "p1", ns: "artifact", method: "publish", args: ["<!doctype html><p>2"] });
+    await waitFor(() => posted.some(m => m.type === "clax:call-result" && m.id === "p1" && m.ok === true), "the publish result");
+    expect(sessionStorage.getItem("clax.keys-held")).toBeNull();
+    await waitFor(() => assign.mock.calls.length === 1, "the reload");
+    expect(assign).toHaveBeenCalledWith(`/a/${ID}`);
+    expect(sessionStorage.getItem("clax.keys-held")).toBe("1");
+    view.unmount();
   });
 
   it("drops another view's held page publish when it unmounts during its own publish", async () => {

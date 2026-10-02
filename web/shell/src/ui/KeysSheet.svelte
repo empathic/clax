@@ -34,7 +34,7 @@
   <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
   <div class="keys-panel" role="dialog" aria-modal="true" aria-labelledby="keys-title" tabindex="-1" bind:this={panel} onkeydown={keydown}>
     <h2 id="keys-title">Keyboard shortcuts</h2>
-    <p class="sub">Press ? to open this. Esc closes it. Keys work while the page does not have focus.</p>
+    <p class="sub">Keys work while the page does not have focus.</p>
     <dl>
       {#each KEY_ROWS as r (r.keys.join("+"))}
         <dt>{#each r.keys as key (key)}<kbd>{key}</kbd>{/each}</dt><dd>{r.what}</dd>

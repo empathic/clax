@@ -15,7 +15,7 @@ it("a sheet whose code fails to load reaches sheetFailed", async () => {
   const state = new Store({
     pinnedVersion: null, startFile: "index.html", data: { artifact: { id: "a" }, versions: [] }, error: null, origin: null, newer: null, deleted: false,
     commenting: false, panel: false, narrow: false, threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0, notice: null, hint: null,
-    me: null, ask: null, file: "index.html", sheet: "keys" as "keys" | null, replyFocus: 0,
+    me: null, ask: null, file: "index.html", sheet: "keys" as "keys" | null,
   });
   const ctl = {
     id: "a", state, shown: () => 1, latest: () => 1, missing: () => null, here: () => "/", openPin() {}, hover() {},

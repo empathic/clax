@@ -1,8 +1,9 @@
 // Echo's chrome in a real browser: the favicon, the theme before first
-// paint, and the shell's keys, which belong to the page while it has focus
-// and to a dialog while one is open (spec §8, "Keys"; decisions Q2 and Q6).
+// paint, and the shell's keys (C and ?), which belong to the page while it
+// has focus and to a dialog while one is open, and are held while the viewer
+// may still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
 import { expect, test, type Page } from "@playwright/test";
-import { api, openArtifact, postThread, publishWith, startDaemon } from "./fixtures";
+import { api, contentFrame, openArtifact, postThread, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -61,9 +62,67 @@ test("keys pressed in the page are the page's: C and ? do nothing in the shell",
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
 
+test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothing", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Only keys", PAGE, { comments: {} });
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const card = page.locator(`[data-thread="${t.id}"]`);
+  await card.locator(".card-head").click();
+  await expect(card).toHaveClass(/selected/);
+  const threads = page.getByRole("button", { name: /^Threads/ });
+  const panel = await threads.getAttribute("aria-pressed");
+  await page.locator(".topbar h1").click();
+  for (const k of ["t", "j", "k", "s", "r", "Shift+S", "Enter"]) await page.keyboard.press(k);
+  await page.waitForTimeout(300);
+  await expect(threads).toHaveAttribute("aria-pressed", panel!);
+  await expect(card).toHaveClass(/selected/);
+  await expect(card.getByRole("textbox", { name: "Reply" })).not.toBeFocused();
+  const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+  expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+  await page.keyboard.press("Shift+?");
+  const sheet = page.getByRole("dialog", { name: "Keyboard shortcuts" });
+  await expect(sheet.locator("dt")).toHaveText(["C", "?", "Esc"]);
+  await page.keyboard.press("Escape");
+  await expect(sheet).toHaveCount(0);
+});
+
+// The page republishes itself on the viewer's first key in it, so the shell
+// reloads while they are still typing for the page.
+const REPUBLISH = `<!doctype html><html><head><title>Republish</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p></main><script>
+const next = "<!doctype html><html><head><title>Next</title></head><body><main><h2 id=t>Target</h2><p>Published.</p></main></body></html>";
+claude.use("artifact").then(a => {
+  let done = false;
+  addEventListener("keydown", () => { if (!done) { done = true; a.publish(next).then(() => { document.title = "ok"; }, e => { document.title = e.code; }); } });
+});
+</script></body></html>`;
+
+test("after a reload the page's publish caused, the viewer's typing stays inert until they press in the shell", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Republish keys", REPUBLISH, { artifact: {} });
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  await frame.locator("p").click();
+  const reloaded = page.waitForEvent("load");
+  await page.keyboard.type("x");
+  await reloaded;
+  await expect((await contentFrame(page, artifact.id, 2)).locator("p")).toHaveText("Published.");
+  await page.keyboard.type("just c");
+  await page.keyboard.press("Shift+?");
+  await page.waitForTimeout(300);
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
+  await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+  // The viewer's own press in the shell gives the keys back, and a later load starts with them.
+  await page.locator(".topbar h1").click();
+  await page.keyboard.press("c");
+  await expect(comment).toHaveAttribute("aria-pressed", "true");
+  await page.reload();
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
+  await page.locator("body").press("c");
+  await expect(comment).toHaveAttribute("aria-pressed", "true");
+});
+
 // The attack: a page raises its consent prompt while the viewer types for it,
 // so their next keys land on the prompt's button in the shell. None of them
-// may send, resolve, or change the view.
+// may open the sheet, turn comment mode on, send, resolve, or change the view.
 const CONSENT = `<!doctype html><html><head><title>Consent</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p></main><script>
 claude.use("permissions").then(perm => {
   let asked = false;
@@ -71,7 +130,7 @@ claude.use("permissions").then(perm => {
 });
 </script></body></html>`;
 
-test("a consent prompt raised while the viewer types takes the keys: S, R, C, T and ? do nothing", async ({ page }) => {
+test("a consent prompt raised while the viewer types takes the keys: C, ? and the rest do nothing", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Consent keys", CONSENT, { comments: {} });
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
   const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
