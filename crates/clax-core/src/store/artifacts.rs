@@ -206,6 +206,14 @@ impl Store {
                     JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
                 params![id.as_str()],
             )?;
+            tx.execute(
+                "DELETE FROM batch_threads WHERE batch_id IN (SELECT id FROM send_batches WHERE artifact_id = ?1)",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM send_batches WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
@@ -395,6 +403,9 @@ impl Store {
                             "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
                             "DELETE FROM feedback WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM batch_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)
+                                OR batch_id IN (SELECT id FROM send_batches WHERE artifact_id = ?1)",
+                            "DELETE FROM send_batches WHERE artifact_id = ?1",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
                             "DELETE FROM watches WHERE artifact_id = ?1",

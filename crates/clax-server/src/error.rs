@@ -91,6 +91,10 @@ impl From<CoreError> for ApiError {
                 err.extra.insert("path".into(), json!(path));
                 err
             }
+            CoreError::Invalid {
+                code: "nothing_to_send",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "nothing_to_send", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {

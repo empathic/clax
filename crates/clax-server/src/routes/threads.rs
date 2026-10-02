@@ -17,10 +17,11 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::feedback::Touched;
 use clax_core::model::{Session, Thread};
+use clax_core::store::batches::SendBatch;
 use clax_core::store::threads::{
     AUTHOR_AGENT, AUTHOR_VIEWER, DEFAULT_THREAD_PAGE, NewComment, NewThread, clip_problem,
 };
-use clax_core::{Anchor, ArtifactId, CoreError, Event, Store};
+use clax_core::{Anchor, ArtifactId, CoreError, Event, SendTarget, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -417,28 +418,115 @@ pub async fn comment(
     Ok(respond(o, StatusCode::CREATED))
 }
 
-/// Sets `sent_to_agent` and creates feedback rows; idempotent. A request with a
-/// foreign `Origin` is refused ([`SameOrigin`]).
+#[derive(Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct SendBody {
+    #[serde(default)]
+    to: Option<String>,
+}
+
+/// The live owner or watcher session of artifact `id` that agent handle `to`
+/// names; 400 `unknown_agent` when it names none.
+fn send_target(st: &Store, id: &ArtifactId, to: Option<&str>) -> clax_core::Result<Option<String>> {
+    match to {
+        Some(h) if clax_core::is_agent_handle(h) => {
+            Ok(Some(st.live_agent(id, h)?.ok_or_else(|| {
+                CoreError::invalid(
+                    "unknown_agent",
+                    "no live agent on this artifact has that handle",
+                )
+            })?))
+        }
+        Some(_) => Err(CoreError::invalid("unknown_agent", "not an agent handle")),
+        None => Ok(None),
+    }
+}
+
+/// Sets `sent_to_agent` and creates feedback rows; idempotent. An optional
+/// body `{"to": <agent handle>}` sends to that live agent only, and it becomes
+/// the thread's target (400 `unknown_agent` when it names no live owner or
+/// watcher). Without `to` the send goes to every live owner and watcher and
+/// clears the thread's target. A request with a foreign `Origin` is refused
+/// ([`SameOrigin`]).
 pub async fn send(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
     p: Result<Path<(String, String)>, PathRejection>,
+    raw: Bytes,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, tid) = path(p)?;
     let id = parse_id(&aid)?;
+    let b: SendBody = if raw.is_empty() {
+        SendBody::default()
+    } else {
+        serde_json::from_slice(&raw)
+            .map_err(|e| ApiError::bad_request("invalid_json", e.to_string()))?
+    };
     let ctx = s.feedback_ctx();
     let with_path = has_token(&headers, &s.token);
     let view = s
         .store_call(move |st| {
             thread_of(st, &id, &tid)?;
-            let (t, touched) = st.send_to_agent(&tid)?;
+            let to = send_target(st, &id, b.to.as_deref())?;
+            let (t, touched) = st.send_to(
+                &tid,
+                to.as_deref()
+                    .map_or(SendTarget::Everyone, SendTarget::Agent),
+            )?;
             apply(&ctx, st, &touched);
             publish_thread(&ctx, st, &t)?;
             thread_view(st, &t, ctx.codex_push(), with_path)
         })
         .await?;
     Ok(Json(json!({"thread": view})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BatchBody {
+    thread_ids: Vec<String>,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+}
+
+/// `POST /api/artifacts/<aid>/threads:send`: sends several threads to the
+/// agent as one batch ([`Store::send_batch`]), all or nothing, to the agent
+/// `to` names or, without it, to every live owner and watcher. The same
+/// access as the single send (no token; a foreign `Origin` is refused); the
+/// viewer cookie names the sender. One fan-out for the whole batch, so every
+/// tier hands its rows over together.
+pub async fn send_batch(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    aid: Result<Path<String>, PathRejection>,
+    req: Result<Json<BatchBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_id(&path(aid)?)?;
+    let b = body(req)?;
+    let ctx = s.feedback_ctx();
+    let with_path = has_token(&headers, &s.token);
+    let v = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            let to = send_target(st, &id, b.to.as_deref())?;
+            let sent_by = author(st, viewer.0.as_deref())?.0;
+            let r = st.send_batch(&id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
+            apply(&ctx, st, &r.touched);
+            let mut views = Vec::new();
+            for tid in &r.sent {
+                let t = thread_of(st, &id, tid)?;
+                publish_thread(&ctx, st, &t)?;
+                views.push(thread_view(st, &t, ctx.codex_push(), with_path)?);
+            }
+            Ok(json!({"batch": r.batch, "sent": r.sent, "unchanged": r.unchanged, "threads": views}))
+        })
+        .await?;
+    Ok(Json(v))
 }
 
 #[derive(Deserialize, Default)]

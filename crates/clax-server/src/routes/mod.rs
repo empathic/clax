@@ -112,6 +112,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(threads::send),
         )
         .route(
+            "/api/artifacts/{aid}/threads:send",
+            post(threads::send_batch),
+        )
+        .route(
             "/api/artifacts/{aid}/threads/{tid}/resolve",
             post(threads::resolve),
         )

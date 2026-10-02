@@ -4,7 +4,7 @@
 use super::Store;
 use super::threads::{AUTHOR_VIEWER, thread_in};
 use crate::anchor::Anchor;
-use crate::feedback::{FeedbackItem, FeedbackPhase, FeedbackState, Tier, Touched};
+use crate::feedback::{FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, Tier, Touched};
 use crate::model::{Feedback, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, Transaction, params};
@@ -75,6 +75,138 @@ pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str) -> Result<Touched
     Ok(touched)
 }
 
+/// Where a send's rows go (spec §10, "Data flow").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SendTarget<'a> {
+    /// This live owner or watcher only (a session ID); it becomes the thread's target.
+    Agent(&'a str),
+    /// Every live owner and watcher, or untargeted when none is live; clears the thread's target.
+    Everyone,
+    /// A later comment, or `@agent`: the thread's target while it is live, else as `Everyone`
+    /// (the stored target is kept, and simply no longer matches a live session).
+    Thread,
+}
+
+/// The sessions `target` names for a thread of `aid`, writing the thread's
+/// target when the send sets or clears it.
+fn targets_for(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    aid: &str,
+    owner: Option<&str>,
+    target: SendTarget<'_>,
+) -> Result<Vec<String>> {
+    let live = live_targets(tx, aid, owner)?;
+    match target {
+        SendTarget::Agent(sid) => {
+            if !live.iter().any(|s| s == sid) {
+                return Err(CoreError::invalid(
+                    "unknown_agent",
+                    "no live agent on this artifact has that handle",
+                ));
+            }
+            tx.execute(
+                "UPDATE threads SET target_session_id = ?2 WHERE id = ?1",
+                params![thread_id, sid],
+            )?;
+            Ok(vec![sid.to_string()])
+        }
+        SendTarget::Everyone => {
+            tx.execute(
+                "UPDATE threads SET target_session_id = NULL WHERE id = ?1",
+                params![thread_id],
+            )?;
+            Ok(live)
+        }
+        SendTarget::Thread => {
+            let stored: Option<String> = tx.query_row(
+                "SELECT target_session_id FROM threads WHERE id = ?1",
+                params![thread_id],
+                |r| r.get(0),
+            )?;
+            Ok(match stored {
+                Some(sid) if live.contains(&sid) => vec![sid],
+                _ => live,
+            })
+        }
+    }
+}
+
+/// Live session IDs that a send `to` this artifact may name: its live owner
+/// and live watchers.
+pub(crate) fn live_targets_of(c: &Connection, aid: &str) -> Result<Vec<String>> {
+    let owner: Option<String> = c.query_row(
+        "SELECT owner_session_id FROM artifacts WHERE id = ?1",
+        params![aid],
+        |r| r.get(0),
+    )?;
+    live_targets(c, aid, owner.as_deref())
+}
+
+/// Marks the thread sent to the agent and creates one row per (viewer
+/// comment without a row, target of `target`), each carrying `batch_id`.
+/// With no target, one untargeted row per comment. Returns how many rows it
+/// inserted. See [`Store::send_to_agent`] for the contract.
+pub(crate) fn send_in(
+    tx: &Transaction<'_>,
+    thread_id: &str,
+    batch_id: Option<&str>,
+    target: SendTarget<'_>,
+    touched: &mut Touched,
+) -> Result<usize> {
+    let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+    if t.status == "resolved" {
+        return Err(CoreError::invalid(
+            "thread_resolved",
+            "a resolved thread cannot be sent; add a comment to reopen it",
+        ));
+    }
+    let owner: Option<String> = tx.query_row(
+        "SELECT owner_session_id FROM artifacts WHERE id = ?1",
+        params![t.artifact_id],
+        |r| r.get(0),
+    )?;
+    tx.execute(
+        "UPDATE threads SET sent_to_agent = 1 WHERE id = ?1",
+        params![thread_id],
+    )?;
+    let targets = targets_for(tx, thread_id, &t.artifact_id, owner.as_deref(), target)?;
+    let now = Store::now();
+    let mut inserted = 0;
+    for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
+        let has_row: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1)",
+            params![c.id],
+            |r| r.get(0),
+        )?;
+        if has_row {
+            continue;
+        }
+        if targets.is_empty() {
+            tx.execute(
+                "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, untargeted_at, batch_id)
+                 VALUES (?1, ?2, ?3, NULL, ?4, ?4, ?5)",
+                params![new_ulid(), thread_id, c.id, now, batch_id],
+            )?;
+            inserted += 1;
+        } else {
+            for sid in &targets {
+                tx.execute(
+                    "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, batch_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    params![new_ulid(), thread_id, c.id, sid, now, batch_id],
+                )?;
+                inserted += 1;
+            }
+            touched.targets.extend(targets.iter().cloned());
+        }
+    }
+    touched
+        .threads
+        .insert((t.artifact_id.clone(), thread_id.to_string()));
+    Ok(inserted)
+}
+
 struct Pending {
     id: String,
     thread_id: String,
@@ -89,6 +221,7 @@ struct Pending {
     body: String,
     created_at: String,
     via_page: bool,
+    batch: Option<FeedbackBatch>,
 }
 
 fn waiting_on(harness: &str, has_hsid: bool, armed: bool, codex_push: bool) -> Tier {
@@ -107,8 +240,9 @@ impl Store {
     pub const MAX_RESENDS: u32 = 3;
 
     /// Marks the thread sent to the agent and creates one row per (viewer
-    /// comment without a row, live target): the artifact's owner session and
-    /// every live watcher. With no live target, one untargeted row per comment.
+    /// comment without a row, live target): the thread's target while its
+    /// session is live, else the artifact's owner session and every live
+    /// watcher. With no live target, one untargeted row per comment.
     /// Idempotent; call it again after each new viewer comment on a sent thread.
     ///
     /// "Without a row" is deliberate, not "never delivered": a resolve
@@ -122,43 +256,19 @@ impl Store {
     /// `NotFound` when the thread or its artifact is gone; `thread_resolved`
     /// for a resolved thread.
     pub fn send_to_agent(&self, thread_id: &str) -> Result<(Thread, Touched)> {
+        self.send_to(thread_id, SendTarget::Thread)
+    }
+
+    /// [`Store::send_to_agent`] with an explicit `target`: one agent (which
+    /// becomes the thread's target), everyone (clearing the target), or the
+    /// thread's own target.
+    ///
+    /// # Errors
+    /// As [`Store::send_to_agent`], plus `unknown_agent` when `target` names a
+    /// session that is not a live owner or watcher of the artifact.
+    pub fn send_to(&self, thread_id: &str, target: SendTarget<'_>) -> Result<(Thread, Touched)> {
         let mut touched = Touched::default();
-        self.with_tx(|tx| {
-            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
-            if t.status == "resolved" {
-                return Err(CoreError::invalid("thread_resolved", "a resolved thread cannot be sent; add a comment to reopen it"));
-            }
-            let owner: Option<String> =
-                tx.query_row("SELECT owner_session_id FROM artifacts WHERE id = ?1", params![t.artifact_id], |r| r.get(0))?;
-            tx.execute("UPDATE threads SET sent_to_agent = 1 WHERE id = ?1", params![thread_id])?;
-            let targets = live_targets(tx, &t.artifact_id, owner.as_deref())?;
-            let now = Store::now();
-            for c in t.comments.iter().filter(|c| c.author_kind == AUTHOR_VIEWER) {
-                let has_row: bool =
-                    tx.query_row("SELECT EXISTS(SELECT 1 FROM feedback WHERE comment_id = ?1)", params![c.id], |r| r.get(0))?;
-                if has_row {
-                    continue;
-                }
-                if targets.is_empty() {
-                    tx.execute(
-                        "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, untargeted_at)
-                         VALUES (?1, ?2, ?3, NULL, ?4, ?4)",
-                        params![new_ulid(), thread_id, c.id, now],
-                    )?;
-                } else {
-                    for sid in &targets {
-                        tx.execute(
-                            "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
-                             VALUES (?1, ?2, ?3, ?4, ?5)",
-                            params![new_ulid(), thread_id, c.id, sid, now],
-                        )?;
-                    }
-                    touched.targets.extend(targets.iter().cloned());
-                }
-            }
-            touched.threads.insert((t.artifact_id.clone(), thread_id.to_string()));
-            Ok(())
-        })?;
+        self.with_tx(|tx| send_in(tx, thread_id, None, target, &mut touched).map(|_| ()))?;
         let thread = self.get_thread(thread_id)?.ok_or(CoreError::NotFound)?;
         Ok((thread, touched))
     }
@@ -182,8 +292,10 @@ impl Store {
             let mut stmt = tx.prepare(
                 "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
                         t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
-                        c.author_name, c.body, c.created_at, c.via_page
+                        c.author_name, c.body, c.created_at, c.via_page,
+                        f.batch_id, b.size, b.note, b.sent_by
                  FROM feedback f
+                 LEFT JOIN send_batches b ON b.id = f.batch_id
                  JOIN threads t ON t.id = f.thread_id
                  JOIN comments c ON c.id = f.comment_id
                  JOIN artifacts a ON a.id = t.artifact_id
@@ -225,6 +337,15 @@ impl Store {
                             body: r.get(10)?,
                             created_at: r.get(11)?,
                             via_page: r.get::<_, i64>(12)? != 0,
+                            batch: match r.get::<_, Option<String>>(13)? {
+                                Some(id) => Some(FeedbackBatch {
+                                    id,
+                                    size: r.get::<_, Option<u32>>(14)?.unwrap_or(0),
+                                    note: r.get(15)?,
+                                    sent_by: r.get::<_, Option<String>>(16)?.unwrap_or_default(),
+                                }),
+                                None => None,
+                            },
                         })
                     },
                 )?
@@ -291,6 +412,7 @@ impl Store {
                 body: p.body,
                 resent: p.delivered,
                 created_at: p.created_at,
+                batch: p.batch,
             });
         }
         Ok((items, touched))
@@ -747,6 +869,71 @@ mod tests {
             items.iter().map(|i| i.body.as_str()).collect::<Vec<_>>(),
             ["first", "second"]
         );
+    }
+
+    fn viewer_says(st: &Store, tid: &str, body: &str) {
+        st.add_comment(
+            tid,
+            NewComment {
+                author_public_id: None,
+                author_kind: AUTHOR_VIEWER,
+                author_name: "Alex".into(),
+                via_session_id: None,
+                body: body.into(),
+                via_page: false,
+            },
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_send_to_one_agent_is_followed_by_later_comments_until_it_ends() {
+        let (_d, st) = store();
+        let owner = session(&st, "claude", "o");
+        let watcher = session(&st, "codex", "w");
+        let aid = artifact(&st, Some(&owner));
+        st.ensure_watch(&watcher, &aid).unwrap();
+        let tid = thread(&st, &aid, "first");
+        let stranger = session(&st, "codex", "s");
+        let err = st.send_to(&tid, SendTarget::Agent(&stranger)).unwrap_err();
+        assert!(matches!(
+            err,
+            CoreError::Invalid {
+                code: "unknown_agent",
+                ..
+            }
+        ));
+        assert!(
+            st.feedback_rows(&tid).unwrap().is_empty(),
+            "nothing was written"
+        );
+        st.send_to(&tid, SendTarget::Agent(&watcher)).unwrap();
+        viewer_says(&st, &tid, "second");
+        st.send_to_agent(&tid).unwrap();
+        let bodies = |sid: &str| {
+            take(&st, sid, Tier::Piggyback)
+                .into_iter()
+                .map(|i| i.body)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(bodies(&watcher), ["first", "second"]);
+        assert!(bodies(&owner).is_empty());
+        st.end_session(&watcher).unwrap();
+        viewer_says(&st, &tid, "third");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(
+            bodies(&owner),
+            ["third"],
+            "the target ended: the comment fans out"
+        );
+        let second = session(&st, "codex", "w2");
+        st.ensure_watch(&second, &aid).unwrap();
+        st.send_to(&tid, SendTarget::Agent(&second)).unwrap();
+        st.send_to(&tid, SendTarget::Everyone).unwrap();
+        viewer_says(&st, &tid, "fourth");
+        st.send_to_agent(&tid).unwrap();
+        assert_eq!(bodies(&owner), ["fourth"], "Everyone cleared the target");
+        assert_eq!(bodies(&second), ["fourth"]);
     }
 
     #[test]

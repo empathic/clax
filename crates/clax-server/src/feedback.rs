@@ -173,6 +173,7 @@ pub fn thread_view(
     };
     v["feedback_state"] = json!(st.feedback_state(&t.id, codex_push)?);
     v["addressed_in"] = json!(st.addressed_in(&t.id)?);
+    v["sends"] = json!(st.thread_sends(&t.id)?);
     let resolver = match t
         .resolved_by
         .as_deref()

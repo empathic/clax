@@ -94,6 +94,19 @@ pub struct FeedbackItem {
     pub body: String,
     pub resent: bool,
     pub created_at: String,
+    /// The batch this comment was sent in, when it was sent with others.
+    #[serde(default)]
+    pub batch: Option<FeedbackBatch>,
+}
+
+/// A batch send (several threads sent together): its ID, how many threads it
+/// sent, its optional note, and the sender's display name.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct FeedbackBatch {
+    pub id: String,
+    pub size: u32,
+    pub note: Option<String>,
+    pub sent_by: String,
 }
 
 /// What a store change affected: sessions that now have undelivered rows
@@ -196,17 +209,45 @@ pub fn render_item(i: &FeedbackItem) -> String {
     )
 }
 
-/// `[clax] N comments sent to you:` (`1 comment` for one) followed by each
-/// item, separated by a blank line.
+/// `[clax] N comments sent to you:` (`1 comment` for one), then each item,
+/// separated by a blank line. A run of items from one batch is led by one
+/// line naming how many of its comments this delivery holds, who sent them,
+/// and the batch's note, quoted like a comment body.
 pub fn render_items(items: &[FeedbackItem]) -> String {
     let n = items.len();
     let noun = if n == 1 { "comment" } else { "comments" };
-    let body = items
-        .iter()
-        .map(render_item)
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    format!("[clax] {n} {noun} sent to you:\n{body}")
+    let mut parts: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < items.len() {
+        if let Some(b) = &items[i].batch {
+            let run = items[i..]
+                .iter()
+                .take_while(|x| x.batch.as_ref().map(|y| &y.id) == Some(&b.id))
+                .count();
+            let noun = if run == 1 { "comment" } else { "comments" };
+            let note = b
+                .note
+                .as_deref()
+                .map(|t| format!(" Note: {}", quoted(t)))
+                .unwrap_or_default();
+            let lead = format!(
+                "[clax] {run} {noun} on {}, sent together by {}.{note}",
+                quoted(&items[i].artifact_title),
+                display_name(&b.sent_by),
+            );
+            let body = items[i..i + run]
+                .iter()
+                .map(render_item)
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            parts.push(format!("{lead}\n{body}"));
+            i += run;
+        } else {
+            parts.push(render_item(&items[i]));
+            i += 1;
+        }
+    }
+    format!("[clax] {n} {noun} sent to you:\n{}", parts.join("\n\n"))
 }
 
 /// Characters of a quote shown in tool results.
@@ -241,7 +282,50 @@ mod tests {
             body: "Make this a two-column layout and drop the third bullet.".into(),
             resent: false,
             created_at: "2026-09-29T10:00:00.000Z".into(),
+            batch: None,
         }
+    }
+
+    #[test]
+    fn a_batch_is_led_by_one_line_with_its_note() {
+        let b = FeedbackBatch {
+            id: "B".into(),
+            size: 2,
+            note: Some("Before the \"demo\"".into()),
+            sent_by: "Alex".into(),
+        };
+        let one = FeedbackItem {
+            thread_id: "T1".into(),
+            batch: Some(b.clone()),
+            ..item()
+        };
+        let two = FeedbackItem {
+            thread_id: "T2".into(),
+            batch: Some(b),
+            ..item()
+        };
+        let lone = FeedbackItem {
+            thread_id: "T3".into(),
+            ..item()
+        };
+        let text = render_items(&[one, two, lone]);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines[0], "[clax] 3 comments sent to you:");
+        assert_eq!(
+            lines[1],
+            "[clax] 2 comments on \"Quarterly Review\", sent together by Alex. Note: \"Before the \\\"demo\\\"\""
+        );
+        assert!(lines[2].starts_with("[clax] Comment sent to you on \"Quarterly Review\""));
+        assert_eq!(text.matches("sent together").count(), 1);
+        assert!(text.contains("thread T3"));
+    }
+
+    #[test]
+    fn items_without_a_batch_render_as_before() {
+        assert_eq!(
+            render_items(&[item()]),
+            format!("[clax] 1 comment sent to you:\n{}", render_item(&item()))
+        );
     }
 
     #[test]
