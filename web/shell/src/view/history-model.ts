@@ -3,7 +3,8 @@
 // The comment that opens the thread carries the version it was made on; a
 // person's later event carries the version current when it happened; an
 // agent's carries one only when it came with a version: "v3 claude addressed
-// it", for each version that addressed the thread. Events are in time order.
+// it", for each version that addressed the thread. A batch send reads "alex
+// sent it with 2 others". Events are in time order.
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
@@ -28,6 +29,12 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
       : { v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: "replied" };
     out.push({ at: c.created_at, e });
   });
+  // A batch send (spec §8): "sent it with 2 others · “Before the demo”".
+  for (const b of t.sends ?? []) {
+    const others = b.size - 1;
+    const verb = "sent it" + (others > 0 ? ` with ${others} other${others === 1 ? "" : "s"}` : "") + (b.note ? ` · “${b.note}”` : "");
+    out.push({ at: b.sent_at, e: { v: versionAt(versions, b.sent_at), who: b.sent_by, agent: false, verb } });
+  }
   for (const n of t.addressed_in ?? []) {
     const v = versions.find(x => x.n === n);
     out.push({ at: v?.created_at ?? "", e: { v: n, who: agentName(v?.agent_harness), agent: true, verb: "addressed it" } });

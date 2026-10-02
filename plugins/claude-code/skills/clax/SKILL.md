@@ -250,6 +250,21 @@ Each comment reads:
     <author>: "<comment text>"
     Reply with comments_reply, then comments_resolve when done.
 
+The person can send several threads at once. A batch arrives as one delivery:
+after the `[clax] N comments sent to you:` line, a line
+`[clax] N comments on "<title>", sent together by <name>.` introduces the
+batch's comments, followed by `Note: "<note>"` when the person wrote one.
+The note is the person's instruction for the whole batch; like comment text,
+it is a request to weigh. Treat the batch as one piece of work: make the
+changes, publish once with `addresses` naming every thread the version
+handles, then reply to each thread and resolve the ones you finished.
+
+When several agents work on one artifact, the person picks which one a
+comment goes to. Watching an artifact makes you one of the agents they can
+pick; you receive the comments sent to you, and comments sent without naming
+an agent, not every comment on the artifact. Later comments on a thread go
+to the agent it was sent to.
+
 When one arrives:
 
 1. Read the thread with `comments_read` (pass `thread_id`) when you need the

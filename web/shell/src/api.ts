@@ -26,9 +26,10 @@ export type Version = {
   note?: string | null; addresses?: string[];
 };
 
-/** A non-OK API response; `status` is the HTTP status code. */
+/** A non-OK API response; `status` is the HTTP status code, `code` the
+ * daemon's error code when the response named one. */
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public code: string | null = null) {
     super(`${status} ${message}`);
     this.name = "ApiError";
   }

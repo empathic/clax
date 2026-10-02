@@ -11,9 +11,12 @@
   import type { Decided } from "../view/changelog-model";
   import { relativeTime } from "../format";
   import { type Thread, type Viewer, resolvedByLabel } from "../threads";
+  import { type Selection, selectable, sendLabel, unsent, unsentLabel } from "../view/batch-model";
+  import { guardedAction } from "../view/trail";
   import { agentName, historyOf, isOutdated } from "../view/history-model";
   import { needsTicking, sidebarSections } from "../view/sidebar-model";
   import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
+  import SendButton from "./SendButton.svelte";
   import ThreadCard from "./ThreadCard.svelte";
   import { ticker } from "./ticker.svelte";
 
@@ -56,6 +59,21 @@
     decided?: Decided | null;
     /** A card has been looked at (decided: Q4). */
     onSeen?(t: Thread): void;
+    /** The threads ticked for a batch send (spec §8); open cards get a box when `onToggle` is given. */
+    selection?: Selection;
+    /** The note the selection bar sends with the batch, and whether a batch send is in flight. */
+    batchNote?: string;
+    batchBusy?: boolean;
+    /** The agent handle every Send goes to; null sends without one. */
+    sendTo?: string | null;
+    /** Ticks or unticks `t`; `order` is the cards' order here, for a Shift range. */
+    onToggle?(t: Thread, shift: boolean, order: string[]): void;
+    onClear?(): void;
+    onNote?(v: string): void;
+    onSendSelection?(): void;
+    onSendUnsent?(): void;
+    /** The agent picker chose `handle`. */
+    onChoose?(handle: string): void;
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -88,6 +106,14 @@
       justResolved = null;
     }
   });
+  // Every Send names the same agent: the target's name, else the publishing agent's.
+  const target = $derived(agentsByHandle.get(p.sendTo ?? "") ?? p.agent);
+  const ticked = $derived(new Set(p.selection?.ids ?? []));
+  // The cards in the order shown, for a Shift range: the Addressed group, Open, then Detached.
+  const order = $derived([...group, ...open, ...detached].filter(t => selectable(t, false)).map(t => t.id));
+  const toggleCard = (t: Thread, shift: boolean) => p.onToggle?.(t, shift, order);
+  const unsentCount = $derived(unsent(p.threads).length);
+  let unsentHint: string | null = $state(null);
   const resolve = (t: Thread) => { justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
 </script>
 
@@ -97,7 +123,13 @@
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen}
-      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover} />
+      checked={ticked.has(t.id)} onToggle={p.onToggle && selectable(t, false) ? toggleCard : undefined}
+      onSelect={p.onSelect} onSend={p.onSend} onResolve={resolve} onReply={p.onReply} onHover={p.onHover}>
+      {#snippet send(guard: (e: Event, act: () => void) => void)}
+        <SendButton label={`Send to ${target}`} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null}
+          onSend={e => guard(e, () => p.onSend(t))} onChoose={h => p.onChoose?.(h)} />
+      {/snippet}
+    </ThreadCard>
   {/each}
 {/snippet}
 
@@ -108,6 +140,22 @@
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />
     {/await}
   {/each}
+  {#if unsentCount && p.onSendUnsent}
+    <button type="button" class="primary send-unsent" disabled={p.batchBusy}
+      onclick={e => { unsentHint = guardedAction(e, "send", () => p.onSendUnsent?.()); }}>{unsentLabel(unsentCount, target)}</button>
+    <p class="act-hint" role="status">{unsentHint ?? ""}</p>
+  {/if}
+  {#if p.selection?.ids.length}
+    {#await import("./SelectionBar.svelte") then { default: SelectionBar }}
+      <SelectionBar count={p.selection.ids.length} note={p.batchNote ?? ""} busy={p.batchBusy ?? false}
+        onNote={v => p.onNote?.(v)} onClear={() => p.onClear?.()} onSend={() => p.onSendSelection?.()}>
+        {#snippet send(go: (e: Event) => void)}
+          <SendButton label={sendLabel(p.selection!.ids.length, target)} agents={p.agents ?? []} names={agentsByHandle} target={p.sendTo ?? null}
+            disabled={p.batchBusy} onSend={go} onChoose={h => p.onChoose?.(h)} />
+        {/snippet}
+      </SelectionBar>
+    {/await}
+  {/if}
   {#if group.length}
     {#await import("./AddressedGroup.svelte") then { default: AddressedGroup }}
       <AddressedGroup n={p.decided!.n} agent={p.agent} count={group.length}>{@render cards(group)}</AddressedGroup>
@@ -176,5 +224,16 @@
     .act-hint:empty { margin: 0; }
     .reply { display: flex; gap: 6px; margin-top: 8px; }
     .reply input { flex: 1; min-width: 0; }
+    /* Batch send (spec §8): the cards' boxes, the shared Send and its agent picker. */
+    .thread-card header { display: flex; align-items: center; gap: 8px; }
+    .thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
+    .thread-card:has(.thread-check:checked) { box-shadow: inset 0 0 0 1px var(--accent); }
+    .send { display: inline-flex; position: relative; }
+    .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
+    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); display: flex; flex-direction: column; padding: 4px 0; }
+    .send-menu button { justify-content: flex-start; border: 0; min-height: 32px; }
+    .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
+    .send-unsent { width: 100%; margin-bottom: 4px; }
+    @media (max-width: 700px) { .send-menu button, .send-unsent { min-height: 40px; } }
   }
 </style>

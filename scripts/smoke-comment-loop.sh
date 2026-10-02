@@ -291,6 +291,30 @@ if read["threads"][0]["anchor"]["file"] != "about.html":
     fail(f"comments_read anchor: {read['threads'][0]['anchor']}")
 ok(f"a thread on about.html (v{v2['version']}) reached the agent as '{want}'")
 
+# 6c. A batch: three threads sent together with a note arrive as one delivery,
+# mark every thread working, and one publish lists all three as addressed.
+# The agent answers the about.html thread first, which takes it out of its
+# working record, so the record and the publish below hold only the batch.
+shim.call("comments_reply", {"url_or_id": aid, "thread_id": t4["id"], "text": "Named the team."})
+batch = [browser_thread(aid, f"batch item {i}")["id"] for i in range(3)]
+sent = http("POST", f"/api/artifacts/{aid}/threads:send", {"thread_ids": batch, "note": "Do these before the demo"})
+if sent["sent"] != batch or sent["batch"]["note"] != "Do these before the demo":
+    fail(f"batch send: {sent}")
+listed, trailing = shim.call("list", {})
+lead = f'[clax] 3 comments on "Quarterly Review", sent together by Viewer. Note: "Do these before the demo"'
+# Compare only the batch's rows: an unacknowledged earlier thread may be resent alongside.
+if [f["thread_id"] for f in listed["feedback"] if f["thread_id"] in batch] != batch or not trailing or lead not in trailing.split("\n"):
+    fail("batch delivery:\n" + str(trailing))
+ok(f"batch: three threads arrived in one delivery led by the note ({lead})")
+w = working(aid)
+if len(w) != 1 or w[0]["thread_ids"] != batch:
+    fail(f"working after the batch: {w}")
+ok("batch: every thread in it is marked working")
+v3, _ = shim.call("publish", {"id": aid, "html": page, "note": "Batch done"})
+if v3["addressed"] != batch:
+    fail(f"publish after the batch: {v3}")
+ok(f"batch: publish v{v3['version']} listed all three threads as addressed")
+
 # 7. Tier 5 (Codex): a Codex session known through its SessionStart hook gets `codex queue`.
 join = http("POST", "/api/sessions/join", {"harness": "codex", "parent_pid": 999999, "harness_session_id": "cx-smoke", "cwd": SCRATCH}, token=True)
 csid = join["session"]["id"]

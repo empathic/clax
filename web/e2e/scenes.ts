@@ -156,4 +156,22 @@ export const SCENES: Scene[] = [
     }
     await page.getByRole("dialog", { name: "Versions" }).locator(".vrow").first().waitFor();
   } },
+  // Batch send (spec §8): a Codex session watches too, so two agents are
+  // live; the first card ticked, the third Shift-clicked (three ticked), a
+  // note typed, and the selection bar's agent picker open.
+  { name: "bulk", path: s => `/a/${s.aid}`, prepare: async (page, s) => {
+    const watcher = await registerSession(s.base, s.token, "codex", "shots-bulk");
+    await api(s.base, s.token, `/api/sessions/${watcher.id}/watches/${s.aid}`, { method: "PUT" });
+    await page.reload();
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    const boxes = page.locator(".section-open .thread-check");
+    await boxes.nth(0).click();
+    await boxes.nth(2).click({ modifiers: ["Shift"] });
+    const bar = page.getByRole("region", { name: "Selected comments" });
+    await bar.getByLabel("Note for the agent (optional)").fill("Before the Thursday review");
+    // Back to the top of the list, where Send N unsent leads.
+    await page.locator("aside.sidebar").evaluate(e => { e.scrollTop = 0; });
+    await bar.getByRole("button", { name: "Choose the agent" }).click();
+    await bar.getByRole("menu").waitFor();
+  } },
 ];

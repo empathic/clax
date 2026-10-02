@@ -602,3 +602,33 @@ async fn a_failed_queue_marks_nothing() {
     }
     assert!(working_on(&ts, &aid).await.is_empty());
 }
+
+#[tokio::test]
+async fn a_batch_reaches_codex_as_one_queued_message_led_by_its_note() {
+    let d = tempfile::tempdir().unwrap();
+    let ts = server(Some(fake_codex(d.path(), 0, 0)), Duration::from_secs(10)).await;
+    let (_sid, aid) = codex_owner(&ts, Some("cx-batch")).await;
+    let a = ts.thread(&aid, 1, "one").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.thread(&aid, 1, "two").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .json(&json!({"thread_ids": [a, b], "note": "Both, please"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let args = ran(d.path()).await;
+    assert!(args.starts_with("queue\n--thread\ncx-batch\n--message\n[clax] 2 comments sent to you:\n[clax] 2 comments on \"Pushed\", sent together by Viewer. Note: \"Both, please\"\n"), "{args}");
+    assert_eq!(
+        args.matches("[clax] Comment sent to you").count(),
+        2,
+        "one message holds both"
+    );
+}

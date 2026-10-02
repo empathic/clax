@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel } from "../threads";
   import type { Version } from "../api";
@@ -24,9 +25,15 @@
     versions?: Version[];
     /** The card has been at least half visible for a second (decided: Q4). */
     onSeen?(t: Thread): void;
+    /** The card's box is ticked for a batch send (spec §8). */
+    checked?: boolean;
+    /** Ticks or unticks the card; `shift` asks for the range from the last one ticked. Without it the card has no box. */
+    onToggle?(t: Thread, shift: boolean): void;
+    /** The shared Send button, given the guarded send for its activation; without it, a plain Send to `agent`. */
+    send?: Snippet<[(e: Event, act: () => void) => void]>;
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
   let hint: string | null = $state(null);
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
@@ -40,6 +47,7 @@
     io.observe(el);
     return () => { clearTimeout(timer); io.disconnect(); };
   };
+  const guardSend = (e: Event, act: () => void) => { hint = guardedAction(e, "send", act); };
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
 </script>
 
@@ -48,6 +56,8 @@
 <article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)} {@attach seen}
   onmouseenter={() => onHover?.(t)} onmouseleave={() => onHover?.(null)}>
   <header>
+    {#if onToggle}<input type="checkbox" class="thread-check" {checked} aria-label={`Select thread ${n ?? ""} ${anchorLabel(t.anchor)}`.replace("  ", " ")}
+      onclick={e => { e.stopPropagation(); onToggle(t, e.shiftKey); }} />{/if}
     <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
       >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
       >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">{when}</span
@@ -73,7 +83,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <div class="actions" onclick={e => e.stopPropagation()}>
       <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
-      {#if !t.sent_to_agent}<button class="primary" onclick={e => { hint = guardedAction(e, "send", () => onSend(t)); }}>Send to {agent}</button>{/if}
+      {#if !t.sent_to_agent}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
     </div>
     <!-- Said when the keyboard asked for an action on a trail the page may have steered (`keyboardTrail`). -->
     <p class="act-hint" role="status">{hint ?? ""}</p>

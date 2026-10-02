@@ -293,4 +293,67 @@ describe("Sidebar", () => {
     expect(view.root.querySelector(".hist")?.textContent ?? "").not.toContain("working on it");
     view.unmount();
   });
+
+  describe("batch send", () => {
+    const open = (id: string, quote: string): Thread => ({ ...base, id, anchor: { ...anchor, quote }, status: "open", sent_to_agent: false, comments: [comment(`${id}1`, "viewer", "Alex", quote)] });
+    const threads = [open("a", "Goals"), open("b", "Units"), { ...open("c", "Old"), status: "resolved" as const }];
+    const two = [{ handle: "a_cx", harness: "codex", live: true }, { handle: "a_cl", harness: "claude", live: true }];
+    function render(more: Record<string, unknown>) {
+      const root = document.createElement("div");
+      document.body.appendChild(root);
+      const props = { versions: [], shown: 1, agent: "claude", threads, resolved: {}, now: new Date(base.created_at), selected: null,
+        onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), selection: { ids: [], anchor: null }, onToggle: vi.fn(), onChoose: vi.fn(), ...more };
+      const view = mount(Sidebar, props, root);
+      return { root, props, done: () => { view.unmount(); root.remove(); } };
+    }
+    const box = (root: HTMLElement, id: string) => root.querySelector<HTMLInputElement>(`.thread-card[data-thread="${id}"] .thread-check`)!;
+
+    it("gives open cards a labelled box, ticked from the selection, and none to resolved cards", () => {
+      const { root, done } = render({ selection: { ids: ["a"], anchor: "a" } });
+      expect(box(root, "a").getAttribute("aria-label")).toBe("Select thread 1 «Goals»");
+      expect(box(root, "a").checked).toBe(true);
+      expect(box(root, "b").checked).toBe(false);
+      expect(root.querySelector('.thread-card[data-thread="c"] .thread-check')).toBeNull();
+      done();
+    });
+
+    it("passes shift on a Shift-click, for a range", () => {
+      const { root, props, done } = render({});
+      flush(() => box(root, "b").dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
+      expect(props.onToggle).toHaveBeenCalledWith(expect.objectContaining({ id: "b" }), true, ["a", "b"]);
+      flush(() => box(root, "a").click());
+      expect(props.onToggle).toHaveBeenLastCalledWith(expect.objectContaining({ id: "a" }), false, ["a", "b"]);
+      done();
+    });
+
+    it("with two live agents, the caret's menu lists both and checks the target", () => {
+      const { root, props, done } = render({ agents: two, sendTo: "a_cl" });
+      const card = root.querySelector('.thread-card[data-thread="a"]')!;
+      expect(card.querySelector(".send .primary")!.textContent).toBe("Send to claude");
+      flush(() => card.querySelector<HTMLButtonElement>('[aria-label="Choose the agent"]')!.click());
+      const items = Array.from(card.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]'));
+      expect(items.map(i => [i.textContent, i.getAttribute("aria-checked")])).toEqual([["codex", "false"], ["claude", "true"]]);
+      flush(() => items[0].click());
+      expect(props.onChoose).toHaveBeenCalledWith("a_cx");
+      expect(card.querySelector('[role="menu"]')).toBeNull();
+      done();
+    });
+
+    it("with one live agent, there is no caret", () => {
+      const { root, done } = render({ agents: [two[1], { handle: "a_old", harness: "pi", live: false }], sendTo: "a_cl" });
+      expect(root.querySelector('[aria-label="Choose the agent"]')).toBeNull();
+      done();
+    });
+
+    it("offers Send N unsent at the top, to the target", () => {
+      const onSendUnsent = vi.fn();
+      const { root, done } = render({ agents: two, sendTo: "a_cx", onSendUnsent });
+      const b = root.querySelector<HTMLButtonElement>(".send-unsent")!;
+      expect(b.textContent).toBe("Send 2 unsent to codex");
+      flush(() => b.click());
+      expect(onSendUnsent).toHaveBeenCalledOnce();
+      done();
+    });
+  });
 });
+

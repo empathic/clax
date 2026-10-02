@@ -359,8 +359,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await page.locator(".thread-card").first().waitFor();
     await frame.locator("#a").click();
-    // What looks like a five-field form: Smith, Jones, Main, Lot, New York.
-    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."New", "Space", ..."York"], 0);
+    // What looks like a seven-field form: Smith, Jones, Main, Lot, Apt, Zip,
+    // New York. Its Tabs walk the pin, Send N unsent, the card's box, its
+    // head and Resolve, so the Space in "New York" lands on Send.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."New", "Space", ..."York"], 0);
     await expect(page.locator(".act-hint").filter({ hasText: /^Click to send, or press Esc first$/ })).toHaveCount(1);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
   });
@@ -387,10 +389,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
     const send = page.getByRole("button", { name: /^Send to / });
-    for (let i = 0; i < 3; i++) await page.keyboard.press("Tab");
+    // Send N unsent, the card's box, its head, Resolve, then Send.
+    for (let i = 0; i < 5; i++) await page.keyboard.press("Tab");
     await expect(send).toBeFocused();
     await page.keyboard.press("Space");
-    await expect(page.locator(".act-hint")).toHaveText("Click to send, or press Esc first");
+    await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send, or press Esc first");
     expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
     await page.keyboard.press("Escape");
     await page.keyboard.press("Shift+Tab");

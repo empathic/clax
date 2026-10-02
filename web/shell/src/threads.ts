@@ -13,6 +13,9 @@ export type Thread = {
   comments: Comment[]; feedback_state: FeedbackState | null;
   /** The versions that addressed this thread, oldest first. */
   addressed_in?: number[];
+  /** Each time the thread was sent with others as one batch, oldest first:
+   * the batch's size (this thread included), its note, and its sender's name. */
+  sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[];
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
 export type Viewer = { public_id: string; display_name: string | null; created_at: string };
@@ -20,8 +23,9 @@ export type Viewer = { public_id: string; display_name: string | null; created_a
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = res.statusText;
-    try { msg = (await res.json()).error?.message ?? msg; } catch { /* not JSON */ }
-    throw new ApiError(res.status, msg);
+    let code: string | null = null;
+    try { const e = (await res.json()).error; msg = e?.message ?? msg; code = typeof e?.code === "string" ? e.code : null; } catch { /* not JSON */ }
+    throw new ApiError(res.status, msg, code);
   }
   return res.json() as Promise<T>;
 }
@@ -55,8 +59,16 @@ export async function createThread(aid: string, input: { anchor: Anchor; body: s
 export async function addComment(aid: string, tid: string, body: string): Promise<Thread> {
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/comments`, { body }))).thread;
 }
-export async function sendToAgent(aid: string, tid: string): Promise<Thread> {
-  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/send`))).thread;
+/** Sends a thread to the agent `to` names (a participant handle), or with
+ * `to` null to every live owner and watcher; the body carries no `to` then. */
+export async function sendToAgent(aid: string, tid: string, to: string | null = null): Promise<Thread> {
+  return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/send`, to === null ? undefined : { to }))).thread;
+}
+/** Sends `threadIds` as one batch with an optional `note`, to the agent `to`
+ * names or, with `to` null, without a target (the body has no `to` key). All
+ * or nothing: a refusal throws `ApiError` with the daemon's message. */
+export async function sendBatch(aid: string, threadIds: string[], note: string | null, to: string | null): Promise<{ threads: Thread[]; sent: string[]; unchanged: string[] }> {
+  return ok(await post(`/api/artifacts/${aid}/threads:send`, { thread_ids: threadIds, note, ...(to === null ? {} : { to }) }));
 }
 export async function resolveThread(aid: string, tid: string): Promise<Thread> {
   return (await ok<{ thread: Thread }>(await post(`/api/artifacts/${aid}/threads/${tid}/resolve`))).thread;

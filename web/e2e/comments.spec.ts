@@ -189,6 +189,8 @@ test("thread cards are reachable and selectable from the keyboard", async ({ pag
   await page.keyboard.press("Tab"); // Send to the agent
   await page.keyboard.press("Tab"); // Reply input
   await page.keyboard.press("Tab"); // Reply button
+  await page.keyboard.press("Tab"); // the second card's box, for a batch send
+  await expect(second.locator(".thread-check")).toBeFocused();
   await page.keyboard.press("Tab"); // the second card's header
   await expect(second.locator("button.card-head")).toBeFocused();
   await page.keyboard.press("Space");

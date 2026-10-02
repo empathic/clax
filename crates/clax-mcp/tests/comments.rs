@@ -745,3 +745,39 @@ async fn publish_carries_a_note_and_links_addressed_and_working_threads() {
         .unwrap();
     assert_eq!(t["thread"]["status"], "open");
 }
+
+#[tokio::test]
+async fn a_batch_piggybacks_as_one_group_on_the_next_tool_result() {
+    let ts = TestServer::spawn().await;
+    let (tools, _sid) = session_tools(&ts).await;
+    let (p, _) = blocks(
+        &tools
+            .publish(Parameters(PublishArgs {
+                html: Some("<h2>Goals</h2>".into()),
+                title: Some("Batch".into()),
+                ..Default::default()
+            }))
+            .await
+            .unwrap(),
+    );
+    let aid = p["artifact_id"].as_str().unwrap().to_string();
+    let a = ts.thread(&aid, 1, "one").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let b = ts.thread(&aid, 1, "two").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.client
+        .post(format!("{}/api/artifacts/{aid}/threads:send", ts.base))
+        .json(&json!({"thread_ids": [a, b]}))
+        .send()
+        .await
+        .unwrap();
+    let (v, trailing) = blocks(&tools.list(Parameters(ListArgs::default())).await.unwrap());
+    assert_eq!(v["feedback"].as_array().unwrap().len(), 2);
+    assert_eq!(v["feedback"][0]["batch"]["size"], 2);
+    let text = trailing.unwrap();
+    assert!(text.starts_with("---\n[clax] 2 comments sent to you:\n[clax] 2 comments on \"Batch\", sent together by Viewer.\n"), "{text}");
+}

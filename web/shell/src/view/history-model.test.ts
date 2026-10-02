@@ -47,6 +47,22 @@ describe("history-model", () => {
     expect(addressedNote(t, t.comments[0], withAgent)).toBeNull();
   });
 
+  it("reads a batch send with how many others went with it and its note", () => {
+    const t = T({
+      comments: [C("c1", "viewer", "alex", "2026-09-30T10:30:00.000Z")],
+      sends: [
+        { batch_id: "b1", size: 3, note: "Before the demo", sent_by: "alex", sent_at: "2026-09-30T11:10:00.000Z" },
+        { batch_id: "b2", size: 2, note: null, sent_by: "Mia", sent_at: "2026-09-30T12:10:00.000Z" },
+        { batch_id: "b3", size: 1, note: null, sent_by: "Mia", sent_at: "2026-09-30T12:20:00.000Z" },
+      ],
+    });
+    expect(historyOf(t, vs, names).slice(1)).toEqual([
+      { v: 2, who: "alex", agent: false, verb: "sent it with 2 others · “Before the demo”" },
+      { v: 3, who: "Mia", agent: false, verb: "sent it with 1 other" },
+      { v: 3, who: "Mia", agent: false, verb: "sent it" },
+    ]);
+  });
+
   it("tags the opening comment with the version it was made on, even when a newer one was out", () => {
     // v2 was published at 11:00; the viewer, still on v1, commented at 11:30.
     const t = T({ version_n: 1, comments: [C("1", "viewer", "alex", "2026-09-30T11:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:40:00.000Z")] });
