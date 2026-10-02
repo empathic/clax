@@ -11,6 +11,11 @@
 //! - `mcp`: whether the daemon has a live session of the harness.
 //! - `hooks`: the harness's latest lines in `logs/hooks.log`.
 //! - `feedback`: each live session's watches and push state.
+//! - Grok Build only: `grok`, the installed Grok's version, and
+//!   `claude_copy`, whether the Claude Code plugin has stood down in a Grok
+//!   session.
+//! - `channel` (Claude Code): whether the installed plugin declares the Clax
+//!   channel, and how the latest session was launched.
 
 use crate::client::Client;
 use clax_core::Home;
@@ -23,6 +28,7 @@ use std::path::{Path, PathBuf};
 pub enum DoctorAgent {
     Claude,
     Codex,
+    Grok,
     Pi,
 }
 
@@ -39,6 +45,7 @@ impl DoctorAgent {
         match self {
             DoctorAgent::Claude => "claude",
             DoctorAgent::Codex => "codex",
+            DoctorAgent::Grok => "grok",
             DoctorAgent::Pi => "pi",
         }
     }
@@ -47,6 +54,7 @@ impl DoctorAgent {
         match self {
             DoctorAgent::Claude => "Claude Code",
             DoctorAgent::Codex => "Codex",
+            DoctorAgent::Grok => "Grok Build",
             DoctorAgent::Pi => "Pi",
         }
     }
@@ -57,6 +65,7 @@ impl DoctorAgent {
                 "reinstall with `/plugin uninstall clax@clax`, then `/plugin install clax@clax`"
             }
             DoctorAgent::Codex => "reinstall with `codex plugin add clax@clax`",
+            DoctorAgent::Grok => "reinstall with `clax init --agent grok`",
             DoctorAgent::Pi => "reinstall with `pi install <checkout>/plugins/pi`",
         }
     }
@@ -69,6 +78,9 @@ impl DoctorAgent {
             }
             DoctorAgent::Codex => {
                 include_str!("../../../../plugins/clax/skills/clax/SKILL.md")
+            }
+            DoctorAgent::Grok => {
+                include_str!("../../../../plugins/clax-grok/skills/clax/SKILL.md")
             }
             DoctorAgent::Pi => include_str!("../../../../plugins/pi/skills/clax/SKILL.md"),
         }
@@ -83,6 +95,8 @@ pub struct Dirs {
     pub claude_dir: PathBuf,
     /// `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
     pub pi_dir: PathBuf,
+    /// `$GROK_HOME`, else `~/.grok`.
+    pub grok_home: PathBuf,
 }
 
 impl Dirs {
@@ -110,6 +124,7 @@ impl Dirs {
             codex_home: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             pi_dir: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")),
+            grok_home: var("GROK_HOME").unwrap_or_else(|| home.join(".grok")),
         })
     }
 }
@@ -167,6 +182,8 @@ fn read_json(path: &Path) -> Option<Value> {
 ///   `<claude dir>/plugins/cache/*/clax/<version>/`.
 /// - Pi: local-path packages in `<pi dir>/settings.json` whose `package.json`
 ///   names the Clax Pi package.
+/// - Grok Build: directories under `<grok home>` holding a
+///   `.grok-plugin/plugin.json` that names clax-grok ([`grok_plugin_copies`]).
 pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
     let mut roots = match agent {
         DoctorAgent::Codex => cached_copies(
@@ -209,6 +226,7 @@ pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
                 })
                 .collect()
         }
+        DoctorAgent::Grok => grok_plugin_copies(&dirs.grok_home),
     };
     let version =
         |p: &PathBuf| plugin::manifest_version(p).and_then(|v| semver::Version::parse(&v).ok());
@@ -216,10 +234,40 @@ pub fn plugin_roots(agent: DoctorAgent, dirs: &Dirs) -> Vec<PathBuf> {
     roots
 }
 
+/// Directories under `grok_home`, at most five levels down and never inside
+/// `sessions` or `logs`, whose `.grok-plugin/plugin.json` names clax-grok.
+/// Grok's install layout is not documented, so this does not assume one.
+fn grok_plugin_copies(grok_home: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut stack = vec![(grok_home.to_path_buf(), 0usize)];
+    while let Some((d, depth)) = stack.pop() {
+        if read_json(&d.join(".grok-plugin/plugin.json")).is_some_and(|m| m["name"] == "clax-grok")
+        {
+            out.push(d);
+            continue;
+        }
+        if depth == 5 {
+            continue;
+        }
+        for e in std::fs::read_dir(&d)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+        {
+            let name = e.file_name();
+            if e.file_type().is_ok_and(|t| t.is_dir()) && name != "sessions" && name != "logs" {
+                stack.push((e.path(), depth + 1));
+            }
+        }
+    }
+    out
+}
+
 fn where_installed(agent: DoctorAgent, dirs: &Dirs) -> String {
     match agent {
         DoctorAgent::Codex => dirs.codex_home.join("plugins/cache").display().to_string(),
         DoctorAgent::Claude => dirs.claude_dir.join("plugins").display().to_string(),
+        DoctorAgent::Grok => dirs.grok_home.display().to_string(),
         DoctorAgent::Pi => dirs.pi_dir.join("settings.json").display().to_string(),
     }
 }
@@ -354,6 +402,7 @@ pub fn plugin_check(
             DoctorAgent::Claude => {
                 "`/plugin marketplace add <checkout>`, then `/plugin install clax@clax`"
             }
+            DoctorAgent::Grok => "`clax init --agent grok`",
             DoctorAgent::Pi => "`pi install <checkout>/plugins/pi`",
         };
         return (
@@ -467,6 +516,22 @@ pub fn live_sessions(client: Option<&Client>, agent: DoctorAgent) -> Result<Vec<
 /// `mcp`: the daemon has a live session of the harness, which its MCP server
 /// (or, under Pi, its extension) registers.
 pub fn mcp_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>) -> Value {
+    let mut c = mcp_sessions_check(agent, sessions);
+    if agent == DoctorAgent::Grok {
+        let detail = format!(
+            "{}\n{GROK_APPROVAL}",
+            c["detail"].as_str().unwrap_or_default()
+        );
+        c["detail"] = Value::String(detail);
+    }
+    c
+}
+
+/// How Grok's per-call tool approval can be lifted for the clax tools; doctor
+/// prints it and never writes it.
+const GROK_APPROVAL: &str = "Grok asks before each tool call; [permission] allow = [\"MCPTool(clax_grok__*)\"] in ~/.grok/config.toml approves them all, delete included";
+
+fn mcp_sessions_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>) -> Value {
     let registrar = match agent {
         DoctorAgent::Pi => "the Pi extension",
         _ => "the plugin's MCP server",
@@ -481,6 +546,9 @@ pub fn mcp_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>) -> V
             let hint = match agent {
                 DoctorAgent::Codex => " (`codex mcp list` shows whether Codex has the server)",
                 DoctorAgent::Claude => " (`/mcp` in Claude Code shows the server's state)",
+                DoctorAgent::Grok => {
+                    " (`grok mcp list` shows whether Grok has the clax_grok server)"
+                }
                 DoctorAgent::Pi => "",
             };
             check(
@@ -509,7 +577,8 @@ pub fn mcp_check(agent: DoctorAgent, sessions: &Result<Vec<Value>, String>) -> V
 }
 
 /// `hooks`: the harness's last lines in hooks.log. Failed when the latest
-/// is the launcher finding no binary, or when no Claude Code hook has run.
+/// is the launcher finding no binary, or when no Claude Code or Grok Build
+/// hook has run. Stand-down lines are not hook runs.
 pub fn hooks_check(agent: DoctorAgent, home: &Home) -> Value {
     if agent == DoctorAgent::Pi {
         return check(
@@ -529,6 +598,10 @@ pub fn hooks_check(agent: DoctorAgent, home: &Home) -> Value {
                     "no hook has run ({} has no codex line); Codex runs plugin hooks only with `features.hooks = true` and trusted hooks, which are optional",
                     log.display()
                 ),
+                DoctorAgent::Grok => format!(
+                    "no hook has run ({} has no grok line); clax-grok's hooks run once the plugin is installed and trusted (clax init installs it with --trust)",
+                    log.display()
+                ),
                 _ => format!("no hook has run ({} has no claude line)", log.display()),
             },
         ),
@@ -543,6 +616,75 @@ pub fn hooks_check(agent: DoctorAgent, home: &Home) -> Value {
             ),
         ),
     }
+}
+
+/// The oldest Grok Build release Clax is checked against
+/// (open-questions Q3).
+const MIN_GROK: semver::Version = semver::Version::new(1, 0, 45);
+
+/// `grok`: the first `X.Y.Z` in `grok --version`'s first line; failed when
+/// there is none, or it is older than [`MIN_GROK`].
+pub fn grok_version_check(version_line: Option<&str>) -> Value {
+    let Some(line) = version_line else {
+        return check(
+            "grok",
+            false,
+            "grok is not on PATH, or `grok --version` failed",
+        );
+    };
+    let found = line
+        .split(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .find_map(|w| semver::Version::parse(w).ok());
+    match found {
+        Some(v) if v >= MIN_GROK => check("grok", true, line.to_string()),
+        Some(v) => check(
+            "grok",
+            false,
+            format!(
+                "{line}: Clax is checked against Grok Build {MIN_GROK} and later; update Grok (v{v} is older)"
+            ),
+        ),
+        None => check("grok", false, format!("{line}: no version found")),
+    }
+}
+
+/// `claude_copy`: never failed. Whether the Claude Code plugin has stood
+/// down in a Grok session, from its `standdown` lines in hooks.log.
+pub fn claude_copy_check(home: &Home) -> Value {
+    let n = [
+        home.hooks_log_path().with_extension("log.1"),
+        home.hooks_log_path(),
+    ]
+    .iter()
+    .filter_map(|p| std::fs::read_to_string(p).ok())
+    .map(|t| {
+        t.lines()
+            .filter(|l| l.contains(" standdown ") && l.contains(" host=grok"))
+            .count()
+    })
+    .sum::<usize>();
+    if n == 0 {
+        check(
+            "claude_copy",
+            true,
+            "the Claude Code plugin has not run in a Grok session",
+        )
+    } else {
+        check(
+            "claude_copy",
+            true,
+            format!(
+                "the Claude Code plugin is enabled in Grok and stood down {n} time(s): clax-grok acts instead. `grok plugin disable clax` removes its idle clax server"
+            ),
+        )
+    }
+}
+
+/// The first `grok` on the `PATH` value `path`.
+fn grok_on_path(path: &std::ffi::OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|d| d.join("grok"))
+        .find(|p| p.is_file())
 }
 
 /// One live session's feedback state: its watches (from
@@ -594,6 +736,45 @@ pub fn feedback_check(sessions: &Result<Vec<SessionFeedback>, String>) -> Value 
     check("feedback", ok, lines.join("\n"))
 }
 
+/// `channel` (Claude Code): whether the installed plugin declares the Clax
+/// channel, and how the latest Claude Code session was launched (the
+/// shim's `channel` line in hooks.log). The channel is opt-in, so only a
+/// manifest without it fails.
+pub fn channel_check(root: Option<&Path>, home: &Home) -> Value {
+    let declared = root
+        .and_then(|r| read_json(&r.join(".claude-plugin/plugin.json")))
+        .is_some_and(|m| m["channels"] == json!([{"server": "clax"}]));
+    if !declared {
+        return check(
+            "channel",
+            false,
+            "the installed plugin does not declare the clax channel; run `clax init` to install the current plugin",
+        );
+    }
+    let launch = clax_mcp::channel::LAUNCH;
+    let last = crate::hooklog::tail_for(home, "claude", 200)
+        .into_iter()
+        .rev()
+        .find(|l| {
+            l.split_once(' ')
+                .is_some_and(|(_, rest)| rest.starts_with("channel "))
+        });
+    let detail = match last {
+        None => format!(
+            "no Claude Code session has started the shim yet. To wake idle sessions through the channel, launch `{launch}`; without it the skill runs `clax feedback follow --once` in the background"
+        ),
+        Some(l) if l.contains("launch_flag=present") => format!(
+            "the latest session ({}) was launched with the channel: {l}. Claude Code does not tell Clax whether the channel registered; its startup screen says so. If it says the channel was blocked, relaunch without the flag to use the background fallback",
+            l.split(' ').next().unwrap_or_default()
+        ),
+        Some(l) => format!(
+            "the latest session ({}) was launched without the channel ({l}); idle sessions wake through the skill's background `clax feedback follow --once`. For the channel, launch `{launch}` (research preview, CLI only, claude.ai or Console login; on Team and Enterprise an Owner must turn channels on)",
+            l.split(' ').next().unwrap_or_default()
+        ),
+    };
+    check("channel", true, detail)
+}
+
 /// Every layered check for `agent`.
 pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<Value> {
     let version = env!("CARGO_PKG_VERSION");
@@ -602,11 +783,14 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let clax_bin = std::env::var("CLAX_BIN").ok();
     let mut out = vec![binary_check(&exe, version, clax_bin.as_deref(), &on_path)];
     out.push(upgrade_check(home, client.map(|c| c.info.version.as_str())));
+    // The installed plugin's root; `None` when HOME is unset.
+    let mut plugin_root: Option<PathBuf> = None;
     match Dirs::from_env(|k| std::env::var(k).ok()) {
         Some(dirs) => {
             let (plugin, root) = plugin_check(agent, &dirs, version);
             out.push(plugin);
             out.push(skill_check(agent, root.as_deref(), ClaxTools::tool_count()));
+            plugin_root = root;
         }
         None => {
             out.push(check("plugin", false, "HOME is not set"));
@@ -616,6 +800,12 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
     let sessions = live_sessions(client, agent);
     out.push(mcp_check(agent, &sessions));
     out.push(hooks_check(agent, home));
+    if agent == DoctorAgent::Grok {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let line = grok_on_path(&path).and_then(|g| version_line(&g));
+        out.push(grok_version_check(line.as_deref()));
+        out.push(claude_copy_check(home));
+    }
     let feedback = sessions.map(|list| {
         list.iter()
             .map(|s| {
@@ -633,6 +823,9 @@ pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<V
             .collect()
     });
     out.push(feedback_check(&feedback));
+    if agent == DoctorAgent::Claude {
+        out.push(channel_check(plugin_root.as_deref(), home));
+    }
     out
 }
 
@@ -675,6 +868,18 @@ mod tests {
             self.write(&format!("{rel}/skills/clax/SKILL.md"), agent.built_skill());
             self.home().join(rel)
         }
+        /// The Clax home under this HOME.
+        fn clax_home(&self) -> Home {
+            Home::at(self.home().join("ax"))
+        }
+        /// Adds `channels: [{"server": "clax"}]` to the Claude Code manifest
+        /// of the plugin copy at `root`.
+        fn write_manifest_channels(&self, root: &Path) {
+            let path = root.join(".claude-plugin/plugin.json");
+            let mut m: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+            m["channels"] = json!([{"server": "clax"}]);
+            std::fs::write(&path, m.to_string()).unwrap();
+        }
     }
 
     const V: &str = env!("CARGO_PKG_VERSION");
@@ -691,6 +896,7 @@ mod tests {
         assert_eq!(d.codex_home, PathBuf::from("/cx"));
         assert_eq!(d.claude_dir, PathBuf::from("/h/.claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
+        assert_eq!(d.grok_home, PathBuf::from("/h/.grok"));
         assert!(Dirs::from_env(|_| None).is_none());
     }
 
@@ -701,12 +907,14 @@ mod tests {
             "CODEX_HOME" => Some("~".into()),
             "CLAUDE_CONFIG_DIR" => Some("cfg/claude".into()),
             "PI_CODING_AGENT_DIR" => Some("~/.pi/agent".into()),
+            "GROK_HOME" => Some("g".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!(d.codex_home, PathBuf::from("/h"));
         assert_eq!(d.claude_dir, PathBuf::from("/h/cfg/claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
+        assert_eq!(d.grok_home, PathBuf::from("/h/g"));
     }
 
     #[test]
@@ -840,7 +1048,12 @@ mod tests {
     #[test]
     fn no_plugin_says_where_it_looked_and_how_to_install() {
         let f = Fixture::new();
-        for agent in [DoctorAgent::Claude, DoctorAgent::Codex, DoctorAgent::Pi] {
+        for agent in [
+            DoctorAgent::Claude,
+            DoctorAgent::Codex,
+            DoctorAgent::Grok,
+            DoctorAgent::Pi,
+        ] {
             let (p, root) = plugin_check(agent, &f.dirs(), V);
             assert_eq!(p["ok"], false);
             assert!(root.is_none());
@@ -949,7 +1162,12 @@ mod tests {
 
     #[test]
     fn the_built_skills_state_this_binarys_tool_count() {
-        for agent in [DoctorAgent::Claude, DoctorAgent::Codex, DoctorAgent::Pi] {
+        for agent in [
+            DoctorAgent::Claude,
+            DoctorAgent::Codex,
+            DoctorAgent::Grok,
+            DoctorAgent::Pi,
+        ] {
             assert_eq!(
                 plugin::skill_block(agent.built_skill()),
                 Some((V.to_string(), ClaxTools::tool_count())),
@@ -1005,6 +1223,172 @@ mod tests {
             "t3 launcher mode=hook agent=codex exit=0 reason=\"no binary found\"",
         );
         assert_eq!(hooks_check(DoctorAgent::Codex, &home)["ok"], false);
+    }
+
+    #[test]
+    fn the_grok_plugin_is_found_anywhere_under_grok_home() {
+        let f = Fixture::new();
+        let root = f.dirs().grok_home.join("plugins/installed/clax-grok-0.3.0");
+        std::fs::create_dir_all(root.join(".grok-plugin")).unwrap();
+        std::fs::write(
+            root.join(".grok-plugin/plugin.json"),
+            r#"{"name": "clax-grok", "version": "0.3.0"}"#,
+        )
+        .unwrap();
+        // A plugin of another name is not ours, and session trees are never walked.
+        let other = f.dirs().grok_home.join("plugins/x");
+        std::fs::create_dir_all(other.join(".grok-plugin")).unwrap();
+        std::fs::write(
+            other.join(".grok-plugin/plugin.json"),
+            r#"{"name": "x", "version": "9.9.9"}"#,
+        )
+        .unwrap();
+        let session = f.dirs().grok_home.join("sessions/s1/clax-grok");
+        std::fs::create_dir_all(session.join(".grok-plugin")).unwrap();
+        std::fs::write(
+            session.join(".grok-plugin/plugin.json"),
+            r#"{"name": "clax-grok", "version": "0.3.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(plugin_roots(DoctorAgent::Grok, &f.dirs()), vec![root]);
+    }
+
+    #[test]
+    fn grok_hooks_are_expected_and_stand_downs_are_not_grok_or_claude_hooks() {
+        let f = Fixture::new();
+        let home = Home::at(f.home().join("ax"));
+        assert_eq!(
+            hooks_check(DoctorAgent::Grok, &home)["ok"],
+            false,
+            "no grok hook has run"
+        );
+        assert!(
+            claude_copy_check(&home)["detail"]
+                .as_str()
+                .unwrap()
+                .contains("has not run"),
+        );
+        crate::hooklog::append(
+            &home,
+            "2026-10-01T10:00:00Z standdown mode=hook agent=claude host=grok",
+        );
+        assert_eq!(
+            hooks_check(DoctorAgent::Claude, &home)["ok"],
+            false,
+            "a stand-down is not a Claude Code hook run"
+        );
+        let c = claude_copy_check(&home);
+        assert_eq!(c["ok"], true);
+        assert!(
+            c["detail"]
+                .as_str()
+                .unwrap()
+                .contains("grok plugin disable clax"),
+            "{c}"
+        );
+    }
+
+    #[test]
+    fn the_grok_version_check_warns_below_the_minimum() {
+        assert_eq!(grok_version_check(Some("grok 1.0.45"))["ok"], true);
+        assert_eq!(
+            grok_version_check(Some("grok-build 1.1.0 (abc)"))["ok"],
+            true
+        );
+        assert_eq!(grok_version_check(Some("grok 1.0.44"))["ok"], false);
+        assert_eq!(grok_version_check(Some("grok dev"))["ok"], false);
+        assert_eq!(grok_version_check(None)["ok"], false);
+    }
+
+    #[test]
+    fn grok_mcp_prints_the_approval_rule() {
+        for sessions in [Ok(vec![]), Ok(vec![json!({"id": "s1", "harness": "grok"})])] {
+            let c = mcp_check(DoctorAgent::Grok, &sessions);
+            assert!(
+                c["detail"]
+                    .as_str()
+                    .unwrap()
+                    .contains(r#"allow = ["MCPTool(clax_grok__*)"]"#),
+                "{c}"
+            );
+        }
+        let none = mcp_check(DoctorAgent::Grok, &Ok(vec![]));
+        assert!(none["detail"].as_str().unwrap().contains("grok mcp list"));
+    }
+
+    #[test]
+    fn channel_needs_the_manifest_entry_and_reports_the_last_launch() {
+        let f = Fixture::new();
+        let root = f.plugin(
+            "plugins/cache/clax/clax/0.3.0",
+            ".claude-plugin/plugin.json",
+            "0.3.0",
+            DoctorAgent::Claude,
+        );
+        // Without `channels` in the manifest: failed, says to reinstall.
+        let v = channel_check(Some(&root), &f.clax_home());
+        assert_eq!(v["ok"], false, "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("clax init"), "{v}");
+        assert_eq!(channel_check(None, &f.clax_home())["ok"], false);
+        // With it, and no channel line: ok, gives the launch command.
+        f.write_manifest_channels(&root);
+        let v = channel_check(Some(&root), &f.clax_home());
+        assert_eq!(v["ok"], true);
+        assert!(
+            v["detail"]
+                .as_str()
+                .unwrap()
+                .contains("--dangerously-load-development-channels plugin:clax@clax"),
+            "{v}"
+        );
+        // The latest channel line decides the text.
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:00:00Z channel agent=claude launch_flag=absent flag=\"\" entry=\"\" parent_pid=1",
+        );
+        let d = channel_check(Some(&root), &f.clax_home())["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            d.contains("2026-10-01T10:00:00Z") && d.contains("without the channel"),
+            "{d}"
+        );
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:05:00Z channel agent=claude launch_flag=present flag=\"--dangerously-load-development-channels\" entry=\"plugin:clax@clax\" parent_pid=2",
+        );
+        crate::hooklog::append(
+            &f.clax_home(),
+            "2026-10-01T10:05:01Z hook agent=claude event=stop bin=/b/clax duration_ms=3 exit=0 stderr=\"\"",
+        );
+        let d = channel_check(Some(&root), &f.clax_home())["detail"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            d.contains("2026-10-01T10:05:00Z")
+                && d.contains("plugin:clax@clax")
+                && d.contains("startup screen"),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn a_latest_channel_line_leaves_hooks_ok() {
+        let f = Fixture::new();
+        let home = f.clax_home();
+        crate::hooklog::append(
+            &home,
+            "t1 hook agent=claude event=stop bin=/b/clax duration_ms=3 exit=0 stderr=\"\"",
+        );
+        crate::hooklog::append(
+            &home,
+            "t2 channel agent=claude launch_flag=absent flag=\"\" entry=\"\" parent_pid=1",
+        );
+        let h = hooks_check(DoctorAgent::Claude, &home);
+        assert_eq!(h["ok"], true, "{h}");
+        assert!(h["detail"].as_str().unwrap().contains("t2 channel"), "{h}");
     }
 
     #[test]

@@ -15,7 +15,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 /// The harness names a session may carry.
-pub const HARNESSES: [&str; 3] = ["claude", "codex", "pi"];
+pub const HARNESSES: [&str; 4] = ["claude", "codex", "grok", "pi"];
 
 /// `invalid_args` unless `harness` is one of [`HARNESSES`].
 fn check_harness(harness: &str) -> Result<(), ApiError> {
@@ -122,6 +122,7 @@ pub async fn patch(
                 let (session, touched) = st.end_session_touched(&id)?;
                 crate::feedback::apply(&ctx, st, &touched);
                 ctx.waiters.forget(&id);
+                ctx.followers.forget(&id);
                 Ok(session)
             } else {
                 st.heartbeat(&id)
@@ -165,19 +166,29 @@ pub async fn get(
             Ok((session, codex_home, push_error))
         })
         .await?;
-    let push = push_info(&session, &s.codex, codex_home, push_error);
+    let following = s.followers.is_following(&session.id);
+    let push = push_info(&session, &s.codex, codex_home, push_error, following);
     Ok(Json(json!({"session": session, "push": push})))
 }
+
+/// Why nothing wakes an idle Claude Code session that no notice follower
+/// polls for.
+const CLAUDE_NO_PUSH: &str = "nothing wakes this session while it is idle: launch Claude Code with `claude --dangerously-load-development-channels plugin:clax@clax`, or run follow_command in the background after publishing; meanwhile comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback";
 
 /// How feedback can be pushed to this session (tier 5), and why not when it
 /// cannot. For Codex, `last_error` and `last_error_at` hold the latest
 /// `codex queue` failure (`null` after a success or before any run); a
 /// failure leaves push available, since the next comment is pushed again.
+/// For Grok, push is the monitor: available while `following` (a `clax
+/// feedback follow` of the session is connected). For Claude Code, the
+/// daemon reports a notice follower (a `clax feedback follow --once` or the
+/// shim's channel) as tier `notice`; the shim refines it.
 fn push_info(
     s: &Session,
     codex: &CodexPush,
     codex_home: Option<String>,
     push_error: Option<(String, String)>,
+    following: bool,
 ) -> Value {
     match s.harness.as_str() {
         "codex" => {
@@ -192,6 +203,14 @@ fn push_info(
                 "last_error": last_error, "last_error_at": last_error_at})
         }
         "pi" => json!({"tier": "inject", "available": true, "reason": null}),
+        "grok" => {
+            let reason = (!following).then_some(
+                "no clax feedback follow is running for this session; the clax-grok skill starts one with Grok's monitor tool after a publish. Meanwhile comments arrive at the end of a turn (Stop hook), on the next clax tool call, or during wait_for_feedback",
+            );
+            json!({"tier": "monitor", "available": following, "reason": reason})
+        }
+        "claude" if following => json!({"tier": "notice", "available": true, "reason": null}),
+        "claude" => json!({"tier": null, "available": false, "reason": CLAUDE_NO_PUSH}),
         _ => {
             json!({"tier": null, "available": false, "reason": "Claude Code has no native push; comments arrive at the end of a turn (Stop hook), with the next prompt, on the next clax tool call, or during wait_for_feedback"})
         }

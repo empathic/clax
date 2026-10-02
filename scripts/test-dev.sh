@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests scripts/dev-home.sh, scripts/dev.sh and the hand-off from a bare
 # `just dev` to scripts/watch.sh, and the install and uninstall recipes, with a
-# scratch HOME and CARGO_HOME, fake `claude`, `codex`, `pi` and `cargo`
+# scratch HOME and CARGO_HOME, fake `claude`, `codex`, `grok`, `pi` and `cargo`
 # commands, a fake clax, and `sleep` processes standing in for daemons. No
 # cargo build, no real harness, no real daemon, nothing on 7480 or 7481.
 set -uo pipefail
@@ -13,8 +13,8 @@ FAILED=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 export HOME="$T/home"
-export CODEX_HOME="$T/codex-home" CLAUDE_CONFIG_DIR="$T/claude-config" PI_CODING_AGENT_DIR="$T/pi-agent"
-mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$PI_CODING_AGENT_DIR"
+export CODEX_HOME="$T/codex-home" CLAUDE_CONFIG_DIR="$T/claude-config" PI_CODING_AGENT_DIR="$T/pi-agent" GROK_HOME="$T/grok-home"
+mkdir -p "$HOME" "$CODEX_HOME" "$CLAUDE_CONFIG_DIR" "$PI_CODING_AGENT_DIR" "$GROK_HOME"
 unset CLAX_HOME CLAX_DEV_PORT CLAX_DEV_BIN CLAX_BIN
 
 # shellcheck source=scripts/dev-home.sh
@@ -126,11 +126,11 @@ rm -rf "$HOME/.clax"
 # check, before it builds anything or probes a port.
 FAKE="$T/fake"
 mkdir -p "$FAKE"
-for h in claude codex pi; do
+for h in claude codex grok pi; do
     cat > "$FAKE/$h" <<SH
 #!/bin/sh
 c="\$(command -v clax)"
-echo "$h \$* | clax=\$c (\$(clax --version)) home=\${CLAX_HOME:-} codex_home=\${CODEX_HOME:-} argc=\$#" >> "$T/calls"
+echo "$h \$* | clax=\$c (\$(clax --version)) home=\${CLAX_HOME:-} codex_home=\${CODEX_HOME:-} grok_home=\${GROK_HOME:-} argc=\$#" >> "$T/calls"
 SH
     chmod +x "$FAKE/$h"
 done
@@ -172,6 +172,16 @@ if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && [ -z "$(ls -A "$CODEX_HOME")" ] && grep -q 'just install' "$T/out"; then
     pass "just dev codex runs Codex once, with the build on PATH and ~/.clax-dev, its own CODEX_HOME untouched and the installed plugin"
 else fail "just dev codex ($line; $(cat "$T/err"))"; fi
+
+devrun grok --resume
+line="$(cat "$T/calls")"
+tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
+if [ "$(wc -l < "$T/calls" | tr -d ' ')" = 1 ] \
+    && echo "$line" | grep -qF "grok --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev" \
+    && echo "$line" | grep -qF "grok_home=$GROK_HOME" \
+    && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && [ -z "$(ls -A "$GROK_HOME")" ] && grep -q 'just install' "$T/out"; then
+    pass "just dev grok runs Grok once, with the build on PATH and ~/.clax-dev, its own GROK_HOME untouched and the installed plugin"
+else fail "just dev grok ($line; $(cat "$T/err"))"; fi
 
 : > "$T/calls"
 if CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" CLAX_HOME="$T/mine" "$HERE/dev.sh" pi >/dev/null 2>&1 \

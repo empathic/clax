@@ -22,6 +22,9 @@ for example `mcp__plugin_clax_clax__publish`. The plugin's commands
 `/clax:comments`, `/clax:watch` and `/clax:wait` drive the comment
 loop below.
 
+Grok Build also loads this plugin when it is enabled there; in Grok it does
+nothing, and Clax runs from the clax-grok plugin instead.
+
 ## When to publish
 
 Publish when the result is something the person should look at or interact with
@@ -229,7 +232,7 @@ Sent comments reach you in one of these ways:
   array, plus a trailing text block starting with `---` and
   `[clax] N comments sent to you:`.
 - At the end of your turn, from the Stop hook, where the harness has one and
-  the watch has replies on (Claude Code, Codex).
+  the watch has replies on (Claude Code, Codex, Grok Build).
 - With the person's next message, from the prompt hook (Claude Code).
 - From `wait_for_feedback`, which returns as soon as a comment arrives.
 - Pushed into an idle session where the harness allows it and the watch has
@@ -284,6 +287,35 @@ call it again after handling the result, whatever `call_again` says, while the
 person wants live feedback; stop when the person says to stop. Each
 call returns within `timeout_s` because harnesses cap a single tool call
 (Codex at 60 seconds).
+
+## Waking an idle session
+
+In Claude Code an idle session is woken by a notice, which says only that a
+comment is waiting. A notice is one line, either from the Clax channel as
+`<channel source="plugin:clax:clax" artifact_id="…" thread_id="…">`, or
+printed by `clax feedback follow`:
+
+    [clax] New comment on "<title>" (<url>), thread <thread ID>. Call comments_read with url_or_id "<artifact ID>" and thread_id "<thread ID>" to read it; if you have already handled it, do nothing.
+
+It does not contain the comment. Call `comments_read` as it says, then
+handle the comment as in "Comment loop". If you have already handled that
+thread, do nothing.
+
+After your first `publish` (or `watch`) in a session, call `status` and
+look at `push`:
+
+- `tier` is `"channel"`: the session was launched with the Clax channel.
+  Notices arrive on their own. Start nothing.
+- `tier` is `"follow"`: a follower is already running. Start nothing.
+- `tier` is null and `follow_command` is present: run `follow_command`
+  with the Bash tool and `run_in_background: true`. It exits when a
+  comment arrives, which wakes you, and its output is the notice lines.
+  Handle each one, then run the same command again in the background.
+  Keep exactly one running. Stop restarting it when the person says to
+  stop watching for comments. If it exits with no output, the session has
+  ended. Do not restart it.
+
+Never start `follow_command` while `tier` is `"channel"`.
 
 ## Runtime capabilities
 

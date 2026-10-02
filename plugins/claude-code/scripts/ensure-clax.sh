@@ -21,6 +21,13 @@
 # $CLAX_VERSION (this plugin's) runs; MCP and CLI modes warn about it, hooks
 # stay silent.
 #
+# In a Grok Build session, Clax acts only through --agent grok (the
+# clax-grok plugin); Grok also loads this Claude Code plugin. A run with
+# --agent claude that Grok started stands down before any clax is looked
+# for: a hook (GROK_HOOK_EVENT set) reads its input and exits 0 silently;
+# the MCP server (GROK_SESSION_ID set, and CLAUDE_PID not this script's
+# parent) answers with a minimal server whose one tool, status, says so.
+#
 # Every failure, and every MCP start, appends one line to
 # ${CLAX_HOME:-~/.clax}/logs/hooks.log (rotated to hooks.log.1 past 1 MiB).
 
@@ -28,6 +35,9 @@ set -uo pipefail
 
 # This plugin's Clax version; a clax of another version runs with a warning.
 CLAX_VERSION="0.3.0"
+# What the Claude Code copy's MCP server says when Grok Build runs it; the
+# same text as GROK_STANDDOWN in crates/clax-mcp/src/standdown.rs.
+GROK_STANDDOWN="This is the Clax plugin for Claude Code, which Grok Build also loads. In Grok, Clax runs from the clax-grok plugin, whose tools are named \`clax_grok__<tool>\` (for example \`clax_grok__publish\`); this server does nothing. If no \`clax_grok\` tools are listed, run \`clax init --agent grok\`. To remove this server from Grok, run \`grok plugin disable clax\`."
 LOG_MAX_BYTES=1048576
 ARGV="$*"
 
@@ -242,12 +252,26 @@ status_text() {
     echo "$1"
 }
 
-# A minimal MCP server on stdin/stdout whose one tool, status, states why clax
-# cannot run, so the client and the agent see the reason instead of a closed
-# pipe. Answers until stdin closes.
-serve_unavailable() {
-    local text line method id proto
-    text="Clax is unavailable: $REASON (Details: ${CLAX_HOME:-~/.clax}/logs/hooks.log.)"
+# True when Grok Build started this Claude Code copy's hook or MCP server.
+# Claude Code sets CLAUDE_PID to its own PID and starts MCP servers
+# directly, so under Claude Code CLAUDE_PID is this script's parent, even
+# when Claude Code was started from a Grok shell that passed on
+# GROK_SESSION_ID. Grok sets GROK_HOOK_EVENT on every hook it runs.
+grok_runs_claude_copy() {
+    [ "$AGENT" = claude ] || return 1
+    case "$MODE" in
+        hook) [ -n "${GROK_HOOK_EVENT:-}" ] ;;
+        mcp) [ -n "${GROK_SESSION_ID:-}" ] && [ "${CLAUDE_PID:-}" != "$PPID" ] ;;
+        *) return 1 ;;
+    esac
+}
+
+# A minimal MCP server on stdin/stdout whose one tool, status, is described
+# by $2. Its instructions are $1. With $3 = true, a status call is an error
+# that states $1, or that the cause is gone (status_text); with $3 = false
+# it returns $1. Answers until stdin closes.
+serve_status() {
+    local text="$1" desc="$2" is_error="$3" line method id proto out
     while IFS= read -r line || [ -n "$line" ]; do
         IFS=$'\037' read -r method id proto <<EOF
 $(parse_request "$line")
@@ -261,15 +285,27 @@ EOF
                 reply "$id" "{\"protocolVersion\":$proto,\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"clax\",\"version\":\"$CLAX_VERSION\"},\"instructions\":$(json_string "$text")}"
                 ;;
             tools/list)
-                reply "$id" "{\"tools\":[{\"name\":\"status\",\"description\":$(json_string "Clax could not start. Call this tool for the reason and the fix."),\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}"
+                reply "$id" "{\"tools\":[{\"name\":\"status\",\"description\":$(json_string "$desc"),\"inputSchema\":{\"type\":\"object\",\"properties\":{}}}]}"
                 ;;
             tools/call)
-                reply "$id" "{\"content\":[{\"type\":\"text\",\"text\":$(json_string "$(status_text "$text")")}],\"isError\":true}"
+                if [ "$is_error" = true ]; then out="$(status_text "$text")"; else out="$text"; fi
+                reply "$id" "{\"content\":[{\"type\":\"text\",\"text\":$(json_string "$out")}],\"isError\":$is_error}"
                 ;;
             ping) reply "$id" "{}" ;;
             *) printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":%s}}\n' "$id" "$(json_string "$text")" ;;
         esac
     done
+}
+
+# Clax cannot run: the reason, and the fix.
+serve_unavailable() {
+    serve_status "Clax is unavailable: $REASON (Details: ${CLAX_HOME:-~/.clax}/logs/hooks.log.)" \
+        "Clax could not start. Call this tool for the reason and the fix." true
+}
+
+# This Claude Code copy in a Grok Build session: clax-grok acts instead.
+serve_standdown() {
+    serve_status "$GROK_STANDDOWN" "Says which Clax plugin serves this Grok session; this server does nothing else." false
 }
 
 # Runs a hook with the binary and always exits 0: a hook must never fail its
@@ -316,6 +352,15 @@ preflight() {
 }
 
 main() {
+    if grok_runs_claude_copy; then
+        hooks_log "standdown mode=$MODE agent=claude host=grok"
+        case "$MODE" in
+            # Read the hook's input, so Grok's write to stdin never fails.
+            hook) cat > /dev/null 2>&1 || true ;;
+            *) serve_standdown ;;
+        esac
+        exit 0
+    fi
     if resolve; then
         if [ "$GOT_VERSION" != "clax $CLAX_VERSION" ]; then
             WARNING="$BIN is $GOT_VERSION, but this plugin is clax $CLAX_VERSION; run \`just install\` (or \`clax init\`) so the plugin and the binary match"

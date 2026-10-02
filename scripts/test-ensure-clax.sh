@@ -43,6 +43,7 @@ new_env() {
     mkdir -p "$FAKEBIN"
     export PATH="$FAKEBIN:$TOOLS"
     unset CLAX_BIN CLAX_HOME CLAX_SOURCE_DIR CLAX_INSTALL_DIR CLAX_CONFIG_DIR CLAX_RELEASE_BASE_URL CLAX_RELEASE_VERSION
+    unset GROK_SESSION_ID GROK_HOOK_EVENT GROK_PLUGIN_ROOT GROK_HOME CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR CLAX_SESSION_ID
 }
 run() { OUT="$("$TOOLS/bash" "$SCRIPT" "$@" 2>"$SANDBOX/stderr" < /dev/null)"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
 run_at() { local s="$1"; shift; OUT="$("$TOOLS/bash" "$s" "$@" 2>"$SANDBOX/stderr" < /dev/null)"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
@@ -405,6 +406,103 @@ export CLAX_HOME="$SANDBOX/not-a-dir"
 echo file > "$CLAX_HOME"
 run exec hook --agent codex stop
 if [ "$RC" = 0 ] && [ -z "$OUT" ]; then pass "an unwritable log does not fail a hook"; else fail "an unwritable log does not fail a hook (rc=$RC err=$ERR)"; fi
+
+# --- Grok guard: the Claude Code copy stands down in a Grok session -----------
+
+# A fake clax that records each run, so a case can tell that none happened.
+recording_clax() {
+    mkdir -p "$1"
+    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "$*" >> "%s/ran"\necho "args: $*"\n' "$V" "$SANDBOX" > "$1/clax"
+    chmod +x "$1/clax"
+}
+# Runs the wrapper as a child of a shell whose PID is exported as CLAUDE_PID,
+# as Claude Code does for the MCP servers it starts.
+run_under_claude() {
+    OUT="$("$TOOLS/bash" -c 'export CLAUDE_PID=$$; "$1" "$2" "${@:3}"; exit $?' _ "$TOOLS/bash" "$SCRIPT" "$@" 2>"$SANDBOX/stderr" < /dev/null)"
+    RC=$?; ERR="$(cat "$SANDBOX/stderr")"
+}
+standdown_text() {
+    "$PY" - "$OUT" <<'PYEOF'
+import json, sys
+lines = [json.loads(l) for l in sys.argv[1].splitlines()]
+assert [l["id"] for l in lines] == [0, 1, "call-2", 3, 4], lines
+init = lines[0]["result"]
+assert init["serverInfo"]["name"] == "clax" and "clax-grok" in init["instructions"], init
+tools = lines[1]["result"]["tools"]
+assert [t["name"] for t in tools] == ["status"], tools
+call = lines[2]["result"]
+assert call["isError"] is False, call
+assert lines[3]["error"]["code"] == -32601 and lines[4]["result"] == {}, lines
+print(call["content"][0]["text"])
+PYEOF
+}
+mcp_as() { local agent="$1"; shift; OUT="$(printf '%s\n' "$REQS" | env "$@" "$TOOLS/bash" "$SCRIPT" exec mcp --agent "$agent" 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
+
+new_env
+recording_clax "$FAKEBIN"
+mcp_as claude GROK_SESSION_ID=019a-g
+if [ "$RC" = 0 ] && text="$(standdown_text)" && echo "$text" | grep -qF 'clax_grok__publish' \
+    && [ ! -e "$SANDBOX/ran" ] && hooks_log | grep -q ' standdown mode=mcp agent=claude host=grok$'; then
+    pass "grok guard: the Claude copy's MCP server under Grok serves status only and runs no clax"
+else fail "grok guard: Claude copy MCP under Grok (rc=$RC out=$OUT err=$ERR ran=$(cat "$SANDBOX/ran" 2>/dev/null))"; fi
+
+new_env
+mcp_as claude GROK_SESSION_ID=019a-g
+if [ "$RC" = 0 ] && standdown_text >/dev/null && ! hooks_log | grep -q launcher; then
+    pass "grok guard: standing down needs no clax binary"
+else fail "grok guard: standing down without clax (out=$OUT log=$(hooks_log))"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+mcp_as claude GROK_SESSION_ID=019a-g CLAUDE_PID=1
+if standdown_text >/dev/null && [ ! -e "$SANDBOX/ran" ]; then
+    pass "grok guard: Grok started from a Claude Code shell (inherited CLAUDE_PID) stands the copy down"
+else fail "grok guard: inherited CLAUDE_PID (out=$OUT)"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+GROK_SESSION_ID=019a-g run_under_claude exec mcp --agent claude
+if [ "$RC" = 0 ] && grep -q -- '--agent claude' "$SANDBOX/ran" 2>/dev/null; then
+    pass "grok guard: Claude Code as the parent (CLAUDE_PID) runs clax even with GROK_SESSION_ID"
+else fail "grok guard: CLAUDE_PID parent (rc=$RC out=$OUT err=$ERR)"; fi
+
+for agent in grok codex; do
+    new_env
+    recording_clax "$FAKEBIN"
+    mcp_as "$agent" GROK_SESSION_ID=019a-g
+    if grep -q -- "mcp --agent $agent" "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep -q standdown; then
+        pass "grok guard: --agent $agent is never stood down"
+    else fail "grok guard: --agent $agent (out=$OUT log=$(hooks_log))"; fi
+done
+
+new_env
+recording_clax "$FAKEBIN"
+OUT="$(printf '{"sessionId":"g","hookEventName":"Stop"}' | GROK_HOOK_EVENT=Stop "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$SANDBOX/ran" ] \
+    && hooks_log | grep -q ' standdown mode=hook agent=claude host=grok$'; then
+    pass "grok guard: a Claude copy hook that Grok runs reads its input, prints nothing and exits 0"
+else fail "grok guard: Claude copy hook under Grok (rc=$RC out=$OUT err=$ERR)"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+OUT="$(printf '{"session_id":"s"}' | GROK_SESSION_ID=g "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?
+if [ "$RC" = 0 ] && grep -q -- 'hook --agent claude stop' "$SANDBOX/ran" 2>/dev/null; then
+    pass "grok guard: a Claude Code hook with only GROK_SESSION_ID (Claude Code started from a Grok shell) acts"
+else fail "grok guard: hook without GROK_HOOK_EVENT (rc=$RC)"; fi
+
+new_env
+recording_clax "$FAKEBIN"
+GROK_HOOK_EVENT=Stop GROK_SESSION_ID=g run exec status
+if [ "$RC" = 0 ] && [ "$OUT" = "args: status" ]; then
+    pass "grok guard: CLI mode is never stood down"
+else fail "grok guard: CLI mode (rc=$RC out=$OUT)"; fi
+
+# The wrapper and the binary say the same thing.
+want="$(sed -n 's/^pub const GROK_STANDDOWN: &str = "\(.*\)";$/\1/p' "$HERE/../crates/clax-mcp/src/standdown.rs")"
+new_env
+mcp_as claude GROK_SESSION_ID=019a-g
+if [ -n "$want" ] && [ "$(standdown_text)" = "$want" ]; then pass "grok guard: the wrapper's text is the binary's"
+else fail "grok guard: the stand-down text differs from crates/clax-mcp/src/standdown.rs"; fi
 
 # --- No alias for the previous name -------------------------------------------
 # Its variables, its binary on PATH and its home are all ignored and left

@@ -227,7 +227,7 @@ Sent comments reach you in one of these ways:
   array, plus a trailing text block starting with `---` and
   `[clax] N comments sent to you:`.
 - At the end of your turn, from the Stop hook, where the harness has one and
-  the watch has replies on (Claude Code, Codex).
+  the watch has replies on (Claude Code, Codex, Grok Build).
 - With the person's next message, from the prompt hook (Claude Code).
 - From `wait_for_feedback`, which returns as soon as a comment arrives.
 - Pushed into an idle session where the harness allows it and the watch has
