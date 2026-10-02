@@ -36,16 +36,16 @@ test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ 
   const card = page.locator(".section-open .thread-card").first();
   await expect(card).toContainText("Make this two columns.");
   await expect(page.locator("button.thread-pin")).toHaveCount(1);
-  await card.getByRole("button", { name: "Send to agent" }).click();
+  await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
   await expect(card.locator(".waiting")).toContainText("waiting on the end of its turn");
   const tid = (await card.getAttribute("data-thread"))!;
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done: two columns.", author_kind: "agent" }) });
-  await expect(card).toContainText("Agent · via claude");
+  await expect(card.locator(".msg.agent .author")).toContainText("claude");
   await expect(card.locator(".waiting")).toHaveText("seen by the agent");
   await card.getByRole("button", { name: "Resolve" }).click();
   await expect(page.locator(".section-resolved .thread-card")).toHaveCount(1);
-  await expect(page.locator(".section-resolved .resolved-by")).toHaveText("Resolved by Viewer");
+  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText("Viewer resolved");
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });
 
@@ -113,7 +113,7 @@ test("the viewer name attributes comments", async ({ page }) => {
   const card = page.locator(".thread-card").filter({ hasText: "named note" });
   await expect(card).toContainText("Alex");
   await card.getByRole("button", { name: "Resolve" }).click();
-  await expect(page.locator(".section-resolved .resolved-by")).toHaveText("Resolved by Alex");
+  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText("Alex resolved");
 });
 
 test("sandboxed frames support comment mode too", async ({ page }) => {
@@ -136,10 +136,10 @@ test("a failed send shows in the banner and clears on the next success", async (
   await page.locator(".composer").getByRole("button", { name: "Post comment" }).click();
   const card = page.locator(".section-open .thread-card").filter({ hasText: "send me" });
   await page.route("**/threads/*/send", route => route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ error: { code: "internal", message: "boom" } }) }));
-  await card.getByRole("button", { name: "Send to agent" }).click();
+  await card.getByRole("button", { name: /^Send to / }).click();
   await expect(page.locator(".banner.notice")).toHaveText(/Could not send to the agent: 500 boom/);
   await page.unroute("**/threads/*/send");
-  await card.getByRole("button", { name: "Send to agent" }).click();
+  await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
   await expect(page.locator(".banner.notice")).toHaveCount(0);
 });
@@ -185,8 +185,8 @@ test("thread cards are reachable and selectable from the keyboard", async ({ pag
   await first.locator("button.card-head").focus();
   await page.keyboard.press("Enter");
   await expect(first).toHaveClass(/selected/);
-  await page.keyboard.press("Tab"); // Send to agent
   await page.keyboard.press("Tab"); // Resolve
+  await page.keyboard.press("Tab"); // Send to the agent
   await page.keyboard.press("Tab"); // Reply input
   await page.keyboard.press("Tab"); // Reply button
   await page.keyboard.press("Tab"); // the second card's header

@@ -7,6 +7,7 @@ import Pins from "./ui/Pins.svelte";
 import Sidebar from "./ui/Sidebar.svelte";
 import { type Draft, nextDraft, submitKeysLabel, withClip } from "./view/composer-model";
 import { PIN_RIGHT_ROOM } from "./view/pins-model";
+import { ALLOW_DELAY_MS } from "./view/prompt-queue";
 
 const anchor = { kind: "element" as const, selector: "body > h2", quote: "Goals", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const thread = (id: string, status: "open" | "resolved" = "open"): Thread => ({
@@ -43,11 +44,11 @@ describe("Pins", () => {
     const { root, done } = mountIt(Pins, { threads, resolved, onSelect: vi.fn() });
     // Open and not detached: a (1), c (2), d (3, not measured yet), f (4).
     expect(Array.from(root.querySelectorAll("button.thread-pin")).map(b => b.textContent)).toEqual(["1", "4"]);
-    const { root: side, done: doneSide } = mountIt(Sidebar, { threads, resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+    const { root: side, done: doneSide } = mountIt(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
     expect(Array.from(side.querySelectorAll(".section-open .thread-num")).map(n => n.textContent)).toEqual(["1", "2", "3", "4"]);
     // A viewer comment must not carry the page-level `.viewer` layout class.
-    expect(side.querySelector(".comment.viewer")).toBeNull();
-    expect(side.querySelector(".comment.from-viewer .author")!.textContent).toBe("Viewer");
+    expect(side.querySelector(".msg.viewer")).toBeNull();
+    expect(side.querySelector(".msg.you .author")!.textContent).toBe("Viewer");
     done();
     doneSide();
   });
@@ -64,7 +65,7 @@ describe("Pins", () => {
     };
     expect(pins("index.html")).toEqual(["1@28px"]);
     expect(pins("about.html")).toEqual(["1@68px", "2@108px"]);
-    const { root: side, done } = mountIt(Sidebar, { threads, resolved, file: "about.html", now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
+    const { root: side, done } = mountIt(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved, file: "about.html", now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() });
     expect(Array.from(side.querySelectorAll(".section-open .thread-num")).map(n => n.textContent)).toEqual(["1", "2"]);
     done();
   });
@@ -81,7 +82,7 @@ describe("Pins", () => {
     pin.dispatchEvent(new MouseEvent("mouseleave"));
     expect(onHover).toHaveBeenLastCalledWith(null);
     done();
-    const { root: side, done: doneSide } = mountIt(Sidebar, { threads: [area], resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), onHover });
+    const { root: side, done: doneSide } = mountIt(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [area], resolved, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), onHover });
     expect(side.querySelector(".anchor-label")!.textContent).toBe("Area in main > section (42% × 18%)");
     expect(areaLabel({ ...area.anchor, area: { x: 0, y: 0, w: 1, h: 0.004 } })).toBe("Area in main > section (100% × <1%)");
     const card = side.querySelector(".thread-card")!;
@@ -91,6 +92,31 @@ describe("Pins", () => {
     card.dispatchEvent(new MouseEvent("mouseleave"));
     expect(onHover).toHaveBeenLastCalledWith(null);
     doneSide();
+  });
+
+  it("takes no press on a pin that just appeared or moved, until ALLOW_DELAY_MS has passed", () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance", "Date"] });
+    try {
+      const props = { threads: [thread("a")], resolved: { a: at("a", 40) }, onSelect: vi.fn(), width: 800 };
+      const view = mount(Pins, props);
+      const pin = () => view.root.querySelector<HTMLElement>("button.thread-pin")!;
+      expect(pin().classList.contains("settling")).toBe(true);
+      flush(() => vi.advanceTimersByTime(ALLOW_DELAY_MS - 1));
+      expect(pin().classList.contains("settling")).toBe(true);
+      flush(() => vi.advanceTimersByTime(1));
+      expect(pin().classList.contains("settling")).toBe(false);
+      // The page moves it: it settles again.
+      view.update({ ...props, resolved: { a: at("a", 90) } });
+      expect(pin().classList.contains("settling")).toBe(true);
+      flush(() => vi.advanceTimersByTime(ALLOW_DELAY_MS));
+      expect(pin().classList.contains("settling")).toBe(false);
+      // The same place again takes presses at once.
+      view.update({ ...props, resolved: { a: at("a", 90) } });
+      expect(pin().classList.contains("settling")).toBe(false);
+      view.unmount();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps a full-width region's pin inside the stage and clear of the frame's scrollbar", () => {
@@ -324,7 +350,7 @@ describe("the submit shortcut", () => {
 
   it("sends a sidebar reply on Cmd+Enter or Ctrl+Enter, never an empty one or mid-composition", () => {
     const onReply = vi.fn();
-    const { root, done } = mountIt(Sidebar, { threads: [thread("a")], resolved: {}, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply });
+    const { root, done } = mountIt(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [thread("a")], resolved: {}, now: new Date(), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply });
     const input = root.querySelector<HTMLInputElement>("input[aria-label=Reply]")!;
     const typeText = (v: string) => flush(() => { input.value = v; input.dispatchEvent(new Event("input", { bubbles: true })); });
     key(input, { metaKey: true });

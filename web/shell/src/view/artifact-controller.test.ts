@@ -436,4 +436,42 @@ describe("ArtifactController", () => {
     expect(live()).toBe(true);
     ctl.dispose();
   });
+
+  it("hands focus the page pushed out to the shell's body back to the frame a task later, unless the viewer acted in the shell or Tabbed onto a control", async () => {
+    const { ctl, frame } = await started();
+    const tick = () => new Promise(r => setTimeout(r, 0));
+    // The frame has focus; the page calls parent.focus(): the window's blur, focus on <body>, the window's focus.
+    const pushOut = () => {
+      frame.focus();
+      expect(document.activeElement).toBe(frame);
+      dispatchTrusted(window, new FocusEvent("blur"));
+      (document.activeElement as HTMLElement).blur();
+      expect(document.activeElement).toBe(document.body);
+      dispatchTrusted(window, new FocusEvent("focus"));
+    };
+    pushOut();
+    expect(document.activeElement).toBe(document.body);
+    await tick();
+    expect(document.activeElement).toBe(frame);
+    // A trusted key or press in the shell between the focus and that task keeps focus on the body.
+    for (const input of [new KeyboardEvent("keydown", { key: "x", bubbles: true }), new Event("pointerdown")]) {
+      pushOut();
+      dispatchTrusted(window, input);
+      await tick();
+      expect(document.activeElement, input.type).toBe(document.body);
+    }
+    // The viewer's own Tab out of the frame has reached a shell control by then: it stays there.
+    const button = document.body.appendChild(document.createElement("button"));
+    pushOut();
+    button.focus();
+    await tick();
+    expect(document.activeElement).toBe(button);
+    // A blur while a shell control had focus is not the frame's: no give-back.
+    dispatchTrusted(window, new FocusEvent("blur"));
+    button.blur();
+    dispatchTrusted(window, new FocusEvent("focus"));
+    await tick();
+    expect(document.activeElement).toBe(document.body);
+    ctl.dispose();
+  });
 });

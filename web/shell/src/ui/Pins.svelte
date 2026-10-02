@@ -7,6 +7,7 @@
   import { type AnchorResult, INDEX_FILE } from "../../../bridge/src/protocol";
   import type { Thread } from "../threads";
   import { pinPlaces } from "../view/pins-model";
+  import { ALLOW_DELAY_MS } from "../view/prompt-queue";
 
   type Props = {
     threads: Thread[];
@@ -35,11 +36,34 @@
   // A region scrolled wholly above the frame gets no pin; one below it is
   // clipped by `.pins`.
   const places = $derived(pinPlaces(threads, resolved, file, width ?? measured));
+  // A pin that appeared or moved less than ALLOW_DELAY_MS ago takes no press
+  // (`.settling`): a page that places its pin under the resting pointer just
+  // before the viewer's click cannot take that click, which reaches the page.
+  const seen = new Map<string, { left: number; top: number; at: number }>();
+  let tick = $state(0);
+  const settling = $derived.by(() => {
+    void tick;
+    const now = performance.now();
+    const out = new Set<string>();
+    for (const p of places) {
+      const was = seen.get(p.thread.id);
+      if (!was || was.left !== p.left || was.top !== p.top) seen.set(p.thread.id, { left: p.left, top: p.top, at: now });
+      if (now - seen.get(p.thread.id)!.at < ALLOW_DELAY_MS) out.add(p.thread.id);
+    }
+    // A pin that goes and comes back has appeared again.
+    for (const id of seen.keys()) if (!places.some(p => p.thread.id === id)) seen.delete(id);
+    return out;
+  });
+  $effect(() => {
+    if (!settling.size) return;
+    const t = setTimeout(() => { tick++; }, ALLOW_DELAY_MS);
+    return () => clearTimeout(t);
+  });
 </script>
 
 <div class="pins" {@attach measure}>
   {#each places as p (p.thread.id)}
-    <button class="thread-pin" title={p.thread.comments[0]?.body ?? ""} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
+    <button class="thread-pin" class:settling={settling.has(p.thread.id)} title={p.thread.comments[0]?.body ?? ""} aria-label={`Thread ${p.n}`} style:left={`${p.left}px`} style:top={`${p.top}px`}
       onclick={() => onSelect(p.thread)} onmouseenter={() => onHover?.(p.thread)} onmouseleave={() => onHover?.(null)}>{p.n}</button>
   {/each}
 </div>

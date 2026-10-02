@@ -147,38 +147,6 @@ machine, so no agent runs them.
     threads whose anchors went unanswered while it failed stay unplaced. The
     bridge should report a part that loads after failing, and the shell then
     clear the failure and its notice and resolve the anchors again.
-- **A page can drop focus to the shell's body, and the viewer's next Tabs
-  walk the shell's buttons** (Echo Task 3 re-review 3, I6; in every shell
-  version). The page calls `parent.focus()` on a key the viewer types in its
-  form. Focus falls to the shell's `<body>`, and the viewer's next Tabs,
-  meant for the page's next field, walk the shell's controls from the frame:
-  a pin, the card head, then "Send to agent", which a Space presses
-  natively. It needs no capability, only comments on. The same Tab landing
-  on a shell control also gives the shell's keys (C and ?) back. Proposed
-  fix: recognise the page pushing focus out and hand focus back to the
-  frame. The window's `blur` saw the frame active; on the window's `focus`,
-  wait one task (`setTimeout(…, 0)`), then call `frame.focus()` only if
-  focus is still on `<body>` and the viewer made no trusted `pointerdown` or
-  `keydown` in the shell in between. The wait matters: at the `focus` event
-  focus is on `<body>` for the viewer's own Tab out of the frame too, and a
-  synchronous `frame.focus()` there focuses the frame element without giving
-  the frame's document the keys. Echo Task 5, which owns the thread-card
-  buttons and pins, does this, with e2e tests that the page keeps the
-  viewer's typing after `parent.focus()` (one Tab, then text in the next
-  field) and that the viewer's own Tab out of the frame stays in the shell.
-- **A pin the page places under the pointer takes the viewer's click** (Echo
-  Task 3 re-review 3, I8; in every shell version). With `customAnchors`,
-  `placed()` moves the shell's pin buttons anywhere over the frame, with no
-  rate limit or settle time, once the viewer has used comment mode. The page
-  moves its pin under the pointer just before a click meant for its own
-  input; the trusted press lands on the pin, which selects the thread and
-  gives the shell's keys back. `gesture.ts` already treats a pin scrolled
-  under the resting pointer as a known trick (A2) for the gesture tiers.
-  Proposed fix: a pin that appeared or moved less than `ALLOW_DELAY_MS` ago
-  takes no press (`pointer-events: none` until it settles), as Allow is
-  armed; or a press on a pin selects but does not give the keys back. Echo
-  Task 5 does the first, with an e2e test of a page that places its pin
-  under the pointer on `mousemove`.
 
 ## Tests
 

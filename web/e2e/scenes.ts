@@ -9,7 +9,8 @@ export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page
 
 const REPORT = readFileSync(new URL("./pages/sample-report.html", import.meta.url), "utf8");
 
-/** One artifact by a claude session with three threads, two quieter
+/** One artifact by a claude session with three threads (the agent has
+ * answered the second), two quieter
  * artifacts. The threads are posted without a viewer cookie, so each one's
  * author is an unnamed viewer and shows as "Viewer"; the gallery scene's
  * name is its own browser's viewer, not theirs. */
@@ -25,6 +26,11 @@ export async function seed(base: string, token: string): Promise<Seeded> {
   ]) {
     threads.push((await postThread(base, artifact.id, body, selector)).id);
   }
+  // The viewer sends the chart thread and the agent answers it, so a card
+  // shows an agent's message.
+  const sent = await fetch(`${base}/api/artifacts/${artifact.id}/threads/${threads[1]}/send`, { method: "POST", headers: { origin: base } });
+  if (!sent.ok) throw new Error(`send: ${sent.status}`);
+  await api(base, token, `/api/artifacts/${artifact.id}/threads/${threads[1]}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Added a dashed line at the deploy, labelled with its time.", author_kind: "agent" }) });
   const other = await registerSession(base, token, "codex", "shots-codex");
   await publishAs(base, token, other.id, "Onboarding checklist", { "index.html": "<main><h2>First week</h2><ul><li>Laptop</li><li>Access</li></ul></main>" });
   await api(base, token, "/api/artifacts", { method: "POST", body: JSON.stringify({ title: "Permissions probe", files: { "index.html": { content: "<main><h2>Probe</h2></main>", encoding: "utf8" } } }) });
@@ -40,4 +46,8 @@ export const SCENES: Scene[] = [
   { name: "view", path: s => `/a/${s.aid}` },
   { name: "comment", path: s => `/a/${s.aid}`, prepare: async page => { await page.getByRole("button", { name: /^Comment/ }).click(); } },
   { name: "keys", path: s => `/a/${s.aid}`, prepare: async page => { await page.locator("body").press("Shift+?"); await page.getByRole("dialog", { name: "Keyboard shortcuts" }).waitFor(); } },
+  { name: "threads", path: s => `/a/${s.aid}`, prepare: async page => {
+    if (!(await page.locator("aside.sidebar").isVisible())) await page.getByRole("button", { name: /Threads/ }).first().click();
+    await page.locator(".thread-card").first().click();
+  } },
 ];

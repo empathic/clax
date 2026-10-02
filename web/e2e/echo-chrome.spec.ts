@@ -2,7 +2,7 @@
 // paint, and the shell's keys (C and ?), which belong to the page while it
 // has focus and to a dialog while one is open, and are held while the viewer
 // may still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Frame, type Page } from "@playwright/test";
 import { api, contentFrame, openArtifact, postThread, publishWith, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
@@ -262,4 +262,85 @@ test("form typing with Tabs and a Space while the prompt is open presses nothing
   // The Space pressed the focused "Don't allow", inside the dialog; nothing outside it.
   await expect(dialog).toHaveCount(0);
   await unchanged();
+});
+
+// The page drops focus to the shell's body mid-typing (`parent.focus()`), and
+// places its pin under the pointer just before a click meant for its input.
+// Neither turns the viewer's input into a press on the shell's controls.
+const FORM = `<!doctype html><html><head><title>Form</title></head><body><main><h2 id="t">Target</h2><input id="a"><input id="b"></main><script>
+let done = false;
+document.getElementById("a").addEventListener("keydown", e => { if (!done && e.key === "m") { done = true; parent.focus(); } });
+</script></body></html>`;
+
+/** Whether the frame's own document has focus, so the viewer's keys reach the page. */
+const pageHasFocus = (frame: Frame) => frame.evaluate(() => document.hasFocus());
+
+test("focus the page drops to the shell's body goes back to the page, so the viewer's next Tab and typing stay in it", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Dropped focus", FORM, {});
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  await frame.locator("#a").click();
+  // The page calls parent.focus() on the "m".
+  await page.keyboard.type("Sm");
+  await expect.poll(() => pageHasFocus(frame)).toBe(true);
+  await page.keyboard.type("ith");
+  await page.keyboard.press("Tab");
+  await page.keyboard.type("Jones");
+  // The frame has focus again, but not its field: the page gave that up with
+  // the "m", so the "m" and "ith" reach no field. The Tab still moves on from
+  // the field, and nothing reaches the shell.
+  await expect(frame.locator("#b")).toHaveValue("Jones");
+  await expect(frame.locator("#a")).toHaveValue(/^S/);
+  await expect(page.locator(".thread-card.selected")).toHaveCount(0);
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
+  const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+  expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+});
+
+test("the viewer's own Tab or Shift+Tab out of the page stays on the shell control it reached", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Tab out", FORM, {});
+  await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  for (const [field, key] of [["#b", "Tab"], ["#a", "Shift+Tab"]] as const) {
+    // After shell input the gesture shield covers the frame but for a hole
+    // under the pointer, so the click moves the pointer there first.
+    const box = (await frame.locator(field).boundingBox())!;
+    await page.mouse.move(box.x + 20, box.y + box.height / 2, { steps: 4 });
+    await page.mouse.click(box.x + 20, box.y + box.height / 2);
+    await expect.poll(() => frame.evaluate(f => document.activeElement?.id === f.slice(1), field)).toBe(true);
+    await page.keyboard.press(key);
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.activeElement?.localName), key).toBe("button");
+    expect(await pageHasFocus(frame), key).toBe(false);
+  }
+});
+
+const PLACED = `<!doctype html><html><head><title>Placed</title></head><body><main><h2 id="t">Target</h2><input id="i" style="position:absolute;left:200px;top:120px;width:200px"></main><script>
+claude.use("comments").then(c => c.customAnchors({ mode(on) { document.body.dataset.mode = on; }, threads(l) { window.list = l; document.body.dataset.n = l.length; }, reveal() {} })).then(reg => {
+  const h = () => window.list && window.list[0] && window.list[0].id;
+  addEventListener("mousemove", e => { if (h()) reg.placed({ [h()]: { x: e.clientX + scrollX + 1, y: e.clientY + scrollY + 1 } }); });
+});
+</script></body></html>`;
+
+test("a pin the page places under the pointer does not take the viewer's click", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Placed pin", PLACED, { comments: { customAnchors: true } });
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  // Comment mode once, so the page holds handles it may place.
+  await comment.click();
+  await expect(frame.locator("body")).toHaveAttribute("data-n", /[1-9]/);
+  await comment.click();
+  await expect(frame.locator("body")).toHaveAttribute("data-mode", "false");
+  const box = (await frame.locator("#i").boundingBox())!;
+  const x = box.x + 60, y = box.y + box.height / 2;
+  await page.mouse.move(x, y + 40, { steps: 3 });
+  await page.mouse.move(x, y, { steps: 6 });
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.type("is it c");
+  await expect(frame.locator("#i")).toHaveValue("is it c");
+  await expect(page.locator(`[data-thread="${t.id}"]`)).not.toHaveClass(/selected/);
+  await expect(comment).toHaveAttribute("aria-pressed", "false");
 });

@@ -222,7 +222,7 @@ describe("PromptDialog", () => {
 
   it("keeps Tab inside itself, on its refusing button alone until Allow is armed, and makes the rest of the shell inert", () => {
     const outside = document.createElement("button");
-    outside.textContent = "Send to agent";
+    outside.textContent = "Send to claude";
     document.body.append(outside);
     const { root, unmount } = mountDialog();
     const deny = button(root, "Don't allow");
