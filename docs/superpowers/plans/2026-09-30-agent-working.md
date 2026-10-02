@@ -1338,7 +1338,7 @@ No later task adds a key.
 - `view/mark.ts`: `export const MARK_SVG: string` (30×24, `class="mk"`, `aria-hidden="true"`).
 - `ui/Mark.svelte`: `{ size?: "bar" | "hero"; apart?: boolean; playful?: boolean }`. Only the gallery's mark is playful. The top bar's mark stays a plain link to the gallery, so a click there navigates (decided: Q9). With `playful`, it is a button whose click makes the halves meet, and a second click parts them (`aria-pressed`). Without it, the mark is decoration.
 - `view/theme-model.ts`: `type Scheme = "light" | "dark"`, `type Choice = Scheme | null`, `THEME_KEY = "clax.theme"`, `readChoice(): Choice`, `systemScheme(): Scheme`, `shownScheme(choice: Choice, system: Scheme): Scheme`, `flip(choice: Choice, system: Scheme): Choice`, `applyChoice(c: Choice, root?: HTMLElement): void`.
-- `view/keys.ts`: `type KeyAction = "help" | "comment"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" }`, `export const KEY_ROWS: KeyRow[]`, `holdKeysAcrossLoad(): void` and `keysHeldAtLoad(): boolean`.
+- `view/keys.ts`: `type KeyAction = "help" | "comment"`, `keyAction(e: KeyLike): KeyAction | null`, `type KeyRow = { keys: string[]; what: string }`, `export const KEY_ROWS: KeyRow[]`, `holdKeysAcrossLoad(): void` and `keysHeldAtLoad(): boolean`.
 - `ArtifactController`: `ViewState.sheet: "keys" | null` (initially `null`). New methods: `shortcut(a: KeyAction): boolean`, `closeSheet(): void` and `sheetFailed(): void`. A private `keysOwned` holds C and `?` while the viewer may still be typing for the page.
 
 - [ ] **Step 1: Pure models, tests first**
@@ -1470,15 +1470,15 @@ export function applyChoice(c: Choice, root: HTMLElement = document.documentElem
 // inside the artifact's frame belong to the page and never reach here.
 export type KeyAction = "help" | "comment";
 export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
-export type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" };
+export type KeyRow = { keys: string[]; what: string };
 
 const MAP: Record<string, KeyAction> = { "?": "help", c: "comment" };
 
 /** The sheet's rows, in order. */
 export const KEY_ROWS: KeyRow[] = [
-  { keys: ["C"], what: "Comment mode: click an element or drag an area", action: "comment" },
-  { keys: ["?"], what: "This sheet", action: "help" },
-  { keys: ["Esc"], what: "Leave comment mode, close a menu or this sheet", action: "escape" },
+  { keys: ["C"], what: "Comment mode: click an element or drag an area" },
+  { keys: ["?"], what: "This sheet" },
+  { keys: ["Esc"], what: "Leave comment mode, close a menu or this sheet" },
 ];
 
 function typing(t: EventTarget | null): boolean {
@@ -1498,9 +1498,10 @@ export function keyAction(e: KeyLike): KeyAction | null {
 const HELD_KEY = "clax.keys-held";
 
 /** Marks the shell load about to happen as the page's doing (its publish
- * reloading the view), so the next view starts with the keys held. */
+ * reloading the view), so the next view starts with the keys held. A refused
+ * write holds the next view only if its read throws too. */
 export function holdKeysAcrossLoad(): void {
-  try { sessionStorage.setItem(HELD_KEY, "1"); } catch { /* read back as held */ }
+  try { sessionStorage.setItem(HELD_KEY, "1"); } catch { /* the next view's read decides */ }
 }
 
 /** Whether this view starts with the keys held: the load was the page's
@@ -2470,28 +2471,36 @@ Two ways a page turns input the viewer meant for it into a press on the shell's 
 2. **A pin placed under the pointer.** With `customAnchors`, the page moves its pin under the resting pointer just before a click meant for its own input. The trusted press lands on the pin, which selects the thread and gives the shell's keys back.
 
 The fixes:
-1. The shell recognises the page pushing focus out and hands focus back to the frame. It returns only what the page gave up: the window's `blur` saw the frame active, a window `focus` arrives with focus on `<body>`, and no trusted press in the shell came in between. A viewer's Tab out of the frame lands on a shell control, not on `<body>`, and a viewer's click in the shell is a press, so neither is undone.
+1. The shell recognises the page pushing focus out and hands focus back to the frame. The window's `blur` saw the frame active; when the window's `focus` arrives, the shell waits one task (`setTimeout(…, 0)`) for the focus move to settle, and hands focus back only if focus is still on `<body>` and the viewer made no trusted `pointerdown` or `keydown` in the shell in between. At the `focus` event itself focus is on `<body>` for the viewer's own Tab or Shift+Tab out of the frame too; a task later it is on the shell control their Tab reached, so it is left there. A viewer's press or key in the shell cancels the give-back, so a key typed before the task runs also cancels it; that key meets held keys (`keysOwned`).
 2. A pin that appeared or moved less than `ALLOW_DELAY_MS` ago takes no press (`.settling`, `pointer-events: none`), as Allow is armed. The press falls through to the page, the target the viewer aimed at.
 
 In `ArtifactController.listen()` (`web/shell/src/view/artifact-controller.ts`), replace `onPress` and `onBlur`, and listen for the window's `focus`:
 
 ```ts
     // The page pushing focus out of its frame (`parent.focus()`): the window's
-    // blur saw the frame active, and focus comes back to the shell's body with
-    // no trusted press in the shell between. Focus goes back to the frame, so
-    // the viewer's next Tab or Space, typed for the page, stays in the page.
+    // blur saw the frame active, and a task after the window's focus (once the
+    // focus move has settled) focus is still on <body>, with no trusted press
+    // or key in the shell in between. Focus goes back to the frame, so the
+    // viewer's next Tab or Space, typed for the page, stays in the page. A
+    // viewer's own Tab out of the frame has reached a shell control by then.
     let leftForFrame = false;
+    let shellInput = 0;
+    const onInput = (e: Event) => { if (e.isTrusted) shellInput++; };
     const onPress = (e: PointerEvent) => { if (e.isTrusted) { this.keysOwned = true; leftForFrame = false; } };
     // Only the window's own blur and focus reach these listeners: an element's do not bubble.
-    const onBlur = () => { this.keysOwned = false; leftForFrame = !!this.frame && document.activeElement === this.frame.el; };
+    const onBlur = () => { this.keysOwned = false; const el = this.frame?.el; leftForFrame = !!el && document.activeElement === el; };
     const onFocus = (e: FocusEvent) => {
       if (!e.isTrusted || !leftForFrame) return;
       leftForFrame = false;
-      if (document.activeElement === document.body) this.frame?.el.focus();
+      const seen = shellInput;
+      setTimeout(() => {
+        const el = this.frame?.el;
+        if (el && !this.disposed && seen === shellInput && document.activeElement === document.body) el.focus();
+      }, 0);
     };
 ```
 
-Add `addEventListener("focus", onFocus);` beside the `blur` listener, and `removeEventListener("focus", onFocus);` to the cleanup. Extend the `keysOwned` doc comment: focus the page pushes to the body goes back to the frame, so the viewer's next Tab no longer lands on a shell control.
+Add `addEventListener("focus", onFocus);` beside the `blur` listener, and `addEventListener("pointerdown", onInput, true); addEventListener("keydown", onInput, true);` beside the `pointerdown` listener; remove all three in the cleanup. `onInput` counts every trusted press and key the shell document hears, forwarded keys included; keys typed in the frame never reach it. Extend the `keysOwned` doc comment: focus the page pushes to the body goes back to the frame, so the viewer's next Tab no longer lands on a shell control.
 
 `web/shell/src/ui/Pins.svelte`: import `ALLOW_DELAY_MS` from `../view/prompt-queue`, and add after `places`:
 
@@ -2522,9 +2531,13 @@ Add `addEventListener("focus", onFocus);` beside the `blur` listener, and `remov
 The pin button gains `class:settling={settling.has(p.thread.id)}`. In `theme.css`, after the `.thread-pin` rules: `.thread-pin.settling { pointer-events: none; }`. A pin also settles after the page scrolls, since its place follows the anchor; a press in that half second reaches the page.
 
 Tests:
-- `artifact-controller.test.ts`: after a trusted window `blur` with focus on the frame, a trusted window `focus` with focus on `<body>` moves focus to the frame; with a trusted `pointerdown` between them, or with focus on a shell button, it does not.
+- `artifact-controller.test.ts`, with the frame element focused before each trusted window `blur` (`dispatchTrusted`), then `document.activeElement.blur()` and a trusted window `focus`:
+  - focus on `<body>` when the next task runs: focus is on the frame after `await new Promise(r => setTimeout(r, 0))`, and not before it;
+  - a trusted `keydown` or `pointerdown` on the window between the `focus` and that task: focus stays on `<body>`;
+  - focus moved to a shell button between the `focus` and that task (the viewer's own Tab out): focus stays on the button;
+  - a `blur` while a shell button had focus, then `focus` with focus on `<body>`: no give-back.
 - `comments.test.ts`, under `describe("Pins")`: with fake timers, a pin is `.settling` when it first renders and when its place changes, and is not after `ALLOW_DELAY_MS`.
-- `web/e2e/echo-chrome.spec.ts`:
+- `web/e2e/echo-chrome.spec.ts` (import `type Frame` from `@playwright/test`):
 
 ```ts
 // The page drops focus to the shell's body mid-typing (`parent.focus()`), and
@@ -2535,20 +2548,40 @@ let done = false;
 document.getElementById("a").addEventListener("keydown", e => { if (!done && e.key === "m") { done = true; parent.focus(); } });
 </script></body></html>`;
 
-test("focus the page drops to the shell's body goes back to the page, so Tabs and a Space press nothing in the shell", async ({ page }) => {
+/** Whether the frame's own document has focus, so the viewer's keys reach the page. */
+const pageHasFocus = (frame: Frame) => frame.evaluate(() => document.hasFocus());
+
+test("focus the page drops to the shell's body goes back to the page, so the viewer's next Tab and typing stay in it", async ({ page }) => {
   const { artifact } = await publishWith(d.base, d.token, "Dropped focus", FORM, {});
   const t = await postThread(d.base, artifact.id, "Check this", "#t");
   const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   await frame.locator("#a").click();
-  await page.keyboard.type("Smith");
-  await expect.poll(() => page.evaluate(() => document.activeElement?.localName)).toBe("iframe");
-  for (const k of ["Tab", "Tab", "Tab", "Space", "c"]) await page.keyboard.press(k);
-  await page.waitForTimeout(300);
+  // The page calls parent.focus() on the "m".
+  await page.keyboard.type("Sm");
+  await expect.poll(() => pageHasFocus(frame)).toBe(true);
+  await page.keyboard.type("ith");
+  await page.keyboard.press("Tab");
+  await page.keyboard.type("Jones");
+  await expect(frame.locator("#a")).toHaveValue("Smith");
+  await expect(frame.locator("#b")).toHaveValue("Jones");
   await expect(page.locator(".thread-card.selected")).toHaveCount(0);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
   expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+});
+
+test("the viewer's own Tab or Shift+Tab out of the page stays on the shell control it reached", async ({ page }) => {
+  const { artifact } = await publishWith(d.base, d.token, "Tab out", FORM, {});
+  await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  for (const [field, key] of [["#b", "Tab"], ["#a", "Shift+Tab"]] as const) {
+    await frame.locator(field).click();
+    await page.keyboard.press(key);
+    await page.waitForTimeout(200);
+    expect(await page.evaluate(() => document.activeElement?.localName), key).toBe("button");
+    expect(await pageHasFocus(frame), key).toBe(false);
+  }
 });
 
 const PLACED = `<!doctype html><html><head><title>Placed</title></head><body><main><h2 id="t">Target</h2><input id="i" style="position:absolute;left:200px;top:120px;width:200px"></main><script>
@@ -2582,7 +2615,7 @@ test("a pin the page places under the pointer does not take the viewer's click",
 ```
 
 Run: `cd web && npx vitest run && npm run build && npx playwright test e2e/echo-chrome.spec.ts e2e/gesture.spec.ts e2e/comments.spec.ts e2e/comments-capability.spec.ts; echo "exit=$?"`
-Expected: `exit=0`. Both new e2e tests fail against the shell before this step: the first sends the thread, and the second selects it and leaves the input empty.
+Expected: `exit=0`. Against the shell before this step, the dropped-focus test fails at its `pageHasFocus` poll, because focus stays on the shell's `<body>`; and the placed-pin test fails because the click lands on the pin, which selects the thread and leaves the input empty. The Tab-out test passes before and after: it guards the rule, and fails for a give-back that does not check `<body>` again a task after the `focus` event, which would undo the viewer's own Tab.
 
 Remove the two entries ("A page can drop focus to the shell's body…" and "A pin the page places under the pointer…") from `docs/follow-ups.md`.
 

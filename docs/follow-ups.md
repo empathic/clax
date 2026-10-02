@@ -58,10 +58,22 @@ machine, so no agent runs them.
 - **A subdomain-mode page can navigate the whole shell window.** In subdomain
   mode the content frame has no `sandbox`, so a page with the viewer's
   activation can set `top.location` to any URL: another site, or a fresh
-  Clax load where C and ? start live. Options: sandbox the subdomain frame
+  Clax load where C and ? start live. A sibling case: the page can
+  `window.open` the shell's URL, and the new tab starts with empty session
+  storage (its opener is another origin), so C and ? are live there too and
+  it has focus. Options: sandbox the subdomain frame
   (`allow-scripts allow-same-origin allow-forms allow-popups`, no
   `allow-top-navigation`) after checking every capability still works, or
-  hold the keys on every load. Sandbox mode is not affected.
+  hold the keys on every load. The sandbox alone covers only `top.location`:
+  a popup inherits the frame's flags unless `allow-popups-to-escape-sandbox`
+  is set, but those flags include `allow-same-origin`, so the shell in it
+  still runs at its own origin with empty storage and live keys. Leaving
+  `allow-popups-to-escape-sandbox` off is therefore not enough, and the
+  shell cannot reliably tell a load the page opened (the page can open it
+  with `noopener` and `noreferrer`). Holding the keys on every load is the
+  option that covers both cases. Sandbox mode is not affected: a popup
+  inherits the opaque-origin sandbox, storage throws, and the keys start
+  held.
 
 - **The daemon's own `/mcp` `status` does not report `upgrade_held`.** The
   shim, the CLI and Pi report it; the daemon-served MCP endpoint has no hold
@@ -143,12 +155,17 @@ machine, so no agent runs them.
   a pin, the card head, then "Send to agent", which a Space presses
   natively. It needs no capability, only comments on. The same Tab landing
   on a shell control also gives the shell's keys (C and ?) back. Proposed
-  fix: recognise the page pushing focus out (the window's `blur` saw the
-  frame active, then a window `focus` arrives with focus on `<body>`, with
-  no trusted press in the shell between) and hand focus back to the frame
-  (`frame.focus()`). Echo Task 5, which owns the thread-card buttons and
-  pins, does this, with an e2e test of `parent.focus()` mid-typing, then
-  Tab, Tab, Tab and Space.
+  fix: recognise the page pushing focus out and hand focus back to the
+  frame. The window's `blur` saw the frame active; on the window's `focus`,
+  wait one task (`setTimeout(…, 0)`), then call `frame.focus()` only if
+  focus is still on `<body>` and the viewer made no trusted `pointerdown` or
+  `keydown` in the shell in between. The wait matters: at the `focus` event
+  focus is on `<body>` for the viewer's own Tab out of the frame too, and a
+  synchronous `frame.focus()` there focuses the frame element without giving
+  the frame's document the keys. Echo Task 5, which owns the thread-card
+  buttons and pins, does this, with e2e tests that the page keeps the
+  viewer's typing after `parent.focus()` (one Tab, then text in the next
+  field) and that the viewer's own Tab out of the frame stays in the shell.
 - **A pin the page places under the pointer takes the viewer's click** (Echo
   Task 3 re-review 3, I8; in every shell version). With `customAnchors`,
   `placed()` moves the shell's pin buttons anywhere over the frame, with no
