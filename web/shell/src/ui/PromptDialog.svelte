@@ -11,11 +11,15 @@
   // before. "After arming" is judged by the event's own timeStamp as well as
   // by when it is handled, so input the browser queued while the main thread
   // was busy is not counted as fresh. Escape dismisses it (neither allow nor
-  // deny).
+  // deny). While it is open the rest of the shell is inert and Tab stays
+  // among its buttons ("Don't allow" alone until "Allow" is armed), so text
+  // typed for the page cannot Tab to another control and press it.
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
+  import { inertOutside, trapTab } from "./modal";
 
   let { ask }: { ask: Ask } = $props();
   let deny = $state<HTMLButtonElement>();
+  let box = $state<HTMLElement>();
   let armed = $state(false);
   // When "Allow" was armed (performance.now(), the clock of event timeStamps).
   let armedAt = Infinity;
@@ -99,8 +103,11 @@
   }
 </script>
 
-<div class="prompt-backdrop">
-  <div class="prompt" role="dialog" aria-modal="true" aria-labelledby="prompt-title" aria-describedby="prompt-body">
+<div class="prompt-backdrop" {@attach inertOutside}>
+  <!-- Tab cycles inside the dialog; its other keys are handled above. -->
+  <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+  <div class="prompt" role="dialog" aria-modal="true" aria-labelledby="prompt-title" aria-describedby="prompt-body" tabindex="-1"
+    bind:this={box} onkeydown={e => { if (box) trapTab(e, box); }}>
     <h2 id="prompt-title">{ask.prompt.title}</h2>
     <p id="prompt-body">{ask.prompt.body}</p>
     <div class="actions">

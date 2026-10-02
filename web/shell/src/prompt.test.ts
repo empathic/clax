@@ -219,4 +219,34 @@ describe("PromptDialog", () => {
     button(second.root, "Don't allow").click();
     expect(second.answer).toHaveBeenCalledWith("deny");
   });
+
+  it("keeps Tab inside itself, on its refusing button alone until Allow is armed, and makes the rest of the shell inert", () => {
+    const outside = document.createElement("button");
+    outside.textContent = "Send to agent";
+    document.body.append(outside);
+    const { root, unmount } = mountDialog();
+    const deny = button(root, "Don't allow");
+    const allow = button(root, "Allow");
+    expect(document.activeElement).toBe(deny);
+    expect(outside.hasAttribute("inert")).toBe(true);
+    const tab = (shiftKey = false) => {
+      const e = new KeyboardEvent("keydown", { key: "Tab", shiftKey, bubbles: true, cancelable: true });
+      (document.activeElement as HTMLElement).dispatchEvent(e);
+      return e.defaultPrevented;
+    };
+    expect([tab(), tab(true)]).toEqual([true, true]);
+    expect(document.activeElement).toBe(deny);
+    arm();
+    expect(allow.disabled).toBe(false);
+    // Armed: Tab cycles between the two, both ways.
+    expect(tab()).toBe(false);
+    allow.focus();
+    expect(tab()).toBe(true);
+    expect(document.activeElement).toBe(deny);
+    expect(tab(true)).toBe(true);
+    expect(document.activeElement).toBe(allow);
+    unmount();
+    expect(outside.hasAttribute("inert")).toBe(false);
+    outside.remove();
+  });
 });

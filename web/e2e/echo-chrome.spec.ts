@@ -135,3 +135,72 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     await expect(comment).toHaveAttribute("aria-pressed", "true");
   });
 }
+
+/** A thread selected, the viewer typing in the page, and the page's prompt
+ * raised by their key, with focus on its refusing button. */
+async function promptRaised(page: Page, title: string) {
+  const { artifact } = await publishWith(d.base, d.token, title, CONSENT, { comments: {} });
+  const t = await postThread(d.base, artifact.id, "Check this", "#t");
+  const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
+  const card = page.locator(`[data-thread="${t.id}"]`);
+  await card.locator(".card-head").click();
+  await expect(card).toHaveClass(/selected/);
+  const comment = page.getByRole("button", { name: "Comment", exact: true });
+  const threads = page.getByRole("button", { name: /^Threads/ });
+  const panel = await threads.getAttribute("aria-pressed");
+  await frame.locator("p").click();
+  await page.keyboard.type("h");
+  const dialog = page.getByRole("dialog");
+  const deny = dialog.getByRole("button", { name: "Don't allow" });
+  await expect(deny).toBeFocused();
+  /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send or resolve. */
+  const unchanged = async () => {
+    await page.waitForTimeout(300);
+    await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
+    await expect(comment).toHaveAttribute("aria-pressed", "false");
+    await expect(threads).toHaveAttribute("aria-pressed", panel!);
+    await expect(card).toHaveClass(/selected/);
+    const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; sent_to_agent: boolean }[] };
+    expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+  };
+  return { dialog, deny, unchanged };
+}
+
+test("after the viewer clicks the prompt's refusing button, their typing stays inert", async ({ page }) => {
+  const { dialog, deny, unchanged } = await promptRaised(page, "Consent click");
+  await deny.click();
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.type("is it c");
+  await page.keyboard.press("Shift+?");
+  await unchanged();
+});
+
+test("a press on the prompt's backdrop, then Escape, leaves the typing inert", async ({ page }) => {
+  const { dialog, unchanged } = await promptRaised(page, "Consent backdrop");
+  await page.mouse.click(20, 300);
+  await expect(dialog).toHaveCount(1);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.type("is it c");
+  await unchanged();
+});
+
+test("Tab and Shift+Tab stay in the prompt, and after Escape the typing stays inert", async ({ page }) => {
+  const { dialog, deny, unchanged } = await promptRaised(page, "Consent tab");
+  await page.keyboard.press("Tab");
+  await expect(deny).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(deny).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  await page.keyboard.type("is it c");
+  await unchanged();
+});
+
+test("form typing with Tabs and a Space while the prompt is open presses nothing outside it", async ({ page }) => {
+  const { dialog, unchanged } = await promptRaised(page, "Consent form");
+  for (const k of ["m", "i", "t", "h", "Tab", "1", "2", "Tab", "Space"]) await page.keyboard.press(k);
+  // The Space pressed the focused "Don't allow", inside the dialog; nothing outside it.
+  await expect(dialog).toHaveCount(0);
+  await unchanged();
+});

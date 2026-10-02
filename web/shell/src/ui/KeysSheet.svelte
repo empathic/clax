@@ -6,32 +6,25 @@
   // to its Close button and Tab stays inside it; Escape, Close or a click
   // outside the panel closes it, and focus returns to where it was.
   import { KEY_ROWS } from "../view/keys";
+  import { inertOutside, trapTab } from "./modal";
 
   let { onClose }: { onClose(): void } = $props();
   const back = document.activeElement as HTMLElement | null;
   let panel: HTMLElement | undefined = $state();
   const focus = (el: HTMLElement) => { el.focus(); };
-  // Makes every element outside the sheet inert (each sibling of the sheet
-  // and of its ancestors), and on close undoes that, then gives focus back.
+  // Everything outside the sheet is inert while it is open; on close that is
+  // undone, then focus goes back.
   const modal = (el: HTMLElement) => {
-    const made: Element[] = [];
-    for (let n: Element = el; n.parentElement && n !== document.body; n = n.parentElement) {
-      for (const sib of n.parentElement.children) if (sib !== n && !sib.hasAttribute("inert")) { sib.setAttribute("inert", ""); made.push(sib); }
-    }
+    const undo = inertOutside(el);
     return () => {
-      for (const sib of made) sib.removeAttribute("inert");
+      undo();
       if (back?.isConnected) back.focus?.();
     };
   };
 
   function keydown(e: KeyboardEvent) {
     if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); return; }
-    if (e.key !== "Tab" || !panel) return;
-    const all = [...panel.querySelectorAll<HTMLElement>("button, [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")];
-    const first = all[0], last = all[all.length - 1];
-    if (!first) { e.preventDefault(); panel.focus(); return; }
-    if (e.shiftKey && (document.activeElement === first || document.activeElement === panel)) { e.preventDefault(); last.focus(); }
-    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    if (panel) trapTab(e, panel);
   }
 </script>
 
