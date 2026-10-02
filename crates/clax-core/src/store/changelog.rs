@@ -160,6 +160,7 @@ mod tests {
         st.create_thread(
             id,
             NewThread {
+                author_public_id: None,
                 version_n: 1,
                 anchor: anchor(),
                 body: "@agent x".into(),

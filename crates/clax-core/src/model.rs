@@ -37,6 +37,12 @@ pub struct Version {
     /// Thread IDs this version addressed, in link order.
     #[serde(default)]
     pub addresses: Vec<String>,
+    /// The publishing session's agent handle.
+    #[serde(default)]
+    pub agent: Option<String>,
+    /// The publishing session's harness.
+    #[serde(default)]
+    pub agent_harness: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -61,6 +67,8 @@ pub struct Session {
     pub started_at: String,
     pub last_seen_at: String,
     pub ended_at: Option<String>,
+    /// The opaque name viewers see for this session; never its ID.
+    pub agent_handle: String,
 }
 
 pub const CONTRACT_VERSION: &str = "0.2.61";
@@ -92,6 +100,9 @@ pub struct Comment {
     pub thread_id: String,
     pub author_kind: String,
     pub author_name: String,
+    /// The authoring viewer's public ID; `None` for agents and anonymous viewers.
+    #[serde(default)]
+    pub author_public_id: Option<String>,
     pub via_harness: Option<String>,
     /// The page wrote it through the `comments` capability, as the viewer.
     #[serde(default)]

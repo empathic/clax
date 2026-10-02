@@ -1,5 +1,7 @@
 //! `GET/PUT /api/viewers/me`: the browser viewer behind the `clax_viewer`
 //! cookie; `GET/PUT /api/viewers/me/seen`: its version seen marks;
+//! `GET /api/viewers/me/attention` and `PUT /api/viewers/me/looked`: its
+//! attention per artifact and its looked-at marks on threads;
 //! `GET /api/viewers`: other viewers by public ID or name. All refuse
 //! a request with a foreign `Origin` ([`SameOrigin`]).
 
@@ -11,8 +13,8 @@ use axum::Json;
 use axum::extract::Query;
 use axum::extract::State;
 use axum::extract::rejection::{JsonRejection, QueryRejection};
-use axum::http::HeaderMap;
 use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::{CoreError, new_ulid};
 use serde::Deserialize;
@@ -197,4 +199,78 @@ pub async fn set_seen(
         })
         .await?;
     Ok(Json(json!({"seen": n})))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LookedBody {
+    artifact_id: String,
+    thread_ids: Vec<String>,
+}
+
+/// `GET /api/viewers/me/attention`: this viewer's attention on every live
+/// artifact, without looked-at times; `{artifacts: {}}` without a cookie.
+pub async fn attention(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+) -> Result<Response, ApiError> {
+    let out = match viewer.0 {
+        Some(v) => {
+            s.store_call(move |st| {
+                Ok(match st.get_viewer(&v)? {
+                    Some(_) => json!(st.attention_all(&v)?),
+                    None => json!({}),
+                })
+            })
+            .await?
+        }
+        None => json!({}),
+    };
+    Ok((
+        [
+            (header::CACHE_CONTROL, "private, no-cache"),
+            (header::VARY, "Cookie"),
+        ],
+        Json(json!({"artifacts": out})),
+    )
+        .into_response())
+}
+
+/// `PUT /api/viewers/me/looked`: records that this viewer looked at the
+/// threads now (spec §10, "Participants and attention"); `{looked}`, the
+/// viewer's marks on the artifact. 400 `no_viewer` without a viewer cookie.
+pub async fn set_looked(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    viewer: ViewerCookie,
+    req: Result<Json<LookedBody>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let b = body(req)?;
+    let id = parse_id(&b.artifact_id)?;
+    let max = clax_core::store::attention::MAX_LOOKED;
+    if b.thread_ids.is_empty()
+        || b.thread_ids.len() > max
+        || !b.thread_ids.iter().all(|t| clax_core::is_ulid(t))
+    {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            format!("thread_ids: 1 to {max} thread IDs"),
+        ));
+    }
+    let Some(vid) = viewer.0 else {
+        return Err(ApiError::bad_request(
+            "no_viewer",
+            "open /api/viewers/me first",
+        ));
+    };
+    let looked = s
+        .store_call(move |st| {
+            st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            st.get_viewer(&vid)?
+                .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
+            st.mark_looked(&vid, &id, &b.thread_ids)
+        })
+        .await?;
+    Ok(Json(json!({"looked": looked})))
 }

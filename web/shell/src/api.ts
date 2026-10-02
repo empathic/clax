@@ -6,9 +6,19 @@ export type Artifact = {
   owner_live?: boolean;
   /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the owner session's harness, when it exists. */
   owner_harness?: string | null;
+  /** From `GET /api/artifacts` and `GET /api/artifacts/<id>`: the artifact's people and agents. */
+  participants?: Participants;
 };
+/** `agents` is ordered live first, then most recently active; `live` means a send can reach it. */
+export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
+export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
+export type Attention = AttentionSummary & { looked: Record<string, string> };
 export type FileMeta = { content_type: string; size: number };
-export type Version = { artifact_id: string; n: number; label: string | null; created_at: string; files: Record<string, FileMeta> };
+export type Version = {
+  artifact_id: string; n: number; label: string | null; created_at: string; files: Record<string, FileMeta>;
+  /** The publishing session's agent handle and harness. */
+  agent?: string | null; agent_harness?: string | null;
+};
 
 /** A non-OK API response; `status` is the HTTP status code. */
 export class ApiError extends Error {
@@ -32,6 +42,18 @@ export async function listArtifacts(): Promise<Artifact[]> {
 }
 export async function getArtifact(id: string): Promise<{ artifact: Artifact; versions: Version[] }> {
   return json(await fetch(`/api/artifacts/${id}`));
+}
+
+/** This viewer's attention on every artifact; {} without a viewer or on failure. */
+export async function getAttention(): Promise<Record<string, AttentionSummary>> {
+  try { const r = await fetch("/api/viewers/me/attention"); return r.ok ? (await r.json()).artifacts : {}; } catch { return {}; }
+}
+/** Records that this viewer looked at `ids`; answers the viewer's marks on `aid`, or null on failure (the next look writes again). */
+export async function putLooked(aid: string, ids: string[]): Promise<Record<string, string> | null> {
+  try {
+    const r = await fetch("/api/viewers/me/looked", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, thread_ids: ids }) });
+    return r.ok ? (await r.json()).looked : null;
+  } catch { return null; }
 }
 
 let tokenPromise: Promise<string | null> | null = null;

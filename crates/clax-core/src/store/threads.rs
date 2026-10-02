@@ -24,6 +24,8 @@ pub struct NewThread {
     pub version_n: u32,
     pub anchor: Anchor,
     pub author_name: String,
+    /// The authoring viewer's public ID, when a viewer cookie names one.
+    pub author_public_id: Option<String>,
     pub body: String,
     pub clip: Option<Vec<u8>>,
     /// The page wrote the first comment through the `comments` capability.
@@ -35,6 +37,8 @@ pub struct NewThread {
 pub struct NewComment {
     pub author_kind: &'static str,
     pub author_name: String,
+    /// The authoring viewer's public ID (viewer comments only).
+    pub author_public_id: Option<String>,
     pub via_session_id: Option<String>,
     pub body: String,
     /// The page wrote it through the `comments` capability (viewer comments only).
@@ -133,6 +137,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
         thread_id: r.get("thread_id")?,
         author_kind: r.get("author_kind")?,
         author_name: r.get("author_name")?,
+        author_public_id: r.get("author_public_id")?,
         via_harness: r.get("via_harness")?,
         via_page: r.get::<_, i64>("via_page")? != 0,
         body: r.get("body")?,
@@ -142,7 +147,7 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
 
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
     let mut stmt = c.prepare(
-        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, s.harness AS via_harness, c.via_page, c.body, c.created_at
+        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
          FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id
          WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id",
     )?;
@@ -175,6 +180,25 @@ pub(crate) fn artifact_live(c: &Connection, id: &str) -> Result<bool> {
         params![id],
         |r| r.get(0),
     )?)
+}
+
+/// Records the viewers `body` mentions (see [`crate::mentions::mentioned`])
+/// for the comment `comment_id`, in the caller's transaction.
+fn insert_mentions(tx: &Connection, comment_id: &str, body: &str) -> Result<()> {
+    let names: Vec<(String, String)> = {
+        let mut st = tx.prepare(
+            "SELECT public_id, display_name FROM viewers WHERE display_name IS NOT NULL AND display_name != ''",
+        )?;
+        st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    for p in crate::mentions::mentioned(body, &names) {
+        tx.execute(
+            "INSERT OR IGNORE INTO mentions (comment_id, public_id) VALUES (?1, ?2)",
+            params![comment_id, p],
+        )?;
+    }
+    Ok(())
 }
 
 /// Writes `bytes` to `path` via a temporary file in `dir`, creating `dir`.
@@ -245,11 +269,13 @@ impl Store {
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
                 params![tid, id.as_str(), t.version_n, anchor_json, t.clip.is_some(), now],
             )?;
+            let cid = new_ulid();
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, via_page, body, created_at)
-                 VALUES (?1, ?2, 'viewer', ?3, NULL, ?4, ?5, ?6)",
-                params![new_ulid(), tid, t.author_name, t.via_page, t.body, now],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
+                 VALUES (?1, ?2, 'viewer', ?3, ?4, NULL, ?5, ?6, ?7)",
+                params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
+            insert_mentions(tx, &cid, &t.body)?;
             // Written last, still inside the transaction: a failed write rolls
             // the rows back, and a failed commit removes the file below.
             if let Some(bytes) = &t.clip {
@@ -288,6 +314,11 @@ impl Store {
             thread_id: thread_id.to_string(),
             author_kind: c.author_kind.to_string(),
             author_name: c.author_name,
+            author_public_id: if c.author_kind == AUTHOR_VIEWER {
+                c.author_public_id
+            } else {
+                None
+            },
             via_harness: None,
             via_page: c.via_page && c.author_kind == AUTHOR_VIEWER,
             body: c.body,
@@ -296,9 +327,9 @@ impl Store {
         self.with_tx(|tx| {
             thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
-                "INSERT INTO comments (id, thread_id, author_kind, author_name, via_session_id, via_page, body, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, c.via_session_id, comment.via_page, comment.body, comment.created_at],
+                "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![comment.id, comment.thread_id, comment.author_kind, comment.author_name, comment.author_public_id, c.via_session_id, comment.via_page, comment.body, comment.created_at],
             )?;
             comment.via_harness = match &c.via_session_id {
                 Some(sid) => tx
@@ -307,6 +338,7 @@ impl Store {
                 None => None,
             };
             if comment.author_kind == AUTHOR_VIEWER {
+                insert_mentions(tx, &comment.id, &comment.body)?;
                 tx.execute(
                     "UPDATE threads SET status = 'open', resolved_at = NULL, resolved_by = NULL WHERE id = ?1",
                     params![thread_id],
@@ -490,6 +522,11 @@ impl Store {
                     .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?
             };
             tx.execute("DELETE FROM version_threads WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute(
+                "DELETE FROM mentions WHERE comment_id IN (SELECT id FROM comments WHERE thread_id = ?1)",
+                params![thread_id],
+            )?;
+            tx.execute("DELETE FROM viewer_threads WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM feedback WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
@@ -527,6 +564,7 @@ mod tests {
 
     fn new_thread(body: &str, clip: Option<Vec<u8>>) -> NewThread {
         NewThread {
+            author_public_id: None,
             version_n: 1,
             anchor: anchor(),
             author_name: "Alex".into(),
@@ -693,6 +731,7 @@ mod tests {
         st.add_comment(
             &t.id,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_AGENT,
                 author_name: "claude".into(),
                 via_session_id: None,
@@ -709,6 +748,7 @@ mod tests {
         st.add_comment(
             &t.id,
             NewComment {
+                author_public_id: None,
                 author_kind: AUTHOR_VIEWER,
                 author_name: "Alex".into(),
                 via_session_id: None,
@@ -733,6 +773,7 @@ mod tests {
             .add_comment(
                 &t.id,
                 NewComment {
+                    author_public_id: None,
                     author_kind: AUTHOR_AGENT,
                     author_name: "codex".into(),
                     via_session_id: Some(sid.clone()),
@@ -923,6 +964,7 @@ mod tests {
             .add_comment(
                 &t.id,
                 NewComment {
+                    author_public_id: None,
                     author_kind: "robot",
                     author_name: "r".into(),
                     via_session_id: None,
@@ -952,6 +994,7 @@ mod tests {
             .create_thread(
                 &id,
                 NewThread {
+                    author_public_id: None,
                     version_n: 1,
                     anchor: anchor(),
                     author_name: "Alex".into(),
@@ -1011,6 +1054,7 @@ mod tests {
             .add_comment(
                 &t.id,
                 NewComment {
+                    author_public_id: None,
                     author_kind: AUTHOR_VIEWER,
                     author_name: "Alex".into(),
                     via_session_id: None,
@@ -1024,6 +1068,7 @@ mod tests {
             .add_comment(
                 &t.id,
                 NewComment {
+                    author_public_id: None,
                     author_kind: AUTHOR_AGENT,
                     author_name: "claude".into(),
                     via_session_id: None,

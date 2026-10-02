@@ -197,6 +197,15 @@ impl Store {
                 "DELETE FROM version_threads WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
+            tx.execute(
+                "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c
+                    JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
+                params![id.as_str()],
+            )?;
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
@@ -381,7 +390,10 @@ impl Store {
                     None => {
                         for sql in [
                             "DELETE FROM version_threads WHERE artifact_id = ?1",
+                            "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM viewer_seen WHERE artifact_id = ?1",
+                            "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
                             "DELETE FROM feedback WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",
@@ -483,11 +495,16 @@ fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         files,
         note: r.get("note")?,
         addresses: Vec::new(),
+        agent: r.get("agent")?,
+        agent_harness: r.get("agent_harness")?,
     }))
 }
 
 const SELECT_VERSION: &str =
-    "SELECT artifact_id, n, label, created_at, session_id, files_json, note FROM versions";
+    "SELECT artifact_id, n, label, created_at, session_id, files_json, note,
+        (SELECT agent_handle FROM sessions s WHERE s.id = versions.session_id) AS agent,
+        (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
+     FROM versions";
 
 impl Store {
     /// Creates an artifact and writes its version 1. `p.files` are all stored;
@@ -1273,6 +1290,7 @@ mod tests {
             .create_thread(
                 &aid,
                 crate::NewThread {
+                    author_public_id: None,
                     version_n: 1,
                     anchor: crate::store::test_util::anchor(),
                     author_name: "Alex".into(),

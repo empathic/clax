@@ -4,7 +4,7 @@ import { ApiError } from "./api";
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 export type FeedbackState = { thread_id: string; state: "sent" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean };
 /** `via_page`: the page wrote it through the `comments` capability, as the viewer. */
-export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
+export type Comment = { id: string; thread_id: string; author_kind: "viewer" | "agent"; author_name: string; author_public_id?: string | null; via_harness: string | null; via_page?: boolean; body: string; created_at: string };
 export type Thread = {
   id: string; artifact_id: string; version_n: number; anchor: Anchor; status: "open" | "resolved"; sent_to_agent: boolean;
   has_clip: boolean; clip_url: string | null; created_at: string; resolved_at: string | null; resolved_by: string | null;

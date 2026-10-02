@@ -116,7 +116,7 @@ async fn names_no_session_and_no_clip_path() {
         .unwrap()
         .to_string();
     let api: Value = ts
-        .get(&format!("/api/artifacts/{id}"))
+        .get_authed(&format!("/api/artifacts/{id}"))
         .await
         .json()
         .await
@@ -149,6 +149,12 @@ async fn names_no_session_and_no_clip_path() {
     let (text, b) = boot(&html);
     assert!(!text.contains(&sid), "{text}");
     assert!(!text.contains("session_id"), "{text}");
+    let agents = &b["artifact"]["artifact"]["participants"]["agents"];
+    assert_eq!(agents[0]["harness"], "claude", "{text}");
+    assert!(clax_core::is_agent_handle(
+        agents[0]["handle"].as_str().unwrap()
+    ));
+    assert!(b.get("attention").is_none(), "no viewer, no attention");
     assert_eq!(b["threads"][0]["clip_path"], Value::Null);
     assert!(b["threads"][0]["clip_url"].is_string());
     assert!(!html.contains(&ts.token));
@@ -174,7 +180,15 @@ async fn names_the_cookies_viewer_only() {
         .json()
         .await
         .unwrap();
-    assert_eq!(boot(&html).1["viewer"], me["viewer"]);
+    let b = boot(&html).1;
+    assert_eq!(b["viewer"], me["viewer"]);
+    assert!(b["artifact"]["artifact"]["participants"].is_object());
+    assert_eq!(
+        b["attention"]["open_in"],
+        json!([]),
+        "the cookie's viewer gets its attention"
+    );
+    assert!(b["attention"]["looked"].is_object());
     assert!(
         !html.contains(&v.cookie),
         "the viewer cookie never enters the page"
@@ -186,9 +200,11 @@ async fn names_the_cookies_viewer_only() {
     )
     .await;
     assert!(unknown.headers().get("set-cookie").is_none());
-    assert_eq!(
-        boot(&unknown.text().await.unwrap()).1["viewer"],
-        Value::Null
+    let b = boot(&unknown.text().await.unwrap()).1;
+    assert_eq!(b["viewer"], Value::Null);
+    assert!(
+        b.get("attention").is_none(),
+        "an unknown cookie gets no attention"
     );
 }
 

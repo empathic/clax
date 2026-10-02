@@ -28,7 +28,7 @@ pub struct Reaped {
 }
 
 const SELECT: &str = "SELECT id, harness, harness_session_id, cwd, pid, parent_pid, started_at,
-    last_seen_at, ended_at FROM sessions";
+    last_seen_at, ended_at, agent_handle FROM sessions";
 
 fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
     Ok(Session {
@@ -41,6 +41,7 @@ fn row_to_session(r: &Row<'_>) -> rusqlite::Result<Session> {
         started_at: r.get("started_at")?,
         last_seen_at: r.get("last_seen_at")?,
         ended_at: r.get("ended_at")?,
+        agent_handle: r.get("agent_handle")?,
     })
 }
 
@@ -133,8 +134,8 @@ impl Store {
             let id = new_ulid();
             tx.execute(
                 "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
-                    started_at, last_seen_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+                    started_at, last_seen_at, agent_handle)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7, ?8)",
                 params![
                     id,
                     r.harness,
@@ -142,7 +143,8 @@ impl Store {
                     r.cwd,
                     r.pid,
                     r.parent_pid,
-                    now
+                    now,
+                    crate::new_agent_handle()
                 ],
             )?;
             fetch(tx, &id)
@@ -207,9 +209,9 @@ impl Store {
                     let id = new_ulid();
                     tx.execute(
                         "INSERT INTO sessions (id, harness, harness_session_id, cwd, pid, parent_pid,
-                            started_at, last_seen_at)
-                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5)",
-                        params![id, harness, harness_session_id, parent_pid, now, cwd.unwrap_or("")],
+                            started_at, last_seen_at, agent_handle)
+                         VALUES (?1, ?2, ?3, ?6, NULL, ?4, ?5, ?5, ?7)",
+                        params![id, harness, harness_session_id, parent_pid, now, cwd.unwrap_or(""), crate::new_agent_handle()],
                     )?;
                     id
                 }
@@ -728,6 +730,7 @@ mod tests {
             .create_thread(
                 &aid,
                 NewThread {
+                    author_public_id: None,
                     version_n: 1,
                     anchor: anchor(),
                     author_name: "A".into(),

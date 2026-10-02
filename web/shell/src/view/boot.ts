@@ -1,8 +1,13 @@
+import type { Attention } from "../api";
 import type { Thread, Viewer } from "../threads";
 import type { Loaded } from "./artifact-controller";
 
 /** The daemon's first-load data for `/a/…` (spec §8 Time to usable). */
-export type Boot = { v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null; frame: { mode: "subdomain" | "sandbox"; src: string } | null };
+export type Boot = {
+  v: 1; artifact: Loaded; threads: Thread[]; viewer: Viewer | null; frame: { mode: "subdomain" | "sandbox"; src: string } | null;
+  /** The cookie's viewer's attention on this artifact; absent without a viewer. */
+  attention?: Attention | null;
+};
 
 /** How this document was reached (`back_forward` for history), from Navigation Timing. */
 function navigationType(): string {
@@ -16,7 +21,8 @@ function navigationType(): string {
 /** The bootstrap block in `doc`, or null when there is none, it does not
  * parse, or it is not version 1. A page reached through history may come
  * from the browser's cache without asking the daemon, so its viewer can be
- * stale: it is left out (`viewer: null`), and the shell looks the viewer up.
+ * stale: it and its attention are left out (`viewer: null`, `attention:
+ * null`), and the shell looks the viewer up.
  * The threads and the artifact are reloaded on the stream's first `ready`. */
 export function readBoot(doc: Document = document, navType: string = navigationType()): Boot | null {
   const text = doc.getElementById("clax-boot")?.textContent;
@@ -24,7 +30,7 @@ export function readBoot(doc: Document = document, navType: string = navigationT
   try {
     const b = JSON.parse(text) as Boot;
     if (!(b && b.v === 1 && b.artifact?.artifact && Array.isArray(b.artifact.versions) && Array.isArray(b.threads))) return null;
-    return navType === "back_forward" ? { ...b, viewer: null } : b;
+    return navType === "back_forward" ? { ...b, viewer: null, attention: null } : b;
   } catch {
     return null;
   }

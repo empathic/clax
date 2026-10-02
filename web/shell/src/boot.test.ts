@@ -345,11 +345,13 @@ describe("readBoot", () => {
     expect(readBoot()).toEqual(boot(null));
   });
 
-  it("leaves out the viewer of a page reached through history, which may come from the cache", async () => {
+  it("leaves out the viewer and its attention of a page reached through history, which may come from the cache", async () => {
     const { readBoot } = await import("./view/boot");
-    block(JSON.stringify(boot(null)));
+    const attention = { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: 1, looked: {} };
+    block(JSON.stringify({ ...boot(null), attention }));
     expect(readBoot(document, "navigate")!.viewer).toEqual(viewer);
-    expect(readBoot(document, "back_forward")).toEqual({ ...boot(null), viewer: null });
+    expect(readBoot(document, "navigate")!.attention).toEqual(attention);
+    expect(readBoot(document, "back_forward")).toEqual({ ...boot(null), viewer: null, attention: null });
   });
 
   it("refuses a block that does not parse or is not version 1", async () => {

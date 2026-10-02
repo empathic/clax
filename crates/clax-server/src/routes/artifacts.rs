@@ -1,13 +1,15 @@
 //! REST routes for artifacts and versions.
 
 use crate::auth::RequireToken;
+use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::rejection::PathRejection;
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
+use axum::response::{IntoResponse, Response};
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Store};
@@ -93,24 +95,60 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
         .transpose()
 }
 
-/// `a` as JSON with `owner_live` (its owner session exists and has not ended)
-/// and `owner_harness` (the owner's harness, when it exists). The owner
-/// session itself is not exposed: these routes need no token. `working` is
-/// the artifact's working list (spec §10 "Working"), which never names a session.
+/// `a` as JSON with `owner_live` (its owner session exists and has not ended),
+/// `owner_harness` (the owner's harness, when it exists) and `participants`
+/// (people by public ID, agents by handle). `working` is the artifact's
+/// working list (spec §10 "Working"), which never names a session. The
+/// artifact's own `owner_session_id` stays; token-less routes drop it with
+/// [`strip_sessions`].
 pub(crate) fn with_owner(
+    st: &Store,
     a: &Artifact,
     owner: Option<&Session>,
     working: &[clax_core::working::WorkingView],
-) -> Value {
+) -> clax_core::Result<Value> {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
     v["working"] = json!(working);
-    v
+    v["participants"] = json!(st.participants(&ArtifactId::parse(&a.id)?)?);
+    Ok(v)
 }
 
-/// Each live artifact, with the owner fields of [`with_owner`].
-pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
+/// Leaves out the session IDs a token-less caller must not see (spec §14):
+/// the artifact's `owner_session_id` and each version's `session_id`.
+pub(crate) fn strip_sessions(v: &mut Value) {
+    if let Some(a) = v.get_mut("artifact").and_then(Value::as_object_mut) {
+        a.remove("owner_session_id");
+    }
+    if let Some(x) = v.get_mut("version").and_then(Value::as_object_mut) {
+        x.remove("session_id");
+    }
+    for x in v
+        .get_mut("versions")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(x) = x.as_object_mut() {
+            x.remove("session_id");
+        }
+    }
+    for x in v
+        .get_mut("artifacts")
+        .and_then(Value::as_array_mut)
+        .into_iter()
+        .flatten()
+    {
+        if let Some(x) = x.as_object_mut() {
+            x.remove("owner_session_id");
+        }
+    }
+}
+
+/// Each live artifact, with the owner fields of [`with_owner`]. Without the
+/// token, no session ID is included.
+pub async fn list(State(s): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     let all = s.working.all();
     let artifacts = s
         .store_call(move |st| {
@@ -127,12 +165,16 @@ pub async fn list(State(s): State<AppState>) -> Result<Json<Value>, ApiError> {
                     None => None,
                 };
                 let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
-                out.push(with_owner(&a, owner.as_ref(), working));
+                out.push(with_owner(st, &a, owner.as_ref(), working)?);
             }
             Ok(out)
         })
         .await?;
-    Ok(Json(json!({"artifacts": artifacts})))
+    let mut v = json!({"artifacts": artifacts});
+    if !has_token(&headers, &s.token) {
+        strip_sessions(&mut v);
+    }
+    Ok(Json(v))
 }
 
 /// Creates an artifact. The body must carry a non-blank `title`.
@@ -176,26 +218,50 @@ pub async fn create(
 }
 
 /// The artifact (with the owner fields of [`with_owner`]) and its versions.
+/// Without the token, no session ID is included. With a viewer cookie, also
+/// that viewer's `attention`, and the response is private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
+    headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let (artifact, versions, owner) = s
+    let viewer = crate::viewer::read(&headers);
+    let working = s.working.for_artifact(id.as_str());
+    let has_viewer = viewer.is_some();
+    let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let v = st.list_versions(&id)?;
+            let versions = st.list_versions(&id)?;
             let owner = match &a.owner_session_id {
                 Some(sid) => st.get_session(sid)?,
                 None => None,
             };
-            Ok((a, v, owner))
+            let mut v = json!({
+                "artifact": with_owner(st, &a, owner.as_ref(), &working)?,
+                "versions": versions,
+            });
+            if let Some(vid) = viewer {
+                v["attention"] = json!(st.attention(&vid, &id)?);
+            }
+            Ok(v)
         })
         .await?;
-    let working = s.working.for_artifact(&artifact.id);
-    Ok(Json(
-        json!({"artifact": with_owner(&artifact, owner.as_ref(), &working), "versions": versions}),
-    ))
+    if !has_token(&headers, &s.token) {
+        strip_sessions(&mut v);
+    }
+    if has_viewer {
+        Ok((
+            [
+                (header::CACHE_CONTROL, "private, no-cache"),
+                (header::VARY, "Cookie"),
+            ],
+            Json(v),
+        )
+            .into_response())
+    } else {
+        Ok(Json(v).into_response())
+    }
 }
 
 /// Metadata edits. `capabilities` replaces the whole declaration (omitted
@@ -260,8 +326,10 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Every version of the artifact; without the token, no session ID.
 pub async fn list_versions(
     State(s): State<AppState>,
+    headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
@@ -271,7 +339,11 @@ pub async fn list_versions(
             st.list_versions(&id)
         })
         .await?;
-    Ok(Json(json!({"versions": versions})))
+    let mut v = json!({"versions": versions});
+    if !has_token(&headers, &s.token) {
+        strip_sessions(&mut v);
+    }
+    Ok(Json(v))
 }
 
 pub async fn publish(
@@ -327,8 +399,10 @@ pub async fn publish(
     ))
 }
 
+/// Version `n`; without the token, no session ID.
 pub async fn get_version(
     State(s): State<AppState>,
+    headers: HeaderMap,
     params: Result<Path<(String, u32)>, PathRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let (aid, n) = path(params)?;
@@ -339,7 +413,11 @@ pub async fn get_version(
             st.get_version(&id, n)?.ok_or(CoreError::NotFound)
         })
         .await?;
-    Ok(Json(json!({"version": v})))
+    let mut v = json!({"version": v});
+    if !has_token(&headers, &s.token) {
+        strip_sessions(&mut v);
+    }
+    Ok(Json(v))
 }
 
 pub async fn files(

@@ -158,6 +158,11 @@ the artifact). `addresses` may name resolved threads. A thread ID in
 `addresses` that is not a thread of the artifact fails the call with
 `unknown_thread`, and nothing is published.
 
+Over HTTP, `POST /api/artifacts` and `POST /api/artifacts/<id>/versions`
+answer `{artifact, version, url, note_truncated}`: `note_truncated` is `true`
+when the given `note` was longer than 280 characters and was cut to them,
+else `false`. The tool result passes it on.
+
 The declaration can also be changed without publishing a version:
 `PATCH /api/artifacts/<id>` (token required) with `{"capabilities": {...}}`
 replaces it the same way (omitted or `null` keeps, `{}` clears) and returns
@@ -993,6 +998,84 @@ deletes with `?as=agent`, holding the token and `X-Clax-Session` naming a
 live session (400 `unknown_session` otherwise); on a thread that was not sent
 to the agent it gets 200 `{guidance}` and nothing changes. A thread of
 another or a deleted artifact is 404.
+
+### Versions, seen marks and attention
+
+Every thread view carries `addressed_in`: the versions linked to the thread
+(named in a publish's `addresses`, linked because the publishing session was
+working on the thread, or linked when an agent resolved it), ascending, `[]`
+for none.
+
+A viewer's seen mark is the highest version of an artifact it has viewed at
+the artifact's latest URL (not at a pinned version). `GET
+/api/viewers/me/seen?artifact=<aid>` answers `{"seen": <n>}`, or `{"seen":
+null}` when the viewer has none or there is no viewer cookie; an unknown
+artifact is 404. `PUT /api/viewers/me/seen` with `{"artifact_id",
+"version"}` raises the mark to `version` (it never lowers it) and answers
+`{"seen": <the mark after the write>}`; without a viewer cookie it is 400
+`no_viewer`. A viewer keeps marks on its 200 most recently marked artifacts;
+older ones are dropped. A viewer's seen mark is public: it is the `seen` of
+that person in the artifact's `participants`.
+
+Comments name their author: a comment view carries `author_public_id`, the
+viewer's public ID when a viewer cookie wrote it, `null` for agent comments,
+for comments written without a viewer, and for comments written before
+authors were recorded. A viewer comment mentions a viewer by `@` and that
+viewer's whole display name, in any case, not preceded by a letter or digit
+and followed by the end of the text, whitespace, or one of `.,;:!?)]}'"`. A
+two-word name needs both words (`@Mia Kovač`). A viewer named `agent` is
+never mentioned: `@agent` sends to the agent. Mentions are recorded when the
+comment is written.
+
+A viewer is in a thread when it wrote a comment on it, a comment on it
+mentions it, or it resolved it. A viewer looks at threads with `PUT
+/api/viewers/me/looked` and `{"artifact_id", "thread_ids"}` (1 to 50 thread
+IDs); threads of other artifacts are ignored, and the answer is `{"looked":
+{<thread ID>: <time>}}`, the viewer's marks on that artifact. Without a
+viewer cookie, or with one that names no viewer, it is 400 `no_viewer`; an
+unknown artifact is 404; malformed thread IDs are 400 `invalid_args`.
+Looked-at marks are the viewer's own: no thread view, artifact view,
+participant list or event carries them.
+
+`GET /api/artifacts` (each artifact) and `GET /api/artifacts/<aid>`
+(`artifact`) carry `participants`:
+
+```json
+{
+  "people": [{"public_id": "u_…", "display_name": "Alex", "seen": 3}],
+  "agents": [{"handle": "a_…", "harness": "claude", "live": true}]
+}
+```
+
+`people` are the viewers who wrote a comment on the artifact, oldest viewer
+first, each with its public seen mark (`null` for none). `agents` are the
+artifact's owner session, its watchers and the sessions that published its
+versions, at most 10. Each is named by its agent handle (`a_` and 22
+lowercase hex digits, assigned once per session), never by session ID.
+`live` is `true` when the session has not ended and owns or watches the
+artifact, so a send can reach it. Live agents come first, then the most
+recently active on the artifact (its newest version, comment on the
+artifact's threads, or watch, else its registration). Each version view
+carries `agent` (its publishing session's handle) and `agent_harness`, both
+`null` for a version published without a session.
+
+With a viewer cookie, `GET /api/artifacts/<aid>` also carries `attention`,
+and is then sent with `Cache-Control: private, no-cache` and `Vary: Cookie`:
+
+| Field | Meaning |
+|---|---|
+| `open_in` | Open threads the viewer is in, oldest first. |
+| `addressed` | Open threads the viewer is in that a version was linked to after the viewer last looked at them (or that it never looked at). |
+| `addressed_v` | The newest version among those links; `null` when `addressed` is empty. |
+| `new_replies` | Threads the viewer is in with a comment by someone else after its last look. |
+| `seen` | The viewer's seen mark on the artifact, or `null`. |
+| `looked` | The viewer's looked-at marks on the artifact's threads, `{<thread ID>: <time>}`. |
+
+`GET /api/viewers/me/attention` answers `{"artifacts": {<aid>: {...}}}` for
+every live artifact, with the fields above except `looked`, and
+`{"artifacts": {}}` without a viewer cookie or with one that names no
+viewer. The `/a/<id>` bootstrap carries `participants` in its artifact and,
+for the cookie's existing viewer, `attention` at the top level.
 
 ### The `comments` capability
 
@@ -1839,8 +1922,9 @@ harness and the daemon, each `ok` or failed with the fix:
   and comment on them but not publish or change them. `GET /api/push` names
   the daemon's `codex` path (`bin`) only to a request with the token. `GET /api/artifacts/<id>` returns
   `{artifact, versions}`; like each entry of the artifact list, `artifact`
-  carries `owner_session_id`, `owner_live` and `owner_harness`, never the
-  owner's session row. Content and asset URLs are readable by anyone who can
+  carries `owner_live`, `owner_harness` and `participants`, never the
+  owner's session row, and `owner_session_id` (with each version's
+  `session_id`) only with the token. Content and asset URLs are readable by anyone who can
   reach the daemon and knows the unguessable artifact or asset ID.
 - `GET /api/token` hands the token to the gallery in a local browser. On top
   of the `Host` rule above, it answers only when the connection comes from a
@@ -1872,7 +1956,9 @@ harness and the daemon, each `ok` or failed with the fix:
   carries no CSP; the origin is the boundary. Supporting files and blobs are
   sent with `X-Content-Type-Options: nosniff`.
 - The viewer routes (creating a thread, commenting, sending to the agent,
-  resolving, reopening, deleting, and `GET`/`PUT /api/viewers/me`) need no
+  resolving, reopening, deleting, `GET`/`PUT /api/viewers/me`, `GET`/`PUT
+  /api/viewers/me/seen`, `GET /api/viewers/me/attention` and `PUT
+  /api/viewers/me/looked`) need no
   token, so LAN viewers can comment; reopening and deleting also need a
   display name (or the token). They refuse a request whose `Origin` is not
   the daemon's own (`http://` plus the request's `Host`, never an artifact
@@ -1888,10 +1974,12 @@ harness and the daemon, each `ok` or failed with the fix:
   /api/viewers/me` answer `{"viewer": {"public_id", "display_name",
   "created_at"}}`, and a viewer's resolve records `resolved_by`
   `viewer:<public ID>`. Comment threads never carry a session ID: an
-  agent's resolve records `agent:<harness>` and its comments `via_harness`
-  (the artifact list and artifact view still name the owning session's ID
-  in `owner_session_id` and each version's `session_id`, which are not
-  credentials).
+  agent's resolve records `agent:<harness>` and its comments `via_harness`.
+  Viewers name agents by agent handle (`a_` and 22 lowercase hex digits).
+  The artifact list, the artifact view and the version routes
+  (`GET /api/artifacts/<id>/versions` and `.../versions/<n>`) name the
+  owning session's ID in `owner_session_id` and each version's `session_id`
+  only to a request with the token; without it both fields are left out.
   Agent replies and resolves need
   the token and `X-Clax-Session` naming a live session (400
   `unknown_session` otherwise). Thread views carry `clip_path` only for

@@ -199,7 +199,7 @@ async fn publish_with_session_header_attributes_owner_and_versions() {
     assert_eq!(v2["artifact"]["owner_session_id"], sid);
 
     let got: Value = ts
-        .get(&format!("/api/artifacts/{aid}"))
+        .get_authed(&format!("/api/artifacts/{aid}"))
         .await
         .json()
         .await
@@ -236,7 +236,7 @@ async fn publish_without_header_has_no_owner() {
     assert_eq!(created["artifact"]["owner_session_id"], Value::Null);
     let aid = created["artifact"]["id"].as_str().unwrap();
     let got: Value = ts
-        .get(&format!("/api/artifacts/{aid}"))
+        .get_authed(&format!("/api/artifacts/{aid}"))
         .await
         .json()
         .await
