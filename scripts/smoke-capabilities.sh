@@ -4,8 +4,12 @@
 # ephemeral port (Codex push off), publishes the tracker sample page, seeds
 # and reads it with the db_* tools over the daemon's /mcp endpoint, checks
 # caller levels, private subtrees, SSE doc events, PATCH capabilities, and the
-# REST publish a page's `artifact.publish` makes, then (unless --no-browser)
-# runs the claude.ai-page suite in both frame modes against the built web UI.
+# REST publish a page's `artifact.publish` makes; with the stub sample
+# provider it checks sample's status route (sample-status), a streamed call
+# (sample-call), the owner gate (sample-owner-only) and the doctor's line
+# (sample-doctor), and two room sockets seeing each other join and leave
+# (room-socket); then (unless --no-browser) it runs the claude.ai-page suite,
+# room.spec.ts and sample.spec.ts in both frame modes against the built web UI.
 # It never builds the web UI (a build rewrites web/dist, which `just dev` and
 # the quality gates serve): when web/dist is older than its sources it stops
 # and says so. Each check prints `smoke: ok <check>`; the last line is
@@ -41,6 +45,7 @@ trap cleanup EXIT
 
 rm -rf "$CLAX_HOME"
 mkdir -p "$CLAX_HOME"
+printf '[sample]\nprovider = "stub"\nstub_delay_ms = 20\n' >"$CLAX_HOME/config.toml"
 echo "smoke: building clax"
 cargo build -q -p clax-cli
 "$BIN" serve --foreground --bind 127.0.0.1 --port 0 >"$SCRATCH/daemon.log" 2>&1 &
@@ -173,6 +178,83 @@ if s != 409 or v["error"]["current"] != 2: fail(f"a stale republish was not a co
 ok("a REST publish marked as the page's (X-Clax-Via: page) creates v2, and a stale one is a conflict naming v2")
 PY
 
+# sample (the stub provider) and room. The viewer cookie must be one the
+# daemon issued (a ULID), so it comes from GET /api/viewers/me.
+read -r PORT TOKEN < <(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["port"], d["token"])' "$CLAX_HOME/daemon.json")
+BASE="http://127.0.0.1:$PORT"
+publish_page() { # title, capabilities JSON, page file; prints the artifact ID
+    python3 -c 'import json,sys; print(json.dumps({"title": sys.argv[1], "capabilities": json.loads(sys.argv[2]), "files": {"index.html": {"content": open(sys.argv[3]).read(), "encoding": "utf8"}}}))' "$1" "$2" "$3" \
+        | curl -sf -X POST "$BASE/api/artifacts" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' --data-binary @- \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["artifact"]["id"])'
+}
+SAMPLE_AID="$(publish_page "Sample smoke" '{"sample": {}}' web/e2e/pages/sample.html)" || die "could not publish the sample page"
+ROOM_AID="$(publish_page "Room smoke" '{"room": {}}' web/e2e/pages/room.html)" || die "could not publish the room page"
+COOKIE="$(curl -s -D - -o /dev/null "$BASE/api/viewers/me" | sed -n 's/^[Ss]et-[Cc]ookie: clax_viewer=\([^;]*\).*/\1/p' | tr -d '\r')"
+[ -n "$COOKIE" ] || die "GET /api/viewers/me set no viewer cookie"
+
+status="$(curl -s -H "authorization: Bearer $TOKEN" "$BASE/api/artifacts/$SAMPLE_AID/sample")"
+anon="$(curl -s "$BASE/api/artifacts/$SAMPLE_AID/sample")"
+python3 -c '
+import json, sys
+a, b = json.loads(sys.argv[1]), json.loads(sys.argv[2])
+sys.exit(0 if a["available"] is True and a["provider"] == "stub" and b["available"] is False and b["provider"] is None else 1)
+' "$status" "$anon" || die "sample-status: with the token $status; without it $anon"
+echo "smoke: ok sample-status: available with the stub to the token, unavailable without it"
+
+stream="$(curl -sN -X POST "$BASE/api/artifacts/$SAMPLE_AID/sample" -H "authorization: Bearer $TOKEN" \
+    -H "cookie: clax_viewer=$COOKIE" -H 'content-type: application/json' --data '{"input": "hello"}')"
+python3 -c '
+import json, sys
+frames, event = [], None
+for line in sys.argv[1].splitlines():
+    if line.startswith("event:"): event = line[6:].strip()
+    elif line.startswith("data:") and event: frames.append((event, json.loads(line[5:].strip()))); event = None
+ok = bool(frames) and frames[0][0] == "start" and frames[-1][0] == "done" and frames[-1][1]["text"] == "echo: hello"
+sys.exit(0 if ok else 1)
+' "$stream" || die "sample-call: the stream did not end with done \"echo: hello\": $stream"
+echo "smoke: ok sample-call: a streamed call ends with done \"echo: hello\""
+
+no_token="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$BASE/api/artifacts/$SAMPLE_AID/sample" \
+    -H "cookie: clax_viewer=$COOKIE" -H 'content-type: application/json' --data '{"input": "hello"}')"
+no_cookie="$(curl -s -w ' %{http_code}' -X POST "$BASE/api/artifacts/$SAMPLE_AID/sample" \
+    -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' --data '{"input": "hello"}')"
+[ "$no_token" = 401 ] || die "sample-owner-only: a call without the token answered $no_token, not 401"
+case "$no_cookie" in *'"forbidden"'*' 403') ;; *) die "sample-owner-only: a call without a cookie answered $no_cookie, not 403 forbidden" ;; esac
+echo "smoke: ok sample-owner-only: no token is 401, no viewer cookie is 403 forbidden"
+
+doctor="$("$BIN" doctor 2>&1 || true)"
+grep -E '(^|[[:space:]])sample[[:space:]].*stub' >/dev/null <<<"$doctor" \
+    || die "sample-doctor: clax doctor printed no sample line naming stub: $doctor"
+echo "smoke: ok sample-doctor: clax doctor's sample line names stub"
+
+# shellcheck disable=SC2016 # the Node script's ${...} are JavaScript, not shell
+node --input-type=module -e '
+const [base, aid] = process.argv.slice(1);
+const fail = m => { console.error(`smoke: FAIL: room-socket: ${m}`); process.exit(1); };
+const timer = setTimeout(() => fail("timed out"), 10000);
+const open = label => new Promise((resolve, reject) => {
+  const s = { ws: new WebSocket(`${base.replace(/^http/, "ws")}/api/artifacts/${aid}/room?peer=${label}`), frames: [], waiters: [] };
+  s.ws.onmessage = e => { s.frames.push(JSON.parse(e.data)); for (const w of [...s.waiters]) w(); };
+  s.ws.onopen = () => resolve(s);
+  s.ws.onerror = () => reject(new Error(`socket ${label} failed`));
+});
+const until = (s, pred) => new Promise(resolve => {
+  const check = () => { const f = s.frames.find(pred); if (f) { s.waiters = s.waiters.filter(w => w !== check); resolve(f); } };
+  s.waiters.push(check); check();
+});
+const a = await open("aaaaaaaaaaaaaaaa");
+await until(a, f => f.t === "peers");
+const b = await open("bbbbbbbbbbbbbbbb");
+const first = await until(b, f => f.t === "peers");
+const labels = first.peers.map(p => p.peer).sort().join(",");
+if (labels !== "aaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbb") fail(`the second socket saw ${labels}`);
+a.ws.close();
+await until(b, f => f.t === "left" && f.peer === "aaaaaaaaaaaaaaaa");
+clearTimeout(timer);
+b.ws.close();
+' "$BASE" "$ROOM_AID" || die "room-socket"
+echo "smoke: ok room-socket: the second socket's first peers frame lists both, and it hears the first leave"
+
 if [ "$BROWSER" = 1 ]; then
     # The suite's daemon serves web/dist; it must be built from the current sources.
     for out in web/dist/index.html web/dist/_clax/bridge.js; do
@@ -181,8 +263,8 @@ if [ "$BROWSER" = 1 ]; then
             -type f ! -name '*.test.ts' -newer "$out" -print -quit)"
         [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && npm run build) first, or pass --no-browser"
     done
-    echo "smoke: running the claude.ai-page suite (web/e2e/contract.spec.ts) in both frame modes"
-    (cd web && npx playwright test contract.spec.ts --reporter=line) || die "the claude.ai-page suite failed"
-    echo "smoke: ok the claude.ai sample pages run unchanged in both frame modes"
+    echo "smoke: running the claude.ai-page suite (web/e2e/contract.spec.ts), room.spec.ts and sample.spec.ts in both frame modes"
+    (cd web && npx playwright test contract.spec.ts room.spec.ts sample.spec.ts --reporter=line) || die "the claude.ai-page, room or sample suite failed"
+    echo "smoke: ok the claude.ai sample pages, rooms and sample() run in both frame modes"
 fi
 echo "smoke: all checks passed"
