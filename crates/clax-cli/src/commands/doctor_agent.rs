@@ -83,6 +83,12 @@ pub struct Dirs {
     pub claude_dir: PathBuf,
     /// `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
     pub pi_dir: PathBuf,
+    /// `$GROK_HOME`, else `~/.grok`.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "no Grok check reads it yet outside tests")
+    )]
+    pub grok_home: PathBuf,
 }
 
 impl Dirs {
@@ -110,6 +116,7 @@ impl Dirs {
             codex_home: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             pi_dir: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")),
+            grok_home: var("GROK_HOME").unwrap_or_else(|| home.join(".grok")),
         })
     }
 }
@@ -691,6 +698,7 @@ mod tests {
         assert_eq!(d.codex_home, PathBuf::from("/cx"));
         assert_eq!(d.claude_dir, PathBuf::from("/h/.claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
+        assert_eq!(d.grok_home, PathBuf::from("/h/.grok"));
         assert!(Dirs::from_env(|_| None).is_none());
     }
 
@@ -701,12 +709,14 @@ mod tests {
             "CODEX_HOME" => Some("~".into()),
             "CLAUDE_CONFIG_DIR" => Some("cfg/claude".into()),
             "PI_CODING_AGENT_DIR" => Some("~/.pi/agent".into()),
+            "GROK_HOME" => Some("g".into()),
             _ => None,
         })
         .unwrap();
         assert_eq!(d.codex_home, PathBuf::from("/h"));
         assert_eq!(d.claude_dir, PathBuf::from("/h/cfg/claude"));
         assert_eq!(d.pi_dir, PathBuf::from("/h/.pi/agent"));
+        assert_eq!(d.grok_home, PathBuf::from("/h/g"));
     }
 
     #[test]
