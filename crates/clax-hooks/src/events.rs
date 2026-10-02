@@ -23,21 +23,21 @@ pub trait Daemon {
 }
 
 /// Joins the harness's session ID to the session registered for the same
-/// harness process (`parent_pid` is the hook's parent; `ancestor_pids`, nearest
-/// first, cover a wrapper shell between the hook and the harness). The
-/// context names the daemon and, when the joined session has pending
-/// `prompt_hook` feedback, appends its rendered text. That feedback request is
-/// bounded by [`START_FEEDBACK_TIMEOUT`]; when it fails or times out the
-/// context is returned without it. `codex_home`, when given, is recorded for
-/// the session so the daemon can run `codex queue` against that Codex home.
-pub fn session_start(
+/// harness process (`parent_pid` is the hook's parent; `ancestor_pids`,
+/// nearest first, cover a wrapper shell between the hook and the harness),
+/// filling `cwd` and recording `codex_home` when given. Returns the
+/// daemon's answer, `{"session": …}`.
+///
+/// # Errors
+/// When the input has no session ID or the daemon request fails.
+pub fn join(
     harness: &str,
     parent_pid: u32,
     ancestor_pids: &[u32],
     input: &HookInput,
     codex_home: Option<&str>,
     daemon: &dyn Daemon,
-) -> anyhow::Result<HookOutput> {
+) -> anyhow::Result<Value> {
     let Some(session_id) = input.session_id.as_deref().filter(|s| !s.is_empty()) else {
         bail!("hook input has no session_id");
     };
@@ -55,7 +55,33 @@ pub fn session_start(
     if let Some(h) = codex_home {
         body["codex_home"] = json!(h);
     }
-    let joined = daemon.post("/api/sessions/join", &body)?;
+    daemon.post("/api/sessions/join", &body)
+}
+
+/// Joins the harness's session ID to the session registered for the same
+/// harness process (`parent_pid` is the hook's parent; `ancestor_pids`, nearest
+/// first, cover a wrapper shell between the hook and the harness). The
+/// context names the daemon and, when the joined session has pending
+/// `prompt_hook` feedback, appends its rendered text. That feedback request is
+/// bounded by [`START_FEEDBACK_TIMEOUT`]; when it fails or times out the
+/// context is returned without it. `codex_home`, when given, is recorded for
+/// the session so the daemon can run `codex queue` against that Codex home.
+pub fn session_start(
+    harness: &str,
+    parent_pid: u32,
+    ancestor_pids: &[u32],
+    input: &HookInput,
+    codex_home: Option<&str>,
+    daemon: &dyn Daemon,
+) -> anyhow::Result<HookOutput> {
+    let joined = join(
+        harness,
+        parent_pid,
+        ancestor_pids,
+        input,
+        codex_home,
+        daemon,
+    )?;
     let mut context = format!(
         "Clax daemon at {}; artifacts publish with the `publish` tool.",
         daemon.browser_url("/")
@@ -71,6 +97,24 @@ pub fn session_start(
         context.push_str(&text);
     }
     Ok(HookOutput::additional_context("SessionStart", &context))
+}
+
+/// [`session_start`] for a harness that ignores `SessionStart` output
+/// (Grok Build): joins and prints nothing. It does not ask for
+/// `prompt_hook` feedback: that request marks comments delivered, and
+/// they would never reach the agent.
+///
+/// # Errors
+/// When the input has no session ID or the join request fails.
+pub fn session_start_quiet(
+    harness: &str,
+    parent_pid: u32,
+    ancestor_pids: &[u32],
+    input: &HookInput,
+    daemon: &dyn Daemon,
+) -> anyhow::Result<HookOutput> {
+    join(harness, parent_pid, ancestor_pids, input, None, daemon)?;
+    Ok(HookOutput::none())
 }
 
 /// Ends the live session for `(harness, session_id)`, if there is one.
@@ -135,11 +179,18 @@ fn rendered_text(res: &Value) -> Option<String> {
 /// Tier 2. Blocks the stop with the pending feedback as the reason; allows it
 /// (prints nothing) when nothing is pending. Only watches with replies armed
 /// count. While `stop_hook_active` is set, only never-delivered rows can block,
-/// so a stop is blocked at most once per new comment.
+/// so a stop is blocked at most once per new comment. For Grok Build, a Stop
+/// whose reason is not `end_turn` allows the stop without asking the daemon.
 ///
 /// # Errors
 /// When the input has no `session_id` or a daemon request fails.
 pub fn stop(harness: &str, input: &HookInput, daemon: &dyn Daemon) -> anyhow::Result<HookOutput> {
+    // Grok Build fires Stop again at session end (`channel_closed`,
+    // `shutdown`) and ignores that run's output; only `end_turn` (or an
+    // input without a reason) is the end of a turn.
+    if harness == "grok" && input.stop_reason().is_some_and(|r| r != "end_turn") {
+        return Ok(HookOutput::none());
+    }
     let Some(sid) = live_session(harness, input, daemon)? else {
         return Ok(HookOutput::none());
     };
@@ -187,6 +238,7 @@ mod tests {
                 {"id": "a", "harness": "claude", "harness_session_id": "s1"},
                 {"id": "b", "harness": "codex", "harness_session_id": "s1"},
                 {"id": "c", "harness": "claude", "harness_session_id": "s2"},
+                {"id": "g", "harness": "grok", "harness_session_id": "s1"},
             ]}))
         }
         fn get_with_timeout(&self, path: &str, _: Duration) -> anyhow::Result<Value> {
@@ -228,6 +280,17 @@ mod tests {
     }
 
     #[test]
+    fn a_quiet_start_joins_and_prints_nothing() {
+        let d = Fake::default();
+        let out = session_start_quiet("grok", 42, &[7], &input("s1"), &d).unwrap();
+        assert_eq!(out, HookOutput::none());
+        let calls = d.calls.borrow();
+        assert_eq!(calls.len(), 1, "no prompt_hook request: {calls:?}");
+        assert_eq!(calls[0].1, "/api/sessions/join");
+        assert_eq!(calls[0].2["harness"], "grok");
+    }
+
+    #[test]
     fn start_without_session_id_errors() {
         let d = Fake::default();
         assert!(session_start("claude", 1, &[], &HookInput::default(), None, &d).is_err());
@@ -263,9 +326,10 @@ mod tests {
         fn get(&self, path: &str) -> anyhow::Result<Value> {
             self.seen.borrow_mut().push(path.to_string());
             if path.starts_with("/api/sessions?") {
-                return Ok(
-                    json!({"sessions": [{"id": "S", "harness": "claude", "harness_session_id": "s1"}]}),
-                );
+                return Ok(json!({"sessions": [
+                    {"id": "S", "harness": "claude", "harness_session_id": "s1"},
+                    {"id": "G", "harness": "grok", "harness_session_id": "s1"},
+                ]}));
             }
             Ok(
                 json!({"feedback": if self.text.is_some() { json!([{}]) } else { json!([]) }, "text": self.text, "waited_s": 0}),
@@ -334,6 +398,60 @@ mod tests {
         assert!(
             stop("claude", &HookInput::default(), &d).is_err(),
             "no session_id"
+        );
+    }
+
+    #[test]
+    fn a_grok_stop_acts_only_at_the_end_of_a_turn() {
+        let d = fake(Some("[clax] hi"));
+        let grok = |reason: &str| {
+            HookInput::parse(&format!(r#"{{"sessionId":"s1","reason":"{reason}"}}"#))
+        };
+        assert_eq!(
+            stop("grok", &grok("channel_closed"), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert_eq!(
+            stop("grok", &grok("shutdown"), &d).unwrap(),
+            HookOutput::none()
+        );
+        assert!(
+            d.seen.borrow().is_empty(),
+            "no daemon request at session end"
+        );
+        assert_eq!(
+            stop("grok", &grok("end_turn"), &d).unwrap(),
+            HookOutput::block("[clax] hi")
+        );
+        let no_reason = HookInput::parse(r#"{"sessionId":"s1"}"#);
+        assert_eq!(
+            stop("grok", &no_reason, &d).unwrap(),
+            HookOutput::block("[clax] hi")
+        );
+    }
+
+    #[test]
+    fn a_reason_does_not_filter_other_harnesses() {
+        let d = fake(Some("[clax] hi"));
+        let i = HookInput::parse(r#"{"session_id":"s1","reason":"anything"}"#);
+        assert_eq!(
+            stop("claude", &i, &d).unwrap(),
+            HookOutput::block("[clax] hi")
+        );
+    }
+
+    #[test]
+    fn grok_stop_hook_active_turns_resends_off() {
+        let d = fake(Some("[clax] hi"));
+        let i = HookInput::parse(r#"{"sessionId":"s1","reason":"end_turn","stopHookActive":true}"#);
+        stop("grok", &i, &d).unwrap();
+        assert!(
+            d.seen
+                .borrow()
+                .iter()
+                .any(|p| p == "/api/sessions/G/feedback?tier=stop_hook&resends=false"),
+            "{:?}",
+            d.seen.borrow()
         );
     }
 

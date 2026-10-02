@@ -1,8 +1,8 @@
 //! The plugins this binary was built with, and writing them out as a
 //! marketplace directory (`clax init`). The layout matches the repository:
-//! `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json` and
-//! `plugins/{claude-code,clax,pi}`, so both manifests' `./plugins/<name>`
-//! sources resolve. The Pi package carries what its `package.json` ships.
+//! `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`,
+//! `.grok-plugin/marketplace.json` and `plugins/{claude-code,clax,clax-grok,pi}`,
+//! so the manifests' `./plugins/<name>` sources resolve. The Pi package carries what its `package.json` ships.
 //! `build.rs` rebuilds the binary when any of it changes.
 
 use rust_embed::RustEmbed;
@@ -12,6 +12,7 @@ use std::path::Path;
 #[folder = "../../plugins/"]
 #[include = "claude-code/**"]
 #[include = "clax/**"]
+#[include = "clax-grok/**"]
 #[include = "pi/package.json"]
 #[include = "pi/README.md"]
 #[include = "pi/src/**"]
@@ -23,10 +24,15 @@ struct Plugins;
 
 const CLAUDE_MARKETPLACE: &str = include_str!("../../../.claude-plugin/marketplace.json");
 const CODEX_MARKETPLACE: &str = include_str!("../../../.agents/plugins/marketplace.json");
+const GROK_MARKETPLACE: &str = include_str!("../../../.grok-plugin/marketplace.json");
 
 /// Every file of the marketplace tree: (path relative to its root, contents).
 pub fn files() -> Vec<(String, Vec<u8>)> {
     let mut out = vec![
+        (
+            ".grok-plugin/marketplace.json".to_string(),
+            GROK_MARKETPLACE.as_bytes().to_vec(),
+        ),
         (
             ".claude-plugin/marketplace.json".to_string(),
             CLAUDE_MARKETPLACE.as_bytes().to_vec(),
@@ -146,6 +152,29 @@ mod tests {
         assert!(watched.contains(&"plugins/clax/scripts"), "{watched:?}");
     }
 
+    /// `materialize` writes the whole tree, with the wrappers executable
+    /// and everything else not.
+    #[test]
+    fn materialize_writes_the_grok_plugin_and_marketplace() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("marketplace");
+        materialize(&root).unwrap();
+        let mode = |rel: &str| {
+            std::fs::metadata(root.join(rel))
+                .unwrap_or_else(|e| panic!("{rel}: {e}"))
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("plugins/clax-grok/scripts/ensure-clax.sh"), 0o755);
+        assert_eq!(mode("plugins/clax-grok/.grok-plugin/plugin.json"), 0o644);
+        assert_eq!(mode("plugins/clax-grok/.mcp.json"), 0o644);
+        assert_eq!(mode("plugins/clax-grok/hooks/hooks.json"), 0o644);
+        let index = std::fs::read_to_string(root.join(".grok-plugin/marketplace.json")).unwrap();
+        assert!(index.contains("./plugins/clax-grok"), "{index}");
+    }
+
     /// A failed final rename puts the previous tree back; when that fails
     /// too, the previous tree survives as `.old`.
     #[test]
@@ -196,7 +225,12 @@ mod tests {
             "plugins/clax/.codex-plugin/plugin.json",
             "plugins/clax/.mcp.json",
             "plugins/clax/scripts/ensure-clax.sh",
+            "plugins/clax-grok/.grok-plugin/plugin.json",
+            "plugins/clax-grok/.mcp.json",
+            "plugins/clax-grok/hooks/hooks.json",
+            "plugins/clax-grok/scripts/ensure-clax.sh",
             "plugins/pi/package.json",
+            ".grok-plugin/marketplace.json",
         ] {
             assert!(names.iter().any(|n| n == want), "{want} missing: {names:?}");
         }

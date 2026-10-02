@@ -10,6 +10,7 @@ use std::time::Duration;
 pub enum Agent {
     Claude,
     Codex,
+    Grok,
 }
 
 #[derive(clap::Args)]
@@ -35,6 +36,21 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{}", one_line(&format!("{e:#}"))));
     }
+    // SAFETY: getppid has no preconditions and cannot fail.
+    let parent_pid = unsafe { libc::getppid() } as u32;
+    if matches!(a.agent, Agent::Claude)
+        && crate::host::grok_runs_mcp(|k| std::env::var(k).ok(), parent_pid)
+    {
+        // Grok Build runs the Claude Code copy too; in a Grok session only
+        // clax-grok's server acts (spec D17).
+        crate::host::log_standdown(home, "mcp");
+        let rt = tokio::runtime::Runtime::new()?;
+        let result = rt.block_on(clax_mcp::standdown::serve(
+            clax_mcp::standdown::GROK_STANDDOWN,
+        ));
+        rt.shutdown_timeout(Duration::from_millis(100));
+        return result;
+    }
     // Stdout is the MCP channel: diagnostics go to stderr only.
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -47,6 +63,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let harness = match a.agent {
         Agent::Claude => Harness::Claude,
         Agent::Codex => Harness::Codex,
+        Agent::Grok => Harness::Grok,
     };
     let (refresh_home, port) = (home.clone(), cli.port_for(home)?);
     let refresh: shim::Refresh = Arc::new(move || {

@@ -1,0 +1,13 @@
+{
+  "name": "clax",
+  "owner": {
+    "name": "Empathic"
+  },
+  "plugins": [
+    {
+      "name": "clax-grok",
+      "description": "Local artifacts with comment-driven development for Grok Build: publish HTML pages, view them, and get feedback back",
+      "source": "./plugins/clax-grok"
+    }
+  ]
+}

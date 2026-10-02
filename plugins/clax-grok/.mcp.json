@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "clax_grok": {
+      "command": "${GROK_PLUGIN_ROOT}/scripts/ensure-clax.sh",
+      "args": ["exec", "mcp", "--agent", "grok"],
+      "env": {"GROK_PLUGIN_ROOT": "${GROK_PLUGIN_ROOT}"}
+    }
+  }
+}

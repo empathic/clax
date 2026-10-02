@@ -177,6 +177,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
+        .route("/api/sessions/{id}/notices", get(feedback::notices))
         .merge(api_fast)
         .merge(api_slow)
         .route("/", get(shell::gallery_page))

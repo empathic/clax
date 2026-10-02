@@ -4,10 +4,11 @@
 use std::path::{Path, PathBuf};
 
 /// The manifests that carry a plugin's version, relative to its root: Codex,
-/// Claude Code, and the Pi package.
-pub const MANIFESTS: [&str; 3] = [
+/// Claude Code, Grok Build, and the Pi package.
+pub const MANIFESTS: [&str; 4] = [
     ".codex-plugin/plugin.json",
     ".claude-plugin/plugin.json",
+    ".grok-plugin/plugin.json",
     "package.json",
 ];
 
@@ -20,17 +21,18 @@ pub fn manifest_version(root: &Path) -> Option<String> {
     })
 }
 
-/// The plugin root of a shim: `CLAUDE_PLUGIN_ROOT`, else `PLUGIN_ROOT` (empty
-/// counts as unset), else `cwd` when it holds a plugin manifest (Codex starts
-/// the server in the plugin root and exports neither variable).
+/// The plugin root of a shim: `CLAUDE_PLUGIN_ROOT`, else `GROK_PLUGIN_ROOT`,
+/// else `PLUGIN_ROOT` (empty counts as unset), else `cwd` when it holds a
+/// harness plugin manifest (Codex starts the server in the plugin root and
+/// exports none of the variables).
 pub fn root_from_env(
     env: impl Fn(&str) -> Option<String>,
     cwd: Option<PathBuf>,
 ) -> Option<PathBuf> {
-    ["CLAUDE_PLUGIN_ROOT", "PLUGIN_ROOT"]
+    ["CLAUDE_PLUGIN_ROOT", "GROK_PLUGIN_ROOT", "PLUGIN_ROOT"]
         .iter()
         .find_map(|k| env(k).filter(|v| !v.is_empty()).map(PathBuf::from))
-        .or_else(|| cwd.filter(|d| MANIFESTS[..2].iter().any(|m| d.join(m).is_file())))
+        .or_else(|| cwd.filter(|d| MANIFESTS[..3].iter().any(|m| d.join(m).is_file())))
 }
 
 /// The plugin version and tool count stated by a skill's generated tools
@@ -46,6 +48,26 @@ pub fn skill_block(text: &str) -> Option<(String, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_grok_plugin_root_and_manifest_are_found() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".grok-plugin")).unwrap();
+        std::fs::write(
+            dir.path().join(".grok-plugin/plugin.json"),
+            r#"{"name": "clax-grok", "version": "0.3.0"}"#,
+        )
+        .unwrap();
+        assert_eq!(manifest_version(dir.path()).as_deref(), Some("0.3.0"));
+        let root = dir.path().display().to_string();
+        let env = move |k: &str| (k == "GROK_PLUGIN_ROOT").then(|| root.clone());
+        assert_eq!(root_from_env(env, None), Some(dir.path().to_path_buf()));
+        assert_eq!(
+            root_from_env(|_| None, Some(dir.path().to_path_buf())),
+            Some(dir.path().to_path_buf()),
+            "a working directory holding a Grok manifest is a plugin root"
+        );
+    }
 
     #[test]
     fn the_first_manifest_with_a_version_wins() {
