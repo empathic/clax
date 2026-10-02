@@ -67,7 +67,8 @@ pub enum Cmd {
     /// Re-running reinstalls the plugin, which enables it again where it was
     /// disabled. A Pi package is removed only when `init` recorded it or its
     /// package.json names Clax's Pi package; one whose directory is missing
-    /// is left and named, with the command that removes it. Known miss:
+    /// is left and named, with the command that removes it. Grok's plugin is
+    /// registered and removed as `clax-grok`, never `clax`. Known miss:
     /// `~user/` paths are not expanded. A Pi entry written that way is left
     /// registered, and a CODEX_HOME, CLAUDE_CONFIG_DIR or PI_CODING_AGENT_DIR
     /// written that way is taken relative to HOME.
