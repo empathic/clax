@@ -93,9 +93,33 @@ People comment on a page in the browser and send a thread to the agent with
 **Send to agent** or `@agent`. Those comments reach the session on the next
 clax tool result, at the end of a turn (the `Stop` hook), with the person's
 next message (the `UserPromptSubmit` hook), or at once while the agent is in
-`wait_for_feedback` (`/clax:wait`). Claude Code offers plugins no way to
-wake an idle session, so nothing arrives between turns unless the agent is
-waiting. The thread in the browser shows which of these it is waiting on.
+`wait_for_feedback` (`/clax:wait`). The thread in the browser shows which of
+these it is waiting on.
+
+An idle session wakes on a new comment in one of two ways:
+
+- **The Clax channel.** Launch Claude Code with
+
+  ```sh
+  claude --dangerously-load-development-channels plugin:clax@clax
+  ```
+
+  and accept the development-channels warning; the startup screen then says
+  messages from `plugin:clax@clax` inject into the session. Clax sends one
+  notice through the channel per comment, which starts a turn when the
+  session is idle and joins the next turn when it is busy. Channels are a
+  Claude Code research preview: CLI only, with a claude.ai or Console login,
+  and on Team and Enterprise an Owner must turn them on. Clax never asks for
+  permission relay, so people who comment cannot approve tool use.
+- **The background follower.** Without the channel, the skill has the agent
+  run `clax feedback follow --once` in the background after it publishes,
+  and start it again after each exit. The command exits when a comment
+  arrives, and its exit wakes the session.
+
+A notice only points at the comment. The comment itself still arrives once,
+through the next clax tool result, the end of the turn, or
+`wait_for_feedback`. `status` (its `push` field) and
+`clax doctor --agent claude` show which path a session uses.
 `docs/contract.md` ("Comments and feedback") has the details.
 
 ## In Grok Build

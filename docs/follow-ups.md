@@ -43,6 +43,12 @@ machine, so no agent runs them.
   activates with `pointerId` -1 and no `pointerdown`; only synthetic events
   have checked that. Check that VoiceOver in Safari and Chrome grants, and
   that it does not grant before the button is armed.
+- `scripts/smoke-claude-push.sh --channel` and `--follow`: an idle Claude
+  Code session wakes on a comment through the channel and through the
+  background follow fallback. Until the owner runs them, two facts are
+  unverified live: that a channel event from `plugin:clax@clax` starts a
+  turn, and that a background Bash command's exit starts one in an idle
+  session.
 - **Unsigned commits.** The commits from 2e08cad through the end of the
   stable-install work were made unsigned, for one batch re-sign later.
 
