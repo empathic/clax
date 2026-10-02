@@ -656,6 +656,57 @@ impl DaemonClient {
         .map(|_| ())
     }
 
+    /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
+    pub async fn set_working(&self, id: &str, body: &Value) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/working/{id}", c.session_path()),
+            )
+            .json(body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/working/<id>[?thread_ids=…]`: `{cleared, working}`.
+    pub async fn clear_working(&self, id: &str, threads: Option<&[String]>) -> Result<Value> {
+        let q: Vec<(&str, String)> = threads
+            .map(|t| vec![("thread_ids", t.join(","))])
+            .unwrap_or_default();
+        self.json(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/working/{id}", c.session_path()),
+            )
+            .query(&q)
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/working/renew`: `{renewed}`.
+    pub async fn renew_working(&self) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/working/renew", c.session_path()),
+            )
+            .json(&json!({}))
+        })
+        .await
+    }
+
+    /// `POST /api/sessions/<sid>/working/end`: `{cleared}`.
+    pub async fn end_working(&self) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::POST,
+                &format!("{}/working/end", c.session_path()),
+            )
+            .json(&json!({}))
+        })
+        .await
+    }
+
     /// `GET /api/sessions/<sid>`: `{session, push}`.
     pub async fn session_info(&self) -> Result<Value> {
         self.json(|c| c.request(reqwest::Method::GET, &c.session_path()))

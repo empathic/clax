@@ -120,6 +120,9 @@ def http(method, path, body=None, ctype="application/json", token=False, session
         raw = r.read()
         return json.loads(raw) if raw else {}
 
+def working(aid):
+    return http("GET", f"/api/artifacts/{aid}/working")["working"]
+
 def browser_thread(aid, text, clip=None, file=None, quote="Quarterly goals", version=1):
     """POST /api/artifacts/<aid>/threads as the shell does: multipart anchor, body, version, clip."""
     b = uuid.uuid4().hex
@@ -176,6 +179,10 @@ again, trailing2 = shim.call("list", {})
 if again["feedback"] or trailing2:
     fail("feedback was delivered twice")
 ok("tier 1: delivered once")
+w = working(aid)
+if len(w) != 1 or w[0]["harness"] != "claude" or w[0]["thread_ids"] != [t1["id"]] or "session_id" in w[0]:
+    fail(f"working after tier 1 delivery: {w}")
+ok(f"working: a record naming the thread appeared when the comment was delivered (key {w[0]['key']})")
 
 # 4. Tier 2: the Stop hook blocks once with a new comment, then allows.
 t2 = browser_thread(aid, "@agent and tighten the spacing")
@@ -195,6 +202,9 @@ code, out = stop(True)
 if code != 0 or out:
     fail(f"stop hook with stop_hook_active: {code} {out!r}")
 ok(f"tier 2: the Stop hook blocked with thread {t2['id']}, then allowed the stop")
+if working(aid):
+    fail(f"working after the Stop hook allowed the stop: {working(aid)}")
+ok("working: cleared when the Stop hook allowed the stop (the turn ended)")
 before = http("GET", f"/api/artifacts/{aid}/threads/{t2['id']}")["thread"]["feedback_state"]
 read, _ = shim.call("comments_read", {"url_or_id": aid, "thread_id": t2["id"]})
 after = http("GET", f"/api/artifacts/{aid}/threads/{t2['id']}")["thread"]["feedback_state"]
@@ -221,12 +231,20 @@ if len(waited["feedback"]) != 1 or waited["call_again"] or not 0 <= lag <= 1.0 \
         or waited["feedback"][0]["thread_id"] != sent_at["thread"] or waited["feedback"][0]["body"] != "@agent one more thing":
     fail(f"wait_for_feedback: {waited} after {lag:.2f}s (expected thread {sent_at.get('thread')})")
 ok(f"tier 4: wait_for_feedback returned {lag * 1000:.0f} ms after the @agent comment was posted")
+w = working(aid)
+if [x["thread_ids"] for x in w] != [[sent_at["thread"]]]:
+    fail(f"working after wait_for_feedback: {w}")
+ok("working: wait_for_feedback returning a comment marked its thread")
 idle, _ = shim.call("wait_for_feedback", {"timeout_s": 1})
 if idle != {"feedback": [], "waited_s": 1, "call_again": True}:
     fail(f"idle wait: {idle}")
 ok("tier 4: an idle wait returns call_again after timeout_s")
 
 # 6. Reply and resolve as the agent; a plain thread returns guidance.
+set_, _ = shim.call("working", {"url_or_id": aid, "thread_ids": [t1["id"]], "message": "Two columns"})
+if not set_["working"] or set_["message"] != "Two columns":
+    fail(f"working tool: {set_}")
+ok("working tool: the top bar now reads 'claude: Two columns'")
 reply, _ = shim.call("comments_reply", {"url_or_id": aid, "thread_id": t1["id"], "text": "Done: two columns, third bullet removed."})
 resolved, _ = shim.call("comments_resolve", {"url_or_id": aid, "thread_id": t1["id"]})
 t = http("GET", f"/api/artifacts/{aid}/threads/{t1['id']}")["thread"]
@@ -235,6 +253,9 @@ if not reply["replied"] or not resolved["resolved"] or t["status"] != "resolved"
         or agent["author_name"] != "claude" or t["feedback_state"]["state"] != "acknowledged":
     fail(f"reply/resolve: {reply} {resolved} {t}")
 ok(f"agent reply shown as '{agent['author_name']}', thread resolved, feedback acknowledged")
+if any(t1["id"] in x["thread_ids"] for x in working(aid)):
+    fail(f"working still names thread 1 after the reply: {working(aid)}")
+ok("working: the agent's reply to thread 1 took it out of the working record")
 plain = browser_thread(aid, "just a note for the team")
 g, _ = shim.call("comments_reply", {"url_or_id": aid, "thread_id": plain["id"], "text": "x"})
 if g["replied"] or "not sent to you" not in g["guidance"]:

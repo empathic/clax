@@ -84,7 +84,8 @@ then pass "the Claude Code hooks quote \${CLAUDE_PLUGIN_ROOT} and use --agent cl
 else fail "the Claude Code hooks must run \"\${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude"; fi
 
 # The Claude Code plugin hands feedback over at Stop and prompt submit; the
-# Codex plugin at Stop. Stop hooks get 10 s.
+# Codex plugin at Stop. Stop hooks get 10 s. Both renew working records
+# through the PostToolUse gate (scripts/tool-hook.sh), which gets 5 s.
 if python3 - plugins/claude-code/hooks/hooks.json plugins/clax/hooks/hooks.json 2>/dev/null <<'PY'
 import json, sys
 claude = json.load(open(sys.argv[1]))["hooks"]
@@ -94,9 +95,11 @@ def cmds(hooks, event):
 ok = all(h["command"].endswith("exec hook --agent claude stop") and h["timeout"] == 10 for h in cmds(claude, "Stop")) and cmds(claude, "Stop")
 ok = ok and all(h["command"].endswith("exec hook --agent claude prompt") and isinstance(h["timeout"], int) for h in cmds(claude, "UserPromptSubmit")) and cmds(claude, "UserPromptSubmit")
 ok = ok and all('"${PLUGIN_ROOT}/scripts/ensure-clax.sh" exec hook --agent codex stop' in h["command"] and h["timeout"] == 10 for h in cmds(codex, "Stop")) and cmds(codex, "Stop")
+ok = ok and [h["command"] for h in cmds(claude, "PostToolUse")] == ['"${CLAUDE_PLUGIN_ROOT}/scripts/tool-hook.sh" claude'] and all(h["timeout"] == 5 for h in cmds(claude, "PostToolUse"))
+ok = ok and [h["command"] for h in cmds(codex, "PostToolUse")] == ['bash "${PLUGIN_ROOT}/scripts/tool-hook.sh" codex'] and all(h["timeout"] == 5 for h in cmds(codex, "PostToolUse"))
 sys.exit(0 if ok else 1)
 PY
-then pass "Stop and prompt hooks are wired"; else fail "the Claude Stop/UserPromptSubmit or Codex Stop hooks are missing or misconfigured"; fi
+then pass "Stop, prompt and PostToolUse hooks are wired"; else fail "the Claude Stop/UserPromptSubmit/PostToolUse or Codex Stop/PostToolUse hooks are missing or misconfigured"; fi
 
 for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md; do
     [ -f "$f" ] || fail "$f is missing"
@@ -106,7 +109,7 @@ done
 if out="$(scripts/check-version.sh 2>&1)"; then pass "every written version agrees (scripts/check-version.sh)"
 else fail "$out"; fi
 
-# The Rust tools and the Pi extension carry the same twenty-two tool descriptions,
+# The Rust tools and the Pi extension carry the same twenty-three tool descriptions,
 # word for word (plugins/pi/test/fixtures/contract.json lists them).
 if out="$(python3 - plugins/pi/test/fixtures/contract.json crates/clax-mcp/src/tools.rs plugins/pi/src/clax.ts 2>&1 <<'PY'
 import json, sys
@@ -119,11 +122,11 @@ for src in sys.argv[2:4]:
         quoted = '"' + t["description"].replace("\\", "\\\\").replace('"', '\\"') + '"'
         if quoted not in text:
             missing.append(f"{src}: {t['name']}")
-if len(tools) != 22 or missing:
-    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 22")
+if len(tools) != 23 or missing:
+    print("; ".join(missing) or f"{len(tools)} tools in the fixture, not 23")
     sys.exit(1)
 PY
-)"; then pass "the twenty-two tool descriptions match in tools.rs and clax.ts"
+)"; then pass "the twenty-three tool descriptions match in tools.rs and clax.ts"
 else fail "tool descriptions differ from plugins/pi/test/fixtures/contract.json: $out"; fi
 
 # Every Claude marketplace plugin source is an existing directory.
@@ -170,6 +173,15 @@ for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/e
         fail "$wrapper differs from scripts/ensure-clax.sh (or is missing)"
     fi
     [ -x "$wrapper" ] || fail "$wrapper is not executable"
+done
+
+for gate in plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh; do
+    if cmp -s scripts/tool-hook.sh "$gate"; then
+        pass "$gate matches scripts/tool-hook.sh"
+    else
+        fail "$gate differs from scripts/tool-hook.sh (or is missing)"
+    fi
+    [ -x "$gate" ] || fail "$gate is not executable"
 done
 
 commands=(plugins/claude-code/commands/*.md)

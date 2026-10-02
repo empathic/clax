@@ -59,13 +59,14 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent claude`): twenty-two tools,
+- The `clax` MCP server (`clax mcp --agent claude`): twenty-three tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `watch`, `wait_for_feedback`, and the data tools
+  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`.
-- Hooks (`hooks/hooks.json`), all run as `clax hook --agent claude <event>`.
+- Hooks (`hooks/hooks.json`), run as `clax hook --agent claude <event>`
+  (`PostToolUse` through its gate script).
   Hooks never start a daemon (the first tool call does); with none running
   they do nothing.
   - `SessionStart` (`session-start`, 5 s): joins the Claude Code session to
@@ -78,6 +79,13 @@ binary differ.
     stop with them as the reason, so the agent handles them before the turn
     ends. While Claude Code reports `stop_hook_active`, only comments never
     handed over before can block, so each comment blocks a stop at most once.
+    When nothing blocks, the turn is over: the page stops showing the agent
+    as working.
+  - `PostToolUse` (`scripts/tool-hook.sh claude`, 5 s): keeps the page's
+    "working" status alive while the agent uses tools. A shell check skips
+    starting `clax` unless this session's stamp file
+    (`~/.clax/run/tool-hook/`) is at least a minute old, so most tool calls
+    cost only a few small shell commands. It always exits 0.
   - `SessionEnd` (`session-end`, 5 s): ends the session.
 - The `clax` skill: when to publish, the page contract, and the comment
   loop.

@@ -118,6 +118,11 @@ if hooks and not with_id:
     print("smoke: hooks were enabled but no codex session carries a harness_session_id"); sys.exit(1)
 print("smoke: " + ("the SessionStart hook ran (harness_session_id is set)" if with_id
       else "no harness_session_id: hooks did not run (features.hooks is unset)"))
+if hooks:
+    log = open(os.path.join(os.environ["CLAX_HOME"], "logs", "hooks.log")).read()
+    ran = "agent=codex event=tool" in log  # the gate lets the first call of a session through
+    print("smoke: " + ("the PostToolUse hook ran (renewal on every tool call works on this Codex)"
+          if ran else "the PostToolUse hook did not run: Codex renews working records only on clax tool calls and the Stop hook"))
 PY
 
 echo "smoke: OK"

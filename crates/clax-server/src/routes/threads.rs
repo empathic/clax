@@ -379,6 +379,8 @@ pub async fn comment(
                     },
                 )?;
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
+                let changed = ctx.working.thread_done(&sess.id, id.as_str(), &tid);
+                crate::working::announce(&ctx.events, &ctx.working, &changed);
                 c
             } else {
                 let name = author_name(st, viewer.0.as_deref())?;
@@ -473,12 +475,14 @@ pub async fn resolve(
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
+            let mut resolver = None;
             let by = if agent {
                 let sess = agent_session(st, &session)?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
+                resolver = Some(sess.id);
                 format!("agent:{}", sess.harness)
             } else {
                 match viewer.0.as_deref() {
@@ -488,6 +492,11 @@ pub async fn resolve(
             };
             let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
             touched.merge(withdrawn);
+            let changed = match &resolver {
+                Some(sid) => ctx.working.thread_done(sid, id.as_str(), &tid),
+                None => ctx.working.thread_gone(id.as_str(), &tid),
+            };
+            crate::working::announce(&ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadResolved {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
@@ -637,6 +646,8 @@ pub async fn delete(
                 }
             }
             let (_, touched) = st.delete_thread_touched(&tid)?;
+            let changed = ctx.working.thread_gone(id.as_str(), &tid);
+            crate::working::announce(&ctx.events, &ctx.working, &changed);
             ctx.events.publish(Event::ThreadDeleted {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),

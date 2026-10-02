@@ -23,3 +23,51 @@ pub fn sweep_and_announce(w: &Working, events: &EventBus) {
     let changed = w.sweep();
     announce(events, w, &changed);
 }
+
+use crate::feedback::FeedbackCtx;
+use clax_core::working::Actor;
+use clax_core::{FeedbackItem, Store, Tier};
+use std::collections::BTreeMap;
+
+/// Tiers whose takes are hook runs or tool calls: each renews the session's records.
+pub fn renew_for_tier(ctx: &FeedbackCtx, session_id: &str, tier: Tier) {
+    if matches!(tier, Tier::Piggyback | Tier::StopHook | Tier::PromptHook) {
+        ctx.working.renew(session_id);
+    }
+}
+
+/// Feedback reached `session_id`: marks it working on each item's artifact
+/// and thread, and announces the changes.
+///
+/// # Errors
+/// When reading the session fails.
+pub fn mark_items(
+    ctx: &FeedbackCtx,
+    st: &Store,
+    session_id: &str,
+    items: &[FeedbackItem],
+) -> clax_core::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let Some(sess) = st.get_session(session_id)? else {
+        return Ok(());
+    };
+    let who = Actor {
+        session_id: sess.id,
+        harness: sess.harness,
+    };
+    let mut by_artifact: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+    for i in items {
+        by_artifact
+            .entry(&i.artifact_id)
+            .or_default()
+            .push(i.thread_id.clone());
+    }
+    let mut changed = clax_core::working::Changed::default();
+    for (aid, tids) in by_artifact {
+        changed.merge(ctx.working.mark(&who, aid, &tids));
+    }
+    announce(&ctx.events, &ctx.working, &changed);
+    Ok(())
+}

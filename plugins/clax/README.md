@@ -69,10 +69,10 @@ binary differ.
 
 ## What it adds
 
-- The `clax` MCP server (`clax mcp --agent codex`): twenty-two tools,
+- The `clax` MCP server (`clax mcp --agent codex`): twenty-three tools,
   `publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`,
   `asset_upload`, `status`, `comments_read`, `comments_reply`,
-  `comments_resolve`, `watch`, `wait_for_feedback`, and the data tools
+  `comments_resolve`, `watch`, `wait_for_feedback`, `working`, and the data tools
   `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`,
   `db_str_replace`, `db_batch`, which Codex names `mcp__clax__<tool>`. The first
   tool call starts the daemon when none is running.
@@ -83,7 +83,10 @@ binary differ.
   and records its Codex session ID and `CODEX_HOME`, and adds any comments
   already waiting for the session to its context; `Stop` (`stop`, 10 s;
   gives up after 8 s) hands over comments sent to the session at the end of a
-  turn; `SessionEnd` (`session-end`) ends the session. Hooks never start a
+  turn, and when nothing is waiting ends the page's "working" status;
+  `PostToolUse` (`scripts/tool-hook.sh codex`, 5 s) keeps that status alive,
+  starting `clax` at most once a minute (not yet measured on Codex; see
+  `docs/contract.md`); `SessionEnd` (`session-end`) ends the session. Hooks never start a
   daemon. They are optional; see below.
 
 ## The comment loop

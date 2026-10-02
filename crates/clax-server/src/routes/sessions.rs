@@ -122,6 +122,7 @@ pub async fn patch(
                 let (session, touched) = st.end_session_touched(&id)?;
                 crate::feedback::apply(&ctx, st, &touched);
                 ctx.waiters.forget(&id);
+                crate::working::announce(&ctx.events, &ctx.working, &ctx.working.end_session(&id));
                 Ok(session)
             } else {
                 st.heartbeat(&id)

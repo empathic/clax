@@ -484,6 +484,27 @@ export class DaemonClient {
     await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
   }
 
+  /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
+  setWorking(id: string, body: { thread_ids?: string[]; message?: string }): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/working/${id}`, this.jsonBody("PUT", body));
+  }
+
+  /** `DELETE /api/sessions/<sid>/working/<id>`: `{cleared, working}`. */
+  clearWorking(id: string, threadIds?: string[]): Promise<any> {
+    const q = threadIds ? `?${new URLSearchParams({ thread_ids: threadIds.join(",") })}` : "";
+    return this.json(() => `${this.sessionPath()}/working/${id}${q}`, { method: "DELETE" });
+  }
+
+  /** `POST /api/sessions/<sid>/working/renew`: `{renewed}`. Never starts a daemon. */
+  renewWorking(): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/working/renew`, this.jsonBody("POST", {}), this.discoverFn);
+  }
+
+  /** `POST /api/sessions/<sid>/working/end`: `{cleared}`. Never starts a daemon. */
+  endWorking(): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/working/end`, this.jsonBody("POST", {}), this.discoverFn);
+  }
+
   /** `GET /api/sessions/<sid>/watches`: `{watches}`. */
   watches(): Promise<any> {
     return this.json(() => `${this.sessionPath()}/watches`, { method: "GET" });

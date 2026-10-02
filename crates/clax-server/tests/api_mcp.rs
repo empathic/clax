@@ -67,7 +67,7 @@ async fn mcp_refuses_a_non_local_host() {
 }
 
 #[tokio::test]
-async fn mcp_lists_the_twenty_two_tools() {
+async fn mcp_lists_the_twenty_three_tools() {
     let ts = TestServer::spawn().await;
     let res = mcp_post(&ts, &initialize())
         .bearer_auth(&ts.token)
@@ -141,7 +141,8 @@ async fn mcp_lists_the_twenty_two_tools() {
             "status",
             "unpin",
             "wait_for_feedback",
-            "watch"
+            "watch",
+            "working"
         ]
     );
 

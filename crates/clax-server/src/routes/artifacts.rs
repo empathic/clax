@@ -243,8 +243,10 @@ pub async fn delete(
     let id = parse_id(&path(aid)?)?;
     let events = s.events.clone();
     let cache = s.wrap_cache.clone();
+    let working = s.working.clone();
     s.store_call(move |st| {
         st.delete_artifact(&id)?;
+        crate::working::announce(&events, &working, &working.artifact_gone(id.as_str()));
         cache.remove_artifact(id.as_str());
         events.publish(Event::ArtifactDeleted {
             artifact_id: id.as_str().to_string(),
@@ -289,6 +291,8 @@ pub async fn publish(
             if let Some(sid) = &session {
                 let aid = ArtifactId::parse(&artifact.id)?;
                 st.ensure_watch(sid, &aid)?;
+                let changed = ctx.working.clear(sid, artifact.id.as_str(), None);
+                crate::working::announce(&ctx.events, &ctx.working, &changed);
                 let touched = st.retarget_untargeted(&aid, sid)?;
                 crate::feedback::apply(&ctx, st, &touched);
             }
