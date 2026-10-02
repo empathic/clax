@@ -116,6 +116,17 @@ const CASES: Record<string, Case> = {
       await expect(f.locator("#status")).toHaveText(JSON.stringify({ first: true, second: false }));
     },
   },
+  "room.html": {
+    caps: { room: { topics: { reaction: "interact" } } },
+    async check(f) {
+      await expect(f.locator("#status")).toHaveText("connected");
+      await expect(f.locator("#count")).toHaveText("1");
+      await f.locator("#pick-a").click();
+      await expect(f.locator("#peers")).toHaveText("this tab: A");
+      await f.locator("#wave").click();
+      await expect(f.locator("#log")).toHaveText("wave from this tab");
+    },
+  },
   "board.html": {
     caps: { comments: { customAnchors: true } },
     async check(f, page, id) {

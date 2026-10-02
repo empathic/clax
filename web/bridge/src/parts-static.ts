@@ -1,7 +1,7 @@
 // The parts from source, for unit tests (vitest aliases clax-bridge-parts here).
 // `failParts` makes the named parts' loads fail, and `requests` lists every
 // load asked for, in order.
-import type { CapsPart, ClipPart, CommentPart, Parts, RoomPart } from "./parts/types";
+import type { CapsPart, ClipPart, CommentPart, Parts, RoomPart, SamplePart } from "./parts/types";
 
 const loads: Promise<unknown>[] = [];
 export const requests: string[] = [];
@@ -26,6 +26,7 @@ export function loadParts(_bridgeSrc: string): Parts {
     clip: loader<ClipPart>("clip", () => import("./parts/clip")),
     caps: loader<CapsPart>("caps", () => import("./parts/caps")),
     room: loader<RoomPart>("room", () => import("./parts/room")),
+    sample: loader<SamplePart>("sample", () => import("./parts/sample")),
   };
 }
 

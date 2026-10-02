@@ -63,6 +63,20 @@ describe("parts that cannot load", () => {
     expect(requests.filter(r => r === "caps")).toHaveLength(before);
   });
 
+  it("a granted sample loads its own part and resolves its callable namespace, never through caps", async () => {
+    const before = requests.filter(r => r === "caps").length;
+    const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("sample");
+    await settle();
+    const req = posted.find(m => m.type === "clax:use" && m.name === "sample")!;
+    send({ type: "clax:use-result", id: req.id, granted: true, config: {} });
+    const ns = await use as { json: unknown; limits: unknown };
+    expect(typeof ns).toBe("function");
+    expect(Object.isFrozen(ns)).toBe(true);
+    expect(Object.keys(ns).sort()).toEqual(["json", "limits"]);
+    expect(requests).toContain("sample");
+    expect(requests.filter(r => r === "caps")).toHaveLength(before);
+  });
+
   it("posts a pick whose clip could not render with the reason, once the composer is ready", async () => {
     send({ type: "clax:comment-mode", on: true });
     await settle();

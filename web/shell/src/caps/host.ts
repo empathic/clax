@@ -78,6 +78,11 @@ export interface Handler {
   onEvent?(e: ArtifactEvent): void;
   /** The frame loaded a new document: drop per-document state. */
   reset?(): void;
+  /** The frame's document left (a `bye`, a load without a hello, a hello the
+   * shell does not welcome, or a navigation the shell started): close what
+   * serves that document live (a socket, a stream). State the next hello
+   * resets with `reset` may stay until then. */
+  leave?(): void;
   /** The host is gone: drop all state and never post, fetch, or schedule again. */
   dispose?(): void;
   /** Comment mode, the composer, the selection, the threads, or the page changed. */
@@ -153,6 +158,12 @@ export class CapabilityHost {
 
   reset(): void {
     for (const h of this.handlers.values()) h.reset?.();
+  }
+
+  /** The frame's document left; see `Handler.leave`. */
+  leave(): void {
+    if (this.dead) return;
+    for (const h of this.handlers.values()) h.leave?.();
   }
 
   /** Comment mode, the composer, the selection, the threads, or the page changed. */
