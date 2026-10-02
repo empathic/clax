@@ -167,11 +167,15 @@ export class ArtifactController {
   private toldHost: CapabilityHost | null = null;
   private cancelFlush: () => void = () => {};
   /** Whether the viewer's keys are meant for the shell, so shell keys may act.
-   * Focus that the page moved or took (into its frame, or onto a prompt or
-   * composer it raised) clears it, and stays cleared when that UI closes and
-   * focus falls to the body while the viewer is still typing for the page.
-   * Only the viewer's own act in the shell sets it again: a trusted press,
-   * or Tab or Shift+Tab moving focus to a shell control outside a dialog. */
+   * It is cleared when the shell window loses focus (to the page's frame or
+   * anywhere else), and when a prompt or composer the page raised opens or
+   * closes, so focus that falls to the body while the viewer is still typing
+   * for the page never makes their keys the shell's. Only the viewer's own
+   * act sets it again: a trusted press in the shell, or focus landing on a
+   * specific shell control (their Tab or Shift+Tab, or a press). The page
+   * cannot put focus there (its `parent.focus()` reaches only the body), and
+   * the shell moves focus by script only onto the prompt and composer, which
+   * do not count, and in answer to its own keys. */
   private keysOwned = true;
   // A prompt closes the keys sheet, so nothing covers or disables the prompt.
   private readonly prompt = promptQueue(ask => this.set(ask ? { ask, sheet: null } : { ask }));
@@ -310,10 +314,12 @@ export class ArtifactController {
     if (this.disposed) return;
     const prev = this.s;
     this.state.set(patch);
-    // A prompt or composer opening comes from the page (a capability, or the
-    // bridge's pick): the keys are the shell's again only after the viewer's
-    // own act in it (`keysOwned`).
-    if ((!prev.ask && this.s.ask) || (!prev.draft && this.s.draft)) this.keysOwned = false;
+    // A prompt or composer comes from the page (a capability, or the bridge's
+    // pick). Its opening and its closing, however it closed (a key, a press
+    // on its buttons or backdrop), give the keys up: a press that closed it
+    // came before the close, so the viewer's next keys may still be meant for
+    // the page (`keysOwned`).
+    if (!!prev.ask !== !!this.s.ask || !!prev.draft !== !!this.s.draft) this.keysOwned = false;
     // Comment mode cannot come on in a page whose comment part did not load,
     // however it was asked for: the viewer is told again instead.
     if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
@@ -707,21 +713,15 @@ export class ArtifactController {
         if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
       }
     };
-    // Who the keys belong to (`keysOwned`): the page once focus enters its
-    // frame; the shell again on the viewer's press in it, or their Tab to one
-    // of its controls. A Tab that lands in a dialog (a page's prompt) does
-    // not count, nor does focus that a script moved.
-    let tabbed = false;
+    // Who the keys belong to (`keysOwned`).
     const onPress = (e: PointerEvent) => { if (e.isTrusted) this.keysOwned = true; };
-    const onTab = (e: KeyboardEvent) => { tabbed = e.isTrusted && e.key === "Tab"; };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target;
-      if (tabbed && t instanceof Element && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true]")) this.keysOwned = true;
-      tabbed = false;
+      if (e.isTrusted && t instanceof Element && t !== document.body && t.localName !== "iframe" && !t.closest("[role=dialog], [aria-modal=true], .composer")) this.keysOwned = true;
     };
-    const onBlur = () => { if (document.activeElement?.localName === "iframe") this.keysOwned = false; };
+    // Only the window's own blur reaches this listener: an element's blur does not bubble.
+    const onBlur = () => { this.keysOwned = false; };
     addEventListener("pointerdown", onPress, true);
-    addEventListener("keydown", onTab, true);
     addEventListener("focusin", onFocusIn, true);
     addEventListener("blur", onBlur);
     const unforward = setForwardedKeys(forwards);
@@ -748,7 +748,6 @@ export class ArtifactController {
       removeEventListener("keydown", onKey);
       removeEventListener("keyup", onKey);
       removeEventListener("pointerdown", onPress, true);
-      removeEventListener("keydown", onTab, true);
       removeEventListener("focusin", onFocusIn, true);
       removeEventListener("blur", onBlur);
       removeEventListener("popstate", onPop);

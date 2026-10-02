@@ -417,4 +417,37 @@ describe("ArtifactController", () => {
     expect(ctl.state.get().commenting).toBe(true);
     ctl.dispose();
   });
+
+  it("gives the keys up on every close of a page's prompt and on any loss of window focus, and takes them back only on the viewer's own act", async () => {
+    const { ctl } = await started({ threads: [thread("t1"), thread("t2")] });
+    await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+    const key = (k: string) => dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true }));
+    const live = () => { const before = ctl.state.get().commenting; key("c"); const now = ctl.state.get().commenting; if (now !== before) key("c"); return now !== before; };
+    const focusOn = (el: Element) => dispatchTrusted(el, new FocusEvent("focusin", { bubbles: true }));
+    const el = (html: string) => { const box = document.createElement("div"); box.innerHTML = html; document.body.append(box); return box.firstElementChild!.querySelector("[data-at]") ?? box.firstElementChild!; };
+    expect(live()).toBe(true);
+    // A press while the prompt is open (on its button, say) does not outlast the prompt.
+    const prompt = (ctl as unknown as { prompt(p: { title: string; body: string; allow: string; deny: string }): Promise<string> }).prompt;
+    void prompt({ title: "T", body: "B", allow: "Allow", deny: "Don't allow" });
+    await vi.waitFor(() => expect(ctl.state.get().ask).not.toBeNull());
+    dispatchTrusted(window, new Event("pointerdown"));
+    ctl.state.get().ask!.answer("deny");
+    await vi.waitFor(() => expect(ctl.state.get().ask).toBeNull());
+    expect(live()).toBe(false);
+    // Focus on the body, in a dialog or in the composer (where the shell's
+    // own script puts it for the page's UI) does not count.
+    focusOn(document.body);
+    focusOn(el(`<div role="dialog"><button data-at></button></div>`));
+    focusOn(el(`<div class="composer"><textarea data-at></textarea></div>`));
+    expect(live()).toBe(false);
+    // Focus landing on a specific shell control does: the page cannot put it there.
+    focusOn(el(`<button>Threads</button>`));
+    expect(live()).toBe(true);
+    // The window losing focus, to the frame or anywhere else, gives them up.
+    dispatchTrusted(window, new FocusEvent("blur"));
+    expect(live()).toBe(false);
+    dispatchTrusted(window, new Event("pointerdown"));
+    expect(live()).toBe(true);
+    ctl.dispose();
+  });
 });
