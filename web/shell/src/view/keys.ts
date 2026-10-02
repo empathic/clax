@@ -6,15 +6,15 @@
 // page and never reach here.
 export type KeyAction = "help" | "comment";
 export type KeyLike = Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "isComposing" | "repeat" | "target">;
-export type KeyRow = { keys: string[]; what: string; action: KeyAction | "escape" };
+export type KeyRow = { keys: string[]; what: string };
 
 const MAP: Record<string, KeyAction> = { "?": "help", c: "comment" };
 
 /** The sheet's rows, in order. */
 export const KEY_ROWS: KeyRow[] = [
-  { keys: ["C"], what: "Comment mode: click an element or drag an area", action: "comment" },
-  { keys: ["?"], what: "This sheet", action: "help" },
-  { keys: ["Esc"], what: "Leave comment mode, close a menu or this sheet", action: "escape" },
+  { keys: ["C"], what: "Comment mode: click an element or drag an area" },
+  { keys: ["?"], what: "This sheet" },
+  { keys: ["Esc"], what: "Leave comment mode, close a menu or this sheet" },
 ];
 
 function typing(t: EventTarget | null): boolean {
@@ -35,9 +35,12 @@ const HELD_KEY = "clax.keys-held";
 
 /** Marks the shell load about to happen as the page's doing (its publish
  * reloading the view), so the next view starts with the keys held: the viewer
- * may still be typing for the page. Called just before that navigation. */
+ * may still be typing for the page. Called just before that navigation. When
+ * storage refuses the write, the next view holds the keys only if its read
+ * throws too; storage that refuses writes but allows reads (full, or an old
+ * private mode) lets it start live. */
 export function holdKeysAcrossLoad(): void {
-  try { sessionStorage.setItem(HELD_KEY, "1"); } catch { /* read back as held: storage that throws here throws there */ }
+  try { sessionStorage.setItem(HELD_KEY, "1"); } catch { /* the next view's read decides */ }
 }
 
 /** Whether this view starts with the keys held: the load was the page's
