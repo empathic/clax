@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
-import { api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, startDaemon } from "./fixtures";
+import { api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, startDaemon, setName } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -14,8 +14,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `Cap ${mode}`, html, { comments: {} });
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(frame.locator("#state")).toHaveText("none");
-    await page.getByLabel("Your name").fill("Alex");
-    await page.getByLabel("Your name").press("Enter");
+    await setName(page, "Alex");
     // A write as the viewer needs their click in the page 5.5 s clear of
     // their input to the shell (the name field).
     await page.waitForTimeout(5_700);

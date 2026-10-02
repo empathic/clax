@@ -238,10 +238,14 @@ pub async fn serve(
         working: Arc::new(clax_core::working::Working::new(Arc::new(
             clax_core::working::SystemClock,
         ))),
+        presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
+            clax_core::working::SystemClock,
+        ))),
     };
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     let fctx = state.feedback_ctx();
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
+    let state_presence = state.presence.clone();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -311,6 +315,7 @@ pub async fn serve(
         loop {
             every.tick().await;
             crate::working::sweep_and_announce(&sweep_working, &sweep_events);
+            crate::presence::sweep_and_announce(&state_presence, &sweep_events);
         }
     });
 

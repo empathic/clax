@@ -20,6 +20,8 @@ import type { Decided } from "./changelog-model";
 import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
+import type { PresenceView } from "./presence-model";
+import type { PresenceReporter } from "./presence-reporter";
 import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 import { keyboardTrail } from "./trail";
@@ -80,6 +82,10 @@ export type ViewState = {
   /** The changelog this load decided (spec §8): the Addressed group, the
    * version button's dot and the summary line; null until the view is ready. */
   decided: Decided | null;
+  /** Who has the artifact open (spec §10, "Presence"), from the daemon. */
+  presence: PresenceView[];
+  /** Whether this viewer shares where they look ("Share where I'm looking"; per browser, on by default). */
+  shareWhere: boolean;
   /** The menu open from the top bar. */
   menu: "versions" | "people" | null;
   /** This viewer's looked-at marks on this artifact's threads (thread ID to when). */
@@ -121,6 +127,11 @@ export const MOVE_TO_CLICK = "Move the pointer, then click again";
 const LOADED = Symbol("loaded");
 
 const media = (q: string) => typeof matchMedia === "function" && matchMedia(q).matches;
+const SHARE_WHERE_KEY = "clax.shareWhere";
+/** The stored "Share where I'm looking" choice; on unless turned off. */
+function readShareWhere(): boolean {
+  try { return localStorage.getItem(SHARE_WHERE_KEY) !== "0"; } catch { return true; }
+}
 const threadIds = (ts: Thread[]) => ts.map(t => t.id).join(",");
 
 export class ArtifactController {
@@ -241,7 +252,7 @@ export class ArtifactController {
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
-      decided: null, menu: null, looked: {},
+      decided: null, menu: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
@@ -436,6 +447,8 @@ export class ArtifactController {
     if (prev.draft?.clipToken !== next.draft?.clipToken || prev.draft?.capturing !== next.draft?.capturing) this.armCapture(next.draft);
     if (prev.data !== next.data || prev.origin !== next.origin) this.decideChangelog();
     if (prev.me !== next.me || prev.data !== next.data || prev.origin !== next.origin) this.writeSeen();
+    if (prev.me !== next.me || prev.deleted !== next.deleted) this.reporter?.report(true);
+    else if (prev.selected !== next.selected || prev.draft?.anchor !== next.draft?.anchor) this.reporter?.report();
     if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy || host !== this.toldHost) {
       this.toldHost = host;
       host?.uiChanged();
@@ -662,6 +675,35 @@ export class ArtifactController {
     this.viewChanged();
     this.decideChangelog();
     this.writeSeen();
+    if (!this.presenceAsked) {
+      this.presenceAsked = true;
+      this.offs.push(afterPaint(() => this.startPresence()));
+    }
+  }
+
+  // ---- presence (spec §10, "Presence") ----
+
+  private presenceAsked = false;
+  /** The reporter, once its code loaded after the first paint. */
+  private reporter: PresenceReporter | null = null;
+  private startPresence(): void {
+    void import("./presence-reporter").then(m => {
+      if (this.disposed) return;
+      const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, people => this.set({ presence: people }));
+      this.reporter = r;
+      this.offs.push(() => r.dispose());
+      r.fetch();
+      r.report(true);
+    }, () => {});
+  }
+
+  /** The "Share where I'm looking" switch: stored per browser, then reported
+   * at once (turning it off withdraws the location without waiting). */
+  setShareWhere(on: boolean): void {
+    try { localStorage.setItem(SHARE_WHERE_KEY, on ? "1" : "0"); } catch { /* kept for this view only */ }
+    this.set({ shareWhere: on });
+    this.reporter?.reset();
+    this.reporter?.report(true);
   }
 
   /** The changelog for this load (spec §8): decided once the view is ready,
@@ -1147,6 +1189,7 @@ export class ArtifactController {
     if (e.type === "version" && e.n > this.latestKnown) { this.latestKnown = e.n; this.set({ newer: e.n }); }
     if (e.type === "artifact_deleted") this.set({ deleted: true });
     if (e.type === "working") this.set({ working: e.working });
+    if (e.type === "presence") this.set({ presence: e.people });
     // An agent may have started or ended: the Send target follows.
     if (e.type === "working" || e.type === "version") this.refreshAgents();
     if (e.type === "thread") this.changeThreads(ts => upsert(ts, e.thread));
@@ -1157,6 +1200,7 @@ export class ArtifactController {
     // published between the initial load and the stream opening.
     if (e.type === "resync" || e.type === "ready") {
       this.loadThreads();
+      this.reporter?.fetch();
       getArtifact(this.id).then(d => {
         const n = d.artifact.current_version;
         this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));

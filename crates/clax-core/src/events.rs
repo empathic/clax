@@ -56,6 +56,12 @@ pub enum Event {
         artifact_id: String,
         working: Vec<crate::working::WorkingView>,
     },
+    /// The artifact's presence changed; `people` is the whole list (spec §10
+    /// "Presence"), never carrying a cookie.
+    Presence {
+        artifact_id: String,
+        people: Vec<crate::presence::PresenceView>,
+    },
     /// A `db` document changed; `version` is `None` after a delete. The body
     /// is never carried (SSE needs no token). `private_to` names the viewer
     /// whose private subtree holds `path` (the event goes only to that viewer);
@@ -86,6 +92,7 @@ impl Event {
             | Event::ThreadDeleted { artifact_id, .. }
             | Event::FeedbackState { artifact_id, .. }
             | Event::Working { artifact_id, .. }
+            | Event::Presence { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
         }
     }
@@ -101,6 +108,7 @@ impl Event {
             Event::ThreadDeleted { .. } => "thread_deleted",
             Event::FeedbackState { .. } => "feedback_state",
             Event::Working { .. } => "working",
+            Event::Presence { .. } => "presence",
             Event::Doc { .. } => "doc",
         }
     }
@@ -197,6 +205,10 @@ mod tests {
             Event::Working {
                 artifact_id: "a".into(),
                 working: vec![],
+            },
+            Event::Presence {
+                artifact_id: "a".into(),
+                people: vec![],
             },
             Event::Doc {
                 artifact_id: "a".into(),

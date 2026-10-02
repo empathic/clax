@@ -19,6 +19,8 @@ pub struct TestServer {
     pub events: EventBus,
     /// The server's working registry.
     pub working: Arc<clax_core::working::Working>,
+    /// The server's presence registry.
+    pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
     pub addr: SocketAddr,
     _dir: tempfile::TempDir,
@@ -65,10 +67,14 @@ impl TestServer {
             working: Arc::new(clax_core::working::Working::new(Arc::new(
                 clax_core::working::SystemClock,
             ))),
+            presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
+                clax_core::working::SystemClock,
+            ))),
         };
         f(&mut state);
         let events = state.events.clone();
         let working = state.working.clone();
+        let presence = state.presence.clone();
         let app = build_router(state);
         tokio::spawn(async move {
             axum::serve(
@@ -85,6 +91,7 @@ impl TestServer {
             client: reqwest::Client::new(),
             events,
             working,
+            presence,
             addr,
             _dir: dir,
         }

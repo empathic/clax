@@ -1,6 +1,6 @@
 // The states every UI task photographs (light and dark, desktop and phone),
 // on one seeded scratch daemon. Tasks append scenes as they add UI.
-import type { Cookie, Page } from "@playwright/test";
+import type { BrowserContext, Cookie, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { api, contentFrame, postThread, publishAs, publishNext, registerSession, seenOf, setWorking } from "./fixtures";
 
@@ -111,6 +111,60 @@ async function changelog(page: Page, s: Seeded): Promise<void> {
   await page.locator(".thread-pin").first().waitFor();
 }
 
+/** Two people present (spec §10, "Presence"), on an artifact of their own so
+ * the viewers of other scenes are not on it: "alex" (this page's viewer, with
+ * a thread) and "Mia Kovač" (another browser, who replied on it and selected
+ * the chart's thread), the claude session working on two threads and a
+ * codex session watching, idle. Both viewers keep their cookies across runs,
+ * so every shot shows the same two people. Ends with the people panel open. */
+let multi: { aid: string; alex: Cookie[]; mia: Cookie[]; chart: string; open: string[] } | null = null;
+let miaCtx: BrowserContext | null = null;
+const viewerThread = (page: Page, aid: string, selector: string, quote: string | null, text: string) => page.evaluate(async a => {
+  const f = new FormData();
+  f.set("anchor", JSON.stringify({ kind: "element", selector: a.selector, quote: a.quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  f.set("body", a.text);
+  f.set("version", "1");
+  return (await (await fetch(`/api/artifacts/${a.aid}/threads`, { method: "POST", body: f })).json()).thread.id as string;
+}, { aid, selector, quote, text });
+async function multiplayer(page: Page, s: Seeded): Promise<void> {
+  const browser = page.context().browser()!;
+  await miaCtx?.close();
+  if (!multi) {
+    const { artifact } = await publishAs(s.base, s.token, s.sid, "Checkout latency, week 39", { "index.html": REPORT });
+    const open = [(await postThread(s.base, artifact.id, SEEDED[0][0], SEEDED[0][1])).id, (await postThread(s.base, artifact.id, SEEDED[2][0], SEEDED[2][1])).id];
+    const watcher = await registerSession(s.base, s.token, "codex", "shots-multi");
+    await api(s.base, s.token, `/api/sessions/${watcher.id}/watches/${artifact.id}`, { method: "PUT" });
+    await page.goto(`${s.base}/a/${artifact.id}`);
+    await contentFrame(page, artifact.id, 1);
+    await name(page, "alex");
+    const chart = await viewerThread(page, artifact.id, "#tgt-chart", "p95 by four-hour window", "Mark the deploy on the chart itself.");
+    const ctx = await browser.newContext();
+    const mia = await ctx.newPage();
+    await mia.goto(`${s.base}/a/${artifact.id}`);
+    await contentFrame(mia, artifact.id, 1);
+    await name(mia, "Mia Kovač");
+    await mia.evaluate(({ aid, tid }) => fetch(`/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ body: "Yes, and put the deploy time on it." }) }), { aid: artifact.id, tid: chart });
+    multi = { aid: artifact.id, alex: await page.context().cookies(), mia: await ctx.cookies(), chart, open };
+    await ctx.close();
+  } else {
+    await page.context().addCookies(multi.alex);
+  }
+  // Mia has the artifact open, with the chart's thread selected.
+  miaCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await miaCtx.addCookies(multi.mia);
+  const mia = await miaCtx.newPage();
+  await mia.goto(`${s.base}/a/${multi.aid}`);
+  await contentFrame(mia, multi.aid, 1);
+  await mia.locator(`.thread-card[data-thread="${multi.chart}"] .card-head`).click();
+  await setWorking(s.base, s.token, s.sid, multi.aid, { thread_ids: multi.open });
+  await page.goto(`${s.base}/a/${multi.aid}`);
+  await contentFrame(page, multi.aid, 1);
+  await page.getByRole("button", { name: "People and agents" }).click();
+  const panel = page.getByRole("dialog", { name: "People and agents" });
+  await panel.locator(".prow", { hasText: "looking at" }).waitFor();
+  await panel.locator(".prow .hk").waitFor();
+}
+
 export const SCENES: Scene[] = [
   // The gallery with a card that needs the viewer's eyes, above everything else.
   { name: "gallery", path: () => "/", prepare: needsEyes },
@@ -174,4 +228,7 @@ export const SCENES: Scene[] = [
     await bar.getByRole("button", { name: "Choose the agent" }).click();
     await bar.getByRole("menu").waitFor();
   } },
+  // Presence (spec §10): the roster's here dots, and the people panel open
+  // from it, with Mia's location shown only there.
+  { name: "multiplayer", path: s => `/a/${s.aid}`, prepare: multiplayer },
 ];

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
-import { namedViewer, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { namedViewer, openArtifact, publishWith, startDaemon, nameField } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -17,7 +17,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `Who ${mode}`, html("who.html"), { user: { scopes: ["profile"] }, db: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     expect(await facts(f)).toMatchObject({ isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true, name: "", isMe: true, stranger: "", other: null, search: 0 });
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     await name.fill("Alex");
     await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
     await f.locator("#refresh").click();
@@ -43,7 +43,7 @@ test("LAN: user is not the owner, resolves other viewers by name, and can write 
   const { artifact } = await publishWith(d.base, d.token, "Who LAN", who, { user: { scopes: ["profile"] }, db: {} });
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
   expect(await facts(f)).toMatchObject({ isOwner: false, canEdit: false, dataWrite: false, filesWrite: false, idShape: true, search: 0, other: "Ärger Ölund", stranger: "" });
-  const name = page.getByRole("textbox", { name: "Your name" });
+  const name = await nameField(page);
   await name.fill("Sam");
   await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
   // can() is fixed for the life of the frame's document: naming does not change it.

@@ -293,6 +293,31 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("reports presence with where this viewer looks, takes presence events, and keeps the location private when sharing is off", async () => {
+    const quoted = thread("t1", { anchor: { ...thread("t1").anchor, quote: "Quarterly goals" } });
+    const { ctl } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
+    const reports = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
+      .filter(([u, i]) => String(u) === "/api/viewers/me/presence" && (i as RequestInit | undefined)?.method === "PUT")
+      .map(([, i]) => JSON.parse((i as RequestInit).body as string));
+    await vi.waitFor(() => expect(reports()[0]).toEqual({ artifact_id: ID, state: "here" }));
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    ctl.selectThread(ctl.state.get().threads[0]);
+    await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here", where: "«Quarterly goals»" }), { timeout: 3000 });
+    ctl.setShareWhere(false);
+    await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here" }));
+    expect(localStorage.getItem("clax.shareWhere")).toBe("0");
+    const people = [{ public_id: "u_2", display_name: "Mia", state: "here", where: "«p95 chart»", since: "x" }];
+    while (!FakeES.last) await new Promise(r => setTimeout(r, 5));
+    FakeES.last.emit("presence", { type: "presence", artifact_id: ID, people });
+    expect(ctl.state.get().presence).toEqual(people);
+    Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "away" }));
+    Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    localStorage.removeItem("clax.shareWhere");
+    ctl.dispose();
+  });
+
   it("drops a deleted artifact's frame before the next paint, so nothing the page posts after the deletion is answered", async () => {
     const { ctl, frame } = await started();
     const win = frame.contentWindow!;

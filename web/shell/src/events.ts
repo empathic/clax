@@ -1,4 +1,5 @@
 import type { FeedbackState, Thread } from "./threads";
+import type { PresenceView } from "./view/presence-model";
 import type { Working } from "./view/working-model";
 
 export type ArtifactEvent =
@@ -16,6 +17,8 @@ export type ArtifactEvent =
   | { type: "doc"; artifact_id: string; path: string; version: number | null }
   /** Who is working on the artifact now: its whole list, newest first. */
   | { type: "working"; artifact_id: string; working: Working[] }
+  /** Who has the artifact open, here or away, or was here lately: its whole list. */
+  | { type: "presence"; artifact_id: string; people: PresenceView[] }
   /** The stream (re)connected; anything published while it was down was missed, so refetch state. */
   | { type: "ready" }
   /** The stream failed and is reconnecting (or gave up): nothing is announced until the next `ready`. */
@@ -33,7 +36,7 @@ export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => voi
   const handler = (e: MessageEvent) => { try { onEvent(JSON.parse(e.data)); } catch { /* ignore malformed */ } };
   es.addEventListener("version", handler);
   es.addEventListener("artifact_deleted", handler);
-  for (const name of ["thread", "comment", "thread_resolved", "thread_deleted", "feedback_state", "doc", "working"]) es.addEventListener(name, handler);
+  for (const name of ["thread", "comment", "thread_resolved", "thread_deleted", "feedback_state", "doc", "working", "presence"]) es.addEventListener(name, handler);
   es.addEventListener("ready", () => onEvent({ type: "ready" }));
   es.addEventListener("error", () => onEvent({ type: "stream_down" }));
   es.addEventListener("resync", (e: MessageEvent) => {

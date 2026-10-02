@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { api, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { api, openArtifact, publishWith, startDaemon, nameField, setName } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -57,7 +57,7 @@ test("LAN: an unnamed viewer reads but cannot write; naming them makes them a wr
   await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
   await f.locator("#add").click();
   await expect(f.locator("#err")).toHaveText("invalid_argument");
-  const name = page.getByRole("textbox", { name: "Your name" });
+  const name = await nameField(page);
   await name.fill("Sam");
   await Promise.all([
     page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"),
@@ -143,7 +143,6 @@ test("LAN: naming the viewer refetches subscriptions under its new level", async
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/docs/cards/c1`, { method: "PUT", body: JSON.stringify({ data: { at: 0 }, lww: true }) });
   const f = await openArtifact(page, d.base, artifact.id, 1, "sandbox", { lan: true });
   await expect(f.locator("#out")).toHaveText(JSON.stringify({ n: 0, lag: null, changes: [] }));
-  await page.getByRole("textbox", { name: "Your name" }).fill("Ada");
-  await page.getByRole("textbox", { name: "Your name" }).press("Enter");
+  await setName(page, "Ada");
   await expect(f.locator("#out")).toContainText('"n":1');
 });

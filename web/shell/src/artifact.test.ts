@@ -296,30 +296,33 @@ describe("ArtifactView", () => {
         ? new Response(JSON.stringify({ threads: [], next_cursor: null }))
         : new Response(JSON.stringify({ error: { code: "forbidden_origin", message: "nope" } }), { status: 403 }));
     const root = view.root;
+    (await import("./ui/more-menu.svelte")).loadMoreMenu();
+    await waitFor(() => !root.querySelector(".more-slot"), "more menu");
+    (await waitFor(() => root.querySelector<HTMLButtonElement>("button.who"), "roster")).click();
     const banner = await waitFor(() => root.querySelector(".banner.notice"), "notice banner");
     expect(banner.textContent).toContain("Could not load your name: 403 nope");
   });
 
-  it("puts \"Your name\" in the header when wide and in the Threads panel when narrow", async () => {
-    stubMedia({ "(min-width: 900px)": true, "(max-width: 480px)": false });
-    let view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
-    let root = view.root;
-    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    expect(root.querySelectorAll('input[aria-label="Your name"]')).toHaveLength(1);
-    expect(root.querySelector('.topbar input[aria-label="Your name"]')).not.toBeNull();
-    view.unmount();
-    document.body.replaceChildren();
-    vi.resetModules();
-
-    stubMedia({ "(min-width: 900px)": false, "(max-width: 480px)": true });
-    view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
-    root = view.root;
-    await waitFor(() => root.querySelector("iframe.frame"), "viewer");
-    expect(root.querySelector('input[aria-label="Your name"]')).toBeNull();
-    buttonNamed(root, /^Threads/).click();
-    await waitFor(() => root.querySelector('aside.sidebar input[aria-label="Your name"]'), "name field in the Threads panel");
-    expect(root.querySelectorAll('input[aria-label="Your name"]')).toHaveLength(1);
-  });
+  for (const narrow of [false, true]) {
+    it(`puts "Your name" in the people panel, opened from the roster (${narrow ? "narrow" : "wide"})`, async () => {
+      stubMedia({ "(min-width: 900px)": !narrow, "(max-width: 480px)": narrow });
+      const view = await mountView(async () => new Response(JSON.stringify(artifact(1))));
+      const root = view.root;
+      await waitFor(() => root.querySelector("iframe.frame"), "viewer");
+      expect(root.querySelector('input[aria-label="Your name"]')).toBeNull();
+      // The entry loads the roster after the first paint (`artifact-main.ts`).
+      (await import("./ui/more-menu.svelte")).loadMoreMenu();
+      await waitFor(() => !root.querySelector(".more-slot"), "more menu");
+      const who = await waitFor(() => root.querySelector<HTMLButtonElement>("button.who"), "roster");
+      expect(who.getAttribute("aria-label")).toBe("People and agents");
+      who.click();
+      await waitFor(() => root.querySelector('[role="dialog"][aria-label="People and agents"] input[aria-label="Your name"]'), "name field in the people panel");
+      expect(root.querySelectorAll('input[aria-label="Your name"]')).toHaveLength(1);
+      expect(who.getAttribute("aria-expanded")).toBe("true");
+      // The thread list, which loads after the first paint, lands in this test's module registry too.
+      if (!narrow) await waitFor(() => root.querySelector('aside.sidebar:not([aria-busy])'), "thread list");
+    });
+  }
 
   it("ignores a hello from another artifact or version, and welcomes the shown one", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(artifact(2))));

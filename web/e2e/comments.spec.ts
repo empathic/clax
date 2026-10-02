@@ -1,5 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
-import { api, publish, publishAs, registerSession, startDaemon } from "./fixtures";
+import { api, publish, publishAs, registerSession, startDaemon, setName } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -105,8 +105,7 @@ test("republish while composing records the picked version", async ({ page }) =>
 test("the viewer name attributes comments", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Named", { "index.html": PAGE });
   await page.goto(`${d.base}/a/${artifact.id}`);
-  await page.getByLabel("Your name").fill("Alex");
-  await page.getByLabel("Your name").press("Enter");
+  await setName(page, "Alex");
   await pickHeading(page, artifact.id, 1);
   await page.locator(".composer textarea").fill("named note");
   await page.locator(".composer").getByRole("button", { name: "Post comment" }).click();

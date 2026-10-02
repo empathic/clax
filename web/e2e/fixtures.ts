@@ -253,3 +253,18 @@ export async function postThread(base: string, aid: string, body: string, select
   if (!res.ok) throw new Error(`${res.status} ${await res.text()}`);
   return (await res.json()).thread as { id: string };
 }
+
+/** Sets this page's viewer name through the people panel, as a person does. */
+export async function setName(page: Page, name: string) {
+  await page.getByRole("button", { name: "People and agents" }).click();
+  const field = page.getByRole("dialog", { name: "People and agents" }).getByLabel("Your name");
+  await field.fill(name);
+  await field.press("Enter");
+  await page.keyboard.press("Escape");
+}
+
+/** The name field, in the open people panel: the shell text control the gesture tests click. */
+export async function nameField(page: Page) {
+  if (!(await page.getByRole("dialog", { name: "People and agents" }).isVisible())) await page.getByRole("button", { name: "People and agents" }).click();
+  return page.getByRole("dialog", { name: "People and agents" }).getByRole("textbox", { name: "Your name" });
+}

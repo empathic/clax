@@ -1,5 +1,8 @@
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, record, registerSession, startDaemon } from "./fixtures";
+import { api, openArtifact, record, registerSession, startDaemon, nameField, reach } from "./fixtures";
+
+/** The shell's dialogs other than the people panel: the consent dialog. */
+const consent = (page: Page) => page.locator('[role="dialog"]:not(.people)');
 
 // The viewer's gesture check (`web/shell/src/caps/gesture.ts`) against a page
 // that moves focus into itself with window.focus(): input the viewer gives
@@ -94,13 +97,16 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const id = await publishLive(`Pull open ${mode}`, PULLER("open"), { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, id, 1, mode);
     await page.waitForTimeout(1_000);
-    await page.getByRole("textbox", { name: "Your name" }).click();
+    await (await nameField(page)).click();
     await page.waitForTimeout(1_500);
     await expect(page.locator(".composer")).toHaveCount(0);
     await pollsMore(f, 8);
     await expect(f.locator("#status")).not.toContainText("true");
     await expect(page.locator(".composer")).toHaveCount(0);
-    // The viewer's own click on the page's button opens it.
+    // The viewer's own click on the page's button opens it. The name field
+    // sits in the people panel, over the page, so the pointer moves onto the
+    // button first, as a hand's does.
+    await reach(page, f.locator("#b"));
     await f.locator("#b").click();
     await expect(f.locator("#clicked")).toHaveText(JSON.stringify({ opened: true }));
     await expect(page.locator(".composer")).toHaveCount(1);
@@ -109,7 +115,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page that pulls focus cannot ride keys typed in the shell with the pointer resting on the page`, async ({ page }) => {
     const id = await publishLive(`Pull typing ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, id, 1, mode);
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     await name.click();
     // The pointer comes to rest on the page, and the click's activation lapses.
     const fb = await frameBox(page);
@@ -128,25 +134,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const id = await publishLive(`Pull send ${mode}`, PULLER("send"), { comments: {} });
     const f = await openArtifact(page, d.base, id, 1, mode);
     await page.waitForTimeout(1_000);
-    await page.getByRole("textbox", { name: "Your name" }).click();
+    await (await nameField(page)).click();
     await page.waitForTimeout(1_500);
     // Refused before consent is asked or anything is written.
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(consent(page)).toHaveCount(0);
     await pollsMore(f, 8);
     await expect(f.locator("#status")).not.toContainText("sent");
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(consent(page)).toHaveCount(0);
     const threads = async () => ((await api(d.base, d.token, `/api/artifacts/${id}/threads?include_resolved=true`)) as { threads: { sent_to_agent: boolean }[] }).threads;
     expect(await threads()).toHaveLength(0);
     // The viewer's own click in the page within 5.5 s of their click on the
     // name field is refused with a code the page can show ("click again").
     const named = Date.now();
+    await reach(page, f.locator("#b"));
     await f.locator("#b").click();
     await expect(f.locator("#clicked")).toHaveText("shell_input_recent");
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(consent(page)).toHaveCount(0);
     // Past that, their click asks consent and sends.
     await page.waitForTimeout(Math.max(0, 5_700 - (Date.now() - named)));
     await f.locator("#b").click();
-    await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+    await consent(page).getByRole("button", { name: "Allow", exact: true }).click();
     await expect(f.locator("#clicked")).toHaveText("sent");
     await expect.poll(async () => (await threads()).map(t => t.sent_to_agent)).toEqual([true]);
   });
@@ -154,7 +161,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a Tab from the shell into the page and a key there opens the composer`, async ({ page }) => {
     const id = await publishLive(`Tab ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, id, 1, mode);
-    await page.getByRole("textbox", { name: "Your name" }).click();
+    await (await nameField(page)).click();
     for (let i = 0; i < 30 && (await f.locator("#focused").textContent()) !== "yes"; i++) await page.keyboard.press("Tab");
     await expect(f.locator("#focused")).toHaveText("yes");
     await page.keyboard.press("Enter");
@@ -333,7 +340,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: after the viewer clicks Allow for the page's own create, the page cannot send to the agent`, async ({ page }) => {
     const id = await publishLive(`Allow ${mode}`, ATTACKER(true), { comments: {} });
     const f = await openReady(page, id, mode);
-    const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+    const allow = consent(page).getByRole("button", { name: "Allow", exact: true });
     // The dialog sits over the frame, so its buttons do too.
     const fb = await frameBox(page);
     const ab = (await allow.boundingBox())!;
@@ -349,7 +356,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: after the viewer answers Allow with Enter, the pointer resting over the page, the page cannot send to the agent`, async ({ page }) => {
     const id = await publishLive(`Allow key ${mode}`, ATTACKER(true), { comments: {} });
     const f = await openReady(page, id, mode);
-    const dialog = page.getByRole("dialog");
+    const dialog = consent(page);
     const allow = dialog.getByRole("button", { name: "Allow", exact: true });
     await expect(allow).toBeEnabled();
     // The pointer comes to rest on the dialog's backdrop, over the frame.
@@ -368,7 +375,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: after the viewer clicks Don't allow, the page cannot reach sendToClaude or the composer`, async ({ page }) => {
     const id = await publishLive(`Deny ${mode}`, ATTACKER(true), { comments: {} });
     const f = await openReady(page, id, mode);
-    await page.getByRole("dialog").getByRole("button", { name: "Don't allow", exact: true }).click();
+    await consent(page).getByRole("button", { name: "Don't allow", exact: true }).click();
     await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
     await page.waitForTimeout(300);
     // Refused at the gesture check (claude_unavailable), not at consent.
@@ -377,7 +384,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await go(f, "open");
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
     await expect(page.locator(".composer")).toHaveCount(0);
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(consent(page)).toHaveCount(0);
   });
 
   test(`${mode}: after the viewer clicks a pin that the page's scroll moves away, the page cannot open the composer`, async ({ page }) => {
@@ -425,7 +432,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const ctx = await browser.newContext({ hasTouch: true });
     const page = await ctx.newPage();
     const f = await openReady(page, id, mode);
-    const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+    const nb = (await (await nameField(page)).boundingBox())!;
     await page.touchscreen.tap(nb.x + nb.width / 2, nb.y + nb.height / 2);
     const bb = (await f.locator("#b").boundingBox())!;
     await page.touchscreen.tap(bb.x + bb.width / 2, bb.y + bb.height / 2);
@@ -468,7 +475,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const id = ((await res.json()) as { artifact: { id: string } }).artifact.id;
     const f = await openArtifact(page, d.base, id, 1, mode);
     await page.waitForTimeout(1_000);
-    await page.getByRole("textbox", { name: "Your name" }).click();
+    await (await nameField(page)).click();
     await page.waitForTimeout(2_000);
     const current = async () => ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
     expect(await current()).toBe(1);
@@ -492,12 +499,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     test(`${mode}: with the pointer resting on the page, the page's own consent dialog answered by ${key} gives it no gesture (A1)`, async ({ page }) => {
       const id = await publishLive(`A1 ${key} ${mode}`, ATTACKER(false), { comments: {} });
       const f = await openReady(page, id, mode);
-      await page.getByRole("textbox", { name: "Your name" }).click();
+      await (await nameField(page)).click();
       const fb = await frameBox(page);
       await restAt(page, fb.x + fb.width / 2, fb.y + fb.height / 2);
       // The dialog appears under the resting pointer.
       await f.evaluate(() => { void (window as unknown as { ask(): Promise<void> }).ask(); });
-      const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+      const allow = consent(page).getByRole("button", { name: "Allow", exact: true });
       await expect(allow).toBeEnabled();
       await page.keyboard.press("Tab");
       await expect(allow).toBeFocused();
@@ -523,7 +530,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const f = await openReady(page, id, mode);
       const pin = page.locator(".thread-pin");
       await expect(pin).toHaveCount(1);
-      const name = page.getByRole("textbox", { name: "Your name" });
+      const name = await nameField(page);
       await name.click();
       const pb = (await pin.boundingBox())!;
       const x = pb.x + pb.width / 2;
@@ -601,10 +608,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         if (verb === "send") {
           // A grant stored once.
           await f.evaluate(() => { void (window as unknown as { ask(): Promise<unknown> }).ask(); });
-          const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+          const allow = consent(page).getByRole("button", { name: "Allow", exact: true });
           await expect(allow).toBeEnabled();
           await allow.click();
-          await expect(page.getByRole("dialog")).toHaveCount(0);
+          await expect(consent(page)).toHaveCount(0);
         }
         let at: { x: number; y: number };
         if (target === "composer") {
@@ -616,7 +623,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
           const tb = (await page.locator(".composer textarea").boundingBox())!;
           at = { x: tb.x + tb.width / 2, y: tb.y + tb.height / 2 };
         } else {
-          const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+          const nb = (await (await nameField(page)).boundingBox())!;
           at = { x: nb.x + nb.width / 2, y: nb.y + nb.height / 2 };
         }
         const fb = await frameBox(page);
@@ -716,7 +723,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // Idle on the Comment button.
     await page.waitForTimeout(1_500);
     // Moving over the shell's sidebar and header.
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     const nb = (await name.boundingBox())!;
     for (let i = 0; i < 20; i++) { await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await page.waitForTimeout(100); }
     // Typing in the name field, with the pointer resting on the page.
@@ -758,7 +765,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const ctx = await browser.newContext({ hasTouch: true });
     const page = await ctx.newPage();
     const f = await openReady(page, id, mode);
-    const name = page.getByRole("textbox", { name: "Your name" });
+    const name = await nameField(page);
     const nb = (await name.boundingBox())!;
     await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 4 });
     await page.mouse.down();
@@ -779,10 +786,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
  * the viewer allows it. */
 async function grant(page: Page, f: Frame) {
   await f.evaluate(() => { void (window as unknown as { ask(): Promise<unknown> }).ask(); });
-  const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
+  const allow = consent(page).getByRole("button", { name: "Allow", exact: true });
   await expect(allow).toBeEnabled();
   await allow.click();
-  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await expect(consent(page)).toHaveCount(0);
 }
 
 /** After the page's timer has run: nothing was sent to the agent (and the
@@ -791,7 +798,7 @@ async function grant(page: Page, f: Frame) {
 async function expectRefused(page: Page, f: Frame | null, id: string, verb: "send" | "publish") {
   if (verb === "send") {
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
-    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(consent(page)).toHaveCount(0);
     if (f) expect(await f.evaluate(() => (window as unknown as { res: string[] }).res)).not.toContain("ok");
   } else {
     const cur = ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
@@ -809,7 +816,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
         if (verb === "send") await grant(page, f);
         // Focus in the name field, by the viewer's click.
-        const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+        const nb = (await (await nameField(page)).boundingBox())!;
         await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 8 });
         await page.mouse.down();
         await page.mouse.up();
@@ -871,7 +878,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
       if (verb === "send") await grant(page, f);
       // A frame of another origin beside the name field, as an extension injects.
-      const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+      const nb = (await (await nameField(page)).boundingBox())!;
       const xf = { x: nb.x, y: nb.y + nb.height + 40, w: 180, h: 50 };
       const src = d.base.replace("localhost", "127.0.0.1") + "/healthz";
       // Plain, or inside a shadow root on a custom element, as password
@@ -915,7 +922,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.up();
     // Focus stays in the page while the viewer scrolls the shell's header.
-    const nb = (await page.getByRole("textbox", { name: "Your name" }).boundingBox())!;
+    const nb = (await page.getByRole("button", { name: "People and agents" }).boundingBox())!;
     await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 8 });
     await page.mouse.wheel(0, 40);
     await page.waitForTimeout(200);

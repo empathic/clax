@@ -5,7 +5,7 @@
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
 import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, namedViewer, openArtifact, publishWith, reach, startDaemon, type FrameMode } from "./fixtures";
+import { contentFrame, namedViewer, openArtifact, publishWith, reach, startDaemon, type FrameMode, nameField } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -132,7 +132,8 @@ const CASES: Record<string, Case> = {
       // refused, with nothing written. The shell input is a click in the name
       // field just before, so the refusal does not depend on how long the
       // steps since Allow took.
-      await page.getByRole("textbox", { name: "Your name" }).click();
+      await (await nameField(page)).click();
+      await page.getByRole("dialog", { name: "People and agents" }).getByRole("button", { name: "Close" }).click();
       await reach(page, f.locator(".note"));
       await f.locator(".note").click();
       await expect(f.locator("#status")).toHaveText("shell_input_recent");
@@ -211,7 +212,7 @@ test("LAN: the tracker is readable, and writable only as far as the viewer's lev
   await expect(f.locator("#status")).toHaveText("add invalid_argument");
   await f.locator("#save-note").click();
   await expect(f.locator("#status")).toHaveText("note invalid_argument");
-  const name = page.getByRole("textbox", { name: "Your name" });
+  const name = await nameField(page);
   await name.fill("Sam");
   await Promise.all([page.waitForResponse(r => r.url().endsWith("/api/viewers/me") && r.request().method() === "PUT"), name.press("Enter")]);
   // After input to the shell the viewer's next click in the page comes after

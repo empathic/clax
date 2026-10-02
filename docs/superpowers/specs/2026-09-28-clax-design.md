@@ -1493,9 +1493,9 @@ A viewer with the artifact open reports `here` (tab visible) or `away`
 (hidden, or 5 minutes without input) every 30 s, and optionally `where` (the
 anchor label of the thread they have selected or are writing on, at most 80
 characters; the people panel's "Share where I'm looking" switch, on by
-default and stored per browser, stops it). The daemon keeps reports in
-memory; one lapses 90 s after the last, shows as "last here" for 10 minutes,
-then goes. Changes go out as `presence`.
+default and stored per browser, stops it), and `away` as they leave the
+page. The daemon keeps reports in memory; one lapses 90 s after the last,
+shows as "last here" for 10 minutes, then goes. Changes go out as `presence`.
 
 ## 11. Sessions and identity
 
