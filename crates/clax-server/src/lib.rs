@@ -12,6 +12,7 @@ pub mod http_cache;
 pub mod push;
 pub mod room;
 pub mod routes;
+pub mod sample;
 pub mod shell_route;
 pub mod state;
 #[cfg(feature = "test-support")]

@@ -32,4 +32,6 @@ pub struct AppState {
     pub codex: Arc<crate::push::CodexPush>,
     /// The live rooms of the `room` capability (memory only).
     pub rooms: Arc<crate::room::Rooms>,
+    /// The `sample` capability's provider and settings.
+    pub sample: Arc<crate::sample::Sampler>,
 }
