@@ -636,4 +636,55 @@ describe("ArtifactController", () => {
     expect(document.activeElement).toBe(frame);
     ctl.dispose();
   });
+
+  describe("batch send", () => {
+    const batchSeed: Seed = {
+      threads: [thread("t1"), thread("t2")],
+      artifact: { participants: { people: [], agents: [{ handle: "a_cl", harness: "claude", live: true }] } },
+      routes: (url, init) => (init?.method === "POST" && String(url).endsWith("/threads:send")
+        ? { threads: [thread("t1", { sent_to_agent: true }), thread("t2", { sent_to_agent: true })], sent: ["t1", "t2"], unchanged: [] }
+        : undefined),
+    };
+    afterEach(() => localStorage.clear());
+
+    it("ticks a range, sends it as one batch to the default agent with the note, then clears", async () => {
+      const { ctl } = await started(batchSeed);
+      await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+      const [t1, t2] = ctl.state.get().threads;
+      expect(ctl.state.get().sendTo).toBe("a_cl");
+      ctl.toggleSelect(t1, false);
+      ctl.toggleSelect(t2, true);
+      ctl.setBatchNote("Before the demo");
+      await ctl.sendSelection();
+      const call = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(([u]) => String(u).endsWith("/threads:send"))!;
+      expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ thread_ids: ["t1", "t2"], note: "Before the demo", to: "a_cl" });
+      expect(ctl.state.get()).toMatchObject({ selection: { ids: [], anchor: null }, batchNote: "", batchBusy: false });
+      ctl.dispose();
+    });
+
+    it("drops a thread from the selection when it disappears", async () => {
+      const { ctl } = await started(batchSeed);
+      await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+      const [t1, t2] = ctl.state.get().threads;
+      ctl.toggleSelect(t1, false);
+      ctl.toggleSelect(t2, false);
+      FakeES.last!.emit("thread_deleted", { type: "thread_deleted", artifact_id: ID, thread_id: "t1" });
+      await Promise.resolve();
+      expect(ctl.state.get().selection.ids).toEqual(["t2"]);
+      ctl.dispose();
+    });
+
+    it("names no target with no live agent, and sends the batch without to", async () => {
+      const { ctl } = await started({ ...batchSeed, artifact: { participants: { people: [], agents: [] } } });
+      await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
+      const [t1, t2] = ctl.state.get().threads;
+      expect(ctl.state.get().sendTo).toBeNull();
+      ctl.toggleSelect(t1, false);
+      ctl.toggleSelect(t2, false);
+      await ctl.sendSelection();
+      const call = (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.find(([u]) => String(u).endsWith("/threads:send"))!;
+      expect(JSON.parse((call[1] as RequestInit).body as string)).toEqual({ thread_ids: ["t1", "t2"], note: null });
+      ctl.dispose();
+    });
+  });
 });

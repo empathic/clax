@@ -12,8 +12,9 @@ import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEN
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
-import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendToAgent, upsert } from "../threads";
+import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
 import { afterPaint } from "./after-paint";
+import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
 import { type Boot, rememberFrameMode } from "./boot";
@@ -23,11 +24,12 @@ import type { FrameHost } from "./frame-host";
 import { type KeyAction, holdKeysAcrossLoad, keyAction, keysHeldAtLoad } from "./keys";
 import { keyboardTrail } from "./trail";
 import { type Ask, promptQueue } from "./prompt-queue";
+import { defaultTarget, rememberTarget } from "./send-target";
 import { Store } from "./store";
 import { type ThreadChange, ThreadSync } from "./thread-sync";
 import { setUrl, validHash } from "./url";
 import type { SetNotice } from "./viewer-name-model";
-import type { Working } from "./working-model";
+import type { AgentView, Working } from "./working-model";
 
 /** `file` is the page the frame opens on, from the shell URL (`index.html` when it names none). */
 export type ArtifactProps = { id: string; pinnedVersion: number | null; file?: string };
@@ -82,6 +84,18 @@ export type ViewState = {
   menu: "versions" | "people" | null;
   /** This viewer's looked-at marks on this artifact's threads (thread ID to when). */
   looked: Record<string, string>;
+  /** The artifact's agents, live first and most recently active first, as
+   * the daemon lists them: from the load, then from each refetch. */
+  agents: AgentView[];
+  /** The threads ticked for a batch send (spec §8), in the order ticked. */
+  selection: Selection;
+  /** The note the selection bar sends with the batch. */
+  batchNote: string;
+  /** A batch send is in flight. */
+  batchBusy: boolean;
+  /** The agent handle every Send goes to (`defaultTarget`, or the viewer's
+   * pick); null when no agent is live, and a Send then goes without `to`. */
+  sendTo: string | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -228,6 +242,7 @@ export class ArtifactController {
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
       decided: null, menu: null, looked: {},
+      agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -363,6 +378,11 @@ export class ArtifactController {
     // Comment mode cannot come on in a page whose comment part did not load,
     // however it was asked for: the viewer is told again instead.
     if (this.s.commenting && this.failedParts.has("comment")) this.state.set({ commenting: false, notice: `${PART_FAILED.comment}.` });
+    // A ticked thread that was deleted or resolved, or whose artifact went, leaves the selection.
+    if (prev.threads !== this.s.threads || prev.deleted !== this.s.deleted) {
+      const sel = prune(this.s.selection, this.s.threads, this.s.deleted);
+      if (sel !== this.s.selection) this.state.set({ selection: sel });
+    }
     if (this.turnFrom === null && this.s !== prev) {
       this.turnFrom = prev;
       queueMicrotask(() => this.rendered());
@@ -638,6 +658,7 @@ export class ArtifactController {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
     this.set(s => ({ data: d, working: d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.agentsChanged(d.artifact.participants?.agents ?? []);
     this.viewChanged();
     this.decideChangelog();
     this.writeSeen();
@@ -1126,6 +1147,8 @@ export class ArtifactController {
     if (e.type === "version" && e.n > this.latestKnown) { this.latestKnown = e.n; this.set({ newer: e.n }); }
     if (e.type === "artifact_deleted") this.set({ deleted: true });
     if (e.type === "working") this.set({ working: e.working });
+    // An agent may have started or ended: the Send target follows.
+    if (e.type === "working" || e.type === "version") this.refreshAgents();
     if (e.type === "thread") this.changeThreads(ts => upsert(ts, e.thread));
     if (e.type === "thread_deleted") { this.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); this.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
     if (e.type === "feedback_state") this.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
@@ -1137,9 +1160,49 @@ export class ArtifactController {
       getArtifact(this.id).then(d => {
         const n = d.artifact.current_version;
         this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
+        this.agentsChanged(d.artifact.participants?.agents ?? []);
         if (n > this.latestKnown) { this.latestKnown = n; this.set({ newer: n }); }
       }, err => { if (err instanceof ApiError && err.status === 404) this.set({ deleted: true }); });
     }
+  }
+
+  /** Takes the artifact's agents as listed now: the Send target stays while
+   * it names a live agent, else becomes the default (`defaultTarget`). */
+  private agentsChanged(agents: AgentView[]): void {
+    this.set(s => ({ agents, sendTo: s.sendTo !== null && agents.some(a => a.live && a.handle === s.sendTo) ? s.sendTo : defaultTarget(this.id, agents) }));
+  }
+
+  private agentsFetch = false;
+  /** Refetches the artifact's agents; one request at a time. */
+  private refreshAgents(): void {
+    if (this.agentsFetch || this.disposed) return;
+    this.agentsFetch = true;
+    getArtifact(this.id).then(d => this.agentsChanged(d.artifact.participants?.agents ?? []), () => {}).finally(() => { this.agentsFetch = false; });
+  }
+
+  /** A send to `to` (or without one): remembered as this viewer's target on
+   * success. A target that ended since the last refetch (`unknown_agent`)
+   * refetches the agents, so the next Send names a live one; the failure
+   * shows and the send is never retried without `to`. */
+  private sendTracked<T>(p: Promise<T>, to: string | null): Promise<T> {
+    return p.then(v => { if (to !== null) rememberTarget(this.id, to); return v; }, (e: unknown) => {
+      if (e instanceof ApiError && e.code === "unknown_agent") this.refreshAgents();
+      throw e;
+    });
+  }
+
+  /** Sends `ids` as one batch with the selection bar's note to `sendTo`;
+   * on success the selection and note clear. One batch at a time. */
+  private async sendIds(ids: string[]): Promise<void> {
+    if (!ids.length || this.s.batchBusy) return;
+    const to = this.s.sendTo;
+    this.set({ batchBusy: true });
+    const r = await report(this.whileBusy(this.sendTracked(sendBatch(this.id, ids, this.s.batchNote.trim() || null, to), to)), SEND_FAILED, this.noticeFor(SEND_FAILED));
+    if (r) {
+      this.changeThreads(ts => r.threads.reduce((all, t) => upsert(all, t), ts));
+      this.set({ selection: EMPTY_SELECTION, batchNote: "" });
+    }
+    this.set({ batchBusy: false });
   }
 
   private saveThread(p: Promise<Thread>, prefix: string): void {
@@ -1221,7 +1284,19 @@ export class ArtifactController {
     this.openPage(t.anchor.file);
   }
 
-  sendThread(t: Thread): void { this.saveThread(sendToAgent(this.id, t.id), SEND_FAILED); }
+  sendThread(t: Thread): void { const to = this.s.sendTo; this.saveThread(this.sendTracked(sendToAgent(this.id, t.id, to), to), SEND_FAILED); }
+  /** Ticks or unticks `t`; with `shift`, every card between the last one
+   * ticked and `t` in `order`, the sidebar's order of its cards (the
+   * threads' order without it). */
+  toggleSelect(t: Thread, shift: boolean, order: string[] = this.s.threads.map(x => x.id)): void { this.set(s => ({ selection: toggle(s.selection, t.id, shift, order) })); }
+  clearSelection(): void { this.set({ selection: EMPTY_SELECTION }); }
+  setBatchNote(v: string): void { this.set({ batchNote: v }); }
+  /** Sends the ticked threads as one batch. */
+  sendSelection(): Promise<void> { return this.sendIds(this.s.selection.ids); }
+  /** Sends every open thread not yet sent as one batch. */
+  sendUnsent(): Promise<void> { return this.sendIds(unsent(this.s.threads).map(t => t.id)); }
+  /** The agent picker: every Send goes to `handle` from now on, remembered for this artifact. */
+  chooseTarget(handle: string): void { rememberTarget(this.id, handle); this.set({ sendTo: handle }); }
   resolveThread(t: Thread): void { this.saveThread(resolveThread(this.id, t.id), RESOLVE_FAILED); }
   reply(t: Thread, body: string): void { this.saveThread(addComment(this.id, t.id, body), POST_FAILED); }
   composerInput(text: string): void { this.composerText = text; }

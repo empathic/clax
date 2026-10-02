@@ -849,6 +849,18 @@ describe("comments", () => {
     const v2 = JSON.parse((await pi.callTool("clax_publish", { id: v1.artifact_id, html: "<h2>Goals</h2>", note: "Done", addresses: [tid] }, ctx)).content[0].text!);
     expect(v2).toMatchObject({ version: 2, note: "Done", note_truncated: false, addressed: [tid] });
   });
+
+  it("tier 5: a batch reaches Pi as one follow-up message led by its note", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-batch");
+    await pi.emit("session_start", {}, ctx);
+    const aid = parts(await pi.callTool("clax_publish", { html: "<h2>Goals</h2>", title: "Pi batch" }, ctx)).json.artifact_id;
+    const ids = [await browserThread(aid, "one"), await browserThread(aid, "two")];
+    const res = await fetch(`${daemon.base}/api/artifacts/${aid}/threads:send`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ thread_ids: ids, note: "Together" }) });
+    expect(res.status).toBe(200);
+    await expect.poll(() => pi.sent.length, { timeout: 20_000 }).toBe(1);
+    expect(String(pi.sent[0].content)).toMatch(/^\[clax\] 2 comments sent to you:\n\[clax\] 2 comments on "Pi batch", sent together by Viewer\. Note: "Together"\n/);
+    await pi.emit("session_shutdown", {}, ctx);
+  });
 });
 
 /** The timer functions as they were before any test replaced them. */

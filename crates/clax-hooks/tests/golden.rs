@@ -612,3 +612,142 @@ fn claude_working_through_a_turn() {
 fn codex_working_through_a_turn() {
     working_through_a_turn("codex", "cx-work-1");
 }
+
+#[test]
+fn a_batch_blocks_the_stop_once_with_every_thread() {
+    let d = Daemon::start();
+    let (_sid, aid) = d.session_with_artifact("claude", "cc-batch");
+    let mut tids = Vec::new();
+    for body in ["one", "two", "three"] {
+        let form = reqwest::blocking::multipart::Form::new()
+            .text(
+                "anchor",
+                r#"{"kind":"element","selector":"body > h2","quote":"Goals"}"#,
+            )
+            .text("body", body)
+            .text("version", "1");
+        let v: Value = d
+            .http()
+            .post(format!("{}/api/artifacts/{aid}/threads", d.base()))
+            .multipart(form)
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        tids.push(v["thread"]["id"].as_str().unwrap().to_string());
+    }
+    let res = d
+        .http()
+        .post(format!("{}/api/artifacts/{aid}/threads:send", d.base()))
+        .json(&serde_json::json!({"thread_ids": tids, "note": "All three"}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut stop_in: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+    stop_in["session_id"] = "cc-batch".into();
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    let reason = one_line_json(&r.stdout)["reason"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert!(reason.starts_with("[clax] 3 comments sent to you:\n[clax] 3 comments on \"Hooked\", sent together by Viewer. Note: \"All three\"\n"), "{reason}");
+    for t in &tids {
+        assert!(reason.contains(t.as_str()), "{reason}");
+    }
+    stop_in["stop_hook_active"] = true.into();
+    assert_eq!(
+        hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes()).stdout,
+        ""
+    );
+}
+
+#[test]
+fn a_send_to_one_agent_blocks_only_its_stop_and_later_comments_follow_it() {
+    let d = Daemon::start();
+    let (_owner, aid) = d.session_with_artifact("claude", "cc-owner");
+    let w: Value = d.http().post(format!("{}/api/sessions", d.base())).bearer_auth(d.token())
+        .json(&serde_json::json!({"harness": "claude", "harness_session_id": "cc-watcher", "cwd": "/tmp/project"}))
+        .send().unwrap().json().unwrap();
+    let watcher = w["session"]["id"].as_str().unwrap().to_string();
+    let res = d
+        .http()
+        .put(format!("{}/api/sessions/{watcher}/watches/{aid}", d.base()))
+        .bearer_auth(d.token())
+        .send()
+        .unwrap();
+    assert!(res.status().is_success());
+    let a: Value = d
+        .http()
+        .get(format!("{}/api/artifacts/{aid}", d.base()))
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    // The watcher watched last, so it is the most recently active live agent and leads the list (Task 15).
+    let first = &a["artifact"]["participants"]["agents"][0];
+    assert_eq!(first["live"], true);
+    let handle = first["handle"].as_str().unwrap().to_string();
+    let form = reqwest::blocking::multipart::Form::new()
+        .text(
+            "anchor",
+            r#"{"kind":"element","selector":"body > h2","quote":"Goals"}"#,
+        )
+        .text("body", "two columns")
+        .text("version", "1");
+    let t: Value = d
+        .http()
+        .post(format!("{}/api/artifacts/{aid}/threads", d.base()))
+        .multipart(form)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    let tid = t["thread"]["id"].as_str().unwrap().to_string();
+    let res = d
+        .http()
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/send",
+            d.base()
+        ))
+        .json(&serde_json::json!({"to": handle}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let stop = |hsid: &str| {
+        let mut s: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+        s["session_id"] = hsid.into();
+        hook(&d.home(), "claude", "stop", s.to_string().as_bytes()).stdout
+    };
+    assert_eq!(
+        stop("cc-owner"),
+        "",
+        "the owner is not the agent the thread was sent to"
+    );
+    assert!(
+        one_line_json(&stop("cc-watcher"))["reason"]
+            .as_str()
+            .unwrap()
+            .contains("two columns")
+    );
+    let res = d
+        .http()
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            d.base()
+        ))
+        .json(&serde_json::json!({"body": "and the footer"}))
+        .send()
+        .unwrap();
+    assert_eq!(res.status(), 201);
+    assert_eq!(
+        stop("cc-owner"),
+        "",
+        "a later comment follows the thread's target"
+    );
+    assert!(
+        one_line_json(&stop("cc-watcher"))["reason"]
+            .as_str()
+            .unwrap()
+            .contains("and the footer")
+    );
+}
