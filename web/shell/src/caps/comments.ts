@@ -4,7 +4,9 @@
 // thread routes as this viewer after the viewer's consent, under the full
 // declaration only, marked as written by the page (`via_page`, which also
 // keeps an `@agent` in page text inert). customAnchors hands the page
-// anonymous thread handles and takes pin positions back.
+// anonymous thread handles and takes pin positions back. Clax's extensions
+// `working` and `onWorking` (clax-extensions.d.ts) read who is working, under
+// either form, with no consent and no gesture.
 //
 // The page never sees a thread's store ID: `create` answers an opaque handle,
 // and the write verbs act only on threads this page created in its current
@@ -32,6 +34,8 @@ import { seconds, takeSlot } from "./budget";
 import { CapError } from "./errors";
 import { SHELL_QUIET_MS, frameGesture, frameGestureStrict } from "./gesture";
 import type { HandlerFactory } from "./host";
+import type { Working } from "../view/working-model";
+import type { pageWorking } from "./working-page";
 
 export { MAX_TEXT_BYTES, textProblem } from "../../../bridge/src/text-rule";
 
@@ -164,6 +168,16 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
   let sent: { mode: boolean | null; canArea: boolean | null; composing: boolean | null; threads: string; listed: Set<string> } = { mode: null, canArea: null, composing: null, threads: "", listed: new Set() };
   /** Nonces of area composes whose clip is still to come (`composeClip`). */
   const pendingClips = new Set<string>();
+  /** The page follows the working state (`onWorking`). */
+  let watchingWorking = false;
+  const ownHandle = (id: string) => [...created].find(([, v]) => v === id)?.[0];
+  /** `pageWorking`, loaded on the page's first working call, off the path to first paint. */
+  let toPage: typeof pageWorking | null = null;
+  const loadWorking = async () => (toPage ??= (await import("./working-page")).pageWorking);
+  /** `list`: the event's list, which the view takes after its handlers hear the event. */
+  const pushWorking = (list?: Working[]) => {
+    if (watchingWorking && toPage && !disposed) env.post(event("working", toPage(list ?? env.working?.() ?? [], ownHandle)));
+  };
   /** The cached `canSendToClaude` answer and when it was asked. */
   let canSendCache: { at: number; answer: Promise<"available" | "no_session"> } | null = null;
 
@@ -520,6 +534,21 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
         case "exitMode":
           if (custom) ui().exitMode();
           return null;
+        // Clax extensions (clax-extensions.d.ts): read-only, under either
+        // declaration form, with no consent and no gesture.
+        case "working": {
+          const f = await loadWorking();
+          return f(env.working?.() ?? [], ownHandle);
+        }
+        case "watchWorking":
+          await loadWorking();
+          if (disposed) throw closed();
+          watchingWorking = true;
+          pushWorking();
+          return null;
+        case "unwatchWorking":
+          watchingWorking = false;
+          return null;
         default:
           throw new CapError("capability_removed", `comments.${String(method)} is not part of this runtime`);
       }
@@ -528,6 +557,7 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
       // Sessions starting or ending show in these; the next check asks again.
       if (e.type === "version" || e.type === "feedback_state" || e.type === "ready" || e.type === "resync") canSendCache = null;
       if (e.type === "thread" || e.type === "thread_resolved" || e.type === "thread_deleted") pushState();
+      if (e.type === "working") pushWorking(e.working);
     },
     uiChanged() {
       pushState();
@@ -542,11 +572,13 @@ export const commentsHandler: HandlerFactory = (env, grants) => {
     },
     reset() {
       created = new Map();
+      watchingWorking = false;
       canSendCache = null;
       endCustom();
     },
     dispose() {
       disposed = true;
+      watchingWorking = false;
       created = new Map();
       endCustom();
     },

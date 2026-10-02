@@ -192,7 +192,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
       body: JSON.stringify({ if_version: 1, files: { "index.html": { content: BOARD, encoding: "utf8" } } }),
     });
     expect(res.status).toBe(201);
-    await page.locator(".banner").getByRole("button", { name: "Reload" }).click();
+    await page.locator(".topbar").getByRole("button", { name: "Reload" }).click();
     f = await contentFrame(page, artifact.id, 2);
     await page.getByRole("button", { name: "Comment", exact: true }).click();
     await expect(f.locator("#status")).toHaveText("mode true");

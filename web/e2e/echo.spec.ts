@@ -35,7 +35,7 @@ test("at phone width the bar keeps the mark, title, Comment and the more menu in
   await expect(page.locator(".topbar a.home")).toBeVisible();
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open raw or copy link" })).toBeVisible();
-  await expect(page.locator(".topbar select.version")).toBeHidden();
+  await expect(page.locator(".topbar .vbtn")).toBeHidden();
   expect((await page.locator(".topbar").boundingBox())!.height).toBe(56);
   const tabs = page.getByRole("group", { name: "Page or threads" });
   await tabs.getByRole("button", { name: /Threads/ }).click();

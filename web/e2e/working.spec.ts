@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { test, expect } from "@playwright/test";
-import { api, openArtifact, postThread, publishAs, registerSession, setWorking, skewWorking, startDaemon } from "./fixtures";
+import { api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -7,6 +8,29 @@ test.afterAll(async () => { await d?.stop(); });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 for (const mode of ["subdomain", "sandbox"] as const) {
+  test(`${mode}: the page reads working state through the comments capability`, async ({ page }) => {
+    const html = readFileSync(new URL("./pages/working-cap.html", import.meta.url), "utf8");
+    const s = await registerSession(d.base, d.token, "codex", `cap-${mode}`);
+    const { artifact } = await publishWith(d.base, d.token, `Cap ${mode}`, html, { comments: {} });
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(frame.locator("#state")).toHaveText("none");
+    await page.getByLabel("Your name").fill("Alex");
+    await page.getByLabel("Your name").press("Enter");
+    // A write as the viewer needs their click in the page 5.5 s clear of
+    // their input to the shell (the name field).
+    await page.waitForTimeout(5_700);
+    await reach(page, frame.locator("#add"));
+    await frame.locator("#add").click();
+    await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
+    await expect.poll(() => frame.locator("body").getAttribute("data-handle")).toBeTruthy();
+    const tid = (await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`)).threads[0].id as string;
+    await setWorking(d.base, d.token, s.id, artifact.id, { message: "Chart", thread_ids: [tid] });
+    await expect(frame.locator("#state")).toHaveText("Codex|Chart|1|0");
+    expect(await frame.locator("body").getAttribute("data-handle")).not.toBe(tid);
+    await api(d.base, d.token, `/api/sessions/${s.id}/working/${artifact.id}`, { method: "DELETE" });
+    await expect(frame.locator("#state")).toHaveText("none");
+  });
+
   test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });

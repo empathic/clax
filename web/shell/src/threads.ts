@@ -11,6 +11,8 @@ export type Thread = {
   /** The display name of the viewer who resolved it, when they have one. */
   resolved_by_name?: string | null;
   comments: Comment[]; feedback_state: FeedbackState | null;
+  /** The versions that addressed this thread, oldest first. */
+  addressed_in?: number[];
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
 export type Viewer = { public_id: string; display_name: string | null; created_at: string };

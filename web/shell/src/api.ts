@@ -22,6 +22,8 @@ export type Version = {
   artifact_id: string; n: number; label: string | null; created_at: string; files: Record<string, FileMeta>;
   /** The publishing session's agent handle and harness. */
   agent?: string | null; agent_harness?: string | null;
+  /** The agent's note on what changed; the IDs of the threads this version addresses. */
+  note?: string | null; addresses?: string[];
 };
 
 /** A non-OK API response; `status` is the HTTP status code. */
@@ -59,6 +61,13 @@ export async function putLooked(aid: string, ids: string[]): Promise<Record<stri
     const r = await fetch("/api/viewers/me/looked", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, thread_ids: ids }) });
     return r.ok ? (await r.json()).looked : null;
   } catch { return null; }
+}
+
+/** Raises this viewer's version seen mark on `aid` to `n`; a failure is ignored (the next load writes again). */
+export async function putSeen(aid: string, n: number): Promise<void> {
+  try {
+    await fetch("/api/viewers/me/seen", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, version: n }) });
+  } catch { /* the next load writes again */ }
 }
 
 let tokenPromise: Promise<string | null> | null = null;

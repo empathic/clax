@@ -9,7 +9,7 @@ export const CAPABILITY_METHODS = {
   db: ["doc", "collection"],
   downloads: ["save"],
   user: ["isOwner", "canEdit", "can", "me", "id", "profiles", "name", "avatarUrl", "search", "email"],
-  comments: ["openComposer", "anchorFor", "create", "reply", "sendToClaude", "canSendToClaude", "resolve", "delete", "customAnchors"],
+  comments: ["openComposer", "anchorFor", "create", "reply", "sendToClaude", "canSendToClaude", "resolve", "delete", "customAnchors", "working", "onWorking"],
   assets: ["upload", "list", "delete"],
 } as const satisfies Record<string, readonly string[]>;
 

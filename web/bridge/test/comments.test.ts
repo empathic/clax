@@ -144,4 +144,22 @@ describe("comments (page side)", () => {
     await expect(ctl.compose(path, at) as Promise<unknown>).resolves.toEqual({ opened: true });
     ctl.release();
   });
+
+  it("onWorking shares one shell subscription and ends it with the last subscriber", async () => {
+    const f = fakeRpc(() => ({ working: false, agents: [] }));
+    const c = commentsLocals(f.rpc as never, {}, { ctx: commentsContext, clip: () => import("../src/parts/clip") }) as unknown as { onWorking(fn: (s: unknown) => void): Promise<() => void> };
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const offA = await c.onWorking(s => a.push(s));
+    const offB = await c.onWorking(s => b.push(s));
+    const methods = () => f.rpc.call.mock.calls.map(x => x[1]);
+    expect(methods().filter(m => m === "watchWorking")).toHaveLength(1);
+    f.emit("working", { working: true, agents: [] });
+    expect(a.at(-1)).toEqual({ working: true, agents: [] });
+    expect(b.at(-1)).toEqual({ working: true, agents: [] });
+    offA();
+    expect(methods()).not.toContain("unwatchWorking");
+    offB();
+    expect(methods()).toContain("unwatchWorking");
+  });
 });

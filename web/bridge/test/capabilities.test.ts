@@ -10,6 +10,11 @@ const contract = (file: string) =>
     .replace(/\/\*[\s\S]*?\*\//g, "")
     .replace(/^\s*\/\/.*$/gm, "");
 
+/** Clax's additions (clax-extensions.d.ts), read the same way. */
+const ext = readFileSync(resolve(__dirname, "../../contract/clax-extensions.d.ts"), "utf8")
+  .replace(/\/\*[\s\S]*?\*\//g, "")
+  .replace(/^\s*\/\/.*$/gm, "");
+
 /** Function names declared in a `namespace` (`function name(`). */
 const functions = (src: string) => [...new Set([...src.matchAll(/^\s*function (\w+)\(/gm)].map(m => m[1]))].sort();
 
@@ -41,7 +46,7 @@ describe("the namespace method lists match the 0.2.61 contract", () => {
     ["artifact", functions(contract("artifact"))],
     ["downloads", functions(contract("downloads"))],
     ["user", functions(contract("user"))],
-    ["comments", members(contract("comments"), "interface Comments {")],
+    ["comments", [...new Set([...members(contract("comments"), "interface Comments {"), ...members(ext, "interface Comments {")])].sort()],
     ["assets", members(contract("assets"), "interface Assets {")],
     ["db", members(contract("db"), "type DB = {")],
   ] as const)("%s", (name, expected) => {

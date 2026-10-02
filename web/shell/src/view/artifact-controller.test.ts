@@ -48,10 +48,38 @@ async function started(seed: Seed = {}) {
 const fromFrame = (win: Window, data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
 const hello = (win: Window, version = 2) => fromFrame(win, { type: "clax:hello", artifact: ID, version, file: "index.html" });
 
+const seed: Seed = {
+  threads: [thread("t1")],
+  versions: [
+    { artifact_id: ID, n: 1, label: null, created_at: "2026-09-30T09:00:00.000Z", files: {} },
+    { artifact_id: ID, n: 2, label: null, created_at: "2026-09-30T11:00:00.000Z", files: {}, addresses: ["t1"], note: "Two columns", agent: "a_1", agent_harness: "claude" },
+  ],
+  attention: { addressed: ["t1"], addressed_v: 2, new_replies: [], open_in: ["t1"], seen: 1, looked: {} },
+  routes: url => (url === "/api/viewers/me/seen" ? { seen: 2 } : url === "/api/viewers/me/looked" ? { looked: { t1: "x" } } : undefined),
+};
+
 describe("ArtifactController", () => {
   beforeEach(() => { vi.resetModules(); FakeES.last = undefined; history.replaceState(null, "", `/a/${ID}`); });
   // The gesture module this test's registry loaded watches the document until its `unwatchShell` runs.
   afterEach(async () => { (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });
+
+  it("decides the changelog once ready, writes seen for the unpinned latest, and batches looked-at marks", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const { ctl } = await started(seed);
+    await vi.waitFor(() => expect(ctl.state.get().decided).toEqual({ n: 2, ids: ["t1"], dot: true, line: "v2 addressed 1" }));
+    const puts = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls.filter(([, i]) => (i as RequestInit | undefined)?.method === "PUT");
+    await vi.waitFor(() => expect(puts().some(([u, i]) => String(u) === "/api/viewers/me/seen" && JSON.parse((i as RequestInit).body as string).version === 2)).toBe(true));
+    const t1 = ctl.state.get().threads.find(t => t.id === "t1")!;
+    ctl.look(t1);
+    ctl.look(t1);
+    await vi.advanceTimersByTimeAsync(1100);
+    const looked = puts().filter(([u]) => String(u) === "/api/viewers/me/looked");
+    expect(looked).toHaveLength(1);
+    expect(JSON.parse((looked[0][1] as RequestInit).body as string)).toEqual({ artifact_id: ID, thread_ids: ["t1"] });
+    expect(ctl.state.get().decided!.ids).toEqual(["t1"]);
+    ctl.dispose();
+    vi.useRealTimers();
+  });
 
   it("inserts the frame only once the artifact and the frame mode are known, with the gate already reset", async () => {
     const { ctl, frame } = await started();

@@ -2,7 +2,7 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type Version, getArtifact, getToken } from "../api";
+import { ApiError, type Artifact, type Attention, type Version, getArtifact, getToken, putLooked, putSeen } from "../api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -15,6 +15,7 @@ import { parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendToAgent, upsert } from "../threads";
 import { afterPaint } from "./after-paint";
 import { AnchorHandles } from "./anchor-handles";
+import type { Decided } from "./changelog-model";
 import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
@@ -74,6 +75,13 @@ export type ViewState = {
   working: Working[];
   /** The viewer's attention on this artifact; null without a viewer. */
   attention: Attention | null;
+  /** The changelog this load decided (spec §8): the Addressed group, the
+   * version button's dot and the summary line; null until the view is ready. */
+  decided: Decided | null;
+  /** The menu open from the top bar. */
+  menu: "versions" | "people" | null;
+  /** This viewer's looked-at marks on this artifact's threads (thread ID to when). */
+  looked: Record<string, string>;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -146,7 +154,7 @@ export class ArtifactController {
   // handler counts them; one that ends in a reload keeps its count). A page
   // publish by another view that arrives meanwhile is remembered in
   // `deferredPublish` (its version) and applied once the count drops to 0
-  // without a reload: a reload to the latest, or the banner when pinned.
+  // without a reload: a reload to the latest, or Reload in the top bar when pinned.
   private readonly ownPublish: { active: number; settled?(): void } = { active: 0 };
   private deferredPublish: number | null = null;
   // A thread on another page the viewer opened: the frame was sent to that
@@ -219,6 +227,7 @@ export class ArtifactController {
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
+      decided: null, menu: null, looked: {},
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -332,6 +341,13 @@ export class ArtifactController {
     return s.threads.filter(t => t.status === "open").length;
   }
 
+  /** The pin numbering the sidebar uses (`sidebarSections(...).numbers`,
+   * `pinPlaces`), by thread ID: the open threads found on the page shown. */
+  numbers(s: ViewState = this.s): Map<string, number> {
+    const attached = s.threads.filter(t => t.status === "open" && t.anchor.file === s.file && !(s.resolved[t.id] && !s.resolved[t.id].found));
+    return new Map(attached.map((t, i) => [t.id, i + 1]));
+  }
+
   // ---- state and reactions ----
 
   private set(patch: Partial<ViewState> | ((s: ViewState) => Partial<ViewState>)): void {
@@ -398,6 +414,8 @@ export class ArtifactController {
     if (prev.draft !== next.draft) this.draftChanged(next.draft, next.deleted);
     if (prev.hovered !== next.hovered || prev.selected !== next.selected || prev.threads !== next.threads) this.sendFocus();
     if (prev.draft?.clipToken !== next.draft?.clipToken || prev.draft?.capturing !== next.draft?.capturing) this.armCapture(next.draft);
+    if (prev.data !== next.data || prev.origin !== next.origin) this.decideChangelog();
+    if (prev.me !== next.me || prev.data !== next.data || prev.origin !== next.origin) this.writeSeen();
     if (prev.commenting !== next.commenting || prev.draft !== next.draft || prev.selected !== next.selected || prev.threads !== next.threads || prev.file !== next.file || prev.busy !== next.busy || host !== this.toldHost) {
       this.toldHost = host;
       host?.uiChanged();
@@ -508,6 +526,7 @@ export class ArtifactController {
         ownPublish: this.ownPublish,
         page: () => this.s.file,
         comments: this.commentsUi,
+        working: () => this.s.working,
         files: data.versions.find(v => v.n === shown)?.files,
       })));
       // It hears of the UI in the next reaction pass, as the effect that
@@ -598,6 +617,8 @@ export class ArtifactController {
     if (this.live || this.disposed) return;
     this.live = true;
     const boot = this.init.boot ?? null;
+    // This viewer, once known (the bootstrap, a lookup, or a rename).
+    this.offs.push(onViewer(v => this.set({ me: v })));
     if (boot) {
       seedViewer(boot.viewer);
       this.set({ threads: boot.threads });
@@ -616,8 +637,40 @@ export class ArtifactController {
   private loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
-    this.set(s => ({ data: d, working: d.artifact.working ?? [], attention, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    this.set(s => ({ data: d, working: d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
     this.viewChanged();
+    this.decideChangelog();
+    this.writeSeen();
+  }
+
+  /** The changelog for this load (spec §8): decided once the view is ready,
+   * and again when a newer latest version loads; never on the path to first
+   * paint. The decision stays frozen until then (decided: Q4). */
+  private decideFor = 0;
+  private decideChangelog(): void {
+    const s = this.s;
+    if (!viewReady(s)) return;
+    const latest = s.data.artifact.current_version;
+    if (this.decideFor === latest) return;
+    this.decideFor = latest;
+    const pinned = this.pinnedVersion !== null || this.shown(s) !== latest;
+    // Its code loads here, off the artifact entry.
+    void import("./changelog-model").then(m => {
+      if (this.decideFor === latest) this.set({ decided: m.decide(s.data.versions, latest, s.attention, pinned) });
+    }, () => {});
+  }
+
+  /** Writes the version seen once this viewer is known and views the
+   * unpinned latest. Separate from the decision: on a first visit there is
+   * no cookie yet, so `me` arrives after the decision, from `getViewer()`. */
+  private seenFor = 0;
+  private writeSeen(): void {
+    const s = this.s;
+    if (!viewReady(s) || !s.me || s.deleted) return;
+    const latest = s.data.artifact.current_version;
+    if (this.pinnedVersion !== null || this.shown(s) !== latest || this.seenFor === latest) return;
+    this.seenFor = latest;
+    void putSeen(this.id, latest);
   }
 
   /** The frame mode: this tab's cached probe; else the daemon's guess (from
@@ -699,6 +752,7 @@ export class ArtifactController {
     this.host?.dispose();
     this.host = null;
     this.clearPending();
+    clearTimeout(this.lookTimer);
     clearTimeout(this.hintTimer);
     clearTimeout(this.captureTimer);
     if (this.hashFrame) cancelAnimationFrame(this.hashFrame);
@@ -733,8 +787,8 @@ export class ArtifactController {
         const a = keyAction(e);
         if (a && this.shortcut(a)) e.preventDefault();
       } else if (e.key === "Escape" && e.type === "keydown") {
-        // Escape anywhere else closes the sheet, or else ends comment mode here.
-        if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
+        // Escape anywhere else closes the menu, else the sheet, or else ends comment mode here.
+        if (this.s.menu) this.set({ menu: null }); else if (this.s.sheet) this.set({ sheet: null }); else this.set({ commenting: false });
       }
     };
     // Who the keys belong to (`keysOwned`).
@@ -1058,7 +1112,7 @@ export class ArtifactController {
     if (e.type === "version" && e.by_page && e.n > this.shown()) {
       // The page republished itself (artifact.publish): every unpinned view
       // follows at once, on the page it shows (the new version carries every
-      // file forward); a pinned view gets the banner. The publishing view
+      // file forward); a pinned view is offered Reload in the top bar. The publishing view
       // reloads itself after its call result is posted; while one of its own
       // publishes is in flight, another view's publish waits for it to settle.
       if (this.ownPublish.active > 0) { this.deferredPublish = Math.max(this.deferredPublish ?? 0, e.n); return; }
@@ -1082,7 +1136,7 @@ export class ArtifactController {
       this.loadThreads();
       getArtifact(this.id).then(d => {
         const n = d.artifact.current_version;
-        this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention }));
+        this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
         if (n > this.latestKnown) { this.latestKnown = n; this.set({ newer: n }); }
       }, err => { if (err instanceof ApiError && err.status === 404) this.set({ deleted: true }); });
     }
@@ -1114,6 +1168,26 @@ export class ArtifactController {
     if (a === "help") this.set({ sheet: "keys" }); else this.toggleComment();
     return true;
   }
+  private readonly pendingLook = new Set<string>();
+  private lookTimer: ReturnType<typeof setTimeout> | undefined;
+  /** This viewer looked at `t` (spec §10, "Participants and attention";
+   * decided: Q4); marks go out at most once a second. */
+  look(t: Thread): void {
+    const mark = this.s.looked[t.id];
+    if (mark && mark >= (t.comments.at(-1)?.created_at ?? "")) return;
+    this.pendingLook.add(t.id);
+    this.lookTimer ??= setTimeout(() => {
+      this.lookTimer = undefined;
+      const ids = [...this.pendingLook];
+      this.pendingLook.clear();
+      void putLooked(this.id, ids).then(m => { if (m && !this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } })); });
+    }, 1000);
+  }
+
+  /** Opens menu `m` from the top bar, or closes it when open. */
+  openMenu(m: "versions" | "people"): void { this.set(s => ({ menu: s.menu === m ? null : m })); }
+  closeMenu(): void { this.set({ menu: null }); }
+
   /** The version menu: the latest is the unpinned URL. */
   chooseVersion(n: number): void { nav.assign(this.here(n === this.latest() ? null : n)); }
   copyLink(): void { navigator.clipboard.writeText(location.origin + this.here(this.pinnedVersion) + location.hash).catch(() => {}); }
@@ -1128,6 +1202,7 @@ export class ArtifactController {
    * (given up with a notice when that page does not greet in `pageWait.ms`). */
   selectThread(t: Thread): void {
     this.set({ selected: t.id });
+    this.look(t);
     this.clearPending();
     if (t.anchor.file === this.s.file) {
       // A custom-anchors page brings its own threads into view; the shell

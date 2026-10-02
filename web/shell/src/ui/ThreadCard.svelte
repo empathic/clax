@@ -1,7 +1,8 @@
 <script lang="ts">
   import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel } from "../threads";
-  import type { HistoryEvent } from "../view/history-model";
+  import type { Version } from "../api";
+  import { type HistoryEvent, addressedNote } from "../view/history-model";
   import { authorLabel } from "../view/sidebar-model";
   import { guardedAction } from "../view/trail";
   import { waitingLabel } from "../waiting";
@@ -19,18 +20,32 @@
     when: string;
     /** An agent working on the thread now: replaces the waiting line. */
     marker?: { text: string; since: string } | null;
+    /** The artifact's versions: an agent's reply says which one addressed the thread. */
+    versions?: Version[];
+    /** The card has been at least half visible for a second (decided: Q4). */
+    onSeen?(t: Thread): void;
     onSelect(t: Thread): void; onSend(t: Thread): void; onResolve(t: Thread): void; onReply(t: Thread, body: string): void; onHover?(t: Thread | null): void;
   };
-  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
+  let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
   let hint: string | null = $state(null);
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
+  const seen = (el: HTMLElement) => {
+    if (!onSeen || typeof IntersectionObserver !== "function") return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const io = new IntersectionObserver(([e]) => {
+      clearTimeout(timer);
+      if (e.intersectionRatio >= 0.5) timer = setTimeout(() => onSeen(t), 1000);
+    }, { threshold: [0, 0.5] });
+    io.observe(el);
+    return () => { clearTimeout(timer); io.disconnect(); };
+  };
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
 </script>
 
 <!-- The card's header button is its keyboard path; a click anywhere else on the card is a pointer shortcut to the same action. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)}
+<article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)} {@attach seen}
   onmouseenter={() => onHover?.(t)} onmouseleave={() => onHover?.(null)}>
   <header>
     <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
@@ -40,8 +55,9 @@
   </header>
   {#if t.clip_url}<img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />{/if}
   {#each t.comments as c (c.id)}
+    {@const note = addressedNote(t, c, versions)}
     <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
-      <b class="author">{authorLabel(c)}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b>
+      <b class="author">{authorLabel(c)}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b>
       <p class="body">{c.body}</p>
     </div>
   {/each}

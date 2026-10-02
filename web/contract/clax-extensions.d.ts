@@ -34,4 +34,41 @@ declare namespace ClaxExtensions {
    * One retry from a fresh gesture is reasonable.
    */
   type CommentsErrorCode = ShellInputRecent;
+
+  /** One agent session working on this artifact now (`comments.working()`). */
+  interface WorkingAgent {
+    /** `"claude"`, `"codex"`, `"pi"`, or another harness name. */
+    harness: string;
+    /** The harness as people read it ("Claude Code"). */
+    label: string;
+    /** The agent's own words, at most 140 characters; treat as untrusted text. */
+    message: string | null;
+    /** When it started (ISO 8601). */
+    since: string;
+    /** Handles of threads THIS document created that the agent is acting on. */
+    threads: string[];
+    /** How many other threads it is acting on. */
+    otherThreads: number;
+  }
+
+  /** What `working()` resolves and `onWorking` reports. */
+  interface WorkingState {
+    working: boolean;
+    /** Newest first. */
+    agents: WorkingAgent[];
+  }
+
+  /**
+   * Members Clax adds to the `comments` namespace (`comments.d.ts`
+   * `interface Comments`). Granted under either declaration form, including
+   * `composer_only` (which otherwise grants only openComposer and
+   * anchorFor), with no consent prompt and no gesture. They never name a
+   * session or a thread's store ID.
+   */
+  interface Comments {
+    /** Which agents are working on this artifact now. Read-only. */
+    working(): Promise<WorkingState>;
+    /** Calls `fn` with the current state, then on every change. Resolves a function that stops the calls. */
+    onWorking(fn: (state: WorkingState) => void): Promise<() => void>;
+  }
 }

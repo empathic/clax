@@ -285,13 +285,14 @@ type PartName = keyof Parts;
         if (commentsContext.live) return;
         const r = l.part.resolveAnchor(document, m.anchor, undefined, meta.file, undefined, m.sameVersion === true);
         if (!r) return;
+        const behavior: ScrollBehavior = self.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
         if (m.anchor.kind === "area" && m.anchor.area) {
           // The drawn area is centred, not its element (often far taller).
           const a = placeOf(l, m.anchor, r);
-          scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior: "smooth" });
+          scrollBy({ left: a.x + a.w / 2 - innerWidth / 2, top: a.y + a.h / 2 - innerHeight / 2, behavior });
           setTimeout(() => l.mode.showFocus(placeOf(l, m.anchor, r), true), 350);
         } else {
-          r.element.scrollIntoView({ block: "center", behavior: "smooth" });
+          r.element.scrollIntoView({ block: "center", behavior });
           setTimeout(() => l.mode.flash(r.range ?? r.element), 350);
         }
       })); break;
