@@ -1534,7 +1534,7 @@ The thread's waiting indicator follows the `feedback_state` event:
 
 | State | Indicator |
 |---|---|
-| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the end of its turn, Codex to pick up the queued message, Pi to take the message>" |
+| `sent` | "sent, waiting for the agent · <elapsed> · waiting on <the tier: its next clax tool call, the agent finishing its current work, Codex to pick up the queued message, Pi to take the message>" |
 | `delivered` | "delivered via <tier> · <elapsed> ago · not yet acknowledged" (then "· resent once" or "· resent N times"); "delivered, not acknowledged" after three resends |
 | `acknowledged` | "seen by the agent" |
 | `agent_ended` | "agent session ended; waiting for a new one" |
