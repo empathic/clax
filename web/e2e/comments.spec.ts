@@ -38,7 +38,7 @@ test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ 
   await expect(page.locator("button.thread-pin")).toHaveCount(1);
   await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
-  await expect(card.locator(".waiting")).toContainText("waiting on the end of its turn");
+  await expect(card.locator(".waiting")).toContainText("waiting on the agent finishing its current work");
   const tid = (await card.getAttribute("data-thread"))!;
   await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${tid}/comments`, { method: "POST", session: s.id, body: JSON.stringify({ body: "Done: two columns.", author_kind: "agent" }) });
   await expect(card.locator(".msg.agent .author")).toContainText("claude");

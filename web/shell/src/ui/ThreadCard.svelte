@@ -75,7 +75,7 @@
   {:else if label}<p class="st waiting">{label}</p>{/if}
   {#if history.length}
     <ul class="hist" aria-label="History">
-      {#each history as e, i (i)}<li class={["ev", e.agent && "agent"]}>{#if i}{" "}<span class="sep">·</span>{" "}{/if}{#if e.v !== null}<span class="vt">v{e.v}</span>{" "}{/if}<b>{e.who}</b>{" "}{e.verb}</li>{/each}
+      {#each history as e, i (i)}{#if i && e.v !== null}<li class="br" aria-hidden="true"></li>{/if}<li class={["ev", e.agent && "agent", i && e.v !== null && "nl"]}>{#if i}{" "}<span class="sep">·</span>{" "}{/if}{#if e.v !== null}<span class="vt">v{e.v}</span>{" "}{/if}<b>{e.who}</b>{" "}{e.verb}</li>{/each}
     </ul>
   {/if}
   {#if t.status === "open"}

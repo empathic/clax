@@ -16,19 +16,21 @@ describe("working-model", () => {
 
   it("reads the summary for one agent, all yours, some yours, a message, and nobody", () => {
     const names = agentNames([w({})], agents);
-    const base = { names, open: 3, idle: [], addressed: null, published: null, now };
+    const base = { names, open: 3, idle: [], addressed: null, published: null, rally: false, now };
     expect(summary({ ...base, working: [w({ thread_ids: ["a", "b"] })], mine: new Set(["a", "b"]) }))
       .toEqual({ line1: "claude working on 2", agent: true, line2: "all yours", elapsed: "0:42" });
     expect(summary({ ...base, working: [w({ thread_ids: ["a", "b"] })], mine: new Set(["a"]) }).line2).toBe("1 yours");
     expect(summary({ ...base, working: [w({ message: "Rebuilding the chart" })], mine: new Set() }).line1).toBe("claude: Rebuilding the chart");
     expect(summary({ ...base, working: [], mine: new Set(), idle: ["codex"] })).toEqual({ line1: "Nobody working", agent: false, line2: "3 open threads · codex idle", elapsed: null });
     expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3" })).toEqual({ line1: "v5 addressed 3", agent: false, line2: "yours, not looked at yet", elapsed: null });
+    expect(summary({ ...base, working: [], mine: new Set(), rally: true }).line2).toBe("3 open threads · rally of 10");
+    expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3", rally: true }).line2).toBe("yours, not looked at yet");
     expect(summary({ ...base, working: [], mine: new Set(), published: 3 })).toEqual({ line1: "v3 published", agent: false, line2: "reload to see it", elapsed: null });
   });
 
   it("lists several agents and counts distinct threads", () => {
     const list = [w({ thread_ids: ["a", "b"] }), w({ key: "k2", agent: "a_2222bbbb", harness: "codex", thread_ids: ["b", "c"], started_at: "2026-09-30T10:00:10.000Z" })];
-    expect(summary({ working: list, names: agentNames(list, agents), mine: new Set(), open: 3, idle: [], addressed: null, published: null, now }).line1).toBe("codex, claude working on 3");
+    expect(summary({ working: list, names: agentNames(list, agents), mine: new Set(), open: 3, idle: [], addressed: null, published: null, rally: false, now }).line1).toBe("codex, claude working on 3");
     expect(chips(list, agentNames(list, agents))).toEqual(["codex working on 2", "claude working on 2"]);
   });
 
