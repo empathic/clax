@@ -5,7 +5,10 @@ import { areaLabel } from "../threads";
  * empty. `label` is a page's words for the spot, shown in place of the quote. */
 /** `capturing`: its screenshot is still being taken, and arrives under
  * `clipToken` (`attachClip`). */
-export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string };
+/** `byPage`: the page opened (or moved) this composer through the `comments`
+ * capability, not the viewer's own pick, so its Post takes only a pointer's
+ * click (`guardedAction`). */
+export type Draft = { pickId: string; anchor: Anchor; version: number; clip: Blob | null; clipError?: string; label?: string; capturing?: boolean; clipToken?: string; byPage?: boolean };
 
 /** How long a composer waits for a screenshot still being taken before it
  * says none was taken (the bridge's clip limit plus a margin; settable for tests). */

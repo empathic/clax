@@ -1056,7 +1056,8 @@ the artifact's latest URL (not at a pinned version). `GET
 /api/viewers/me/seen?artifact=<aid>` answers `{"seen": <n>}`, or `{"seen":
 null}` when the viewer has none or there is no viewer cookie; an unknown
 artifact is 404. `PUT /api/viewers/me/seen` with `{"artifact_id",
-"version"}` raises the mark to `version` (it never lowers it) and answers
+"version"}` raises the mark to `version`, or to the latest version when
+`version` is higher (it never lowers it), and answers
 `{"seen": <the mark after the write>}`; without a viewer cookie it is 400
 `no_viewer`. A viewer keeps marks on its 200 most recently marked artifacts;
 older ones are dropped. A viewer's seen mark is public: it is the `seen` of
@@ -1121,6 +1122,15 @@ every live artifact, with the fields above except `looked`, and
 `{"artifacts": {}}` without a viewer cookie or with one that names no
 viewer. The `/a/<id>` bootstrap carries `participants` in its artifact and,
 for the cookie's existing viewer, `attention` at the top level.
+
+`PUT /api/viewers/me/presence` with `{"artifact_id", "state": "here" |
+"away", "where"?}` (a viewer route; 400 `no_viewer` without a viewer
+cookie) reports this viewer on the artifact and answers `{"people":
+[{public_id, display_name, state, where, since}]}`, as `GET
+/api/artifacts/<aid>/presence` does without a cookie; `presence` events
+carry the same list. An artifact lists at most 64 people: a newcomer takes
+the place of the gone person whose last report is oldest, and with none
+gone the report is 429 `limit_reached`.
 
 ### The `comments` capability
 
@@ -1600,7 +1610,11 @@ or by `GROK_SESSION_ID`; it never starts a daemon, follows the session
 across daemon restarts, and exits 0 once the session has ended (at once
 for `--session`; after 60 s with no live Clax session for a harness
 session). `status`'s `push` for a Grok session is `{"tier": "monitor",
-"available": <a follower polled within 15 s>, "reason": …}`.
+"available": <a follower polled within 15 s>, "reason": …,
+"follow_command": …}`, where `follow_command` is the command the skill gives
+Grok's `monitor` tool as is: `'<binary>' feedback follow --agent grok
+--harness-session '<harness session ID>'`, each value one single-quoted
+shell word (absent without a harness session ID).
 
 With `--once`, it exits 0 after the first poll that printed at least one
 line, or when the session ends.
@@ -1661,6 +1675,15 @@ the version menu lists every version's note. Each thread's history line
 shows what happened on which version. When the person sends several
 threads, or several agents work on one artifact, the person picks the agent;
 the payload is the same.
+
+Send, Resolve, Reply, the batch Send and "Send N unsent", Post in a
+composer the page opened, and the consent prompt's Allow run only on a
+trusted pointer's click once focus has entered the shell from the frame or
+from `<body>` without a press of the person's on a shell control, which is
+how every load starts; Allow always takes a click. Enter, Space, ⌘↵ or an
+assistive technology's activation then does nothing and the action says
+"Click to <verb>". No key lifts it; a press that puts focus on a shell
+control does.
 
 ## Page contract
 
@@ -1944,7 +1967,8 @@ sent latest-wins. A topic matches `^[a-z][a-z0-9_.-]{0,47}$` and a room name
 bytes of JSON and 8 levels deep. Presence keys match
 `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and are never `prototype` or a name
 `Object.prototype` carries. A socket joins at most 16 named rooms, and an
-artifact declares at most 16 topics.
+artifact declares at most 16 topics. The daemon reads at most 64 KiB of one
+message; a larger one closes the socket with 1009.
 
 **The relay (bridge and shell, namespace `room`).** Calls: `connect()`,
 `presence(room: string | null, state)`, `emit(room, topic[, data]) →
@@ -2313,7 +2337,9 @@ harness and the daemon, each `ok` or failed with the fix:
   origin) with 403 `forbidden_origin`, so a published page cannot call them
   itself: it writes only through the shell's `comments` capability, after
   the viewer's consent; requests without an `Origin` header (scripts) are
-  allowed. The daemon serves plain HTTP only. A viewer is identified by the
+  allowed, unless their `Sec-Fetch-Site` is `same-site` or `cross-site` (a
+  page's `<img>` or other no-cors GET, which browsers send without
+  `Origin`), which are refused with 403 `forbidden_origin` too. The daemon serves plain HTTP only. A viewer is identified by the
   `clax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
   the daemon accepts only when it is a ULID. The cookie never leaves the
   daemon: no response body, event, thread view, comment, or log carries it.
@@ -2446,6 +2472,57 @@ harness and the daemon, each `ok` or failed with the fix:
 - `just dev claude` loads the checkout's plugin with `--plugin-dir`, which
   has no `plugin:<name>@<marketplace>` entry, so dev sessions use the
   background fallback.
+
+- A page decides when the viewer's keys leave its frame: it can push focus
+  out with `parent.focus()`, or run out of fields on the viewer's Tab. Two
+  rules stand against it. A give-back returns focus to the frame when the
+  page pushed it to the shell's `<body>`, swallowing the key that found it
+  there. And the keyboard trail (above, "What the person sees") keeps every
+  consequential action to a pointer's click. What the viewer's typing can
+  still do on the shell's controls is select a thread, tick a card's box,
+  type into the Reply field (never posted by a key), and turn comment mode
+  or the keys sheet on with C or `?`.
+- Keyboard-only and screen-reader viewers cannot complete Send, Resolve,
+  Reply, a batch send, Post in a composer the page opened, or Allow by key
+  once the trail is tainted, which is every load: they need a pointer, as no
+  key can be told from one the page coaxed. Safari and Firefox on macOS do
+  not focus a button on click, so there a click on a button acts but leaves
+  the trail tainted; a click in a text field clears it.
+- A subdomain-mode page has no `sandbox`, so with the viewer's activation it
+  can navigate the whole window, to another site or to a fresh Clax load,
+  and it can `window.open` the shell's URL. A fresh load starts with the
+  trail tainted and C and `?` live, as every load does.
+- A pin that keeps moving never takes a press: a pin settles for
+  `ALLOW_DELAY_MS` after it appears or moves, so one whose place changes at
+  least that often is reached from its card. A pin the page parks under a
+  pointer that rests longer than that takes the click, which costs a
+  selection and gives C and `?` back.
+- A page shares its realm with the bridge, so while the viewer has comment
+  mode on it can report a pick the viewer did not make; the composer that
+  opens holds only what the viewer types into it.
+- Over the LAN, anyone who reaches the daemon can make viewers, threads,
+  comments, sends to the agent and `db` documents at their level, with no
+  rate limit; the LAN bind is for a network the person trusts. Room sockets
+  and event streams have no idle timeout and no cap on how many one caller
+  holds open; each needs an open connection.
+- What any viewer may read, including over the LAN without the token: every
+  artifact, its threads (also on `/api/events?types=thread`), working lists
+  with agent messages (`/api/events?types=working`), presence, and the
+  public seen marks, each the viewer's own claim. A page that declares
+  `comments` reads its own artifact's working list (`working()`,
+  `onWorking`) without consent.
+- Token holders are trusted with every working record: a working write
+  names any live session, its `DELETE ?thread_ids=` takes unvalidated IDs,
+  the registry has no cap beyond 20 threads per record and one record per
+  session and artifact, and a debug build serves `POST
+  /api/_test/working/skew`. A publish's `addresses` may name resolved
+  threads. Events from separate writes may arrive in either order; each
+  working event carries the whole list.
+- The hooks trust `GROK_SESSION_ID`, `sessionId` and Grok's Stop `reason`
+  as the harness sets them (a Stop with no reason ends the turn); anything
+  that can set them runs as the person and can read `daemon.json`.
+- `GET /api/viewers/me/attention` costs work in proportion to the threads a
+  viewer is in across every artifact.
 
 Open follow-ups, and the checks that still need a real harness or GitHub,
 are listed in [`docs/follow-ups.md`](follow-ups.md).

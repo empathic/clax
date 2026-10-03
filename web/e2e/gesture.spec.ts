@@ -353,7 +353,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
   });
 
-  test(`${mode}: after the viewer answers Allow with Enter, the pointer resting over the page, the page cannot send to the agent`, async ({ page }) => {
+  test(`${mode}: Enter on Allow, the pointer resting over the page, grants nothing and the page cannot send to the agent`, async ({ page }) => {
     const id = await publishLive(`Allow key ${mode}`, ATTACKER(true), { comments: {} });
     const f = await openReady(page, id, mode);
     const dialog = consent(page);
@@ -365,10 +365,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.keyboard.press("Tab");
     await expect(allow).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
+    // The page opened the dialog, so Allow takes only a pointer's click.
+    await expect(dialog.locator(".act-hint")).toHaveText("Click to allow");
+    await expect(allow).toBeVisible();
     await page.waitForTimeout(300);
+    await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
     await go(f, "send");
-    await expect(f.locator("#result")).toHaveText("claude_unavailable");
+    await expect(f.locator("#result")).not.toHaveText("sent");
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
   });
 
@@ -496,7 +499,7 @@ async function restAt(page: Page, x: number, y: number) {
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   for (const key of ["Enter", "Space"] as const) {
-    test(`${mode}: with the pointer resting on the page, the page's own consent dialog answered by ${key} gives it no gesture (A1)`, async ({ page }) => {
+    test(`${mode}: with the pointer resting on the page, ${key} on the page's own consent dialog grants nothing and gives it no gesture (A1)`, async ({ page }) => {
       const id = await publishLive(`A1 ${key} ${mode}`, ATTACKER(false), { comments: {} });
       const f = await openReady(page, id, mode);
       await (await nameField(page)).click();
@@ -509,8 +512,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await page.keyboard.press("Tab");
       await expect(allow).toBeFocused();
       await page.keyboard.press(key);
-      await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
+      // The page opened the dialog, so Allow takes only a pointer's click.
+      await expect(consent(page).locator(".act-hint")).toHaveText("Click to allow");
+      await expect(allow).toBeVisible();
       await page.waitForTimeout(300);
+      await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
       await go(f, "send");
       await expect(f.locator("#result")).not.toHaveText("sent");
       expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);

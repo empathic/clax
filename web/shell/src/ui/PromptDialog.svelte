@@ -4,17 +4,19 @@
   // as it is inserted, before its first paint), and "Allow" stays inert for
   // ALLOW_DELAY_MS counted from the dialog's first paint, so a keystroke or
   // click meant for the page cannot grant consent, however long the page
-  // keeps the main thread busy before that paint. A press that began before
-  // "Allow" was armed never grants: a pointer click counts only when the same
-  // pointer (by its pointerId) went down after arming, and a key click (Enter
-  // or Space) only when its key went down after arming and was not held from
-  // before. "After arming" is judged by the event's own timeStamp as well as
-  // by when it is handled, so input the browser queued while the main thread
-  // was busy is not counted as fresh. Escape dismisses it (neither allow nor
-  // deny). While it is open the rest of the shell is inert and Tab stays
-  // among its buttons ("Don't allow" alone until "Allow" is armed), so text
-  // typed for the page cannot Tab to another control and press it.
+  // keeps the main thread busy before that paint. The page opened it, so
+  // "Allow" grants only on a trusted pointer's click (`guardedAction`, the
+  // tainted keyboard trail): Enter or Space on it, or any other activation
+  // with no pointer, says "Click to allow" and grants nothing. A press that
+  // began before "Allow" was armed never grants: a click counts only when
+  // the same pointer (by its pointerId) went down after arming, judged by the
+  // event's own timeStamp as well as by when it is handled, so input the
+  // browser queued while the main thread was busy is not counted as fresh.
+  // Escape dismisses it (neither allow nor deny). While it is open the rest
+  // of the shell is inert and Tab stays among its buttons ("Don't allow"
+  // alone until "Allow" is armed).
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
+  import { guardedAction } from "../view/trail";
   import { inertOutside, trapTab } from "./modal";
 
   let { ask }: { ask: Ask } = $props();
@@ -28,10 +30,8 @@
   // Whether the latest press of a pointer that reports no ID (a browser whose
   // click is not a PointerEvent) began after arming.
   let lastFresh = false;
-  // The latest Enter or Space press began after arming; `keyDown`: such a
-  // key is down (or its click is still to come).
-  let keyFresh = false;
-  let keyDown = false;
+  // Said when something other than a pointer's click asked for "Allow".
+  let hint: string | null = $state(null);
   const after = (e: Event) => armed && e.timeStamp >= armedAt;
 
   // Each ask (the next one in the queue reuses the dialog) refocuses the
@@ -44,7 +44,8 @@
     armed = false;
     armedAt = Infinity;
     fresh = new Map();
-    lastFresh = keyFresh = keyDown = false;
+    lastFresh = false;
+    hint = null;
     deny?.focus();
     let second = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -58,48 +59,31 @@
       lastFresh = after(e);
       if (typeof e.pointerId === "number") fresh.set(e.pointerId, lastFresh);
     };
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key !== "Enter" && e.key !== " ") return;
-      keyDown = true;
-      keyFresh = after(e) && !e.repeat;
-    };
-    // Space clicks on its keyup: the press it ends is forgotten only after that click.
-    const onKeyUp = (e: KeyboardEvent) => { if (e.key === "Enter" || e.key === " ") setTimeout(() => { keyDown = false; }); };
     addEventListener("keydown", onKey);
     addEventListener("pointerdown", onPress, true);
-    addEventListener("keydown", onKeyDown, true);
-    addEventListener("keyup", onKeyUp, true);
     return () => {
       cancelAnimationFrame(first);
       cancelAnimationFrame(second);
       clearTimeout(timer);
       removeEventListener("keydown", onKey);
       removeEventListener("pointerdown", onPress, true);
-      removeEventListener("keydown", onKeyDown, true);
-      removeEventListener("keyup", onKeyUp, true);
     };
   });
 
-  /** Whether a click on "Allow" ends a press that began after it was armed.
-   * A pointer's click (a PointerEvent with a pointerId of 0 or more) needs
-   * that pointer's pointerdown after arming; a pointer click that reports no
-   * ID (`detail` > 0 on a plain MouseEvent), the latest pointerdown after
-   * arming; a key click, a fresh Enter or Space after arming. A click with
-   * none of these (an assistive technology's activation: pointerId -1 or
-   * none, no key down) counts once armed. */
+  /** Whether a pointer's click on "Allow" ends a press that began after it
+   * was armed: that pointer's pointerdown (by pointerId) after arming, or,
+   * for a click that reports no ID, the latest pointerdown after arming. */
   function grants(e: MouseEvent): boolean {
     if (!armed) return false;
     const id = (e as Partial<PointerEvent>).pointerId;
     if (typeof id === "number" && id >= 0) return fresh.get(id) === true;
-    if (typeof id !== "number" && e.detail > 0) return lastFresh;
-    if (keyDown) return keyFresh;
-    return true;
+    return lastFresh;
   }
   /** A click on "Allow" ends its press: that press cannot count again. */
   function spent(e: MouseEvent): void {
     const id = (e as Partial<PointerEvent>).pointerId;
     if (typeof id === "number") fresh.delete(id);
-    lastFresh = keyFresh = false;
+    lastFresh = false;
   }
 </script>
 
@@ -113,10 +97,13 @@
     <div class="actions">
       <button type="button" bind:this={deny} onclick={() => ask.answer("deny")}>{ask.prompt.deny}</button>
       <button type="button" class="primary" disabled={!armed} onclick={e => {
-        const ok = grants(e);
-        spent(e);
-        if (ok) ask.answer("allow");
+        hint = guardedAction(e, "allow", () => {
+          const ok = grants(e);
+          spent(e);
+          if (ok) ask.answer("allow");
+        }, true);
       }}>{ask.prompt.allow}</button>
     </div>
+    <p class="act-hint" role="status">{hint ?? ""}</p>
   </div>
 </div>

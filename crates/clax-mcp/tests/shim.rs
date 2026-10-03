@@ -544,3 +544,21 @@ async fn a_grok_shim_registers_by_its_session_id() {
     assert_eq!(live[0]["harness_session_id"], "019a-shim");
     shim.finish().await;
 }
+
+/// The skill runs `push.follow_command` as given, so a session ID is one
+/// shell word whatever it holds.
+#[tokio::test]
+async fn a_grok_status_gives_the_monitor_command_shell_quoted() {
+    let shim = Shim::start_grok("g1'; touch pwned #").await;
+    let v = ok(&shim.call("status", json!({})).await);
+    let bin = v["binary"]["path"].as_str().unwrap().to_string();
+    assert_eq!(
+        v["push"]["follow_command"],
+        format!(
+            "'{}' feedback follow --agent grok --harness-session 'g1'\\''; touch pwned #'",
+            bin.replace('\'', "'\\''")
+        ),
+        "{v}"
+    );
+    shim.finish().await;
+}

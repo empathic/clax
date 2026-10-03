@@ -1,5 +1,6 @@
 import type { Component } from "svelte";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchTrusted } from "../../bridge/test/trusted";
 import { flush, mount } from "./test/svelte";
 import { type Thread, areaLabel } from "./threads";
 import Composer from "./ui/Composer.svelte";
@@ -179,6 +180,23 @@ describe("the submit shortcut", () => {
       done();
     });
   }
+
+  it("posts a composer the page opened only on a pointer's click on Post, and says so to a key", () => {
+    const { root, ta, typeText, onSubmit, done } = composer({ byPage: true });
+    const post = root.querySelector<HTMLButtonElement>("button[type=submit]")!;
+    const hint = root.querySelector(".act-hint")!;
+    typeText("mith");
+    key(ta, { metaKey: true });
+    key(ta, { ctrlKey: true });
+    // Enter or Space on Post: a click with detail 0, then the form's submit.
+    flush(() => { dispatchTrusted(post, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 0 })); });
+    expect(onSubmit).not.toHaveBeenCalled();
+    expect(hint.textContent).toBe("Click to post");
+    flush(() => { dispatchTrusted(post, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 })); });
+    expect(onSubmit).toHaveBeenCalledWith("mith");
+    expect(hint.textContent).toBe("");
+    done();
+  });
 
   it("leaves plain Enter to the textarea", () => {
     const { ta, typeText, onSubmit, done } = composer();

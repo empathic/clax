@@ -41,6 +41,12 @@ use tokio_stream::StreamMap;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
+/// Most bytes the daemon reads of one WebSocket message (and frame). A frame
+/// carries at most [`clax_core::room::MAX_JSON_BYTES`] of `data` or presence
+/// plus its envelope; a larger message closes the socket (1009) before it is
+/// held in memory whole.
+pub const MAX_ROOM_MESSAGE_BYTES: usize = 64 * 1024;
+
 /// Sends per second that emits and presence share, and the burst (`room.d.ts` `emit`).
 pub const SEND_RATE: f64 = 40.0;
 pub const SEND_BURST: f64 = 80.0;
@@ -135,7 +141,10 @@ pub async fn room(
         by: if declares_user { viewer.clone() } else { None },
         viewer,
     };
-    Ok(ws.on_upgrade(move |socket| session(s, aid, who, level, topics, socket)))
+    Ok(ws
+        .max_message_size(MAX_ROOM_MESSAGE_BYTES)
+        .max_frame_size(MAX_ROOM_MESSAGE_BYTES)
+        .on_upgrade(move |socket| session(s, aid, who, level, topics, socket)))
 }
 
 fn close(code: u16, reason: &'static str) -> Message {

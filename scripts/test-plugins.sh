@@ -287,11 +287,11 @@ section() {
         on { print }
     ' "$1"
 }
-# The Grok skill tells the agent to start one persistent monitor on
-# clax feedback follow, with the values from clax_grok__status.
+# The Grok skill tells the agent to start one persistent monitor on the
+# shell-quoted push.follow_command from clax_grok__status.
 grok_skill=plugins/clax-grok/skills/clax/SKILL.md
 live="$(section "$grok_skill" "Live feedback in Grok")"
-if [ -n "$live" ] && echo "$live" | grep -qF 'feedback follow --agent grok --harness-session' \
+if [ -n "$live" ] && echo "$live" | grep -qF 'push.follow_command' \
     && echo "$live" | grep -qF 'persistent: true' && echo "$live" | grep -qF 'push.available' \
     && echo "$live" | grep -qF 'clax_grok__comments_read'; then
     pass "$grok_skill has the Live feedback in Grok section"

@@ -121,3 +121,34 @@ async fn lookups_refuse_foreign_origins() {
         .unwrap();
     assert_eq!(res.status(), 403);
 }
+
+/// A page's `<img src=".../api/viewers/me">` is a no-cors GET, which carries
+/// no `Origin`; the browser still says where it came from in `Sec-Fetch-Site`.
+#[tokio::test]
+async fn a_request_another_site_or_origin_made_without_an_origin_is_refused_and_creates_no_viewer()
+{
+    let ts = TestServer::spawn().await;
+    for site in ["cross-site", "same-site"] {
+        let res = ts
+            .client
+            .get(format!("{}/api/viewers/me", ts.base))
+            .header("sec-fetch-site", site)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{site}");
+        assert!(res.headers().get("set-cookie").is_none(), "{site}");
+        let v: Value = res.json().await.unwrap();
+        assert_eq!(v["error"]["code"], "forbidden_origin", "{site}");
+    }
+    // The shell's own fetches, a typed URL, and scripts that send no such header.
+    for site in [Some("same-origin"), Some("none"), None] {
+        let mut req = ts.client.get(format!("{}/api/viewers/me", ts.base));
+        if let Some(s) = site {
+            req = req.header("sec-fetch-site", s);
+        }
+        let res = req.send().await.unwrap();
+        assert_eq!(res.status(), 200, "{site:?}");
+        assert!(res.headers().get("set-cookie").is_some(), "{site:?}");
+    }
+}

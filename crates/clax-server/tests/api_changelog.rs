@@ -160,20 +160,29 @@ async fn seen_marks_are_per_viewer_monotonic_and_refuse_foreign_origins() {
     };
     assert_eq!(get(alex.cookie.clone()).await, json!({"seen": null}));
     assert_eq!(
+        put(Some(alex.cookie.clone()), 1, None)
+            .await
+            .json::<Value>()
+            .await
+            .unwrap(),
+        json!({"seen": 1})
+    );
+    assert_eq!(
+        put(Some(alex.cookie.clone()), 0, None)
+            .await
+            .json::<Value>()
+            .await
+            .unwrap(),
+        json!({"seen": 1})
+    );
+    // Never past the latest version (the artifact has one).
+    assert_eq!(
         put(Some(alex.cookie.clone()), 3, None)
             .await
             .json::<Value>()
             .await
             .unwrap(),
-        json!({"seen": 3})
-    );
-    assert_eq!(
-        put(Some(alex.cookie.clone()), 2, None)
-            .await
-            .json::<Value>()
-            .await
-            .unwrap(),
-        json!({"seen": 3})
+        json!({"seen": 1})
     );
     assert_eq!(get(other.cookie.clone()).await, json!({"seen": null}));
     assert_eq!(put(None, 1, None).await.status(), 400);
