@@ -330,10 +330,10 @@ tool. Start one monitor per session, after your first publish in it
 
 1. Call `clax_grok__status`. If `push.available` is true, a monitor is
    already running for this session: do not start another.
-2. Otherwise call Grok's `monitor` tool with `persistent: true` and the
-   command `"<binary.path>" feedback follow --agent grok --harness-session
-   <session.harness_session_id>`, with both values from that `status`
-   result. It prints nothing until a comment arrives.
+2. Otherwise call Grok's `monitor` tool with `persistent: true` and, as its
+   command, `push.follow_command` from that `status` result, exactly as
+   given (it is already shell-quoted; never build it yourself). It prints
+   nothing until a comment arrives.
 
 Each line it prints names an artifact and a thread. Call
 `clax_grok__comments_read` with the `url_or_id` and `thread_id` it gives,

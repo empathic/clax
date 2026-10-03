@@ -363,8 +363,23 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // New York. Its Tabs walk the pin, Send N unsent, the card's box, its
     // head and Resolve, so the Space in "New York" lands on Send.
     await typeOn(page, [..."Smith", "Tab", ..."Jones", "Tab", ..."Main", "Tab", ..."Lot", "Tab", ..."Apt", "Tab", ..."Zip", "Tab", ..."New", "Space", ..."York"], 0);
-    await expect(page.locator(".act-hint").filter({ hasText: /^Click to send, or press Esc first$/ })).toHaveCount(1);
+    await expect(page.locator(".act-hint").filter({ hasText: /^Click to send$/ })).toHaveCount(1);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
+  });
+
+  test(`${mode}: typing for the page that walks into a sent thread's Reply, Escape and Enter included, posts nothing`, async ({ page }) => {
+    const { artifact } = await publishWith(d.base, d.token, "Shrink reply", SHRINK, {});
+    const t = await postThread(d.base, artifact.id, "Check this", "#t");
+    await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/send`, { method: "POST", body: "{}" });
+    const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await page.locator(".thread-card").first().waitFor();
+    await frame.locator("#a").click();
+    // The pin, the card's box, its head, Resolve, then the Reply field: the
+    // Escape a page can coax ("Esc to close") clears nothing.
+    await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
+    await page.waitForTimeout(400);
+    const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
+    expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", comments: [expect.anything()] });
   });
 
   for (const spacing of [0, 60]) {
@@ -380,7 +395,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     });
   }
 
-  test(`${mode}: a keyboard-only viewer who Tabs out of the page presses Esc, then sends from the keyboard`, async ({ page }) => {
+  test(`${mode}: a viewer who Tabs out of the page sends only with a click: no key clears the trail`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, "Keyboard send", FORM, {});
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
@@ -393,13 +408,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     for (let i = 0; i < 5; i++) await page.keyboard.press("Tab");
     await expect(send).toBeFocused();
     await page.keyboard.press("Space");
-    await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send, or press Esc first");
-    expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
+    await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send");
     await page.keyboard.press("Escape");
-    await page.keyboard.press("Shift+Tab");
-    await page.keyboard.press("Tab");
-    await expect(send).toBeFocused();
-    await page.keyboard.press("Space");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(300);
+    expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
+    await send.click();
     await expect.poll(async () => (await threadState(artifact.id, t.id))?.sent_to_agent).toBe(true);
   });
 

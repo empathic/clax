@@ -183,6 +183,17 @@ fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// `status.push.follow_command` under Grok Build: the command its `monitor`
+/// tool runs to wake the session on each comment, with the binary and the
+/// harness session ID each one shell word.
+pub fn grok_follow_command(bin: &str, harness_session_id: &str) -> String {
+    format!(
+        "{} feedback follow --agent grok --harness-session {}",
+        shell_quote(bin),
+        shell_quote(harness_session_id)
+    )
+}
+
 /// `status.push` under Claude Code: the daemon's `push`, refined. The tier is
 /// `channel` when the shim forwards notices, and `follow` when the daemon sees
 /// a notice follower and the shim is not one. Without forwarding,

@@ -11,12 +11,13 @@
   import type { Snippet } from "svelte";
   import { countLabel } from "../view/batch-model";
   import { isSubmitKey } from "../view/composer-model";
-  import { guardedAction } from "../view/trail";
+  import { guardedAction, keyboardTrail } from "../view/trail";
 
   let { count, note, busy, send, onNote, onClear, onSend }: {
     count: number; note: string; busy: boolean; send: Snippet<[(e: Event) => void]>; onNote(v: string): void; onClear(): void; onSend(): void;
   } = $props();
   let hint: string | null = $state(null);
+  $effect(() => keyboardTrail.onClear(() => { hint = null; }));
   const go = (e: Event) => { hint = guardedAction(e, "send", onSend); };
 </script>
 

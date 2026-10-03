@@ -5,12 +5,17 @@
   import { onDestroy, untrack } from "svelte";
   import { type Anchor, INDEX_FILE } from "../../../bridge/src/protocol";
   import { type Draft, composerQuote, isSubmitKey, submitKeysLabel } from "../view/composer-model";
+  import { guardedAction } from "../view/trail";
 
   type Props = { draft: Draft; onCancel(): void; onSubmit(body: string): Promise<void>; onText?(text: string): void; onFocused?(): void };
   let { draft, onCancel, onSubmit, onText, onFocused }: Props = $props();
   const uid = $props.id();
   let body = $state("");
   let busy = $state(false);
+  // A composer the page opened posts only on a pointer's click
+  // (`guardedAction`); `hint` says so when a key asked.
+  let hint: string | null = $state(null);
+  const guard = (e: Event, act: () => void) => { hint = guardedAction(e, "post", act, !!draft.byPage); return hint === null; };
   let clipUrl = $state<string | null>(null);
   $effect(() => {
     const clip = draft.clip;
@@ -102,7 +107,7 @@
       if (e.key === "Escape") onCancel();
       else if (isSubmitKey(e)) {
         e.preventDefault();
-        request();
+        guard(e, request);
       }
     }}></textarea>
   <div class="actions">
@@ -110,7 +115,8 @@
     <!-- While the screenshot is taken, Post stays focusable (Tab order does
          not change) and waits: pressing it queues the post, which the status
          line it is described by announces. -->
-    <button type="submit" class="primary" title={draft.capturing ? "Posts once the screenshot is taken" : `Post comment (${submitKeysLabel()})`} disabled={busy || !body.trim()}
+    <button type="submit" class="primary" onclick={e => { if (!guard(e, () => {})) e.preventDefault(); }} title={draft.capturing ? "Posts once the screenshot is taken" : `Post comment (${submitKeysLabel()})`} disabled={busy || !body.trim()}
       aria-disabled={draft.capturing ? "true" : undefined} aria-describedby={draft.capturing && !clipUrl ? `${uid}-status` : undefined}>Post comment</button>
   </div>
+  <p class="act-hint" role="status">{hint ?? ""}</p>
 </form>

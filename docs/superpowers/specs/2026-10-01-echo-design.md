@@ -88,7 +88,10 @@ page, and C and `?` stay held while the viewer may still be typing for it:
 after focus leaves the shell window, after a prompt or composer the page
 raised opens or closes, and after a reload the page's publish caused, until
 the viewer presses in the shell or focus lands on one of its controls.
-Escape keeps its existing behaviour.
+Escape keeps its existing behaviour. Once focus may have reached the shell
+from the page, Send, Resolve, Reply, the batch sends, Post in a composer the
+page opened, and Allow take only a pointer's click; no key lifts that, only
+a press on a shell control (main spec §8, "Consequential actions").
 
 ### Motion
 

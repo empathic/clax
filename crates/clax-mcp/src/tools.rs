@@ -1097,6 +1097,18 @@ impl ClaxTools {
             out["push"] =
                 crate::channel::push_for_status(ch, out["push"].take(), hs.as_deref(), &bin);
         }
+        // Under Grok, the monitor command the skill runs as given.
+        if self.channel.is_none()
+            && out["push"].is_object()
+            && let Some(s) = &session
+            && s.harness == "grok"
+            && let Some(hs) = s.harness_session_id.as_deref()
+        {
+            let bin = std::env::current_exe()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            out["push"]["follow_command"] = json!(crate::channel::grok_follow_command(&bin, hs));
+        }
         // Version skew between these tools and the daemon they call.
         if h["version"].as_str() != Some(env!("CARGO_PKG_VERSION")) {
             out["daemon_version"] = h["version"].clone();

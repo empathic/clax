@@ -275,7 +275,7 @@ export class ArtifactController {
       openComposer: (d, opts) => {
         const next = nextDraft(this.s.draft, this.composerText, d, opts);
         if (!next) return false;
-        this.set({ draft: next });
+        this.set({ draft: { ...next, byPage: true } });
         return true;
       },
       attachClip: (token, clip, clipError) => this.set(s => ({ draft: withClip(s.draft, token, clip, clipError) })),
@@ -894,11 +894,15 @@ export class ArtifactController {
     };
     // The keyboard trail (`keyboardTrail`): focus that enters the shell from
     // the frame or from <body>, with no press of the viewer's, taints it, so
-    // a card's consequential actions ignore the keyboard until the viewer
-    // presses in the shell or presses Escape on a shell control. Focus the
+    // consequential actions take only a pointer's click. Only a trusted press
+    // that puts focus on the shell control it targets clears it: not a press
+    // on the gesture shield's bands or the prompt's backdrop, and not one that
+    // leaves focus where it was (a band keeps it). No key clears it. Focus the
     // browser puts back where it was when the window regains focus changes
-    // nothing. After a load the page caused, it starts tainted.
-    if (this.heldAtLoad) keyboardTrail.taint(); else keyboardTrail.clear();
+    // nothing. Every load starts tainted: the shell cannot tell a load the
+    // page caused (a top navigation, or `window.open` of the shell's URL)
+    // from any other.
+    keyboardTrail.taint();
     let pressing = false;
     let restoreTo: Element | null = null;
     const isControl = (t: EventTarget | null): t is Element => t instanceof Element && t !== document.body && t.localName !== "iframe";
@@ -906,16 +910,24 @@ export class ArtifactController {
       if (!e.isTrusted) return;
       this.keysOwned = true;
       giveBackTo = null;
-      keyboardTrail.clear();
+      restoreTo = null;
+      const target = e.target instanceof Element ? e.target : null;
+      const before = document.activeElement;
+      const counts = !!target && !target.closest(".frame-shield, .prompt-backdrop");
       // The focus this press gives a control comes in the same task.
       pressing = true;
-      setTimeout(() => { pressing = false; }, 0);
+      setTimeout(() => {
+        pressing = false;
+        const now = document.activeElement;
+        if (counts && now !== before && isControl(now) && now.contains(target)) keyboardTrail.clear();
+      }, 0);
     };
     const onFocusIn = (e: FocusEvent) => {
       const t = e.target;
-      if (!e.isTrusted || !isControl(t)) return;
+      if (!e.isTrusted) return;
       const restored = t === restoreTo;
       restoreTo = null;
+      if (!isControl(t)) return;
       if (!restored && !pressing && (e.relatedTarget === null || (e.relatedTarget instanceof Element && e.relatedTarget.localName === "iframe"))) keyboardTrail.taint();
       if (!t.closest("[role=dialog], [aria-modal=true], .composer")) {
         this.keysOwned = true;
@@ -930,13 +942,18 @@ export class ArtifactController {
       giveBackTo = el && a === el ? el : null;
       restoreTo = isControl(a) ? a : null;
     };
-    const onFocus = (e: FocusEvent) => { if (e.isTrusted && giveBackTo) setTimeout(handBack, 0); };
+    const onFocus = (e: FocusEvent) => {
+      if (!e.isTrusted) return;
+      if (giveBackTo) setTimeout(handBack, 0);
+      // The browser's restore of focus comes with the window's focus; after
+      // it, focus on <body> or the frame leaves nothing to restore.
+      setTimeout(() => { if (!isControl(document.activeElement)) restoreTo = null; }, 0);
+    };
     const onShellKey = (e: KeyboardEvent) => {
       if (!e.isTrusted) return;
       const a = document.activeElement;
       // The viewer's own keys in the composer: their typing is the shell's.
       if (a instanceof Element && a.closest(".composer")) giveBackTo = null;
-      if (e.key === "Escape" && isControl(a)) keyboardTrail.clear();
       if (!giveBackTo || a !== document.body) return;
       const el = giveBackFrame();
       if (!el) { giveBackTo = null; return; }

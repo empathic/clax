@@ -15,6 +15,10 @@ pub const PRESENCE_TTL_SECS: i64 = 90;
 pub const GONE_KEEP_SECS: i64 = 600;
 /// Longest location, in characters, after cleaning.
 pub const MAX_WHERE_CHARS: usize = 80;
+/// Most viewers one artifact lists. Anyone who reaches the daemon can make
+/// viewers, so the list, and each `presence` event, which carries it whole,
+/// stays bounded.
+pub const MAX_PEOPLE: usize = 64;
 
 /// A viewer's presence. `Gone` is never reported: it is a report that lapsed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -83,7 +87,9 @@ impl Presence {
 
     /// Records a report from `public_id` on `aid`. `where_` is cleaned to one
     /// line of at most [`MAX_WHERE_CHARS`] and kept only while `Here`.
-    /// Returns whether the view anyone sees changed.
+    /// Returns whether the view anyone sees changed; `None` when `aid`
+    /// already lists [`MAX_PEOPLE`] others, none of them gone (a newcomer
+    /// otherwise takes the place of the gone one whose last report is oldest).
     pub fn report(
         &self,
         aid: &str,
@@ -91,7 +97,7 @@ impl Presence {
         display_name: Option<&str>,
         state: State,
         where_: Option<&str>,
-    ) -> bool {
+    ) -> Option<bool> {
         let now = self.clock.now();
         let state = if state == State::Gone {
             State::Away
@@ -110,10 +116,33 @@ impl Presence {
         };
         let key = (aid.to_string(), public_id.to_string());
         let mut map = self.entries.lock().unwrap();
+        let mut evicted = false;
+        if !map.contains_key(&key) {
+            let mut count = 0;
+            let mut oldest_gone: Option<(Key, DateTime<Utc>)> = None;
+            for (k, e) in map
+                .range((aid.to_string(), String::new())..)
+                .take_while(|((a, _), _)| a == aid)
+            {
+                count += 1;
+                let gone = e.state == State::Gone || lapsed(e, now);
+                if gone
+                    && oldest_gone
+                        .as_ref()
+                        .is_none_or(|(_, at)| e.last_report < *at)
+                {
+                    oldest_gone = Some((k.clone(), e.last_report));
+                }
+            }
+            if count >= MAX_PEOPLE {
+                map.remove(&oldest_gone?.0);
+                evicted = true;
+            }
+        }
         let before = map.get(&key).map(|e| view(public_id, e, now));
         let after = view(public_id, &entry, now);
         map.insert(key, entry);
-        before.as_ref().map(visible) != Some(visible(&after))
+        Some(evicted || before.as_ref().map(visible) != Some(visible(&after)))
     }
 
     /// Marks lapsed reports `Gone`, drops those gone past [`GONE_KEEP_SECS`],
@@ -228,10 +257,22 @@ mod tests {
     #[test]
     fn a_repeated_report_changes_nothing_and_artifacts_stay_apart() {
         let (_c, p) = reg();
-        assert!(p.report("a1", "u_a", Some("Alex"), State::Here, None));
-        assert!(!p.report("a1", "u_a", Some("Alex"), State::Here, None));
-        assert!(p.report("a1", "u_b", Some("Bea"), State::Away, None));
-        assert!(p.report("a2", "u_a", Some("Alex"), State::Here, None));
+        assert_eq!(
+            p.report("a1", "u_a", Some("Alex"), State::Here, None),
+            Some(true)
+        );
+        assert_eq!(
+            p.report("a1", "u_a", Some("Alex"), State::Here, None),
+            Some(false)
+        );
+        assert_eq!(
+            p.report("a1", "u_b", Some("Bea"), State::Away, None),
+            Some(true)
+        );
+        assert_eq!(
+            p.report("a2", "u_a", Some("Alex"), State::Here, None),
+            Some(true)
+        );
         let names: Vec<_> = p
             .for_artifact("a1")
             .into_iter()
@@ -239,5 +280,39 @@ mod tests {
             .collect();
         assert_eq!(names, ["u_a", "u_b"]);
         assert_eq!(p.for_artifact("a2").len(), 1);
+    }
+
+    #[test]
+    fn an_artifact_lists_at_most_max_people_and_a_newcomer_takes_the_oldest_gone_place() {
+        let (c, p) = reg();
+        for i in 0..MAX_PEOPLE {
+            assert_eq!(
+                p.report("a1", &format!("u_{i}"), None, State::Here, None),
+                Some(true)
+            );
+        }
+        assert_eq!(
+            p.report("a1", "u_new", None, State::Here, None),
+            None,
+            "full"
+        );
+        assert_eq!(p.for_artifact("a1").len(), MAX_PEOPLE);
+        // Those already listed still report; another artifact is apart.
+        assert_eq!(p.report("a1", "u_3", None, State::Away, None), Some(true));
+        assert_eq!(p.report("a2", "u_new", None, State::Here, None), Some(true));
+        // Once some lapse, a newcomer takes the place of the oldest of them.
+        c.advance(60);
+        for i in 1..MAX_PEOPLE {
+            p.report("a1", &format!("u_{i}"), None, State::Here, None);
+        }
+        c.advance(40);
+        assert_eq!(p.report("a1", "u_new", None, State::Here, None), Some(true));
+        let ids: Vec<_> = p
+            .for_artifact("a1")
+            .into_iter()
+            .map(|v| v.public_id)
+            .collect();
+        assert_eq!(ids.len(), MAX_PEOPLE);
+        assert!(ids.contains(&"u_new".to_string()) && !ids.contains(&"u_0".to_string()));
     }
 }

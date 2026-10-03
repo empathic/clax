@@ -885,7 +885,8 @@ describe("ArtifactView", () => {
     const lastMode = () => posted.filter(m => m.type === "clax:event" && m.topic === "mode").at(-1)?.data;
     await waitFor(() => lastMode()?.on === true && lastMode()?.canArea === true, "areas on in comment mode");
     const card = await waitFor(() => root.querySelector('[data-thread="tS"]'), "the thread");
-    buttonNamed(card, "Send to claude").click();
+    // A pointer's click: every load starts with the keyboard trail tainted (`keyboardTrail`).
+    pointerClick(buttonNamed(card, "Send to claude"));
     await waitFor(() => lastMode()?.canArea === false, "areas off while the send is in flight");
     answerSend(new Response(JSON.stringify({ thread: { ...thread, sent_to_agent: true } })));
     await waitFor(() => lastMode()?.canArea === true, "areas on again");
@@ -1048,8 +1049,10 @@ describe("ArtifactView", () => {
     buttonNamed(root, "Post comment").click();
     await waitFor(() => !root.querySelector(".composer") && pressed() && lastMode() === true, "comment mode back after Post");
     // Sending the posted thread to the agent from its card leaves it on.
-    // A pointer's click (detail 1): the composer's focus tainted the keyboard trail (`keyboardTrail`).
-    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 }));
+    // The viewer's press in the shell clears the keyboard trail that the
+    // composer's focus tainted (`keyboardTrail`).
+    (await import("./view/trail")).keyboardTrail.clear();
+    buttonNamed(await waitFor(() => root.querySelector('[data-thread="t1"]'), "the posted thread"), "Send to claude").click();
     await waitFor(() => sends === 1, "the send");
     await settle();
     expect(pressed()).toBe(true);
@@ -1110,6 +1113,13 @@ describe("ArtifactView", () => {
     };
     // The page's openComposer, then Cancel: mode stays off.
     await pageOpens("o1");
+    // The page opened it: text typed into it never posts from the keyboard.
+    const ta = root.querySelector<HTMLTextAreaElement>(".composer textarea")!;
+    ta.value = "typed for the page";
+    ta.dispatchEvent(new Event("input", { bubbles: true }));
+    ta.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", metaKey: true, bubbles: true, cancelable: true }));
+    await settle();
+    expect(root.querySelector(".composer .act-hint")?.textContent).toBe("Click to post");
     await cancelStaysOff();
     // A pick's empty composer that the page's openComposer replaced: closing it leaves mode off.
     comment.click();
@@ -1134,6 +1144,8 @@ describe("ArtifactView", () => {
     input.value = "more";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     await settle();
+    // The viewer's press in the shell clears the keyboard trail every load starts with.
+    (await import("./view/trail")).keyboardTrail.clear();
     buttonNamed(card, "Reply").click();
     await waitFor(() => replies === 1, "the reply");
     await settle();
@@ -1334,4 +1346,9 @@ function startOf(m: { pickId: string; [k: string]: unknown }) {
 
 function pick(pickId: string, quote: string) {
   return { type: "clax:pick", pickId, version: 1, anchor: { kind: "element", selector: "body > h2", quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } };
+}
+
+/** A trusted pointer's click (`detail` 1) on `el`. */
+function pointerClick(el: Element): void {
+  dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail: 1 }));
 }

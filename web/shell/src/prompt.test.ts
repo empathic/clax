@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { dispatchTrusted } from "../../bridge/test/trusted";
 import { flush, mount } from "./test/svelte";
 import PromptDialog from "./ui/PromptDialog.svelte";
 import { ALLOW_DELAY_MS, type Ask } from "./view/prompt-queue";
@@ -40,14 +41,16 @@ function pointerish(type: string, init: { detail?: number; pointerId?: number; t
   return e;
 }
 /** A pointer's click (`detail` 1) by `pointerId` (the mouse is 1). */
-const click = (el: Element, pointerId: number | undefined = 1) => flush(() => { el.dispatchEvent(pointerish("click", { detail: 1, pointerId })); });
+const click = (el: Element, pointerId: number | undefined = 1) => flush(() => { dispatchTrusted(el, pointerish("click", { detail: 1, pointerId })); });
 /** A key's or an assistive technology's click: no pointer (`pointerId` -1, `detail` 0). */
-const keyClick = (el: Element) => flush(() => { el.dispatchEvent(pointerish("click", { pointerId: -1 })); });
-const press = (el: Element, pointerId: number | undefined = 1, timeStamp?: number) => flush(() => { el.dispatchEvent(pointerish("pointerdown", { pointerId, timeStamp })); });
+const keyClick = (el: Element) => flush(() => { dispatchTrusted(el, pointerish("click", { pointerId: -1 })); });
+const press = (el: Element, pointerId: number | undefined = 1, timeStamp?: number) => flush(() => { dispatchTrusted(el, pointerish("pointerdown", { pointerId, timeStamp })); });
+/** A fresh press and its click. */
+const pressClick = (el: Element) => { press(el); click(el); };
 const key = (el: Element, type: "keydown" | "keyup", k: string, repeat = false, timeStamp?: number) => flush(() => {
   const e = new KeyboardEvent(type, { key: k, repeat, bubbles: true, cancelable: true });
   if (timeStamp !== undefined) Object.defineProperty(e, "timeStamp", { value: timeStamp });
-  el.dispatchEvent(e);
+  dispatchTrusted(el, e);
 });
 
 describe("PromptDialog", () => {
@@ -68,7 +71,7 @@ describe("PromptDialog", () => {
     // No paint yet, however long the main thread is busy: Allow stays inert.
     wait(2000);
     expect(allow.disabled).toBe(true);
-    allow.click();
+    pressClick(allow);
     expect(answer).not.toHaveBeenCalled();
     // The frame that paints the dialog: the 500 ms start once it is done.
     frame();
@@ -77,11 +80,11 @@ describe("PromptDialog", () => {
     frame();
     wait(ALLOW_DELAY_MS - 1);
     expect(allow.disabled).toBe(true);
-    allow.click();
+    pressClick(allow);
     expect(answer).not.toHaveBeenCalled();
     wait(1);
     expect(allow.disabled).toBe(false);
-    allow.click();
+    pressClick(allow);
     expect(answer).toHaveBeenCalledWith("allow");
   });
 
@@ -96,7 +99,7 @@ describe("PromptDialog", () => {
     wait(2000);
     expect(button(root, "Allow").disabled).toBe(true);
     arm();
-    button(root, "Allow").click();
+    pressClick(button(root, "Allow"));
     expect(next.answer).toHaveBeenCalledWith("allow");
     expect(answer).not.toHaveBeenCalled();
   });
@@ -164,15 +167,18 @@ describe("PromptDialog", () => {
     expect(answer).toHaveBeenCalledWith("allow");
   });
 
-  it("grants on a click with no pointer and no key (an assistive technology's) once armed", () => {
+  it("never grants on a click with no pointer (a key's or an assistive technology's), and says to click", () => {
     const { root, answer } = mountDialog();
     const allow = button(root, "Allow");
-    frame();
-    frame();
+    arm();
     keyClick(allow);
     expect(answer).not.toHaveBeenCalled();
-    wait(ALLOW_DELAY_MS);
-    keyClick(allow);
+    expect(root.querySelector(".act-hint")!.textContent).toBe("Click to allow");
+    // Nor on an untrusted click (a script's), with a press or not.
+    press(allow);
+    flush(() => { allow.dispatchEvent(pointerish("click", { detail: 1, pointerId: 1 })); });
+    expect(answer).not.toHaveBeenCalled();
+    pressClick(allow);
     expect(answer).toHaveBeenCalledWith("allow");
   });
 
@@ -189,24 +195,16 @@ describe("PromptDialog", () => {
   });
 
   for (const k of ["Enter", " "]) {
-    it(`grants on no ${k === " " ? "Space" : "Enter"} held from before Allow was armed, only on a fresh one after`, () => {
+    it(`never grants on ${k === " " ? "Space" : "Enter"}, however fresh: typed Tabs can reach Allow`, () => {
       const { root, answer } = mountDialog();
       const allow = button(root, "Allow");
-      frame();
-      frame();
+      arm();
+      allow.focus();
       key(allow, "keydown", k);
-      wait(ALLOW_DELAY_MS);
-      // The held key repeats, then its click comes (Enter clicks on a
-      // keydown, Space on its keyup).
-      key(allow, "keydown", k, true);
       if (k === " ") key(allow, "keyup", k);
       keyClick(allow);
       expect(answer).not.toHaveBeenCalled();
-      wait(0);
-      key(allow, "keydown", k);
-      if (k === " ") key(allow, "keyup", k);
-      keyClick(allow);
-      expect(answer).toHaveBeenCalledWith("allow");
+      expect(root.querySelector(".act-hint")!.textContent).toBe("Click to allow");
     });
   }
 

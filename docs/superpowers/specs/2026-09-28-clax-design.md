@@ -652,6 +652,16 @@ file under `v/<digits>/` is reachable only through the versioned form):
   raised opens or closes, and after a reload the page's publish caused)
   until the viewer presses in the shell or focus lands on one of its
   controls.
+- Consequential actions and the keyboard trail: Send, Resolve, Reply, the
+  batch Send and "Send N unsent", the composer's Post when the page opened
+  the composer, and the consent prompt's Allow run only on a trusted
+  pointer's click (a click whose `detail` is 1 or more) once focus has
+  entered the shell from the frame or from `<body>` without a press of the
+  viewer's on a shell control. Every load starts that way, and Allow always
+  takes a click. Any other activation (Enter, Space, ⌘↵, an assistive
+  technology's) does nothing and says "Click to <verb>" beside the action.
+  No key ends it: only a trusted press that puts focus on the shell control
+  it targets, never one on the gesture shield or the prompt's backdrop.
 - Theme: follows the system; the switch flips light and dark, and a choice
   equal to the system's clears back to following it.
 - Nothing Clax draws covers or moves the artifact, except pins and the
@@ -1563,7 +1573,8 @@ in linked to a version after they last looked at the thread), `new_replies`
 look), `open_in`, and `seen` (`viewer_seen`). Looking at a thread is its card
 being at least half visible for a second, or selecting it; it writes
 `viewer_threads`. Viewing the latest version at the artifact's latest URL
-(`/a/<aid>`) writes `viewer_seen`; a `/v/<n>` view writes nothing. Resolving
+(`/a/<aid>`) writes `viewer_seen`, never past the latest version; a `/v/<n>`
+view writes nothing. Resolving
 is never needed to clear anything. `seen` is public: `participants.people`
 carries each person's, for the people panel. Looked-at marks and attention
 stay private to their viewer.
@@ -1594,6 +1605,9 @@ characters; the people panel's "Share where I'm looking" switch, on by
 default and stored per browser, stops it), and `away` as they leave the
 page. The daemon keeps reports in memory; one lapses 90 s after the last,
 shows as "last here" for 10 minutes, then goes. Changes go out as `presence`.
+An artifact lists at most 64 people: a newcomer takes the place of the gone
+person whose last report is oldest, and with none gone its report is 429
+`limit_reached` (the shell tries again with its next report).
 
 ## 11. Sessions and identity
 
@@ -1946,7 +1960,11 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   origins, `null`, and other origins are refused) with 403
   `forbidden_origin`, so a published page cannot call them itself; it
   writes only through the shell's `comments` capability, after the viewer's
-  consent. Requests without an `Origin` header are allowed.
+  consent. Requests without an `Origin` header are allowed, unless their
+  `Sec-Fetch-Site` is `same-site` or `cross-site` (a page's `<img>` or
+  other no-cors GET, which browsers send without `Origin`): those are
+  refused the same way, so a page cannot mint viewers through
+  `GET /api/viewers/me` either.
   The daemon is HTTP only. `GET /api/push` needs no token but names the
   daemon's `codex` path (which usually contains the user name) only to
   requests with the token.
@@ -2011,7 +2029,12 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   harnesses. Attention and
   looked-at marks are served only to the viewer whose cookie the request
   carries. Presence carries public IDs, display names, here or away, and the
-  optional location the person chose to share.
+  optional location the person chose to share. An artifact lists at most 64
+  people (§10 Presence), and a room socket reads at most 64 KiB of one
+  message, so neither grows without bound from callers without the token.
+- Consequential actions in the shell take a pointer's click once the
+  viewer's keys may have been the page's (§8, "Consequential actions and
+  the keyboard trail").
 - The shell HTML for `/a/…` embeds only what `GET /api/artifacts/<id>`,
   `GET /api/artifacts/<id>/threads` (without the token) and
   `GET /api/viewers/me` (for the cookie's own viewer, never creating one)

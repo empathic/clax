@@ -5,7 +5,7 @@
   import type { Version } from "../api";
   import { type HistoryEvent, addressedNote } from "../view/history-model";
   import { authorLabel } from "../view/sidebar-model";
-  import { guardedAction } from "../view/trail";
+  import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
   import { clock } from "../view/working-model";
 
@@ -35,8 +35,20 @@
   };
   let { t, n, now, selected, file, history, outdated, agent, when, marker = null, versions = [], onSeen, checked = false, onToggle, send: sendButton, onSelect, onSend, onResolve, onReply, onHover }: Props = $props();
   let reply = $state("");
+  // Send, Resolve and Reply are consequential: on a tainted keyboard trail
+  // they take only a pointer's click (`guardedAction`), and `hint` says so
+  // until the trail clears.
   let hint: string | null = $state(null);
+  $effect(() => keyboardTrail.onClear(() => { hint = null; }));
+  let card: HTMLElement | undefined = $state();
+  let head: HTMLButtonElement | undefined = $state();
   const send = () => { if (reply.trim()) { onReply(t, reply); reply = ""; } };
+  // Enter or the submit shortcut in Reply, and any activation of the Reply button.
+  const replyKey = (e: KeyboardEvent) => {
+    if (!isSubmitKey(e) && !(e.key === "Enter" && !e.isComposing && !e.shiftKey)) return;
+    e.preventDefault();
+    hint = guardedAction(e, "reply", send);
+  };
   const seen = (el: HTMLElement) => {
     if (!onSeen || typeof IntersectionObserver !== "function") return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -47,18 +59,21 @@
     io.observe(el);
     return () => { clearTimeout(timer); io.disconnect(); };
   };
-  const guardSend = (e: Event, act: () => void) => { hint = guardedAction(e, "send", act); };
+  // A sent thread has no Send: focus on the card moves to its head first, not to <body>.
+  const guardSend = (e: Event, act: () => void) => {
+    hint = guardedAction(e, "send", () => { if (card?.contains(document.activeElement)) head?.focus(); act(); });
+  };
   const label = $derived(t.status === "open" && t.sent_to_agent ? waitingLabel(t.feedback_state, now) : null);
 </script>
 
 <!-- The card's header button is its keyboard path; a click anywhere else on the card is a pointer shortcut to the same action. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-<article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} onclick={() => onSelect(t)} {@attach seen}
+<article class={`thread-card${selected === t.id ? " selected" : ""}`} data-thread={t.id} bind:this={card} onclick={() => onSelect(t)} {@attach seen}
   onmouseenter={() => onHover?.(t)} onmouseleave={() => onHover?.(null)}>
   <header>
     {#if onToggle}<input type="checkbox" class="thread-check" {checked} aria-label={`Select thread ${n ?? ""} ${anchorLabel(t.anchor)}`.replace("  ", " ")}
       onclick={e => { e.stopPropagation(); onToggle(t, e.shiftKey); }} />{/if}
-    <button type="button" class="card-head" aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
+    <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
       >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
       >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">{when}</span
     ></button>
@@ -85,13 +100,12 @@
       <button onclick={e => { hint = guardedAction(e, "resolve", () => onResolve(t)); }}>Resolve</button>
       {#if !t.sent_to_agent}{#if sendButton}{@render sendButton(guardSend)}{:else}<button class="primary" onclick={e => { guardSend(e, () => onSend(t)); }}>Send to {agent}</button>{/if}{/if}
     </div>
-    <!-- Said when the keyboard asked for an action on a trail the page may have steered (`keyboardTrail`). -->
-    <p class="act-hint" role="status">{hint ?? ""}</p>
   {/if}
   <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
-  <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => { e.preventDefault(); send(); }}>
-    <input aria-label="Reply" placeholder="Reply, or @name someone" bind:value={reply}
-      onkeydown={e => { if (isSubmitKey(e)) { e.preventDefault(); send(); } }} />
-    <button type="submit">Reply</button>
+  <form class="reply" onclick={e => e.stopPropagation()} onsubmit={e => e.preventDefault()}>
+    <input aria-label="Reply" placeholder="Reply, or @name someone" bind:value={reply} onkeydown={replyKey} />
+    <button type="button" onclick={e => { hint = guardedAction(e, "reply", send); }}>Reply</button>
   </form>
+  <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`). -->
+  <p class="act-hint" role="status">{hint ?? ""}</p>
 </article>

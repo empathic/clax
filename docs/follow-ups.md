@@ -37,13 +37,14 @@ machine, so no agent runs them.
   `actionlint` was not run either (not installed). After a real release, and
   only once the repository is public, `install.sh` from GitHub is still
   untested (plan, C).
-- **Allow in the consent dialog with a real screen reader** (Svelte port,
-  Task 8). Activating Allow with VoiceOver, once the button is armed (500 ms
-  after the dialog's first paint), must grant once. The shell lets a click
-  with no tracked press through on the assumption that assistive technology
-  activates with `pointerId` -1 and no `pointerdown`; only synthetic events
-  have checked that. Check that VoiceOver in Safari and Chrome grants, and
-  that it does not grant before the button is armed.
+- **Consequential actions with a real screen reader** (security pass).
+  Send, Resolve, Reply, the batch sends, Post in a composer the page opened,
+  and the consent dialog's Allow act only on a trusted click whose `detail`
+  is 1 or more once the keyboard trail is tainted, which is every load.
+  Check with VoiceOver in Safari and Chrome whether its activation clicks
+  with `detail` 1 (it acts) or 0 (it says "Click to <verb>" and acts
+  only on a pointer), and record which in `docs/contract.md` "Known
+  limitations".
 - `scripts/smoke-claude-push.sh --channel` and `--follow`: an idle Claude
   Code session wakes on a comment through the channel and through the
   background follow fallback. Until the owner runs them, two facts are
@@ -108,25 +109,26 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
 
 ## Known issues
 
-- **A subdomain-mode page can navigate the whole shell window.** In subdomain
-  mode the content frame has no `sandbox`, so a page with the viewer's
-  activation can set `top.location` to any URL: another site, or a fresh
-  Clax load where C and ? start live. A sibling case: the page can
-  `window.open` the shell's URL, and the new tab starts with empty session
-  storage (its opener is another origin), so C and ? are live there too and
-  it has focus. Options: sandbox the subdomain frame
-  (`allow-scripts allow-same-origin allow-forms allow-popups`, no
-  `allow-top-navigation`) after checking every capability still works, or
-  hold the keys on every load. The sandbox alone covers only `top.location`:
-  a popup inherits the frame's flags unless `allow-popups-to-escape-sandbox`
-  is set, but those flags include `allow-same-origin`, so the shell in it
-  still runs at its own origin with empty storage and live keys. Leaving
-  `allow-popups-to-escape-sandbox` off is therefore not enough, and the
-  shell cannot reliably tell a load the page opened (the page can open it
-  with `noopener` and `noreferrer`). Holding the keys on every load is the
-  option that covers both cases. Sandbox mode is not affected: a popup
-  inherits the opaque-origin sandbox, storage throws, and the keys start
-  held.
+- **Owner decision: sandbox the subdomain frame** (security pass, O1). A
+  subdomain-mode page can navigate the whole window with the viewer's
+  activation, to another site or a fresh Clax load (`docs/contract.md`,
+  "Known limitations"). Every load now starts with the keyboard trail
+  tainted, so what remains is C and `?` live in the fresh load and the
+  navigation itself. Giving the subdomain frame `sandbox="allow-scripts
+  allow-same-origin allow-forms allow-modals allow-popups
+  allow-popups-to-escape-sandbox allow-downloads"` (no top navigation)
+  would stop a navigation to another site; it needs every capability and
+  page link checked first, and a popup the page opens keeps the shell's
+  live keys either way.
+- **Owner decision: a keyboard path for consequential actions** (security
+  pass, O2). No key clears the tainted trail, so keyboard-only and
+  screen-reader viewers need a pointer for Send, Resolve, Reply, the batch
+  sends, a page-opened composer's Post, and Allow. A path a page cannot
+  coax (for example: the control held focus for `ALLOW_DELAY_MS` with no
+  other key in between) would restore keyboard use.
+- **Owner decision: rate limits for LAN writes** (security pass, O3). LAN
+  viewers can create viewers, threads, comments, sends and `db` documents
+  without limit.
 
 - **The daemon's own `/mcp` `status` does not report `upgrade_held`.** The
   shim, the CLI and Pi report it; the daemon-served MCP endpoint has no hold
@@ -194,39 +196,6 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
     threads whose anchors went unanswered while it failed stay unplaced. The
     bridge should report a part that loads after failing, and the shell then
     clear the failure and its notice and resolve the anchors again.
-
-- **A page decides when the viewer's keys leave its frame for the shell**
-  (Echo Task 3 re-review 3, I6; Task 5 review, I1; Task 5 re-review 1, R2).
-  **Open: the fix is pending re-review.** The page can push focus out with
-  `parent.focus()` on any key (and keep the main thread busy so the viewer's
-  next keys reach the shell first), or make the viewer's own Tab leave the
-  frame by running out of fields (disabling them on that Tab). Either way the
-  viewer's typing, meant for the page, walks the shell's controls (a pin, a
-  card head, Resolve, "Send to <agent>"), and a Space presses them natively.
-  Two rules stand against it:
-  - the give-back: once the window's blur saw the frame active, a give-back
-    to that frame is pending until the viewer presses in the shell, focus
-    lands on a shell control, or they type in the composer; while it is
-    pending and focus is on `<body>`, a trusted key is swallowed and focus
-    returns to the frame in that key's handler (or a task after the window's
-    focus, with no key). It ends when that frame is removed or replaced.
-  - the tainted keyboard trail (`view/trail.ts`): focus that enters the shell
-    from the frame or from `<body>` without a press of the viewer's taints
-    it, and a card's consequential actions (Send, Resolve, and later ones)
-    ignore keyboard activation and say "Click to send, or press Esc first".
-    A trusted press in the shell, or a trusted Escape on a shell control,
-    clears it. Both start set after a load the page caused.
-
-  The shell keys C and ? still follow `keysOwned`, which focus landing on a
-  shell control sets even on a tainted trail.
-- **A pin that keeps moving never takes a press** (Echo Task 5 review,
-  Minor 7). A pin settles (takes no press) for `ALLOW_DELAY_MS` after it
-  appears or moves, so one whose place changes at least that often (an
-  element the page animates, a live chart, a layout that follows the scroll)
-  is never pressable; the viewer reaches the thread from its card. The
-  accepted limit beside it: a pin the page parks under a pointer that rests
-  longer than `ALLOW_DELAY_MS` takes the click, which costs a selection and
-  gives the shell's keys (C and ?) back.
 
 ## Tests
 

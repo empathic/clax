@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { dispatchTrusted } from "../../bridge/test/trusted";
 import Sidebar from "./ui/Sidebar.svelte";
 import { flush, mount } from "./test/svelte";
 import type { Thread } from "./threads";
@@ -137,7 +138,7 @@ describe("Sidebar", () => {
     root.remove();
   });
 
-  it("posts a reply on Cmd+Enter or Ctrl+Enter, once, without selecting the thread", () => {
+  it("posts a reply on Enter, Cmd+Enter or Ctrl+Enter, once, without selecting the thread", () => {
     const onReply = vi.fn();
     const onSelect = vi.fn();
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
@@ -149,11 +150,15 @@ describe("Sidebar", () => {
     key({ metaKey: true });
     expect(onReply).not.toHaveBeenCalled();
     flush(() => { input.value = "looks good"; input.dispatchEvent(new Event("input", { bubbles: true })); });
-    key({});
+    // Shift+Enter is not a submit.
+    key({ shiftKey: true });
     expect(onReply).not.toHaveBeenCalled();
     key({ metaKey: true });
     expect(onReply).toHaveBeenCalledExactlyOnceWith(t, "looks good");
     expect(input.value).toBe("");
+    flush(() => { input.value = "plain"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    key({});
+    expect(onReply).toHaveBeenLastCalledWith(t, "plain");
     flush(() => { input.value = "again"; input.dispatchEvent(new Event("input", { bubbles: true })); });
     key({ ctrlKey: true });
     expect(onReply).toHaveBeenLastCalledWith(t, "again");
@@ -212,29 +217,61 @@ describe("Sidebar", () => {
     second.unmount();
   });
 
-  it("refuses Send and Resolve from the keyboard on a tainted trail, says how to act, and takes a click", async () => {
+  it("on a tainted trail, takes Send, Resolve and Reply only from a pointer's click, says so until the trail clears, and keeps focus on the card after a Send", async () => {
     const { keyboardTrail } = await import("./view/trail");
     const onSend = vi.fn();
     const onResolve = vi.fn();
+    const onReply = vi.fn();
     const t: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "note")] };
-    const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend, onResolve, onReply: vi.fn() });
+    const props = { versions: [], shown: 1, agent: "claude", threads: [t], resolved: {}, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend, onResolve, onReply };
+    const view = mount(Sidebar, props);
     const button = (name: string) => Array.from(view.root.querySelectorAll("button")).find(b => b.textContent === name)!;
-    const hint = view.root.querySelector(".act-hint")!;
+    const hint = view.root.querySelector(".thread-card .act-hint")!;
+    const click = (el: Element, detail: number) => flush(() => { dispatchTrusted(el, new MouseEvent("click", { bubbles: true, cancelable: true, detail })); });
+    const input = view.root.querySelector<HTMLInputElement>(".reply input")!;
+    const typeReply = (text: string) => flush(() => { input.value = text; input.dispatchEvent(new Event("input", { bubbles: true })); });
+    const key = (el: Element, k: string, mods: KeyboardEventInit = {}) => flush(() => { dispatchTrusted(el, new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...mods })); });
     expect(hint.getAttribute("role")).toBe("status");
     keyboardTrail.taint();
     try {
       // Enter or Space on a button is a click with detail 0.
-      flush(() => button("Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      click(button("Send to claude"), 0);
       expect(onSend).not.toHaveBeenCalled();
-      expect(hint.textContent).toBe("Click to send, or press Esc first");
-      flush(() => button("Resolve").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      expect(hint.textContent).toBe("Click to send");
+      click(button("Resolve"), 0);
       expect(onResolve).not.toHaveBeenCalled();
-      expect(hint.textContent).toBe("Click to resolve, or press Esc first");
-      flush(() => button("Send to claude").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 1 })));
-      expect(onSend).toHaveBeenCalledOnce();
+      expect(hint.textContent).toBe("Click to resolve");
+      // Typing meant for the page that lands in Reply is never posted by a key.
+      typeReply("pwd hunter2");
+      key(input, "Enter");
+      key(input, "Enter", { metaKey: true });
+      key(input, "Enter", { ctrlKey: true });
+      click(button("Reply"), 0);
+      expect(onReply).not.toHaveBeenCalled();
+      expect(hint.textContent).toBe("Click to reply");
+      // An Escape clears nothing.
+      key(input, "Escape");
+      click(button("Reply"), 0);
+      expect(onReply).not.toHaveBeenCalled();
+      // A pointer's click acts.
+      click(button("Reply"), 1);
+      expect(onReply).toHaveBeenCalledWith(t, "pwd hunter2");
       expect(hint.textContent).toBe("");
-      keyboardTrail.clear();
-      flush(() => button("Resolve").dispatchEvent(new MouseEvent("click", { bubbles: true, detail: 0 })));
+      click(button("Send to claude"), 0);
+      expect(hint.textContent).toBe("Click to send");
+      // The hint goes once the trail clears; then keys act again.
+      flush(() => keyboardTrail.clear());
+      expect(hint.textContent).toBe("");
+      typeReply("ok");
+      key(input, "Enter");
+      expect(onReply).toHaveBeenLastCalledWith(t, "ok");
+      // A Send from the keyboard moves focus to the card's head before Send goes.
+      button("Send to claude").focus();
+      click(button("Send to claude"), 0);
+      expect(onSend).toHaveBeenCalledOnce();
+      view.update({ ...props, threads: [{ ...t, sent_to_agent: true }] });
+      expect(document.activeElement).toBe(view.root.querySelector(".card-head"));
+      click(button("Resolve"), 0);
       expect(onResolve).toHaveBeenCalledOnce();
     } finally {
       keyboardTrail.clear();

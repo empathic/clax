@@ -571,12 +571,30 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
-  it("taints the keyboard trail when focus enters the shell from the frame or the body without a press, and clears it on a press or an Escape on a control", async () => {
+  it("starts every load with the keyboard trail tainted, whether or not the page caused it", async () => {
+    const { ctl } = await started();
+    const { keyboardTrail } = await import("./trail");
+    // A load the page caused through top navigation or `window.open` cannot
+    // be told from another one, so none starts clear.
+    expect(keyboardTrail.tainted).toBe(true);
+    ctl.dispose();
+  });
+
+  it("taints the keyboard trail when focus enters the shell from the frame or the body without a press, and clears it only on a press that puts focus on a shell control", async () => {
     const { ctl, frame } = await started();
     const { keyboardTrail } = await import("./trail");
     const button = document.body.appendChild(document.createElement("button"));
     const other = document.body.appendChild(document.createElement("button"));
     const land = (el: Element, from: Element | null) => { (el as HTMLElement).focus(); dispatchTrusted(el, new FocusEvent("focusin", { bubbles: true, relatedTarget: from })); };
+    // A trusted press on `el`; `focus` is the control the browser then focuses
+    // in the same task (none: the press keeps focus where it was).
+    const press = async (el: Element, focus: HTMLElement | null, isTrusted = true) => {
+      const e = new Event("pointerdown", { bubbles: true });
+      if (isTrusted) dispatchTrusted(el, e); else el.dispatchEvent(e);
+      if (focus) land(focus, document.activeElement === document.body ? null : document.activeElement);
+      await new Promise(r => setTimeout(r, 0));
+    };
+    await press(other, other);
     expect(keyboardTrail.tainted).toBe(false);
     // From the frame (the viewer's Tab out, or the page running out of fields).
     land(button, frame);
@@ -584,29 +602,60 @@ describe("ArtifactController", () => {
     // A Tab on to another control keeps it.
     land(other, button);
     expect(keyboardTrail.tainted).toBe(true);
-    // An Escape with focus on <body> does not clear it; on a control it does.
-    other.blur();
-    dispatchTrusted(document.body, new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(keyboardTrail.tainted).toBe(true);
-    other.focus();
+    // No key clears it: not an Escape on a control (a page can coax one).
     dispatchTrusted(other, new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
-    expect(keyboardTrail.tainted).toBe(false);
-    // An untrusted Escape never clears it.
-    land(button, null);
     expect(keyboardTrail.tainted).toBe(true);
-    button.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    // Not a press on a shield band, which keeps focus on the tainted landing.
+    const shield = document.body.appendChild(document.createElement("div"));
+    shield.className = "frame-shield";
+    const band = shield.appendChild(document.createElement("div"));
+    await press(band, null);
+    expect(document.activeElement).toBe(other);
     expect(keyboardTrail.tainted).toBe(true);
-    // A press clears it, and the focus that press gives a control does not taint it.
-    dispatchTrusted(window, new Event("pointerdown"));
-    land(other, null);
+    // Nor one on a band that is a control, nor on the prompt's backdrop.
+    const bandButton = shield.appendChild(document.createElement("button"));
+    await press(bandButton, bandButton);
+    expect(keyboardTrail.tainted).toBe(true);
+    const backdrop = document.body.appendChild(document.createElement("div"));
+    backdrop.className = "prompt-backdrop";
+    await press(backdrop, null);
+    expect(keyboardTrail.tainted).toBe(true);
+    // Nor a press that leaves focus where it was, nor an untrusted one.
+    await press(other, null);
+    expect(keyboardTrail.tainted).toBe(true);
+    await press(button, null, false);
+    expect(keyboardTrail.tainted).toBe(true);
+    // A press that puts focus on the control it targets clears it, and the
+    // focus that press gives does not taint it.
+    const label = button.appendChild(document.createElement("span"));
+    await press(label, button);
     expect(keyboardTrail.tainted).toBe(false);
-    await new Promise(r => setTimeout(r, 0));
     // Focus the browser puts back when the window regains focus changes nothing.
     dispatchTrusted(window, new FocusEvent("blur"));
-    land(other, null);
+    land(button, null);
     expect(keyboardTrail.tainted).toBe(false);
     // Focus arriving from <body> after that taints it again.
-    land(button, null);
+    land(other, null);
+    expect(keyboardTrail.tainted).toBe(true);
+    ctl.dispose();
+  });
+
+  it("forgets the control to restore once focus goes anywhere else, so a later landing from the frame taints", async () => {
+    const { ctl, frame } = await started();
+    const { keyboardTrail } = await import("./trail");
+    const button = document.body.appendChild(document.createElement("button"));
+    dispatchTrusted(button, new Event("pointerdown", { bubbles: true }));
+    button.focus();
+    dispatchTrusted(button, new FocusEvent("focusin", { bubbles: true, relatedTarget: null }));
+    await new Promise(r => setTimeout(r, 0));
+    expect(keyboardTrail.tainted).toBe(false);
+    // The window blurs with focus on the button; focus then goes into the frame.
+    dispatchTrusted(window, new FocusEvent("blur"));
+    frame.focus();
+    dispatchTrusted(frame, new FocusEvent("focusin", { bubbles: true, relatedTarget: null }));
+    // The page runs out of fields onto that same button (dispatched alone:
+    // jsdom's own focus() would fire a focusin first).
+    dispatchTrusted(button, new FocusEvent("focusin", { bubbles: true, relatedTarget: frame }));
     expect(keyboardTrail.tainted).toBe(true);
     ctl.dispose();
   });

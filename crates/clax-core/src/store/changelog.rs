@@ -126,11 +126,18 @@ impl Store {
         })
     }
 
-    /// Raises the viewer's seen mark on `aid` to `n` (never lowers it) and
-    /// prunes the viewer's rows past [`MAX_SEEN_PER_VIEWER`], least recently
-    /// updated first. The mark after the write.
+    /// Raises the viewer's seen mark on `aid` to `n`, at most the latest
+    /// version (never lowers it), and prunes the viewer's rows past
+    /// [`MAX_SEEN_PER_VIEWER`], least recently updated first. The mark after
+    /// the write.
     pub fn mark_seen(&self, viewer_id: &str, aid: &ArtifactId, n: u32) -> Result<u32> {
         self.with_tx(|tx| {
+            let latest: Option<u32> = tx.query_row(
+                "SELECT MAX(n) FROM versions WHERE artifact_id = ?1",
+                params![aid.as_str()],
+                |r| r.get(0),
+            )?;
+            let n = n.min(latest.unwrap_or(0));
             tx.execute(
                 "INSERT INTO viewer_seen (viewer_id, artifact_id, seen_n, updated_at) VALUES (?1, ?2, ?3, ?4)
                  ON CONFLICT (viewer_id, artifact_id) DO UPDATE SET seen_n = MAX(seen_n, excluded.seen_n), updated_at = excluded.updated_at",
@@ -274,9 +281,10 @@ mod tests {
         let (_d, st) = store();
         let viewer = st.upsert_viewer(&crate::new_ulid(), None).unwrap().id;
         let id = artifact(&st, None);
+        v2(&st, &id, None, &[], &[]).unwrap();
         assert_eq!(st.seen(&viewer, &id).unwrap(), None);
-        assert_eq!(st.mark_seen(&viewer, &id, 3).unwrap(), 3);
-        assert_eq!(st.mark_seen(&viewer, &id, 2).unwrap(), 3);
+        assert_eq!(st.mark_seen(&viewer, &id, 2).unwrap(), 2);
+        assert_eq!(st.mark_seen(&viewer, &id, 1).unwrap(), 2);
         let ids: Vec<ArtifactId> = (0..crate::changelog::MAX_SEEN_PER_VIEWER)
             .map(|_| artifact(&st, None))
             .collect();
@@ -289,5 +297,19 @@ mod tests {
             "the least recently updated row was pruned"
         );
         assert_eq!(st.seen(&viewer, &ids[0]).unwrap(), Some(1));
+    }
+
+    #[test]
+    fn a_seen_mark_never_passes_the_latest_version() {
+        let (_d, st) = store();
+        let viewer = st.upsert_viewer(&crate::new_ulid(), None).unwrap().id;
+        let id = artifact(&st, None);
+        assert_eq!(st.mark_seen(&viewer, &id, 999).unwrap(), 1);
+        v2(&st, &id, None, &[], &[]).unwrap();
+        assert_eq!(
+            st.mark_seen(&viewer, &id, 2).unwrap(),
+            2,
+            "a later version is still news"
+        );
     }
 }

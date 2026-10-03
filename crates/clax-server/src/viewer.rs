@@ -39,13 +39,31 @@ pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
 /// curl) or its `Origin` is the daemon's own: `http://` plus the request's
 /// `Host`. Artifact origins (`<aid>.localhost:<port>`), `null`, and foreign
 /// origins are refused with 403 `forbidden_origin`, so a published page cannot
-/// comment, send, resolve, or rename the viewer on a person's behalf.
+/// comment, send, resolve, or rename the viewer on a person's behalf. A
+/// request without `Origin` whose `Sec-Fetch-Site` names another origin
+/// (`same-site` or `cross-site`: a page's `<img>` or other no-cors GET, which
+/// browsers send without `Origin`) is refused the same way, so a page cannot
+/// reach a viewer route's side effects, such as minting a viewer, either.
 pub struct SameOrigin;
+
+/// Whether the browser says another origin made the request (`Sec-Fetch-Site`
+/// other than `same-origin` or `none`; scripts send no such header).
+fn fetched_from_elsewhere(headers: &HeaderMap) -> bool {
+    headers
+        .get("sec-fetch-site")
+        .is_some_and(|v| !matches!(v.to_str(), Ok("same-origin" | "none")))
+}
 
 impl<S: Send + Sync> FromRequestParts<S> for SameOrigin {
     type Rejection = ApiError;
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, ApiError> {
         let Some(origin) = parts.headers.get(header::ORIGIN) else {
+            if fetched_from_elsewhere(&parts.headers) {
+                return Err(ApiError::forbidden(
+                    "forbidden_origin",
+                    "viewer routes accept requests only from the Clax shell's own origin",
+                ));
+            }
             return Ok(SameOrigin);
         };
         let host = parts

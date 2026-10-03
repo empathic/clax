@@ -482,3 +482,46 @@ async fn foreign_origins_and_bad_labels_are_refused_before_the_upgrade() {
         Some(403)
     );
 }
+
+/// The daemon reads at most `MAX_ROOM_MESSAGE_BYTES` of one message: a
+/// larger one closes the socket (1009) rather than being buffered whole.
+#[tokio::test]
+async fn a_message_over_the_size_cap_closes_the_socket() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(&ts, caps()).await;
+    let mut a = connect(&ts, &aid, A, None, &[]).await;
+    a.next().await;
+    let big = "x".repeat(clax_server::routes::room::MAX_ROOM_MESSAGE_BYTES + 1);
+    let _ =
+        a.ws.send(Message::Text(
+            json!({"t": "presence", "room": null, "state": {"k": big}})
+                .to_string()
+                .into(),
+        ))
+        .await;
+    let mut closed = false;
+    for _ in 0..4 {
+        match tokio::time::timeout(Duration::from_secs(5), a.ws.next()).await {
+            Ok(None | Some(Err(_))) => {
+                closed = true;
+                break;
+            }
+            Ok(Some(Ok(Message::Close(c)))) => {
+                assert_eq!(c.map(|c| u16::from(c.code)), Some(1009));
+                closed = true;
+                break;
+            }
+            Ok(Some(Ok(_))) => continue,
+            Err(_) => break,
+        }
+    }
+    assert!(closed, "the socket closes");
+    // A message within the cap is read (and refused by its own bounds, quietly).
+    let mut b = connect(&ts, &aid, B, None, &[]).await;
+    b.next().await;
+    b.send(json!({"t": "presence", "room": null, "state": {"k": "x".repeat(5000)}}))
+        .await;
+    b.send(json!({"t": "join", "id": 1, "room": "r"})).await;
+    let ack = b.until(|f| f["t"] == "ack").await;
+    assert_eq!(ack["id"], 1);
+}

@@ -165,6 +165,9 @@ input, select { line-height: 1.2; }
 .thread-num, .thread-pin { display: inline-grid; place-items: center; width: 22px; height: 22px; min-height: 0; border-radius: 50%; background: var(--you); color: var(--on-you); font: 600 12px/1 var(--mono); flex: none; padding: 0; }
 .composer .clip { display: block; max-width: 100%; min-height: 24px; object-fit: cover; object-position: left top; border: 1px solid var(--border); background: var(--bg); }
 .composer .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
+/* Said beside a consequential action a key asked for on a tainted trail (view/trail.ts). */
+.act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
+.act-hint:empty { margin: 0; }
 .pins { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
 .thread-pin { position: absolute; pointer-events: auto; border: 2px solid var(--pin-ring); box-shadow: 0 1px 3px rgba(47,11,4,.45); }
 .thread-pin:not(:disabled):hover { border-color: var(--focus); }

@@ -295,7 +295,9 @@ pub struct PresenceBody {
 /// `PUT /api/viewers/me/presence`: reports this viewer here or away on an
 /// artifact, with where they look when they share it (spec §10, "Presence");
 /// `{people}`, the artifact's presence. Announces a `presence` event when the
-/// report changed what others see. 400 `no_viewer` without a viewer cookie.
+/// report changed what others see. 400 `no_viewer` without a viewer cookie;
+/// 429 `limit_reached` when the artifact already lists
+/// [`clax_core::presence::MAX_PEOPLE`] others and none of them is gone.
 pub async fn set_presence(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -322,13 +324,25 @@ pub async fn set_presence(
         ReportedState::Here => P::Here,
         ReportedState::Away => P::Away,
     };
-    let changed = s.presence.report(
-        &b.artifact_id,
-        &v.public_id,
-        v.display_name.as_deref(),
-        state,
-        b.r#where.as_deref(),
-    );
+    let changed = s
+        .presence
+        .report(
+            &b.artifact_id,
+            &v.public_id,
+            v.display_name.as_deref(),
+            state,
+            b.r#where.as_deref(),
+        )
+        .ok_or_else(|| {
+            ApiError::new(
+                axum::http::StatusCode::TOO_MANY_REQUESTS,
+                "limit_reached",
+                format!(
+                    "this artifact already lists {} people",
+                    clax_core::presence::MAX_PEOPLE
+                ),
+            )
+        })?;
     if changed {
         crate::presence::announce(&s.events, &s.presence, &b.artifact_id);
     }

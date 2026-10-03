@@ -11,7 +11,7 @@
   import { relativeTime } from "../format";
   import { type Thread, type Viewer, resolvedByLabel } from "../threads";
   import { type Selection, selectable, sendLabel, unsent, unsentLabel } from "../view/batch-model";
-  import { guardedAction } from "../view/trail";
+  import { guardedAction, keyboardTrail } from "../view/trail";
   import { agentName, historyOf, isOutdated } from "../view/history-model";
   import { needsTicking, sidebarSections } from "../view/sidebar-model";
   import { type Working, agentNames, newestFirst, stripText, threadAgent, threadMarker } from "../view/working-model";
@@ -111,6 +111,7 @@
   const toggleCard = (t: Thread, shift: boolean) => p.onToggle?.(t, shift, order);
   const unsentCount = $derived(unsent(p.threads).length);
   let unsentHint: string | null = $state(null);
+  $effect(() => keyboardTrail.onClear(() => { unsentHint = null; }));
   const resolve = (t: Thread) => { justResolved = { id: t.id, until: Date.now() + RESOLVE_OPEN_MS }; p.onResolve(t); };
 </script>
 
@@ -219,8 +220,6 @@
     .hist .ev b { font-weight: 600; color: var(--fg); }
     .hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
     .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
-    .act-hint { margin: 6px 0 0; font-size: 12px; color: var(--muted); text-align: right; }
-    .act-hint:empty { margin: 0; }
     .reply { display: flex; gap: 6px; margin-top: 8px; }
     .reply input { flex: 1; min-width: 0; }
     /* Batch send (spec §8): the cards' boxes, the shared Send and its agent picker. */
