@@ -28,7 +28,7 @@
   const busy = $derived(new Set(p.s.working.map(w => w.agent)));
   const sum = $derived(summary({
     working: p.s.working, names, mine: new Set(p.s.attention?.open_in ?? []), open: p.open, now: tick.now,
-    idle: parts.agents.filter(a => a.live && !busy.has(a.handle)).map(a => names.get(a.handle) ?? a.harness), addressed: p.s.decided?.line ?? null, published: p.s.deleted ? null : p.s.newer,
+    idle: parts.agents.filter(a => a.live && !busy.has(a.handle)).map(a => names.get(a.handle) ?? a.harness), addressed: p.s.decided?.line ?? null, published: p.s.deleted ? null : p.s.newer, rally: p.s.rally,
   }));
 </script>
 

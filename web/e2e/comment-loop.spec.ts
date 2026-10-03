@@ -35,7 +35,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   const card = page.locator(".section-open .thread-card").first();
   await card.getByRole("button", { name: /^Send to / }).click();
   await expect(card.locator(".waiting")).toContainText("sent, waiting for the agent");
-  await expect(card.locator(".waiting")).toContainText("waiting on the end of its turn");
+  await expect(card.locator(".waiting")).toContainText("waiting on the agent finishing its current work");
   const tid = (await card.getAttribute("data-thread"))!;
 
   // Agent side: the next tool result's feedback, exactly as the shim fetches it.

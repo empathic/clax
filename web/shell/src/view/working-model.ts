@@ -5,7 +5,7 @@ import type { Participants } from "../api";
 
 export type Working = { key: string; agent: string; harness: string; message: string | null; thread_ids: string[]; started_at: string; last_heartbeat: string };
 export type AgentView = Participants["agents"][number];
-export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; now: Date };
+export type SummaryInput = { working: Working[]; names: Map<string, string>; mine: Set<string>; open: number; idle: string[]; addressed: string | null; published: number | null; rally: boolean; now: Date };
 export type Summary = { line1: string; agent: boolean; line2: string; elapsed: string | null };
 
 const LABELS: Record<string, string> = { claude: "Claude Code", codex: "Codex", pi: "Pi" };
@@ -47,7 +47,7 @@ export function summary(i: SummaryInput): Summary {
   }
   if (i.published !== null) return { line1: `v${i.published} published`, agent: false, line2: "reload to see it", elapsed: null };
   if (i.addressed) return { line1: i.addressed, agent: false, line2: "yours, not looked at yet", elapsed: null };
-  return { line1: "Nobody working", agent: false, line2: plural(i.open, "open thread") + idle, elapsed: null };
+  return { line1: "Nobody working", agent: false, line2: plural(i.open, "open thread") + idle + (i.rally ? " · rally of 10" : ""), elapsed: null };
 }
 
 export function threadMarker(list: Working[], threadId: string, names: Map<string, string>): { text: string; since: string } | null {

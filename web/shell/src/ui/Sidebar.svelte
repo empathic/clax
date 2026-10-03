@@ -213,6 +213,9 @@
     .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
     .hist .sep { margin-right: 2px; }
     .hist .ev { white-space: nowrap; }
+    /* Each version's events start a line; the "·" stays in the text, read and copied. */
+    .hist .br { flex-basis: 100%; height: 0; }
+    .hist .nl .sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     .hist .ev b { font-weight: 600; color: var(--fg); }
     .hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
     .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }

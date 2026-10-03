@@ -79,7 +79,8 @@ button:disabled { opacity: .5; cursor: default; }
 .gal { max-width: 1360px; margin: 0 auto; padding: 28px 32px 40px; }
 .grp { margin-bottom: 34px; min-width: 0; }
 .grp h2 { display: flex; align-items: center; gap: 10px; margin: 0 0 4px; font-size: 26px; line-height: 1.1; padding-bottom: 10px; border-bottom: 2px solid var(--fg); }
-.grp h2 small { font: 400 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; }
+.grp h2 { white-space: nowrap; }
+.grp h2 small { font: 400 12px var(--mono); color: var(--muted); margin-left: auto; text-align: right; white-space: normal; min-width: 0; }
 .grp h2 .sw { width: 12px; height: 24px; flex: none; }
 .grp .rule { font-size: 11.5px; color: var(--muted); margin: 6px 0 14px; line-height: 1.45; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 18px; }
@@ -101,7 +102,8 @@ button:disabled { opacity: .5; cursor: default; }
 .card-tools button:last-child:hover, .card-tools button:last-child:focus-visible { color: var(--danger); }
 .empty { text-align: center; color: var(--muted); padding: 64px 0; }
 .empty-gallery { display: grid; place-items: center; gap: 10px; padding: 80px 0 40px; text-align: center; }
-.empty-gallery p { margin: 0; font: 600 20px var(--grot); }
+.empty-gallery p { margin: 0; font: 600 20px var(--grot); text-wrap: balance; }
+.empty-gallery code { white-space: nowrap; }
 .empty-gallery p.muted { font: 400 13px var(--mono); }
 code { background: var(--bg); border: 1px solid var(--border); padding: 2px 6px; color: var(--fg); }
 .gfoot { margin-top: 4px; color: var(--muted); font-size: 12px; display: flex; gap: 24px; border-top: 1px solid var(--border); padding-top: 14px; }

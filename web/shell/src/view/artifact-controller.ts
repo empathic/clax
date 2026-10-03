@@ -17,6 +17,7 @@ import { afterPaint } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
 import type { Decided } from "./changelog-model";
+import { rallyOnce } from "./rally";
 import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
 import { FrameGate } from "./frame-gate";
@@ -82,6 +83,8 @@ export type ViewState = {
   /** The changelog this load decided (spec §8): the Addressed group, the
    * version button's dot and the summary line; null until the view is ready. */
   decided: Decided | null;
+  /** "Rally of 10" (spec §8, "Look"): this load is this browser's first view of the artifact's tenth version. */
+  rally: boolean;
   /** Who has the artifact open (spec §10, "Presence"), from the daemon. */
   presence: PresenceView[];
   /** Whether this viewer shares where they look ("Share where I'm looking"; per browser, on by default). */
@@ -252,7 +255,7 @@ export class ArtifactController {
       panel: media("(min-width: 900px)"), narrow: media("(max-width: 480px)"),
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
-      decided: null, menu: null, looked: {}, presence: [], shareWhere: readShareWhere(),
+      decided: null, rally: false, menu: null, looked: {}, presence: [], shareWhere: readShareWhere(),
       agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
@@ -717,6 +720,7 @@ export class ArtifactController {
     if (this.decideFor === latest) return;
     this.decideFor = latest;
     const pinned = this.pinnedVersion !== null || this.shown(s) !== latest;
+    this.set({ rally: rallyOnce(this.id, this.shown(s)) });
     // Its code loads here, off the artifact entry.
     void import("./changelog-model").then(m => {
       if (this.decideFor === latest) this.set({ decided: m.decide(s.data.versions, latest, s.attention, pinned) });

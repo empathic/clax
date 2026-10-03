@@ -55,6 +55,7 @@
   :global {
     .ros { display: flex; align-items: center; gap: 2px; }
     .ros .side { display: flex; gap: 2px; } .ros .ppl { flex-direction: row-reverse; }
+    .ros:not(:has(.tok)) { display: none; }
     .ros .hub { width: 7px; height: 7px; border-radius: 50%; background: var(--fg); margin: 0 4px; flex: none; }
     .tok { display: inline-grid; place-items: center; height: 26px; min-width: 30px; padding: 0 6px; font: 600 12px/1 var(--grot); flex: none; position: relative; }
     .tok.p { border-radius: 0 13px 13px 0; padding-right: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--you); color: var(--fg); }

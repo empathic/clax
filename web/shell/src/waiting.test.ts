@@ -8,7 +8,7 @@ const s = (state: any, tier: any, extra = {}) => ({ thread_id: "t", state, tier,
 describe("waitingLabel", () => {
   it("says nothing for a thread never sent", () => { expect(waitingLabel(null, now)).toBeNull(); });
   it("names the tier being waited on while sent", () => {
-    expect(waitingLabel(s("sent", "stop_hook"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on the end of its turn");
+    expect(waitingLabel(s("sent", "stop_hook"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on the agent finishing its current work");
     expect(waitingLabel(s("sent", "piggyback"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on its next clax tool call");
     expect(waitingLabel(s("sent", "queue"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on Codex to pick up the queued message");
     expect(waitingLabel(s("sent", "inject"), now)).toBe("sent, waiting for the agent · 1 min 15 s · waiting on Pi to take the message");

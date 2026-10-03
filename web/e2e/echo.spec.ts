@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
+import { contentFrame, openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
 
 let d: Awaited<ReturnType<typeof startDaemon>>;
 test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
@@ -149,4 +149,19 @@ test("at phone width the thread list's code is fetched after the first paint, be
   await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   await fetched;
   await expect(page.locator("aside.sidebar")).toHaveCount(0);
+});
+
+test("the tenth version, viewed first in this browser, reads rally of 10 in the top bar once, and the gallery card carries the chip", async ({ page }) => {
+  const s = await registerSession(d.base, d.token, "claude", "echo-rally");
+  const { artifact } = await publishAs(d.base, d.token, s.id, "Echo rally", { "index.html": "<main><h2>Goals</h2></main>" });
+  for (let v = 1; v < 10; v++) await publishNext(d.base, d.token, s.id, artifact.id, v, {});
+  await openArtifact(page, d.base, artifact.id, 10, "subdomain");
+  await expect(page.locator(".who .sum .l2")).toContainText("rally of 10");
+  await page.reload();
+  await contentFrame(page, artifact.id, 10);
+  await expect(page.locator(".who .sum .l2")).toHaveText(/open thread/);
+  await expect(page.locator(".who .sum .l2")).not.toContainText("rally of 10");
+  await page.goto(`${d.base}/`);
+  const card = page.locator(".card-wrap").filter({ has: page.getByRole("heading", { name: "Echo rally" }) });
+  await expect(card.locator(".chip.rally")).toHaveText("rally of 10");
 });

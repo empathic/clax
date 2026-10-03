@@ -8,7 +8,7 @@ import type { FeedbackState, Tier } from "./threads";
 // entries of DELIVERED_VIA exist for type completeness only.
 const WAITING_ON: Record<Tier, string> = {
   piggyback: "its next clax tool call",
-  stop_hook: "the end of its turn",
+  stop_hook: "the agent finishing its current work",
   prompt_hook: "your next message to it",
   wait: "its wait_for_feedback loop",
   queue: "Codex to pick up the queued message",
