@@ -1,5 +1,5 @@
-//! `clax init` / `clax uninit` against fake `claude`, `codex` and `pi`
-//! commands and scratch harness configuration directories. The real
+//! `clax init` / `clax uninit` against fake `claude`, `codex`, `grok` and
+//! `pi` commands and scratch harness configuration directories. The real
 //! harnesses and their real configuration are never touched.
 
 use assert_cmd::Command;
@@ -16,7 +16,8 @@ struct Env {
 impl Env {
     /// A scratch HOME with fake CLIs for `harnesses` in `fakebin`. Each fake
     /// appends "<name> <args>" to `calls`, and exits 1 when that line is
-    /// listed in `fail`.
+    /// listed in `fail`. Given `plugin list --json`, a fake prints
+    /// `grok-list.json`, else `[]`.
     fn new(harnesses: &[&str]) -> Env {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -27,10 +28,11 @@ impl Env {
             std::fs::write(
                 &p,
                 format!(
-                    "#!/bin/sh\nline=\"{h} $*\"\necho \"$line\" >> '{calls}'\npwd -P >> '{cwds}'\nif grep -qxF \"$line\" '{fail}' 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nexit 0\n",
+                    "#!/bin/sh\nline=\"{h} $*\"\necho \"$line\" >> '{calls}'\npwd -P >> '{cwds}'\nif grep -qxF \"$line\" '{fail}' 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nif [ \"$*\" = \"plugin list --json\" ]; then cat '{list}' 2>/dev/null || echo '[]'; fi\nexit 0\n",
                     calls = dir.path().join("calls").display(),
                     cwds = dir.path().join("cwds").display(),
                     fail = dir.path().join("fail").display(),
+                    list = dir.path().join("grok-list.json").display(),
                 ),
             )
             .unwrap();
@@ -51,6 +53,10 @@ impl Env {
             .env("CLAUDE_CONFIG_DIR", self.p("claude"))
             .env("CODEX_HOME", self.p("codex"))
             .env("PI_CODING_AGENT_DIR", self.p("pi"))
+            .env("GROK_HOME", self.p("grok"))
+            .env_remove("GROK_SESSION_ID")
+            .env_remove("GROK_HOOK_EVENT")
+            .env_remove("CLAUDE_PID")
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.p("fakebin").display()),
@@ -606,4 +612,96 @@ fn harness_clis_run_in_the_home_directory_not_the_callers() {
     for l in cwds.lines() {
         assert_eq!(l, home);
     }
+}
+
+#[test]
+fn a_machine_with_only_grok_registers_clax_grok() {
+    let e = Env::new(&["grok"]);
+    let (ok, v) = e.json(&["init"]);
+    assert!(ok, "{v}");
+    for other in ["claude", "codex", "pi"] {
+        assert_eq!(status(&v, other), "skipped", "{v}");
+    }
+    assert_eq!(status(&v, "grok"), "registered", "{v}");
+    let dir = e.root().join("plugins/clax-grok");
+    assert_eq!(
+        e.calls(),
+        [
+            "grok plugin uninstall clax-grok --confirm".to_string(),
+            format!("grok plugin install {} --trust", dir.display()),
+        ]
+    );
+    assert!(dir.join(".grok-plugin/plugin.json").is_file());
+    assert!(e.root().join(".grok-plugin/marketplace.json").is_file());
+    assert!(
+        !e.p(".grok").exists() && !e.p("grok").exists(),
+        "init writes nothing in a Grok home"
+    );
+}
+
+#[test]
+fn no_grok_command_names_the_claude_code_plugin() {
+    let e = Env::new(&["claude", "codex", "grok", "pi"]);
+    assert!(e.json(&["init"]).0);
+    assert!(e.json(&["uninit"]).0);
+    for c in e.calls().iter().filter(|c| c.starts_with("grok ")) {
+        assert!(
+            !c.split_whitespace()
+                .any(|w| w == "clax" || w == "clax@clax"),
+            "{c}: in Grok, `clax` is the Claude Code plugin's install"
+        );
+    }
+}
+
+#[test]
+fn a_failed_grok_uninstall_is_ignored_and_a_failed_install_fails_grok_only() {
+    let e = Env::new(&["claude", "grok"]);
+    std::fs::write(
+        e.p("fail"),
+        format!(
+            "grok plugin uninstall clax-grok --confirm\ngrok plugin install {} --trust\n",
+            e.root().join("plugins/clax-grok").display()
+        ),
+    )
+    .unwrap();
+    let (ok, v) = e.json(&["init"]);
+    assert!(!ok);
+    assert_eq!(status(&v, "grok"), "failed");
+    assert_eq!(status(&v, "claude"), "registered");
+    assert!(detail(&v, "grok").contains("(ignored)"), "{v}");
+}
+
+#[test]
+fn init_records_grok_and_uninit_removes_it_and_the_marketplace() {
+    let e = Env::new(&["grok"]);
+    assert!(e.json(&["init"]).0);
+    let rec: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(e.p("ax/registrations.json")).unwrap()).unwrap();
+    assert_eq!(rec["harnesses"]["grok"]["plugin"], "clax-grok");
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(status(&v, "grok"), "removed");
+    assert!(e.calls().contains(&"grok plugin list --json".to_string()));
+    assert!(!e.root().exists(), "{v}");
+}
+
+#[test]
+fn uninit_keeps_the_marketplace_while_grok_still_lists_a_plugin_from_it() {
+    let e = Env::new(&["grok"]);
+    assert!(e.json(&["init"]).0);
+    std::fs::write(
+        e.p("grok-list.json"),
+        serde_json::json!([{"name": "clax-grok", "source": e.root().join("plugins/clax-grok")}])
+            .to_string(),
+    )
+    .unwrap();
+    let (_, v) = e.json(&["uninit"]);
+    assert!(e.root().exists());
+    assert!(
+        v["marketplace_detail"]
+            .as_str()
+            .unwrap()
+            .contains("grok still registers it"),
+        "{v}"
+    );
 }

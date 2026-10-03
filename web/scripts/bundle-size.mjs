@@ -54,7 +54,7 @@ for (const html of ["index.html", "artifact.html"]) {
 const fontBytes = woffs.reduce((n, f) => n + statSync(new URL(f, fontDir)).size, 0);
 
 const partsManifest = JSON.parse(read("_clax/bridge/.vite/manifest.json"));
-const partKeys = { comment: "partComment", clip: "partClip", caps: "partCaps" };
+const partKeys = { comment: "partComment", clip: "partClip", caps: "partCaps", room: "partRoom", sample: "partSample" };
 function part(name) {
   const key = Object.keys(partsManifest).find(k => partsManifest[k].isEntry && partsManifest[k].name === name);
   if (!key) throw new Error(`dist/_clax/bridge has no ${name} part`);
@@ -67,7 +67,7 @@ function part(name) {
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 sizes.fonts = fontBytes;
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}; raw bytes: fonts ${sizes.fonts}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}; raw bytes: fonts ${sizes.fonts}`);
 
 const MEASURED = ["gallery", "artifact", "bridge", ...Object.values(partKeys), "fonts"];
 const KEYS = [...MEASURED, "bridgeBaseline"];

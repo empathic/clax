@@ -158,7 +158,10 @@ pub const MIGRATIONS: &[&str] = &[
         COALESCE((SELECT MAX(version) FROM docs WHERE docs.artifact_id = artifacts.id), 0);",
     // 9: comments a page wrote through the `comments` capability, as the viewer.
     "ALTER TABLE comments ADD COLUMN via_page INTEGER NOT NULL DEFAULT 0;",
-    // 10: the version changelog: each version's note, the threads it
+    // 10: when `clax feedback follow` announced the row to its target session
+    // (a notice, not a delivery); cleared when the row is retargeted.
+    "ALTER TABLE feedback ADD COLUMN notified_at TEXT;",
+    // 11: the version changelog: each version's note, the threads it
     // addressed, and the latest version each viewer has viewed. No
     // foreign key to `artifacts`: the doctor's hard deletes of broken artifact
     // rows must not trip on them; artifact deletion removes them explicitly.
@@ -180,7 +183,7 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (viewer_id, artifact_id)
     );
     CREATE INDEX viewer_seen_by_age ON viewer_seen(viewer_id, updated_at);",
-    // 11: participants. A comment's author (the viewer's public ID), the
+    // 12: participants. A comment's author (the viewer's public ID), the
     // viewers a comment mentions, each viewer's last look at a thread, and an
     // opaque handle per session so the shell can name and target an agent
     // without a session ID. Existing sessions get a handle; existing comments
@@ -202,7 +205,7 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE sessions ADD COLUMN agent_handle TEXT;
     UPDATE sessions SET agent_handle = 'a_' || lower(hex(randomblob(11)));
     CREATE UNIQUE INDEX sessions_by_handle ON sessions(agent_handle);",
-    // 12: batch sends: the batch (its note and who sent it), its threads, and
+    // 13: batch sends: the batch (its note and who sent it), its threads, and
     // the batch each feedback row came from.
     "CREATE TABLE send_batches (
         id TEXT PRIMARY KEY,
@@ -219,7 +222,7 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX batch_threads_by_thread ON batch_threads(thread_id);
     ALTER TABLE feedback ADD COLUMN batch_id TEXT;",
-    // 13: the session a thread was last sent to with `to`. Later viewer
+    // 14: the session a thread was last sent to with `to`. Later viewer
     // comments on the thread follow it while it is live. Never served.
     "ALTER TABLE threads ADD COLUMN target_session_id TEXT;",
 ];
@@ -343,5 +346,87 @@ mod tests {
             .doc_set(&id, "t/c", serde_json::json!({}), pin, &admin)
             .unwrap();
         assert_eq!(w.doc.unwrap().version, 6);
+    }
+
+    /// The last migration shared with installs that predate the changelog,
+    /// participants and batch sends: `feedback.notified_at`.
+    const NOTIFIED_AT: usize = 10;
+
+    #[test]
+    fn a_database_at_notified_at_upgrades_to_the_latest_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        assert!(MIGRATIONS[NOTIFIED_AT - 1].contains("notified_at"));
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..NOTIFIED_AT] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", NOTIFIED_AT as u32)
+                .unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 't', 'x', 'x', 1, '0');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json)
+                    VALUES ('7q3k9mzx2b4t', 1, 'x', '[]');
+                 INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at)
+                    VALUES ('{SID}', 'grok', '/w', 'x', 'x');
+                 INSERT INTO threads (id, artifact_id, version_n, anchor_json, created_at)
+                    VALUES ('t1', '7q3k9mzx2b4t', 1, '{{}}', 'x');
+                 INSERT INTO comments (id, thread_id, author_kind, author_name, body, created_at)
+                    VALUES ('c1', 't1', 'viewer', 'Alex', 'hi', 'x');
+                 INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at, notified_at)
+                    VALUES ('f1', 't1', 'c1', '{SID}', 'x', 'y');"
+            ))
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let row = st
+            .with_conn(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT user_version FROM pragma_user_version),
+                            f.notified_at, f.batch_id,
+                            (SELECT agent_handle FROM sessions WHERE id = ?1),
+                            (SELECT note FROM versions WHERE n = 1),
+                            (SELECT author_public_id FROM comments WHERE id = 'c1'),
+                            (SELECT target_session_id FROM threads WHERE id = 't1')
+                     FROM feedback f WHERE f.id = 'f1'",
+                    params![SID],
+                    |r| {
+                        Ok((
+                            r.get::<_, u32>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, Option<String>>(2)?,
+                            r.get::<_, Option<String>>(3)?,
+                            r.get::<_, Option<String>>(4)?,
+                            r.get::<_, Option<String>>(5)?,
+                            r.get::<_, Option<String>>(6)?,
+                        ))
+                    },
+                )?)
+            })
+            .unwrap();
+        assert_eq!(row.0, MIGRATIONS.len() as u32);
+        assert_eq!(row.1.as_deref(), Some("y"), "notified_at survives");
+        assert_eq!(row.2, None);
+        let handle = row.3.expect("existing sessions get a handle");
+        assert!(handle.starts_with("a_"), "{handle}");
+        assert_eq!((row.4, row.5, row.6), (None, None, None));
+        for table in [
+            "version_threads",
+            "viewer_seen",
+            "mentions",
+            "viewer_threads",
+            "send_batches",
+            "batch_threads",
+        ] {
+            let n: i64 = st
+                .with_conn(|c| {
+                    Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
+                })
+                .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
     }
 }

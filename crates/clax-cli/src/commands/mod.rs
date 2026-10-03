@@ -2,6 +2,7 @@ pub mod asset;
 pub mod delete;
 pub mod doctor;
 pub mod doctor_agent;
+pub mod feedback;
 pub mod haiku;
 pub mod hook;
 pub mod init;

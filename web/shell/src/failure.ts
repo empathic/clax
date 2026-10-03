@@ -9,10 +9,12 @@ export const LOAD_FAILED = "Could not load comments";
 export const OPEN_FAILED = "Could not open";
 export const SHEET_FAILED = "Could not open the keyboard shortcuts";
 /** What the shell says when a lazy part of the bridge could not load in the page. */
-export const PART_FAILED: Record<"comment" | "clip" | "caps", string> = {
+export const PART_FAILED: Record<"comment" | "clip" | "caps" | "room" | "sample", string> = {
   comment: "Comment mode could not load in this page",
   clip: "Screenshots could not load in this page",
   caps: "This page's capabilities could not load",
+  room: "This page's live room could not load",
+  sample: "This page's Claude calls could not load",
 };
 
 /** `<prefix>: <message>` for an API error, a network failure, or anything thrown. */

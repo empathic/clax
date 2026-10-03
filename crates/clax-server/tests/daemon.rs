@@ -134,6 +134,7 @@ async fn serve_picks_a_free_port_writes_info_and_shuts_down_on_request() {
         reap_interval: std::time::Duration::from_secs(60),
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
+        sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -178,6 +179,7 @@ async fn shutdown_completes_while_an_sse_client_stays_connected() {
         reap_interval: std::time::Duration::from_secs(60),
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
+        sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();
@@ -218,6 +220,7 @@ async fn serve_exits_when_daemon_json_is_deleted() {
         reap_interval: std::time::Duration::from_secs(60),
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
+        sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     rx.await.unwrap();
@@ -243,6 +246,7 @@ async fn reaper_ends_idle_sessions_whose_process_is_gone() {
         reap_interval: std::time::Duration::from_millis(100),
         // Push off: these daemons never reach the real `codex`.
         codex: Default::default(),
+        sample: std::sync::Arc::new(clax_server::sample::Sampler::disabled()),
     };
     let handle = tokio::spawn(serve(cfg, Some(tx)));
     let info = rx.await.unwrap();

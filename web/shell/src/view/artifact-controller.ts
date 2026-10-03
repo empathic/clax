@@ -2,7 +2,7 @@
 // `state` and call the intent methods; the frame is a FrameHost the mount
 // gives it.
 import { type AnchorResult, INDEX_FILE, type ShellToBridge } from "../../../bridge/src/protocol";
-import { ApiError, type Artifact, type Attention, type Version, getArtifact, getToken, putLooked, putSeen } from "../api";
+import { ApiError, type Artifact, type Attention, type SampleStatus, type Version, getArtifact, getSampleStatus, getToken, putLooked, putSeen } from "../api";
 import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "../bridge-link";
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
@@ -105,6 +105,9 @@ export type ViewState = {
   /** The agent handle every Send goes to (`defaultTarget`, or the viewer's
    * pick); null when no agent is live, and a Send then goes without `to`. */
   sendTo: string | null;
+  /** This artifact's calls to Claude today and the cap, once the owner's
+   * browser has asked the daemon (null until then, and on a LAN view). */
+  sampleCalls: { n: number; cap: number | null } | null;
 };
 
 /** The artifact is loaded and the frame mode decided: the islands show. */
@@ -256,7 +259,7 @@ export class ArtifactController {
       threads: [], resolved: {}, draft: null, selected: null, hovered: null, busy: 0,
       notice: null, hint: null, me: null, ask: null, file: startFile, sheet: null, working: [], attention: null,
       decided: null, rally: false, menu: null, looked: {}, presence: [], shareWhere: readShareWhere(),
-      agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null,
+      agents: [], selection: EMPTY_SELECTION, batchNote: "", batchBusy: false, sendTo: null, sampleCalls: null,
     });
     this.threadLoad = new ThreadSync(f => this.set(s => ({ threads: f(s.threads) })));
     this.ownPublish.settled = () => {
@@ -549,22 +552,27 @@ export class ArtifactController {
       // dispose are disposed, so their timers and late results never reach a frame.
       this.host?.dispose();
       const data = s.data;
-      this.host = new CapabilityHost(getToken().then(token => ({
-        aid: this.id,
-        version: shown,
-        pinned: this.pinnedVersion !== null,
-        token,
-        viewer: currentViewer,
-        declared: (data.artifact.capabilities ?? {}) as Declared,
-        prompt: this.prompt,
-        post: m => { if (this.gate.open) this.send(m); },
-        reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
-        ownPublish: this.ownPublish,
-        page: () => this.s.file,
-        comments: this.commentsUi,
-        working: () => this.s.working,
-        files: data.versions.find(v => v.n === shown)?.files,
-      })));
+      this.host = new CapabilityHost(getToken().then(token => {
+        let status: Promise<SampleStatus | null> | null = null;
+        return {
+          aid: this.id,
+          version: shown,
+          pinned: this.pinnedVersion !== null,
+          token,
+          viewer: currentViewer,
+          declared: (data.artifact.capabilities ?? {}) as Declared,
+          prompt: this.prompt,
+          post: m => { if (this.gate.open) this.send(m); },
+          reload: () => { holdKeysAcrossLoad(); nav.assign(this.here(null)); },
+          ownPublish: this.ownPublish,
+          page: () => this.s.file,
+          comments: this.commentsUi,
+          working: () => this.s.working,
+          files: data.versions.find(v => v.n === shown)?.files,
+          sampleStatus: token === null ? undefined : () => status ??= getSampleStatus(this.id, token),
+          onSampleCalls: (n: number, cap: number | null) => this.set({ sampleCalls: { n, cap } }),
+        };
+      }));
       // It hears of the UI in the next reaction pass, as the effect that
       // depended on the host did after the render that made it.
       this.schedulePass();
@@ -587,7 +595,7 @@ export class ArtifactController {
   frameLoaded(): void {
     if (this.disposed) return;
     if (this.held) { this.held.push(LOADED); return; }
-    if (this.gate.load()) { this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
+    if (this.gate.load()) { this.leaveDocument(); this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
   }
 
   private resolveAll(): void {
@@ -618,6 +626,7 @@ export class ArtifactController {
     if (!frame) return;
     this.frameHash = hash;
     this.gate.close();
+    this.leaveDocument();
     this.failedParts.clear();
     this.set({ file: null, resolved: {} });
     const url = pageSrc(this.id, this.shown(), this.s.origin ?? null, target) + hash;
@@ -980,8 +989,15 @@ export class ArtifactController {
    * itself off, as `clax:cancel` only turns its own comment mode off. */
   private frameLeft(): void {
     this.gate.bye();
+    this.leaveDocument();
     this.failedParts.clear();
     this.set({ file: null, resolved: {} });
+  }
+
+  /** The frame's document is gone, or is not the page: what serves it live
+   * (the room socket, sample streams) ends now, not at the next hello. */
+  private leaveDocument(): void {
+    this.host?.leave();
   }
 
   private onMessage(e: MessageEvent): void {
@@ -999,7 +1015,7 @@ export class ArtifactController {
         this.failedParts.clear();
         this.set({ resolved: {} });
         this.anchorIds.forget();
-        if (!this.gate.open) { this.set({ file: null }); break; }
+        if (!this.gate.open) { this.leaveDocument(); this.set({ file: null }); break; }
         this.host?.reset();
         this.set({ file: greeted });
         // The address bar follows the frame to another page. A link the page

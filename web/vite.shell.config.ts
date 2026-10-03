@@ -21,7 +21,8 @@ export function inlineCss(): Plugin {
       // have its CSS fetched by Vite's preload helper from a file this plugin
       // deletes, or not at all: refuse it. The check is per entry, since a
       // chunk one entry imports statically has its CSS only in that entry's
-      // HTML.
+      // HTML. A lazy chunk may import a chunk the same entry already loads
+      // statically: that chunk's CSS is in the entry's HTML, so it passes.
       const chunks = new Map(Object.values(bundle).flatMap(c => (c.type === "chunk" ? [[c.fileName, c] as const] : [])));
       const closure = (from: string[], into: Set<string>) => {
         const walk = (name: string) => {

@@ -37,8 +37,25 @@ fn fixture(name: &str) -> Vec<u8> {
     .unwrap()
 }
 
+/// The harness environment a test inherits from the agent running it; every
+/// `clax` run here starts without it.
+const HARNESS_ENV: [&str; 9] = [
+    "GROK_SESSION_ID",
+    "GROK_HOOK_EVENT",
+    "GROK_PLUGIN_ROOT",
+    "GROK_HOME",
+    "CLAUDE_PID",
+    "CLAUDE_CODE_SESSION_ID",
+    "CLAUDE_PLUGIN_ROOT",
+    "CLAUDE_PROJECT_DIR",
+    "CLAX_SESSION_ID",
+];
+
 fn clax(home: &Path) -> Command {
     let mut c = Command::new(clax_bin());
+    for var in HARNESS_ENV {
+        c.env_remove(var);
+    }
     c.env("CLAX_HOME", home)
         .env("CLAX_CODEX_BIN", "")
         .env("CLAX_NO_OPEN", "1")
@@ -145,11 +162,17 @@ impl Daemon {
     /// Registers the session a shim would, then publishes as it (which
     /// watches the artifact, replies armed).
     fn session_with_artifact(&self, harness: &str, hsid: &str) -> (String, String) {
+        self.registered_with_artifact(&serde_json::json!({"harness": harness, "harness_session_id": hsid, "cwd": "/tmp/project"}))
+    }
+
+    /// Registers a session with `body`, then publishes as it (which watches
+    /// the artifact, replies armed).
+    fn registered_with_artifact(&self, body: &Value) -> (String, String) {
         let s: Value = self
             .http()
             .post(format!("{}/api/sessions", self.base()))
             .bearer_auth(self.token())
-            .json(&serde_json::json!({"harness": harness, "harness_session_id": hsid, "cwd": "/tmp/project"}))
+            .json(body)
             .send()
             .unwrap()
             .json()
@@ -166,6 +189,35 @@ impl Daemon {
             .json()
             .unwrap();
         (sid, a["artifact"]["id"].as_str().unwrap().to_string())
+    }
+
+    /// The session's undelivered feedback, read without waiting (this
+    /// delivers it).
+    fn pending(&self, sid: &str) -> Vec<Value> {
+        let v: Value = self
+            .http()
+            .get(format!(
+                "{}/api/sessions/{sid}/feedback?tier=wait",
+                self.base()
+            ))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        v["feedback"].as_array().unwrap().clone()
+    }
+
+    fn session(&self, sid: &str) -> Value {
+        let v: Value = self
+            .http()
+            .get(format!("{}/api/sessions/{sid}", self.base()))
+            .bearer_auth(self.token())
+            .send()
+            .unwrap()
+            .json()
+            .unwrap();
+        v["session"].clone()
     }
 
     /// A thread sent to the agent (its body mentions @agent).
@@ -749,5 +801,145 @@ fn a_send_to_one_agent_blocks_only_its_stop_and_later_comments_follow_it() {
             .as_str()
             .unwrap()
             .contains("and the footer")
+    );
+}
+
+/// A Grok session as its shim registers it: keyed on `GROK_SESSION_ID`,
+/// with no cwd yet and a parent that is not the hook's.
+fn grok_session_with_artifact(d: &Daemon) -> (String, String) {
+    d.registered_with_artifact(&serde_json::json!({
+        "harness": "grok",
+        "harness_session_id": "019a-grok-1",
+        "cwd": "",
+        "pid": std::process::id(),
+        "parent_pid": 1,
+    }))
+}
+
+#[test]
+fn grok_session_start_joins_by_session_id_and_prints_nothing() {
+    let d = Daemon::start();
+    let (sid, aid) = grok_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(
+        &d.home(),
+        "grok",
+        "session-start",
+        &fixture("grok-session-start.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    let live = d.sessions(true);
+    assert_eq!(live.len(), 1, "joined, not inserted: {live:?}");
+    assert_eq!(live[0]["id"], sid.as_str());
+    assert_eq!(d.session(&sid)["cwd"], "/tmp/project");
+    assert_eq!(d.pending(&sid).len(), 1, "session start delivers nothing");
+}
+
+#[test]
+fn grok_stop_blocks_once_at_the_end_of_a_turn() {
+    let d = Daemon::start();
+    let (_sid, aid) = grok_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop.json"));
+    assert_eq!(r.code, Some(0));
+    let v = one_line_json(&r.stdout);
+    assert_eq!(v["decision"], "block");
+    let reason = v["reason"].as_str().unwrap();
+    assert!(reason.contains("make it two columns"), "{reason}");
+    let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop-active.json"));
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+}
+
+#[test]
+fn grok_stop_at_session_end_does_nothing() {
+    let d = Daemon::start();
+    let (sid, aid) = grok_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(
+        &d.home(),
+        "grok",
+        "stop",
+        &fixture("grok-stop-shutdown.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert_eq!(d.pending(&sid).len(), 1, "still undelivered");
+}
+
+#[test]
+fn grok_session_end_ends_the_row_within_its_budget() {
+    let d = Daemon::start();
+    let (sid, _aid) = grok_session_with_artifact(&d);
+    let end = fixture("grok-session-end.json");
+    let r = hook(&d.home(), "grok", "session-end", &end);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
+    assert!(d.sessions(true).is_empty());
+    assert!(d.session(&sid)["ended_at"].is_string());
+
+    let dir = tempfile::tempdir().unwrap();
+    let r = hook(&dir.path().join("ax"), "grok", "session-end", &end);
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(r.elapsed < Duration::from_millis(1500), "{:?}", r.elapsed);
+}
+
+#[test]
+fn grok_working_through_a_turn() {
+    let d = Daemon::start();
+    let (_sid, aid) = grok_session_with_artifact(&d);
+    d.sent_thread(&aid, "make it two columns");
+    let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop.json"));
+    assert_eq!(one_line_json(&r.stdout)["decision"], "block");
+    assert_eq!(
+        d.working(&aid).len(),
+        1,
+        "the blocked stop handed the comment over and marked the session"
+    );
+    let r = hook(
+        &d.home(),
+        "grok",
+        "stop",
+        &fixture("grok-stop-shutdown.json"),
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert_eq!(
+        d.working(&aid).len(),
+        1,
+        "a stop at session end does not end the turn's records"
+    );
+    let r = hook(&d.home(), "grok", "stop", &fixture("grok-stop-active.json"));
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    assert!(d.working(&aid).is_empty(), "the turn ended");
+}
+
+#[test]
+fn a_claude_code_tool_hook_in_a_grok_session_stands_down() {
+    let d = Daemon::start();
+    let (_sid, aid) = d.session_with_artifact("claude", "cc-in-grok");
+    d.sent_thread(&aid, "tighten the spacing");
+    let mut stop_in: Value = serde_json::from_slice(&fixture("claude-stop.json")).unwrap();
+    stop_in["session_id"] = "cc-in-grok".into();
+    let r = hook(&d.home(), "claude", "stop", stop_in.to_string().as_bytes());
+    assert_eq!(one_line_json(&r.stdout)["decision"], "block");
+    assert_eq!(d.working(&aid).len(), 1);
+    d.skew(100);
+    let mut tool_in: Value = serde_json::from_slice(&fixture("claude-post-tool-use.json")).unwrap();
+    tool_in["session_id"] = "cc-in-grok".into();
+    let r = hook_env(
+        &d.home(),
+        "claude",
+        "tool",
+        tool_in.to_string().as_bytes(),
+        &[("GROK_HOOK_EVENT", "PostToolUse")],
+    );
+    assert_eq!((r.code, r.stdout.as_str()), (Some(0), ""));
+    d.skew(100);
+    assert!(
+        d.working(&aid).is_empty(),
+        "the stood-down tool hook renewed nothing"
+    );
+    let log = std::fs::read_to_string(d.home().join("logs/hooks.log")).unwrap();
+    assert!(
+        log.contains("standdown mode=hook agent=claude host=grok"),
+        "{log}"
     );
 }

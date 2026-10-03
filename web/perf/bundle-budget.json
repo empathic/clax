@@ -1,10 +1,12 @@
 {
   "bridgeBaseline": 32861,
   "gallery": 26748,
-  "artifact": 61672,
+  "artifact": 62675,
   "bridge": 5491,
   "partComment": 11821,
   "partClip": 16504,
   "partCaps": 8773,
+  "partRoom": 3657,
+  "partSample": 3674,
   "fonts": 50144
 }

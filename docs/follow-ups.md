@@ -44,14 +44,67 @@ machine, so no agent runs them.
   activates with `pointerId` -1 and no `pointerdown`; only synthetic events
   have checked that. Check that VoiceOver in Safari and Chrome grants, and
   that it does not grant before the button is armed.
+- `scripts/smoke-claude-push.sh --channel` and `--follow`: an idle Claude
+  Code session wakes on a comment through the channel and through the
+  background follow fallback. Until the owner runs them, two facts are
+  unverified live: that a channel event from `plugin:clax@clax` starts a
+  turn, and that a background Bash command's exit starts one in an idle
+  session.
 - **Unsigned commits.** The commits from 2e08cad through the end of the
   stable-install work were made unsigned, for one batch re-sign later.
 
-## Decisions still open
+## Grok Build
 
-- **Grok Build.** The plugin's name (`clax-grok` is the recommendation) and
-  the duplicate-plugin guard (Grok also discovers the Claude Code plugin) are
-  proposals, not decisions. Grok support is queued after the stable install.
+From the Grok Build plan (`docs/superpowers/plans/2026-10-01-grok-build.md`)
+and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
+
+- **The live checks** (Q4), which only the owner runs, with
+  `scripts/smoke-grok.sh` and a real Grok TUI. Only a fake Grok
+  (`crates/clax-cli/tests/grok_dedupe.rs`) has run them so far:
+  - a: `grok plugin install <dir> --trust` and `grok plugin uninstall
+    clax-grok --confirm` take those arguments, and install copies the plugin;
+  - b: `grok plugin list --json` names an installed plugin's source path;
+  - c: stdio MCP servers get `GROK_SESSION_ID`, and hooks get
+    `GROK_HOOK_EVENT` and `sessionId`;
+  - d: a Stop hook's `{"decision":"block"}` continues the turn, the next Stop
+    has `stopHookActive: true`, and the session-end Stop's `reason` is not
+    `end_turn`;
+  - e: servers `clax` and `clax_grok` from two enabled plugins both load, and
+    `search_tool` finds `clax_grok__publish`;
+  - f: `/new` and `/resume` start a new MCP server with the new
+    `GROK_SESSION_ID`;
+  - g: the `SessionEnd` hook's `timeout: 2` is honoured, or capped at 1.5 s;
+  - the monitor wake (h, i): a persistent `monitor` running `clax feedback
+    follow` wakes an idle TUI on each line and a busy one after its turn, and
+    the agent can build its command from `clax_grok__status`.
+
+  Then record the measured Grok version in `docs/contract.md` and drop "not
+  yet run live".
+- **Q1, Q2, Q3 and Q5, answered as recommended on 2026-10-01.** If the owner
+  reverses one, this changes:
+  - Q1 (tool approval documented, not written): writing
+    `MCPTool(clax_grok__*)` into `~/.grok/config.toml` needs a
+    comment-preserving TOML edit in `clax init` and a matching removal in
+    `clax uninit`; the doctor's `mcp` detail and the READMEs then change.
+  - Q2 (sandboxed Grok unsupported unless a daemon already runs): supporting
+    it needs sandbox detection in the shim and a daemon start outside the
+    sandbox; the contract's Known-limitations entry goes.
+  - Q3 (Grok Build 1.0.45 and later, warned by doctor only): a different
+    minimum changes the doctor's warning and the contract's measurement line;
+    enforcing it would add a version check to the shim or hooks.
+  - Q5 (no PostToolUse hand-over): see below.
+- **A Claude Code fallback for `clax feedback follow`.** A `--once` flag that
+  exits after its first line, run by Claude Code as a background command
+  whose exit wakes the session, would give Claude Code the same notice path
+  as Grok's monitor.
+- **A PostToolUse hand-over for Claude Code and Grok together** (Q5). Both
+  harnesses can add context to any tool's result; a hand-over there would
+  reach the agent on its next tool call of any kind. Add it for both at once,
+  as a tier with its own delivery and acknowledgement rules, weighing a
+  `clax hook` run on every tool call.
+- **`scripts/verify-harnesses.sh` does not cover `grok` yet.** It checks
+  `clax init` and `clax uninit` against the real `claude`, `codex` and `pi`
+  only.
 
 ## Known issues
 
@@ -181,8 +234,6 @@ These tests have failed intermittently under heavy machine load and passed
 on rerun; each is parked for a fix:
 
 - `clax-mcp` `open_status`: relies on a 1.5 s wait for the fake browser opener.
-- `api_docs::an_oversized_batch_names_the_docs_batch_limit`: a connection reset
-  under load.
 - `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
   `sendToClaude` case: a 120 s timeout under load. Suspected fix (frame
   load before click) in e5dfa42; confirm under a loaded full gates run.

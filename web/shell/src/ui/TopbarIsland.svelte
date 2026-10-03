@@ -1,5 +1,6 @@
 <script lang="ts">
-  // The top bar island: the artifact view's controls (the roster and the
+  // The top bar island: the artifact view's controls (in the owner's browser,
+  // this artifact's count of calls to Claude today, first; the roster and the
   // working summary, loaded after the first paint, which opens the people
   // panel (its own lazy chunk, holding the viewer's name); Reload when a newer
   // version is out; Comment, Threads, the version
@@ -11,6 +12,7 @@
   import { fromStore } from "svelte/store";
   import { type ArtifactController, viewReady } from "../view/artifact-controller";
   import { moreMenu, who } from "./more-menu.svelte";
+  import SampleCount from "./SampleCount.svelte";
   import ThemeSwitch from "./ThemeSwitch.svelte";
   import VersionMenu from "./VersionMenu.svelte";
 
@@ -26,6 +28,7 @@
 {#if viewReady(s)}
   {@const shown = ctl.shown(s)}
   {@const latest = ctl.latest(s)}
+  <SampleCount {ctl} />
   {#if Who}<Who {ctl} {s} open={ctl.openCount(s)} />{/if}
   {#if s.newer && !s.deleted}<button class="primary reload" onclick={() => ctl.reloadLatest()}>Reload</button>{/if}
   <button class="comment" aria-pressed={s.commenting} disabled={s.deleted} onclick={() => ctl.toggleComment()}>Comment <span class="kc" aria-hidden="true">C</span></button>

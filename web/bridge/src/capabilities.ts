@@ -18,8 +18,18 @@ export type CapabilityName = keyof typeof CAPABILITY_METHODS;
 /** Other spellings `use()` accepts, mapped to their canonical name. */
 export const ALIASES: Readonly<Record<string, CapabilityName>> = Object.freeze({ self: "artifact" });
 
-export function isCapabilityName(name: string): name is CapabilityName {
-  return Object.prototype.hasOwnProperty.call(CAPABILITY_METHODS, name);
+/** Capabilities whose page side is a lazy part of its own (parts/<name>.ts):
+ * the part builds the whole frozen namespace, and its member list lives there. */
+export const PART_CAPABILITIES = ["room", "sample"] as const;
+export type PartCapabilityName = (typeof PART_CAPABILITIES)[number];
+export type UsableName = CapabilityName | PartCapabilityName;
+
+export function isPartCapability(name: string): name is PartCapabilityName {
+  return (PART_CAPABILITIES as readonly string[]).includes(name);
+}
+
+export function isCapabilityName(name: string): name is UsableName {
+  return Object.prototype.hasOwnProperty.call(CAPABILITY_METHODS, name) || isPartCapability(name);
 }
 
 /** Members implemented in the page (validation, builders, DOM access) instead of a plain shell call. */

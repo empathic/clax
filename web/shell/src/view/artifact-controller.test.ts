@@ -712,4 +712,23 @@ describe("ArtifactController", () => {
       ctl.dispose();
     });
   });
+
+  it("tells the capability host the page left at a bye, at a load with no hello since, and at a hello it does not welcome", async () => {
+    const { ctl, frame } = await started();
+    const { CapabilityHost } = await import("../caps/host");
+    const leave = vi.spyOn(CapabilityHost.prototype, "leave");
+    frame.contentWindow!.postMessage = (() => {}) as Window["postMessage"];
+    hello(frame.contentWindow!);
+    fromFrame(frame.contentWindow!, { type: "clax:bye" });
+    expect(leave).toHaveBeenCalledTimes(1);
+    hello(frame.contentWindow!);
+    ctl.frameLoaded(); // the hello came since the previous load: the page stays
+    expect(leave).toHaveBeenCalledTimes(1);
+    ctl.frameLoaded(); // no hello since the previous load: that document left
+    expect(leave).toHaveBeenCalledTimes(2);
+    hello(frame.contentWindow!);
+    hello(frame.contentWindow!, 1); // a stale document now holds the frame
+    expect(leave).toHaveBeenCalledTimes(3);
+    ctl.dispose();
+  });
 });
