@@ -62,6 +62,7 @@ impl TestServer {
             self_base: format!("http://{}:{port}", probe_host(&bind.to_string())),
             browser_base: format!("http://{}:{port}", browser_host(&bind.to_string())),
             feedback_waiters: Arc::new(Default::default()),
+            followers: Arc::new(Default::default()),
             // Push off; tests about push set it with `spawn_with`.
             codex: Arc::new(Default::default()),
             working: Arc::new(clax_core::working::Working::new(Arc::new(
@@ -70,6 +71,9 @@ impl TestServer {
             presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
                 clax_core::working::SystemClock,
             ))),
+            rooms: Arc::new(crate::room::Rooms::default()),
+            // Sampling off; tests that sample set their own with `spawn_with`.
+            sample: Arc::new(crate::sample::Sampler::disabled()),
         };
         f(&mut state);
         let events = state.events.clone();

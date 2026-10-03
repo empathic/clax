@@ -169,6 +169,9 @@ pub struct ServeConfig {
     /// Where the daemon's `codex` is, for Codex tier 5 (`clax serve` uses
     /// [`crate::push::CodexPush::from_env`] on its own environment).
     pub codex: crate::push::CodexPush,
+    /// The `sample` capability's provider and settings (`clax serve` uses
+    /// [`crate::sample::Sampler::from_home`] on its own environment).
+    pub sample: Arc<crate::sample::Sampler>,
 }
 
 async fn bind_first_free(bind: IpAddr, start: u16) -> io::Result<tokio::net::TcpListener> {
@@ -234,6 +237,7 @@ pub async fn serve(
         self_base: format!("http://{}:{port}", probe_host(&info.bind)),
         browser_base: format!("http://{}:{port}", browser_host(&info.bind)),
         feedback_waiters: Arc::new(Default::default()),
+        followers: Arc::new(Default::default()),
         codex: Arc::new(cfg.codex.clone()),
         working: Arc::new(clax_core::working::Working::new(Arc::new(
             clax_core::working::SystemClock,
@@ -241,8 +245,11 @@ pub async fn serve(
         presence: Arc::new(clax_core::presence::Presence::new(Arc::new(
             clax_core::working::SystemClock,
         ))),
+        rooms: Arc::new(crate::room::Rooms::default()),
+        sample: cfg.sample.clone(),
     };
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
+    tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
@@ -296,6 +303,7 @@ pub async fn serve(
                         &ctx.working,
                         &ctx.working.end_session(id),
                     );
+                    ctx.followers.forget(id);
                 }
                 Ok::<_, clax_core::CoreError>(r)
             })

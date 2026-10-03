@@ -7,7 +7,7 @@ default: help
 help:
     @just --list --unsorted
 
-# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex uses the installed one); with no harness, `just watch`
+# Build clax and start a harness on ~/.clax-dev and port 7481 (claude and pi load this checkout's plugin; codex and grok use the installed one); with no harness, `just watch`
 [positional-arguments]
 dev *ARGS:
     ./scripts/dev.sh "$@"
@@ -95,6 +95,10 @@ stop:
 # Check the dev home and its daemon (~/.clax-dev)
 doctor:
     CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}" cargo run -q -p clax-cli -- doctor
+
+# Try rooms and sample() in a scratch daemon (the stub provider unless ANTHROPIC_API_KEY is set)
+demo-room-sample:
+    scripts/demo-room-sample.sh
 
 # Remove build output and web dependencies
 clean:

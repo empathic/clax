@@ -1,5 +1,7 @@
 //! `GET /api/sessions/<sid>/feedback` (W): hands over feedback for a session by
-//! tier, long-polling up to `wait` seconds; and `POST .../feedback/ack` (W).
+//! tier, long-polling up to `wait` seconds; `POST .../feedback/ack` (W); and
+//! `GET /api/sessions/<sid>/notices` (W), the notices `clax feedback follow`
+//! prints.
 
 use super::artifacts::{body, parse_id, path};
 use crate::auth::RequireToken;
@@ -9,7 +11,7 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use clax_core::feedback::render_items;
+use clax_core::feedback::{render_items, render_notice};
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -138,6 +140,75 @@ pub async fn poll(
             _ = &mut stopping => {
                 return Ok(Json(json!({"feedback": [], "text": null, "waited_s": started.elapsed().as_secs()})));
             }
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct NoticesQuery {
+    #[serde(default)]
+    wait: u64,
+}
+
+/// `GET /api/sessions/<sid>/notices?wait=<s>`: announces the session's
+/// armed, undelivered comments that no follower has announced
+/// (`Store::take_notices`), as soon as there are any or after `wait`
+/// seconds (capped at 600): `{notices, lines, waited_s}`, one line per
+/// notice. Announcing delivers nothing. While the session is inside
+/// `wait_for_feedback`, answers empty at once and announces nothing. The
+/// poll counts as a connected follower for `status`'s `push`. Unknown
+/// session: 404; ended: 400 `unknown_session`, before any wait, and also
+/// at once when the session ends during the wait, so a follower stops
+/// without waiting out its poll. A daemon that begins shutting down
+/// answers empty at once.
+pub async fn notices(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    sid: Result<Path<String>, PathRejection>,
+    q: Result<Query<NoticesQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(sid)?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let check = sid.clone();
+    s.store_call(move |st| live_session(st, &check)).await?;
+    let _following = s.followers.enter(&sid);
+    let started = Instant::now();
+    let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
+    let notify = s.feedback_waiters.get(&sid);
+    let mut shutdown = s.shutdown.clone();
+    // A dropped sender means the state has no shutdown source; never end early then.
+    let stopping = async move {
+        if shutdown.wait_for(|v| *v).await.is_err() {
+            std::future::pending::<()>().await;
+        }
+    };
+    tokio::pin!(stopping);
+    let empty = |waited: u64| Json(json!({"notices": [], "lines": [], "waited_s": waited}));
+    loop {
+        let notified = notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if s.feedback_waiters.is_waiting(&sid) {
+            return Ok(empty(0));
+        }
+        let base = s.browser_base.clone();
+        let who = sid.clone();
+        let notices = s
+            .store_call(move |st| {
+                live_session(st, &who)?;
+                st.take_notices(&who, &base)
+            })
+            .await?;
+        if !notices.is_empty() || Instant::now() >= deadline {
+            let lines: Vec<String> = notices.iter().map(render_notice).collect();
+            return Ok(Json(
+                json!({"notices": notices, "lines": lines, "waited_s": started.elapsed().as_secs()}),
+            ));
+        }
+        tokio::select! {
+            _ = &mut notified => {}
+            _ = tokio::time::sleep_until(deadline) => {}
+            _ = &mut stopping => return Ok(empty(started.elapsed().as_secs())),
         }
     }
 }

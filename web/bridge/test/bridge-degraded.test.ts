@@ -19,7 +19,7 @@ beforeAll(async () => {
   script.dataset.artifact = "7q3k9mzx2b4t"; script.dataset.version = "1"; script.dataset.contract = "0.2.61"; script.dataset.file = "index.html";
   document.head.appendChild(script);
   Object.defineProperty(document, "currentScript", { value: script, configurable: true });
-  failParts(["caps", "clip"]);
+  failParts(["caps", "clip", "room"]);
   await import("../src/bridge");
 });
 
@@ -49,6 +49,32 @@ describe("parts that cannot load", () => {
     await settle();
     expect(requests.filter(r => r === "caps")).toHaveLength(1);
     expect(degraded("caps")).toHaveLength(1);
+  });
+
+  it("a room part that cannot load resolves use(\"room\") null and is reported as room, without loading caps", async () => {
+    const before = requests.filter(r => r === "caps").length;
+    const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("room");
+    await settle();
+    const req = posted.find(m => m.type === "clax:use" && m.name === "room")!;
+    send({ type: "clax:use-result", id: req.id, granted: true, config: {} });
+    await expect(use).resolves.toBeNull();
+    await settle();
+    expect(degraded("room")).toHaveLength(1);
+    expect(requests.filter(r => r === "caps")).toHaveLength(before);
+  });
+
+  it("a granted sample loads its own part and resolves its callable namespace, never through caps", async () => {
+    const before = requests.filter(r => r === "caps").length;
+    const use = (window as unknown as { claude: { use(n: string): Promise<unknown> } }).claude.use("sample");
+    await settle();
+    const req = posted.find(m => m.type === "clax:use" && m.name === "sample")!;
+    send({ type: "clax:use-result", id: req.id, granted: true, config: {} });
+    const ns = await use as { json: unknown; limits: unknown };
+    expect(typeof ns).toBe("function");
+    expect(Object.isFrozen(ns)).toBe(true);
+    expect(Object.keys(ns).sort()).toEqual(["json", "limits"]);
+    expect(requests).toContain("sample");
+    expect(requests.filter(r => r === "caps")).toHaveLength(before);
   });
 
   it("posts a pick whose clip could not render with the reason, once the composer is ready", async () => {

@@ -25,12 +25,12 @@ def sub(path, pattern, count=1):
 sub("Cargo.toml", r'(\[workspace\.package\]\s*\nversion\s*=\s*")([^"]+)(")')
 for crate in ("clax-core", "clax-server", "clax-cli", "clax-mcp", "clax-hooks"):
     sub("Cargo.lock", r'(^name = "%s"\nversion = ")([^"]+)(")' % re.escape(crate))
-for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/pi/package.json"):
+for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex-plugin/plugin.json", "plugins/clax-grok/.grok-plugin/plugin.json", "plugins/pi/package.json"):
     sub(f, r'(^  "version": ")([^"]+)(")')
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
 sub("plugins/pi/package-lock.json", r'(^  "version": ")([^"]+)(")')
 sub("plugins/pi/package-lock.json", r'("": \{\n      "name": "@empathic/clax-pi",\n      "version": ")([^"]+)(")')
-for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh"):
+for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)

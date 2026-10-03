@@ -102,7 +102,7 @@ export type BridgeToShell =
    * say); sent once per part, after the welcome. `message` is the browser's
    * error, for debugging: the page can post this too, so the shell shows only
    * its own words for `part`. */
-  | { type: "clax:degraded"; part: "comment" | "clip" | "caps"; message: string }
+  | { type: "clax:degraded"; part: "comment" | "clip" | "caps" | "room" | "sample"; message: string }
   | UseRequest
   | CallRequest;
 

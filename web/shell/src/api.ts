@@ -112,3 +112,17 @@ export async function patchArtifact(id: string, patch: Partial<Pick<Artifact, "t
 export async function deleteArtifact(id: string, token: string): Promise<void> {
   await json<unknown>(await fetch(`/api/artifacts/${id}`, { method: "DELETE", headers: { authorization: `Bearer ${token}` } }).then(r => (r.status === 204 ? new Response("{}") : r)));
 }
+
+export type SampleLimits = { maxPromptBytes: number; images?: { maxCount: number; maxInputBytes: number; mediaTypes: string[] }; tools?: { maxCount: number } };
+/** `GET /api/artifacts/<id>/sample` with the token: whether this daemon samples for the artifact, and today's count. */
+export type SampleStatus = { available: boolean; provider: string | null; limits: SampleLimits; calls_today: number; daily_call_cap: number | null };
+
+/** The artifact's sample status as the owner's browser sees it, or null when it cannot be read. */
+export async function getSampleStatus(id: string, token: string): Promise<SampleStatus | null> {
+  try {
+    const res = await fetch(`/api/artifacts/${id}/sample`, { headers: { authorization: `Bearer ${token}` } });
+    return res.ok ? ((await res.json()) as SampleStatus) : null;
+  } catch {
+    return null;
+  }
+}

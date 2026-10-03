@@ -90,11 +90,79 @@ impl Drop for WaitGuard {
     }
 }
 
+/// Sessions with a `clax feedback follow` connected: one in a notices
+/// long-poll now, or whose last poll ended under [`Followers::RECENT`]
+/// ago (the gap while it prints and polls again).
+#[derive(Default)]
+pub struct Followers {
+    active: Mutex<HashMap<String, usize>>,
+    last: Mutex<HashMap<String, std::time::Instant>>,
+}
+
+impl Followers {
+    pub const RECENT: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// Counts a notices poll of `session_id` until the guard drops.
+    pub fn enter(self: &Arc<Self>, session_id: &str) -> FollowGuard {
+        *self
+            .active
+            .lock()
+            .unwrap()
+            .entry(session_id.to_string())
+            .or_default() += 1;
+        FollowGuard {
+            followers: self.clone(),
+            session_id: session_id.to_string(),
+        }
+    }
+
+    /// Whether a follower of `session_id` is connected.
+    pub fn is_following(&self, session_id: &str) -> bool {
+        self.active.lock().unwrap().contains_key(session_id)
+            || self
+                .last
+                .lock()
+                .unwrap()
+                .get(session_id)
+                .is_some_and(|t| t.elapsed() < Self::RECENT)
+    }
+
+    /// Drops the record of the ended session `session_id`'s last poll.
+    pub fn forget(&self, session_id: &str) {
+        self.last.lock().unwrap().remove(session_id);
+    }
+}
+
+/// An in-progress notices poll ([`Followers::enter`]).
+pub struct FollowGuard {
+    followers: Arc<Followers>,
+    session_id: String,
+}
+
+impl Drop for FollowGuard {
+    fn drop(&mut self) {
+        let mut active = self.followers.active.lock().unwrap();
+        if let Some(n) = active.get_mut(&self.session_id) {
+            *n -= 1;
+            if *n == 0 {
+                active.remove(&self.session_id);
+            }
+        }
+        drop(active);
+        self.followers
+            .last
+            .lock()
+            .unwrap()
+            .insert(self.session_id.clone(), std::time::Instant::now());
+    }
+}
+
 /// What feedback fan-out needs, cloneable into `store_call` closures.
 #[derive(Clone)]
 pub struct FeedbackCtx {
     pub events: EventBus,
     pub waiters: Arc<FeedbackWaiters>,
+    pub followers: Arc<Followers>,
     pub browser_base: String,
     pub store: Arc<Store>,
     pub codex: Arc<crate::push::CodexPush>,
@@ -115,6 +183,7 @@ impl AppState {
         FeedbackCtx {
             events: self.events.clone(),
             waiters: self.feedback_waiters.clone(),
+            followers: self.followers.clone(),
             browser_base: self.browser_base.clone(),
             store: self.store.clone(),
             codex: self.codex.clone(),

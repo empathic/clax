@@ -744,6 +744,25 @@ impl DaemonClient {
         .await
     }
 
+    /// `GET /api/sessions/<sid>/notices?wait=<wait_s>`: `{notices, lines,
+    /// waited_s}`; the deadline is `wait_s` plus 10 s. Like `heartbeat`, it
+    /// finds a running daemon but never starts one.
+    pub async fn notices(&self, wait_s: u64) -> Result<Value> {
+        let q = [("wait", wait_s.to_string())];
+        let deadline = Duration::from_secs(wait_s + 10);
+        let res = self
+            .send_with(Mode::DiscoverOnly, |c| {
+                c.request(
+                    reqwest::Method::GET,
+                    &format!("{}/notices", c.session_path()),
+                )
+                .query(&q)
+                .timeout(deadline)
+            })
+            .await?;
+        body_json(res).await
+    }
+
     /// `POST /api/sessions/<sid>/feedback/ack` `{comment_ids}`: acknowledges
     /// only the rows for those comments; `{acknowledged}`.
     pub async fn ack_comments(&self, comment_ids: &[String]) -> Result<Value> {
