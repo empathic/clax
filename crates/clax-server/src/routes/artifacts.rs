@@ -12,7 +12,7 @@ use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
-use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Store};
+use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Participants, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -97,22 +97,23 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended),
 /// `owner_harness` (the owner's harness, when it exists) and `participants`
-/// (people by public ID, agents by handle). `working` is the artifact's
-/// working list (spec §10 "Working"), which never names a session. The
+/// (people by public ID, agents by handle; see [`Store::participants`]).
+/// `working` is the artifact's working list (spec §10 "Working"), which
+/// never names a session. The
 /// artifact's own `owner_session_id` stays; token-less routes drop it with
 /// [`strip_sessions`].
 pub(crate) fn with_owner(
-    st: &Store,
     a: &Artifact,
     owner: Option<&Session>,
     working: &[clax_core::working::WorkingView],
-) -> clax_core::Result<Value> {
+    participants: &Participants,
+) -> Value {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
     v["working"] = json!(working);
-    v["participants"] = json!(st.participants(&ArtifactId::parse(&a.id)?)?);
-    Ok(v)
+    v["participants"] = json!(participants);
+    v
 }
 
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
@@ -152,22 +153,23 @@ pub async fn list(State(s): State<AppState>, headers: HeaderMap) -> Result<Json<
     let all = s.working.all();
     let artifacts = s
         .store_call(move |st| {
-            let mut owners = std::collections::HashMap::new();
-            let mut out = Vec::new();
-            for a in st.list_artifacts()? {
-                let owner = match &a.owner_session_id {
-                    Some(sid) => {
-                        if !owners.contains_key(sid) {
-                            owners.insert(sid.clone(), st.get_session(sid)?);
-                        }
-                        owners[sid].clone()
-                    }
-                    None => None,
-                };
-                let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
-                out.push(with_owner(st, &a, owner.as_ref(), working)?);
-            }
-            Ok(out)
+            let artifacts = st.list_artifacts()?;
+            let owners: std::collections::HashMap<String, Session> = st
+                .list_sessions(false)?
+                .into_iter()
+                .map(|s| (s.id.clone(), s))
+                .collect();
+            let participants = st.participants_all()?;
+            let none = Participants::default();
+            Ok(artifacts
+                .iter()
+                .map(|a| {
+                    let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
+                    let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
+                    let people = participants.get(&a.id).unwrap_or(&none);
+                    with_owner(a, owner, working, people)
+                })
+                .collect::<Vec<_>>())
         })
         .await?;
     let mut v = json!({"artifacts": artifacts});
@@ -238,7 +240,7 @@ pub async fn get(
                 None => None,
             };
             let mut v = json!({
-                "artifact": with_owner(st, &a, owner.as_ref(), &working)?,
+                "artifact": with_owner(&a, owner.as_ref(), &working, &st.participants(&id)?),
                 "versions": versions,
             });
             if let Some(vid) = viewer {

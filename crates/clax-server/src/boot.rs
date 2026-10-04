@@ -4,7 +4,7 @@
 //! markers the shell build keeps; no template engine.
 
 use crate::error::ApiError;
-use crate::feedback::thread_view;
+use crate::feedback::thread_views;
 use crate::routes::artifacts::with_owner;
 use crate::shell_route::ShellRoute;
 use crate::state::AppState;
@@ -186,9 +186,7 @@ pub async fn assemble(
             let mut cursor: Option<String> = None;
             loop {
                 let (page, next) = st.list_threads(&lookup, true, cursor.as_deref(), 200)?;
-                for t in &page {
-                    threads.push(thread_view(st, t, codex, false)?);
-                }
+                threads.extend(thread_views(st, &page, codex, false)?);
                 match next {
                     Some(c) => cursor = Some(c),
                     None => break,
@@ -202,7 +200,7 @@ pub async fn assemble(
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,
             };
-            let artifact = with_owner(st, &a, owner.as_ref(), &working)?;
+            let artifact = with_owner(&a, owner.as_ref(), &working, &st.participants(&lookup)?);
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })
         .await?;

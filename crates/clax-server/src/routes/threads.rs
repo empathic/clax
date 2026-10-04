@@ -5,7 +5,7 @@ use super::artifacts::{body, parse_id, path, publishing_session, session_header}
 use super::assets::multipart_error;
 use crate::auth::has_token;
 use crate::error::ApiError;
-use crate::feedback::{apply, thread_view};
+use crate::feedback::{apply, thread_view, thread_views};
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, ViewerCookie, author};
 use axum::Json;
@@ -115,11 +115,7 @@ pub async fn list(
         .store_call(move |st| {
             let (ts, next) =
                 st.list_threads(&id, q.include_resolved, q.cursor.as_deref(), limit)?;
-            let views = ts
-                .iter()
-                .map(|t| thread_view(st, t, codex, with_path))
-                .collect::<clax_core::Result<Vec<_>>>()?;
-            Ok((views, next))
+            Ok((thread_views(st, &ts, codex, with_path)?, next))
         })
         .await?;
     Ok(Json(json!({"threads": threads, "next_cursor": next})))
@@ -517,12 +513,23 @@ pub async fn send_batch(
             let sent_by = author(st, viewer.0.as_deref())?.0;
             let r = st.send_batch(&id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
             apply(&ctx, st, &r.touched);
-            let mut views = Vec::new();
-            for tid in &r.sent {
-                let t = thread_of(st, &id, tid)?;
-                publish_thread(&ctx, st, &t)?;
-                views.push(thread_view(st, &t, ctx.codex_push(), with_path)?);
+            let sent = r
+                .sent
+                .iter()
+                .map(|tid| thread_of(st, &id, tid))
+                .collect::<clax_core::Result<Vec<_>>>()?;
+            let public = thread_views(st, &sent, ctx.codex_push(), false)?;
+            for (t, view) in sent.iter().zip(&public) {
+                ctx.events.publish(Event::Thread {
+                    artifact_id: t.artifact_id.clone(),
+                    thread: view.clone(),
+                });
             }
+            let views = if with_path {
+                thread_views(st, &sent, ctx.codex_push(), true)?
+            } else {
+                public
+            };
             Ok(json!({"batch": r.batch, "sent": r.sent, "unchanged": r.unchanged, "threads": views}))
         })
         .await?;

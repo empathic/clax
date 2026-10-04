@@ -35,4 +35,4 @@ pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
 pub use store::feedback::{SendTarget, TakeFeedback};
 pub use store::sessions::{Reaped, RegisterSession};
-pub use store::threads::{NewComment, NewThread};
+pub use store::threads::{NewComment, NewThread, ThreadExtras};

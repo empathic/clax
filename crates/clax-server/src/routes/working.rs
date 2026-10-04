@@ -34,6 +34,7 @@ pub(crate) fn check_threads(st: &Store, aid: &ArtifactId, ids: &[String]) -> cla
             format!("at most {MAX_WORKING_THREADS} thread_ids"),
         ));
     }
+    let statuses = st.thread_statuses(aid, ids)?;
     for tid in ids {
         if !clax_core::is_ulid(tid) {
             return Err(CoreError::invalid(
@@ -41,16 +42,15 @@ pub(crate) fn check_threads(st: &Store, aid: &ArtifactId, ids: &[String]) -> cla
                 format!("'{tid}' is not a thread ID"),
             ));
         }
-        match st.get_thread(tid)? {
-            Some(t) if t.artifact_id == aid.as_str() => {
-                if t.status != "open" {
-                    return Err(CoreError::invalid(
-                        "thread_not_open",
-                        format!("thread {tid} is resolved"),
-                    ));
-                }
+        match statuses.get(tid).map(String::as_str) {
+            Some("open") => {}
+            Some(_) => {
+                return Err(CoreError::invalid(
+                    "thread_not_open",
+                    format!("thread {tid} is resolved"),
+                ));
             }
-            _ => {
+            None => {
                 return Err(CoreError::invalid(
                     "unknown_thread",
                     format!("{tid} is not a thread of {aid}"),

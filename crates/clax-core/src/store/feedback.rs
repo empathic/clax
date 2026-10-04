@@ -10,6 +10,7 @@ use crate::feedback::{
 use crate::model::{Feedback, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, Transaction, params};
+use std::collections::BTreeMap;
 
 /// What a caller wants handed over: rows targeted to `session_id`, for `tier`,
 /// optionally only for one artifact; resend-eligible rows too when the tier
@@ -291,28 +292,7 @@ impl Store {
         let now = Store::now();
         let base = browser_base.trim_end_matches('/').to_string();
         let pending = self.with_tx(|tx| {
-            let mut stmt = tx.prepare(
-                "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
-                        t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
-                        c.author_name, c.body, c.created_at, c.via_page,
-                        f.batch_id, b.size, b.note, b.sent_by
-                 FROM feedback f
-                 LEFT JOIN send_batches b ON b.id = f.batch_id
-                 JOIN threads t ON t.id = f.thread_id
-                 JOIN comments c ON c.id = f.comment_id
-                 JOIN artifacts a ON a.id = t.artifact_id
-                 WHERE f.target_session_id = ?1
-                   AND a.deleted_at IS NULL AND t.status = 'open'
-                   AND (?2 IS NULL OR t.artifact_id = ?2)
-                   AND (NOT ?3 OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
-                                          AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
-                   AND (?7 = 0 OR f.push_failed_at IS NULL)
-                   AND (f.delivered_at IS NULL
-                        OR (?4 AND f.acknowledged_at IS NULL
-                            AND f.delivery_tier IN ('stop_hook', 'prompt_hook', 'queue', 'inject')
-                            AND f.resend_count < ?5 AND f.last_sent_at <= ?6))
-                 ORDER BY f.created_at, f.id",
-            )?;
+            let mut stmt = tx.prepare_cached(TAKE_FEEDBACK)?;
             let rows = stmt
                 .query_map(
                     params![
@@ -636,92 +616,178 @@ impl Store {
         thread_id: &str,
         codex_push: bool,
     ) -> Result<Option<FeedbackState>> {
-        struct Row {
-            target: Option<String>,
-            created_at: String,
-            delivered_at: Option<String>,
-            tier: Option<String>,
-            acknowledged_at: Option<String>,
-            resends: u32,
-            untargeted_at: Option<String>,
-            ended_at: Option<String>,
-            harness: Option<String>,
-            has_hsid: bool,
-            armed: bool,
-            push_failed: bool,
-        }
-        self.with_conn(|c| {
-            let mut stmt = c.prepare(
-                "SELECT f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
-                        f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
-                        COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL
-                 FROM feedback f
-                 JOIN threads t ON t.id = f.thread_id
-                 LEFT JOIN sessions s ON s.id = f.target_session_id
-                 LEFT JOIN watches w ON w.session_id = f.target_session_id AND w.artifact_id = t.artifact_id
-                 WHERE f.thread_id = ?1 AND f.comment_id =
-                    (SELECT comment_id FROM feedback WHERE thread_id = ?1 ORDER BY created_at DESC, id DESC LIMIT 1)
-                 ORDER BY f.created_at, f.id",
-            )?;
-            let rows = stmt
-                .query_map(params![thread_id], |r| {
-                    Ok(Row {
-                        target: r.get(0)?,
-                        created_at: r.get(1)?,
-                        delivered_at: r.get(2)?,
-                        tier: r.get(3)?,
-                        acknowledged_at: r.get(4)?,
-                        resends: r.get(5)?,
-                        untargeted_at: r.get(6)?,
-                        ended_at: r.get(7)?,
-                        harness: r.get(8)?,
-                        has_hsid: r.get::<_, Option<bool>>(9)?.unwrap_or(false),
-                        armed: r.get::<_, i64>(10)? != 0,
-                        push_failed: r.get(11)?,
-                    })
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            if rows.is_empty() {
-                return Ok(None);
-            }
-            let tier_of = |r: &Row| r.tier.as_deref().and_then(Tier::parse);
-            let state = |state, tier, since: &str, resends, exhausted| FeedbackState {
-                thread_id: thread_id.to_string(),
-                state,
-                tier,
-                since: since.to_string(),
-                resends,
-                exhausted,
-            };
-            if let Some((r, at)) = rows
-                .iter()
-                .filter_map(|r| r.acknowledged_at.as_deref().map(|at| (r, at)))
-                .max_by(|a, b| a.1.cmp(b.1))
-            {
-                return Ok(Some(state(FeedbackPhase::Acknowledged, tier_of(r), at, r.resends, false)));
-            }
-            let delivered: Vec<(&Row, &str)> = rows
-                .iter()
-                .filter_map(|r| r.delivered_at.as_deref().map(|at| (r, at)))
-                .collect();
-            if let Some((first, at)) = delivered.iter().min_by(|a, b| a.1.cmp(b.1)) {
-                let resends = delivered.iter().map(|(r, _)| r.resends).max().unwrap_or(0);
-                let exhausted = delivered.iter().all(|(r, _)| r.resends >= Self::MAX_RESENDS);
-                return Ok(Some(state(FeedbackPhase::Delivered, tier_of(first), at, resends, exhausted)));
-            }
-            if let Some(r) = rows.iter().find(|r| r.target.is_some() && r.ended_at.is_none()) {
-                let push = codex_push && !r.push_failed;
-                let tier = waiting_on(r.harness.as_deref().unwrap_or(""), r.has_hsid, r.armed, push);
-                return Ok(Some(state(FeedbackPhase::Sent, Some(tier), &r.created_at, 0, false)));
-            }
-            let since = rows
-                .iter()
-                .filter_map(|r| r.untargeted_at.clone().or_else(|| r.ended_at.clone()))
-                .max()
-                .unwrap_or_else(|| rows[0].created_at.clone());
-            Ok(Some(state(FeedbackPhase::AgentEnded, None, &since, 0, false)))
-        })
+        Ok(self
+            .feedback_states(&[thread_id.to_string()], codex_push)?
+            .remove(thread_id))
     }
+
+    /// [`Store::feedback_state`] of each of `thread_ids`, by thread ID; a
+    /// thread with nothing forwarded is missing.
+    pub fn feedback_states(
+        &self,
+        thread_ids: &[String],
+        codex_push: bool,
+    ) -> Result<BTreeMap<String, FeedbackState>> {
+        if thread_ids.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        self.with_conn(|c| feedback_states_in(c, thread_ids, codex_push))
+    }
+}
+
+/// The rows [`Store::take_feedback`] hands over: targeted to session `?1`,
+/// of artifact `?2` (`NULL`: any), armed watches only when `?3`, resends
+/// when `?4` (under `?5` resends, last sent at or before `?6`), and none
+/// that `codex queue` failed to take when `?7`.
+pub(crate) const TAKE_FEEDBACK: &str = "SELECT f.id, f.thread_id, f.comment_id, f.delivered_at IS NOT NULL AS delivered,
+                        t.artifact_id, a.title, t.version_n, t.anchor_json, t.has_clip,
+                        c.author_name, c.body, c.created_at, c.via_page,
+                        f.batch_id, b.size, b.note, b.sent_by
+                 FROM feedback f
+                 LEFT JOIN send_batches b ON b.id = f.batch_id
+                 JOIN threads t ON t.id = f.thread_id
+                 JOIN comments c ON c.id = f.comment_id
+                 JOIN artifacts a ON a.id = t.artifact_id
+                 WHERE f.target_session_id = ?1
+                   AND a.deleted_at IS NULL AND t.status = 'open'
+                   AND (?2 IS NULL OR t.artifact_id = ?2)
+                   AND (NOT ?3 OR EXISTS (SELECT 1 FROM watches w WHERE w.session_id = f.target_session_id
+                                          AND w.artifact_id = t.artifact_id AND w.replies_armed = 1))
+                   AND (?7 = 0 OR f.push_failed_at IS NULL)
+                   AND (f.delivered_at IS NULL
+                        OR (?4 AND f.acknowledged_at IS NULL
+                            AND f.delivery_tier IN ('stop_hook', 'prompt_hook', 'queue', 'inject')
+                            AND f.resend_count < ?5 AND f.last_sent_at <= ?6))
+                 ORDER BY f.created_at, f.id";
+
+/// The JSON array of `ids`, without duplicates, for `json_each`.
+pub(crate) fn id_array(ids: &[String]) -> String {
+    let set: std::collections::BTreeSet<&String> = ids.iter().collect();
+    serde_json::to_string(&set).expect("strings serialise")
+}
+
+/// The feedback rows of each thread's latest forwarded comment.
+pub(crate) const FEEDBACK_STATES: &str =
+    "SELECT f.thread_id, f.target_session_id, f.created_at, f.delivered_at, f.delivery_tier, f.acknowledged_at,
+            f.resend_count, f.untargeted_at, s.ended_at, s.harness, s.harness_session_id IS NOT NULL,
+            COALESCE(w.replies_armed, 0), f.push_failed_at IS NOT NULL
+       FROM json_each(?1) j
+      CROSS JOIN feedback f ON f.thread_id = j.value
+       JOIN threads t ON t.id = f.thread_id
+       LEFT JOIN sessions s ON s.id = f.target_session_id
+       LEFT JOIN watches w ON w.session_id = f.target_session_id AND w.artifact_id = t.artifact_id
+      WHERE f.comment_id = (SELECT l.comment_id FROM feedback l WHERE l.thread_id = j.value
+                             ORDER BY l.created_at DESC, l.id DESC LIMIT 1)
+      ORDER BY f.thread_id, f.created_at, f.id";
+
+struct StateRow {
+    target: Option<String>,
+    created_at: String,
+    delivered_at: Option<String>,
+    tier: Option<String>,
+    acknowledged_at: Option<String>,
+    resends: u32,
+    untargeted_at: Option<String>,
+    ended_at: Option<String>,
+    harness: Option<String>,
+    has_hsid: bool,
+    armed: bool,
+    push_failed: bool,
+}
+
+pub(crate) fn feedback_states_in(
+    c: &Connection,
+    thread_ids: &[String],
+    codex_push: bool,
+) -> Result<BTreeMap<String, FeedbackState>> {
+    let mut by_thread: BTreeMap<String, Vec<StateRow>> = BTreeMap::new();
+    let mut stmt = c.prepare_cached(FEEDBACK_STATES)?;
+    let mut rows = stmt.query(params![id_array(thread_ids)])?;
+    while let Some(r) = rows.next()? {
+        by_thread.entry(r.get(0)?).or_default().push(StateRow {
+            target: r.get(1)?,
+            created_at: r.get(2)?,
+            delivered_at: r.get(3)?,
+            tier: r.get(4)?,
+            acknowledged_at: r.get(5)?,
+            resends: r.get(6)?,
+            untargeted_at: r.get(7)?,
+            ended_at: r.get(8)?,
+            harness: r.get(9)?,
+            has_hsid: r.get::<_, Option<bool>>(10)?.unwrap_or(false),
+            armed: r.get::<_, i64>(11)? != 0,
+            push_failed: r.get(12)?,
+        });
+    }
+    Ok(by_thread
+        .into_iter()
+        .map(|(tid, rows)| {
+            let s = state_of(&tid, &rows, codex_push);
+            (tid, s)
+        })
+        .collect())
+}
+
+/// The state of one thread from its latest comment's rows (not empty).
+fn state_of(thread_id: &str, rows: &[StateRow], codex_push: bool) -> FeedbackState {
+    let tier_of = |r: &StateRow| r.tier.as_deref().and_then(Tier::parse);
+    let state = |state, tier, since: &str, resends, exhausted| FeedbackState {
+        thread_id: thread_id.to_string(),
+        state,
+        tier,
+        since: since.to_string(),
+        resends,
+        exhausted,
+    };
+    if let Some((r, at)) = rows
+        .iter()
+        .filter_map(|r| r.acknowledged_at.as_deref().map(|at| (r, at)))
+        .max_by(|a, b| a.1.cmp(b.1))
+    {
+        return state(
+            FeedbackPhase::Acknowledged,
+            tier_of(r),
+            at,
+            r.resends,
+            false,
+        );
+    }
+    let delivered: Vec<(&StateRow, &str)> = rows
+        .iter()
+        .filter_map(|r| r.delivered_at.as_deref().map(|at| (r, at)))
+        .collect();
+    if let Some((first, at)) = delivered.iter().min_by(|a, b| a.1.cmp(b.1)) {
+        let resends = delivered.iter().map(|(r, _)| r.resends).max().unwrap_or(0);
+        let exhausted = delivered
+            .iter()
+            .all(|(r, _)| r.resends >= Store::MAX_RESENDS);
+        return state(
+            FeedbackPhase::Delivered,
+            tier_of(first),
+            at,
+            resends,
+            exhausted,
+        );
+    }
+    if let Some(r) = rows
+        .iter()
+        .find(|r| r.target.is_some() && r.ended_at.is_none())
+    {
+        let push = codex_push && !r.push_failed;
+        let tier = waiting_on(
+            r.harness.as_deref().unwrap_or(""),
+            r.has_hsid,
+            r.armed,
+            push,
+        );
+        return state(FeedbackPhase::Sent, Some(tier), &r.created_at, 0, false);
+    }
+    let since = rows
+        .iter()
+        .filter_map(|r| r.untargeted_at.clone().or_else(|| r.ended_at.clone()))
+        .max()
+        .unwrap_or_else(|| rows[0].created_at.clone());
+    state(FeedbackPhase::AgentEnded, None, &since, 0, false)
 }
 
 #[cfg(test)]

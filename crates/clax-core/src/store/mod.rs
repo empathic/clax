@@ -10,6 +10,8 @@ pub mod changelog;
 pub mod docs;
 pub mod feedback;
 pub mod migrations;
+#[cfg(test)]
+mod plans;
 pub mod sessions;
 pub mod threads;
 pub mod viewers;
@@ -18,6 +20,11 @@ pub mod watches;
 use crate::{Home, Result};
 use rusqlite::Connection;
 use std::sync::Mutex;
+
+/// Rows `ANALYZE` samples per index when `PRAGMA optimize` refreshes statistics.
+pub const ANALYSIS_LIMIT: u32 = 400;
+/// How often the daemon refreshes planner statistics ([`Store::optimize`]).
+pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -34,7 +41,26 @@ impl Store {
             home: home.clone(),
         };
         store.migrate()?;
+        store.with_conn(|c| {
+            c.execute_batch(&format!(
+                "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
+            ))?;
+            Ok(())
+        })?;
         Ok(store)
+    }
+
+    /// Refreshes the query planner's statistics where they are stale
+    /// (`PRAGMA optimize`, sampling at most [`ANALYSIS_LIMIT`] rows per
+    /// index). Cheap when nothing changed; the daemon runs it every
+    /// [`OPTIMIZE_INTERVAL`].
+    pub fn optimize(&self) -> Result<()> {
+        self.with_conn(|c| {
+            c.execute_batch(&format!(
+                "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize;"
+            ))?;
+            Ok(())
+        })
     }
 
     pub fn home(&self) -> &Home {

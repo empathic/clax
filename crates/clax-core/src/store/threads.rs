@@ -3,10 +3,14 @@
 //! optional clip is stored at `artifacts/<aid>/clips/<tid>.png`.
 
 use super::Store;
+use super::batches::ThreadSend;
+use super::feedback::{feedback_states_in, id_array};
 use crate::anchor::Anchor;
+use crate::feedback::FeedbackState;
 use crate::model::{Comment, Thread};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Row, params};
+use std::collections::HashMap;
 
 /// Largest accepted clip, in bytes.
 pub const MAX_CLIP_BYTES: usize = 5 * 1024 * 1024;
@@ -79,6 +83,46 @@ pub(crate) const THREAD_SELECT: &str =
     t.sent_to_agent, t.has_clip, t.created_at, t.resolved_at, t.resolved_by
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id WHERE a.deleted_at IS NULL";
 
+/// The status of each thread of `?2` (a JSON array of thread IDs) that
+/// belongs to the live artifact `?1`.
+pub(crate) const THREAD_STATUSES: &str = "SELECT t.id, t.status FROM json_each(?2) j
+    CROSS JOIN threads t ON t.id = j.value
+    JOIN artifacts a ON a.id = t.artifact_id
+    WHERE t.artifact_id = ?1 AND a.deleted_at IS NULL";
+/// The versions addressing each thread of `?1` (a JSON array), ascending.
+pub(crate) const ADDRESSED_IN_MANY: &str = "SELECT vt.thread_id, vt.version_n FROM json_each(?1) j
+    CROSS JOIN version_threads vt ON vt.thread_id = j.value
+    ORDER BY vt.thread_id, vt.version_n";
+/// The batches that sent each thread of `?1` (a JSON array), oldest first.
+pub(crate) const SENDS_OF_MANY: &str =
+    "SELECT bt.thread_id, b.id, b.size, b.note, b.sent_by, b.created_at
+    FROM json_each(?1) j
+    CROSS JOIN batch_threads bt ON bt.thread_id = j.value
+    JOIN send_batches b ON b.id = bt.batch_id
+    ORDER BY bt.thread_id, b.created_at, b.id";
+/// The display name of each viewer of `?1` (a JSON array of public IDs).
+pub(crate) const NAMES_OF_MANY: &str = "SELECT v.public_id, v.display_name FROM json_each(?1) j
+    CROSS JOIN viewers v INDEXED BY viewers_public_id ON v.public_id = j.value";
+
+/// A page of threads of artifact `?1` (resolved ones too when `?2`) after
+/// the thread `?3` (`NULL`: from the start), at most `?4`.
+pub(crate) fn list_threads_sql() -> String {
+    format!(
+        "{THREAD_SELECT} AND t.artifact_id = ?1 AND (?2 OR t.status = 'open')
+         AND (?3 IS NULL OR (t.created_at, t.id) > (SELECT created_at, id FROM threads WHERE id = ?3))
+         ORDER BY t.created_at, t.id LIMIT ?4"
+    )
+}
+
+/// What a thread view adds to a stored thread; see [`Store::thread_extras`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ThreadExtras {
+    pub feedback_state: Option<FeedbackState>,
+    pub addressed_in: Vec<u32>,
+    pub sends: Vec<ThreadSend>,
+    pub resolved_by_name: Option<String>,
+}
+
 struct ThreadRow {
     id: String,
     artifact_id: String,
@@ -145,15 +189,41 @@ fn row_to_comment(r: &Row<'_>) -> rusqlite::Result<Comment> {
     })
 }
 
+/// Comments with their author's session harness; callers append `WHERE ...`.
+const COMMENT_SELECT: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
+     FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id";
+
 fn load_comments(c: &Connection, thread_id: &str) -> Result<Vec<Comment>> {
-    let mut stmt = c.prepare(
-        "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
-         FROM comments c LEFT JOIN sessions s ON s.id = c.via_session_id
-         WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id",
-    )?;
+    let mut stmt = c.prepare_cached(&format!(
+        "{COMMENT_SELECT} WHERE c.thread_id = ?1 ORDER BY c.created_at, c.id"
+    ))?;
     Ok(stmt
         .query_map(params![thread_id], row_to_comment)?
         .collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// The comments of each of `thread_ids`, oldest first, by thread ID.
+pub(crate) const COMMENTS_OF_MANY: &str = "SELECT c.id, c.thread_id, c.author_kind, c.author_name, c.author_public_id, s.harness AS via_harness, c.via_page, c.body, c.created_at
+     FROM json_each(?1) j CROSS JOIN comments c ON c.thread_id = j.value
+     LEFT JOIN sessions s ON s.id = c.via_session_id
+     ORDER BY c.thread_id, c.created_at, c.id";
+
+fn load_comments_many(
+    c: &Connection,
+    thread_ids: &[String],
+) -> Result<HashMap<String, Vec<Comment>>> {
+    let mut out: HashMap<String, Vec<Comment>> = HashMap::new();
+    if thread_ids.is_empty() {
+        return Ok(out);
+    }
+    let mut stmt = c.prepare_cached(COMMENTS_OF_MANY)?;
+    for comment in stmt.query_map(params![id_array(thread_ids)], row_to_comment)? {
+        let comment = comment?;
+        out.entry(comment.thread_id.clone())
+            .or_default()
+            .push(comment);
+    }
+    Ok(out)
 }
 
 /// The thread `thread_id` of a live artifact, with its comments.
@@ -391,20 +461,21 @@ impl Store {
                     ));
                 }
             }
-            let mut stmt = c.prepare(&format!(
-                "{THREAD_SELECT} AND t.artifact_id = ?1 AND (?2 OR t.status = 'open')
-                 AND (?3 IS NULL OR (t.created_at, t.id) > (SELECT created_at, id FROM threads WHERE id = ?3))
-                 ORDER BY t.created_at, t.id LIMIT ?4"
-            ))?;
+            let mut stmt = c.prepare_cached(&list_threads_sql())?;
             let rows = stmt
-                .query_map(params![id.as_str(), include_resolved, cursor, (limit + 1) as i64], row_to_thread_row)?
+                .query_map(
+                    params![id.as_str(), include_resolved, cursor, (limit + 1) as i64],
+                    row_to_thread_row,
+                )?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             let more = rows.len() > limit;
+            let ids: Vec<String> = rows.iter().take(limit).map(|r| r.id.clone()).collect();
+            let mut comments_of = load_comments_many(c, &ids)?;
             let mut threads = Vec::with_capacity(limit);
             let mut last = None;
             for row in rows.into_iter().take(limit) {
                 let thread_id = row.id.clone();
-                let comments = load_comments(c, &thread_id)?;
+                let comments = comments_of.remove(&thread_id).unwrap_or_default();
                 match row.into_thread(comments) {
                     Ok(thread) => threads.push(thread),
                     Err(CoreError::Corrupt {
@@ -425,6 +496,87 @@ impl Store {
             }
             let next = if more { last } else { None };
             Ok((threads, next))
+        })
+    }
+
+    /// The status of each of `thread_ids` that is a thread of the live
+    /// artifact `id`, by thread ID.
+    pub fn thread_statuses(
+        &self,
+        id: &ArtifactId,
+        thread_ids: &[String],
+    ) -> Result<HashMap<String, String>> {
+        if thread_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+        self.with_conn(|c| {
+            let mut stmt = c.prepare_cached(THREAD_STATUSES)?;
+            let rows = stmt.query_map(params![id.as_str(), id_array(thread_ids)], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })?;
+            Ok(rows.collect::<rusqlite::Result<_>>()?)
+        })
+    }
+
+    /// What a thread view adds to each of `threads`, in the same order: the
+    /// feedback state ([`Store::feedback_state`]), the versions addressing it
+    /// ([`Store::addressed_in`]), its sends ([`Store::thread_sends`]), and
+    /// the current display name of the viewer named by `resolved_by`.
+    pub fn thread_extras(&self, threads: &[Thread], codex_push: bool) -> Result<Vec<ThreadExtras>> {
+        if threads.is_empty() {
+            return Ok(Vec::new());
+        }
+        let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
+        let resolvers: Vec<String> = threads
+            .iter()
+            .filter_map(|t| t.resolved_by.as_deref()?.strip_prefix("viewer:"))
+            .filter(|p| crate::is_public_id(p))
+            .map(str::to_string)
+            .collect();
+        self.with_conn(|c| {
+            let mut states = feedback_states_in(c, &ids, codex_push)?;
+            let arr = id_array(&ids);
+            let mut addressed: HashMap<String, Vec<u32>> = HashMap::new();
+            let mut stmt = c.prepare_cached(ADDRESSED_IN_MANY)?;
+            let mut rows = stmt.query(params![arr])?;
+            while let Some(r) = rows.next()? {
+                addressed.entry(r.get(0)?).or_default().push(r.get(1)?);
+            }
+            drop(rows);
+            let mut sends: HashMap<String, Vec<ThreadSend>> = HashMap::new();
+            let mut stmt = c.prepare_cached(SENDS_OF_MANY)?;
+            let mut rows = stmt.query(params![arr])?;
+            while let Some(r) = rows.next()? {
+                sends.entry(r.get(0)?).or_default().push(ThreadSend {
+                    batch_id: r.get(1)?,
+                    size: r.get(2)?,
+                    note: r.get(3)?,
+                    sent_by: r.get(4)?,
+                    sent_at: r.get(5)?,
+                });
+            }
+            drop(rows);
+            let mut names: HashMap<String, Option<String>> = HashMap::new();
+            if !resolvers.is_empty() {
+                let mut stmt = c.prepare_cached(NAMES_OF_MANY)?;
+                let mut rows = stmt.query(params![id_array(&resolvers)])?;
+                while let Some(r) = rows.next()? {
+                    names.insert(r.get(0)?, r.get(1)?);
+                }
+            }
+            Ok(threads
+                .iter()
+                .map(|t| ThreadExtras {
+                    feedback_state: states.remove(&t.id),
+                    addressed_in: addressed.remove(&t.id).unwrap_or_default(),
+                    sends: sends.remove(&t.id).unwrap_or_default(),
+                    resolved_by_name: t
+                        .resolved_by
+                        .as_deref()
+                        .and_then(|by| by.strip_prefix("viewer:"))
+                        .and_then(|p| names.get(p).cloned().flatten()),
+                })
+                .collect())
         })
     }
 

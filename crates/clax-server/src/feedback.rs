@@ -196,12 +196,19 @@ impl AppState {
 /// Publishes `feedback_state` for every touched thread. Failures are logged;
 /// the change itself has happened.
 pub fn publish_states(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
-    for (aid, tid) in &touched.threads {
-        match st.feedback_state(tid, ctx.codex_push()) {
-            Ok(Some(s)) => ctx.events.publish(Event::feedback_state(aid.clone(), s)),
-            Ok(None) => {}
-            Err(e) => tracing::warn!(thread = %tid, error = %e, "feedback state unavailable"),
+    if touched.threads.is_empty() {
+        return;
+    }
+    let ids: Vec<String> = touched.threads.iter().map(|(_, t)| t.clone()).collect();
+    match st.feedback_states(&ids, ctx.codex_push()) {
+        Ok(mut states) => {
+            for (aid, tid) in &touched.threads {
+                if let Some(s) = states.remove(tid) {
+                    ctx.events.publish(Event::feedback_state(aid.clone(), s));
+                }
+            }
         }
+        Err(e) => tracing::warn!(error = %e, "feedback states unavailable"),
     }
 }
 
@@ -225,36 +232,47 @@ pub fn thread_view(
     codex_push: bool,
     with_path: bool,
 ) -> clax_core::Result<Value> {
-    let mut v = serde_json::to_value(t).expect("threads serialise");
-    v["clip_url"] = if t.has_clip {
-        json!(format!(
-            "/api/artifacts/{}/threads/{}/clip",
-            t.artifact_id, t.id
-        ))
-    } else {
-        Value::Null
-    };
-    v["clip_path"] = if t.has_clip && with_path {
-        let id = ArtifactId::parse(&t.artifact_id)?;
-        json!(st.home().clip_path(&id, &t.id).to_string_lossy())
-    } else {
-        Value::Null
-    };
-    v["feedback_state"] = json!(st.feedback_state(&t.id, codex_push)?);
-    v["addressed_in"] = json!(st.addressed_in(&t.id)?);
-    v["sends"] = json!(st.thread_sends(&t.id)?);
-    let resolver = match t
-        .resolved_by
-        .as_deref()
-        .and_then(|by| by.strip_prefix("viewer:"))
-    {
-        Some(public_id) => st
-            .viewer_by_public_id(public_id)?
-            .and_then(|v| v.display_name),
-        None => None,
-    };
-    v["resolved_by_name"] = json!(resolver);
-    Ok(v)
+    Ok(
+        thread_views(st, std::slice::from_ref(t), codex_push, with_path)?
+            .pop()
+            .expect("one view per thread"),
+    )
+}
+
+/// [`thread_view`] of each of `threads`, in order, read in one store call.
+pub fn thread_views(
+    st: &Store,
+    threads: &[Thread],
+    codex_push: bool,
+    with_path: bool,
+) -> clax_core::Result<Vec<Value>> {
+    let extras = st.thread_extras(threads, codex_push)?;
+    threads
+        .iter()
+        .zip(extras)
+        .map(|(t, x)| {
+            let mut v = serde_json::to_value(t).expect("threads serialise");
+            v["clip_url"] = if t.has_clip {
+                json!(format!(
+                    "/api/artifacts/{}/threads/{}/clip",
+                    t.artifact_id, t.id
+                ))
+            } else {
+                Value::Null
+            };
+            v["clip_path"] = if t.has_clip && with_path {
+                let id = ArtifactId::parse(&t.artifact_id)?;
+                json!(st.home().clip_path(&id, &t.id).to_string_lossy())
+            } else {
+                Value::Null
+            };
+            v["feedback_state"] = json!(x.feedback_state);
+            v["addressed_in"] = json!(x.addressed_in);
+            v["sends"] = json!(x.sends);
+            v["resolved_by_name"] = json!(x.resolved_by_name);
+            Ok(v)
+        })
+        .collect()
 }
 
 #[cfg(test)]

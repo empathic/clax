@@ -202,6 +202,7 @@ pub async fn serve(
     let port = listener.local_addr()?.port();
     let store = Arc::new(Store::open(&cfg.home)?);
     let reaper_store = store.clone();
+    let optimize_store = store.clone();
     let token = generate_token();
     let started_at = Store::now();
     let info = DaemonInfo {
@@ -317,6 +318,20 @@ pub async fn serve(
         }
     });
 
+    let optimizer = tokio::spawn(async move {
+        let mut every = tokio::time::interval(clax_core::store::OPTIMIZE_INTERVAL);
+        every.tick().await;
+        loop {
+            every.tick().await;
+            let store = optimize_store.clone();
+            match tokio::task::spawn_blocking(move || store.optimize()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => tracing::warn!(error = %e, "planner statistics refresh failed"),
+                Err(e) => tracing::warn!(error = %e, "planner statistics task failed"),
+            }
+        }
+    });
+
     let (sweep_working, sweep_events) = (state_working, state_events);
     let sweeper = tokio::spawn(async move {
         let mut every = tokio::time::interval(crate::working::SWEEP_INTERVAL);
@@ -364,6 +379,7 @@ pub async fn serve(
         _ = drain_deadline => tracing::warn!("connections did not drain in time; exiting"),
     }
     reaper.abort();
+    optimizer.abort();
     sweeper.abort();
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
