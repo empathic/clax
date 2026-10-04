@@ -8,7 +8,7 @@
 //! `path` in the error; a missing artifact's 404 does not. Each change publishes the `doc`
 //! SSE event, which carries the path and version but never the body.
 
-use super::artifacts::{body, body_within, parse_id, path};
+use super::artifacts::{JsonBytes, body, parse_body, parse_id, path};
 use crate::db_caller::CallerParts;
 use crate::error::ApiError;
 use crate::state::AppState;
@@ -249,37 +249,40 @@ pub async fn batch(
     _o: SameOrigin,
     who: CallerParts,
     aid: Result<Path<String>, PathRejection>,
-    req: Result<Json<BatchBody>, JsonRejection>,
+    req: Result<JsonBytes, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let b = body_within(req, "the docs batch limit")?;
-    let ops: Vec<String> = b.writes.iter().map(|w| w.op.clone()).collect();
-    let writes = b
-        .writes
-        .into_iter()
-        .map(|w| {
-            let op = match (w.op.as_str(), w.data) {
-                ("set", Some(d)) => BatchOp::Set(d),
-                ("update", Some(d)) => BatchOp::Update(d),
-                ("delete", None) => BatchOp::Delete,
-                (op, _) => {
-                    return Err(invalid_argument(format!(
-                        "'{op}' on {}: op is set or update (with data) or delete (without)",
-                        w.path
-                    )));
-                }
-            };
-            Ok(BatchWrite {
-                path: w.path,
-                op,
-                if_version: w.if_version,
+    let (ops, writes, lww) = parse_body(req, "the docs batch limit", |b: BatchBody| {
+        let ops: Vec<String> = b.writes.iter().map(|w| w.op.clone()).collect();
+        let writes = b
+            .writes
+            .into_iter()
+            .map(|w| {
+                let op = match (w.op.as_str(), w.data) {
+                    ("set", Some(d)) => BatchOp::Set(d),
+                    ("update", Some(d)) => BatchOp::Update(d),
+                    ("delete", None) => BatchOp::Delete,
+                    (op, _) => {
+                        return Err(invalid_argument(format!(
+                            "'{op}' on {}: op is set or update (with data) or delete (without)",
+                            w.path
+                        )));
+                    }
+                };
+                Ok(BatchWrite {
+                    path: w.path,
+                    op,
+                    if_version: w.if_version,
+                })
             })
-        })
-        .collect::<clax_core::Result<Vec<_>>>()?;
+            .collect::<clax_core::Result<Vec<_>>>()?;
+        Ok((ops, writes, b.lww))
+    })
+    .await?;
     let events = s.events.clone();
     let written = s
         .store_call(move |st| {
-            let ws = st.doc_batch(&id, writes, b.lww, &who.resolve_for(st, &id)?)?;
+            let ws = st.doc_batch(&id, writes, lww, &who.resolve_for(st, &id)?)?;
             announce(
                 &events,
                 id.as_str(),

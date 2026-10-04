@@ -133,7 +133,7 @@ impl Store {
             let _ = std::fs::remove_file(&tmp_path);
             return Err(e.into());
         }
-        let inserted = self.with_conn(|c| {
+        let inserted = self.with_tx(|c| {
             c.execute("INSERT INTO assets (id, artifact_id, content_type, size, ext, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![asset.id, asset.artifact_id, asset.content_type, asset.size as i64, asset.ext, asset.created_at])?;
             Ok(())
@@ -152,7 +152,7 @@ impl Store {
     /// # Errors
     /// Database errors only.
     pub fn get_asset(&self, asset_id: &str) -> Result<Option<(Asset, PathBuf)>> {
-        let a = self.with_conn(|c| {
+        let a = self.with_read(|c| {
             Ok(c.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![asset_id],
@@ -177,7 +177,7 @@ impl Store {
     /// # Errors
     /// Database errors only.
     pub fn list_assets(&self, id: &ArtifactId) -> Result<Vec<Asset>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE artifact_id = ?1 ORDER BY created_at, id"
             ))?;
@@ -199,7 +199,7 @@ impl Store {
             return Err(CoreError::NotFound);
         };
         remove_file_if_present(&path)?;
-        self.with_conn(|c| {
+        self.with_tx(|c| {
             c.execute("DELETE FROM assets WHERE id = ?1", params![asset_id])?;
             Ok(())
         })
@@ -211,7 +211,7 @@ impl Store {
     /// # Errors
     /// Database errors only.
     pub fn list_all_asset_rows(&self) -> Result<Vec<AssetRow>> {
-        let rows = self.with_conn(|c| {
+        let rows = self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT a.id, a.artifact_id, a.content_type, a.size, a.ext, a.created_at,
                         r.deleted_at IS NOT NULL AS artifact_deleted
@@ -277,7 +277,7 @@ impl Store {
                 continue;
             }
             remove_file_if_present(&row.path)?;
-            self.with_conn(|c| {
+            self.with_tx(|c| {
                 c.execute("DELETE FROM assets WHERE id = ?1", params![row.asset.id])?;
                 Ok(())
             })?;
@@ -388,7 +388,7 @@ mod tests {
         let (_d, store) = store();
         let id = store.insert_artifact_for_test("A", "2026-01-01T00:00:00.000Z");
         store
-            .with_conn(|c| Ok(c.execute_batch("DROP TABLE assets")?))
+            .with_write(|c| Ok(c.execute_batch("DROP TABLE assets")?))
             .unwrap();
         assert!(matches!(
             store.add_asset(&id, "image/png", &[1]).unwrap_err(),

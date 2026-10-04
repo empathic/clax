@@ -36,8 +36,7 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             .map(|_| ())
             .map_err(|e| anyhow::anyhow!("{}", one_line(&format!("{e:#}"))));
     }
-    // SAFETY: getppid has no preconditions and cannot fail.
-    let parent_pid = unsafe { libc::getppid() } as u32;
+    let parent_pid = std::os::unix::process::parent_id();
     if matches!(a.agent, Agent::Claude)
         && crate::host::grok_runs_mcp(|k| std::env::var(k).ok(), parent_pid)
     {

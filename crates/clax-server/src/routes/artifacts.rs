@@ -5,15 +5,18 @@ use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::state::AppState;
 use axum::Json;
-use axum::extract::rejection::JsonRejection;
+use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
-use axum::extract::{Path, State};
+use axum::extract::rejection::{JsonRejection, MissingJsonContentType, QueryRejection};
+use axum::extract::{FromRequest, Request};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
 use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Participants, Store};
 use serde::Deserialize;
+use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 
 /// Request body cap for the publish routes. A fully base64-encoded 64 MiB
@@ -47,6 +50,67 @@ pub(crate) fn body_within<T>(
             ApiError::bad_request("invalid_json", e.body_text())
         }
     })
+}
+
+/// Bodies up to this size are parsed on the runtime worker; larger ones on
+/// the blocking pool (see [`parse_body`]).
+pub(crate) const INLINE_PARSE_BYTES: usize = 64 * 1024;
+
+/// The unparsed body of a JSON request: the `Content-Type` and the body
+/// limit are checked as [`Json`] checks them, with the same rejections.
+/// [`parse_body`] parses it.
+pub struct JsonBytes(pub Bytes);
+
+impl<S: Send + Sync> FromRequest<S> for JsonBytes {
+    type Rejection = JsonRejection;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, JsonRejection> {
+        if !json_content_type(req.headers()) {
+            return Err(MissingJsonContentType::default().into());
+        }
+        Ok(JsonBytes(Bytes::from_request(req, state).await?))
+    }
+}
+
+/// Whether `headers` declare a JSON body (`application/json` or any
+/// `application/*+json`), as [`Json`] requires.
+fn json_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<mime_guess::mime::Mime>().ok())
+        .is_some_and(|m| {
+            m.type_() == "application"
+                && (m.subtype() == "json" || m.suffix().is_some_and(|s| s == "json"))
+        })
+}
+
+/// Parses the body as `T`, with [`body_within`]'s errors, and applies `then`
+/// to it. A body over [`INLINE_PARSE_BYTES`] is parsed (and `then` run) on
+/// the blocking pool, so a large body never occupies a runtime worker.
+pub(crate) async fn parse_body<T, R>(
+    req: Result<JsonBytes, JsonRejection>,
+    limit: &'static str,
+    then: impl FnOnce(T) -> Result<R, ApiError> + Send + 'static,
+) -> Result<R, ApiError>
+where
+    T: DeserializeOwned + Send + 'static,
+    R: Send + 'static,
+{
+    let bytes = body_within(req.map(|JsonBytes(b)| Json(b)), limit)?;
+    let large = bytes.len() > INLINE_PARSE_BYTES;
+    let work = move || then(body_within(Json::<T>::from_bytes(&bytes), limit)?);
+    if !large {
+        return work();
+    }
+    tokio::task::spawn_blocking(work).await.map_err(|e| {
+        tracing::error!(error = %e, "parsing a request body failed");
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "parsing the request body failed",
+        )
+    })?
 }
 
 pub(crate) fn path<T>(r: Result<Path<T>, PathRejection>) -> Result<T, ApiError> {
@@ -147,31 +211,64 @@ pub(crate) fn strip_sessions(v: &mut Value) {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ListQuery {
+    artifact: Option<String>,
+}
+
 /// Each live artifact, with the owner fields of [`with_owner`]. Without the
-/// token, no session ID is included.
-pub async fn list(State(s): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
-    let all = s.working.all();
-    let artifacts = s
-        .store_call(move |st| {
-            let artifacts = st.list_artifacts()?;
-            let owners: std::collections::HashMap<String, Session> = st
-                .list_sessions(false)?
-                .into_iter()
-                .map(|s| (s.id.clone(), s))
-                .collect();
-            let participants = st.participants_all()?;
-            let none = Participants::default();
-            Ok(artifacts
-                .iter()
-                .map(|a| {
-                    let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
-                    let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
-                    let people = participants.get(&a.id).unwrap_or(&none);
-                    with_owner(a, owner, working, people)
-                })
-                .collect::<Vec<_>>())
-        })
-        .await?;
+/// token, no session ID is included. With `?artifact=<aid>`, that artifact
+/// alone, or none when it is not live (400 for a malformed ID).
+pub async fn list(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<ListQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
+        Some(id) => {
+            let working = s.working.for_artifact(id.as_str());
+            s.store_call(move |st| {
+                let Some(a) = st.get_artifact(&id)? else {
+                    return Ok(vec![]);
+                };
+                let owner = match &a.owner_session_id {
+                    Some(sid) => st.get_session(sid)?,
+                    None => None,
+                };
+                Ok(vec![with_owner(
+                    &a,
+                    owner.as_ref(),
+                    &working,
+                    &st.participants(&id)?,
+                )])
+            })
+            .await?
+        }
+        None => {
+            let all = s.working.all();
+            s.store_call(move |st| {
+                let artifacts = st.list_artifacts()?;
+                let owners: std::collections::HashMap<String, Session> = st
+                    .list_sessions(false)?
+                    .into_iter()
+                    .map(|s| (s.id.clone(), s))
+                    .collect();
+                let participants = st.participants_all()?;
+                let none = Participants::default();
+                Ok(artifacts
+                    .iter()
+                    .map(|a| {
+                        let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
+                        let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
+                        let people = participants.get(&a.id).unwrap_or(&none);
+                        with_owner(a, owner, working, people)
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .await?
+        }
+    };
     let mut v = json!({"artifacts": artifacts});
     if !has_token(&headers, &s.token) {
         strip_sessions(&mut v);
@@ -184,9 +281,12 @@ pub async fn create(
     State(s): State<AppState>,
     _t: RequireToken,
     headers: HeaderMap,
-    req: Result<Json<PublishRequest>, JsonRejection>,
+    req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    let p = validate(body_within(req, "the publish limit")?)?;
+    let p = parse_body(req, "the publish limit", |r: PublishRequest| {
+        Ok(validate(r)?)
+    })
+    .await?;
     require_title(p.title.as_deref())?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
@@ -370,10 +470,13 @@ pub async fn publish(
     _t: RequireToken,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
-    req: Result<Json<PublishRequest>, JsonRejection>,
+    req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let mut p = validate(body_within(req, "the publish limit")?)?;
+    let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
+        Ok(validate(r)?)
+    })
+    .await?;
     let truncated = p.note_truncated;
     let session = session_header(&headers)?;
     let by_page = headers.get(VIA_HEADER).and_then(|v| v.to_str().ok()) == Some("page");

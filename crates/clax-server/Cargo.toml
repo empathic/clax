@@ -4,12 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[lints]
+workspace = true
+
 [dependencies]
 clax-core = { path = "../clax-core" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-libc.workspace = true
+nix = { workspace = true, features = ["signal"] }
 rand.workspace = true
 rust-embed.workspace = true
 serde.workspace = true
@@ -41,7 +44,6 @@ bytes = "1"
 sha2 = "0.11"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true
-libc.workspace = true
 chrono.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["full"] }

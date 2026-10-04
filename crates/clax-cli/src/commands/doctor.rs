@@ -427,6 +427,8 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
     ));
     match Store::open(home) {
         Ok(store) => {
+            // Whole-home checks may read for longer than a request may.
+            store.lift_read_limit();
             if args.fix {
                 fixed = apply_fixes(home, &store)?;
             }

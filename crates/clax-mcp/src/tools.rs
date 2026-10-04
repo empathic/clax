@@ -523,8 +523,8 @@ fn thread_summary(t: &Value) -> Value {
     })
 }
 
-fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
-    std::fs::read(path).map_err(|e| {
+async fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
+    tokio::fs::read(path).await.map_err(|e| {
         render::error(
             "file_unreadable",
             format!("cannot read {}: {e}", path.display()),
@@ -535,8 +535,8 @@ fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
 
 /// A publish file entry for a local file: UTF-8 text for text extensions whose
 /// bytes decode, base64 otherwise.
-fn file_entry(path: &Path) -> Result<Value, CallToolResult> {
-    let bytes = read_local(path)?;
+async fn file_entry(path: &Path) -> Result<Value, CallToolResult> {
+    let bytes = read_local(path).await?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -640,7 +640,22 @@ pub struct ClaxTools {
     plugin_version: Option<String>,
     upgrade_hold: Option<UpgradeHoldProbe>,
     channel: Option<crate::channel::ChannelState>,
+    opener: Opener,
     tool_router: ToolRouter<Self>,
+}
+
+/// How the `open` tool shows a URL in the browser.
+#[derive(Clone, Debug, Default)]
+pub enum Opener {
+    /// The platform opener ([`open_in_browser`]), unless `CLAX_NO_OPEN` is
+    /// set in the environment.
+    #[default]
+    Platform,
+    /// Opens nothing; `open` reports `opened: false`.
+    Off,
+    /// Runs this program on the URL, as [`open_in_browser`] runs the
+    /// platform opener.
+    Program(PathBuf),
 }
 
 /// Given the running daemon's version, the failed upgrade that keeps that
@@ -666,6 +681,7 @@ impl ClaxTools {
             plugin_version: None,
             upgrade_hold: None,
             channel: None,
+            opener: Opener::default(),
             tool_router: Self::tool_router(),
         }
     }
@@ -690,6 +706,12 @@ impl ClaxTools {
     /// channel state in `status.push`.
     pub fn with_channel(mut self, channel: crate::channel::ChannelState) -> ClaxTools {
         self.channel = Some(channel);
+        self
+    }
+
+    /// These tools with `opener` showing the URLs `open` returns.
+    pub fn with_opener(mut self, opener: Opener) -> ClaxTools {
+        self.opener = opener;
         self
     }
 
@@ -739,7 +761,7 @@ impl ClaxTools {
         }
     }
 
-    fn file_arg(&self, name: &str, f: FileArg) -> Result<Value, CallToolResult> {
+    async fn file_arg(&self, name: &str, f: FileArg) -> Result<Value, CallToolResult> {
         let mut entry = match (f.path, f.content) {
             (Some(p), None) => {
                 if f.encoding.is_some() {
@@ -747,7 +769,7 @@ impl ClaxTools {
                         "files.{name}: encoding applies only to content"
                     )));
                 }
-                file_entry(&self.local_path(&p)?)?
+                file_entry(&self.local_path(&p)?).await?
             }
             (None, Some(c)) => json!({"content": c, "encoding": f.encoding.unwrap_or_default()}),
             _ => {
@@ -780,7 +802,7 @@ impl ClaxTools {
         self.prepare_session(a.file_path.as_deref().into_iter().chain(file_paths))
             .await;
         let page = match (&a.file_path, &a.html) {
-            (Some(p), None) => file_entry(&self.local_path(p)?)?,
+            (Some(p), None) => file_entry(&self.local_path(p)?).await?,
             (None, Some(h)) => json!({"content": h, "encoding": "utf8"}),
             _ => return Err(invalid("pass exactly one of file_path and html")),
         };
@@ -797,7 +819,7 @@ impl ClaxTools {
                 ));
             }
             let entry = match f {
-                Some(f) => self.file_arg(&name, f)?,
+                Some(f) => self.file_arg(&name, f).await?,
                 None => Value::Null,
             };
             files.insert(name, entry);
@@ -1004,11 +1026,21 @@ impl ClaxTools {
         let id = artifact_id(&a.url_or_id)?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
         let url = self.artifact_url(&id);
-        let opened = std::env::var_os("CLAX_NO_OPEN").is_none() && {
-            let url = url.clone();
-            tokio::task::spawn_blocking(move || open_in_browser(&url))
-                .await
-                .unwrap_or(false)
+        let program = match &self.opener {
+            Opener::Platform if std::env::var_os("CLAX_NO_OPEN").is_none() => {
+                Some(PathBuf::from(platform_opener()))
+            }
+            Opener::Platform | Opener::Off => None,
+            Opener::Program(p) => Some(p.clone()),
+        };
+        let opened = match program {
+            Some(program) => {
+                let url = url.clone();
+                tokio::task::spawn_blocking(move || run_opener(&program, &url))
+                    .await
+                    .unwrap_or(false)
+            }
+            None => false,
         };
         Ok(json!({"url": url, "opened": opened}))
     }
@@ -1033,7 +1065,7 @@ impl ClaxTools {
         let mut files = Vec::with_capacity(paths.len());
         for p in &paths {
             let path = self.local_path(p)?;
-            let bytes = read_local(&path)?;
+            let bytes = read_local(&path).await?;
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -1333,7 +1365,7 @@ impl ClaxTools {
     }
 
     /// `data` or the JSON object in `file_path`: exactly one of them.
-    fn db_body(
+    async fn db_body(
         &self,
         data: Option<Map<String, Value>>,
         file_path: Option<String>,
@@ -1341,7 +1373,7 @@ impl ClaxTools {
         match (data, file_path) {
             (Some(d), None) => Ok(Value::Object(d)),
             (None, Some(p)) => {
-                let bytes = read_local(&self.local_path(&p)?)?;
+                let bytes = read_local(&self.local_path(&p)?).await?;
                 let v: Value = serde_json::from_slice(&bytes)
                     .map_err(|e| invalid(format!("{p} is not JSON: {e}")))?;
                 if v.is_object() {
@@ -1426,7 +1458,7 @@ impl ClaxTools {
         self.prepare_session(a.file_path.as_deref().into_iter())
             .await;
         let path = db_path(&a.collection, &a.doc_id)?;
-        let data = self.db_body(a.data, a.file_path)?;
+        let data = self.db_body(a.data, a.file_path).await?;
         let mut body = json!({"data": data});
         if let Some(v) = a.if_version {
             body["if_version"] = json!(v);
@@ -1495,7 +1527,7 @@ impl ClaxTools {
                     )));
                 }
                 DbBatchOp::Delete => {}
-                _ => e["data"] = self.db_body(w.data, w.file_path)?,
+                _ => e["data"] = self.db_body(w.data, w.file_path).await?,
             }
             if let Some(v) = w.if_version {
                 e["if_version"] = json!(v);
@@ -1551,12 +1583,21 @@ pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500
 /// openers hand off and linger; it is reaped in the background); false when it
 /// cannot start or exits unsuccessfully. Blocks the calling thread.
 pub fn open_in_browser(url: &str) -> bool {
-    let opener = if cfg!(target_os = "macos") {
+    run_opener(Path::new(platform_opener()), url)
+}
+
+/// `open` on macOS, `xdg-open` elsewhere.
+fn platform_opener() -> &'static str {
+    if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
-    };
-    let Ok(mut child) = std::process::Command::new(opener)
+    }
+}
+
+/// [`open_in_browser`] with `program` as the opener.
+fn run_opener(program: &Path, url: &str) -> bool {
+    let Ok(mut child) = std::process::Command::new(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

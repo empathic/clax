@@ -265,7 +265,7 @@ impl Store {
 
     /// Records the `CODEX_HOME` the session's Codex runs with, for `codex queue`.
     pub fn set_codex_home(&self, session_id: &str, codex_home: &str) -> Result<()> {
-        self.with_conn(|c| {
+        self.with_tx(|c| {
             c.execute(
                 "INSERT INTO session_env (session_id, codex_home) VALUES (?1, ?2)
                  ON CONFLICT(session_id) DO UPDATE SET codex_home = excluded.codex_home",
@@ -277,7 +277,7 @@ impl Store {
 
     /// The `CODEX_HOME` recorded for the session, if any.
     pub fn codex_home(&self, session_id: &str) -> Result<Option<String>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT codex_home FROM session_env WHERE session_id = ?1",
                 params![session_id],
@@ -293,7 +293,7 @@ impl Store {
     /// success) clears it.
     pub fn set_push_error(&self, session_id: &str, error: Option<&str>) -> Result<()> {
         let at = error.map(|_| Store::now());
-        self.with_conn(|c| {
+        self.with_tx(|c| {
             c.execute(
                 "INSERT INTO session_env (session_id, push_error, push_error_at) VALUES (?1, ?2, ?3)
                  ON CONFLICT(session_id) DO UPDATE SET push_error = excluded.push_error,
@@ -307,7 +307,7 @@ impl Store {
     /// The last `codex queue` failure recorded for the session and when, if
     /// the latest run failed.
     pub fn push_error(&self, session_id: &str) -> Result<Option<(String, String)>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT push_error, push_error_at FROM session_env
                  WHERE session_id = ?1 AND push_error IS NOT NULL",
@@ -319,7 +319,7 @@ impl Store {
     }
 
     pub fn get_session(&self, id: &str) -> Result<Option<Session>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 &format!("{SELECT} WHERE id = ?1"),
                 params![id],
@@ -331,7 +331,7 @@ impl Store {
 
     /// Sessions, newest first; only those not ended when `live_only`.
     pub fn list_sessions(&self, live_only: bool) -> Result<Vec<Session>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let filter = if live_only {
                 "WHERE ended_at IS NULL"
             } else {
@@ -353,26 +353,38 @@ impl Store {
     pub fn reap_sessions(&self, idle: Duration, pid_alive: &dyn Fn(u32) -> bool) -> Result<Reaped> {
         let cutoff =
             (chrono::Utc::now() - idle).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        self.with_tx(|tx| {
-            let mut stmt = tx.prepare(
+        let stale = self.with_read(|c| {
+            let mut stmt = c.prepare(
                 "SELECT id, pid FROM sessions WHERE ended_at IS NULL AND last_seen_at < ?1",
             )?;
-            let stale = stmt
+            Ok(stmt
                 .query_map(params![cutoff], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, Option<u32>>(1)?))
                 })?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            drop(stmt);
+                .collect::<rusqlite::Result<Vec<_>>>()?)
+        })?;
+        // Checked outside the transaction; the update below re-checks that
+        // each session is still live and idle.
+        let dead: Vec<String> = stale
+            .into_iter()
+            .filter(|(_, pid)| !pid.is_some_and(pid_alive))
+            .map(|(id, _)| id)
+            .collect();
+        if dead.is_empty() {
+            return Ok(Reaped::default());
+        }
+        self.with_tx(|tx| {
             let now = Store::now();
             let mut reaped = Reaped::default();
-            for (id, pid) in stale {
-                if pid.is_some_and(pid_alive) {
+            for id in dead {
+                let n = tx.execute(
+                    "UPDATE sessions SET ended_at = ?2
+                     WHERE id = ?1 AND ended_at IS NULL AND last_seen_at < ?3",
+                    params![id, now, cutoff],
+                )?;
+                if n == 0 {
                     continue;
                 }
-                tx.execute(
-                    "UPDATE sessions SET ended_at = ?2 WHERE id = ?1",
-                    params![id, now],
-                )?;
                 reaped
                     .touched
                     .merge(super::feedback::release_session(tx, &id)?);
@@ -428,7 +440,7 @@ mod tests {
         }
         let store = Store::open(&home).unwrap();
         let version: u32 = store
-            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(version, super::super::migrations::MIGRATIONS.len() as u32);
         assert!(store.list_sessions(false).unwrap().is_empty());
@@ -451,7 +463,7 @@ mod tests {
         }
         let store = Store::open(&home).unwrap();
         let (version, docs, leases): (u32, i64, i64) = store
-            .with_conn(|c| {
+            .with_read(|c| {
                 Ok((
                     c.query_row("PRAGMA user_version", [], |r| r.get(0))?,
                     c.query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))?,
@@ -480,7 +492,7 @@ mod tests {
         }
         let store = Store::open(&home).unwrap();
         let version: u32 = store
-            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(version, super::super::migrations::MIGRATIONS.len() as u32);
         for table in [
@@ -492,7 +504,7 @@ mod tests {
             "session_env",
         ] {
             let n: i64 = store
-                .with_conn(|c| {
+                .with_read(|c| {
                     Ok(c.query_row(
                         "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
                         [table],
@@ -620,7 +632,7 @@ mod tests {
             .register_session(reg(None, Some(10), Some(5)))
             .unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "UPDATE sessions SET last_seen_at = ?2 WHERE id = ?1",
                     params![

@@ -1,6 +1,43 @@
-//! SQLite-backed store. One connection behind a mutex. Metadata operations are
-//! single transactions; version writes, deletes, and asset writes combine a
-//! transaction with file-system work.
+//! SQLite-backed store.
+//!
+//! The database runs in WAL mode behind three kinds of connection, each with
+//! a [`BUSY_TIMEOUT`](exec::BUSY_TIMEOUT) so another process holding a lock
+//! makes a call wait briefly instead of failing:
+//!
+//! - **One writer.** There is one write connection, lent to one caller at a
+//!   time in arrival order (a ticket queue). Every write goes through
+//!   [`Store::with_tx`] (or, for statements that are not transactions,
+//!   `with_write`), which blocks the caller until every earlier caller has
+//!   finished and then runs the job on the caller's own thread. Parsing,
+//!   decoding, hashing and file writes happen before the job starts, so the
+//!   connection is held only for short transactions. On open, the
+//!   migrations run on this connection before any reader opens.
+//! - **Readers.** A pool of `query_only` connections, at most
+//!   [`reader_count`](exec::reader_count), opened on first use. Every
+//!   read-only method takes one through `with_read`, so reads run
+//!   concurrently with each other and with the writer. Each `with_read` runs
+//!   in one read transaction, so all its statements see one snapshot. A
+//!   write job may not read through a reader. A read still running
+//!   after [`READ_LIMIT`](exec::READ_LIMIT) is interrupted and fails with
+//!   [`CoreError::ReadTimeout`](crate::CoreError::ReadTimeout).
+//! - **Checkpoints.** Once the store serves [`Store::call`], a background
+//!   thread runs a `PASSIVE` checkpoint every
+//!   [`CHECKPOINT_INTERVAL`](exec::CHECKPOINT_INTERVAL), so commits rarely
+//!   reach the [`AUTOCHECKPOINT_PAGES`](exec::AUTOCHECKPOINT_PAGES) threshold
+//!   at which they would checkpoint themselves.
+//!
+//! The methods are synchronous and may be called from any thread. The
+//! daemon calls them through [`Store::call`], which runs a job on worker
+//! threads (one per reader) fed by a bounded FIFO queue, so a pile-up of
+//! requests waits in the queue instead of claiming more threads, and a job
+//! whose request has given up is skipped. A job waiting for the write turn
+//! or holding it does not count against the workers that reads need: while
+//! fewer than one per reader would be free of writes, the pool starts
+//! another. [`Store::shutdown`] drains the queue and joins the threads.
+//!
+//! Version writes, deletes, and asset writes combine a transaction with
+//! file-system work, ordered so that a failure on either side leaves no
+//! half-written state.
 
 pub mod artifacts;
 pub mod assets;
@@ -8,6 +45,7 @@ pub mod attention;
 pub mod batches;
 pub mod changelog;
 pub mod docs;
+pub mod exec;
 pub mod feedback;
 pub mod migrations;
 #[cfg(test)]
@@ -18,8 +56,10 @@ pub mod viewers;
 pub mod watches;
 
 use crate::{Home, Result};
+use exec::{Readers, Workers, Writer};
 use rusqlite::Connection;
-use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 /// Rows `ANALYZE` samples per index when `PRAGMA optimize` refreshes statistics.
 pub const ANALYSIS_LIMIT: u32 = 400;
@@ -27,27 +67,32 @@ pub const ANALYSIS_LIMIT: u32 = 400;
 pub const OPTIMIZE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3600);
 
 pub struct Store {
-    conn: Mutex<Connection>,
     home: Home,
+    writer: Writer,
+    readers: Readers,
+    workers: OnceLock<Workers>,
+    /// Set by [`Store::shutdown`].
+    shut_down: AtomicBool,
 }
 
 impl Store {
+    /// Opens (creating when missing) the home's database and migrates it to
+    /// the current schema on the write connection.
     pub fn open(home: &Home) -> Result<Store> {
         home.ensure_dirs()?;
-        let conn = Connection::open(home.db_path())?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        let store = Store {
-            conn: Mutex::new(conn),
+        let path = home.db_path();
+        let mut conn = exec::open_writer(&path)?;
+        migrate(&mut conn)?;
+        conn.execute_batch(&format!(
+            "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
+        ))?;
+        Ok(Store {
             home: home.clone(),
-        };
-        store.migrate()?;
-        store.with_conn(|c| {
-            c.execute_batch(&format!(
-                "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize=0x10002;"
-            ))?;
-            Ok(())
-        })?;
-        Ok(store)
+            writer: Writer::new(conn),
+            readers: Readers::new(path, exec::reader_count()),
+            workers: OnceLock::new(),
+            shut_down: AtomicBool::new(false),
+        })
     }
 
     /// Refreshes the query planner's statistics where they are stale
@@ -55,7 +100,7 @@ impl Store {
     /// index). Cheap when nothing changed; the daemon runs it every
     /// [`OPTIMIZE_INTERVAL`].
     pub fn optimize(&self) -> Result<()> {
-        self.with_conn(|c| {
+        self.with_write(|c| {
             c.execute_batch(&format!(
                 "PRAGMA analysis_limit={ANALYSIS_LIMIT}; PRAGMA optimize;"
             ))?;
@@ -68,44 +113,78 @@ impl Store {
     }
 
     /// First row of `PRAGMA integrity_check`; "ok" when the database is sound.
+    /// Not subject to the read limit.
     pub fn integrity_check(&self) -> Result<String> {
-        self.with_conn(|c| Ok(c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?))
+        self.readers.run(false, |c| {
+            Ok(c.query_row("PRAGMA integrity_check", [], |r| r.get(0))?)
+        })
+    }
+
+    /// Sets how long a read may run before it is interrupted (default
+    /// [`exec::READ_LIMIT`]).
+    #[doc(hidden)]
+    pub fn set_read_limit(&self, limit: std::time::Duration) {
+        self.readers.set_limit(Some(limit));
+    }
+
+    /// Lets reads run as long as they take, for offline checks of a whole
+    /// home (`clax doctor`) rather than requests.
+    pub fn lift_read_limit(&self) {
+        self.readers.set_limit(None);
     }
 
     pub fn now() -> String {
         chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
     }
 
-    fn migrate(&self) -> Result<()> {
-        let mut conn = self.conn.lock().unwrap();
-        let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        for (i, sql) in migrations::MIGRATIONS.iter().enumerate() {
-            let target = i as u32 + 1;
-            if target > version {
-                let tx = conn.transaction()?;
-                tx.execute_batch(sql)?;
-                tx.pragma_update(None, "user_version", target)?;
-                tx.commit()?;
-            }
-        }
-        Ok(())
+    /// Runs `f` on a reader connection, which refuses writes.
+    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.readers.run(true, f)
     }
 
-    pub(crate) fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        let conn = self.conn.lock().unwrap();
-        f(&conn)
-    }
-
+    /// Runs `f` in a transaction on the write connection and commits it when
+    /// `f` succeeds (an error or a panic rolls it back). Blocks until every
+    /// write that arrived before this one has finished, then runs `f` on the
+    /// calling thread.
+    ///
+    /// The transaction is `IMMEDIATE`: it takes the write lock when it
+    /// begins, where a lock held elsewhere (another process, or a reader
+    /// briefly holding it to repair a WAL index it saw mid-update) is waited
+    /// for under the busy timeout. A deferred transaction that read first
+    /// would instead fail at once with `SQLITE_BUSY` on its first write.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let mut conn = self.conn.lock().unwrap();
-        let tx = conn.transaction()?;
-        let out = f(&tx)?;
-        tx.commit()?;
-        Ok(out)
+        self.writer.run(|conn| {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            let out = f(&tx)?;
+            tx.commit()?;
+            Ok(out)
+        })
     }
+
+    /// Runs `f` on the write connection outside a transaction, for
+    /// statements that manage their own (`PRAGMA optimize`).
+    pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
+        self.writer.run(|conn| f(conn))
+    }
+}
+
+/// Applies every migration past the database's `user_version`, each in its
+/// own transaction.
+fn migrate(conn: &mut Connection) -> Result<()> {
+    let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    for (i, sql) in migrations::MIGRATIONS.iter().enumerate() {
+        let target = i as u32 + 1;
+        if target > version {
+            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+            tx.execute_batch(sql)?;
+            tx.pragma_update(None, "user_version", target)?;
+            tx.commit()?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

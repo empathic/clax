@@ -293,6 +293,7 @@ async fn no_session_id_reaches_a_tokenless_caller() {
     for path in [
         format!("/api/artifacts/{aid}"),
         "/api/artifacts".to_string(),
+        format!("/api/artifacts?artifact={aid}"),
     ] {
         let anon: Value = ts.get(&path).await.json().await.unwrap();
         assert!(
@@ -339,4 +340,118 @@ async fn no_version_route_names_a_session_without_the_token() {
             "{path} with the token keeps the session"
         );
     }
+}
+
+async fn get_with(ts: &TestServer, path: &str, cookie: &str) -> reqwest::Response {
+    ts.client
+        .get(format!("{}{path}", ts.base))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn one_artifacts_attention_and_list_entry_match_the_whole_answers() {
+    let ts = TestServer::spawn().await;
+    let (_sid, aid) = artifact(&ts).await;
+    let (_sid2, other) = {
+        let s = ts.register_session("claude", "att-2").await;
+        let sid = s["id"].as_str().unwrap().to_string();
+        let a = ts
+            .publish_as(&sid, "U", "<main><h2>Other</h2></main>")
+            .await;
+        (sid, a["artifact"]["id"].as_str().unwrap().to_string())
+    };
+    let alex = ts.viewer(Some("Alex")).await;
+    let tid = ts.thread_as(&aid, &alex.cookie, "Two columns").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.thread_as(&other, &alex.cookie, "Elsewhere").await;
+
+    let all: Value = get_with(&ts, "/api/viewers/me/attention", &alex.cookie)
+        .await
+        .json()
+        .await
+        .unwrap();
+    let res = get_with(
+        &ts,
+        &format!("/api/viewers/me/attention?artifact={aid}"),
+        &alex.cookie,
+    )
+    .await;
+    assert_eq!(res.headers()["vary"], "Cookie");
+    let one: Value = res.json().await.unwrap();
+    assert_eq!(one["artifacts"].as_object().unwrap().len(), 1, "{one}");
+    assert_eq!(one["artifacts"][&aid], all["artifacts"][&aid]);
+    assert_eq!(one["artifacts"][&aid]["open_in"], json!([tid]));
+    assert!(one["artifacts"][&aid].get("looked").is_none());
+
+    let list: Value = ts.get("/api/artifacts").await.json().await.unwrap();
+    let entry = list["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["id"] == aid)
+        .unwrap()
+        .clone();
+    let single: Value = ts
+        .get(&format!("/api/artifacts?artifact={aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(single["artifacts"], json!([entry]));
+    assert_eq!(
+        single["artifacts"][0]["participants"]["people"][0]["public_id"],
+        alex.public_id
+    );
+
+    let no_cookie: Value = ts
+        .get(&format!("/api/viewers/me/attention?artifact={aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(no_cookie, json!({"artifacts": {}}));
+    let bad = get_with(
+        &ts,
+        "/api/viewers/me/attention?artifact=nope!",
+        &alex.cookie,
+    )
+    .await;
+    assert_eq!(bad.status(), 400);
+    assert_eq!(ts.get("/api/artifacts?artifact=nope!").await.status(), 400);
+
+    let del = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/artifacts/{other}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(del.status(), 204);
+    let gone: Value = get_with(
+        &ts,
+        &format!("/api/viewers/me/attention?artifact={other}"),
+        &alex.cookie,
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(
+        gone,
+        json!({"artifacts": {}}),
+        "a deleted artifact has no attention"
+    );
+    let gone: Value = ts
+        .get(&format!("/api/artifacts?artifact={other}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(gone, json!({"artifacts": []}));
 }

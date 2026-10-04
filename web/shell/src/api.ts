@@ -45,17 +45,19 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function listArtifacts(): Promise<Artifact[]> {
-  return (await json<{ artifacts: Artifact[] }>(await fetch("/api/artifacts"))).artifacts;
+/** Every live artifact; with `only`, that artifact alone, or none when it is not live. */
+export async function listArtifacts(only?: string): Promise<Artifact[]> {
+  return (await json<{ artifacts: Artifact[] }>(await fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts"))).artifacts;
 }
 /** With the viewer cookie, the answer also carries the viewer's `attention`. */
 export async function getArtifact(id: string): Promise<{ artifact: Artifact; versions: Version[]; attention?: Attention }> {
   return json(await fetch(`/api/artifacts/${id}`));
 }
 
-/** This viewer's attention on every artifact; {} without a viewer or on failure. */
-export async function getAttention(): Promise<Record<string, AttentionSummary>> {
-  try { const r = await fetch("/api/viewers/me/attention"); return r.ok ? (await r.json()).artifacts : {}; } catch { return {}; }
+/** This viewer's attention on every live artifact (with `only`, on that one
+ * artifact, or none when it is not live); {} without a viewer, null on failure. */
+export async function getAttention(only?: string): Promise<Record<string, AttentionSummary> | null> {
+  try { const r = await fetch(`/api/viewers/me/attention${only ? `?artifact=${only}` : ""}`); return r.ok ? (await r.json()).artifacts : null; } catch { return null; }
 }
 /** Records that this viewer looked at `ids`; answers the viewer's marks on `aid`, or null on failure (the next look writes again). */
 export async function putLooked(aid: string, ids: string[]): Promise<Record<string, string> | null> {

@@ -161,7 +161,7 @@ pub(crate) const LOOKED_ONE: &str = "SELECT vt.thread_id, vt.looked_at FROM thre
 
 impl Store {
     pub fn participants(&self, aid: &ArtifactId) -> Result<Participants> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(participants_in(c, Some(aid.as_str()))?
                 .remove(aid.as_str())
                 .unwrap_or_default())
@@ -171,12 +171,12 @@ impl Store {
     /// [`Store::participants`] of every live artifact, by artifact ID; an
     /// artifact with neither people nor agents may be missing.
     pub fn participants_all(&self) -> Result<BTreeMap<String, Participants>> {
-        self.with_conn(|c| participants_in(c, None))
+        self.with_read(|c| participants_in(c, None))
     }
 
     /// The live owner or watcher of `aid` whose handle is `handle`, as a session ID.
     pub fn live_agent(&self, aid: &ArtifactId, handle: &str) -> Result<Option<String>> {
-        self.with_conn(|c| Ok(c.query_row(
+        self.with_read(|c| Ok(c.query_row(
             "SELECT id FROM sessions WHERE agent_handle = ?2 AND ended_at IS NULL AND
                (id = (SELECT owner_session_id FROM artifacts WHERE id = ?1) OR id IN (SELECT session_id FROM watches WHERE artifact_id = ?1))",
             params![aid.as_str(), handle], |r| r.get(0)).optional()?))
@@ -205,7 +205,7 @@ impl Store {
     }
 
     pub fn attention(&self, viewer_id: &str, aid: &ArtifactId) -> Result<Attention> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let Some(p) = public_id_of(c, viewer_id)? else {
                 return Ok(Attention::default());
             };
@@ -217,10 +217,39 @@ impl Store {
         })
     }
 
+    /// The viewer's attention summary on `aid` (as [`Store::attention`]
+    /// without `looked`), or `None` when `aid` is not live: deleted, or with
+    /// no version yet. The cost is that of one artifact's threads, whatever
+    /// the viewer's threads elsewhere.
+    pub fn attention_one(
+        &self,
+        viewer_id: &str,
+        aid: &ArtifactId,
+    ) -> Result<Option<AttentionSummary>> {
+        self.with_read(|c| {
+            let live: bool = c
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0)",
+                )?
+                .query_row(params![aid.as_str()], |r| r.get(0))?;
+            if !live {
+                return Ok(None);
+            }
+            let Some(p) = public_id_of(c, viewer_id)? else {
+                return Ok(Some(AttentionSummary::default()));
+            };
+            Ok(Some(
+                summaries_in(c, viewer_id, &p, Some(aid.as_str()))?
+                    .remove(aid.as_str())
+                    .unwrap_or_default(),
+            ))
+        })
+    }
+
     /// The viewer's attention summary on every live artifact, by artifact ID.
     pub fn attention_all(&self, viewer_id: &str) -> Result<BTreeMap<String, AttentionSummary>> {
         let ids: Vec<String> = self.list_artifacts()?.into_iter().map(|a| a.id).collect();
-        let mut found = self.with_conn(|c| match public_id_of(c, viewer_id)? {
+        let mut found = self.with_read(|c| match public_id_of(c, viewer_id)? {
             Some(p) => summaries_in(c, viewer_id, &p, None),
             None => Ok(BTreeMap::new()),
         })?;

@@ -83,7 +83,7 @@ pub(crate) fn fill_addresses(
 impl Store {
     /// The versions `thread_id` is linked to, ascending.
     pub fn addressed_in(&self, thread_id: &str) -> Result<Vec<u32>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT version_n FROM version_threads WHERE thread_id = ?1 ORDER BY version_n",
             )?;
@@ -116,7 +116,7 @@ impl Store {
 
     /// The viewer's seen mark on `aid`.
     pub fn seen(&self, viewer_id: &str, aid: &ArtifactId) -> Result<Option<u32>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 "SELECT seen_n FROM viewer_seen WHERE viewer_id = ?1 AND artifact_id = ?2",
                 params![viewer_id, aid.as_str()],

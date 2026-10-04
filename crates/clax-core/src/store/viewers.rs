@@ -64,7 +64,7 @@ impl Store {
 
     /// The viewer whose cookie is `id`.
     pub fn get_viewer(&self, id: &str) -> Result<Option<Viewer>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 &format!("{VIEWER_SELECT} WHERE id = ?1"),
                 params![id],
@@ -80,7 +80,7 @@ impl Store {
         if !is_public_id(public_id) {
             return Ok(None);
         }
-        self.with_conn(|c| {
+        self.with_read(|c| {
             Ok(c.query_row(
                 &format!("{VIEWER_SELECT} WHERE public_id = ?1"),
                 params![public_id],
@@ -95,7 +95,7 @@ impl Store {
     /// The viewers with these public IDs, in the order given; unknown IDs,
     /// and anything that is not a public ID, are skipped.
     pub fn viewers_by_public_ids(&self, ids: &[String]) -> Result<Vec<Viewer>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(&format!("{VIEWER_SELECT} WHERE public_id = ?1"))?;
             let mut out = Vec::new();
             for id in ids.iter().filter(|i| is_public_id(i)) {
@@ -113,7 +113,7 @@ impl Store {
     /// named viewers, in that order: its cost is linear in the names read.
     pub fn search_viewers(&self, q: &str, limit: usize) -> Result<Vec<Viewer>> {
         let needle = q.to_lowercase();
-        self.with_conn(|c| {
+        self.with_read(|c| {
             // SQLite's lower() folds ASCII only, so names are matched here,
             // streaming in name order and stopping at `limit` hits or
             // MAX_SEARCH_SCAN names read.
@@ -300,7 +300,7 @@ mod tests {
         assert_eq!(MAX_SEARCH_SCAN, 10_000);
         let (_d, st) = store();
         // MAX_SEARCH_SCAN names sorting before one more, "zed", which lies past the scan.
-        st.with_conn(|c| {
+        st.with_write(|c| {
             let tx = c.unchecked_transaction()?;
             {
                 let mut ins = tx.prepare(

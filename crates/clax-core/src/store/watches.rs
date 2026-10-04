@@ -81,7 +81,7 @@ impl Store {
 
     /// Removes the watch; true when one existed.
     pub fn unwatch(&self, session_id: &str, id: &ArtifactId) -> Result<bool> {
-        self.with_conn(|c| {
+        self.with_tx(|c| {
             Ok(c.execute(
                 "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2",
                 params![session_id, id.as_str()],
@@ -91,7 +91,7 @@ impl Store {
 
     /// The session's watches, oldest first.
     pub fn list_watches(&self, session_id: &str) -> Result<Vec<Watch>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT session_id, artifact_id, replies_armed, created_at FROM watches WHERE session_id = ?1 ORDER BY created_at, artifact_id",
             )?;
@@ -101,7 +101,7 @@ impl Store {
 
     /// Watches on `id` held by sessions that have not ended, oldest first.
     pub fn watchers(&self, id: &ArtifactId) -> Result<Vec<Watch>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT w.session_id, w.artifact_id, w.replies_armed, w.created_at FROM watches w
                  JOIN sessions s ON s.id = w.session_id
@@ -173,7 +173,7 @@ mod tests {
         let b = session(&st, "codex", "b");
         st.watch(&a, &aid, true).unwrap();
         st.watch(&b, &aid, false).unwrap();
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute("UPDATE sessions SET ended_at = 'x' WHERE id = ?1", [&b])?;
             Ok(())
         })

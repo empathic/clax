@@ -71,20 +71,24 @@ describe("subscribe", () => {
     expect(seen).toEqual([d, { type: "stream_down" }]);
   });
 
-  it("subscribeGallery opens the gallery's stream and forwards parsed working, version and thread events", () => {
+  it("subscribeGallery opens the gallery's stream and forwards parsed working, version, thread and deletion events", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
     const off = subscribeGallery(e => seen.push(e));
-    expect(FakeES.last.url).toBe("/api/events?types=working,version,thread");
+    expect(FakeES.last.url).toBe("/api/events?types=working,version,thread,thread_deleted,artifact_deleted");
     const w = { type: "working", artifact_id: "7q3k9mzx2b4t", working: [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" }] };
     const v = { type: "version", artifact_id: "7q3k9mzx2b4t", n: 2 };
     const t = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "t1" } };
     FakeES.last.emit("working", w);
     FakeES.last.emit("version", v);
     FakeES.last.emit("thread", t);
+    const td = { type: "thread_deleted", artifact_id: "7q3k9mzx2b4t", thread_id: "t1" };
+    const ad = { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" };
+    FakeES.last.emit("thread_deleted", td);
+    FakeES.last.emit("artifact_deleted", ad);
     FakeES.last.emit("ready", {});
     FakeES.last.emit("resync", { dropped: 2 });
-    expect(seen).toEqual([w, v, t, { type: "ready" }, { type: "resync", dropped: 2 }]);
+    expect(seen).toEqual([w, v, t, td, ad, { type: "ready" }, { type: "resync", dropped: 2 }]);
     off();
     expect(FakeES.last.closed).toBe(true);
   });

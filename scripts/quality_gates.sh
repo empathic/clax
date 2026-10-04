@@ -49,6 +49,9 @@ run "web lint"              bash -c 'cd web && npm ci --silent && npm run lint'
 run "web typecheck + unit"  bash -c 'cd web && npm run typecheck && npm test -- --reporter=dot'
 run "web build"             bash -c 'cd web && npm run build'
 run "web bundle size"       bash -c 'cd web && node scripts/bundle-size.mjs'
+# No `unsafe` in any Rust source (the `unsafe_code` lint forbids it too);
+# a line counts only where the word appears before any `//` comment.
+run "no unsafe code"        bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 perl -ne '"'"'(my $c = $_) =~ s{//.*}{}; if ($c =~ /\bunsafe\b/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }'"'"''
 run "cargo fmt --check"     cargo fmt --all -- --check
 run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace

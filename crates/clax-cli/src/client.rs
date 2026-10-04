@@ -5,6 +5,7 @@ use clax_core::Home;
 use clax_server::daemon::{
     DaemonInfo, DaemonLock, browser_host, pid_alive, probe_host, read_daemon_info,
 };
+use nix::sys::signal::Signal;
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -14,6 +15,12 @@ pub struct Client {
     pub token: String,
     pub info: DaemonInfo,
     http: reqwest::blocking::Client,
+}
+
+/// Sends `sig` to process `pid`, ignoring failure (a process that has
+/// already exited).
+fn signal(pid: u32, sig: Signal) {
+    let _ = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), sig);
 }
 
 fn probe_client() -> Option<reqwest::blocking::Client> {
@@ -118,8 +125,8 @@ fn stop_for_replacement(home: &Home, target: &DaemonInfo, answered: bool) -> any
                 target.pid
             ),
         );
-        // SAFETY: kill(2) on a PID that daemon.json names under the start lock.
-        unsafe { libc::kill(target.pid as libc::pid_t, libc::SIGTERM) };
+        // A PID that daemon.json names under the start lock.
+        signal(target.pid, Signal::SIGTERM);
         if wait(Duration::from_secs(3)) {
             return Ok(());
         }
@@ -520,14 +527,10 @@ impl Client {
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log));
         {
+            // Its own process group, so signals sent to the spawner's
+            // foreground group (a terminal's Ctrl-C) do not reach it.
             use std::os::unix::process::CommandExt;
-            // SAFETY: setsid is async-signal-safe and the closure does nothing else.
-            unsafe {
-                cmd.pre_exec(|| {
-                    libc::setsid();
-                    Ok(())
-                });
-            }
+            cmd.process_group(0);
         }
         let mut child = cmd.spawn().context("spawning clax serve")?;
         let child_pid = child.id();
@@ -554,12 +557,11 @@ impl Client {
             std::thread::sleep(Duration::from_millis(100));
         }
         if stop_if_late {
-            // SAFETY: kill(2) on the child this call spawned, which the
-            // reaper thread has not yet reaped (it has not sent its status).
-            unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGTERM) };
+            // The child this call spawned, which the reaper thread has not
+            // yet reaped (it has not sent its status).
+            signal(child_pid, Signal::SIGTERM);
             if exited.recv_timeout(Duration::from_secs(3)).is_err() {
-                // SAFETY: as above.
-                unsafe { libc::kill(child_pid as libc::pid_t, libc::SIGKILL) };
+                signal(child_pid, Signal::SIGKILL);
                 let _ = exited.recv_timeout(Duration::from_secs(2));
             }
             bail!(
@@ -950,8 +952,11 @@ srv.serve_forever()
                 return;
             };
             for pid in entries.filter_map(|e| e.ok()?.file_name().to_str()?.parse::<i32>().ok()) {
-                // SAFETY: kill(2) on a fake this test started (its PID file).
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+                // A fake this test started (its PID file).
+                let _ = nix::sys::signal::kill(
+                    nix::unistd::Pid::from_raw(pid),
+                    nix::sys::signal::Signal::SIGKILL,
+                );
             }
         }
     }

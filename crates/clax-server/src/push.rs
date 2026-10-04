@@ -246,7 +246,7 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
         ctx.handle.clone().spawn(async move {
             let outcome = run_queue(&bin, timeout, &thread, &message, codex_home.as_deref()).await;
             let store = ctx.store.clone();
-            let settled = tokio::task::spawn_blocking(move || {
+            let settled = store.call(move |store| {
                 let mut touched = Touched::default();
                 let error = outcome.failure();
                 if let Some(reason) = &error {
@@ -257,15 +257,16 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
                     }
                 }
                 if error.is_none()
-                    && let Err(e) = crate::working::mark_items(&ctx, &store, &sid, &marked)
+                    && let Err(e) = crate::working::mark_items(&ctx, store, &sid, &marked)
                 {
                     tracing::warn!(session = %sid, error = %e, "marking a queued session working failed");
                 }
                 if let Err(e) = store.set_push_error(&sid, error.as_deref()) {
                     tracing::warn!(session = %sid, error = %e, "recording the codex queue outcome failed");
                 }
-                publish_states(&ctx, &store, &touched);
+                publish_states(&ctx, store, &touched);
                 ctx.waiters.wake(&touched.targets);
+                Ok(())
             })
             .await;
             if let Err(e) = settled {

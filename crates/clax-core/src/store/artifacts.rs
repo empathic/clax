@@ -94,7 +94,7 @@ impl Store {
     /// # Errors
     /// `Corrupt` when its `capabilities_json` is malformed.
     pub fn get_artifact(&self, id: &ArtifactId) -> Result<Option<Artifact>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             c.query_row(
                 &format!("{SELECT} WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0"),
                 params![id.as_str()],
@@ -109,7 +109,7 @@ impl Store {
     /// most recently updated, ties broken by ID. Rows with a malformed JSON
     /// column are logged and left out (see [`Store::corrupt_rows`]).
     pub fn list_artifacts(&self) -> Result<Vec<Artifact>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT} WHERE deleted_at IS NULL AND current_version > 0 ORDER BY pinned DESC, updated_at DESC, id"
             ))?;
@@ -234,7 +234,7 @@ impl Store {
     /// does not parse as JSON, including deleted artifacts, ordered by artifact
     /// ID then version. Reads the raw text, independent of the typed readers.
     pub fn corrupt_rows(&self) -> Result<Vec<CorruptRow>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut out = Vec::new();
             let mut stmt = c.prepare("SELECT id, capabilities_json FROM artifacts ORDER BY id")?;
             let rows =
@@ -281,7 +281,7 @@ impl Store {
     /// # Errors
     /// Database errors, and I/O errors other than a missing directory.
     pub fn stray_version_dirs(&self) -> Result<Vec<PathBuf>> {
-        let currents: Vec<(String, u32)> = self.with_conn(|c| {
+        let currents: Vec<(String, u32)> = self.with_read(|c| {
             let mut stmt = c.prepare("SELECT id, current_version FROM artifacts ORDER BY id")?;
             Ok(stmt
                 .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
@@ -318,7 +318,7 @@ impl Store {
     /// # Errors
     /// Database errors only.
     pub fn zero_version_artifacts(&self) -> Result<Vec<String>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id FROM artifacts WHERE current_version = 0 AND deleted_at IS NULL ORDER BY id",
             )?;
@@ -435,7 +435,7 @@ impl Store {
     #[doc(hidden)]
     pub fn insert_artifact_for_test(&self, title: &str, at: &str) -> ArtifactId {
         let id = ArtifactId::generate();
-        self.with_conn(|c| {
+        self.with_tx(|c| {
             c.execute(
                 "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                  VALUES (?1, ?2, ?3, ?3, 1, ?4)",
@@ -648,7 +648,7 @@ impl Store {
         let now = Store::now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
         let vdir = self.home.version_dir(id, n);
-        let renamed = std::cell::Cell::new(false);
+        let renamed = std::sync::atomic::AtomicBool::new(false);
         let result = self.with_tx(|tx| {
             let current: u32 = tx.query_row(
                 "SELECT current_version FROM artifacts WHERE id = ?1",
@@ -691,10 +691,10 @@ impl Store {
             )??;
             fill_addresses(tx, id, std::slice::from_mut(&mut v))?;
             std::fs::rename(&staging.0, &vdir)?;
-            renamed.set(true);
+            renamed.store(true, std::sync::atomic::Ordering::Relaxed);
             Ok((a, v))
         });
-        if result.is_err() && renamed.get() {
+        if result.is_err() && renamed.load(std::sync::atomic::Ordering::Relaxed) {
             // Commit failed after the rename; no other writer can hold `n`
             // because the transaction verified `expected` under the lock.
             let _ = std::fs::remove_dir_all(&vdir);
@@ -707,7 +707,7 @@ impl Store {
     /// # Errors
     /// `Corrupt` when its `files_json` is malformed.
     pub fn get_version(&self, id: &ArtifactId, n: u32) -> Result<Option<Version>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let Some(mut v) = c
                 .query_row(
                     &format!("{SELECT_VERSION} WHERE artifact_id = ?1 AND n = ?2"),
@@ -727,7 +727,7 @@ impl Store {
     /// Every version of the artifact, oldest first (ascending `n`). Versions with
     /// a malformed `files_json` are logged and left out.
     pub fn list_versions(&self, id: &ArtifactId) -> Result<Vec<Version>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(&format!(
                 "{SELECT_VERSION} WHERE artifact_id = ?1 ORDER BY n"
             ))?;
@@ -844,7 +844,7 @@ mod tests {
             )
             .unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
                     rusqlite::params![bad.as_str()],
@@ -931,8 +931,7 @@ mod tests {
         store.delete_artifact(&gone).unwrap();
         assert!(store.get_artifact(&gone).unwrap().is_none());
 
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } == 0 {
+        if nix::unistd::geteuid().is_root() {
             eprintln!("skipping unremovable-directory case: root ignores directory modes");
             return;
         }
@@ -991,7 +990,7 @@ mod tests {
 
         // After first open, user_version is the number of migrations
         let version: u32 = store
-            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         let expected = crate::store::migrations::MIGRATIONS.len() as u32;
         assert_eq!(version, expected);
@@ -999,7 +998,7 @@ mod tests {
         // Opening a second time should not re-run migrations or error
         let store2 = Store::open(&home).unwrap();
         let version2: u32 = store2
-            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(version2, expected);
     }
@@ -1152,7 +1151,7 @@ mod tests {
         let (_d, store) = store();
         let id = crate::ArtifactId::generate();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                      VALUES (?1, 'x', 'a', 'a', 0, 1)",
@@ -1188,7 +1187,7 @@ mod tests {
         }
         assert!(store.list_artifacts().unwrap().is_empty());
         let rows: i64 = store
-            .with_conn(|c| Ok(c.query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM artifacts", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(rows, 0, "a rejected create leaves no artifact row");
 
@@ -1312,7 +1311,7 @@ mod tests {
             )
             .unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "INSERT INTO feedback (id, thread_id, comment_id, target_session_id, created_at)
                      VALUES (?1, ?2, ?3, ?4, ?5)",
@@ -1323,7 +1322,7 @@ mod tests {
             .unwrap();
         store.delete_artifact(&aid).unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
                     [aid.as_str()],
@@ -1351,7 +1350,7 @@ mod tests {
             "artifacts",
         ] {
             let n: i64 = store
-                .with_conn(|c| {
+                .with_read(|c| {
                     Ok(c.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))?)
                 })
                 .unwrap();
@@ -1379,7 +1378,7 @@ mod tests {
         let (_d, store) = store();
         let live = one_version(&store);
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
                      VALUES ('zzzzzzzzzzzz', 'z', 'x', 'x', 0, '1')",
@@ -1412,7 +1411,7 @@ mod tests {
         store.delete_artifact(&gone_caps).unwrap();
         store.delete_artifact(&gone_files).unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id IN (?1, ?2)",
                     [live.as_str(), gone_caps.as_str()],
@@ -1438,7 +1437,7 @@ mod tests {
         let gone = one_version(&store);
         store.delete_artifact(&gone).unwrap();
         store
-            .with_conn(|c| {
+            .with_write(|c| {
                 c.execute(
                     "UPDATE artifacts SET capabilities_json = 'nope' WHERE id = ?1",
                     [gone.as_str()],
