@@ -146,8 +146,9 @@ impl CallerParts {
 
 /// Who is subscribing to `/api/events`, for filtering `doc` events. An
 /// `EventSource` cannot send headers, so the token is accepted as `?token=`
-/// (percent-decoded) as well as in `Authorization`; a wrong, missing, or
-/// invalidly encoded token counts as none.
+/// (percent-decoded) as well as in `Authorization`, and `GET /api/events`
+/// also takes the events cookie ([`Subscriber::or_events_cookie`]); a wrong,
+/// missing, or invalidly encoded token counts as none.
 /// The query string of this route must never be logged.
 pub struct Subscriber {
     token: bool,
@@ -173,6 +174,15 @@ impl FromRequestParts<AppState> for Subscriber {
 }
 
 impl Subscriber {
+    /// This subscriber, holding the token also when `headers` carry the
+    /// events cookie for `token` ([`crate::auth::has_events_cookie`]).
+    pub fn or_events_cookie(self, headers: &axum::http::HeaderMap, token: &str) -> Self {
+        Subscriber {
+            token: self.token || crate::auth::has_events_cookie(headers, token),
+            cookie: self.cookie,
+        }
+    }
+
     /// The subscriber's level and viewer: a valid token with a viewer is
     /// `admin` (the owner shell), without one `owner` (an agent, the CLI);
     /// a cookie alone is `interact` for a named viewer, else `view`; neither

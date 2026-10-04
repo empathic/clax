@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { subscribe } from "./events";
+import type { ArtifactEvent } from "./events";
+import { pageStream } from "./stream";
 import { subscribeGallery } from "./working-events";
+
+const watchArtifact = (on: (e: ArtifactEvent) => void) => pageStream().watch({ artifact: "7q3k9mzx2b4t" }, on);
 
 class FakeES {
   static last: FakeES;
@@ -12,13 +15,13 @@ class FakeES {
   emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
 }
 
-describe("subscribe", () => {
-  afterEach(() => { vi.unstubAllGlobals(); });
+describe("the page stream", () => {
+  afterEach(() => { pageStream().close(); vi.unstubAllGlobals(); });
 
   it("opens a filtered stream, forwards parsed events, and closes on unsubscribe", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    const off = subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    const off = watchArtifact(e => seen.push(e));
     expect(FakeES.last.url).toBe("/api/events?artifact=7q3k9mzx2b4t");
     FakeES.last.emit("version", { type: "version", artifact_id: "7q3k9mzx2b4t", n: 4 });
     FakeES.last.emit("artifact_deleted", { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" });
@@ -30,7 +33,7 @@ describe("subscribe", () => {
   it("turns a resync event into a typed event carrying the dropped count", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    watchArtifact(e => seen.push(e));
     FakeES.last.emit("resync", { dropped: 7 });
     expect(seen).toEqual([{ type: "resync", dropped: 7 }]);
   });
@@ -38,7 +41,7 @@ describe("subscribe", () => {
   it("forwards every ready event, so a reconnect can reload what it missed", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    watchArtifact(e => seen.push(e));
     FakeES.last.emit("ready", {});
     FakeES.last.emit("ready", {});
     expect(seen).toEqual([{ type: "ready" }, { type: "ready" }]);
@@ -47,7 +50,7 @@ describe("subscribe", () => {
   it("forwards the comment events", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    watchArtifact(e => seen.push(e));
     const fs = { type: "feedback_state", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", state: "sent", tier: "stop_hook", since: "2026-09-29T10:00:00.000Z", resends: 0, exhausted: false };
     const thread = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "01J9" } };
     const comment = { type: "comment", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", comment: { id: "c" } };
@@ -64,7 +67,7 @@ describe("subscribe", () => {
   it("forwards doc events, and reports a failed stream as stream_down", () => {
     vi.stubGlobal("EventSource", FakeES);
     const seen: unknown[] = [];
-    subscribe("7q3k9mzx2b4t", e => seen.push(e));
+    watchArtifact(e => seen.push(e));
     const d = { type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/a", version: null };
     FakeES.last.emit("doc", d);
     FakeES.last.listeners.get("error")?.(new MessageEvent("error"));

@@ -1054,3 +1054,56 @@ async fn the_token_with_a_cookie_naming_no_viewer_is_owner() {
     let (s, _) = send(put(shell.cookie.clone())).await;
     assert_eq!(s, 404);
 }
+
+#[tokio::test]
+async fn the_events_cookie_counts_as_the_token_on_the_event_stream_only() {
+    let ts = TestServer::spawn().await;
+    let aid = artifact(
+        &ts,
+        json!({"db": {"rules": [{"path": "staff", "read": "admin", "write": "admin"}]}}),
+    )
+    .await;
+    let owner = ts.viewer(Some("Owner")).await;
+    let shell = ts
+        .client
+        .get(format!("{}/api/token", ts.base))
+        .header("sec-fetch-site", "same-origin")
+        .send()
+        .await
+        .unwrap();
+    let set = shell.headers()["set-cookie"].to_str().unwrap();
+    let events_cookie = set.split(';').next().unwrap().to_string();
+    let q = format!("?artifact={aid}");
+    let cookies = format!("clax_viewer={}; {events_cookie}", owner.cookie);
+    let mut with = ts.events_with(&q, |r| r.header("cookie", cookies)).await;
+    let mut without = ts.events_as(&q, Some(&owner.cookie)).await;
+    let wrong = format!("clax_viewer={}; {}x", owner.cookie, events_cookie);
+    let mut forged = ts.events_with(&q, |r| r.header("cookie", wrong)).await;
+    for path in ["staff/s", "open/o"] {
+        send(
+            req(
+                &ts,
+                Method::PUT,
+                &format!("/api/artifacts/{aid}/docs/{path}"),
+                &Who::Token,
+            )
+            .json(&json!({"data": {}})),
+        )
+        .await;
+    }
+    // The cookie with the viewer is the owner shell (`admin`): it hears the
+    // admin-only document; the viewer alone, or a wrong cookie, does not.
+    assert_eq!(with.next_named("doc").await["path"], "staff/s");
+    assert_eq!(without.next_named("doc").await["path"], "open/o");
+    assert_eq!(forged.next_named("doc").await["path"], "open/o");
+    // Other routes ignore it: a write with only the cookie is refused.
+    let res = ts
+        .client
+        .put(format!("{}/api/artifacts/{aid}/docs/staff/t", ts.base))
+        .header("cookie", events_cookie)
+        .json(&json!({"data": {}}))
+        .send()
+        .await
+        .unwrap();
+    assert_ne!(res.status(), 200);
+}

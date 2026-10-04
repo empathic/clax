@@ -14,4 +14,7 @@ if (r.kind === "artifact") {
   allowSidebarPrefetch();
   mountArtifactView(document.getElementById("app")!, { id: r.id, pinnedVersion: r.version, file: r.file }, { boot: readBoot(), early: () => takeEarly() });
   afterPaint(loadMoreMenu);
+  // The view ended as the page was hidden (`ArtifactController`): a page the
+  // back/forward cache restores loads again, live.
+  addEventListener("pageshow", e => { if (e.persisted) location.reload(); });
 }

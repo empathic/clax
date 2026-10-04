@@ -46,12 +46,12 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 /** Every live artifact; with `only`, that artifact alone, or none when it is not live. */
-export async function listArtifacts(only?: string): Promise<Artifact[]> {
-  return (await json<{ artifacts: Artifact[] }>(await fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts"))).artifacts;
+export async function listArtifacts(only?: string, init?: RequestInit): Promise<Artifact[]> {
+  return (await json<{ artifacts: Artifact[] }>(await (init ? fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts", init) : fetch(only ? `/api/artifacts?artifact=${only}` : "/api/artifacts")))).artifacts;
 }
 /** With the viewer cookie, the answer also carries the viewer's `attention`. */
-export async function getArtifact(id: string): Promise<{ artifact: Artifact; versions: Version[]; attention?: Attention }> {
-  return json(await fetch(`/api/artifacts/${id}`));
+export async function getArtifact(id: string, init?: RequestInit): Promise<{ artifact: Artifact; versions: Version[]; attention?: Attention }> {
+  return json(await (init ? fetch(`/api/artifacts/${id}`, init) : fetch(`/api/artifacts/${id}`)));
 }
 
 /** This viewer's attention on every live artifact (with `only`, on that one

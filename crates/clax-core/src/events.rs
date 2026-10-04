@@ -1,6 +1,8 @@
 //! In-process broadcast of storage changes, fanned out to SSE clients by the server.
 
 use serde::Serialize;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 
 use crate::feedback::{FeedbackPhase, FeedbackState, Tier};
@@ -126,21 +128,128 @@ impl Event {
     }
 }
 
-/// Events a subscriber may fall behind by before it lags and older events are dropped.
+/// Events a subscriber may fall behind by before it lags and older events are
+/// dropped; also how many recent events the bus keeps for resuming streams.
 pub const EVENT_BUS_CAPACITY: usize = 256;
 
+/// An event with its place on the bus: `id` grows by one per event published
+/// on this bus, starting at 1.
+#[derive(Clone, Debug)]
+pub struct Stamped {
+    pub id: u64,
+    pub event: Event,
+}
+
+/// What a subscriber resuming after event `after` gets: the retained events
+/// published since then (`replay`, oldest first) and a receiver for the ones
+/// after those. `resumed` is false when `after` is not a point this bus can
+/// resume from (it is older than every retained event, or ahead of the bus),
+/// and `replay` is then empty.
+pub struct Resume {
+    /// The ID of the latest event published when the receiver subscribed.
+    pub last: u64,
+    pub replay: Vec<Stamped>,
+    pub rx: broadcast::Receiver<Stamped>,
+    pub resumed: bool,
+}
+
+struct Ring {
+    /// The ID of the latest event published; 0 before the first.
+    last: u64,
+    /// The latest `EVENT_BUS_CAPACITY` events, oldest first.
+    recent: VecDeque<Stamped>,
+}
+
+/// The daemon's event bus. Each bus has a random `epoch`, so a resume point
+/// taken from another bus (another daemon run) is never mistaken for one of
+/// its own.
 #[derive(Clone)]
-pub struct EventBus(broadcast::Sender<Event>);
+pub struct EventBus {
+    tx: broadcast::Sender<Stamped>,
+    ring: Arc<Mutex<Ring>>,
+    epoch: Arc<str>,
+}
 
 impl EventBus {
     pub fn new() -> Self {
-        EventBus(broadcast::channel(EVENT_BUS_CAPACITY).0)
+        EventBus {
+            tx: broadcast::channel(EVENT_BUS_CAPACITY).0,
+            ring: Arc::new(Mutex::new(Ring {
+                last: 0,
+                recent: VecDeque::with_capacity(EVENT_BUS_CAPACITY),
+            })),
+            epoch: format!("{:016x}", rand::random::<u64>()).into(),
+        }
     }
+
+    /// This bus's epoch: 16 lowercase hex digits.
+    pub fn epoch(&self) -> &str {
+        &self.epoch
+    }
+
+    fn ring(&self) -> std::sync::MutexGuard<'_, Ring> {
+        // The ring is only ever left consistent: a poisoned lock still holds it.
+        self.ring.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     pub fn publish(&self, event: Event) {
-        let _ = self.0.send(event);
+        let mut ring = self.ring();
+        ring.last += 1;
+        let stamped = Stamped {
+            id: ring.last,
+            event,
+        };
+        if ring.recent.len() == EVENT_BUS_CAPACITY {
+            ring.recent.pop_front();
+        }
+        ring.recent.push_back(stamped.clone());
+        // Sent under the lock, so a `resume` sees each event either in its
+        // replay or on its receiver, never both and never neither.
+        let _ = self.tx.send(stamped);
     }
-    pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.0.subscribe()
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Stamped> {
+        self.tx.subscribe()
+    }
+
+    /// The ID of the latest event published (0 before the first).
+    pub fn last_id(&self) -> u64 {
+        self.ring().last
+    }
+
+    /// Subscribes from just after event `after` (see [`Resume`]); `None`
+    /// subscribes from now, with `resumed` false.
+    pub fn resume(&self, after: Option<u64>) -> Resume {
+        let ring = self.ring();
+        let rx = self.tx.subscribe();
+        let Some(after) = after else {
+            return Resume {
+                last: ring.last,
+                replay: Vec::new(),
+                rx,
+                resumed: false,
+            };
+        };
+        let oldest = ring.recent.front().map_or(ring.last + 1, |s| s.id);
+        if after > ring.last || after + 1 < oldest {
+            return Resume {
+                last: ring.last,
+                replay: Vec::new(),
+                rx,
+                resumed: false,
+            };
+        }
+        Resume {
+            last: ring.last,
+            replay: ring
+                .recent
+                .iter()
+                .filter(|s| s.id > after)
+                .cloned()
+                .collect(),
+            rx,
+            resumed: true,
+        }
     }
 }
 
@@ -164,6 +273,8 @@ mod tests {
             by_page: false,
         });
         let ev = rx.recv().await.unwrap();
+        assert_eq!(ev.id, 1);
+        let ev = ev.event;
         assert_eq!(ev.artifact_id(), "7q3k9mzx2b4t");
         assert_eq!(
             serde_json::to_value(&ev).unwrap(),
@@ -244,5 +355,45 @@ mod tests {
         EventBus::new().publish(Event::ArtifactDeleted {
             artifact_id: "x".into(),
         });
+    }
+
+    fn deleted(n: u32) -> Event {
+        Event::ArtifactDeleted {
+            artifact_id: format!("a{n}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn resume_replays_what_was_missed_then_continues_live() {
+        let bus = EventBus::new();
+        for n in 1..=3 {
+            bus.publish(deleted(n));
+        }
+        assert_eq!(bus.last_id(), 3);
+        let mut r = bus.resume(Some(1));
+        assert!(r.resumed);
+        assert_eq!(r.replay.iter().map(|s| s.id).collect::<Vec<_>>(), [2, 3]);
+        bus.publish(deleted(4));
+        assert_eq!(r.rx.recv().await.unwrap().id, 4);
+        // Caught up: nothing to replay.
+        let up = bus.resume(Some(4));
+        assert!(up.resumed && up.replay.is_empty());
+        assert!(!bus.resume(None).resumed);
+    }
+
+    #[test]
+    fn resume_refuses_points_it_no_longer_holds_or_never_had() {
+        let bus = EventBus::new();
+        for n in 0..(EVENT_BUS_CAPACITY as u32 + 10) {
+            bus.publish(deleted(n));
+        }
+        // The oldest retained event is 11: resuming after 10 is complete, after 9 is not.
+        assert!(bus.resume(Some(10)).resumed);
+        assert_eq!(bus.resume(Some(10)).replay.len(), EVENT_BUS_CAPACITY);
+        let gap = bus.resume(Some(9));
+        assert!(!gap.resumed && gap.replay.is_empty());
+        assert!(!bus.resume(Some(bus.last_id() + 1)).resumed);
+        assert_eq!(bus.epoch().len(), 16);
+        assert_ne!(bus.epoch(), EventBus::new().epoch());
     }
 }

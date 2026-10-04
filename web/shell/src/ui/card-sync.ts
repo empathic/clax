@@ -5,6 +5,7 @@
 // ticket when it starts; its answer replaces a card's entry, or its
 // attention, only where no refresh started later has already done so.
 import { type Artifact, type AttentionSummary, getAttention, listArtifacts } from "../api";
+import { Lifecycle, onPageCache } from "../lifecycle";
 import type { WorkingFeed } from "./working-feed.svelte";
 
 /** How often a visible gallery refetches everything, as a safety net. */
@@ -33,19 +34,31 @@ export class CardSync {
   #lists = new Map<string, number>();
   #atts = new Map<string, number>();
   #fullAt = 0;
-  #timer: ReturnType<typeof setInterval> | undefined;
+  #life: Lifecycle | null = null;
+  /** The safety timer's own lifecycle: ended while the page is in the back/forward cache. */
+  #timer: Lifecycle | null = null;
   constructor(private cards: Cards, private feed: WorkingFeed, private every = SAFETY_MS) {}
 
   /** Follows the feed's stream; refreshes everything on `ready` and `resync`. */
   start(): void {
+    if (this.#life) return;
+    const life = (this.#life = new Lifecycle());
     this.feed.start(() => void this.full(), id => void this.one(id));
-    this.#timer = setInterval(() => { if (document.visibilityState !== "hidden") void this.full(); }, this.every);
-    document.addEventListener("visibilitychange", this.#shown);
+    life.defer(() => this.feed.stop());
+    this.#arm();
+    life.listen(document, "visibilitychange", this.#shown);
+    // The stream closes and resumes by itself; the timer stops with it.
+    onPageCache(life, () => { this.#timer?.dispose(); this.#timer = null; }, () => { this.#arm(); this.#shown(); });
   }
   stop(): void {
-    this.feed.stop();
-    clearInterval(this.#timer);
-    document.removeEventListener("visibilitychange", this.#shown);
+    this.#life?.dispose();
+    this.#life = null;
+    this.#timer = null;
+  }
+  #arm(): void {
+    if (!this.#life || this.#timer) return;
+    this.#timer = this.#life.child();
+    this.#timer.interval(() => { if (document.visibilityState !== "hidden") void this.full(); }, this.every);
   }
   #shown = () => { if (document.visibilityState === "visible" && Date.now() - this.#fullAt >= this.every) void this.full(); };
 

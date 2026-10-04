@@ -6,7 +6,9 @@
   // the last version this viewer saw; pin and delete once the token is known,
   // and a haiku in the footer after first paint.
   import { onDestroy, onMount } from "svelte";
-  import { type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
+  import { ApiError, type Artifact, type AttentionSummary, deleteArtifact, getAttention, getToken, listArtifacts, patchArtifact } from "../api";
+  import { REQUEST_STUCK, connTrouble } from "../conn-notice";
+  import { Lifecycle, retrying } from "../lifecycle";
   import { afterPaint } from "../view/after-paint";
   import { filterArtifacts, orderArtifacts } from "../view/gallery-model";
   import GalleryCard from "./GalleryCard.svelte";
@@ -34,7 +36,12 @@
   let cancelStart: (() => void) | null = null;
   let destroyed = false;
   // A list fetched before a `working` event does not undo it (`WorkingFeed.seed`).
-  const refresh = () => { const since = feed?.events; void getAttention().then(t => { if (t && !sync) att = t; }); return listArtifacts().then(a => {
+  // Owns the first load's retries; the stream and timers are `sync`'s.
+  const life = new Lifecycle();
+  const load = (first: boolean) => first
+    ? retrying(life, signal => listArtifacts(undefined, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("gallery", on, REQUEST_STUCK) })
+    : listArtifacts();
+  const refresh = (first = false) => { const since = feed?.events; void getAttention().then(t => { if (t && !sync) att = t; }); return load(first).then(a => {
     error = null; artifacts = a; feed?.seed(a, since);
     cancelStart ??= afterPaint(() => {
       void import("./gallery-working").then(m => {
@@ -46,14 +53,14 @@
         feed = f; gw = m;
       }, () => {});
     });
-  }, e => { error = describe(e); }); };
+  }, e => { if (!life.disposed) error = describe(e); }); };
   const act = (id: string, op: () => Promise<unknown>) => op().then(() => sync ? sync.one(id) : refresh(), e => { error = describe(e); });
   const shown = $derived(artifacts && orderArtifacts(filterArtifacts(artifacts, query)));
   // Grouped without a query once the grouping has loaded; until then, and
   // with a query, one list.
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
-  onMount(() => { void refresh(); void fetch("/api/viewers/me").then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); void getToken().then(t => { token = t; }); });
-  onDestroy(() => { destroyed = true; cancelStart?.(); sync?.stop(); });
+  onMount(() => { void refresh(true); void fetch("/api/viewers/me").then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); void getToken().then(t => { token = t; }); });
+  onDestroy(() => { destroyed = true; life.dispose(); cancelStart?.(); sync?.stop(); });
 </script>
 
 <header class="gbar">

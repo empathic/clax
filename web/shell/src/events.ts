@@ -19,28 +19,10 @@ export type ArtifactEvent =
   | { type: "working"; artifact_id: string; working: Working[] }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
-  /** The stream (re)connected; anything published while it was down was missed, so refetch state. */
+  /** The stream connected for this watcher, or reconnected without being
+   * able to resume: anything published meanwhile may be missed, so refetch state. */
   | { type: "ready" }
   /** The stream failed and is reconnecting (or gave up): nothing is announced until the next `ready`. */
   | { type: "stream_down" }
   /** The stream dropped events; refetch state. */
   | { type: "resync"; dropped: number };
-
-/** Subscribes to the artifact's events. `token` (the owner shell's, from
- * `/api/token`) goes in the query, since an EventSource cannot send headers;
- * the daemon then counts the stream as the owner shell's. */
-export function subscribe(artifactId: string, onEvent: (e: ArtifactEvent) => void, token: string | null = null): () => void {
-  const q = new URLSearchParams({ artifact: artifactId });
-  if (token) q.set("token", token);
-  const es = new EventSource(`/api/events?${q}`);
-  const handler = (e: MessageEvent) => { try { onEvent(JSON.parse(e.data)); } catch { /* ignore malformed */ } };
-  es.addEventListener("version", handler);
-  es.addEventListener("artifact_deleted", handler);
-  for (const name of ["thread", "comment", "thread_resolved", "thread_deleted", "feedback_state", "doc", "working", "presence"]) es.addEventListener(name, handler);
-  es.addEventListener("ready", () => onEvent({ type: "ready" }));
-  es.addEventListener("error", () => onEvent({ type: "stream_down" }));
-  es.addEventListener("resync", (e: MessageEvent) => {
-    try { onEvent({ type: "resync", dropped: Number(JSON.parse(e.data).dropped) || 0 }); } catch { onEvent({ type: "resync", dropped: 0 }); }
-  });
-  return () => es.close();
-}

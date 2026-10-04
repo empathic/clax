@@ -43,6 +43,53 @@ pub fn token_matches(presented: &str, token: &str) -> bool {
     constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
+/// The name of the cookie that stands for the token on `GET /api/events`:
+/// `clax_events_<port>`, the port from the request's `Host` (80 when it
+/// names none), so daemons on one host name but different ports keep apart.
+pub fn events_cookie_name(host: &str) -> String {
+    let port = match host.rsplit_once(':') {
+        Some((h, p))
+            if !p.is_empty()
+                && p.bytes().all(|b| b.is_ascii_digit())
+                && (!h.starts_with('[') || h.ends_with(']')) =>
+        {
+            p
+        }
+        _ => "80",
+    };
+    format!("clax_events_{port}")
+}
+
+/// The events cookie's value for `token`: a SHA-256 of it (lowercase hex),
+/// so the cookie grants the event stream's token level and never reveals the token.
+pub fn events_cookie_value(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::new()
+        .chain_update(b"clax events cookie\n")
+        .chain_update(token.as_bytes())
+        .finalize();
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// True when `headers` carry this port's events cookie with the value for
+/// `token` (compared in constant time). Only `GET /api/events` reads it.
+pub fn has_events_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let name = events_cookie_name(host);
+    let want = events_cookie_value(token);
+    headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|kv| kv.trim().split_once('='))
+        .filter(|(k, _)| *k == name)
+        .any(|(_, v)| constant_time_eq(v.as_bytes(), want.as_bytes()))
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() || a.is_empty() {
         return false;
@@ -163,6 +210,34 @@ pub fn is_local_host(host: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn the_events_cookie_is_named_for_the_port_and_never_holds_the_token() {
+        use super::{events_cookie_name, events_cookie_value, has_events_cookie};
+        assert_eq!(events_cookie_name("localhost:7480"), "clax_events_7480");
+        assert_eq!(events_cookie_name("127.0.0.1:61386"), "clax_events_61386");
+        assert_eq!(events_cookie_name("[::1]:9000"), "clax_events_9000");
+        assert_eq!(events_cookie_name("localhost"), "clax_events_80");
+        assert_eq!(events_cookie_name("[::1]"), "clax_events_80");
+        let v = events_cookie_value("tok");
+        assert_eq!(v.len(), 64);
+        assert!(!v.contains("tok"));
+        let mut h = axum::http::HeaderMap::new();
+        h.insert("host", "localhost:7480".parse().unwrap());
+        h.insert(
+            "cookie",
+            format!("clax_viewer=x; clax_events_7480={v}")
+                .parse()
+                .unwrap(),
+        );
+        assert!(has_events_cookie(&h, "tok"));
+        assert!(!has_events_cookie(&h, "other"));
+        // Another port's cookie, or the token itself, is no token.
+        h.insert("host", "localhost:7481".parse().unwrap());
+        assert!(!has_events_cookie(&h, "tok"));
+        h.insert("cookie", "clax_events_7481=tok".parse().unwrap());
+        assert!(!has_events_cookie(&h, "tok"));
+    }
     use super::*;
 
     #[test]

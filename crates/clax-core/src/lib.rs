@@ -21,7 +21,7 @@ pub mod wrap;
 
 pub use anchor::{Anchor, AnchorKind};
 pub use error::{CoreError, Result};
-pub use events::{EVENT_BUS_CAPACITY, Event, EventBus};
+pub use events::{EVENT_BUS_CAPACITY, Event, EventBus, Resume, Stamped};
 pub use feedback::{
     FeedbackBatch, FeedbackItem, FeedbackPhase, FeedbackState, Notice, Tier, Touched,
 };
