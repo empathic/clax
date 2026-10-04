@@ -325,6 +325,20 @@ async fn the_events_cookie_stands_for_the_token_on_the_stream_and_its_subscripti
         (s, v["error"]["code"].as_str()),
         (404, Some("unknown_stream"))
     );
+    // Cookies ignore ports: a page on another port of this host sends the
+    // cookie too. Its stream does not get the token's level.
+    let p2 = pair.clone();
+    let (_r3, ready) = open_with(&ts, move |b| {
+        b.header("cookie", p2).header("sec-fetch-site", "same-site")
+    })
+    .await;
+    let sid3 = ready["stream"].as_str().unwrap().to_string();
+    let (s, v) = update(&ts, &sid3, json!({"subscribe": ["gallery"]}), with(pair)).await;
+    assert_eq!(
+        (s, v["error"]["code"].as_str()),
+        (404, Some("unknown_stream")),
+        "the stream was opened without the token's level"
+    );
 }
 
 #[tokio::test]

@@ -1211,6 +1211,7 @@ export class ArtifactController {
         threads: () => this.s.threads,
         presence: () => this.s.presence,
         changeThreads: f => this.changeThreads(f),
+        beginThread: tid => this.threadLoad.beginThread(tid),
         event: e => this.onEvent(e),
         page: e => this.host?.onEvent(e),
         disposed: () => this.disposed,

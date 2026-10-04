@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAM_DOWN, connNoticeText } from "./conn-notice";
-import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, leaderLink } from "./stream";
+import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, TOKEN_WAIT_MS, leaderLink } from "./stream";
 import type { HubMsg, TabMsg } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
@@ -70,19 +70,22 @@ describe("EventStream", () => {
     expect(links).toHaveLength(1);
   });
 
-  it("releases its topics after the page has been hidden a while, and takes them again (with ready) when it shows", async () => {
+  it("leaves the hub after the page has been hidden a while, and joins again (with ready) when it shows", async () => {
     const seen: StreamEvent[] = [];
     s.watch(["gallery"], e => seen.push(e));
     await flush();
     setVisibility("hidden");
     await vi.advanceTimersByTimeAsync(HIDDEN_MS - 100);
-    expect(links[0].topics).toEqual(["gallery"]);
+    expect(links[0].closed).toBe(false);
+    // Leaving, not only dropping its topics: a leader tab hands the
+    // connection to a tab that is shown, as a hidden tab may be frozen.
     await vi.advanceTimersByTimeAsync(200);
-    expect(links[0].topics).toEqual([]);
+    expect(links[0].closed).toBe(true);
     setVisibility("visible");
     await flush();
-    expect(links[0].topics).toEqual(["gallery"]);
-    links[0].on({ t: "live", topics: ["gallery"] });
+    expect(links).toHaveLength(2);
+    expect(links[1].topics).toEqual(["gallery"]);
+    links[1].on({ t: "live", topics: ["gallery"] });
     expect(seen).toEqual([{ type: "ready" }]);
   });
 
@@ -144,6 +147,54 @@ describe("EventStream", () => {
     await flush();
     expect(links).toHaveLength(2);
     expect(links[1].topics).toEqual(["gallery"]);
+  });
+  it("asks for a new stream once it has a link, when the viewer changed before it had one", async () => {
+    s.watch(["gallery"], () => {});
+    // The viewer changes while the link is still being made: the hub it
+    // joins may hold a stream opened for the old viewer.
+    s.reconnect();
+    await flush();
+    expect(links[0].msgs.filter(m => m.t === "reconnect")).toHaveLength(1);
+    s.reconnect();
+    expect(links[0].msgs.filter(m => m.t === "reconnect")).toHaveLength(2);
+  });
+
+  it("answers the hub's pings, so a hub without Web Locks keeps it", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    links[0].on({ t: "ping" });
+    expect(links[0].msgs.filter(m => m.t === "ping")).toHaveLength(1);
+  });
+
+  it("backs off while hubs keep failing before saying anything", async () => {
+    const failing: LinkMaker = async (on, lost) => {
+      const l = new FakeLink(on, lost);
+      links.push(l);
+      setTimeout(() => l.lost(), 0);
+      return l;
+    };
+    const f = new EventStream(window, failing);
+    f.watch(["gallery"], () => {});
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(links.length).toBeGreaterThan(1);
+    expect(links.length).toBeLessThanOrEqual(5);
+    f.close();
+  });
+
+  it("stops asking for the shared worker once it failed before answering", async () => {
+    let made = 0;
+    class BrokenWorker {
+      port = { onmessage: null, postMessage() {}, start() {}, close() {}, addEventListener() {} };
+      private onError: (() => void) | null = null;
+      constructor() { made++; setTimeout(() => this.onError?.(), 0); }
+      addEventListener(type: string, cb: () => void) { if (type === "error") this.onError = cb; }
+    }
+    vi.stubGlobal("SharedWorker", BrokenWorker);
+    const w = new EventStream(window);
+    w.watch(["gallery"], () => {});
+    await vi.advanceTimersByTimeAsync(TOKEN_WAIT_MS + 5000);
+    expect(made).toBe(1);
+    w.close();
   });
 });
 

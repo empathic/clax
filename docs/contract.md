@@ -2466,6 +2466,10 @@ always come.
   `Path=/api/stream` (which covers `POST /api/stream/<stream>`), where
   `<port>` is the port in the request's `Host` (80 when it names none).
   The cookie never holds the token, and only the event streams read it.
+  Cookies ignore ports, so a page on another port of the same host sends
+  it too: `/api/stream` counts it only on a request the browser does not
+  mark as made from another origin (`Sec-Fetch-Site` absent, `same-origin`
+  or `none`).
 
 `GET /api/events` stays for agents and other clients; the shell does not
 open it. The shell's pages share one `GET /api/stream` connection per
@@ -2486,8 +2490,9 @@ connection opens or closes on a view change, and the connection closes 3 s
 after no tab watches any topic. A view fetches its state when its topics go
 live (on subscribing, when its page shows again, or after a reconnect that
 could not resume) and on `resync`, and applies each event's delta to what
-it holds in between. A page hidden for 30 s lets its topics go and takes
-them again, with a fetch, when it shows. As a page is left (a navigation, a
+it holds in between. A page hidden for 30 s leaves the shared connection
+(a leader tab hands it to the next tab in line, since a hidden tab may be
+frozen) and joins again, with a fetch, when it shows. As a page is left (a navigation, a
 reload, a close, or the back/forward cache) it leaves the shared
 connection; the gallery rejoins when the back/forward cache restores it,
 and a restored artifact view loads again. The artifact view ends with
@@ -2622,8 +2627,10 @@ abandoned and retried the same way, with a notice.
   takes the token in `Authorization` or as the events cookie, never in its
   URL; the owner's browser uses the cookie. Its subscriptions (`POST
   /api/stream/<stream>`) are checked once, when made, and only the caller
-  that opened a stream may change it or resume it; a stream's ID is sent
-  only on that stream. Its `gallery` topic carries no comment text or
+  that opened a stream may change it or resume it (callers compare by
+  level and viewer, so two callers with no viewer at one level are the
+  same caller; the stream's ID, 128 random bits, keeps their streams
+  apart); a stream's ID is sent only on that stream. Its `gallery` topic carries no comment text or
   author and no working message.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
@@ -2663,8 +2670,8 @@ abandoned and retried the same way, with a notice.
   build, which reads them from disk, sends them `no-cache`.
 - A `200` JSON answer to an API `GET` carries an `ETag` (a hash of the bytes
   sent, so answers that differ by caller never share one) and `Cache-Control:
-  no-cache` unless the route sets its own (`private, no-cache` with a viewer
-  cookie); a request whose `If-None-Match` names it gets `304 Not Modified`
+  private, no-cache` (an answer may differ by caller, so no shared cache
+  keeps it) unless the route sets its own; a request whose `If-None-Match` names it gets `304 Not Modified`
   with no body.
 - API responses and the shell's pages, bundles and bridge are compressed
   with `br` or `gzip`, as `Accept-Encoding` prefers, when the body is JSON,

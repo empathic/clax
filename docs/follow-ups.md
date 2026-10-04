@@ -209,7 +209,7 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   `artifact:<aid>` topic carries a thread's newest comment and its count;
   a view that missed a comment, or holds one deleted or edited before the
   newest, fetches that thread whole.
-- **A hidden tab's catch-up is a refetch.** A tab that let its topics go
+- **A hidden tab's catch-up is a refetch.** A tab that left the connection
   after 30 s hidden fetches its state again when it shows; the shared
   connection has no per-tab resume point. Per-topic rings in the worker
   would let a briefly hidden tab replay instead.
@@ -218,7 +218,8 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   `close` on the worker's port); a worker that lives but hangs is not
   restarted, since a new SharedWorker of the same name reaches the same
   instance. Leader tabs are not pinged at all: a hidden leader's timers are
-  throttled, and its followers would replace it needlessly.
+  throttled, and its followers would replace it needlessly. A leader hidden
+  for 30 s leaves, so a frozen tab does not hold the connection for long.
 - **The 30-tab check runs in the web e2e gate, not in `perf-clients.sh`.**
   `web/e2e/streams.spec.ts` opens 30 tabs and checks the daemon's own count
   of open streams (`/api/_test/stream/open`, debug builds), a new tab's

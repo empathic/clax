@@ -48,7 +48,7 @@ pub struct SameOrigin;
 
 /// Whether the browser says another origin made the request (`Sec-Fetch-Site`
 /// other than `same-origin` or `none`; scripts send no such header).
-fn fetched_from_elsewhere(headers: &HeaderMap) -> bool {
+pub(crate) fn fetched_from_elsewhere(headers: &HeaderMap) -> bool {
     headers
         .get("sec-fetch-site")
         .is_some_and(|v| !matches!(v.to_str(), Ok("same-origin" | "none")))

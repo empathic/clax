@@ -400,7 +400,8 @@ Browser caching (every route above):
   BroadcastChannel; without those, one stream per tab). Views subscribe and
   unsubscribe as they mount and unmount; they refetch only when their
   topics go live or get `resync`, and apply deltas otherwise. A tab hidden
-  for 30 s lets its topics go and takes them again when it shows; the
+  for 30 s leaves the connection (a leader hands it on) and joins again
+  when it shows; the
   connection closes when no tab watches anything. The connection
   authenticates with the events cookie (`Path=/api/stream`, as for
   `/api/events`), never a token in a URL. The number of connections does

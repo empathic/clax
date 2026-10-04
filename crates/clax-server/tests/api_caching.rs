@@ -62,7 +62,8 @@ async fn api_gets_carry_an_etag_and_answer_304_when_current() {
     let path = format!("{}/api/artifacts/{aid}/threads", ts.base);
     let res = ts.client.get(&path).send().await.unwrap();
     assert_eq!(res.status(), 200);
-    assert_eq!(res.headers()["cache-control"], "no-cache");
+    // An answer may differ by caller: no shared cache keeps it.
+    assert_eq!(res.headers()["cache-control"], "private, no-cache");
     let tag = res.headers()["etag"].to_str().unwrap().to_string();
     let res = ts
         .client

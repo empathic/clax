@@ -76,10 +76,18 @@ test("republish re-anchors kept elements and detaches removed ones", async ({ pa
   await mk("body > main > h2", "Keep me", "heading note");
   await mk("body > main > p", "Gone soon", "paragraph note");
   await publish(d.base, d.token, "Detach", { "index.html": "<main><h2>Keep me</h2></main>" }, 1, artifact.id);
+  // The frame's bridge loads late, as on a loaded machine: the threads show
+  // before the frame greets and answers which anchors it found.
+  await page.route(/\/_clax\/bridge\/[^/]+\.js/, async route => {
+    await new Promise(r => setTimeout(r, 1000));
+    await route.continue();
+  });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await contentFrame(page, artifact.id, 2);
-  await expect(page.locator(".section-open .thread-card")).toContainText("heading note");
+  // Until that answer every thread on the page counts as open: wait for it.
   await expect(page.locator(".section-detached .thread-card")).toContainText("paragraph note");
+  await expect(page.locator(".section-open .thread-card")).toHaveCount(1);
+  await expect(page.locator(".section-open .thread-card")).toContainText("heading note");
   await expect(page.locator("button.thread-pin")).toHaveCount(1);
 });
 

@@ -5,7 +5,7 @@
 // holds, and the view handles the full events they amount to.
 import type { ArtifactEvent } from "../events";
 import { type StreamEvent, pageStream } from "../stream";
-import { type Thread, upsert } from "../threads";
+import type { Thread } from "../threads";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
 import type { PresenceView } from "./presence-model";
 
@@ -14,6 +14,9 @@ export type ArtifactStreamView = {
   threads(): Thread[];
   presence(): PresenceView[];
   changeThreads(f: (ts: Thread[]) => Thread[]): void;
+  /** Starts a load of one thread; the result takes its answer (undefined
+   * when it failed), which applies in order with the changes made meanwhile. */
+  beginThread(tid: string): (answer: Thread | undefined) => void;
   /** A full event for the view (and its page). */
   event(e: ArtifactEvent): void;
   /** An event for the page's capabilities alone (the `docs` topic). */
@@ -61,10 +64,18 @@ export class ArtifactStream {
       const d = (e as unknown as { thread: ThreadDelta }).thread;
       const r = applyThread(v.threads(), d);
       v.changeThreads(ts => applyThread(ts, d).threads);
-      // A comment this view never saw (an edit or a delete before the
-      // newest): the thread is fetched whole.
-      if (!r.complete) void getThread(this.id, d.id).then(t => { if (!v.disposed()) v.changeThreads(ts => upsert(ts, t)); }, () => {});
       v.page({ type: "thread", artifact_id: this.id, thread: r.thread });
+      // A comment this view never saw (an edit or a delete before the
+      // newest): the thread is fetched whole, and the page hears it again.
+      if (!r.complete) {
+        const done = v.beginThread(d.id);
+        getThread(this.id, d.id).then(t => {
+          if (v.disposed()) return;
+          done(t);
+          const now = v.threads().find(x => x.id === d.id);
+          if (now) v.page({ type: "thread", artifact_id: this.id, thread: now });
+        }, () => done(undefined));
+      }
       return;
     }
     if (e.type === "presence") {

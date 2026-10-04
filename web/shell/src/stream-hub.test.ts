@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONNECT_MS, Hub, type HubMsg, LINGER_MS } from "./stream-hub";
+import { CONNECT_MS, Hub, type HubMsg, LINGER_MS, PING_MS } from "./stream-hub";
 import { Net } from "./test/fake-net";
 
 const A = "7q3k9mzx2b4t";
@@ -101,6 +101,22 @@ describe("the stream hub", () => {
     expect(of("t1", "live")).toHaveLength(1);
   });
 
+  it("tells a tab that joined during an outage that its topics are live once the stream resumes with them", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.conns[0].end();
+    await vi.advanceTimersByTimeAsync(1000);
+    hub.receive("t2", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    expect(of("t2", "live")).toEqual([]);
+    net.ready(net.open.at(-1)!, S1, true, [`artifact:${A}`]);
+    await tick();
+    expect(of("t2", "live")).toEqual([{ t: "live", topics: [`artifact:${A}`] }]);
+    expect(of("t1", "live")).toHaveLength(1);
+  });
+
   it("refetches everywhere when the daemon could not resume", async () => {
     hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
     await tick();
@@ -161,5 +177,42 @@ describe("the stream hub", () => {
     free();
     expect(h.stats()).toMatchObject({ clients: 0, topics: [] });
     h.close();
+  });
+  it("tells a tab joining a topic whose removal is in flight that it is live only once the stream carries it again", async () => {
+    hub.receive("t1", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    net.auto = false;
+    hub.receive("t1", { t: "topics", topics: [] });
+    await tick();
+    const removal = net.posts.at(-1)!;
+    expect(removal.body).toEqual({ subscribe: [], unsubscribe: [`artifact:${A}`] });
+    // Another tab wants the topic while the removal is in flight.
+    hub.receive("t2", { t: "topics", topics: [`artifact:${A}`] });
+    await tick();
+    removal.answer(200, { seq: 5, topics: [] });
+    await tick();
+    // Events between the removal and the next subscription never reach the
+    // stream: a `live` before then would have the tab refetch too early.
+    expect(of("t2", "live")).toEqual([]);
+    const again = net.posts.at(-1)!;
+    expect(again.body).toEqual({ subscribe: [`artifact:${A}`], unsubscribe: [] });
+    again.answer(200, { seq: 7, topics: [`artifact:${A}`] });
+    await tick();
+    expect(of("t2", "live")).toEqual([{ t: "live", topics: [`artifact:${A}`] }]);
+  });
+
+  it("keeps pinging a tab whose topics were all refused, so it does not count the hub dead", async () => {
+    net.refuse.set(`docs:${A}`, [403, "not_declared"]);
+    hub.receive("t1", { t: "topics", topics: [`docs:${A}`] });
+    await tick();
+    net.ready(net.conns[0], S1);
+    await tick();
+    expect(of("t1", "refused")).toHaveLength(1);
+    // The tab says its topics again (a view mounted): still all refused.
+    hub.receive("t1", { t: "topics", topics: [`docs:${A}`] });
+    await vi.advanceTimersByTimeAsync(PING_MS);
+    expect(of("t1", "ping")).toHaveLength(1);
   });
 });

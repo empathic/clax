@@ -10,13 +10,17 @@
 // A watcher hears `ready` when its topics go live (refetch, then apply the
 // deltas that follow), `resync` when a topic's events were dropped (refetch
 // it), `stream_down` and `stream_up` around an outage, during which the
-// page shows a quiet notice. A page hidden for `HIDDEN_MS` releases its
-// topics and takes them again (with a `ready`) when it shows; as it is
-// hidden for good or enters the back/forward cache it leaves the hub. The
+// page shows a quiet notice. A page hidden for `HIDDEN_MS` leaves the hub
+// (a leader tab hands the connection to another, as a hidden tab may be
+// frozen) and joins again (with a `ready`) when it shows; so does a page
+// hidden for good or in the back/forward cache. A hub that is lost again
+// before saying anything is joined again after a backoff, and a shared
+// worker that fails before saying anything is not asked for again. The
 // token never goes in a URL: the hub's requests carry the events cookie
 // that `GET /api/token` sets for the shell.
 import { getToken } from "./api";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
+import { backoff } from "./lifecycle";
 import type { HubMsg, TabMsg } from "./stream-hub";
 
 /** One message on the stream, as a watcher hears it: `ready`, `resync`
@@ -56,15 +60,23 @@ export async function holdLock(name: string): Promise<(() => void) | null> {
 
 const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
 
+/** The shared worker failed before it said anything (its script would not
+ * load, say): this page uses the fallbacks from then on. */
+let workerBroken = false;
+
 /** A link to the shared worker's hub. */
 export const workerLink: LinkMaker = async (on, lost) => {
   const w = new SharedWorker(new URL("./stream-worker.ts", import.meta.url), { name: "clax-stream" });
   const port = w.port;
   let closed = false;
-  port.onmessage = e => { if (!closed) on(e.data as HubMsg); };
+  let heard = false;
+  port.onmessage = e => { heard = true; if (!closed) on(e.data as HubMsg); };
   // Where the browser says so, the worker's end closing (it crashed).
   port.addEventListener("close", () => { if (!closed) lost(); });
-  w.addEventListener("error", () => { if (!closed) lost(); });
+  w.addEventListener("error", () => {
+    if (!heard) workerBroken = true;
+    if (!closed) lost();
+  });
   port.start();
   const lock = `clax-tab:${newId()}`;
   const release = await holdLock(lock);
@@ -153,7 +165,7 @@ export const localLink: LinkMaker = async on => {
 
 /** The best link this browser supports. */
 export const bestLink: LinkMaker = async (on, lost) => {
-  if (typeof SharedWorker === "function") {
+  if (typeof SharedWorker === "function" && !workerBroken) {
     try { return await workerLink(on, lost); } catch { /* blocked: fall back */ }
   }
   if (typeof BroadcastChannel === "function" && typeof navigator !== "undefined" && navigator.locks) return leaderLink(on, lost);
@@ -178,6 +190,11 @@ export class EventStream {
   private hiddenTimer: Timer | undefined;
   private noticeTimer: Timer | undefined;
   private watchdog: ReturnType<typeof setInterval> | undefined;
+  /** Hubs lost in a row without a word from any; the next join waits on it. */
+  private losses = 0;
+  private rejoin: Timer | undefined;
+  /** The viewer changed while this page had no link. */
+  private wantReconnect = false;
   private hooked = false;
 
   constructor(private readonly win: Window = window, private readonly makeLink: LinkMaker = bestLink) {}
@@ -200,8 +217,13 @@ export class EventStream {
   }
 
   /** Opens a new stream for every tab: the viewer changed, and the daemon
-   * fixes a stream's caller when it opens. Every watcher hears `ready`. */
-  reconnect(): void { this.link?.send({ t: "reconnect" }); }
+   * fixes a stream's caller when it opens. Every watcher hears `ready`.
+   * Without a link yet, the next link asks for it: the hub it joins may hold
+   * a stream opened for the old viewer. */
+  reconnect(): void {
+    if (this.link) this.link.send({ t: "reconnect" });
+    else this.wantReconnect = true;
+  }
 
   /** Leaves the hub and forgets every watcher. */
   close(): void {
@@ -243,7 +265,7 @@ export class EventStream {
     if (this.win.document.visibilityState === "hidden") {
       // Browser tests set `claxHiddenMs` to wait less.
       const ms = (this.win as unknown as { claxHiddenMs?: number }).claxHiddenMs ?? HIDDEN_MS;
-      this.hiddenTimer = setTimeout(() => { this.hiddenTimer = undefined; this.released = true; this.schedule(); }, ms);
+      this.hiddenTimer = setTimeout(() => { this.hiddenTimer = undefined; this.released = true; this.leave(); }, ms);
     } else if (this.released) {
       this.released = false;
       this.schedule();
@@ -269,7 +291,7 @@ export class EventStream {
     const topics = this.union();
     const key = topics.join("\n");
     if (!this.link) {
-      if (topics.length) this.connect();
+      if (topics.length && this.rejoin === undefined) this.connect();
       return;
     }
     if (key === this.sent) return;
@@ -297,12 +319,15 @@ export class EventStream {
       this.linking = null;
       this.link = link;
       this.sent = "";
+      if (this.wantReconnect) { this.wantReconnect = false; link.send({ t: "reconnect" }); }
       this.sync();
     })();
   }
 
   /** Leaves the hub: its topics go, and the notice with them. */
   private leave(): void {
+    clearTimeout(this.rejoin);
+    this.rejoin = undefined;
     this.linking = null;
     this.link?.close();
     this.link = null;
@@ -325,7 +350,11 @@ export class EventStream {
     clearInterval(this.watchdog);
     this.watchdog = undefined;
     this.markDown();
-    this.sync();
+    // At once the first time; after a backoff while hubs keep failing.
+    const wait = this.losses === 0 ? 0 : backoff(this.losses - 1);
+    this.losses++;
+    clearTimeout(this.rejoin);
+    this.rejoin = setTimeout(() => { this.rejoin = undefined; this.sync(); }, wait);
   }
 
   private check(): void {
@@ -358,6 +387,7 @@ export class EventStream {
 
   private onMessage(m: HubMsg): void {
     this.heard = Date.now();
+    this.losses = 0;
     switch (m.t) {
       case "event": {
         // Counts browser tests read: events this page has been handed, and `live` messages.
@@ -378,7 +408,8 @@ export class EventStream {
       case "resync": this.tell(w => w.topics.has(m.topic), { type: "resync", topic: m.topic }); break;
       case "refused": this.tell(w => w.topics.has(m.topic), { type: "refused", topic: m.topic, code: m.code }); break;
       case "status": if (m.up) this.markUp(); else this.markDown(); break;
-      case "ping": break;
+      // Answered, so a hub that cannot watch this tab's Web Lock keeps it.
+      case "ping": this.link?.send({ t: "ping" }); break;
     }
   }
 }

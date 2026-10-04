@@ -72,6 +72,9 @@ export class Hub {
   private clients = new Map<string, Client>();
   /** Topics the open stream carries, as the daemon last said. */
   private server = new Set<string>();
+  /** Topics a subscription request in flight removes: not live for a tab
+   * that asks for one meanwhile, since the stream is about to drop it. */
+  private removing = new Set<string>();
   /** Topics the daemon refused, with its code; retried once no tab wants them. */
   private refused = new Map<string, string>();
   private streamId: string | null = null;
@@ -122,7 +125,7 @@ export class Hub {
         for (const t of c.live) if (!next.has(t)) c.live.delete(t);
         c.topics = next;
         // Topics the stream carries already are live for this tab at once.
-        if (this.up) this.tellLive([id], [...next].filter(t => this.server.has(t) && !c.live.has(t)));
+        if (this.up) this.tellLive([id], [...next].filter(t => this.server.has(t) && !this.removing.has(t) && !c.live.has(t)));
         for (const t of next) {
           const code = this.refused.get(t);
           if (code) this.env.send([id], { t: "refused", topic: t, code });
@@ -171,8 +174,9 @@ export class Hub {
 
   private changed(): void {
     const want = this.wanted();
-    // Tabs are pinged (and tabs without a lock expire) only while some tab holds topics.
-    if (want.size) this.pinger ??= setInterval(() => this.ping(), PING_MS);
+    // Tabs are pinged (and tabs without a lock expire) only while some tab
+    // holds topics, refused ones included: such a tab still watches the hub.
+    if ([...this.clients.values()].some(c => c.topics.size)) this.pinger ??= setInterval(() => this.ping(), PING_MS);
     else { clearInterval(this.pinger); this.pinger = undefined; }
     if (!want.size) {
       if (this.conn && this.linger === undefined) this.linger = setTimeout(() => { this.linger = undefined; if (!this.wanted().size) this.closeIdle(); }, LINGER_MS);
@@ -276,6 +280,8 @@ export class Hub {
         this.toldDown = false;
         if (this.clients.size) this.env.send([...this.clients.keys()], { t: "status", up: true });
       }
+      // Topics the stream resumed with are live again for the tabs that still want them.
+      if (resumed) for (const [cid, c] of this.clients) this.tellLive([cid], [...c.topics].filter(t => this.server.has(t) && !c.live.has(t)));
       void this.flush();
       return;
     }
@@ -364,6 +370,7 @@ export class Hub {
     const stuck = setTimeout(() => req.abort(), STUCK_MS);
     const abort = () => req.abort();
     ac.signal.addEventListener("abort", abort);
+    for (const t of remove) this.removing.add(t);
     let res: Response;
     try {
       res = await this.fetch(this.url(`/api/stream/${id}`), {
@@ -377,12 +384,16 @@ export class Hub {
     } finally {
       clearTimeout(stuck);
       ac.signal.removeEventListener("abort", abort);
+      for (const t of remove) this.removing.delete(t);
     }
     if (this.conn !== ac || this.streamId !== id) return false;
     let body: { topics?: unknown; error?: { code?: unknown } } = {};
     try { body = await res.json(); } catch { /* no body */ }
     if (res.ok) {
       this.server = new Set(Array.isArray(body.topics) ? body.topics.map(String) : []);
+      // A topic the stream no longer carries is no longer live for any tab:
+      // its next subscription tells them again, and they refetch then.
+      for (const c of this.clients.values()) for (const t of [...c.live]) if (!this.server.has(t)) c.live.delete(t);
       const live = add.filter(t => this.server.has(t));
       this.tellLive([...this.clients.keys()], live);
       return true;

@@ -12,6 +12,9 @@ use std::hash::Hasher;
 pub const IMMUTABLE: &str = "public, max-age=31536000, immutable";
 /// Store, but ask the daemon before every use.
 pub const REVALIDATE: &str = "no-cache";
+/// [`REVALIDATE`] in the browser's own cache only: for an answer that may
+/// differ by caller (the token, a viewer cookie).
+pub const PRIVATE_REVALIDATE: &str = "private, no-cache";
 
 /// A strong entity tag for `bytes`: a quoted 64-bit hash, stable for a build
 /// of the daemon (a different build may tag the same bytes differently, which
@@ -79,7 +82,8 @@ pub fn html(req: &HeaderMap, page: &str) -> Response {
 
 /// Middleware for the JSON `GET` routes: a `200` JSON response gets an
 /// `ETag` of its bytes and, unless the route set its own, `Cache-Control:
-/// no-cache`; a request whose `If-None-Match` names that tag gets `304` with
+/// private, no-cache` (an answer may differ by caller, so no shared cache
+/// keeps it); a request whose `If-None-Match` names that tag gets `304` with
 /// no body. The tag hashes the bytes sent, so a response that differs by
 /// caller (the token, a viewer cookie) never matches another caller's copy.
 pub async fn api_etag(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
@@ -109,7 +113,7 @@ pub async fn api_etag(req: axum::extract::Request, next: axum::middleware::Next)
     parts
         .headers
         .entry(header::CACHE_CONTROL)
-        .or_insert(HeaderValue::from_static(REVALIDATE));
+        .or_insert(HeaderValue::from_static(PRIVATE_REVALIDATE));
     if matches(&inm, &tag) {
         parts.status = StatusCode::NOT_MODIFIED;
         parts.headers.remove(header::CONTENT_LENGTH);

@@ -64,8 +64,13 @@ pub async fn open(State(s): State<AppState>, headers: HeaderMap) -> Result<Respo
 /// Whether the request holds the token: in `Authorization`, or as the events
 /// cookie the shell's token request sets (scoped to `/api/events` and
 /// `/api/stream`), so the browser's stream never carries the token in a URL.
+/// Cookies ignore ports, so a page on another port of this host sends the
+/// cookie too: it counts only on a request the browser does not mark as
+/// made from another origin (`Sec-Fetch-Site`).
 fn token_or_cookie(headers: &HeaderMap, token: &str) -> bool {
-    has_token(headers, token) || crate::auth::has_events_cookie(headers, token)
+    has_token(headers, token)
+        || (!crate::viewer::fetched_from_elsewhere(headers)
+            && crate::auth::has_events_cookie(headers, token))
 }
 
 /// Debug builds only: how many `/api/stream` streams the hub holds
