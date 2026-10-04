@@ -215,10 +215,6 @@ on rerun; each is parked for a fix:
 - `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
   `sendToClaude` case: a 120 s timeout under load. Suspected fix (frame
   load before click) in e5dfa42; confirm under a loaded full gates run.
-- `clax-cli` `cli.rs::a_daemon_started_without_port_uses_the_homes_serve_port`:
-  it reserves a port by binding port 0 and releasing it, so another process
-  can take the port before the daemon binds it, and the daemon then uses
-  another one.
 - `web/shell/src/artifact.test.ts`, "says so when the page of an opened thread
   never greets": races a 50 ms wait against 120 ms sleeps.
 - `web/e2e/subpages.spec.ts`, "sandbox: one link inside the frame is one

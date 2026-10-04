@@ -1386,28 +1386,36 @@ fn publish_says_when_no_agent_session_will_get_the_comments() {
 
 #[test]
 fn a_daemon_started_without_port_uses_the_homes_serve_port() {
-    let e = Env::new();
-    // A port the kernel picks, recorded in the home's config.toml.
-    let port = std::net::TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    std::fs::create_dir_all(e.dir.path().join("ax")).unwrap();
-    std::fs::write(
-        e.dir.path().join("ax/config.toml"),
-        format!("[serve]\nport = {port}\n"),
-    )
-    .unwrap();
-    let out = e.cmd().args(["serve", "--json"]).output().unwrap();
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["port"].as_u64().unwrap(), u64::from(port));
-    e.stop();
+    // The test frees a kernel-picked port before the daemon binds it, so
+    // another process can take it in between; the daemon then moves to a
+    // nearby port. Try again with a fresh port until one stays free.
+    for _ in 0..5 {
+        let e = Env::new();
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        std::fs::create_dir_all(e.dir.path().join("ax")).unwrap();
+        std::fs::write(
+            e.dir.path().join("ax/config.toml"),
+            format!("[serve]\nport = {port}\n"),
+        )
+        .unwrap();
+        let out = e.cmd().args(["serve", "--json"]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        let got = v["port"].as_u64().unwrap();
+        e.stop();
+        if got == u64::from(port) {
+            return;
+        }
+    }
+    panic!("five kernel-picked ports were all taken before the daemon bound them");
 }
 
 #[test]
