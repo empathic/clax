@@ -167,8 +167,7 @@ pub async fn run(
     upgrade_hold: Option<UpgradeHoldProbe>,
     channel: Option<crate::channel::ChannelState>,
 ) -> anyhow::Result<()> {
-    // SAFETY: getppid has no preconditions and cannot fail.
-    let parent_pid = unsafe { libc::getppid() } as u32;
+    let parent_pid = std::os::unix::process::parent_id();
     let parent_cwd = match harness {
         Harness::Codex => tokio::task::spawn_blocking(move || process_cwd(parent_pid))
             .await

@@ -931,8 +931,7 @@ mod tests {
         store.delete_artifact(&gone).unwrap();
         assert!(store.get_artifact(&gone).unwrap().is_none());
 
-        // SAFETY: geteuid has no preconditions.
-        if unsafe { libc::geteuid() } == 0 {
+        if nix::unistd::geteuid().is_root() {
             eprintln!("skipping unremovable-directory case: root ignores directory modes");
             return;
         }

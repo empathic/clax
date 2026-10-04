@@ -7,7 +7,6 @@ use std::fs::File;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::io::AsRawFd;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{oneshot, watch};
@@ -78,9 +77,10 @@ pub fn pid_alive(pid: u32) -> bool {
     if pid == 0 || pid > i32::MAX as u32 {
         return false;
     }
-    // SAFETY: kill with signal 0 only probes for existence.
-    let rc = unsafe { libc::kill(pid as libc::pid_t, 0) };
-    rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    match nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None) {
+        Ok(()) | Err(nix::errno::Errno::EPERM) => true,
+        Err(_) => false,
+    }
 }
 
 /// The host part of a URL that reaches a daemon bound to `bind`: an unspecified
@@ -118,36 +118,36 @@ pub fn generate_token() -> String {
 pub struct DaemonLock(#[allow(dead_code)] File);
 
 impl DaemonLock {
-    /// Blocks until the lock is held. A wait interrupted by a signal (`EINTR`) is
-    /// retried; any other `flock` failure is returned.
+    /// Blocks until the lock is held (`flock(LOCK_EX)`, through
+    /// [`File::lock`]). A wait interrupted by a signal (`EINTR`) is retried;
+    /// any other failure is returned.
     pub fn acquire(home: &Home) -> io::Result<DaemonLock> {
         let f = File::create(home.daemon_lock())?;
-        loop {
-            // SAFETY: flock on an owned, open descriptor.
-            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(DaemonLock(f));
-            }
-            let e = io::Error::last_os_error();
-            if e.kind() != io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        retry_interrupted(|| f.lock())?;
+        Ok(DaemonLock(f))
     }
 
-    /// Takes the lock without waiting: `Ok(None)` when another open descriptor
-    /// holds it (`EWOULDBLOCK`, which equals `EAGAIN` on Linux and macOS).
+    /// Takes the lock without waiting (`flock(LOCK_EX | LOCK_NB)`, through
+    /// [`File::try_lock`]): `Ok(None)` when another open descriptor holds it
+    /// (`EWOULDBLOCK`, which equals `EAGAIN` on Linux and macOS).
     pub fn try_acquire(home: &Home) -> io::Result<Option<DaemonLock>> {
         let f = File::create(home.daemon_lock())?;
-        // SAFETY: as above, non-blocking.
-        if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            let e = io::Error::last_os_error();
-            return if e.raw_os_error() == Some(libc::EWOULDBLOCK) {
-                Ok(None)
-            } else {
-                Err(e)
-            };
+        match f.try_lock() {
+            Ok(()) => Ok(Some(DaemonLock(f))),
+            Err(std::fs::TryLockError::WouldBlock) => Ok(None),
+            Err(std::fs::TryLockError::Error(e)) => Err(e),
         }
-        Ok(Some(DaemonLock(f)))
+    }
+}
+
+/// Runs `op` until it returns anything but an [`io::ErrorKind::Interrupted`]
+/// error.
+pub fn retry_interrupted<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result<T> {
+    loop {
+        match op() {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+            out => return out,
+        }
     }
 }
 
@@ -203,6 +203,7 @@ pub async fn serve(
     let store = Arc::new(Store::open(&cfg.home)?);
     let reaper_store = store.clone();
     let optimize_store = store.clone();
+    let drain_store = store.clone();
     let token = generate_token();
     let started_at = Store::now();
     let info = DaemonInfo {
@@ -377,6 +378,10 @@ pub async fn serve(
     reaper.abort();
     optimizer.abort();
     sweeper.abort();
+    // Let queued store calls finish and the database threads stop.
+    if let Err(e) = tokio::task::spawn_blocking(move || drain_store.shutdown()).await {
+        tracing::warn!(error = %e, "store shutdown failed");
+    }
     if read_daemon_info(&cfg.home).map(|i| i.pid) == Some(std::process::id()) {
         remove_daemon_info(&cfg.home);
     }

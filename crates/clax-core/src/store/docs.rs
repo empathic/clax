@@ -107,6 +107,14 @@ pub enum BatchOp {
     Delete,
 }
 
+/// A batch write's operation, with a set body checked and serialised ahead
+/// of the transaction.
+enum Prepared {
+    Set(Result<Body>),
+    Update(Value),
+    Delete,
+}
+
 pub struct BatchWrite {
     pub path: String,
     pub op: BatchOp,
@@ -871,36 +879,37 @@ impl Store {
         }
         // Set bodies are checked and serialised before the transaction; a bad
         // one still fails at its own place in the batch.
-        let writes: Vec<(BatchWrite, Option<Result<Body>>)> = writes
+        let writes: Vec<(String, Option<u64>, Prepared)> = writes
             .into_iter()
-            .map(
-                |mut w| match std::mem::replace(&mut w.op, BatchOp::Delete) {
-                    BatchOp::Set(data) => (w, Some(Body::new(data))),
-                    op => (BatchWrite { op, ..w }, None),
-                },
-            )
+            .map(|w| {
+                let op = match w.op {
+                    BatchOp::Set(data) => Prepared::Set(Body::new(data)),
+                    BatchOp::Update(patch) => Prepared::Update(patch),
+                    BatchOp::Delete => Prepared::Delete,
+                };
+                (w.path, w.if_version, op)
+            })
             .collect();
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             writes
                 .into_iter()
                 .enumerate()
-                .map(|(i, (w, body))| {
-                    let pin = Pin {
-                        if_version: w.if_version,
-                        lww,
-                    };
-                    let path = w.path.as_str();
-                    match (w.op, body) {
-                        (_, Some(body)) => {
+                .map(|(i, (path, if_version, op))| {
+                    let pin = Pin { if_version, lww };
+                    let path = path.as_str();
+                    match op {
+                        Prepared::Set(body) => {
                             write_in(tx, id, &rules, caller, path, pin, |_| body.map(Some))
                         }
-                        (BatchOp::Update(patch), None) => {
+                        Prepared::Update(patch) => {
                             write_in(tx, id, &rules, caller, path, pin, |cur| {
                                 Body::of(update_body(path, cur, patch))
                             })
                         }
-                        (_, None) => write_in(tx, id, &rules, caller, path, pin, |_| Ok(None)),
+                        Prepared::Delete => {
+                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(None))
+                        }
                     }
                     .map_err(|e| in_batch(i, path, e))
                 })

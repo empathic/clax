@@ -1,12 +1,21 @@
 #!/usr/bin/env bash
-# Checks a built binary: it reports "clax <version>" and serves the embedded
-# web UI. Uses a scratch home and a port the kernel picks.
+# Checks a built binary: it reports "clax <version>", its bundled SQLite was
+# built with the flags in .cargo/config.toml, and it serves the embedded web
+# UI. Uses a scratch home and a port the kernel picks.
 # Usage: smoke-release-binary.sh <binary> <version>
 set -euo pipefail
 [ $# = 2 ] || { echo "usage: smoke-release-binary.sh <binary> <version>" >&2; exit 2; }
 bin="$1" version="$2"
 got="$("$bin" --version | head -1)"
 [ "$got" = "clax $version" ] || { echo "$bin reports '$got', not 'clax $version'" >&2; exit 1; }
+# SQLite embeds its compile options as strings (`PRAGMA compile_options`).
+# A shared page cache (ENABLE_MEMORY_MANAGEMENT) would serialise the store's
+# readers; MEMSTATUS must be off.
+options="$(LC_ALL=C tr -c '[:print:]' '\n' < "$bin" | grep -xE 'ENABLE_MEMORY_MANAGEMENT|DEFAULT_MEMSTATUS=[01]' | sort -u || true)"
+[ "$options" = "DEFAULT_MEMSTATUS=0" ] || {
+    echo "$bin bundles SQLite built with the wrong options (want DEFAULT_MEMSTATUS=0 and no ENABLE_MEMORY_MANAGEMENT), found: ${options:-none}" >&2
+    exit 1
+}
 scratch="$(mktemp -d)"
 export HOME="$scratch" CLAX_HOME="$scratch/home" CLAX_CODEX_BIN=""
 unset CLAX_CONFIG_DIR
@@ -19,4 +28,4 @@ case "$page" in
     *"/_clax/"*) ;;
     *) echo "$bin does not serve the embedded web UI: GET / names no /_clax/ asset (was web/dist built before cargo build --release?)" >&2; exit 1 ;;
 esac
-echo "ok: $bin is clax $version and serves the embedded web UI"
+echo "ok: $bin is clax $version, bundles SQLite with the store's options, and serves the embedded web UI"

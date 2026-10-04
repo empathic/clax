@@ -101,17 +101,17 @@ fn close_inherited_fds() {
     const FD_DIR: &str = "/dev/fd";
     // Collect first, then close: the directory handle is itself a descriptor
     // in the listing, and is closed (by the drop) before the loop runs.
-    let fds: Vec<libc::c_int> = match std::fs::read_dir(FD_DIR) {
+    let fds: Vec<std::os::fd::RawFd> = match std::fs::read_dir(FD_DIR) {
         Ok(entries) => entries
             .filter_map(|e| e.ok()?.file_name().to_str()?.parse().ok())
             .filter(|&fd| fd > 2)
             .collect(),
         Err(_) => return,
     };
+    // The process is single-threaded here and owns no descriptor above
+    // stdio yet; closing the listing's own (already closed) handle just
+    // fails with EBADF.
     for fd in fds {
-        // SAFETY: the process is single-threaded here and owns no descriptor
-        // above stdio yet; closing the listing's own (already closed) handle
-        // just fails with EBADF.
-        unsafe { libc::close(fd) };
+        let _ = nix::unistd::close(fd);
     }
 }
