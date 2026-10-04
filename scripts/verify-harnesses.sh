@@ -17,7 +17,8 @@
 # PATH (the build under test first), a scratch TMPDIR, TERM and LANG, and
 # DISABLE_AUTOUPDATER, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and
 # PI_OFFLINE. Each runs in the scratch HOME and is killed, with everything
-# it started, after VERIFY_TIMEOUT seconds (default 120), which reports FAIL.
+# it started, after VERIFY_TIMEOUT seconds (default 120), which reports FAIL;
+# the setup step that writes the seed tree gets at least 60 s.
 # The script refuses to run (exit 2) if HOME is / or the scratch root would
 # fall inside your real HOME. No auth file is read or copied, and only
 # non-interactive commands that need no login are run. A harness whose CLI
@@ -303,7 +304,8 @@ printf '# keep this comment\n[marketplaces.other]\nsource_type = "local"\nsource
 # marketplace with the previous name, registered, then deleted.
 OLDDIR="$ROOT/oldcheckout"
 # Writes the tree only: no harness on that PATH.
-sx "$T" env PATH="$ROOT/empty" "$CLAX_BIN" init >/dev/null 2>&1 </dev/null || true
+# A setup step, not a check: VERIFY_TIMEOUT does not shorten it.
+sx "$(( T > 60 ? T : 60 ))" env PATH="$ROOT/empty" "$CLAX_BIN" init >/dev/null 2>&1 </dev/null || true
 [ -d "$MK" ] || { echo "verify-harnesses: clax init did not write $MK" >&2; exit 1; }
 mv "$MK" "$OLDDIR"
 rm -f "$S_CLAX/registrations.json"

@@ -38,7 +38,10 @@ Budgets live in scripts/perf-clients-budget.json:
   in the same run, as perf-daemon.py does;
 - `clients`, `workers`, `idle_s`, `load_s`, `write_rate_hz`, `flood_batches`:
   the run's shape. CLAX_PERF_CLIENTS overrides `clients` (to explore how far
-  one daemon scales; the budgets are judged at any count).
+  one daemon scales; the budgets are judged at any count);
+- `quick`: what `--quick` (quality_gates.sh) overrides: shorter baseline,
+  idle and load windows, with the same clients and flood, judged by the same
+  budgets and the same idle scaling.
 
 Exits 0 when every measure is within budget, 1 when one is not, 2 on a setup
 failure. The scratch home, the daemon and the workers go on every exit.
@@ -672,8 +675,10 @@ def drain_slow(s, dec, seconds):
 # --- main -------------------------------------------------------------------
 
 
-def main(binary, budget_path):
+def main(binary, budget_path, quick):
     cfg = json.load(open(budget_path))
+    if quick:
+        cfg = {**cfg, **cfg["quick"]}
     n_clients = int(os.environ.get("CLAX_PERF_CLIENTS", cfg["clients"]))
     raise_nofile(n_clients + 1024)
     scratch = tempfile.mkdtemp(prefix="clax-perf-clients.")
@@ -779,7 +784,7 @@ def main(binary, budget_path):
     }
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): time limits scaled by {scale:.2f}")
-    print(f"{n_clients} clients, {cfg['workers']} worker processes, run took {time.monotonic() - t_start:.0f} s")
+    print(f"{n_clients} clients, {cfg['workers']} worker processes, run took {time.monotonic() - t_start:.0f} s{' (quick)' if quick else ''}")
     print()
     print(f"{'measure':<22} {'value':>10} {'limit':>10}  verdict")
     failed = []
@@ -818,8 +823,11 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--probe":
         probe_main(int(sys.argv[2]), sys.argv[3])
         sys.exit(0)
-    if len(sys.argv) != 3:
-        print("usage: perf-clients.py <clax binary> <budget.json>", file=sys.stderr)
+    args = sys.argv[1:]
+    quick = "--quick" in args
+    args = [a for a in args if a != "--quick"]
+    if len(args) != 2:
+        print("usage: perf-clients.py [--quick] <clax binary> <budget.json>", file=sys.stderr)
         sys.exit(2)
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(args[0], args[1], quick))

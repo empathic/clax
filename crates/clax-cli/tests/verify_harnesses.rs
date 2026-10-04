@@ -491,14 +491,14 @@ fn a_hung_harness_cli_fails_by_timeout_and_cleanup_still_runs() {
     let r = Run::new();
     std::fs::write(r.p("hang-codex"), "").unwrap();
     let before = snapshot(&r.p("sentinel"));
-    let out = r.run(&r.tmp(), &[("VERIFY_TIMEOUT", "2")]);
+    let out = r.run(&r.tmp(), &[("VERIFY_TIMEOUT", "1")]);
     let (stdout, stderr) = (text(&out.stdout), text(&out.stderr));
     assert_eq!(out.status.code(), Some(1), "{stdout}\n{stderr}");
     for want in ["codex: seed registers the previous name", "init exits 0"] {
         assert!(
             stdout.lines().any(|l| l.starts_with("FAIL")
                 && l.contains(want)
-                && l.contains("(timeout after 2s)")),
+                && l.contains("(timeout after 1s)")),
             "no timeout FAIL for {want:?}:\n{stdout}"
         );
     }

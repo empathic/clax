@@ -27,13 +27,21 @@ async fn opened_follows_the_openers_exit_status() {
     std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let ts = TestServer::spawn().await;
-    let t = ClaxTools::new(
-        DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
-        format!("http://localhost:{}", ts.addr.port()),
-        None,
-        ts.home.log_path(),
-    )
-    .with_opener(Opener::Program(opener));
+    let tools = |wait: Duration| {
+        ClaxTools::new(
+            DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
+            format!("http://localhost:{}", ts.addr.port()),
+            None,
+            ts.home.log_path(),
+        )
+        .with_opener(Opener::Program(opener.clone()))
+        .with_open_wait(wait)
+    };
+    // An opener that exits is waited for however slowly it starts on a
+    // loaded machine; the one that hangs is given up on after a short wait.
+    let t = tools(Duration::from_secs(30));
+    let short = Duration::from_millis(300);
+    let hanging = tools(short);
     let published = t
         .publish(Parameters(PublishArgs {
             html: Some("<title>Open me</title>".into()),
@@ -45,19 +53,8 @@ async fn opened_follows_the_openers_exit_status() {
         .as_str()
         .unwrap()
         .to_string();
-    let open = || async {
-        let r = t
-            .open(Parameters(TargetArgs {
-                url_or_id: id.clone(),
-            }))
-            .await
-            .unwrap();
-        assert_eq!(r.is_error, Some(false));
-        text(&r)
-    };
-
     std::fs::write(&mode, "1").unwrap();
-    let o = open().await;
+    let o = open(&t, &id).await;
     assert_eq!(o["opened"], false, "{o}");
     assert_eq!(
         o["url"],
@@ -65,15 +62,25 @@ async fn opened_follows_the_openers_exit_status() {
     );
 
     std::fs::write(&mode, "0").unwrap();
-    assert_eq!(open().await["opened"], true);
+    assert_eq!(open(&t, &id).await["opened"], true);
 
-    // An opener still running after the wait counts as opened.
+    // An opener still running after the wait counts as opened, without
+    // waiting for it to exit.
     std::fs::write(&mode, "hang").unwrap();
     let t0 = Instant::now();
-    assert_eq!(open().await["opened"], true);
+    assert_eq!(open(&hanging, &id).await["opened"], true);
     let took = t0.elapsed();
-    assert!(
-        took >= Duration::from_millis(1400) && took < Duration::from_secs(3),
-        "{took:?}"
-    );
+    assert!(took >= short && took < Duration::from_secs(4), "{took:?}");
+}
+
+/// The `open` tool's result for `id`.
+async fn open(t: &ClaxTools, id: &str) -> Value {
+    let r = t
+        .open(Parameters(TargetArgs {
+            url_or_id: id.to_string(),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(r.is_error, Some(false));
+    text(&r)
 }

@@ -24,7 +24,7 @@ build:
 # Install web dependencies and build the frontend bundles
 web:
     cd web && npm ci
-    cd web && npm run build
+    ./scripts/build-web.sh
 
 # Run the web lint, typecheck, and unit tests
 web-test:
@@ -50,14 +50,25 @@ install-test:
 plugin-test:
     ./scripts/test-plugins.sh
 
-# Run the Rust workspace tests (the shell tests need `just web` once first)
+# Run the Rust workspace tests (the shell tests need `just web` once first); cargo nextest when installed
 test:
-    cargo test --workspace
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if cargo nextest --version >/dev/null 2>&1; then
+        # One prebuilt clax for the tests that cannot name it (CLAX_TEST_BIN):
+        # nextest runs each test in its own process, and each would build it.
+        cargo build -q -p clax-cli
+        mkdir -p target/clax-test
+        cp target/debug/clax target/clax-test/clax
+        CLAX_TEST_BIN="$PWD/target/clax-test/clax" cargo nextest run --workspace
+    else
+        cargo test --workspace
+    fi
 
-# Run clippy and cargo check with warnings denied, plus the web lint
+# Run clippy with warnings denied, with and without the test targets, plus the web lint
 lint:
     cargo clippy --workspace --all-targets -- -D warnings
-    RUSTFLAGS=-Dwarnings cargo check --workspace
+    cargo clippy --workspace -- -D warnings
     cd web && npm run lint
 
 # Format the Rust code (the web lint is not a formatter)
@@ -71,6 +82,13 @@ check *GATES:
 # Run the same quality gates CI runs, without auto-format
 ci *GATES:
     ./scripts/quality_gates.sh {{GATES}}
+
+# Run the perf gates' full versions (the quality gates run their quick versions): daemon latency, realtime clients, time to usable
+perf: web
+    cargo build -q --release -p clax-cli
+    CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-daemon.sh
+    CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh
+    cd web && npx playwright install chromium >/dev/null && npm run perf
 
 # Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), and register the plugins with each harness found
 install: web

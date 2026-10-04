@@ -8,10 +8,18 @@ use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-/// The `clax` binary, built once per test run (see the MCP shim tests).
+/// The `clax` binary: `CLAX_TEST_BIN`, else built once per test process
+/// (see the MCP shim tests).
 fn clax_bin() -> PathBuf {
     static BIN: OnceLock<PathBuf> = OnceLock::new();
     BIN.get_or_init(|| {
+        // A prebuilt binary (quality_gates.sh builds one for the whole run):
+        // each test process would otherwise run its own `cargo build`.
+        if let Some(bin) = std::env::var_os("CLAX_TEST_BIN") {
+            let bin = PathBuf::from(bin);
+            assert!(bin.exists(), "CLAX_TEST_BIN {} missing", bin.display());
+            return bin;
+        }
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let mut cmd = Command::new(env!("CARGO"));
         cmd.current_dir(&workspace)

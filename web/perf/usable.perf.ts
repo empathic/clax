@@ -45,8 +45,12 @@ type Sample = Metrics & Shell & { control: number; paintSource: "paint" | "raf";
 
 const BUDGET = fileURLToPath(new URL("./budget.json", import.meta.url));
 const RESULTS = fileURLToPath(new URL("./results.json", import.meta.url));
-const WARMUPS = 2;
-const SAMPLES = 9;
+/** `CLAX_PERF_QUICK=1` (quality_gates.sh) takes fewer samples per mode,
+ * judged against the same budgets with the same control scaling; `just
+ * perf` takes the full count. A recording always takes the full count. */
+const QUICK = process.env.CLAX_PERF_QUICK === "1" && !process.env.CLAX_PERF_RECORD;
+const WARMUPS = QUICK ? 1 : 2;
+const SAMPLES = QUICK ? 5 : 9;
 /** Runs per recording: a baseline or budget is the median of their medians. */
 const RECORD_RUNS = 3;
 const MODES: FrameMode[] = ["subdomain", "sandbox"];

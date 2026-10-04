@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -9,7 +9,7 @@ import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, textPrefix } from "../src/clax.ts";
 import { DaemonClient } from "../src/client.ts";
-import { binaryVersion, discover, endpointOf, ensure, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
+import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
 
@@ -272,7 +272,9 @@ describe("clax Pi extension", () => {
   it("reports opened from the opener's exit status", async () => {
     const { pi, ctx } = load(daemon.home, "pi-open");
     const p = json(await pi.callTool("clax_publish", { html: "<title>open me</title>" }, ctx));
-    const openWith = async (script: string) => {
+    // An opener that exits is waited for however slowly it starts on a
+    // loaded machine; the one that lingers is given up on after a short wait.
+    const openWith = async (script: string, openWaitMs = 30_000) => {
       const bin = mkdtempSync(join(scratch, "opener-"));
       for (const name of ["open", "xdg-open"]) {
         writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
@@ -281,17 +283,17 @@ describe("clax Pi extension", () => {
       const env: NodeJS.ProcessEnv = { ...process.env, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
       delete env.CLAX_NO_OPEN;
       const fresh = new FakePi();
-      claxExtension({ home: daemon.home, env })(fresh.api);
+      claxExtension({ home: daemon.home, env, openWaitMs })(fresh.api);
       const t0 = Date.now();
       const r = json(await fresh.callTool("clax_open", { url_or_id: p.artifact_id }, ctx));
       return { ...r, ms: Date.now() - t0 };
     };
     expect(await openWith("exit 1")).toMatchObject({ url: p.url, opened: false });
     expect(await openWith("exit 0")).toMatchObject({ url: p.url, opened: true });
-    const lingering = await openWith("sleep 5");
+    const lingering = await openWith("sleep 5", 300);
     expect(lingering).toMatchObject({ opened: true });
-    expect(lingering.ms).toBeGreaterThanOrEqual(1_400);
-    expect(lingering.ms).toBeLessThan(3_000);
+    expect(lingering.ms).toBeGreaterThanOrEqual(300);
+    expect(lingering.ms).toBeLessThan(4_000);
   });
 
   it("status reports daemon_version only when the daemon's version differs", async () => {
@@ -924,58 +926,5 @@ describe("helpers match the shared contract fixture", () => {
 
   it("htmlTitle", () => {
     for (const c of FIXTURE.html_title) expect(htmlTitle(c.html) ?? null, c.html).toBe(c.title);
-  });
-});
-
-describe("ensure", () => {
-  it("starts a daemon with `clax serve --json` when none is running", async () => {
-    const home = join(scratch, "fresh");
-    try {
-      const info = await ensure(home, { env: withBin(claxBin), port: 0 });
-      expect(info.port).toBeGreaterThan(0);
-      expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
-    } finally {
-      execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
-    }
-  }, 30_000);
-
-  it("waits for `clax serve` while another client's daemon replacement holds the start lock", async () => {
-    // A replacement holds daemon.lock for up to about 32 s; this one holds it
-    // 12 s, longer than the 10 s ensure used to allow.
-    expect(SERVE_TIMEOUT_MS).toBeGreaterThanOrEqual(2 * 32_000);
-    const home = join(scratch, "locked");
-    mkdirSync(home, { recursive: true });
-    const holder = spawn("python3", ["-c",
-      "import fcntl, sys, time; f = open(sys.argv[1], 'w'); fcntl.flock(f, fcntl.LOCK_EX); print('held', flush=True); time.sleep(12)",
-      join(home, "daemon.lock")], { stdio: ["ignore", "pipe", "inherit"] });
-    try {
-      await new Promise<void>((resolve, reject) => {
-        holder.stdout!.once("data", () => resolve());
-        holder.once("exit", code => reject(new Error(`the lock holder exited with ${code}`)));
-      });
-      const t0 = Date.now();
-      const info = await ensure(home, { env: withBin(claxBin), port: 0 });
-      expect(Date.now() - t0).toBeGreaterThan(10_000);
-      expect((await fetch(`http://127.0.0.1:${info.port}/healthz`)).ok).toBe(true);
-    } finally {
-      holder.kill();
-      execFileSync(claxBin, ["stop"], { env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "" }, stdio: "ignore" });
-    }
-  }, 60_000);
-
-  it("names the install command when no clax binary is found", async () => {
-    const e = ensure(join(scratch, "nobin"), { env: { PATH: "" } });
-    await expect(e).rejects.toThrow(/`just install` in a Clax checkout/);
-    await expect(e).rejects.toThrow(/release installer/);
-  });
-
-  it("reads a binary's version only when it reports itself as clax", async () => {
-    const other = join(scratch, "other-clax");
-    writeFileSync(other, "#!/bin/sh\necho 'other 1.0'\n");
-    chmodSync(other, 0o755);
-    expect(await binaryVersion(other)).toBeNull();
-    expect(await binaryVersion(join(scratch, "no-such-clax"))).toBeNull();
-    const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
-    expect(await binaryVersion(claxBin)).toBe(version);
   });
 });

@@ -8,23 +8,39 @@
 use rust_embed::RustEmbed;
 use std::path::Path;
 
-#[derive(RustEmbed)]
-#[folder = "../../plugins/"]
-#[include = "claude-code/**"]
-#[include = "clax/**"]
-#[include = "clax-grok/**"]
-#[include = "pi/package.json"]
-#[include = "pi/README.md"]
-#[include = "pi/src/**"]
-#[include = "pi/skills/**"]
-#[exclude = "**/.DS_Store"]
-#[exclude = "**/*.swp"]
-#[exclude = "**/*~"]
-struct Plugins;
+/// One embed per embedded directory: a debug build reads embeds from disk on
+/// every call, so one embed of all of `plugins/` would walk
+/// `plugins/pi/node_modules` each time.
+macro_rules! plugin_dir {
+    ($name:ident, $folder:literal, $prefix:literal) => {
+        #[derive(RustEmbed)]
+        #[folder = $folder]
+        #[prefix = $prefix]
+        #[exclude = "**/.DS_Store"]
+        #[exclude = "**/*.swp"]
+        #[exclude = "**/*~"]
+        struct $name;
+    };
+}
+plugin_dir!(ClaudeCode, "../../plugins/claude-code/", "claude-code/");
+plugin_dir!(Codex, "../../plugins/clax/", "clax/");
+plugin_dir!(Grok, "../../plugins/clax-grok/", "clax-grok/");
+plugin_dir!(PiSrc, "../../plugins/pi/src/", "pi/src/");
+plugin_dir!(PiSkills, "../../plugins/pi/skills/", "pi/skills/");
 
 const CLAUDE_MARKETPLACE: &str = include_str!("../../../.claude-plugin/marketplace.json");
 const CODEX_MARKETPLACE: &str = include_str!("../../../.agents/plugins/marketplace.json");
 const GROK_MARKETPLACE: &str = include_str!("../../../.grok-plugin/marketplace.json");
+const PI_PACKAGE: &[u8] = include_bytes!("../../../plugins/pi/package.json");
+const PI_README: &[u8] = include_bytes!("../../../plugins/pi/README.md");
+
+/// Every file of an embed: (path under `plugins/`, contents).
+fn embedded<E: RustEmbed>() -> impl Iterator<Item = (String, Vec<u8>)> {
+    E::iter().map(|p| {
+        let f = E::get(&p).expect("an embedded file lists itself");
+        (format!("plugins/{p}"), f.data.into_owned())
+    })
+}
 
 /// Every file of the marketplace tree: (path relative to its root, contents).
 pub fn files() -> Vec<(String, Vec<u8>)> {
@@ -41,11 +57,14 @@ pub fn files() -> Vec<(String, Vec<u8>)> {
             ".agents/plugins/marketplace.json".to_string(),
             CODEX_MARKETPLACE.as_bytes().to_vec(),
         ),
+        ("plugins/pi/package.json".to_string(), PI_PACKAGE.to_vec()),
+        ("plugins/pi/README.md".to_string(), PI_README.to_vec()),
     ];
-    for p in Plugins::iter() {
-        let f = Plugins::get(&p).expect("an embedded file lists itself");
-        out.push((format!("plugins/{p}"), f.data.into_owned()));
-    }
+    out.extend(embedded::<ClaudeCode>());
+    out.extend(embedded::<Codex>());
+    out.extend(embedded::<Grok>());
+    out.extend(embedded::<PiSrc>());
+    out.extend(embedded::<PiSkills>());
     out.sort();
     out
 }

@@ -6,6 +6,7 @@
 # step; any failure exits non-zero.
 #
 # Usage: scripts/smoke-comment-loop.sh
+# CLAX_TEST_BIN=<path> uses that debug binary instead of building one.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
@@ -13,7 +14,7 @@ TMPROOT="${TMPDIR:-/tmp}"
 SCRATCH="$(mktemp -d "${TMPROOT%/}/clax-loop.XXXXXX")"
 export CLAX_HOME="$SCRATCH/home"
 export CLAX_NO_OPEN=1
-BIN="$REPO/target/debug/clax"
+BIN="${CLAX_TEST_BIN:-$REPO/target/debug/clax}"
 FAKE="$SCRATCH/fakebin"
 mkdir -p "$CLAX_HOME" "$FAKE"
 
@@ -34,8 +35,10 @@ SH
 chmod +x "$FAKE/codex"
 export CLAX_CODEX_BIN="$FAKE/codex"
 
-echo "smoke: building clax"
-cargo build -q -p clax-cli
+if [ -z "${CLAX_TEST_BIN:-}" ]; then
+    echo "smoke: building clax"
+    cargo build -q -p clax-cli
+fi
 
 python3 - "$BIN" "$SCRATCH" "$REPO" <<'PY'
 import json, os, struct, subprocess, sys, threading, time, urllib.request, uuid, zlib
