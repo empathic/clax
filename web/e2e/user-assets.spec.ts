@@ -1,15 +1,19 @@
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
-import { namedViewer, openArtifact, publishWith, startDaemon, nameField } from "./fixtures";
+import { test, expect, type Daemon, namedViewer, openArtifact, publishWith, nameField } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const html = (name: string) => readFileSync(new URL(`./pages/${name}`, import.meta.url), "utf8");
 const facts = async (f: import("@playwright/test").Frame) => {
-  await expect(f.locator("#facts")).not.toHaveText("waiting");
-  return JSON.parse((await f.locator("#facts").textContent())!);
+  // Read until it holds facts: a reloading document starts over at "waiting".
+  let out: Record<string, unknown> | null = null;
+  await expect.poll(async () => {
+    const t = await f.locator("#facts").textContent().catch(() => null);
+    try { out = t === null || t === "waiting" ? null : JSON.parse(t); } catch { out = null; }
+    return out !== null;
+  }).toBe(true);
+  return out!;
 };
 
 for (const mode of ["subdomain", "sandbox"] as const) {

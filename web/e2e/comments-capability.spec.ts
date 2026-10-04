@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon, nameField } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, nameField } from "./fixtures";
+import { advance } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const BOARD = readFileSync(new URL("./pages/board.html", import.meta.url), "utf8");
 
@@ -40,6 +40,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page button opens the composer anchored on its element`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Board ${mode}`, BOARD, { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    await expect(f.locator("#status")).not.toHaveText("waiting");
     await f.locator(".comment").click();
     await expect(f.locator("#status")).toHaveText(JSON.stringify({ opened: true }));
     const composer = page.locator(".composer");
@@ -84,6 +85,8 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
   test(`${mode}: create asks once, then posts as the viewer`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Notes ${mode}`, BOARD, { comments: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
+    // The page's script has set up its buttons.
+    await expect(f.locator("#status")).not.toHaveText("waiting");
     await f.locator(".note").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
     const allowed = Date.now();
@@ -93,7 +96,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     await reach(page, f.locator(".note"));
     await f.locator(".note").click();
     await expect(f.locator("#status")).toHaveText("shell_input_recent");
-    await page.waitForTimeout(Math.max(0, 5_700 - (Date.now() - allowed)));
+    await advance(page, Math.max(0, 5_700 - (Date.now() - allowed)));
     await f.locator(".note").click();
     await expect(f.locator("#status")).toHaveText("created string");
     await expect(page.getByRole("dialog")).toHaveCount(0);
@@ -119,7 +122,8 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     const ids = await storeIds();
     expect(ids).toHaveLength(3);
     expect(ids).not.toContain(tid);
-    const seen = await f.evaluate(async () => { for (;;) { if ((window as any).seen.length) return (window as any).seen as string[]; await new Promise(r => setTimeout(r, 50)); } });
+    await expect.poll(() => f.evaluate(() => (window as any).seen.length as number)).toBeGreaterThan(0);
+    const seen = await f.evaluate(() => (window as any).seen as string[]);
     for (const id of seen) expect(ids).not.toContain(id);
     const codes = await viewerDoes(page, f, cands => {
       (window as any).viewerAct = (c: any) => Promise.all((cands as string[]).map(id => c.delete(id).then(() => "deleted", (e: { code: string }) => e.code)));

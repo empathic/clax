@@ -68,8 +68,13 @@ export function inlineCss(): Plugin {
   };
 }
 
+// CLAX_TEST_CLOCK=1 builds the browser tests' shell, whose clock a test can
+// advance (shell/src/clock.ts); every other build leaves the hook out.
+export const TEST_CLOCK = process.env.CLAX_TEST_CLOCK === "1";
+
 export default defineConfig({
   root: "shell", base: "/", plugins: [svelte({ configFile: SVELTE_CONFIG }), inlineCss()],
+  define: { __CLAX_TEST_CLOCK__: JSON.stringify(TEST_CLOCK) },
   build: {
     outDir: "../dist", emptyOutDir: false, assetsDir: "_clax/shell", manifest: true,
     rollupOptions: { input: { index: "shell/index.html", artifact: "shell/artifact.html" } },

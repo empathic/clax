@@ -4,6 +4,7 @@
 // and every 30 s; away as the page is left; and the artifact's presence, fetched once and on each
 // stream (re)connect.
 import { getPresence, putPresence } from "../api";
+import { after, wall } from "../clock";
 import type { ViewState } from "./artifact-controller";
 import { type PresenceView, stateFor, whereLabel } from "./presence-model";
 
@@ -11,20 +12,20 @@ const INPUTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] 
 
 export class PresenceReporter {
   /** When the viewer last pressed, typed, moved the pointer or scrolled in the shell. */
-  private lastInput = Date.now();
+  private lastInput = wall();
   /** The last report sent: its state, location and time. */
   private reported: { state: "here" | "away"; where: string | null; at: number } | null = null;
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private timer: (() => void) | undefined;
   private readonly beat: ReturnType<typeof setInterval>;
   private readonly onVisible = () => this.report();
   private readonly onInput = () => {
-    this.lastInput = Date.now();
+    this.lastInput = wall();
     if (this.reported?.state === "away" && document.visibilityState === "visible") this.report();
   };
   /** Leaving the page: away at once, rather than here until the report lapses. */
   readonly leave = () => {
     if (this.done || !this.may(this.state())) return;
-    this.reported = { state: "away", where: null, at: Date.now() };
+    this.reported = { state: "away", where: null, at: wall() };
     void putPresence(this.id, "away", null, true);
   };
   private done = false;
@@ -48,18 +49,18 @@ export class PresenceReporter {
   report(force = false): void {
     const s = this.state();
     if (this.done || !this.may(s)) return;
-    const state = stateFor(document.visibilityState === "visible", Date.now() - this.lastInput);
+    const state = stateFor(document.visibilityState === "visible", wall() - this.lastInput);
     const where = state === "here" && s.shareWhere ? whereLabel(s) : null;
     const last = this.reported;
     if (!force && last && last.state === state && last.where === where) return;
-    const wait = last && last.state === state ? last.at + 2000 - Date.now() : 0;
+    const wait = last && last.state === state ? last.at + 2000 - wall() : 0;
     if (wait > 0) {
-      this.timer ??= setTimeout(() => { this.timer = undefined; this.report(true); }, wait);
+      this.timer ??= after(wait, () => { this.timer = undefined; this.report(true); });
       return;
     }
-    clearTimeout(this.timer);
+    this.timer?.();
     this.timer = undefined;
-    this.reported = { state, where, at: Date.now() };
+    this.reported = { state, where, at: wall() };
     void putPresence(this.id, state, where).then(people => { if (people && !this.done) this.take(people); });
   }
 
@@ -72,6 +73,6 @@ export class PresenceReporter {
     removeEventListener("pagehide", this.leave);
     for (const t of INPUTS) removeEventListener(t, this.onInput, { capture: true });
     clearInterval(this.beat);
-    clearTimeout(this.timer);
+    this.timer?.();
   }
 }

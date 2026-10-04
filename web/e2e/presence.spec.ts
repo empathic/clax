@@ -1,11 +1,11 @@
-import { test, expect } from "@playwright/test";
-import { openArtifact, postThread, publishAs, registerSession, setName, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, postThread, publishAs, registerSession, setName } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+// The shell and the daemon alone decide what this shows: the frame only
+// shows the page, the same in either frame mode, so it runs in one mode.
+for (const mode of ["sandbox"] as const) {
   test(`${mode}: two viewers see each other here, the location only in the panel, and away when hidden`, async ({ browser }) => {
     const s = await registerSession(d.base, d.token, "claude", `pres-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Presence ${mode}`, { "index.html": "<main><h2>Quarterly goals</h2></main>" });

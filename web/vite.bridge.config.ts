@@ -10,7 +10,8 @@ const parts = Object.fromEntries(Object.values(manifest).filter(e => e.isEntry &
 for (const name of ["comment", "clip", "caps", "room", "sample"]) if (!parts[name]) throw new Error(`the parts build has no ${name} entry; run node scripts/build-parts.mjs first`);
 
 export default defineConfig({
-  define: { __CLAX_PARTS__: JSON.stringify(parts) },
+  // CLAX_TEST_CLOCK=1 builds the browser tests' bridge (see shell/src/clock.ts).
+  define: { __CLAX_PARTS__: JSON.stringify(parts), __CLAX_TEST_CLOCK__: JSON.stringify(process.env.CLAX_TEST_CLOCK === "1") },
   resolve: { alias: { "clax-bridge-parts": fileURLToPath(new URL("./bridge/src/parts-url.ts", import.meta.url)) } },
   build: {
     outDir: "dist/_clax", emptyOutDir: false,

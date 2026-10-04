@@ -1,10 +1,10 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith } from "./fixtures";
+import { advance, settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const pageHtml = (name: string) => readFileSync(new URL(`./pages/${name}`, import.meta.url), "utf8");
 
@@ -117,9 +117,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   });
 }
 
-/** Clicks the poll's vote button in `f`, 2 s after the view showed it. */
-async function voteSoon(f: Frame) {
-  await new Promise(r => setTimeout(r, 2_000));
+/** Clicks the poll's vote button in `f`, 2 s (of the shell's clock) after the view showed it. */
+async function voteSoon(page: Page, f: Frame) {
+  await advance(page, 2_000);
   await f.locator("#vote").click();
 }
 
@@ -127,7 +127,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   // A shell load is not input to the shell: a vote soon after one publishes.
   test(`${mode}: a vote 2 s after opening the page publishes`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Vote soon ${mode}`, pageHtml("poll.html"), { artifact: {} });
-    await voteSoon(await openArtifact(page, d.base, artifact.id, 1, mode));
+    await voteSoon(page, await openArtifact(page, d.base, artifact.id, 1, mode));
     await expect((await contentFrame(page, artifact.id, 2)).locator("#count")).toHaveText("1");
     expect(await current(artifact.id)).toBe(2);
   });
@@ -135,9 +135,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a vote 2 s after the reload the viewer's own vote caused publishes`, async ({ page }) => {
     const { artifact } = await publishWith(d.base, d.token, `Vote again ${mode}`, pageHtml("poll.html"), { artifact: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
-    await page.waitForTimeout(6_000);
+    await advance(page, 6_000);
     await f.locator("#vote").click();
-    await voteSoon(await contentFrame(page, artifact.id, 2));
+    await voteSoon(page, await contentFrame(page, artifact.id, 2));
     await expect((await contentFrame(page, artifact.id, 3)).locator("#count")).toHaveText("2");
     expect(await current(artifact.id)).toBe(3);
   });
@@ -148,9 +148,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     await openArtifact(pb, d.base, artifact.id, 1, mode);
-    await pa.waitForTimeout(6_000);
+    await advance(pa, 6_000);
     await a.locator("#vote").click();
-    await voteSoon(await contentFrame(pb, artifact.id, 2));
+    await voteSoon(pb, await contentFrame(pb, artifact.id, 2));
     await expect((await contentFrame(pb, artifact.id, 3)).locator("#count")).toHaveText("2");
     expect(await current(artifact.id)).toBe(3);
     await ctx.close();
@@ -174,7 +174,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `Activation ${mode}`, pageHtml("poll.html"), { artifact: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await f.waitForLoadState();
-    await page.waitForTimeout(200);
+    await settle(page);
     expect(act.seen, "the shell is not active before the click").toBeNull();
     const before = Date.now();
     await page.mouse.click(300, 400);
@@ -190,7 +190,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishWith(d.base, d.token, `On load ${mode}`, pageHtml("publish-on-load.html"), { artifact: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
-    await page.waitForTimeout(500);
+    await settle(page);
     expect(await current(artifact.id)).toBe(1);
   });
 

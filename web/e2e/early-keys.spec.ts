@@ -1,5 +1,6 @@
-import { test, expect, type CDPSession, type Frame, type Page } from "@playwright/test";
-import { openArtifact, publish, startDaemon } from "./fixtures";
+import { type CDPSession, type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, openArtifact, publish } from "./fixtures";
+import { settle } from "./time";
 
 // The viewer types right after they pick, on a heavy page: every key typed
 // after the click (or the drag's release) that opens the composer lands in
@@ -14,9 +15,8 @@ import { openArtifact, publish, startDaemon } from "./fixtures";
 // stall queue up and must still land. No one types within about 30 ms of a
 // click, so an instant burst is not tested.
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 // A paragraph and a large area below, each with a heavy element; a text
 // field. The page logs every key and text event it hears.
@@ -116,7 +116,7 @@ async function expectAllInComposer(page: Page, f: Frame, heavy = true) {
   await expect(textarea).toBeFocused();
   await expect(textarea).toHaveValue(SENTENCE);
   // Let any key still in flight arrive before checking the page heard none.
-  await page.waitForTimeout(200);
+  await settle(page);
   await expect(textarea).toHaveValue(SENTENCE);
   expect(await f.evaluate(() => (window as any).pageKeys as string[]), "keys the page heard").toEqual([]);
   expect(await f.evaluate(() => (document.getElementById("field") as HTMLInputElement).value)).toBe("");

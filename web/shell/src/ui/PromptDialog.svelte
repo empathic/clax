@@ -15,6 +15,7 @@
   // Escape dismisses it (neither allow nor deny). While it is open the rest
   // of the shell is inert and Tab stays among its buttons ("Don't allow"
   // alone until "Allow" is armed).
+  import { after as later } from "../clock";
   import { ALLOW_DELAY_MS, type Ask } from "../view/prompt-queue";
   import { guardedAction } from "../view/trail";
   import { inertOutside, trapTab } from "./modal";
@@ -48,10 +49,10 @@
     hint = null;
     deny?.focus();
     let second = 0;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let disarm = () => {};
     const first = requestAnimationFrame(() => {
       second = requestAnimationFrame(() => {
-        timer = setTimeout(() => { armedAt = performance.now(); armed = true; }, ALLOW_DELAY_MS);
+        disarm = later(ALLOW_DELAY_MS, () => { armedAt = performance.now(); armed = true; });
       });
     });
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") a.answer("dismiss"); };
@@ -64,7 +65,7 @@
     return () => {
       cancelAnimationFrame(first);
       cancelAnimationFrame(second);
-      clearTimeout(timer);
+      disarm();
       removeEventListener("keydown", onKey);
       removeEventListener("pointerdown", onPress, true);
     };

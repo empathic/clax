@@ -1,9 +1,24 @@
-import { expect, type Frame, type Locator, type Page } from "@playwright/test";
+import { test as playwrightTest, expect as playwrightExpect, type Frame, type Locator, type Page, type Response } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { advance } from "./time";
+
+/** Playwright's `expect`, whose `poll` checks again after 10, 20 and 50 ms,
+ * then every 100 ms (Playwright's own waits 100, 250, 500 ms, then every
+ * second), so a test moves on as soon as the state it waits for holds. */
+const POLL_INTERVALS = [10, 20, 50, 100];
+export const expect = new Proxy(playwrightExpect, {
+  get(target, prop, receiver) {
+    if (prop === "poll") {
+      const poll: typeof target.poll = (fn, opts) => target.poll(fn, { intervals: POLL_INTERVALS, ...(typeof opts === "string" ? { message: opts } : opts) });
+      return poll;
+    }
+    return Reflect.get(target, prop, receiver);
+  },
+});
 
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
 
@@ -12,40 +27,81 @@ export const NO_KEY_CONFIG = '[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n';
 /** The stub provider: canned, deterministic answers (see crates/clax-server/src/sample/stub.rs). */
 export const STUB_CONFIG = '[sample]\nprovider = "stub"\nstub_delay_ms = 150\n';
 
+export type Daemon = Awaited<ReturnType<typeof startDaemon>>;
+
+/** The browser tests' `test`. `daemon` is the worker's daemon, shared by every
+ * test the worker runs: each test publishes its own artifacts under its own
+ * titles and judges only those. `freshDaemon` is a daemon of the test's own,
+ * for a test that judges the daemon's global state (its open streams). */
+export const test = playwrightTest.extend<{ freshDaemon: Daemon }, { daemon: Daemon }>({
+  // Playwright reads a fixture's needs from its first parameter's pattern: none here.
+  // oxlint-disable-next-line no-empty-pattern
+  daemon: [async ({}, use) => {
+    const d = await startDaemon();
+    await use(d);
+    await d.stop();
+  }, { scope: "worker", timeout: 30_000 }],
+  // oxlint-disable-next-line no-empty-pattern
+  freshDaemon: async ({}, use) => {
+    const d = await startDaemon();
+    await use(d);
+    await d.stop();
+  },
+});
+
+/** Sleeps `ms` of real time; only for polling a state with no event of its own. */
+const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
+
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
- * with `opts.home` and `opts.port`, on that home and port (a restart). `stop({ keepHome: true })` leaves the home. */
+ * with `opts.home` and `opts.port`, on that home and port (a restart). `stop({ keepHome: true })` leaves the home.
+ * It runs the binary daemon-setup.ts built, on a port the system picks. */
 export async function startDaemon(opts: { config?: string; home?: string; port?: number } = {}) {
+  const bin = process.env.CLAX_E2E_BIN;
+  if (!bin) throw new Error("CLAX_E2E_BIN is unset: run the tests through a Playwright config whose global setup builds the daemon (e2e/daemon-setup.ts)");
+  // The browser tests' build of the web UI, when the global setup made one;
+  // else the daemon serves web/dist (the time-to-usable suite).
+  const dist = process.env.CLAX_E2E_WEB_DIST;
   const home = opts.home ?? mkdtempSync(join(tmpdir(), "clax-e2e-"));
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
-  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", String(opts.port ?? 0)],
+  const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : [])],
     { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "inherit"] });
+  const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";
   let port = 0;
   const stop = async (o: { keepHome?: boolean } = {}) => {
-    const exited = child.exitCode === null && child.signalCode === null ? new Promise<void>(resolve => child.once("exit", () => resolve())) : Promise.resolve();
     if (base && token) await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: { authorization: `Bearer ${token}` } }).catch(() => {});
     if (child.exitCode === null && child.signalCode === null) {
       // The shutdown lets the daemon end on its own; it is killed if it has not within 5 s.
-      await Promise.race([exited, new Promise<void>(resolve => setTimeout(resolve, 5000))]);
+      await Promise.race([exited, tick(5000)]);
       if (child.exitCode === null && child.signalCode === null) child.kill();
-      await Promise.race([exited, new Promise<void>(resolve => setTimeout(resolve, 5000))]);
+      await Promise.race([exited, tick(5000)]);
     }
     if (!o.keepHome) rmSync(home, { recursive: true, force: true });
   };
   try {
-    const deadline = Date.now() + 120_000;
-    while (!existsSync(infoPath)) { if (Date.now() > deadline) throw new Error("daemon did not start"); await new Promise(r => setTimeout(r, 200)); }
-    const info = JSON.parse(readFileSync(infoPath, "utf8"));
+    const deadline = Date.now() + 20_000;
+    let gone = false;
+    void exited.then(() => { gone = true; });
+    while (!existsSync(infoPath)) {
+      if (gone) throw new Error(`the daemon exited (${child.exitCode ?? child.signalCode}) before it started`);
+      if (Date.now() > deadline) throw new Error("daemon did not start");
+      await tick(10);
+    }
+    // The daemon may be writing the file still: read it until it parses.
+    let info: { token: string; port: number } | null = null;
+    while (!info) {
+      try { info = JSON.parse(readFileSync(infoPath, "utf8")); } catch { if (Date.now() > deadline) throw new Error("daemon.json never parsed"); await tick(10); }
+    }
     token = info.token as string;
     port = info.port as number;
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
       if (Date.now() > deadline) throw new Error("daemon did not become healthy");
-      await new Promise(r => setTimeout(r, 100));
+      await tick(10);
     }
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
   return { base, token, stop, home, port };
@@ -119,7 +175,7 @@ export type FrameMode = "subdomain" | "sandbox";
 /** The content frame showing version `n` of artifact `id`, in either frame mode. */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
   const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
-  await expect.poll(() => page.frame({ url }) !== null, { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
   return page.frame({ url })!;
 }
 
@@ -162,7 +218,7 @@ export async function record(page: Page) {
 }
 
 export async function last(page: Page, type: string): Promise<any> {
-  await expect.poll(() => page.evaluate(t => (window as any).claxMsgs.some((m: any) => m.type === t), type), { timeout: 30_000 }).toBe(true);
+  await expect.poll(() => page.evaluate(t => (window as any).claxMsgs.some((m: any) => m.type === t), type), { timeout: 10_000 }).toBe(true);
   return page.evaluate(t => (window as any).claxMsgs.filter((m: any) => m.type === t).at(-1), type);
 }
 
@@ -280,4 +336,18 @@ export async function setName(page: Page, name: string) {
 export async function nameField(page: Page) {
   if (!(await page.getByRole("dialog", { name: "People and agents" }).isVisible())) await page.getByRole("button", { name: "People and agents" }).click();
   return page.getByRole("dialog", { name: "People and agents" }).getByRole("textbox", { name: "Your name" });
+}
+
+/** Waits until the shell has written this viewer's look marks (`PUT
+ * /api/viewers/me/looked`), moving its clock on a second at a time past a
+ * card's time in view and the marks' throttle. */
+export async function lookedMarks(page: Page) {
+  let done = false;
+  const on = (r: Response) => { if (r.request().method() === "PUT" && new URL(r.url()).pathname === "/api/viewers/me/looked") done = true; };
+  page.on("response", on);
+  try {
+    await expect.poll(async () => { if (!done) await advance(page, 1000); return done; }).toBe(true);
+  } finally {
+    page.off("response", on);
+  }
 }

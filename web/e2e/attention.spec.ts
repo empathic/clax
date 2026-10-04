@@ -1,9 +1,8 @@
-import { test, expect, type Page } from "@playwright/test";
-import { openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, lookedMarks, openArtifact, publishAs, publishNext, registerSession } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 async function name(page: Page, n: string) {
@@ -19,7 +18,9 @@ async function comment(page: Page, aid: string, body: string, tid?: string): Pro
   }, [aid, body, tid] as const);
 }
 
-for (const mode of ["subdomain", "sandbox"] as const) {
+// The shell and the daemon alone decide what this shows: the frame only
+// shows the page, the same in either frame mode, so it runs in one mode.
+for (const mode of ["subdomain"] as const) {
   test(`${mode}: attention across viewers: addressed, new version, a mention, and looking clears`, async ({ browser }) => {
     const s = await registerSession(d.base, d.token, "claude", `att-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Eyes ${mode}`, { "index.html": PAGE });
@@ -42,7 +43,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await openArtifact(alex, d.base, artifact.id, 2, mode);
     if (!(await alex.locator("aside.sidebar").isVisible())) await alex.getByRole("button", { name: /Threads/ }).first().click();
     await expect(alex.locator(`.thread-card[data-thread="${tid}"]`)).toBeVisible();
-    await alex.waitForTimeout(2500);
+    await lookedMarks(alex);
     await alex.goto(`${d.base}/`);
     await expect(alex.locator(".grp.needs .card-wrap", { hasText: `Eyes ${mode}` })).toHaveCount(0);
     await expect(alex.locator(".grp.rest .card-wrap", { hasText: `Eyes ${mode}` }).locator(".chip.oth")).toHaveText("1 open");

@@ -1,9 +1,9 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 // A green 300 × 200 image with a red square in it, a padded panel with a blue
 // badge in its empty space, and a paragraph of text.
@@ -318,7 +318,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       parent.postMessage({ type: "clax:pick", pickId: "forged2", version, anchor, clipPng: png.slice(0) }, "*");
     });
     await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged2").length)).toBe(2);
-    await page.waitForTimeout(300);
+    await settle(page);
     await expect(page.locator(".composer")).toHaveCount(0);
     // A page that replaces window.parent after load cannot divert the bridge's picks.
     await frame.evaluate(() => { (window as unknown as { parent: unknown }).parent = { postMessage() {} }; });
@@ -377,7 +377,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(fb.x + panel.x + 200, fb.y + panel.y + 180, { steps: 5 });
     await page.keyboard.press("Escape");
     await page.mouse.up();
-    await page.waitForTimeout(300);
+    await settle(page);
     expect(await page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.type === "clax:pick").length)).toBe(picks);
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
     await page.keyboard.press("Escape");

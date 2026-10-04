@@ -1,9 +1,8 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { reach, api, openArtifact, publish, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, reach, api, openArtifact, publish } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const IMG = `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="300" height="200"><rect width="300" height="200" fill="#16a34a"/><rect x="100" y="60" width="80" height="80" fill="#dc2626"/></svg>`)}`;
 const STYLE = `<style>body{margin:0;font:16px/24px sans-serif}main{padding:16px}#pic{display:block}</style>`;

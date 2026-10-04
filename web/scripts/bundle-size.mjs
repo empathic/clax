@@ -37,6 +37,14 @@ for (const [html, markers] of [["index.html", []], ["artifact.html", ["<script i
   }
 }
 
+// The browser tests' clock hook (shell/src/clock.ts) is built only with
+// CLAX_TEST_CLOCK=1: no file of the release bundle may carry it.
+const filesIn = dir => readdirSync(dir, { withFileTypes: true }).flatMap(e => e.isDirectory() ? filesIn(new URL(`${e.name}/`, dir)) : [new URL(e.name, dir)]);
+for (const f of filesIn(dist)) {
+  const text = readFileSync(f, "latin1");
+  if (text.includes("claxTestClock") || text.includes("clax.test-clock")) throw new Error(`${f.pathname} carries the test clock hook; web/dist must be built without CLAX_TEST_CLOCK`);
+}
+
 // Fonts: at most three WOFF2 files, every @font-face swap, none preloaded;
 // their bytes (already compressed) are budgeted as `fonts`.
 const fontDir = new URL("_clax/fonts/", dist);

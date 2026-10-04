@@ -17,6 +17,12 @@ pub struct Args {
     #[cfg(debug_assertions)]
     #[arg(long, hide = true, requires = "foreground")]
     pub report_version: Option<String>,
+    /// Serve the web UI from this directory, laid out like `web/dist`, in
+    /// place of `web/dist`, so the browser tests can run their own build of
+    /// it. Debug builds only.
+    #[cfg(debug_assertions)]
+    #[arg(long, hide = true, requires = "foreground")]
+    pub web_dist: Option<std::path::PathBuf>,
 }
 
 pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
@@ -27,6 +33,10 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
                 tracing_subscriber::EnvFilter::from_default_env().add_directive("info".parse()?),
             )
             .init();
+        #[cfg(debug_assertions)]
+        if let Some(dir) = &a.web_dist {
+            clax_server::routes::shell::set_web_dist(dir.clone());
+        }
         let rt = tokio::runtime::Runtime::new()?;
         let cfg = ServeConfig {
             home: home.clone(),

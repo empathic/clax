@@ -1,9 +1,9 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, publish, publishWith, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, contentFrame, openArtifact, publish, publishWith } from "./fixtures";
+import { advance, settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const EARLY = `<!doctype html><html lang="en"><head><title>Early</title><script>
   window.seen = typeof (window.claude && window.claude.use);
@@ -86,7 +86,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await headOf(g)).toBe(head1);
     let prev = g;
     for (const n of [3, 4]) {
-      await page.waitForTimeout(2_100); // the shell's gap between publishes
+      await advance(page, 2_100); // the shell's gap between publishes
       await prev.locator("#go").click();
       const next = await contentFrame(page, artifact.id, n);
       await expect(next.locator("#out")).toHaveText("function");
@@ -121,7 +121,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const ctx = await browser.newContext();
     try {
       const slow = await ctx.newPage();
-      await slow.route("**/slow.js", async r => { await new Promise(res => setTimeout(res, 2000)); await r.continue(); });
+      // slow.js, and the content its module script renders, held back until
+      // the shell has the thread and has had a frame to place it in.
+      const threads = slow.waitForResponse(r => new URL(r.url()).pathname === `/api/artifacts/${id}/threads`);
+      await slow.route("**/slow.js", async r => { await threads; await settle(slow); await r.continue(); });
       const g = await openArtifact(slow, d.base, id, 1, mode);
       await expect(g.locator("h2")).toHaveText("Quarterly goals");
       await expect(slow.locator("button.thread-pin")).toHaveCount(1);
@@ -149,7 +152,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     try {
       const slow = await ctx.newPage();
       let released = false;
-      await slow.route("**/slow.js", async r => { await new Promise(res => setTimeout(res, 2500)); released = true; await r.continue(); });
+      // Held until the shell has the thread and has asked the frame, still
+      // parsing, for its anchors.
+      const threads = slow.waitForResponse(r => new URL(r.url()).pathname === `/api/artifacts/${id}/threads`);
+      await slow.route("**/slow.js", async r => { await threads; await settle(slow); released = true; await r.continue(); });
       const g = await openArtifact(slow, d.base, id, 1, mode);
       await expect(g.locator("h2")).toHaveText("Quarterly goals");
       expect(released).toBe(true);

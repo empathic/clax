@@ -1,9 +1,8 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record, startDaemon, tintStats } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, clipStats, colorStats, expectVisibleClip, last, openArtifact, publish, record, tintStats } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 // Line 161, the one picked below, is green, so a clip shows where it is.
 const LINES = Array.from({ length: 300 }, (_, i) => (i === 160 ? `<span style="color:#0a8f3c">line 161: the quick brown fox</span>` : `line ${i + 1}: the quick brown fox`)).join("\n");

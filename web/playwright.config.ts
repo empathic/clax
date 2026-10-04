@@ -1,4 +1,32 @@
+import { cpus } from "node:os";
 import { defineConfig } from "@playwright/test";
-// Generous bounds so a loaded machine slows the suite rather than failing it:
-// every wait polls, and these only cap how long a real failure takes to show.
-export default defineConfig({ testDir: "e2e", timeout: 120_000, expect: { timeout: 20_000 }, use: { browserName: "chromium" }, workers: 1, reporter: "list" });
+
+// Every test runs in parallel with the others: each worker has its own daemon
+// (e2e/fixtures.ts), shared by its tests, which publish their own artifacts.
+// CLAX_E2E_WORKERS overrides the worker count: by default four more than the
+// cores, as a test spends much of its time waiting on the browser, the
+// daemon, or Chromium's user activation to lapse.
+// No test sleeps to wait for something: the shell's timing rules run on a
+// clock the tests advance (shell/src/clock.ts), and the rest is waited on as
+// events (the typing tests' key schedules are input, not waits). A failing
+// expectation fails in 5 s; a test that hangs stops at 30 s.
+const workers = Number(process.env.CLAX_E2E_WORKERS) || cpus().length + 4;
+
+export default defineConfig({
+  testDir: "e2e",
+  globalSetup: "./e2e/global-setup.ts",
+  fullyParallel: true,
+  workers,
+  timeout: 30_000,
+  expect: { timeout: 5_000 },
+  use: { browserName: "chromium" },
+  // Projects schedule the work: the gesture tests take up to five eighths of
+  // the workers. Several wait out Chromium's 5 s user activation, which no
+  // clock can shorten, so they run beside the busier tests rather than all
+  // at once.
+  projects: [
+    { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8) },
+    { name: "rest", testIgnore: /gesture\.spec\.ts$/ },
+  ],
+  reporter: "list",
+});

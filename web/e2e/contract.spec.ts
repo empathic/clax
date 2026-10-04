@@ -4,12 +4,11 @@
 // viewer and the page can observe: the page's own text, the shell's roles and
 // labels, downloads, and the daemon's API.
 import { readdirSync, readFileSync } from "node:fs";
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { contentFrame, namedViewer, openArtifact, publishWith, reach, startDaemon, type FrameMode, nameField } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, contentFrame, namedViewer, openArtifact, publishWith, reach, type FrameMode, nameField } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const dir = new URL("./pages/", import.meta.url);
 const html = (file: string) => readFileSync(new URL(file, dir), "utf8");

@@ -1,10 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import { type Page } from "@playwright/test";
 import { readFileSync, existsSync } from "node:fs";
-import { api, publishAs, registerSession, startDaemon, setName } from "./fixtures";
+import { test, expect, type Daemon, api, publishAs, registerSession, setName } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 async function contentFrame(page: Page, id: string, n: number) {
   const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);

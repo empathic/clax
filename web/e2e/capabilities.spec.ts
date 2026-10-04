@@ -1,9 +1,7 @@
-import { test, expect } from "@playwright/test";
-import { reach, contentFrame, openArtifact, publishWith, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PROBE = `<!doctype html><html><head><title>Probe</title></head><body><pre id="out">waiting</pre><script>
 (async () => {

@@ -15,6 +15,7 @@ import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
 import { parseShellPath, shellPath } from "../route";
 import { type Thread, type Viewer, addComment, createThread, currentViewer, getViewer, listThreads, onViewer, resolveThread, seedViewer, sendBatch, sendToAgent, upsert } from "../threads";
+import { after } from "../clock";
 import { afterPaint } from "./after-paint";
 import { EMPTY_SELECTION, type Selection, prune, toggle, unsent } from "./batch-model";
 import { AnchorHandles } from "./anchor-handles";
@@ -128,6 +129,8 @@ const CLIP_DROPPED = "Posted without its screenshot";
 /** How long a page the shell sent the frame to may take to greet before the
  * jump is given up (settable for tests). */
 export const pageWait = { ms: 5000 };
+/** The shortest time between two of this viewer's look marks on an artifact. */
+export const LOOK_EVERY_MS = 1000;
 
 export const MOVE_TO_PICK = "Move the pointer to pick";
 export const MOVE_TO_CLICK = "Move the pointer, then click again";
@@ -194,13 +197,13 @@ export class ArtifactController {
   // A thread on another page the viewer opened: the frame was sent to that
   // page, and it is scrolled to once that page greets, or given up after
   // `pageWait.ms` with a notice.
-  private pendingScroll: { thread: Thread; timer: ReturnType<typeof setTimeout> } | null = null;
+  private pendingScroll: { thread: Thread; cancel: () => void } | null = null;
   // The frame's latest known fragment.
   private frameHash: string;
   // The pending animation frame that copies `frameHash` into the address bar.
   private hashFrame = 0;
-  private hintTimer: ReturnType<typeof setTimeout> | undefined;
-  private captureTimer: ReturnType<typeof setTimeout> | undefined;
+  private hintTimer: (() => void) | undefined;
+  private captureTimer: (() => void) | undefined;
   private stream: ArtifactStream | null = null;
   /** Owns every listener, timer and stream this view starts. */
   private readonly life = new Lifecycle();
@@ -479,10 +482,11 @@ export class ArtifactController {
   // A screenshot still being taken that never arrives: the composer says so,
   // and a post it queued goes ahead without one.
   private armCapture(draft: Draft | null): void {
-    clearTimeout(this.captureTimer);
+    this.captureTimer?.();
+    this.captureTimer = undefined;
     const token = draft?.capturing ? draft.clipToken : undefined;
     if (!token) return;
-    this.captureTimer = setTimeout(() => this.set(s => ({ draft: withClip(s.draft, token, null, CAPTURE_LATE) })), captureWait.ms);
+    this.captureTimer = after(captureWait.ms, () => this.set(s => ({ draft: withClip(s.draft, token, null, CAPTURE_LATE) })));
   }
 
   private changeThreads(f: ThreadChange): void {
@@ -507,8 +511,8 @@ export class ArtifactController {
 
   private showHint(text: string): void {
     this.set({ hint: text });
-    clearTimeout(this.hintTimer);
-    this.hintTimer = setTimeout(() => this.set({ hint: null }), HINT_MS);
+    this.hintTimer?.();
+    this.hintTimer = after(HINT_MS, () => this.set({ hint: null }));
   }
 
   private whileBusy<T>(p: Promise<T>): Promise<T> {
@@ -617,7 +621,7 @@ export class ArtifactController {
   }
 
   private clearPending(): void {
-    if (this.pendingScroll) clearTimeout(this.pendingScroll.timer);
+    this.pendingScroll?.cancel();
     this.pendingScroll = null;
   }
 
@@ -838,9 +842,9 @@ export class ArtifactController {
     this.host?.dispose();
     this.host = null;
     this.clearPending();
-    clearTimeout(this.lookTimer);
-    clearTimeout(this.hintTimer);
-    clearTimeout(this.captureTimer);
+    this.lookTimer?.();
+    this.hintTimer?.();
+    this.captureTimer?.();
     if (this.hashFrame) cancelAnimationFrame(this.hashFrame);
     this.hashFrame = 0;
   }
@@ -1338,19 +1342,19 @@ export class ArtifactController {
     return true;
   }
   private readonly pendingLook = new Set<string>();
-  private lookTimer: ReturnType<typeof setTimeout> | undefined;
+  private lookTimer: (() => void) | undefined;
   /** This viewer looked at `t` (spec §10, "Participants and attention";
-   * decided: Q4); marks go out at most once a second. */
+   * decided: Q4); marks go out at most once per `LOOK_EVERY_MS`. */
   look(t: Thread): void {
     const mark = this.s.looked[t.id];
     if (mark && mark >= (t.comments.at(-1)?.created_at ?? "")) return;
     this.pendingLook.add(t.id);
-    this.lookTimer ??= setTimeout(() => {
+    this.lookTimer ??= after(LOOK_EVERY_MS, () => {
       this.lookTimer = undefined;
       const ids = [...this.pendingLook];
       this.pendingLook.clear();
       void putLooked(this.id, ids).then(m => { if (m && !this.disposed) this.set(s => ({ looked: { ...s.looked, ...m } })); });
-    }, 1000);
+    });
   }
 
   /** Opens menu `m` from the top bar, or closes it when open. */
@@ -1381,12 +1385,12 @@ export class ArtifactController {
     }
     // A thread on a page this version does not hold is detached: nothing to open.
     if (!this.holds(t.anchor.file)) return;
-    const timer = setTimeout(() => {
+    const cancel = after(pageWait.ms, () => {
       if (this.pendingScroll?.thread !== t) return;
       this.pendingScroll = null;
       this.noticeFor(OPEN_FAILED)(`${OPEN_FAILED} ${t.anchor.file}: the page did not load`);
-    }, pageWait.ms);
-    this.pendingScroll = { thread: t, timer };
+    });
+    this.pendingScroll = { thread: t, cancel };
     this.openPage(t.anchor.file);
   }
 

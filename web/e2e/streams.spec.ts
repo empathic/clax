@@ -1,13 +1,14 @@
-import { test, expect, type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
-import { publish, startDaemon } from "./fixtures";
+import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
+import { test, expect, type Daemon, publish, startDaemon } from "./fixtures";
+import { advance, settle } from "./time";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
 // (Playwright turns it off by default).
 test.use({ channel: "chromium", launchOptions: { ignoreDefaultArgs: ["--disable-back-forward-cache"] } });
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+// These tests count the daemon's open streams: each has a daemon of its own.
+let d: Daemon;
+test.beforeEach(({ freshDaemon }) => { d = freshDaemon; });
 
 type Streams = { open: number; held: number; levels: string[] };
 /** The daemon's own count of `/api/stream` connections (a debug build's). */
@@ -79,7 +80,7 @@ async function openTabs(ctx: BrowserContext, urls: string[], ready: (p: Page, ur
 }
 
 test("one tab moving between the gallery and two artifacts holds at most one stream, and Back still uses the back/forward cache", async ({ page }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(30_000);
   const a = (await publish(d.base, d.token, "Stream one", { "index.html": "<h1>One</h1>" })).artifact.id;
   const b = (await publish(d.base, d.token, "Stream two", { "index.html": "<h1>Two</h1>" })).artifact.id;
   // The shell never opens `/api/events` (it stays for agents).
@@ -101,7 +102,7 @@ test("one tab moving between the gallery and two artifacts holds at most one str
     const ms = Date.now() - t0;
     // The daemon sees a closed stream go once the connection closes.
     let open = (await streams()).open;
-    for (let n = 0; open > 1 && n < 10; n++) { await page.waitForTimeout(100); open = (await streams()).open; }
+    await expect.poll(async () => (open = (await streams()).open), { timeout: 1000 }).toBeLessThanOrEqual(1).catch(() => {});
     counts.push(open);
     expect(ms, `${label} took ${ms} ms`).toBeLessThan(1000);
     expect(open, `at most one stream after ${label}; open after each step: ${counts.join(",")}`).toBeLessThanOrEqual(1);
@@ -157,7 +158,7 @@ test("the stream carries no token in its URL, and the events cookie gives it the
 });
 
 test("thirty tabs share one stream; a new tab is ready within 1 s and a publish reaches every tab within 500 ms", async ({ browser }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(60_000);
   const ids: string[] = [];
   for (let i = 0; i < 10; i++) ids.push((await publish(d.base, d.token, `Tab ${i}`, { "index.html": `<h1>Tab ${i}</h1>` })).artifact.id);
   const ctx = await browser.newContext();
@@ -207,36 +208,41 @@ test("thirty tabs share one stream; a new tab is ready within 1 s and a publish 
   await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
 });
 
-/** Lets the test hide and show a page, as switching tabs does, and makes a
- * hidden page release its topics after `ms`. */
-async function controllableVisibility(ctx: BrowserContext, ms: number) {
-  await ctx.addInitScript(hiddenMs => {
+/** How long a hidden page keeps its topics (web/shell/src/stream.ts). */
+const HIDDEN_MS = 30_000;
+
+/** Lets the test hide and show a page, as switching tabs does. */
+async function controllableVisibility(ctx: BrowserContext) {
+  await ctx.addInitScript(() => {
     let v: DocumentVisibilityState = "visible";
     Object.defineProperty(Document.prototype, "visibilityState", { configurable: true, get: () => v });
     Object.defineProperty(Document.prototype, "hidden", { configurable: true, get: () => v === "hidden" });
-    const w = window as unknown as { claxHiddenMs: number; claxSetVisibility: (s: DocumentVisibilityState) => void };
-    w.claxHiddenMs = hiddenMs;
+    const w = window as unknown as { claxSetVisibility: (s: DocumentVisibilityState) => void };
     w.claxSetVisibility = s => { v = s; document.dispatchEvent(new Event("visibilitychange")); };
-  }, ms);
+  });
 }
 const setVisibility = (p: Page, v: DocumentVisibilityState) => p.evaluate(s => (window as unknown as { claxSetVisibility: (s: string) => void }).claxSetVisibility(s), v);
 
 test("a hidden tab releases its topics, hears nothing, and catches up when it shows; with every tab hidden the stream closes", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(30_000);
   const id = (await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H</h1>" })).artifact.id;
   const ctx = await browser.newContext();
-  await controllableVisibility(ctx, 500);
+  await controllableVisibility(ctx);
   const [shown, hidden] = await openTabs(ctx, [`${d.base}/`, `${d.base}/`], async p => {
     await expect(card(p, id)).toBeVisible({ timeout: 20_000 });
     await expect.poll(() => live(p), { timeout: 20_000 }).toBeGreaterThan(0);
   });
   await setVisibility(hidden, "hidden");
-  await hidden.waitForTimeout(1000);
+  // Hidden for HIDDEN_MS on the shell's clock: it releases its topics, and
+  // the hub has that before the publish below.
+  await advance(hidden, HIDDEN_MS);
   const heardBefore = await heard(hidden);
   const liveBefore = await live(hidden);
   await publish(d.base, d.token, "Hidden", { "index.html": "<h1>H2</h1>" }, 1, id);
   await expect(card(shown, id).locator(".v")).toHaveText("v2", { timeout: 2000 });
-  await hidden.waitForTimeout(1000);
+  // The hub hands an event to every tab that wants it at once: once the shown
+  // tab has it, the hidden tab would have too.
+  await settle(hidden);
   expect(await heard(hidden), "the hidden tab hears no events").toBe(heardBefore);
   await expect(card(hidden, id).locator(".v")).toHaveText("v1");
   // Shown again: its topics go live once more, and it refetches.
@@ -247,6 +253,7 @@ test("a hidden tab releases its topics, hears nothing, and catches up when it sh
   // again when one shows.
   await setVisibility(hidden, "hidden");
   await setVisibility(shown, "hidden");
+  for (const p of [hidden, shown]) await advance(p, HIDDEN_MS);
   await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(0);
   await setVisibility(shown, "visible");
   await expect.poll(async () => (await streams()).open, { timeout: 10_000 }).toBe(1);
@@ -254,7 +261,7 @@ test("a hidden tab releases its topics, hears nothing, and catches up when it sh
 });
 
 test("without shared workers the tabs elect one leader to hold the stream, and the next takes over when it closes", async ({ browser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(30_000);
   const id = (await publish(d.base, d.token, "Leader", { "index.html": "<h1>L</h1>" })).artifact.id;
   const ctx = await browser.newContext();
   await ctx.addInitScript(() => { delete (window as unknown as { SharedWorker?: unknown }).SharedWorker; });
@@ -279,7 +286,7 @@ test("without shared workers the tabs elect one leader to hold the stream, and t
 });
 
 test("a daemon restart shows the notice in every tab, which reconnect with backoff and catch up", async ({ browser }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(30_000);
   let own = await startDaemon();
   try {
     const id = (await publish(own.base, own.token, "Restart", { "index.html": "<h1>R</h1>" })).artifact.id;

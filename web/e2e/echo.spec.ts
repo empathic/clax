@@ -1,9 +1,7 @@
-import { test, expect } from "@playwright/test";
-import { contentFrame, openArtifact, publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, contentFrame, openArtifact, publishAs, publishNext, registerSession } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: the top bar reads Echo, and comment mode shows the red-orange rule`, async ({ page }) => {

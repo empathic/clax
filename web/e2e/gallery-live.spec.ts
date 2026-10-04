@@ -1,9 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
-import { publishAs, publishNext, registerSession, startDaemon } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, publishAs, publishNext, registerSession } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 /** Opens a thread on `aid` as this page's viewer; answers its ID. */
@@ -40,7 +40,7 @@ test("a new version updates only its own card, in place from the stream's delta,
   const full = (path: string) => gets.filter(u => u === path).length;
   await expect.poll(() => full("/api/viewers/me/attention")).toBe(2);
   await expect.poll(() => full("/api/artifacts")).toBe(2);
-  await page.waitForTimeout(300);
+  await settle(page);
   const before = gets.length;
   // Mark both cards' nodes: an update in place keeps them.
   await cardA.evaluate(e => { e.dataset.mark = "a"; });
@@ -50,7 +50,9 @@ test("a new version updates only its own card, in place from the stream's delta,
   await expect(cardA.locator(".chip.you")).toHaveText("1 addressed in v3");
   await expect(cardA.locator(".chip.new")).toHaveText("v3 new");
   await expect(cardA.locator(".v")).toHaveText("v3");
-  await page.waitForTimeout(1500);
+  // The delta's own fetch has gone out; anything else it caused would have too.
+  await expect.poll(() => gets.includes(`/api/viewers/me/attention?artifact=${a}`)).toBe(true);
+  await settle(page);
 
   const after = gets.slice(before).filter(u => u.startsWith("/api/"));
   expect(after.filter(u => u === "/api/viewers/me/attention" || u === "/api/artifacts"), "no full refetch").toEqual([]);
