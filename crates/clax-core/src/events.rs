@@ -16,6 +16,14 @@ pub enum Event {
         n: u32,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         by_page: bool,
+        /// The artifact's title after the publish, for `/api/stream` deltas;
+        /// never serialised on `/api/events`.
+        #[serde(skip)]
+        title: Option<String>,
+        /// When the version was created, for `/api/stream` deltas; never
+        /// serialised on `/api/events`.
+        #[serde(skip)]
+        at: Option<String>,
     },
     ArtifactDeleted {
         artifact_id: String,
@@ -129,18 +137,38 @@ impl Event {
 /// Events a subscriber may fall behind by before it lags and older events are dropped.
 pub const EVENT_BUS_CAPACITY: usize = 256;
 
+/// A function every published event is handed to, synchronously, before the
+/// broadcast (see [`EventBus::set_tap`]).
+pub type Tap = Box<dyn Fn(&Event) + Send + Sync>;
+
 #[derive(Clone)]
-pub struct EventBus(broadcast::Sender<Event>);
+pub struct EventBus {
+    tx: broadcast::Sender<Event>,
+    tap: std::sync::Arc<std::sync::OnceLock<Tap>>,
+}
 
 impl EventBus {
     pub fn new() -> Self {
-        EventBus(broadcast::channel(EVENT_BUS_CAPACITY).0)
+        EventBus {
+            tx: broadcast::channel(EVENT_BUS_CAPACITY).0,
+            tap: Default::default(),
+        }
     }
     pub fn publish(&self, event: Event) {
-        let _ = self.0.send(event);
+        if let Some(tap) = self.tap.get() {
+            tap(&event);
+        }
+        let _ = self.tx.send(event);
     }
     pub fn subscribe(&self) -> broadcast::Receiver<Event> {
-        self.0.subscribe()
+        self.tx.subscribe()
+    }
+    /// Hands every event published from now on, on this bus and its clones,
+    /// to `tap` on the publishing thread, before the broadcast. The tap must
+    /// not block. A bus has at most one tap: returns `false`, leaving the
+    /// first in place, when one is already set.
+    pub fn set_tap(&self, tap: Tap) -> bool {
+        self.tap.set(tap).is_ok()
     }
 }
 
@@ -162,6 +190,8 @@ mod tests {
             artifact_id: "7q3k9mzx2b4t".into(),
             n: 2,
             by_page: false,
+            title: Some("T".into()),
+            at: None,
         });
         let ev = rx.recv().await.unwrap();
         assert_eq!(ev.artifact_id(), "7q3k9mzx2b4t");
@@ -169,6 +199,21 @@ mod tests {
             serde_json::to_value(&ev).unwrap(),
             serde_json::json!({"type": "version", "artifact_id": "7q3k9mzx2b4t", "n": 2})
         );
+    }
+
+    #[test]
+    fn the_tap_sees_each_event_before_subscribers_and_is_set_once() {
+        let bus = EventBus::new();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let s2 = seen.clone();
+        assert!(bus.clone().set_tap(Box::new(move |e| {
+            s2.lock().unwrap().push(e.artifact_id().to_string())
+        })));
+        assert!(!bus.set_tap(Box::new(|_| {})));
+        bus.publish(Event::ArtifactDeleted {
+            artifact_id: "a".into(),
+        });
+        assert_eq!(*seen.lock().unwrap(), vec!["a".to_string()]);
     }
 
     #[test]

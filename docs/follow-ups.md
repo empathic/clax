@@ -188,12 +188,20 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   hand), and judges no request slower than its probes, such as
   `GET /api/artifacts`. A release build for the gate costs about a minute
   when nothing is cached.
-- **The daemon compresses no response** (Svelte port, Task 12). The shell's
-  JavaScript, the bridge and its parts, and wrapped pages go out
-  uncompressed. On loopback this costs little; on a LAN view it lengthens
-  link to first paint and to comment ready. Compress text responses
-  (`gzip`, or `br` where accepted) and measure time to usable on a LAN link
-  before and after.
+- **Published pages go out uncompressed.** API JSON, the shell's pages and
+  bundles, and the bridge and its parts are compressed (`gzip`, or `br`
+  where accepted); wrapped pages and supporting files under `/c/...` and on
+  artifact origins are not. On loopback this costs little; on a LAN view it
+  lengthens link to first paint. Time to usable on a LAN link has not been
+  measured before and after compression.
+- **The shell still reads `/api/events`.** `GET /api/stream` (one
+  multiplexed stream per client) is served and gated
+  (`scripts/perf-clients.sh`), but the gallery and the artifact view still
+  open `/api/events` per page; moving them onto `/api/stream` through a
+  SharedWorker, so the connection count does not grow with tabs, is not
+  done. The load gate runs its clients on the daemon's own machine over
+  loopback, from one source address, so it stops near 16,000 clients for
+  want of client ports, not daemon limits.
 - **The bridge says nothing while it waits, or when a part recovers**
   (Svelte port, Task 13 review, M4). Both need protocol additions:
   - While a page's own scripts hold up the parse, comment mode and `use()`

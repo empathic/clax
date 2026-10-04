@@ -12,7 +12,8 @@ clax-core = { path = "../clax-core" }
 anyhow.workspace = true
 axum.workspace = true
 chrono.workspace = true
-nix = { workspace = true, features = ["signal"] }
+nix = { workspace = true, features = ["signal", "resource"] }
+socket2 = "0.6"
 rand.workspace = true
 rust-embed.workspace = true
 serde.workspace = true

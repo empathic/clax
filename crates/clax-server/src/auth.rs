@@ -72,6 +72,37 @@ impl
     }
 }
 
+/// The daemon's listener: a TCP listener that sets socket options on each
+/// connection it accepts (see [`crate::daemon::tune_connection`]).
+pub struct TunedListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for TunedListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (mut io, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        crate::daemon::tune_connection(&mut io);
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TunedListener>>
+    for Conn
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TunedListener>) -> Self {
+        let peer = *stream.remote_addr();
+        Conn {
+            peer,
+            local: stream.io().local_addr().unwrap_or(peer),
+        }
+    }
+}
+
 /// True when `host` (a `Host` header) may address the API: it names this
 /// machine literally ([`is_local_host`]), or it is exactly the address and
 /// port the connection arrived on (`local`; an IP literal, IPv6 bracketed,

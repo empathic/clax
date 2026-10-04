@@ -10,6 +10,7 @@ pub mod room;
 pub mod sample;
 pub mod sessions;
 pub mod shell;
+pub mod stream;
 pub mod threads;
 pub mod token;
 pub mod viewers;
@@ -127,6 +128,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(threads::reopen),
         )
         .route("/api/viewers", get(viewers::lookup))
+        .route("/api/stream/{id}", post(stream::update))
         .route(
             "/api/viewers/me/seen",
             get(viewers::seen).put(viewers::set_seen),
@@ -181,7 +183,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let api_fast = api_fast.route("/api/_test/working/skew", post(working::skew));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
-    let api_fast = with_timeout(api_fast, state.request_timeout);
+    let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
+    let api_fast =
+        with_timeout(api_fast, state.request_timeout).layer(crate::http_cache::compression());
     let api_slow = Router::new()
         .route(
             "/api/artifacts",
@@ -201,13 +205,24 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         );
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
-    let api_slow = with_timeout(api_slow, state.publish_timeout);
+    let api_slow =
+        with_timeout(api_slow, state.publish_timeout).layer(crate::http_cache::compression());
+    let shell_routes = Router::new()
+        .route("/", get(shell::gallery_page))
+        .route("/a/{aid}", get(shell::artifact_page))
+        .route("/a/{aid}/", get(shell::artifact_page))
+        .route("/a/{aid}/v/{n}", get(shell::artifact_page))
+        // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
+        .route("/a/{aid}/{*rest}", get(shell::artifact_page))
+        .route("/_clax/{*path}", get(shell::static_file))
+        .layer(crate::http_cache::compression());
     let mcp = mcp::router(&state);
     #[cfg(feature = "test-routes")]
     let mcp = mcp.layer(axum::middleware::from_fn(test_delay));
     let mut r = Router::new()
         .route("/healthz", get(health::healthz).layer(cors))
         .route("/api/events", get(events::events))
+        .route("/api/stream", get(stream::open))
         .route("/api/artifacts/{aid}/room", get(room::room))
         .route(
             "/api/artifacts/{aid}/sample",
@@ -222,13 +237,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/sessions/{id}/notices", get(feedback::notices))
         .merge(api_fast)
         .merge(api_slow)
-        .route("/", get(shell::gallery_page))
-        .route("/a/{aid}", get(shell::artifact_page))
-        .route("/a/{aid}/", get(shell::artifact_page))
-        .route("/a/{aid}/v/{n}", get(shell::artifact_page))
-        // `/a/<id>[/v/<n>]/<file>`: the shell reads the version and page from the path.
-        .route("/a/{aid}/{*rest}", get(shell::artifact_page))
-        .route("/_clax/{*path}", get(shell::static_file))
+        .merge(shell_routes)
         .route("/_blob/{asset_id}", get(assets::blob))
         .route("/c/{aid}/v/{n}", get(content::redirect_to_slash))
         .route("/c/{aid}/v/{n}/", get(content::index))
@@ -301,6 +310,8 @@ async fn test_slow_publish(
             artifact_id: artifact.id,
             n: version.n,
             by_page: false,
+            title: Some(artifact.title.clone()),
+            at: Some(version.created_at.clone()),
         });
         Ok(())
     })

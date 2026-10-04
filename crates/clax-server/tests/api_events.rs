@@ -157,6 +157,8 @@ async fn lagged_subscriber_receives_resync_with_dropped_count() {
             artifact_id: "7q3k9mzx2b4t".into(),
             n,
             by_page: false,
+            title: None,
+            at: None,
         });
     }
     let dropped = sent - capacity;

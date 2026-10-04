@@ -1,0 +1,19 @@
+{
+  "clients": 1000,
+  "workers": 4,
+  "artifacts": 20,
+  "hot": 4,
+  "baseline_s": 2,
+  "idle_s": 16,
+  "load_s": 15,
+  "write_rate_hz": 5,
+  "flood_batches": 100,
+  "delivery_p95_ms": 40,
+  "delivery_max_ms": 150,
+  "cheap_p95_ms": 10,
+  "rss_per_client_kb": 48,
+  "idle_cpu_pct": 2,
+  "slow_rss_growth_kb": 2048,
+  "quiet_idle_p95_ms": 5,
+  "max_scale": 3
+}

@@ -77,6 +77,17 @@ fn base_caller(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Resu
     })
 }
 
+/// The level and viewer of a caller that holds the token (`token`) and/or
+/// the viewer cookie `cookie`, with the rules of the `db` routes: the token
+/// without a viewer is `owner`, with one `admin`; a named viewer alone is
+/// `interact`, anything else `view`. A cookie with no viewer row is no viewer.
+///
+/// # Errors
+/// When reading the viewer fails.
+pub fn caller_of(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Result<Caller> {
+    base_caller(st, token, cookie)
+}
+
 /// Who is making a `db` request: whether it carries the bearer token, its
 /// viewer cookie, and the `?as_level=` it narrows to (percent-decoded).
 /// Rejects an `as_level` other than `view`, `interact`, or `admin`, or one

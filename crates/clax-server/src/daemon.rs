@@ -151,6 +151,53 @@ pub fn retry_interrupted<T>(mut op: impl FnMut() -> io::Result<T>) -> io::Result
     }
 }
 
+/// Most descriptors the daemon asks for: far more connections than one
+/// daemon serves, and a finite limit for the processes it spawns, which
+/// inherit it (an unlimited one, which macOS allows, breaks programs that
+/// close every descriptor up to the limit).
+pub const MAX_OPEN_FILES: u64 = 1 << 20;
+
+/// Raises the soft limit on open descriptors to the hard limit, at most
+/// [`MAX_OPEN_FILES`], so one daemon can hold thousands of connections.
+/// Where the kernel refuses that, the highest of a few lower steps it
+/// accepts is taken. Returns the soft limit before and after.
+///
+/// # Errors
+/// When the limit cannot be read.
+pub fn raise_open_file_limit() -> io::Result<(u64, u64)> {
+    use nix::sys::resource::{Resource, getrlimit, setrlimit};
+    let (soft, hard) = getrlimit(Resource::RLIMIT_NOFILE).map_err(io::Error::from)?;
+    let top = hard.min(MAX_OPEN_FILES);
+    if soft >= top {
+        return Ok((soft, soft));
+    }
+    let steps = [1 << 19, 245_760, 1 << 17, 1 << 16, 24_576, 10_240];
+    let tries = std::iter::once(top).chain(steps.into_iter().filter(|s| *s < top));
+    for want in tries.filter(|w| *w > soft) {
+        if setrlimit(Resource::RLIMIT_NOFILE, want, hard).is_ok() {
+            let (now, _) = getrlimit(Resource::RLIMIT_NOFILE).map_err(io::Error::from)?;
+            return Ok((soft, now));
+        }
+    }
+    Ok((soft, soft))
+}
+
+/// Socket options for each accepted connection: no Nagle delay, so a small
+/// event leaves at once, and TCP keep-alive probes after a minute idle, so a
+/// peer that vanished without closing (a sleeping laptop on the LAN) frees
+/// its connection and its stream.
+pub fn tune_connection(tcp: &mut tokio::net::TcpStream) {
+    if let Err(e) = tcp.set_nodelay(true) {
+        tracing::debug!(error = %e, "TCP_NODELAY");
+    }
+    let ka = socket2::TcpKeepalive::new()
+        .with_time(Duration::from_secs(60))
+        .with_interval(Duration::from_secs(10));
+    if let Err(e) = socket2::SockRef::from(&*tcp).set_tcp_keepalive(&ka) {
+        tracing::debug!(error = %e, "TCP keep-alive");
+    }
+}
+
 /// Parameters for [`serve`].
 pub struct ServeConfig {
     /// Clax home the daemon serves from and writes `daemon.json` into.
@@ -198,6 +245,10 @@ pub async fn serve(
     ready: Option<oneshot::Sender<DaemonInfo>>,
 ) -> anyhow::Result<()> {
     cfg.home.ensure_dirs()?;
+    match raise_open_file_limit() {
+        Ok((before, after)) => tracing::info!(before, after, "open file limit"),
+        Err(e) => tracing::warn!(error = %e, "could not read or raise the open file limit"),
+    }
     let listener = bind_first_free(cfg.bind, cfg.port).await?;
     let port = listener.local_addr()?.port();
     let store = Arc::new(Store::open(&cfg.home)?);
@@ -249,12 +300,15 @@ pub async fn serve(
         ))),
         rooms: Arc::new(crate::room::Rooms::default()),
         sample: cfg.sample.clone(),
+        stream: crate::stream::Hub::new(),
     };
+    state.stream.listen(&state.events);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
+    let state_stream = state.stream.clone();
     let app = crate::build_router_with_shutdown(state, shutdown_tx.clone());
     if let Some(tx) = ready {
         let _ = tx.send(info.clone());
@@ -336,13 +390,14 @@ pub async fn serve(
             every.tick().await;
             crate::working::sweep_and_announce(&sweep_working, &sweep_events);
             crate::presence::sweep_and_announce(&state_presence, &sweep_events);
+            state_stream.sweep();
         }
     });
 
     let (fired_tx, fired_rx) = oneshot::channel::<()>();
     let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let server = axum::serve(
-        listener,
+        crate::auth::TunedListener(listener),
         app.into_make_service_with_connect_info::<crate::auth::Conn>(),
     )
     .with_graceful_shutdown(async move {
@@ -391,6 +446,14 @@ pub async fn serve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_open_file_limit_ends_at_or_above_where_it_began() {
+        let (before, after) = raise_open_file_limit().unwrap();
+        assert!(after >= before);
+        let (again, _) = raise_open_file_limit().unwrap();
+        assert_eq!(again, after);
+    }
 
     #[test]
     fn probe_host_maps_unspecified_to_same_family_loopback() {

@@ -74,8 +74,10 @@ impl TestServer {
             rooms: Arc::new(crate::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
+            stream: crate::stream::Hub::new(),
         };
         f(&mut state);
+        state.stream.listen(&state.events);
         let events = state.events.clone();
         let working = state.working.clone();
         let presence = state.presence.clone();

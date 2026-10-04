@@ -57,6 +57,7 @@ run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warning
 run "cargo check (no test features)" env RUSTFLAGS=-Dwarnings cargo check --workspace
 run "cargo test"            cargo test --workspace
 run "daemon latency"        scripts/perf-daemon.sh
+run "realtime clients"      scripts/perf-clients.sh
 run "comment loop"          scripts/smoke-comment-loop.sh
 run "pi extension"          bash -c 'cd plugins/pi && npm ci --silent && npm run typecheck && npm test -- --reporter=dot'
 run "web e2e"               bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null && npm run e2e'

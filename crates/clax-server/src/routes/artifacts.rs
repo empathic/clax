@@ -306,6 +306,8 @@ pub async fn create(
                 artifact_id: artifact.id.clone(),
                 n: version.n,
                 by_page: false,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
             });
             Ok((artifact, version))
         })
@@ -503,6 +505,8 @@ pub async fn publish(
                 artifact_id: artifact.id.clone(),
                 n: version.n,
                 by_page,
+                title: Some(artifact.title.clone()),
+                at: Some(version.created_at.clone()),
             });
             for tid in &version.addresses {
                 if let Some(t) = st.get_thread(tid)? {
