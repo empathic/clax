@@ -59,7 +59,7 @@ describe("working UI", () => {
     }
   });
 
-  it("the gallery's feed passes version and thread events to onChange at most once a second", () => {
+  it("the gallery's feed passes each event's artifact to onChange at most once a second per artifact", () => {
     let emit: ((t: string, data: unknown) => void) | null = null;
     vi.stubGlobal("EventSource", class {
       listeners = new Map<string, (e: MessageEvent) => void>();
@@ -70,24 +70,43 @@ describe("working UI", () => {
     vi.useFakeTimers();
     try {
       const onChange = vi.fn();
+      const onResync = vi.fn();
       const feed = new WorkingFeed();
-      feed.start(() => {}, onChange);
+      feed.start(onResync, onChange);
       emit!("version", { type: "version", artifact_id: "a", n: 2 });
       emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      emit!("thread", { type: "thread", artifact_id: "b", thread: {} });
       vi.advanceTimersByTime(0);
-      expect(onChange).toHaveBeenCalledTimes(1);
-      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      expect(onChange.mock.calls).toEqual([["a"], ["b"]]);
+      emit!("thread_deleted", { type: "thread_deleted", artifact_id: "a", thread_id: "t" });
+      emit!("artifact_deleted", { type: "artifact_deleted", artifact_id: "c" });
+      vi.advanceTimersByTime(0);
+      expect(onChange.mock.calls).toEqual([["a"], ["b"], ["c"]]);
       vi.advanceTimersByTime(999);
-      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(onChange).toHaveBeenCalledTimes(3);
       vi.advanceTimersByTime(1);
-      expect(onChange).toHaveBeenCalledTimes(2);
+      expect(onChange.mock.calls[3]).toEqual(["a"]);
+      expect(onResync).not.toHaveBeenCalled();
+      emit!("resync", { dropped: 3 });
+      expect(onResync).toHaveBeenCalledTimes(1);
       emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
       feed.stop();
       vi.advanceTimersByTime(2000);
-      expect(onChange).toHaveBeenCalledTimes(2);
+      expect(onChange).toHaveBeenCalledTimes(4);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();
     }
+  });
+
+  it("the gallery's feed seeds one artifact's working list without touching the others", () => {
+    const w = { key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" };
+    const art = (id: string, working: unknown[]) => ({ id, title: id, description: null, icon: null, updated_at: "x", current_version: 1, pinned: false, working }) as never;
+    const feed = new WorkingFeed();
+    feed.seed([art("a", []), art("b", [w])]);
+    feed.seedOne("a", art("a", [w]));
+    expect(feed.byId).toEqual({ a: [w], b: [w] });
+    feed.seedOne("b", null);
+    expect(feed.byId).toEqual({ a: [w] });
   });
 });

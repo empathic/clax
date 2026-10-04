@@ -209,19 +209,35 @@ pub struct LookedBody {
     thread_ids: Vec<String>,
 }
 
+#[derive(Deserialize)]
+pub struct AttentionQuery {
+    artifact: Option<String>,
+}
+
 /// `GET /api/viewers/me/attention`: this viewer's attention on every live
 /// artifact, without looked-at times; `{artifacts: {}}` without a cookie.
+/// With `?artifact=<aid>`, on that artifact alone: `{artifacts: {<aid>:
+/// ...}}`, or `{artifacts: {}}` when it is not live (400 for a malformed ID).
 pub async fn attention(
     State(s): State<AppState>,
     _o: SameOrigin,
     viewer: ViewerCookie,
+    q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let one = q.artifact.as_deref().map(parse_id).transpose()?;
     let out = match viewer.0 {
         Some(v) => {
             s.store_call(move |st| {
-                Ok(match st.get_viewer(&v)? {
-                    Some(_) => json!(st.attention_all(&v)?),
-                    None => json!({}),
+                Ok(match (st.get_viewer(&v)?, one) {
+                    (None, _) => json!({}),
+                    (Some(_), None) => json!(st.attention_all(&v)?),
+                    (Some(_), Some(id)) => match st.attention_one(&v, &id)? {
+                        Some(a) => {
+                            Value::Object([(id.to_string(), json!(a))].into_iter().collect())
+                        }
+                        None => json!({}),
+                    },
                 })
             })
             .await?

@@ -7,9 +7,9 @@ use crate::state::AppState;
 use axum::Json;
 use axum::body::Bytes;
 use axum::extract::rejection::PathRejection;
-use axum::extract::rejection::{JsonRejection, MissingJsonContentType};
+use axum::extract::rejection::{JsonRejection, MissingJsonContentType, QueryRejection};
 use axum::extract::{FromRequest, Request};
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use clax_core::model::{Artifact, Session};
@@ -211,31 +211,64 @@ pub(crate) fn strip_sessions(v: &mut Value) {
     }
 }
 
+#[derive(Deserialize)]
+pub struct ListQuery {
+    artifact: Option<String>,
+}
+
 /// Each live artifact, with the owner fields of [`with_owner`]. Without the
-/// token, no session ID is included.
-pub async fn list(State(s): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
-    let all = s.working.all();
-    let artifacts = s
-        .store_call(move |st| {
-            let artifacts = st.list_artifacts()?;
-            let owners: std::collections::HashMap<String, Session> = st
-                .list_sessions(false)?
-                .into_iter()
-                .map(|s| (s.id.clone(), s))
-                .collect();
-            let participants = st.participants_all()?;
-            let none = Participants::default();
-            Ok(artifacts
-                .iter()
-                .map(|a| {
-                    let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
-                    let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
-                    let people = participants.get(&a.id).unwrap_or(&none);
-                    with_owner(a, owner, working, people)
-                })
-                .collect::<Vec<_>>())
-        })
-        .await?;
+/// token, no session ID is included. With `?artifact=<aid>`, that artifact
+/// alone, or none when it is not live (400 for a malformed ID).
+pub async fn list(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    q: Result<Query<ListQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
+        Some(id) => {
+            let working = s.working.for_artifact(id.as_str());
+            s.store_call(move |st| {
+                let Some(a) = st.get_artifact(&id)? else {
+                    return Ok(vec![]);
+                };
+                let owner = match &a.owner_session_id {
+                    Some(sid) => st.get_session(sid)?,
+                    None => None,
+                };
+                Ok(vec![with_owner(
+                    &a,
+                    owner.as_ref(),
+                    &working,
+                    &st.participants(&id)?,
+                )])
+            })
+            .await?
+        }
+        None => {
+            let all = s.working.all();
+            s.store_call(move |st| {
+                let artifacts = st.list_artifacts()?;
+                let owners: std::collections::HashMap<String, Session> = st
+                    .list_sessions(false)?
+                    .into_iter()
+                    .map(|s| (s.id.clone(), s))
+                    .collect();
+                let participants = st.participants_all()?;
+                let none = Participants::default();
+                Ok(artifacts
+                    .iter()
+                    .map(|a| {
+                        let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
+                        let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
+                        let people = participants.get(&a.id).unwrap_or(&none);
+                        with_owner(a, owner, working, people)
+                    })
+                    .collect::<Vec<_>>())
+            })
+            .await?
+        }
+    };
     let mut v = json!({"artifacts": artifacts});
     if !has_token(&headers, &s.token) {
         strip_sessions(&mut v);

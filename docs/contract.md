@@ -1083,6 +1083,18 @@ unknown artifact is 404; malformed thread IDs are 400 `invalid_args`.
 Looked-at marks are the viewer's own: no thread view, artifact view,
 participant list or event carries them.
 
+`GET /api/artifacts?artifact=<aid>` answers `{"artifacts": [...]}` with that
+artifact's entry alone, as `GET /api/artifacts` lists it, or `[]` when it
+is not live; a malformed ID is 400.
+
+The open gallery fetches the list and this attention in full when it loads,
+when its event stream (`/api/events?types=working,version,thread,thread_deleted,artifact_deleted`)
+opens or sends `resync`, and once a minute while the page is visible. A
+`version`, `thread`, `thread_deleted` or `artifact_deleted` event refetches
+only the artifact it names, with `?artifact=<aid>` on both routes, at most
+once a second per artifact, and updates that card in place (or removes it).
+`working` events carry the whole list and need no fetch.
+
 `GET /api/artifacts` (each artifact) and `GET /api/artifacts/<aid>`
 (`artifact`) carry `participants`:
 
@@ -1120,7 +1132,10 @@ and is then sent with `Cache-Control: private, no-cache` and `Vary: Cookie`:
 `GET /api/viewers/me/attention` answers `{"artifacts": {<aid>: {...}}}` for
 every live artifact, with the fields above except `looked`, and
 `{"artifacts": {}}` without a viewer cookie or with one that names no
-viewer. The `/a/<id>` bootstrap carries `participants` in its artifact and,
+viewer. With `?artifact=<aid>` it answers for that artifact alone, at the
+cost of that artifact's threads: `{"artifacts": {<aid>: {...}}}`, or
+`{"artifacts": {}}` when the artifact is not live (deleted, or unknown); a
+malformed ID is 400. The `/a/<id>` bootstrap carries `participants` in its artifact and,
 for the cookie's existing viewer, `attention` at the top level.
 
 `PUT /api/viewers/me/presence` with `{"artifact_id", "state": "here" |
@@ -2522,7 +2537,8 @@ harness and the daemon, each `ok` or failed with the fix:
   as the harness sets them (a Stop with no reason ends the turn); anything
   that can set them runs as the person and can read `daemon.json`.
 - `GET /api/viewers/me/attention` costs work in proportion to the threads a
-  viewer is in across every artifact.
+  viewer is in across every artifact; with `?artifact=<aid>`, the threads of
+  that artifact.
 
 Open follow-ups, and the checks that still need a real harness or GitHub,
 are listed in [`docs/follow-ups.md`](follow-ups.md).

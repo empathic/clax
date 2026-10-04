@@ -217,6 +217,35 @@ impl Store {
         })
     }
 
+    /// The viewer's attention summary on `aid` (as [`Store::attention`]
+    /// without `looked`), or `None` when `aid` is not live: deleted, or with
+    /// no version yet. The cost is that of one artifact's threads, whatever
+    /// the viewer's threads elsewhere.
+    pub fn attention_one(
+        &self,
+        viewer_id: &str,
+        aid: &ArtifactId,
+    ) -> Result<Option<AttentionSummary>> {
+        self.with_read(|c| {
+            let live: bool = c
+                .prepare_cached(
+                    "SELECT EXISTS (SELECT 1 FROM artifacts WHERE id = ?1 AND deleted_at IS NULL AND current_version > 0)",
+                )?
+                .query_row(params![aid.as_str()], |r| r.get(0))?;
+            if !live {
+                return Ok(None);
+            }
+            let Some(p) = public_id_of(c, viewer_id)? else {
+                return Ok(Some(AttentionSummary::default()));
+            };
+            Ok(Some(
+                summaries_in(c, viewer_id, &p, Some(aid.as_str()))?
+                    .remove(aid.as_str())
+                    .unwrap_or_default(),
+            ))
+        })
+    }
+
     /// The viewer's attention summary on every live artifact, by artifact ID.
     pub fn attention_all(&self, viewer_id: &str) -> Result<BTreeMap<String, AttentionSummary>> {
         let ids: Vec<String> = self.list_artifacts()?.into_iter().map(|a| a.id).collect();

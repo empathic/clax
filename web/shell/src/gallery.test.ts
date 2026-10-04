@@ -28,6 +28,8 @@ const ARTIFACTS = [
 ];
 
 type Call = { url: string; method: string; body?: string };
+/** Fields a single-artifact list answer changes, by artifact ID. */
+let edits: Record<string, Record<string, unknown>> = {};
 const ATTENTION = { artifacts: { aaaaaaaaaaaa: { addressed: [], addressed_v: null, new_replies: ["t"], open_in: ["t"], seen: 1 } } };
 function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = "none") {
   const calls: Call[] = [];
@@ -38,6 +40,9 @@ function stubApi(tokenStatus: number = 200, attention: "ok" | "fail" | "none" = 
       if (attention === "ok") return new Response(JSON.stringify(ATTENTION));
     }
     if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: ARTIFACTS }));
+    const one = url.match(/^\/api\/artifacts\?artifact=(\w+)$/);
+    if (one) return new Response(JSON.stringify({ artifacts: ARTIFACTS.filter(a => a.id === one[1]).map(a => ({ ...a, ...edits[a.id] })) }));
+    if (url.startsWith("/api/viewers/me/attention?artifact=")) return new Response(JSON.stringify({ artifacts: {} }));
     if (url.includes("haiku")) return new Response(JSON.stringify(["one\ntwo\nthree"]));
     if (url.endsWith("/api/viewers/me")) return new Response(JSON.stringify({ viewer: { public_id: "v1", display_name: "Ada", created_at: "2026-09-01T00:00:00Z" } }));
     if (url.endsWith("/api/token")) return tokenStatus === 200 ? new Response(JSON.stringify({ token: "t" })) : new Response("{}", { status: tokenStatus });
@@ -65,7 +70,7 @@ async function mountGallery() {
 
 describe("Gallery", () => {
   beforeEach(() => { vi.resetModules(); });
-  afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); });
+  afterEach(() => { unmountGallery?.(); unmountGallery = null; vi.unstubAllGlobals(); document.body.replaceChildren(); edits = {}; });
 
   it("renders cards led by the version numeral, with title and link, and no description", async () => {
     stubApi();
@@ -209,18 +214,42 @@ describe("Gallery", () => {
     expect(root.querySelectorAll(".card-wrap")[0].textContent!.match(/★/g)).toHaveLength(1);
   });
 
-  it("pin button sends PATCH with pinned true and refetches", async () => {
+  it("pin button sends PATCH with pinned true and refetches that card", async () => {
     const calls = stubApi();
     const root = await mountGallery();
+    // The live refreshes load with the rosters, after the first paint.
+    await waitFor(() => root.querySelector(".ft .ros"), "the live module to load");
     const pin = await waitFor(() => root.querySelectorAll(".card-wrap")[1]?.querySelector('button[title="Pin"]') as HTMLButtonElement | null, "pin button");
     const wrap = root.querySelectorAll(".card-wrap")[1];
     expect(wrap.querySelector("a button")).toBeNull();
     expect(pin.getAttribute("aria-label")).toBe("Pin Other");
+    edits = { aaaaaaaaaaaa: { pinned: true } };
     pin.click();
-    await waitFor(() => calls.filter(c => c.url.endsWith("/api/artifacts") && c.method === "GET").length === 2, "refetch after PATCH");
+    await waitFor(() => root.querySelector('button[aria-label="Unpin Other"]'), "the card to show its pin");
     const patch = calls.find(c => c.method === "PATCH")!;
     expect(patch.url).toBe("/api/artifacts/aaaaaaaaaaaa");
     expect(JSON.parse(patch.body!)).toEqual({ pinned: true });
+    expect(calls.filter(c => c.method === "GET" && c.url.startsWith("/api/artifacts")).map(c => c.url)).toEqual(["/api/artifacts", "/api/artifacts?artifact=aaaaaaaaaaaa"]);
+  });
+
+  it("an event naming an artifact refetches only that card and its attention, and updates it in place", async () => {
+    let emit: ((t: string, data: unknown) => void) | null = null;
+    vi.stubGlobal("EventSource", class {
+      listeners = new Map<string, (e: MessageEvent) => void>();
+      constructor() { emit = (t, data) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
+      addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
+      close() {}
+    });
+    const calls = stubApi(200, "ok");
+    const root = await mountGallery();
+    await waitFor(() => emit, "the gallery's stream");
+    const before = calls.length;
+    edits = { aaaaaaaaaaaa: { current_version: 2, updated_at: "2026-09-28T11:30:00Z" } };
+    emit!("version", { type: "version", artifact_id: "aaaaaaaaaaaa", n: 2 });
+    const card = () => Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Other"));
+    await waitFor(() => card()?.querySelector(".v")?.textContent === "v2", "the card to show v2");
+    expect(calls.slice(before).map(c => c.url).sort()).toEqual(["/api/artifacts?artifact=aaaaaaaaaaaa", "/api/viewers/me/attention?artifact=aaaaaaaaaaaa"]);
+    expect(Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Pinned one"))?.querySelector(".v")?.textContent).toBe("v3");
   });
 
   it("delete calls DELETE only after confirm", async () => {
