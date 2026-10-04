@@ -4,18 +4,20 @@
 //! a [`BUSY_TIMEOUT`](exec::BUSY_TIMEOUT) so another process holding a lock
 //! makes a call wait briefly instead of failing:
 //!
-//! - **One writer.** A dedicated thread owns the only write connection and
-//!   takes jobs from a FIFO channel, so writers are served in arrival order.
-//!   Every write goes through [`Store::with_tx`] (or, for statements that
-//!   are not transactions, `with_write`), which queues the job and blocks the
-//!   caller until it has run. Parsing, decoding, hashing and file writes
-//!   happen before the job is queued, so the writer runs only short
-//!   transactions. On open, the migrations run on this connection before
-//!   any reader opens.
+//! - **One writer.** There is one write connection, lent to one caller at a
+//!   time in arrival order (a ticket queue). Every write goes through
+//!   [`Store::with_tx`] (or, for statements that are not transactions,
+//!   `with_write`), which blocks the caller until every earlier caller has
+//!   finished and then runs the job on the caller's own thread. Parsing,
+//!   decoding, hashing and file writes happen before the job starts, so the
+//!   connection is held only for short transactions. On open, the
+//!   migrations run on this connection before any reader opens.
 //! - **Readers.** A pool of `query_only` connections, at most
 //!   [`reader_count`](exec::reader_count), opened on first use. Every
 //!   read-only method takes one through `with_read`, so reads run
-//!   concurrently with each other and with the writer. A read still running
+//!   concurrently with each other and with the writer. Each `with_read` runs
+//!   in one read transaction, so all its statements see one snapshot. A
+//!   write job may not read through a reader. A read still running
 //!   after [`READ_LIMIT`](exec::READ_LIMIT) is interrupted and fails with
 //!   [`CoreError::ReadTimeout`](crate::CoreError::ReadTimeout).
 //! - **Checkpoints.** Once the store serves [`Store::call`], a background
@@ -25,10 +27,13 @@
 //!   at which they would checkpoint themselves.
 //!
 //! The methods are synchronous and may be called from any thread. The
-//! daemon calls them through [`Store::call`], which runs a job on a fixed
-//! set of worker threads (one per reader) fed by a bounded FIFO queue, so a
-//! pile-up of requests waits in the queue instead of claiming more threads,
-//! and a job whose request has given up is skipped.
+//! daemon calls them through [`Store::call`], which runs a job on worker
+//! threads (one per reader) fed by a bounded FIFO queue, so a pile-up of
+//! requests waits in the queue instead of claiming more threads, and a job
+//! whose request has given up is skipped. A job waiting for the write turn
+//! or holding it does not count against the workers that reads need: while
+//! fewer than one per reader would be free of writes, the pool starts
+//! another. [`Store::shutdown`] drains the queue and joins the threads.
 //!
 //! Version writes, deletes, and asset writes combine a transaction with
 //! file-system work, ordered so that a failure on either side leaves no
@@ -54,6 +59,7 @@ use crate::{Home, Result};
 use exec::{Readers, Workers, Writer};
 use rusqlite::Connection;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 /// Rows `ANALYZE` samples per index when `PRAGMA optimize` refreshes statistics.
 pub const ANALYSIS_LIMIT: u32 = 400;
@@ -65,6 +71,8 @@ pub struct Store {
     writer: Writer,
     readers: Readers,
     workers: OnceLock<Workers>,
+    /// Set by [`Store::shutdown`].
+    shut_down: AtomicBool,
 }
 
 impl Store {
@@ -80,9 +88,10 @@ impl Store {
         ))?;
         Ok(Store {
             home: home.clone(),
-            writer: Writer::start(conn)?,
+            writer: Writer::new(conn),
             readers: Readers::new(path, exec::reader_count()),
             workers: OnceLock::new(),
+            shut_down: AtomicBool::new(false),
         })
     }
 
@@ -115,7 +124,13 @@ impl Store {
     /// [`exec::READ_LIMIT`]).
     #[doc(hidden)]
     pub fn set_read_limit(&self, limit: std::time::Duration) {
-        self.readers.set_limit(limit);
+        self.readers.set_limit(Some(limit));
+    }
+
+    /// Lets reads run as long as they take, for offline checks of a whole
+    /// home (`clax doctor`) rather than requests.
+    pub fn lift_read_limit(&self) {
+        self.readers.set_limit(None);
     }
 
     pub fn now() -> String {
@@ -127,18 +142,19 @@ impl Store {
         self.readers.run(true, f)
     }
 
-    /// Runs `f` in a transaction on the writer thread and commits it when `f`
-    /// succeeds (an error rolls it back). Blocks until the writer has run
-    /// every job queued before this one, then `f`.
+    /// Runs `f` in a transaction on the write connection and commits it when
+    /// `f` succeeds (an error or a panic rolls it back). Blocks until every
+    /// write that arrived before this one has finished, then runs `f` on the
+    /// calling thread.
     ///
     /// The transaction is `IMMEDIATE`: it takes the write lock when it
     /// begins, where a lock held elsewhere (another process, or a reader
     /// briefly holding it to repair a WAL index it saw mid-update) is waited
     /// for under the busy timeout. A deferred transaction that read first
     /// would instead fail at once with `SQLITE_BUSY` on its first write.
-    pub(crate) fn with_tx<T: Send>(
+    pub(crate) fn with_tx<T>(
         &self,
-        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T> + Send,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.writer.run(|conn| {
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
@@ -150,10 +166,7 @@ impl Store {
 
     /// Runs `f` on the write connection outside a transaction, for
     /// statements that manage their own (`PRAGMA optimize`).
-    pub(crate) fn with_write<T: Send>(
-        &self,
-        f: impl FnOnce(&Connection) -> Result<T> + Send,
-    ) -> Result<T> {
+    pub(crate) fn with_write<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         self.writer.run(|conn| f(conn))
     }
 }

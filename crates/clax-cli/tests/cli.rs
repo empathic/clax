@@ -39,11 +39,11 @@ impl Drop for Env {
             .ok()
             .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
         if let Some(pid) = info.and_then(|v| v["pid"].as_i64()) {
-            // SAFETY: signal 0 probes, SIGTERM ends the leaked test daemon.
-            unsafe {
-                if libc::kill(pid as libc::pid_t, 0) == 0 {
-                    libc::kill(pid as libc::pid_t, libc::SIGTERM);
-                }
+            // Signal 0 probes, SIGTERM ends the leaked test daemon.
+            use nix::sys::signal::{Signal, kill};
+            let pid = nix::unistd::Pid::from_raw(pid as i32);
+            if kill(pid, None).is_ok() {
+                let _ = kill(pid, Signal::SIGTERM);
             }
         }
     }
@@ -1001,31 +1001,25 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
     e.stop();
 }
 
-/// Waits up to `timeout` for `fd` to reach EOF (every write end closed).
-fn read_end_hits_eof(fd: libc::c_int, timeout: std::time::Duration) -> bool {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let mut p = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: `p` is one valid pollfd for the duration of the call.
-        let n = unsafe { libc::poll(&mut p, 1, left.as_millis() as libc::c_int) };
-        if n <= 0 {
-            return false;
-        }
+/// Waits up to `timeout` for `r` to reach EOF (every write end closed).
+fn read_end_hits_eof(mut r: std::io::PipeReader, timeout: std::time::Duration) -> bool {
+    use std::io::Read;
+    let (tx, rx) = std::sync::mpsc::channel();
+    // Reads until EOF or an error; a reader still blocked after the timeout
+    // ends once the writers are gone.
+    std::thread::spawn(move || {
         let mut buf = [0u8; 64];
-        // SAFETY: `buf` is a writable buffer of the stated length.
-        let r = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
-        if r == 0 {
-            return true;
-        }
-        if r < 0 || std::time::Instant::now() >= deadline {
-            return false;
-        }
-    }
+        let eof = loop {
+            match r.read(&mut buf) {
+                Ok(0) => break true,
+                Ok(_) => continue,
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break false,
+            }
+        };
+        let _ = tx.send(eof);
+    });
+    rx.recv_timeout(timeout).unwrap_or(false)
 }
 
 /// How long a step that is immediate on an idle machine may take on a loaded one.
@@ -1055,54 +1049,35 @@ fn wait_for_daemon_json(
     false
 }
 
-/// A close-on-exec pipe, as std makes them.
-fn cloexec_pipe() -> (libc::c_int, libc::c_int) {
-    let mut fds = [0 as libc::c_int; 2];
-    // SAFETY: `fds` has room for the two descriptors pipe writes; fcntl only
-    // sets flags on them.
-    unsafe {
-        assert_eq!(libc::pipe(fds.as_mut_ptr()), 0);
-        libc::fcntl(fds[0], libc::F_SETFD, libc::FD_CLOEXEC);
-        libc::fcntl(fds[1], libc::F_SETFD, libc::FD_CLOEXEC);
-    }
-    (fds[0], fds[1])
-}
-
-/// Passes `fd` to the command's child as an extra inherited descriptor: the
-/// state a concurrent fork catches a std pipe in on platforms without `pipe2`.
-/// Only this child inherits it, so other tests' children cannot hold it.
-fn inherit(cmd: &mut std::process::Command, fd: libc::c_int) {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: fcntl is async-signal-safe and touches only the child's copy.
-    unsafe {
-        cmd.pre_exec(move || {
-            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
-                return Err(std::io::Error::last_os_error());
-            }
-            Ok(())
-        });
-    }
+/// A command running `clax` with `w` as an extra inherited descriptor (9):
+/// the state a concurrent fork catches a std pipe in on platforms without
+/// `pipe2`. A shell takes `w` as its stderr and moves it to descriptor 9 as
+/// it execs `clax` (stderr goes to `/dev/null`), so only this child inherits
+/// it and other tests' children cannot hold it.
+fn clax_inheriting(w: std::io::PipeWriter) -> std::process::Command {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", r#"exec "$0" "$@" 9>&2 2>/dev/null"#])
+        .arg(assert_cmd::cargo::cargo_bin("clax"))
+        .stderr(w);
+    cmd
 }
 
 #[test]
 fn an_auto_started_daemon_does_not_hold_inherited_descriptors() {
     let e = Env::new();
-    let (r, w) = cloexec_pipe();
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("clax"));
+    let (r, w) = std::io::pipe().unwrap();
+    let mut cmd = clax_inheriting(w);
     cmd.env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
         .args(["status", "--start", "--json", "--port", "0"])
         .stdin(std::process::Stdio::null());
-    inherit(&mut cmd, w);
     let out = cmd.output().unwrap();
-    // SAFETY: `w` is this test's own write end, closed once.
-    unsafe { libc::close(w) };
+    // The command has been dropped with this process's copy of the write end.
+    drop(cmd);
     assert!(out.status.success(), "{out:?}");
     // `status --start` returns once the daemon answers, so only the read is bounded.
     let eof = read_end_hits_eof(r, LOADED_BOUND);
-    // SAFETY: `r` is this test's own read end, closed once.
-    unsafe { libc::close(r) };
     e.stop();
     assert!(eof, "the daemon kept an inherited pipe write end open");
 }
@@ -1110,26 +1085,22 @@ fn an_auto_started_daemon_does_not_hold_inherited_descriptors() {
 #[test]
 fn a_foreground_daemon_closes_inherited_descriptors() {
     let e = Env::new();
-    let (r, w) = cloexec_pipe();
-    let mut cmd = std::process::Command::new(assert_cmd::cargo::cargo_bin("clax"));
+    let (r, w) = std::io::pipe().unwrap();
+    let mut cmd = clax_inheriting(w);
     cmd.env("CLAX_HOME", e.dir.path().join("ax"))
         .env("CLAX_CODEX_BIN", "")
         .env("HOME", e.dir.path())
         .args(["serve", "--foreground", "--port", "0"])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    inherit(&mut cmd, w);
+        .stdout(std::process::Stdio::null());
     let mut child = cmd.spawn().unwrap();
-    // SAFETY: `w` is this test's own write end, closed once.
-    unsafe { libc::close(w) };
+    // Drops this process's copy of the write end.
+    drop(cmd);
     // The daemon closes inherited descriptors before it serves, so once it has
     // written daemon.json the pipe is already at EOF; the EOF bound only
     // covers the read itself on a loaded machine.
     let ready = wait_for_daemon_json(&e.dir.path().join("ax"), &mut child, LOADED_BOUND);
     let eof = ready && read_end_hits_eof(r, LOADED_BOUND);
-    // SAFETY: `r` is this test's own read end, closed once.
-    unsafe { libc::close(r) };
     let alive = child.try_wait().unwrap().is_none();
     let _ = child.kill();
     let _ = child.wait();

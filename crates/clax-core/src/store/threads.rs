@@ -305,10 +305,13 @@ impl Drop for PendingClip {
 
 impl Store {
     /// Creates a thread on version `t.version_n` of the live artifact `id` with
-    /// its first (viewer) comment. The clip file is written first; liveness,
-    /// the version, and the rows are then checked and written in one
-    /// transaction. When either fails, no rows remain and no clip file is
-    /// left behind. Callers check the clip with [`clip_problem`] first.
+    /// its first (viewer) comment. Liveness, the version and the anchor are
+    /// checked, the clip file written, and the rows inserted in one
+    /// transaction, so a delete of the artifact either comes first (nothing
+    /// is written, not even the clips directory) or comes after and removes
+    /// the clip with the artifact's files. When anything fails, no rows
+    /// remain and no clip file is left behind. Callers check the clip with
+    /// [`clip_problem`] first.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
@@ -321,20 +324,8 @@ impl Store {
         let now = Store::now();
         let clip_path = self.home.clip_path(id, &tid);
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
-        // Checked again in the transaction; checked here so a missing
-        // artifact gets no clip directory.
-        if t.clip.is_some() && !self.with_read(|c| artifact_live(c, id.as_str()))? {
-            return Err(CoreError::NotFound);
-        }
-        let clip = match &t.clip {
-            Some(bytes) => Some(PendingClip::write(
-                &self.home.clips_dir(id),
-                &clip_path,
-                bytes,
-            )?),
-            None => None,
-        };
-        self.with_tx(|tx| {
+        let clips_dir = self.home.clips_dir(id);
+        let clip = self.with_tx(|tx| {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
@@ -368,6 +359,12 @@ impl Store {
                 ));
             }
 
+            // Written while the transaction holds the write lock, after the
+            // liveness check: a concurrent delete cannot slip in between.
+            let clip = match &t.clip {
+                Some(bytes) => Some(PendingClip::write(&clips_dir, &clip_path, bytes)?),
+                None => None,
+            };
             tx.execute(
                 "INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, sent_to_agent, has_clip, created_at)
                  VALUES (?1, ?2, ?3, ?4, 'open', 0, ?5, ?6)",
@@ -380,7 +377,7 @@ impl Store {
                 params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
-            Ok(())
+            Ok(clip)
         })?;
         if let Some(mut clip) = clip {
             clip.keep = true;
@@ -1059,6 +1056,28 @@ mod tests {
         assert!(matches!(e, CoreError::NotFound), "{e:?}");
         assert_eq!(clip_files(&st, &aid), 0);
         assert_eq!(thread_rows(&st), 0);
+        assert!(
+            !st.home().artifact_dir(&aid).exists(),
+            "no clips directory is recreated"
+        );
+    }
+
+    #[test]
+    fn a_clip_racing_a_delete_leaves_no_directory() {
+        let (_d, st) = store();
+        for _ in 0..30 {
+            let aid = artifact(&st, None);
+            std::thread::scope(|s| {
+                s.spawn(|| {
+                    let _ = st.create_thread(&aid, new_thread("x", Some(PNG.to_vec())));
+                });
+                s.spawn(|| st.delete_artifact(&aid).unwrap());
+            });
+            assert!(
+                !st.home().artifact_dir(&aid).exists(),
+                "the deleted artifact's directory is gone"
+            );
+        }
     }
 
     #[test]

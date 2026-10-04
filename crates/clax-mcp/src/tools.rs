@@ -640,7 +640,22 @@ pub struct ClaxTools {
     plugin_version: Option<String>,
     upgrade_hold: Option<UpgradeHoldProbe>,
     channel: Option<crate::channel::ChannelState>,
+    opener: Opener,
     tool_router: ToolRouter<Self>,
+}
+
+/// How the `open` tool shows a URL in the browser.
+#[derive(Clone, Debug, Default)]
+pub enum Opener {
+    /// The platform opener ([`open_in_browser`]), unless `CLAX_NO_OPEN` is
+    /// set in the environment.
+    #[default]
+    Platform,
+    /// Opens nothing; `open` reports `opened: false`.
+    Off,
+    /// Runs this program on the URL, as [`open_in_browser`] runs the
+    /// platform opener.
+    Program(PathBuf),
 }
 
 /// Given the running daemon's version, the failed upgrade that keeps that
@@ -666,6 +681,7 @@ impl ClaxTools {
             plugin_version: None,
             upgrade_hold: None,
             channel: None,
+            opener: Opener::default(),
             tool_router: Self::tool_router(),
         }
     }
@@ -690,6 +706,12 @@ impl ClaxTools {
     /// channel state in `status.push`.
     pub fn with_channel(mut self, channel: crate::channel::ChannelState) -> ClaxTools {
         self.channel = Some(channel);
+        self
+    }
+
+    /// These tools with `opener` showing the URLs `open` returns.
+    pub fn with_opener(mut self, opener: Opener) -> ClaxTools {
+        self.opener = opener;
         self
     }
 
@@ -1004,11 +1026,21 @@ impl ClaxTools {
         let id = artifact_id(&a.url_or_id)?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
         let url = self.artifact_url(&id);
-        let opened = std::env::var_os("CLAX_NO_OPEN").is_none() && {
-            let url = url.clone();
-            tokio::task::spawn_blocking(move || open_in_browser(&url))
-                .await
-                .unwrap_or(false)
+        let program = match &self.opener {
+            Opener::Platform if std::env::var_os("CLAX_NO_OPEN").is_none() => {
+                Some(PathBuf::from(platform_opener()))
+            }
+            Opener::Platform | Opener::Off => None,
+            Opener::Program(p) => Some(p.clone()),
+        };
+        let opened = match program {
+            Some(program) => {
+                let url = url.clone();
+                tokio::task::spawn_blocking(move || run_opener(&program, &url))
+                    .await
+                    .unwrap_or(false)
+            }
+            None => false,
         };
         Ok(json!({"url": url, "opened": opened}))
     }
@@ -1551,12 +1583,21 @@ pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500
 /// openers hand off and linger; it is reaped in the background); false when it
 /// cannot start or exits unsuccessfully. Blocks the calling thread.
 pub fn open_in_browser(url: &str) -> bool {
-    let opener = if cfg!(target_os = "macos") {
+    run_opener(Path::new(platform_opener()), url)
+}
+
+/// `open` on macOS, `xdg-open` elsewhere.
+fn platform_opener() -> &'static str {
+    if cfg!(target_os = "macos") {
         "open"
     } else {
         "xdg-open"
-    };
-    let Ok(mut child) = std::process::Command::new(opener)
+    }
+}
+
+/// [`open_in_browser`] with `program` as the opener.
+fn run_opener(program: &Path, url: &str) -> bool {
+    let Ok(mut child) = std::process::Command::new(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())

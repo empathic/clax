@@ -166,8 +166,7 @@ pub fn log_run(home: &Home, agent: &str, event: &str, started: Instant, stderr: 
 /// it prints nothing and logs one standdown line.
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
-    // SAFETY: getppid has no preconditions.
-    let parent_pid = unsafe { libc::getppid() } as u32;
+    let parent_pid = std::os::unix::process::parent_id();
     let (agent, event) = (a.agent, a.event);
     let worker_home = home.clone();
     let (tx, rx) = mpsc::channel();

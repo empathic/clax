@@ -1,6 +1,6 @@
-//! `open`, alone in its test binary because it sets `CLAX_NO_OPEN`.
+//! `open` with the opener turned off.
 
-use clax_mcp::tools::{PublishArgs, TargetArgs};
+use clax_mcp::tools::{Opener, PublishArgs, TargetArgs};
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_server::testing::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
@@ -11,17 +11,15 @@ fn text(r: &rmcp::model::CallToolResult) -> Value {
 }
 
 #[tokio::test]
-async fn open_returns_the_browser_url_without_opening_under_clax_no_open() {
-    // SAFETY: this is the only test in the binary and it sets the variable before
-    // starting any thread that could read the environment.
-    unsafe { std::env::set_var("CLAX_NO_OPEN", "1") };
+async fn open_returns_the_browser_url_without_opening_when_the_opener_is_off() {
     let ts = TestServer::spawn().await;
     let t = ClaxTools::new(
         DaemonClient::new(ts.base.clone(), ts.token.clone(), None),
         format!("http://localhost:{}", ts.addr.port()),
         None,
         ts.home.log_path(),
-    );
+    )
+    .with_opener(Opener::Off);
     let published = t
         .publish(Parameters(PublishArgs {
             html: Some("<p>".into()),

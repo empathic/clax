@@ -541,19 +541,10 @@ struct InitLock(#[allow(dead_code)] std::fs::File);
 
 impl InitLock {
     fn acquire(home: &Home) -> std::io::Result<InitLock> {
-        use std::os::fd::AsRawFd;
         std::fs::create_dir_all(home.root())?;
         let f = std::fs::File::create(home.root().join("init.lock"))?;
-        loop {
-            // SAFETY: flock on an owned, open descriptor.
-            if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX) } == 0 {
-                return Ok(InitLock(f));
-            }
-            let e = std::io::Error::last_os_error();
-            if e.kind() != std::io::ErrorKind::Interrupted {
-                return Err(e);
-            }
-        }
+        clax_server::daemon::retry_interrupted(|| f.lock())?;
+        Ok(InitLock(f))
     }
 }
 

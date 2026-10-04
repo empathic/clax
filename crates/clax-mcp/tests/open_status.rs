@@ -1,7 +1,6 @@
-//! `open` reports whether the platform opener succeeded. Alone in its test
-//! binary because it puts a fake opener first on `PATH`.
+//! `open` reports whether the opener succeeded, with a fake opener.
 
-use clax_mcp::tools::{PublishArgs, TargetArgs};
+use clax_mcp::tools::{Opener, PublishArgs, TargetArgs};
 use clax_mcp::{ClaxTools, DaemonClient};
 use clax_server::testing::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
@@ -15,30 +14,17 @@ fn text(r: &rmcp::model::CallToolResult) -> Value {
 
 #[tokio::test]
 async fn opened_follows_the_openers_exit_status() {
-    // A fake `open` and `xdg-open` that behave as the file `mode` says: exit
-    // with the code it holds, or keep running when it says `hang`.
+    // A fake opener that behaves as the file `mode` says: exit with the code
+    // it holds, or keep running when it says `hang`.
     let dir = tempfile::tempdir().unwrap();
     let mode = dir.path().join("mode");
     let script = format!(
         "#!/bin/sh\nm=$(cat '{}')\nif [ \"$m\" = hang ]; then sleep 5; exit 0; fi\nexit \"$m\"\n",
         mode.display()
     );
-    for name in ["open", "xdg-open"] {
-        let p = dir.path().join(name);
-        std::fs::write(&p, &script).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let path = format!(
-        "{}:{}",
-        dir.path().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    // SAFETY: this is the only test in the binary and it sets the variables
-    // before starting any thread that could read the environment.
-    unsafe {
-        std::env::set_var("PATH", path);
-        std::env::remove_var("CLAX_NO_OPEN");
-    }
+    let opener = dir.path().join("open");
+    std::fs::write(&opener, &script).unwrap();
+    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let ts = TestServer::spawn().await;
     let t = ClaxTools::new(
@@ -46,7 +32,8 @@ async fn opened_follows_the_openers_exit_status() {
         format!("http://localhost:{}", ts.addr.port()),
         None,
         ts.home.log_path(),
-    );
+    )
+    .with_opener(Opener::Program(opener));
     let published = t
         .publish(Parameters(PublishArgs {
             html: Some("<title>Open me</title>".into()),

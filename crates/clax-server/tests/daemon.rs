@@ -1,6 +1,7 @@
 use clax_core::Home;
 use clax_server::daemon::{
-    DaemonInfo, DaemonLock, ServeConfig, pid_alive, read_daemon_info, serve, write_daemon_info,
+    DaemonInfo, DaemonLock, ServeConfig, pid_alive, read_daemon_info, retry_interrupted, serve,
+    write_daemon_info,
 };
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -82,40 +83,29 @@ fn lock_is_exclusive_and_released_on_drop() {
     }
 }
 
-extern "C" fn ignore_signal(_: libc::c_int) {}
-
 #[test]
-fn acquire_retries_when_interrupted_by_a_signal() {
-    // A handler installed without SA_RESTART makes a blocked flock return EINTR.
-    // SAFETY: installs a no-op handler for SIGUSR1, which nothing else in this
-    // test binary uses.
-    unsafe {
-        let mut sa: libc::sigaction = std::mem::zeroed();
-        sa.sa_sigaction = ignore_signal as *const () as libc::sighandler_t;
-        sa.sa_flags = 0;
-        libc::sigemptyset(&mut sa.sa_mask);
-        assert_eq!(libc::sigaction(libc::SIGUSR1, &sa, std::ptr::null_mut()), 0);
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let home = Home::at(dir.path().join("ax"));
-    home.ensure_dirs().unwrap();
-    let held = DaemonLock::acquire(&home).unwrap();
-    let waiter = {
-        let home = home.clone();
-        std::thread::spawn(move || DaemonLock::acquire(&home).map(|_| ()))
-    };
-    use std::os::unix::thread::JoinHandleExt;
-    let thread = waiter.as_pthread_t();
-    for _ in 0..5 {
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        // SAFETY: the waiter thread has not been joined, so its handle is valid.
-        unsafe { libc::pthread_kill(thread, libc::SIGUSR1) };
-    }
-    drop(held);
-    waiter
-        .join()
-        .unwrap()
-        .expect("acquire succeeds after EINTR once the holder releases");
+fn an_interrupted_lock_wait_is_retried() {
+    // `DaemonLock::acquire` waits through `retry_interrupted`: an `EINTR`
+    // from a signal arriving while `flock` blocks is retried, any other
+    // error is returned.
+    let mut calls = 0;
+    let out = retry_interrupted(|| {
+        calls += 1;
+        if calls < 3 {
+            Err(std::io::Error::from(std::io::ErrorKind::Interrupted))
+        } else {
+            Ok(calls)
+        }
+    });
+    assert_eq!(out.unwrap(), 3);
+    let mut calls = 0;
+    let e = retry_interrupted(|| -> std::io::Result<()> {
+        calls += 1;
+        Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+    })
+    .unwrap_err();
+    assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied);
+    assert_eq!(calls, 1);
 }
 
 #[tokio::test]
