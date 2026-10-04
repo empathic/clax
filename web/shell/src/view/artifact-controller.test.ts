@@ -342,7 +342,9 @@ describe("ArtifactController", () => {
     await vi.waitFor(() => expect(reports()[0]).toEqual({ artifact_id: ID, state: "here" }));
     await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
     ctl.selectThread(ctl.state.get().threads[0]);
-    await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here", where: "«Quarterly goals»" }), { timeout: 3000 });
+    // Reports go out at most once per 2 s, on the shell's clock.
+    (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(2_000);
+    await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here", where: "«Quarterly goals»" }));
     ctl.setShareWhere(false);
     await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here" }));
     expect(localStorage.getItem("clax.shareWhere")).toBe("0");

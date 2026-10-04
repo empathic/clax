@@ -1,5 +1,29 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, record, registerSession, startDaemon, nameField, reach } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, contentFrame, openArtifact, record, registerSession, nameField, reach } from "./fixtures";
+import { activationLapsed, advance, quietEval, settle } from "./time";
+
+/** The shell's rules (web/shell/src/caps/gesture.ts): no strict gesture within
+ * this long of shell input, and the shield's hole stays closed this long
+ * after a press on a shell control over the page; the hint shows this long. */
+const SHELL_QUIET_MS = 5_500;
+const DOUBLE_CLICK_MS = 500;
+const HINT_MS = 2_500;
+
+/** How many capability calls the shell has had from the page (`record` keeps
+ * them), read without granting the shell a gesture. */
+const calls = (page: Page) => quietEval<number>(page, `claxMsgs.filter(m => m.type === "clax:call").length`);
+/** Waits until the page has made `n` more capability calls. */
+async function callsMore(page: Page, n: number) {
+  const from = await calls(page);
+  await expect.poll(() => calls(page)).toBeGreaterThanOrEqual(from + n);
+}
+/** Waits as a viewer resting for `SHELL_QUIET_MS` would: until the shell's
+ * activation from their input has lapsed in Chromium, then the rest of the
+ * shell's quiet window on its clock. */
+async function quietPast(page: Page) {
+  await activationLapsed(page);
+  await advance(page, SHELL_QUIET_MS);
+}
 
 /** The shell's dialogs other than the people panel: the consent dialog. */
 const consent = (page: Page) => page.locator('[role="dialog"]:not(.people)');
@@ -10,9 +34,8 @@ const consent = (page: Page) => page.locator('[role="dialog"]:not(.people)');
 // drag still do. Nothing reads the frame before the viewer's click: a
 // Playwright read or evaluate grants the shell user activation.
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 /** Publishes `html` declaring `capabilities`, owned by a live session (so
  * sendToClaude has an agent that can receive it). */
@@ -95,10 +118,12 @@ addEventListener("message", e => { if (e.data && e.data.type === "clax:comment-m
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a page that pulls focus cannot open the composer after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
     const id = await publishLive(`Pull open ${mode}`, PULLER("open"), { comments: { composer_only: true } });
+    await record(page);
     const f = await openArtifact(page, d.base, id, 1, mode);
-    await page.waitForTimeout(1_000);
+    // The page pulls focus and calls before the click, and goes on after it.
+    await callsMore(page, 6);
     await (await nameField(page)).click();
-    await page.waitForTimeout(1_500);
+    await callsMore(page, 8);
     await expect(page.locator(".composer")).toHaveCount(0);
     await pollsMore(f, 8);
     await expect(f.locator("#status")).not.toContainText("true");
@@ -120,7 +145,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The pointer comes to rest on the page, and the click's activation lapses.
     const fb = await frameBox(page);
     await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height - 20, { steps: 4 });
-    await page.waitForTimeout(5_500);
+    // On the shell's clock: the "S" below grants the activation afresh, so
+    // whether Chromium's from the click has lapsed changes nothing.
+    await advance(page, SHELL_QUIET_MS);
     await name.press("S");
     // Armed only now (evaluate grants activation, as the typing does anyway).
     await f.evaluate(() => { (window as unknown as { armed: boolean }).armed = true; });
@@ -132,10 +159,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
 
   test(`${mode}: a page that pulls focus cannot send to the agent after the viewer clicks the shell's name field; the viewer's click in the page can`, async ({ page }) => {
     const id = await publishLive(`Pull send ${mode}`, PULLER("send"), { comments: {} });
+    await record(page);
     const f = await openArtifact(page, d.base, id, 1, mode);
-    await page.waitForTimeout(1_000);
+    await callsMore(page, 6);
     await (await nameField(page)).click();
-    await page.waitForTimeout(1_500);
+    await callsMore(page, 8);
     // Refused before consent is asked or anything is written.
     await expect(consent(page)).toHaveCount(0);
     await pollsMore(f, 8);
@@ -145,13 +173,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await threads()).toHaveLength(0);
     // The viewer's own click in the page within 5.5 s of their click on the
     // name field is refused with a code the page can show ("click again").
-    const named = Date.now();
     await reach(page, f.locator("#b"));
     await f.locator("#b").click();
     await expect(f.locator("#clicked")).toHaveText("shell_input_recent");
     await expect(consent(page)).toHaveCount(0);
-    // Past that, their click asks consent and sends.
-    await page.waitForTimeout(Math.max(0, 5_700 - (Date.now() - named)));
+    // Past that, their click asks consent and sends. (Their click disarmed
+    // the page's timer, so the shell's clock may run ahead of Chromium's.)
+    await advance(page, SHELL_QUIET_MS + 200);
     await f.locator("#b").click();
     await consent(page).getByRole("button", { name: "Allow", exact: true }).click();
     await expect(f.locator("#clicked")).toHaveText("sent");
@@ -188,7 +216,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await comment.click();
     await expect(f.locator("#forged")).toHaveText("1");
     await forgedSeen(0);
-    await page.waitForTimeout(500);
+    await settle(page);
     await expect(page.locator(".composer")).toHaveCount(0);
     // The viewer's click on the paragraph.
     await f.locator("#para").click();
@@ -202,7 +230,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(comment).toHaveAttribute("aria-pressed", "true");
     await expect(f.locator("#forged")).toHaveText("2");
     await forgedSeen(1);
-    await page.waitForTimeout(500);
+    await settle(page);
     await expect(composer).toHaveCount(0);
     // The viewer turns comment mode off and on (a fresh Comment click for the
     // page to ride): refused again. Then the viewer drags an area over the
@@ -212,7 +240,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await comment.click();
     await expect(f.locator("#forged")).toHaveText("3");
     await forgedSeen(2);
-    await page.waitForTimeout(500);
+    await settle(page);
     await expect(composer).toHaveCount(0);
     // boundingBox is in the shell's viewport.
     const box = (await f.locator("#empty").boundingBox())!;
@@ -306,10 +334,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await expect(composer).toHaveCount(0);
       await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
       // The composer has gone from under the resting pointer.
-      await page.waitForTimeout(300);
+      await settle(page);
       await go(f, "forge", delay);
       await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
-      await page.waitForTimeout(500);
+      await settle(page);
       await expect(composer).toHaveCount(0);
       // The viewer moves on and clicks another element: that pick counts.
       const tb = (await f.locator("#target").boundingBox())!;
@@ -329,10 +357,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await composer.getByRole("button", { name: "Post comment" }).click();
     await expect(composer).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
-    await page.waitForTimeout(300);
+    await settle(page);
     await go(f, "forge");
     await expect.poll(() => page.evaluate(() => (window as any).claxMsgs.filter((m: any) => m.pickId === "forged").length)).toBe(2);
-    await page.waitForTimeout(500);
+    await settle(page);
     await expect(composer).toHaveCount(0);
     expect((await threadsOf(id)).map(t => t.comments[0].body)).toEqual(["A real comment."]);
   });
@@ -347,7 +375,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(ab.x > fb.x && ab.x + ab.width < fb.x + fb.width && ab.y > fb.y && ab.y + ab.height < fb.y + fb.height).toBe(true);
     await allow.click();
     await expect(f.locator("#t")).toHaveAttribute("data-asked", "yes");
-    await page.waitForTimeout(300);
+    await settle(page);
     await go(f, "send");
     await expect(f.locator("#result")).toHaveText("claude_unavailable");
     expect((await threadsOf(id)).filter(t => t.sent_to_agent)).toHaveLength(0);
@@ -368,7 +396,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     // The page opened the dialog, so Allow takes only a pointer's click.
     await expect(dialog.locator(".act-hint")).toHaveText("Click to allow");
     await expect(allow).toBeVisible();
-    await page.waitForTimeout(300);
+    await settle(page);
     await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
     await go(f, "send");
     await expect(f.locator("#result")).not.toHaveText("sent");
@@ -380,7 +408,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const f = await openReady(page, id, mode);
     await consent(page).getByRole("button", { name: "Don't allow", exact: true }).click();
     await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
-    await page.waitForTimeout(300);
+    await settle(page);
     // Refused at the gesture check (claude_unavailable), not at consent.
     await go(f, "send");
     await expect(f.locator("#result")).toHaveText("claude_unavailable");
@@ -404,7 +432,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await pin.click();
     // The page scrolls the target to the middle: the pin leaves the pointer.
     await expect.poll(async () => (await pin.boundingBox())?.y ?? -1).not.toBe(before.y);
-    await page.waitForTimeout(500);
+    await settle(page);
     await go(f, "open");
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
     await expect(page.locator(".composer")).toHaveCount(0);
@@ -424,7 +452,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(bb.y > fb.y && bb.x > fb.x && bb.x + bb.width < fb.x + fb.width).toBe(true);
     await banner.getByRole("button", { name: "Dismiss" }).click();
     await expect(banner).toHaveCount(0);
-    await page.waitForTimeout(300);
+    await settle(page);
     await go(f, "open");
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: false }));
     await expect(page.locator(".composer")).toHaveCount(0);
@@ -476,15 +504,19 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const res = await fetch(`${d.base}/api/artifacts`, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${d.token}` },
       body: JSON.stringify({ title: `Autosave ${mode}`, capabilities: { artifact: {} }, files: { "index.html": { content: html, encoding: "utf8" } } }) });
     const id = ((await res.json()) as { artifact: { id: string } }).artifact.id;
+    await record(page);
     const f = await openArtifact(page, d.base, id, 1, mode);
-    await page.waitForTimeout(1_000);
+    await callsMore(page, 3);
     await (await nameField(page)).click();
-    await page.waitForTimeout(2_000);
+    await callsMore(page, 6);
     const current = async () => ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
     expect(await current()).toBe(1);
     await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
-    // More than 5.5 s after the click on the name field, the viewer's click in the page publishes.
-    await page.waitForTimeout(3_700);
+    // More than 5.5 s after the click on the name field, the viewer's click
+    // in the page publishes. The page's timer runs on: the click's
+    // activation must lapse in Chromium as well, with the timer refused.
+    await quietPast(page);
+    expect(await current()).toBe(1);
     await f.locator("#save").click();
     await expect.poll(current).toBe(2);
   });
@@ -494,7 +526,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
  * moving there in steps from where it is. */
 async function restAt(page: Page, x: number, y: number) {
   await page.mouse.move(x, y, { steps: 6 });
-  await page.waitForTimeout(100);
+  await settle(page);
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -515,7 +547,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       // The page opened the dialog, so Allow takes only a pointer's click.
       await expect(consent(page).locator(".act-hint")).toHaveText("Click to allow");
       await expect(allow).toBeVisible();
-      await page.waitForTimeout(300);
+      await settle(page);
       await expect(f.locator("#t")).not.toHaveAttribute("data-asked", "yes");
       await go(f, "send");
       await expect(f.locator("#result")).not.toHaveText("sent");
@@ -546,7 +578,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         const before = (await pin.boundingBox())!.y;
         await f.evaluate(v => { (window as unknown as { scrollPage(dy: number): void }).scrollPage(v); }, dy);
         await expect.poll(async () => (await pin.boundingBox())?.y ?? before).not.toBe(before);
-        await page.waitForTimeout(150);
+        await settle(page);
       };
       if (order === "pin, then typing") {
         await scroll(200);
@@ -595,6 +627,18 @@ const timerPage = (armAtLoad?: "send" | "publish") => `<!doctype html><html><hea
 })();</script></body></html>`;
 const TIMER_PAGE = timerPage();
 
+/** The shell-input variants (N4, N11, N13, N14) run in one frame mode each,
+ * the modes taking turns down each list. The input they judge goes to the
+ * shell, never the frame, and the page's part (a timer calling through the
+ * bridge) is the same in both modes, so one mode per variant covers both. */
+const turns = new Map<string, number>();
+function inTurn(mode: "subdomain" | "sandbox", ...variant: string[]): boolean {
+  const key = variant.join("|");
+  if (!turns.has(key)) turns.set(key, turns.size);
+  const i = turns.get(key)!;
+  return mode === ((i + Math.floor(i / 2)) % 2 ? "sandbox" : "subdomain");
+}
+
 /** Drops `text` at (x, y) of the shell's viewport, as a drag from another
  * application does (no pointer or key event reaches the shell). */
 async function dropText(page: Page, x: number, y: number, text: string) {
@@ -607,6 +651,7 @@ async function dropText(page: Page, x: number, y: number, text: string) {
 for (const mode of ["subdomain", "sandbox"] as const) {
   for (const verb of ["send", "publish"] as const) {
     for (const target of ["composer", "name field"] as const) {
+      if (!inTurn(mode, verb, target)) continue;
       test(`${mode}: text dropped into the ${target}, then a move onto the page, gives the page no strict gesture for ${verb === "send" ? "sendToClaude" : "artifact.publish"} (N4)`, async ({ page }) => {
         const id = await publishLive(`Drop ${verb} ${target} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
         const f = await openArtifact(page, d.base, id, 1, mode);
@@ -634,13 +679,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         }
         const fb = await frameBox(page);
         await page.mouse.move(at.x, at.y, { steps: 8 });
-        // Quiet: more than 5.5 s with no input to the shell before the drop.
-        await page.waitForTimeout(6_000);
+        // Quiet: more than 5.5 s with no input to the shell before the drop,
+        // on the shell's clock. (Chromium's activation from the click may
+        // outlive that here; were the drop not shell input, the page could
+        // then act, which is what this test catches.)
+        await advance(page, SHELL_QUIET_MS + 500);
         await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
         await dropText(page, at.x, at.y, "quoted text");
         // The viewer moves over the page; the page's timer starts.
         await page.mouse.move(fb.x + 150, fb.y + 300, { steps: 10 });
-        await page.waitForTimeout(6_500);
+        // Until the activation the viewer's input gave has lapsed: after
+        // that, no call of the page's can pass.
+        await activationLapsed(page);
         if (verb === "send") {
           const threads = await threadsOf(id);
           expect(threads.filter(t => t.sent_to_agent)).toHaveLength(0);
@@ -671,11 +721,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.up();
     await expect(page.locator(".composer")).toHaveCount(0);
     // After the double-click interval, 1 px moves to the left.
-    await page.waitForTimeout(700);
+    await settle(page);
+    await advance(page, DOUBLE_CLICK_MS + 200);
     await f.evaluate(() => { (window as unknown as { moves: number[] }).moves.length = 0; });
     for (let dx = 1; dx <= 12; dx++) {
       await page.mouse.move(at.x - dx, at.y);
-      await page.waitForTimeout(30);
+      await settle(page);
     }
     const fb = await frameBox(page);
     const got = new Set(await f.evaluate(() => (window as unknown as { moves: number[] }).moves));
@@ -699,12 +750,19 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.move(cb.x + cb.width / 2, cb.y + cb.height / 2, { steps: 8 });
     await page.mouse.dblclick(cb.x + cb.width / 2, cb.y + cb.height / 2);
     await expect(page.locator(".composer")).toHaveCount(0);
-    await page.waitForTimeout(300);
+    await settle(page);
     expect(await presses()).toBe(before);
   });
 
   test(`${mode}: a page posting pick starts cannot show the hint while the viewer is idle on a shell control, moves over the shell, or types in it (N10)`, async ({ page }) => {
     const id = await publishLive(`Hint ${mode}`, ATTACKER(false), { comments: { composer_only: true } });
+    await record(page);
+    /** Waits until the page has posted `n` more pick starts. */
+    const spam = async (n: number) => {
+      const count = () => quietEval<number>(page, `claxMsgs.filter(m => m.type === "clax:pick-start").length`);
+      const from = await count();
+      await expect.poll(count).toBeGreaterThanOrEqual(from + n);
+    };
     await page.addInitScript(() => {
       if (window.top !== window) return;
       const w = window as unknown as { hints: number };
@@ -726,19 +784,21 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.up();
     await expect(comment).toHaveAttribute("aria-pressed", "true");
-    // Idle on the Comment button.
-    await page.waitForTimeout(1_500);
-    // Moving over the shell's sidebar and header.
+    // Idle on the Comment button while the page posts 15 starts.
+    await spam(15);
+    // Moving over the shell's sidebar and header, the page posting on.
     const name = await nameField(page);
     const nb = (await name.boundingBox())!;
-    for (let i = 0; i < 20; i++) { await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await page.waitForTimeout(100); }
+    for (let i = 0; i < 20; i++) { await page.mouse.move(nb.x + (i % 10) * 4, nb.y + nb.height / 2 + (i % 5) * 3); await settle(page); }
+    await spam(1);
     // Typing in the name field, with the pointer resting on the page.
     await page.mouse.down();
     await page.mouse.up();
     const fb = await frameBox(page);
     await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height - 40, { steps: 6 });
     await name.pressSequentially("Sam Smith", { delay: 120 });
-    await page.waitForTimeout(500);
+    await spam(5);
+    await settle(page);
     expect(await page.evaluate(() => (window as unknown as { hints: number }).hints)).toBe(0);
   });
 
@@ -754,12 +814,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer).toHaveCount(0);
     // Past the double-click interval the hole is open: the press reaches the
     // page, whose pick is refused.
-    await page.waitForTimeout(700);
+    await settle(page);
+    await advance(page, DOUBLE_CLICK_MS + 200);
     await page.mouse.down();
     await page.mouse.up();
     const hint = page.locator(".gesture-hint");
     await expect(hint).toHaveText("Move the pointer to pick");
-    await expect(hint).toHaveCount(0, { timeout: 4_000 });
+    await advance(page, HINT_MS);
+    await expect(hint).toHaveCount(0);
     await page.mouse.down();
     await page.mouse.up();
     await expect(hint).toHaveText("Move the pointer to pick");
@@ -816,6 +878,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   for (const verb of ["send", "publish"] as const) {
     const call = verb === "send" ? "sendToClaude" : "artifact.publish";
     for (const how of ["a composition, then its commit", "a commit alone (the emoji picker, dictation)"] as const) {
+      if (!inTurn(mode, verb, how)) continue;
       test(`${mode}: ${how} from an input method into the name field, then a move onto the page, gives the page no strict gesture for ${call} (N11)`, async ({ page }) => {
         const id = await publishLive(`IME ${verb} ${how.slice(0, 8)} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
         const f = await openArtifact(page, d.base, id, 1, mode);
@@ -827,12 +890,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await page.mouse.down();
         await page.mouse.up();
         await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
-        // Quiet: more than 5.5 s with no input to the shell before the commit.
-        await page.waitForTimeout(6_000);
+        // Quiet: more than 5.5 s with no input to the shell before the
+        // commit, on the shell's clock.
+        await advance(page, SHELL_QUIET_MS + 500);
         const cdp = await page.context().newCDPSession(page);
         if (how.startsWith("a composition")) {
           await cdp.send("Input.imeSetComposition", { text: "かな", selectionStart: 2, selectionEnd: 2 });
-          await page.waitForTimeout(150);
+          await settle(page);
           await cdp.send("Input.insertText", { text: "仮名" });
         } else {
           await cdp.send("Input.insertText", { text: "👍" });
@@ -841,18 +905,23 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         // The viewer moves over the page; the page's timer starts.
         const fb = await frameBox(page);
         await page.mouse.move(fb.x + 150, fb.y + 300, { steps: 10 });
-        await page.waitForTimeout(6_500);
+        await activationLapsed(page);
         await expectRefused(page, f, id, verb);
       });
     }
 
     for (const how of ["a key", "a click"] as const) {
+      if (!inTurn(mode, verb, how)) continue;
       test(`${mode}: ${how} on the shell before its script runs, then a move onto the page as it loads, gives the page no strict gesture for ${call} (N13)`, async ({ page }) => {
         const id = await publishLive(`Load ${verb} ${how} ${mode}`, timerPage(verb), { comments: {}, artifact: {} });
+        await record(page);
         // Learn the frame's box on a first load; the layout is the same next time.
         const f0 = await openArtifact(page, d.base, id, 1, mode);
         await expect(f0.locator("body")).toHaveAttribute("data-ready", "yes");
         const fb = await frameBox(page);
+        // The click lands on the top bar's title, which is no link (the
+        // mark at the corner would leave for the gallery).
+        const tb = (await page.locator(".topbar h1").boundingBox())!;
         // Reload with the shell's script held back until the viewer's input.
         let release!: () => void;
         const held = new Promise<void>(r => { release = r; });
@@ -863,22 +932,26 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         let heldHits = 0;
         await page.route(u => u.pathname === entry, async route => { heldHits++; await held; await route.continue(); });
         await page.goto(`${d.base}/a/${id}`, { waitUntil: "commit" });
-        await page.waitForTimeout(300);
+        await expect.poll(() => heldHits).toBe(1);
         if (how === "a key") await page.keyboard.press("a");
-        else { await page.mouse.move(40, 40); await page.mouse.down(); await page.mouse.up(); }
+        else { await page.mouse.move(tb.x + tb.width / 2, tb.y + tb.height / 2); await page.mouse.down(); await page.mouse.up(); }
         release();
-        // The viewer moves over the page as it shows; its timer starts.
-        for (let i = 0; i < 12; i++) {
-          await page.waitForTimeout(250);
-          await page.mouse.move(fb.x + fb.width / 2 + (i % 2) * 30, fb.y + fb.height / 2 + i * 5, { steps: 3 });
+        // The viewer moves over the page as it shows, until its timer has
+        // started calling.
+        await contentFrame(page, id, 1);
+        const before = await calls(page);
+        for (let i = 0; await calls(page) === before; i++) {
+          if (i > 200) throw new Error("the page's timer never called");
+          await page.mouse.move(fb.x + fb.width / 2 + (i % 2) * 30, fb.y + fb.height / 2 + (i % 12) * 5, { steps: 3 });
+          await settle(page);
         }
-        await page.waitForTimeout(4_000);
+        await activationLapsed(page);
         expect(heldHits, "the shell's script was held").toBe(1);
         await expectRefused(page, null, id, verb);
       });
     }
 
-    for (const host of ["plain", "open", "closed"] as const) for (const from of ["the shell", "the page"] as const) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu${host === "plain" ? "" : `, in a ${host} shadow root`}), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
+    for (const host of ["plain", "open", "closed"] as const) for (const from of ["the shell", "the page"] as const) if (inTurn(mode, verb, host, from)) test(`${mode}: with focus in ${from}, a click in another frame in the shell document (a password manager's menu${host === "plain" ? "" : `, in a ${host} shadow root`}), then a move onto the page, gives the page no strict gesture for ${call} (N14)`, async ({ page }) => {
       const id = await publishLive(`Other frame ${verb} ${host} ${mode}`, TIMER_PAGE, { comments: {}, artifact: {} });
       const f = await openArtifact(page, d.base, id, 1, mode);
       await expect(f.locator("body")).toHaveAttribute("data-ready", "yes");
@@ -909,13 +982,17 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await page.mouse.down();
       await page.mouse.up();
       await f.evaluate(v => { (window as unknown as { arm(v: string): void }).arm(v); }, verb);
-      await page.waitForTimeout(6_000);
+      // Quiet before the click in the other frame. A click in the page gave
+      // the page activation of its own, which must lapse in Chromium too;
+      // after a click in the shell, the shell's clock is enough.
+      if (from === "the page") await quietPast(page);
+      else await advance(page, SHELL_QUIET_MS + 500);
       await page.mouse.move(xf.x + 40, xf.y + 20, { steps: 5 });
       await page.mouse.down();
       await page.mouse.up();
       const fb = await frameBox(page);
       await page.mouse.move(fb.x + fb.width / 2, fb.y + fb.height / 2, { steps: 10 });
-      await page.waitForTimeout(6_500);
+      await activationLapsed(page);
       await expectRefused(page, f, id, verb);
     });
   }
@@ -931,7 +1008,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const nb = (await page.getByRole("button", { name: "People and agents" }).boundingBox())!;
     await page.mouse.move(nb.x + nb.width / 2, nb.y + nb.height / 2, { steps: 8 });
     await page.mouse.wheel(0, 40);
-    await page.waitForTimeout(200);
+    await settle(page);
     const bb = (await f.locator("#b").boundingBox())!;
     await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2, { steps: 8 });
     await page.mouse.down();

@@ -1,12 +1,13 @@
 import { readFileSync } from "node:fs";
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { STUB_CONFIG, contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, STUB_CONFIG, contentFrame, openArtifact, publishWith, reach, startDaemon } from "./fixtures";
 
 const PAGE = readFileSync(new URL("./pages/sample.html", import.meta.url), "utf8");
 
 test.describe("with the stub provider", () => {
-  let d: Awaited<ReturnType<typeof startDaemon>>;
-  test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon({ config: STUB_CONFIG }); });
+  // The stub provider is a daemon setting: these tests get a daemon of their own.
+  let d: Daemon;
+  test.beforeAll(async () => { d = await startDaemon({ config: STUB_CONFIG }); });
   test.afterAll(async () => { await d?.stop(); });
 
   async function open(page: Page, title: string, mode: "subdomain" | "sandbox"): Promise<Frame> {
@@ -88,9 +89,8 @@ test.describe("with the stub provider", () => {
 });
 
 test.describe("without a key", () => {
-  let d: Awaited<ReturnType<typeof startDaemon>>;
-  test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-  test.afterAll(async () => { await d?.stop(); });
+  let d: Daemon;
+  test.beforeEach(({ daemon }) => { d = daemon; });
 
   for (const mode of ["subdomain", "sandbox"] as const) {
     test(`${mode}: use("sample") resolves null and the header shows no count`, async ({ page }) => {
@@ -103,8 +103,9 @@ test.describe("without a key", () => {
 });
 
 test.describe("a LAN viewer, with the stub provider", () => {
-  let d: Awaited<ReturnType<typeof startDaemon>>;
-  test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon({ config: STUB_CONFIG }); });
+  // The stub provider is a daemon setting: these tests get a daemon of their own.
+  let d: Daemon;
+  test.beforeAll(async () => { d = await startDaemon({ config: STUB_CONFIG }); });
   test.afterAll(async () => { await d?.stop(); });
 
   test("use(\"sample\") resolves null: no dialog, no count, nothing spent", async ({ page }) => {

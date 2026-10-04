@@ -3,6 +3,9 @@ import type { Comment, Thread } from "../threads";
 import { hasElapsedLabel } from "../waiting";
 import { agentName } from "./history-model";
 
+/** How long a thread's card must stay at least half in view before the viewer has looked at it. */
+export const SEEN_AFTER_MS = 1000;
+
 export type SidebarSections = { open: Thread[]; detached: Thread[]; resolved: Thread[]; numbers: Map<string, number>; file: string | null };
 
 /** Open threads: those on the page shown and found (numbered like the pins),

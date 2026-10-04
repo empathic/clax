@@ -4,7 +4,8 @@
   import { type Thread, type Viewer, anchorLabel } from "../threads";
   import type { Version } from "../api";
   import { type HistoryEvent, addressedNote } from "../view/history-model";
-  import { authorLabel } from "../view/sidebar-model";
+  import { SEEN_AFTER_MS, authorLabel } from "../view/sidebar-model";
+  import { after } from "../clock";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
   import { clock } from "../view/working-model";
@@ -51,13 +52,13 @@
   };
   const seen = (el: HTMLElement) => {
     if (!onSeen || typeof IntersectionObserver !== "function") return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cancel = () => {};
     const io = new IntersectionObserver(([e]) => {
-      clearTimeout(timer);
-      if (e.intersectionRatio >= 0.5) timer = setTimeout(() => onSeen(t), 1000);
+      cancel();
+      if (e.intersectionRatio >= 0.5) cancel = after(SEEN_AFTER_MS, () => onSeen(t));
     }, { threshold: [0, 0.5] });
     io.observe(el);
-    return () => { clearTimeout(timer); io.disconnect(); };
+    return () => { cancel(); io.disconnect(); };
   };
   // A sent thread has no Send: focus on the card moves to its head first, not to <body>.
   const guardSend = (e: Event, act: () => void) => {

@@ -1,12 +1,10 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test, expect } from "@playwright/test";
 import { FRAME_SANDBOX } from "../shell/src/view/frame-host";
-import { type FrameMode, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, type FrameMode, contentFrame, openArtifact, publish } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<h1>Top</h1><p style="height:3000px">long</p><h2 id="part-2">Part 2</h2>`;
 const sandboxed = () => { try { sessionStorage.setItem("clax.origin-ok", "0"); } catch { /* storage unavailable */ } };

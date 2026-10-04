@@ -1,9 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
-import { api, publish, publishAs, registerSession, startDaemon, setName } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, publish, publishAs, registerSession, setName } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
 
@@ -79,7 +79,7 @@ test("republish re-anchors kept elements and detaches removed ones", async ({ pa
   // The frame's bridge loads late, as on a loaded machine: the threads show
   // before the frame greets and answers which anchors it found.
   await page.route(/\/_clax\/bridge\/[^/]+\.js/, async route => {
-    await new Promise(r => setTimeout(r, 1000));
+    await expect(page.locator(".section-open .thread-card")).toHaveCount(2);
     await route.continue();
   });
   await page.goto(`${d.base}/a/${artifact.id}`);
@@ -172,7 +172,7 @@ test("Escape in the shell cancels comment mode", async ({ page }) => {
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   // The bridge left comment mode too: a click in the frame picks nothing.
   await frame.locator("h2").click();
-  await page.waitForTimeout(300);
+  await settle(page);
   await expect(page.locator(".composer")).toHaveCount(0);
 });
 

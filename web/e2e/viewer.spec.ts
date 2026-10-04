@@ -1,9 +1,8 @@
-import { test, expect, type Page } from "@playwright/test";
-import { startDaemon, publish } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, publish } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 /** The artifact's content frame for version `n`, once it exists; locators on it auto-wait. */
 async function contentFrame(page: Page, id: string, n: number) {
@@ -12,11 +11,11 @@ async function contentFrame(page: Page, id: string, n: number) {
   return page.frame({ url })!;
 }
 
-// Must run first: it expects an empty daemon.
-test("gallery shows an empty state then a card", async ({ page }) => {
-  await page.goto(`${d.base}/`);
+// On a daemon of its own: it expects an empty gallery.
+test("gallery shows an empty state then a card", async ({ page, freshDaemon: own }) => {
+  await page.goto(`${own.base}/`);
   await expect(page.getByText("When an agent publishes a page, it lands here.")).toBeVisible();
-  await publish(d.base, d.token, "Hello Report", { "index.html": "<title>Hello</title><h1>Hi</h1>" });
+  await publish(own.base, own.token, "Hello Report", { "index.html": "<title>Hello</title><h1>Hi</h1>" });
   await page.reload();
   await expect(page.locator("a.card")).toHaveCount(1);
   await expect(page.locator("a.card")).toContainText("Hello Report");
@@ -61,6 +60,8 @@ test("viewer shows the deleted state", async ({ page }) => {
   const { artifact } = await publish(d.base, d.token, "Doomed", { "index.html": "<p>bye</p>" });
   await page.goto(`${d.base}/a/${artifact.id}`);
   await expect(page.locator("iframe.frame")).toBeVisible();
+  // The view's topics are live, so the deletion reaches it as an event.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
   const res = await page.request.delete(`${d.base}/api/artifacts/${artifact.id}`, { headers: { authorization: `Bearer ${d.token}` } });
   expect(res.ok()).toBeTruthy();
   await expect(page.getByText("This artifact was deleted")).toBeVisible();

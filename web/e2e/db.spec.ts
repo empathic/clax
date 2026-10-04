@@ -1,9 +1,7 @@
-import { test, expect } from "@playwright/test";
-import { api, openArtifact, publishWith, startDaemon, nameField, setName } from "./fixtures";
+import { test, expect, type Daemon, api, openArtifact, publishWith, nameField, setName } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const BOARD = `<!doctype html><html><head><title>Board</title></head><body>
 <button id="add">Add</button><button id="lock">Lock</button>

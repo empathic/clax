@@ -2,12 +2,12 @@
 // paint, and the shell's keys (C and ?), which belong to the page while it
 // has focus and to a dialog while one is open, and are held while the viewer
 // may still be typing for the page (spec §8, "Keys"; decisions Q2 and Q6).
-import { expect, test, type Frame, type Page } from "@playwright/test";
-import { api, contentFrame, openArtifact, postThread, publishWith, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, contentFrame, openArtifact, postThread, publishWith } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<!doctype html><html><head><title>Keys</title></head><body><main><h2 id="t">Target</h2><p>Type here.</p></main></body></html>`;
 
@@ -57,7 +57,7 @@ test("keys pressed in the page are the page's: C and ? do nothing in the shell",
   await frame.locator("p").click();
   await page.keyboard.press("c");
   await page.keyboard.press("Shift+?");
-  await page.waitForTimeout(200);
+  await settle(page);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("dialog")).toHaveCount(0);
 });
@@ -73,7 +73,7 @@ test("C and ? are the shell's only letter keys: T, J, K, S, R and Enter do nothi
   const panel = await threads.getAttribute("aria-pressed");
   await page.locator(".topbar h1").click();
   for (const k of ["t", "j", "k", "s", "r", "Shift+S", "Enter"]) await page.keyboard.press(k);
-  await page.waitForTimeout(300);
+  await settle(page);
   await expect(threads).toHaveAttribute("aria-pressed", panel!);
   await expect(card).toHaveClass(/selected/);
   await expect(card.getByRole("textbox", { name: "Reply" })).not.toBeFocused();
@@ -93,6 +93,7 @@ const next = "<!doctype html><html><head><title>Next</title></head><body><main><
 claude.use("artifact").then(a => {
   let done = false;
   addEventListener("keydown", () => { if (!done) { done = true; a.publish(next).then(() => { document.title = "ok"; }, e => { document.title = e.code; }); } });
+  document.body.dataset.ready = "yes";
 });
 </script></body></html>`;
 
@@ -100,6 +101,8 @@ test("after a reload the page's publish caused, the viewer's typing stays inert 
   const { artifact } = await publishWith(d.base, d.token, "Republish keys", REPUBLISH, { artifact: {} });
   const frame = await openArtifact(page, d.base, artifact.id, 1, "subdomain");
   const comment = page.getByRole("button", { name: "Comment", exact: true });
+  // The page listens for keys.
+  await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
   await frame.locator("p").click();
   const reloaded = page.waitForEvent("load");
   await page.keyboard.type("x");
@@ -107,7 +110,7 @@ test("after a reload the page's publish caused, the viewer's typing stays inert 
   await expect((await contentFrame(page, artifact.id, 2)).locator("p")).toHaveText("Published.");
   await page.keyboard.type("just c");
   await page.keyboard.press("Shift+?");
-  await page.waitForTimeout(300);
+  await settle(page);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   // The viewer's own press in the shell gives the keys back, and a later load starts with them.
@@ -127,6 +130,7 @@ const CONSENT = `<!doctype html><html><head><title>Consent</title></head><body><
 claude.use("permissions").then(perm => {
   let asked = false;
   addEventListener("keydown", () => { if (!asked) { asked = true; perm.request(["comments"]); } });
+  document.body.dataset.ready = "yes";
 });
 </script></body></html>`;
 
@@ -140,13 +144,15 @@ test("a consent prompt raised while the viewer types takes the keys: C, ? and th
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   const threads = page.getByRole("button", { name: /^Threads/ });
   const panel = await threads.getAttribute("aria-pressed");
+  // The page listens for keys.
+  await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
   await frame.locator("p").click();
   await page.keyboard.type("h");
   const dialog = page.getByRole("dialog");
   await expect(dialog).toContainText("post comments on this artifact under your name");
   await expect(dialog.getByRole("button", { name: "Don't allow" })).toBeFocused();
   for (const k of ["s", "r", "c", "t", "Shift+?", "j", "S", "R"]) await page.keyboard.press(k);
-  await page.waitForTimeout(300);
+  await settle(page);
   await expect(dialog).toHaveCount(1);
   await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
   await expect(comment).toHaveAttribute("aria-pressed", "false");
@@ -173,6 +179,8 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     const comment = page.getByRole("button", { name: "Comment", exact: true });
     const threads = page.getByRole("button", { name: /^Threads/ });
     const panel = await threads.getAttribute("aria-pressed");
+    // The page listens for keys.
+    await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
     await frame.locator("p").click();
     await page.keyboard.type("h");
     const dialog = page.getByRole("dialog");
@@ -180,7 +188,7 @@ for (const closer of ["Space", "Enter", "Escape"]) {
     await page.keyboard.press(closer);
     await expect(dialog).toHaveCount(0);
     for (const k of ["s", "r", "c", "Shift+?", "j", "t"]) await page.keyboard.press(k);
-    await page.waitForTimeout(300);
+    await settle(page);
     await expect(dialog).toHaveCount(0);
     await expect(comment).toHaveAttribute("aria-pressed", "false");
     await expect(threads).toHaveAttribute("aria-pressed", panel!);
@@ -207,6 +215,8 @@ async function promptRaised(page: Page, title: string) {
   const comment = page.getByRole("button", { name: "Comment", exact: true });
   const threads = page.getByRole("button", { name: /^Threads/ });
   const panel = await threads.getAttribute("aria-pressed");
+  // The page listens for keys.
+  await expect(frame.locator("body")).toHaveAttribute("data-ready", "yes");
   await frame.locator("p").click();
   await page.keyboard.type("h");
   const dialog = page.getByRole("dialog");
@@ -214,7 +224,7 @@ async function promptRaised(page: Page, title: string) {
   await expect(deny).toBeFocused();
   /** Nothing the viewer typed acted in the shell: no mode, panel, sheet, send or resolve. */
   const unchanged = async () => {
-    await page.waitForTimeout(300);
+    await settle(page);
     await expect(page.getByRole("dialog", { name: "Keyboard shortcuts" })).toHaveCount(0);
     await expect(comment).toHaveAttribute("aria-pressed", "false");
     await expect(threads).toHaveAttribute("aria-pressed", panel!);
@@ -286,6 +296,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const t = await postThread(d.base, artifact.id, "Check this", "#t");
       const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
       await page.locator(".thread-card").first().waitFor();
+      // The pin is placed too: the viewer's Tabs walk it.
+      await expect(page.locator("button.thread-pin")).toHaveCount(1);
       const comment = page.getByRole("button", { name: "Comment", exact: true });
       await frame.locator("#a").click();
       // A person typing: the keys go out on a schedule, none waiting for the
@@ -322,7 +334,7 @@ test("the viewer's own Tab or Shift+Tab out of the page stays on the shell contr
     await page.mouse.click(box.x + 20, box.y + box.height / 2);
     await expect.poll(() => frame.evaluate(f => document.activeElement?.id === f.slice(1), field)).toBe(true);
     await page.keyboard.press(key);
-    await page.waitForTimeout(200);
+    await settle(page);
     expect(await page.evaluate(() => document.activeElement?.localName), key).toBe("button");
     expect(await pageHasFocus(frame), key).toBe(false);
   }
@@ -358,6 +370,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await page.locator(".thread-card").first().waitFor();
+    // The pin is placed too: the viewer's Tabs walk it.
+    await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await frame.locator("#a").click();
     // What looks like a seven-field form: Smith, Jones, Main, Lot, Apt, Zip,
     // New York. Its Tabs walk the pin, Send N unsent, the card's box, its
@@ -373,11 +387,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads/${t.id}/send`, { method: "POST", body: "{}" });
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await page.locator(".thread-card").first().waitFor();
+    // The pin is placed too: the viewer's Tabs walk it.
+    await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await frame.locator("#a").click();
     // The pin, the card's box, its head, Resolve, then the Reply field: the
     // Escape a page can coax ("Esc to close") clears nothing.
     await typeOn(page, [..."Smith", "Tab", ..."Jones", "Escape", "Tab", ..."Main", "Tab", ..."Apt", "Tab", ..."Town", "Tab", ..."pwd", "Space", ..."hunter2", "Enter"], 0);
-    await page.waitForTimeout(400);
+    await settle(page);
     const { threads: list } = await api(d.base, d.token, `/api/artifacts/${artifact.id}/threads`) as { threads: { id: string; status: string; comments: unknown[] }[] };
     expect(list.find(x => x.id === t.id)).toMatchObject({ status: "open", comments: [expect.anything()] });
   });
@@ -388,9 +404,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const t = await postThread(d.base, artifact.id, "Check this", "#t");
       const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
       await page.locator(".thread-card").first().waitFor();
+      // The pin is placed too: the viewer's Tabs walk it.
+      await expect(page.locator("button.thread-pin")).toHaveCount(1);
       await frame.locator("#a").click();
       await typeOn(page, ["a", "b", "Tab", "c", "Tab", "Tab", "Tab", "Space", "?", "Space"], spacing);
-      await page.waitForTimeout(600);
+      await settle(page);
       expect(await threadState(artifact.id, t.id)).toMatchObject({ status: "open", sent_to_agent: false });
     });
   }
@@ -400,6 +418,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const t = await postThread(d.base, artifact.id, "Check this", "#t");
     const frame = await openArtifact(page, d.base, artifact.id, 1, mode);
     await page.locator(".thread-card").first().waitFor();
+    // The pin is placed too: the viewer's Tabs walk it.
+    await expect(page.locator("button.thread-pin")).toHaveCount(1);
     await frame.locator("#b").click();
     await page.keyboard.press("Tab");
     await expect(page.locator("button.thread-pin")).toBeFocused();
@@ -411,7 +431,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".thread-card .act-hint")).toHaveText("Click to send");
     await page.keyboard.press("Escape");
     await page.keyboard.press("Enter");
-    await page.waitForTimeout(300);
+    await settle(page);
     expect(await threadState(artifact.id, t.id)).toMatchObject({ sent_to_agent: false });
     await send.click();
     await expect.poll(async () => (await threadState(artifact.id, t.id))?.sent_to_agent).toBe(true);

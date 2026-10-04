@@ -19,6 +19,7 @@
 // token never goes in a URL: the hub's requests carry the events cookie
 // that `GET /api/token` sets for the shell.
 import { getToken } from "./api";
+import { after } from "./clock";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
 import { backoff } from "./lifecycle";
 import type { HubMsg, TabMsg } from "./stream-hub";
@@ -187,7 +188,7 @@ export class EventStream {
   /** Watchers were told `stream_down`, and not yet `stream_up`. */
   private down = false;
   private heard = Date.now();
-  private hiddenTimer: Timer | undefined;
+  private hiddenTimer: (() => void) | undefined;
   private noticeTimer: Timer | undefined;
   private watchdog: ReturnType<typeof setInterval> | undefined;
   /** Hubs lost in a row without a word from any; the next join waits on it. */
@@ -229,7 +230,7 @@ export class EventStream {
   close(): void {
     this.watchers = [];
     this.leave();
-    clearTimeout(this.hiddenTimer);
+    this.hiddenTimer?.();
     this.hiddenTimer = undefined;
     if (this.hooked) {
       this.win.removeEventListener("pagehide", this.onHide);
@@ -260,12 +261,10 @@ export class EventStream {
   };
 
   private onVisibility = () => {
-    clearTimeout(this.hiddenTimer);
+    this.hiddenTimer?.();
     this.hiddenTimer = undefined;
     if (this.win.document.visibilityState === "hidden") {
-      // Browser tests set `claxHiddenMs` to wait less.
-      const ms = (this.win as unknown as { claxHiddenMs?: number }).claxHiddenMs ?? HIDDEN_MS;
-      this.hiddenTimer = setTimeout(() => { this.hiddenTimer = undefined; this.released = true; this.leave(); }, ms);
+      this.hiddenTimer = after(HIDDEN_MS, () => { this.hiddenTimer = undefined; this.released = true; this.leave(); });
     } else if (this.released) {
       this.released = false;
       this.schedule();

@@ -6,6 +6,7 @@ import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { startDaemon } from "./fixtures";
+import { settle } from "./time";
 import { type Scene, SCENES, seed, type Seeded } from "./scenes";
 
 const TASK = process.env.CLAX_SHOTS ?? "";
@@ -29,7 +30,7 @@ function shoot(scenes: Scene[], s: () => Seeded, base: () => string) {
           await page.goto(`${base()}${scene.path(s())}`);
           await scene.prepare?.(page, s());
           await page.evaluate(() => document.fonts.ready);
-          await page.waitForTimeout(300);
+          await settle(page);
           await page.screenshot({ path: `${out}${theme}-${size}-${scene.name}.png` });
           expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(viewport.width);
         });

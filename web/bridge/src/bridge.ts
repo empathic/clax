@@ -42,6 +42,7 @@
  * loads from ever coming before the page's own import maps.
  */
 import { loadParts } from "clax-bridge-parts";
+import { now } from "../../shell/src/clock";
 import type { Resolved } from "./anchor";
 import { acceptFromShell, forwardedKey, shellOrigins } from "./channel";
 import { commentsContext } from "./comments-context";
@@ -77,8 +78,9 @@ type PartName = keyof Parts;
   let parsed = document.readyState !== "loading";
   const whenDone = new Promise<void>(resolve => whenParsed(document, () => { parsed = true; resolve(); }));
   // The timers and clock as they are now: a page replacing them later can
-  // only hold up or hurry its own parts.
-  const clock: Clock = { now: performance.now.bind(performance), setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window) as (t: unknown) => void };
+  // only hold up or hurry its own parts. (`now` is the shell's clock module,
+  // which a test build lets the browser tests advance.)
+  const clock: Clock = { now, setTimeout: setTimeout.bind(window), clearTimeout: clearTimeout.bind(window) as (t: unknown) => void };
 
   // The shell's window as it is when the bridge loads: a page script that
   // later replaces `window.parent` can neither read nor alter what the

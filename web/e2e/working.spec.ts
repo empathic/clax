@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
-import { api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, startDaemon, setName } from "./fixtures";
+import { test, expect, type Daemon, api, openArtifact, postThread, publishAs, publishWith, reach, registerSession, setWorking, skewWorking, setName } from "./fixtures";
+import { advance } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 for (const mode of ["subdomain", "sandbox"] as const) {
@@ -17,7 +16,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await setName(page, "Alex");
     // A write as the viewer needs their click in the page 5.5 s clear of
     // their input to the shell (the name field).
-    await page.waitForTimeout(5_700);
+    await advance(page, 5_700);
     await reach(page, frame.locator("#add"));
     await frame.locator("#add").click();
     await page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true }).click();
@@ -30,7 +29,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(frame.locator("#state")).toHaveText("none");
   });
 
-  test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
+  // The shell and the daemon alone decide this; the frame only shows the
+  // page, the same in either mode: one mode each.
+  if (mode === "subdomain") test(`${mode}: the summary, roster, marker, pin and gallery chip follow the working record`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `work-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Working ${mode}`, { "index.html": PAGE });
     const t = await postThread(d.base, artifact.id, "@agent two columns");
@@ -38,6 +39,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const line1 = page.locator(".who .sum b.l1");
     await expect(line1).toHaveText("Nobody working");
     await expect(page.locator(".who [role=status]")).toHaveAttribute("aria-live", "polite");
+    // The view's topics are live, so the record reaches it as an event.
+    await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
     await api(d.base, d.token, `/api/sessions/${s.id}/feedback?tier=piggyback`);
     await expect(line1).toHaveText("claude working on 1");
     await expect(page.locator(".who .agt .tok.work")).toHaveCount(1);
@@ -58,7 +61,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(gallery.locator(".card-wrap", { hasText: `Working ${mode}` }).locator(".chip.ag")).toHaveCount(0, { timeout: 10_000 });
   });
 
-  test(`${mode}: a record lapses 2 minutes after its last renewal`, async ({ page }) => {
+  if (mode === "sandbox") test(`${mode}: a record lapses 2 minutes after its last renewal`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "pi", `lapse-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Lapse ${mode}`, { "index.html": PAGE });
     await setWorking(d.base, d.token, s.id, artifact.id, { message: "Tidying" });

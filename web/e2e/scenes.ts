@@ -2,7 +2,7 @@
 // on one seeded scratch daemon. Tasks append scenes as they add UI.
 import type { BrowserContext, Cookie, Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import { api, contentFrame, postThread, publishAs, publishNext, registerSession, seenOf, setWorking } from "./fixtures";
+import { api, contentFrame, expect, postThread, publishAs, publishNext, registerSession, seenOf, setWorking } from "./fixtures";
 
 export type Seeded = { base: string; token: string; aid: string; sid: string; threads: string[] };
 export type Scene = { name: string; path(s: Seeded): string; prepare?(page: Page, s: Seeded): Promise<void> };
@@ -68,7 +68,7 @@ async function needsEyes(page: Page, s: Seeded): Promise<void> {
     }, s.aid);
     await page.goto(`${s.base}/a/${s.aid}`);
     await contentFrame(page, s.aid, 1);
-    for (let i = 0; i < 50 && (await seenOf(page, s.aid)) !== 1; i++) await page.waitForTimeout(100);
+    await expect.poll(() => seenOf(page, s.aid)).toBe(1);
     await publishNext(s.base, s.token, s.sid, s.aid, 1, { addresses: [tid] });
     eyes = await page.context().cookies();
   }
@@ -104,7 +104,7 @@ async function changelog(page: Page, s: Seeded): Promise<void> {
   const sent = await fetch(`${s.base}/api/artifacts/${artifact.id}/threads/${mine}/send`, { method: "POST", headers: { origin: s.base } });
   if (!sent.ok) throw new Error(`send: ${sent.status}`);
   await api(s.base, s.token, `/api/artifacts/${artifact.id}/threads/${mine}/comments`, { method: "POST", session: s.sid, body: JSON.stringify({ body: "Two columns now, and every duration in ms.", author_kind: "agent" }) });
-  for (let i = 0; i < 50 && (await seenOf(page, artifact.id)) !== 1; i++) await page.waitForTimeout(100);
+  await expect.poll(() => seenOf(page, artifact.id)).toBe(1);
   await publishNext(s.base, s.token, s.sid, artifact.id, 1, { note: "Two columns; units in ms", addresses: [mine, ...ids] });
   await page.reload();
   await contentFrame(page, artifact.id, 2);

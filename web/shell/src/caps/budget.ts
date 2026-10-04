@@ -2,6 +2,8 @@
 // (a publish, a download prompt). Kept in sessionStorage so a budget survives
 // the page's own reload; where storage is unavailable, in memory for this load.
 
+import { wall } from "../clock";
+
 export type Limits = { gapMs?: number; perWindow: { n: number; ms: number } };
 
 const memory = new Map<string, number[]>();
@@ -30,7 +32,7 @@ function store(key: string, times: number[]): void {
 
 /** Takes one slot of `key`'s budget at `now`: 0 when taken, else the
  * milliseconds to wait before the next slot (nothing is recorded then). */
-export function takeSlot(key: string, limits: Limits, now: number = Date.now()): number {
+export function takeSlot(key: string, limits: Limits, now: number = wall()): number {
   const { n, ms } = limits.perWindow;
   const times = load(key).filter(t => t <= now && now - t < ms);
   let wait = 0;

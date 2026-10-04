@@ -1,9 +1,8 @@
-import { test, expect, type Response } from "@playwright/test";
-import { openArtifact, publish, startDaemon } from "./fixtures";
+import { type Response } from "@playwright/test";
+import { test, expect, type Daemon, openArtifact, publish } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: pages are revalidated and the frame loads the bridge at its versioned URL`, async ({ page }) => {

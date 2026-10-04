@@ -1,9 +1,8 @@
-import { test, expect, type Page } from "@playwright/test";
-import { expectVisibleClip, last, publish, record, startDaemon } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, expectVisibleClip, last, publish, record } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = `<main><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat this quarter.</p></main>`;
 

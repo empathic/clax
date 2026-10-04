@@ -1,9 +1,7 @@
-import { test, expect } from "@playwright/test";
-import { type FrameMode, openArtifact, publish, publishWith, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, type FrameMode, openArtifact, publish, publishWith } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const partsLoaded = (frame: import("@playwright/test").Frame) =>
   frame.evaluate(() => performance.getEntriesByType("resource").map(e => e.name).filter(n => n.includes("/_clax/bridge/")));
@@ -61,7 +59,7 @@ for (const mode of ["subdomain", "sandbox"] as FrameMode[]) {
     expect(seen).toEqual(["comment.js", "caps.js"]);
     // After the backoff, a thread arriving makes the shell resolve anchors:
     // the comment part loads again under a retry query, and the pin shows.
-    await page.waitForTimeout(2_200);
+    await frame.evaluate(ms => (globalThis as unknown as { claxTestClock: { advance(ms: number): void } }).claxTestClock.advance(ms), 2_200);
     const form = new FormData();
     form.set("anchor", JSON.stringify({ kind: "element", selector: "#t", quote: "Flaky", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null }));
     form.set("body", "Retry me"); form.set("version", "1");

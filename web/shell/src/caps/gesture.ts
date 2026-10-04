@@ -131,6 +131,8 @@
 // control within that time after using the shell is refused
 // (`shell_input_recent`) and must click again.
 
+import { after, now } from "../clock";
+
 /** Chromium's transient user activation lasts 5 s from the input that
  * granted it; half a second more so a shell input's activation has surely
  * expired before a strict call may rely on `isActive`. */
@@ -147,7 +149,7 @@ const HOLE_PX = 4;
 /** After a press on a shell control over the frame, the hole stays closed
  * this long (a double-click's interval), so the second click of a
  * double-click on that control within it never reaches the page. */
-const DOUBLE_CLICK_MS = 500;
+export const DOUBLE_CLICK_MS = 500;
 /** How often the shell checks whether focus sits on something foreign. */
 const FOCUS_POLL_MS = 100;
 
@@ -228,7 +230,6 @@ const activeNow = () => (navigator as Navigator & { userActivation?: { isActive:
 const isShield = (el: EventTarget | null) => !!shield && el instanceof Node && el !== shield && shield.contains(el);
 const pointerFresh = () => pointerOnFrameSince > lastShellInput;
 const far = (a: Pos, x: number, y: number) => Math.abs(x - a.x) > MOVE_PX || Math.abs(y - a.y) > MOVE_PX;
-const now = () => performance.now();
 
 /** Records trusted shell input (the watcher does this; tests call it);
  * `tab`: a Tab or Shift+Tab key press, whose default action may move focus
@@ -338,7 +339,7 @@ export function raiseShieldIfOverFrame(doc: Document = document, press = false):
   holeAt = { x, y };
   const token = ++raised;
   layBands(r, press ? null : holeAt);
-  if (press) setTimeout(() => { if (raised === token && holeAt) layBands(frame.getBoundingClientRect(), holeAt); }, DOUBLE_CLICK_MS);
+  if (press) after(DOUBLE_CLICK_MS, () => { if (raised === token && holeAt) layBands(frame.getBoundingClientRect(), holeAt); });
 }
 
 /** Lays the bands over the frame's box `r`, leaving a hole at `hole` (none:

@@ -1,11 +1,11 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, contentFrame, openArtifact, publish, startDaemon } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, contentFrame, openArtifact, publish } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const INDEX = `<main><h1>Home</h1><p>Start here.</p><a id="to-about" href="about.html">About us</a> <a id="to-team" href="about.html#people">The people</a> <a id="self" href="index.html">Home</a></main>`;
 const ABOUT = `<!doctype html><html><head><title>About</title></head><body><main><h2>Our team</h2><p>We build things.</p><a id="home" href="index.html">Home</a><div style="height:3000px"></div><h3 id="people">People</h3></main></body></html>`;
@@ -97,7 +97,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const index = await openArtifact(page, d.base, id, 1, mode);
     const depth = await page.evaluate(() => history.length);
     await index.locator("#self").click();
-    await page.waitForTimeout(500);
+    await settle(page);
     expect(await page.evaluate(() => history.length)).toBe(depth);
     await expect(page).toHaveURL(`${d.base}/a/${id}`);
     const home = await contentFrame(page, id, 1);
@@ -193,7 +193,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       // The shell would send these to a page it still heard.
       await toggle.click();
       await toggle.click();
-      await page.waitForTimeout(500);
+      await settle(page);
       expect(await other.evaluate(() => (window as unknown as { got: unknown[] }).got)).toEqual([]);
     } finally {
       for (const r of hung) r.destroy();

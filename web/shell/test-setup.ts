@@ -1,4 +1,4 @@
-import { afterAll, expect, vi } from "vitest";
+import { afterAll, afterEach, expect, vi } from "vitest";
 
 // Node 25 and later define a global `localStorage` that is undefined unless
 // Node runs with --localstorage-file (reading it warns), and it shadows
@@ -18,6 +18,12 @@ window.setInterval = ((f: TimerHandler, ms?: number, ...a: unknown[]) => {
   return id;
 }) as typeof window.setInterval;
 window.clearInterval = ((id?: number) => { open.delete(id); clearI(id); }) as typeof window.clearInterval;
+
+// A lazy import a test starts (a component, a module loaded after the first
+// paint) may still be loading when the test ends. Every test waits for them,
+// so none lands after the next test resets the module registry, where it
+// would evaluate against a half-loaded copy of the Svelte runtime.
+afterEach(async () => { await vi.dynamicImportSettled(); });
 
 afterAll(async () => {
   // The gesture module watches the shell document from the moment it loads;

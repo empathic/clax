@@ -1,14 +1,14 @@
-import { test, expect, type Frame, type Page } from "@playwright/test";
-import { api, openArtifact, registerSession, startDaemon, nameField } from "./fixtures";
+import { type Frame, type Page } from "@playwright/test";
+import { test, expect, type Daemon, api, openArtifact, registerSession, nameField } from "./fixtures";
+import { advance, settle, shellNow } from "./time";
 
 // Commenting several times in a row, as a viewer does it: each flow is driven
 // with page.mouse in steps (so the shell sees realistic moves) and ends either
 // working on the first try or showing the shell's hint, never failing
 // silently (the gesture rules are in web/shell/src/caps/gesture.ts).
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 // Two paragraphs at the top left, and a large empty area below and to the
 // right, where the composer's buttons sit over the page.
@@ -76,7 +76,8 @@ async function clickShell(page: Page, loc: import("@playwright/test").Locator) {
 
 type P = { x: number; y: number };
 /** A hand starting from rest: step lengths 1, 1, 2, 3, 5, … px, one event
- * each about 8 ms apart, from `a` toward `b`; ends on `b`. */
+ * each, each delivered before the next is sent, from `a` toward `b`; ends on
+ * `b`. (The shell orders moves by event, not by time.) */
 async function glide(page: Page, a: P, b: P) {
   const dx = b.x - a.x;
   const dy = b.y - a.y;
@@ -86,7 +87,6 @@ async function glide(page: Page, a: P, b: P) {
     s += step;
     if (s >= len) break;
     await page.mouse.move(a.x + (dx * s) / len, a.y + (dy * s) / len);
-    await page.waitForTimeout(8);
   }
   await page.mouse.move(b.x, b.y);
 }
@@ -159,7 +159,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(composer(page)).toHaveCount(0);
     // The pointer rests where Post was, over the page's empty area: a drag
     // from there, without a move first (a moment later, as a hand would).
-    await page.waitForTimeout(100);
+    await settle(page);
     await page.mouse.down();
     await page.mouse.move(at.x - 120, at.y - 80, { steps: 6 });
     await page.mouse.up();
@@ -179,7 +179,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await clickShell(page, composer(page).getByRole("button", { name: "Cancel" }));
     await expect(composer(page)).toHaveCount(0);
     // The same spot, a moment later, as a hand would click again.
-    await page.waitForTimeout(100);
+    await settle(page);
     await page.mouse.down();
     await page.mouse.up();
     await expect(hint(page)).toHaveText("Move the pointer to pick");
@@ -226,15 +226,15 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await clickShell(page, name);
     await page.keyboard.type("Sam");
     await page.keyboard.press("Enter");
-    const typed = Date.now();
+    const typed = await shellNow(page);
     await clickIn(page, f, "#open");
     await expect(f.locator("#result")).toHaveText(JSON.stringify({ opened: true }));
     await clickShell(page, composer(page).getByRole("button", { name: "Cancel" }));
     await clickIn(page, f, "#send");
     await expect(f.locator("#result")).toHaveText("shell_input_recent");
     // The Cancel click was shell input too: 5.5 s after it, a click sends.
-    await page.waitForTimeout(5_700);
-    expect(Date.now() - typed).toBeGreaterThan(5_500);
+    await advance(page, 5_700);
+    expect(await shellNow(page) - typed).toBeGreaterThan(5_500);
     await clickIn(page, f, "#p2");
     await clickIn(page, f, "#send");
     const allow = page.getByRole("dialog").getByRole("button", { name: "Allow", exact: true });
@@ -252,7 +252,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.up();
     await expect(composer(page)).toHaveCount(0);
-    await page.waitForTimeout(100);
+    await settle(page);
     await glide(page, post, await centre(f, "#p2"));
     await page.mouse.down();
     await page.mouse.up();
@@ -267,7 +267,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await page.mouse.down();
     await page.mouse.up();
     await expect(composer(page)).toHaveCount(0);
-    await page.waitForTimeout(100);
+    await settle(page);
     await page.mouse.down();
     await page.mouse.up();
     await expect(hint(page)).toHaveText("Move the pointer to pick");
@@ -284,7 +284,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const c = await whole(f.locator("#open"));
     await page.mouse.move(c.x, c.y, { steps: 10 });
     await page.keyboard.type("Sam", { delay: 120 });
-    await page.waitForTimeout(300);
+    await settle(page);
     await page.mouse.down();
     await page.mouse.up();
     await expect(hint(page)).toHaveText("Move the pointer, then click again");
@@ -301,12 +301,12 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const c = await whole(f.locator("#open"));
     await page.mouse.move(c.x, c.y, { steps: 10 });
     await page.keyboard.type("Sam", { delay: 120 });
-    await page.waitForTimeout(300);
+    await settle(page);
     await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
     await page.mouse.wheel(0, 40);
-    await page.waitForTimeout(300);
+    await settle(page);
     await page.mouse.wheel(0, -40);
-    await page.waitForTimeout(300);
+    await settle(page);
     const c2 = await whole(f.locator("#open"));
     await page.mouse.move(c2.x, c2.y);
     await page.mouse.down();
@@ -331,7 +331,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         await page.keyboard.type("Sam", { delay: 120 });
         await expect(page.locator(".frame-shield")).toHaveCSS("display", "block");
       }
-      await page.waitForTimeout(700);
+      // Past the double-click interval of the last press on a shell control.
+      await settle(page);
+      await advance(page, 700);
       const target = await centre(f, how === "Post clicked with the mouse" ? "#p2" : "#open");
       const done = how === "Post clicked with the mouse"
         ? async () => (await quote(page).count()) > 0 && ((await quote(page).textContent()) ?? "").includes("Second paragraph")

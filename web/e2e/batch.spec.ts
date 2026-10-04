@@ -1,9 +1,9 @@
-import { test, expect } from "@playwright/test";
-import { api, openArtifact, postThread, publishAs, registerSession, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, api, openArtifact, postThread, publishAs, registerSession } from "./fixtures";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+// The send controls follow which agents are live on the daemon: each test
+// has a daemon of its own, so no other test's sessions are among them.
+let d: Daemon;
+test.beforeEach(({ freshDaemon }) => { d = freshDaemon; });
 
 async function fresh(title: string, n: number) {
   const s = await registerSession(d.base, d.token, "claude", `batch-${title}`);
@@ -17,7 +17,9 @@ const panel = async (page: import("@playwright/test").Page) => {
 };
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: tick a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
+  // The shell and the daemon alone decide what the sidebar sends; the frame only shows the
+  // page, the same in either mode: one mode each.
+  if (mode === "subdomain") test(`${mode}: tick a shift range, send with a note, and the agent gets one delivery`, async ({ page }) => {
     const { sid, aid, ids } = await fresh(`Batch ${mode}`, 4);
     await openArtifact(page, d.base, aid, 1, mode);
     await panel(page);
@@ -27,8 +29,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const bar = page.getByRole("region", { name: "Selected comments" });
     await expect(bar.getByRole("status")).toHaveText("3 selected");
     await expect(bar).toContainText("sent together");
-    const [barTop, firstCardTop] = await Promise.all([bar.boundingBox(), page.locator(".thread-card").first().boundingBox()]);
-    expect(barTop!.y, "the selection bar sits at the top of the sidebar").toBeLessThan(firstCardTop!.y);
+    // From the top of the list: the click on the third box may have scrolled
+    // the sidebar, under which the bar stays put.
+    await page.locator(".thread-card").first().evaluate(e => e.scrollIntoView({ block: "end" }));
+    const barAboveCards = async () => (await bar.boundingBox())!.y - (await page.locator(".thread-card").first().boundingBox())!.y;
+    await expect.poll(barAboveCards, { message: "the selection bar sits at the top of the sidebar" }).toBeLessThan(0);
     await expect(bar.getByRole("button", { name: "Send 3 to claude" })).toBeVisible();
     await expect(bar.getByRole("button", { name: "Choose the agent" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Send 4 unsent to claude" })).toBeVisible();
@@ -43,7 +48,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.getByRole("button", { name: /unsent to/ })).toHaveCount(0);
   });
 
-  test(`${mode}: with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
+  if (mode === "sandbox") test(`${mode}: with two live agents the caret picks one, and only that agent gets the rows`, async ({ page }) => {
     const { sid, aid, ids } = await fresh(`Pick ${mode}`, 1);
     const other = await registerSession(d.base, d.token, "codex", `pick-${mode}`);
     await api(d.base, d.token, `/api/sessions/${other.id}/watches/${aid}`, { method: "PUT" });
@@ -60,7 +65,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect(await page.evaluate(id => localStorage.getItem(`clax.sendTo.${id}`), aid)).toMatch(/^a_/);
   });
 
-  test(`${mode}: with no live agent Send goes without to, and the comment waits for the next session`, async ({ page }) => {
+  if (mode === "subdomain") test(`${mode}: with no live agent Send goes without to, and the comment waits for the next session`, async ({ page }) => {
     const { sid, aid, ids } = await fresh(`Nobody ${mode}`, 1);
     await api(d.base, d.token, `/api/sessions/${sid}`, { method: "PATCH", body: JSON.stringify({ ended: true }) });
     await openArtifact(page, d.base, aid, 1, mode);
@@ -75,7 +80,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     expect((await api(d.base, d.token, `/api/sessions/${next.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
   });
 
-  test(`${mode}: a ticked thread that disappears leaves the selection, and the rest sends`, async ({ page }) => {
+  if (mode === "sandbox") test(`${mode}: a ticked thread that disappears leaves the selection, and the rest sends`, async ({ page }) => {
     const { aid, ids } = await fresh(`Prune ${mode}`, 2);
     await openArtifact(page, d.base, aid, 1, mode);
     await panel(page);

@@ -1,10 +1,9 @@
 import { readFileSync } from "node:fs";
-import { test, expect } from "@playwright/test";
-import { openArtifact, publishWith, setName, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, openArtifact, publishWith, setName } from "./fixtures";
+import { settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 
 const PAGE = readFileSync(new URL("./pages/room.html", import.meta.url), "utf8");
 const CAPS = { room: { topics: { reaction: "interact" } } };
@@ -78,7 +77,7 @@ test("sandbox: a document that leaves takes its peer with it, and nothing of the
   await expect.poll(() => a.frame({ url: /foreign\.test/ }) !== null).toBe(true);
   const rec = a.frame({ url: /foreign\.test/ })!;
   // Long enough for B's presence and wave to have reached A's shell, were its socket still open.
-  await a.waitForTimeout(1000);
+  await settle(a);
   const got = await rec.evaluate(() => (window as unknown as { got: { type?: string }[] }).got);
   expect(got.filter(m => m && typeof m === "object" && String(m.type).startsWith("clax:"))).toEqual([]);
 });

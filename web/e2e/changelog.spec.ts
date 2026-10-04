@@ -1,9 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
-import { contentFrame, openArtifact, publishAs, publishNext, reach, registerSession, seenOf, startDaemon } from "./fixtures";
+import { type Page } from "@playwright/test";
+import { test, expect, type Daemon, lookedMarks, contentFrame, openArtifact, publishAs, publishNext, reach, registerSession, seenOf } from "./fixtures";
+import { advance, settle } from "./time";
 
-let d: Awaited<ReturnType<typeof startDaemon>>;
-test.beforeAll(async () => { test.setTimeout(180_000); d = await startDaemon(); });
-test.afterAll(async () => { await d?.stop(); });
+let d: Daemon;
+test.beforeEach(({ daemon }) => { d = daemon; });
 const PAGE = "<main><h2>Quarterly goals</h2></main>";
 
 /** Names this page's viewer and comments on the heading through the shell's own API call, so the thread is theirs. */
@@ -18,7 +18,9 @@ async function commentAs(page: Page, aid: string, name: string, body: string): P
 }
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: a new version puts nothing over the page: a dot, a summary line, and the Addressed group`, async ({ page }) => {
+  // The shell and the daemon alone decide this; the frame only shows the
+  // page, the same in either mode: one mode each.
+  if (mode === "sandbox") test(`${mode}: a new version puts nothing over the page: a dot, a summary line, and the Addressed group`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `cl-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Changelog ${mode}`, { "index.html": PAGE });
     await openArtifact(page, d.base, artifact.id, 1, mode);
@@ -35,14 +37,14 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(group.locator("h2")).toContainText("Addressed in v2");
     await expect(group.locator(".hist")).toContainText("v2 claude addressed it");
     await expect(page.locator(".thread-pin.addressed")).toHaveAttribute("data-v", "v2");
-    await page.waitForTimeout(2500);
+    await lookedMarks(page);
     await page.reload();
     await contentFrame(page, artifact.id, 2);
     await expect(page.locator(".section-addressed")).toHaveCount(0);
     await expect(page.locator(".vbtn .new")).toHaveCount(0);
   });
 
-  test(`${mode}: the version menu reads as a changelog, opens from the version button, and closes with Escape`, async ({ page }) => {
+  if (mode === "subdomain") test(`${mode}: the version menu reads as a changelog, opens from the version button, and closes with Escape`, async ({ page }) => {
     const s = await registerSession(d.base, d.token, "claude", `menu-${mode}`);
     const { artifact } = await publishAs(d.base, d.token, s.id, `Menu ${mode}`, { "index.html": PAGE });
     await openArtifact(page, d.base, artifact.id, 1, mode);
@@ -72,7 +74,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const size = page.viewportSize()!;
     await page.setViewportSize({ width: 800, height: size.height });
     await page.goto(`${d.base}/a/${artifact.id}/v/1`);
-    await page.waitForTimeout(1500);
+    // The view is up, and past the time any mark would go out.
+    await contentFrame(page, artifact.id, 1);
+    await settle(page);
+    await advance(page, 2000);
+    await settle(page);
     expect(await seenOf(page, artifact.id)).toBe(1);
     await page.setViewportSize(size);
     const frame = await openArtifact(page, d.base, artifact.id, 2, mode);
