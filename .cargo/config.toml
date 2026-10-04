@@ -1,0 +1,6 @@
+[env]
+# Bundled SQLite build flags. Without SQLITE_ENABLE_MEMORY_MANAGEMENT each
+# connection keeps its own page cache; with it, every connection shares one
+# cache behind a global mutex, which serialises the store's concurrent
+# readers. MEMSTATUS=0 drops the global mutex around every allocation.
+LIBSQLITE3_FLAGS = "-USQLITE_ENABLE_MEMORY_MANAGEMENT -DSQLITE_DEFAULT_MEMSTATUS=0"

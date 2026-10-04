@@ -577,7 +577,7 @@ impl Store {
 
     /// Every feedback row of the thread, oldest first.
     pub fn feedback_rows(&self, thread_id: &str) -> Result<Vec<Feedback>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT id, thread_id, comment_id, target_session_id, created_at, delivered_at, delivery_tier,
                         acknowledged_at, resend_count, last_sent_at, untargeted_at
@@ -631,7 +631,7 @@ impl Store {
         if thread_ids.is_empty() {
             return Ok(BTreeMap::new());
         }
-        self.with_conn(|c| feedback_states_in(c, thread_ids, codex_push))
+        self.with_read(|c| feedback_states_in(c, thread_ids, codex_push))
     }
 }
 
@@ -892,7 +892,7 @@ mod tests {
     fn age(st: &Store) {
         let old = (chrono::Utc::now() - std::time::Duration::from_secs(200))
             .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute(
                 "UPDATE feedback SET last_sent_at = ?1 WHERE last_sent_at IS NOT NULL",
                 [&old],
@@ -1494,7 +1494,7 @@ mod tests {
         let good = thread(&st, &aid, "good");
         st.send_to_agent(&bad).unwrap();
         st.send_to_agent(&good).unwrap();
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute("UPDATE threads SET anchor_json = '{' WHERE id = ?1", [&bad])?;
             Ok(())
         })
@@ -1536,7 +1536,7 @@ mod tests {
         let good = thread(&st, &a2, "good");
         st.send_to_agent(&bad).unwrap();
         st.send_to_agent(&good).unwrap();
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute_batch("PRAGMA foreign_keys=OFF")?;
             c.execute(
                 "UPDATE artifacts SET id = 'NOT-AN-ID' WHERE id = ?1",

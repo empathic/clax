@@ -111,6 +111,19 @@ impl From<CoreError> for ApiError {
                     format!("storage error: {:?}", e.kind()),
                 )
             }
+            e @ CoreError::ReadTimeout => {
+                tracing::warn!(error = %e, "read interrupted");
+                ApiError::new(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "read_timeout",
+                    e.to_string(),
+                )
+            }
+            CoreError::TaskFailed => ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "storage task failed",
+            ),
             CoreError::Db(e) => {
                 tracing::error!(error = %e, "db");
                 ApiError::new(

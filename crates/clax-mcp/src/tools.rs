@@ -523,8 +523,8 @@ fn thread_summary(t: &Value) -> Value {
     })
 }
 
-fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
-    std::fs::read(path).map_err(|e| {
+async fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
+    tokio::fs::read(path).await.map_err(|e| {
         render::error(
             "file_unreadable",
             format!("cannot read {}: {e}", path.display()),
@@ -535,8 +535,8 @@ fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
 
 /// A publish file entry for a local file: UTF-8 text for text extensions whose
 /// bytes decode, base64 otherwise.
-fn file_entry(path: &Path) -> Result<Value, CallToolResult> {
-    let bytes = read_local(path)?;
+async fn file_entry(path: &Path) -> Result<Value, CallToolResult> {
+    let bytes = read_local(path).await?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
@@ -739,7 +739,7 @@ impl ClaxTools {
         }
     }
 
-    fn file_arg(&self, name: &str, f: FileArg) -> Result<Value, CallToolResult> {
+    async fn file_arg(&self, name: &str, f: FileArg) -> Result<Value, CallToolResult> {
         let mut entry = match (f.path, f.content) {
             (Some(p), None) => {
                 if f.encoding.is_some() {
@@ -747,7 +747,7 @@ impl ClaxTools {
                         "files.{name}: encoding applies only to content"
                     )));
                 }
-                file_entry(&self.local_path(&p)?)?
+                file_entry(&self.local_path(&p)?).await?
             }
             (None, Some(c)) => json!({"content": c, "encoding": f.encoding.unwrap_or_default()}),
             _ => {
@@ -780,7 +780,7 @@ impl ClaxTools {
         self.prepare_session(a.file_path.as_deref().into_iter().chain(file_paths))
             .await;
         let page = match (&a.file_path, &a.html) {
-            (Some(p), None) => file_entry(&self.local_path(p)?)?,
+            (Some(p), None) => file_entry(&self.local_path(p)?).await?,
             (None, Some(h)) => json!({"content": h, "encoding": "utf8"}),
             _ => return Err(invalid("pass exactly one of file_path and html")),
         };
@@ -797,7 +797,7 @@ impl ClaxTools {
                 ));
             }
             let entry = match f {
-                Some(f) => self.file_arg(&name, f)?,
+                Some(f) => self.file_arg(&name, f).await?,
                 None => Value::Null,
             };
             files.insert(name, entry);
@@ -1033,7 +1033,7 @@ impl ClaxTools {
         let mut files = Vec::with_capacity(paths.len());
         for p in &paths {
             let path = self.local_path(p)?;
-            let bytes = read_local(&path)?;
+            let bytes = read_local(&path).await?;
             let name = path
                 .file_name()
                 .map(|n| n.to_string_lossy().into_owned())
@@ -1333,7 +1333,7 @@ impl ClaxTools {
     }
 
     /// `data` or the JSON object in `file_path`: exactly one of them.
-    fn db_body(
+    async fn db_body(
         &self,
         data: Option<Map<String, Value>>,
         file_path: Option<String>,
@@ -1341,7 +1341,7 @@ impl ClaxTools {
         match (data, file_path) {
             (Some(d), None) => Ok(Value::Object(d)),
             (None, Some(p)) => {
-                let bytes = read_local(&self.local_path(&p)?)?;
+                let bytes = read_local(&self.local_path(&p)?).await?;
                 let v: Value = serde_json::from_slice(&bytes)
                     .map_err(|e| invalid(format!("{p} is not JSON: {e}")))?;
                 if v.is_object() {
@@ -1426,7 +1426,7 @@ impl ClaxTools {
         self.prepare_session(a.file_path.as_deref().into_iter())
             .await;
         let path = db_path(&a.collection, &a.doc_id)?;
-        let data = self.db_body(a.data, a.file_path)?;
+        let data = self.db_body(a.data, a.file_path).await?;
         let mut body = json!({"data": data});
         if let Some(v) = a.if_version {
             body["if_version"] = json!(v);
@@ -1495,7 +1495,7 @@ impl ClaxTools {
                     )));
                 }
                 DbBatchOp::Delete => {}
-                _ => e["data"] = self.db_body(w.data, w.file_path)?,
+                _ => e["data"] = self.db_body(w.data, w.file_path).await?,
             }
             if let Some(v) = w.if_version {
                 e["if_version"] = json!(v);

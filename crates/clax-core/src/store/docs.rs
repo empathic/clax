@@ -509,6 +509,27 @@ fn next_version(c: &Connection, id: &ArtifactId, floor: u64) -> Result<u64> {
 /// One write: refused as `DocNotFound` unless `rules` let `caller` write `path`;
 /// pinned by `pin`; `next` maps the current document to the new body (`None`
 /// deletes).
+/// A document body that passed [`check_body`], with its JSON text, ready to
+/// store. Built before the transaction when the body does not depend on the
+/// current document.
+struct Body {
+    data: Value,
+    json: String,
+}
+
+impl Body {
+    fn new(data: Value) -> Result<Body> {
+        check_body(&data, false)?;
+        let json = data.to_string();
+        Ok(Body { data, json })
+    }
+
+    /// `Body::new` of a computed next body, if any.
+    fn of(next: Result<Option<Value>>) -> Result<Option<Body>> {
+        next?.map(Body::new).transpose()
+    }
+}
+
 fn write_in(
     c: &Connection,
     id: &ArtifactId,
@@ -516,7 +537,7 @@ fn write_in(
     caller: &Caller,
     path: &str,
     pin: Pin,
-    next: impl FnOnce(Option<&Doc>) -> Result<Option<Value>>,
+    next: impl FnOnce(Option<&Doc>) -> Result<Option<Body>>,
 ) -> Result<Written> {
     let dp = doc_path(path)?;
     if !rules.allows(&dp.path, Op::Write, caller) {
@@ -532,7 +553,6 @@ fn write_in(
     });
     match next(current.as_ref())? {
         Some(body) => {
-            check_body(&body, false)?;
             if current.is_none() {
                 let n: i64 = c.query_row(
                     "SELECT COUNT(*) FROM docs WHERE artifact_id = ?1",
@@ -549,14 +569,23 @@ fn write_in(
                 }
             }
             let version = next_version(c, id, current.as_ref().map_or(0, |d| d.version))?;
+            let now = Store::now();
             c.execute(
                 "INSERT INTO docs (artifact_id, path, collection, json, version, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                  ON CONFLICT(artifact_id, path) DO UPDATE SET json = excluded.json, version = excluded.version, updated_at = excluded.updated_at",
-                params![id.as_str(), dp.path, dp.collection, body.to_string(), version as i64, Store::now()],
+                params![id.as_str(), dp.path, dp.collection, body.json, version as i64, now],
             )?;
+            let doc = Doc {
+                id: dp.path.rsplit('/').next().unwrap_or_default().to_string(),
+                path: dp.path.clone(),
+                collection: dp.collection.clone(),
+                data: body.data,
+                version,
+                updated_at: now,
+            };
             Ok(Written {
                 path: dp.path.clone(),
-                doc: doc_in(c, id, &dp.path)?,
+                doc: Some(doc),
                 created: current.is_none(),
                 deleted: false,
                 change: Some(DocChange {
@@ -605,13 +634,13 @@ impl Store {
     /// Whether the live artifact's current declaration names `db`;
     /// `NotFound` when the artifact is missing or deleted.
     pub fn doc_declared(&self, id: &ArtifactId) -> Result<bool> {
-        self.with_conn(|c| Ok(caps_in(c, id)?.get("db").is_some()))
+        self.with_read(|c| Ok(caps_in(c, id)?.get("db").is_some()))
     }
 
     /// The document at `path`, or `None` when it is absent or `caller` may not read it.
     pub fn doc_get(&self, id: &ArtifactId, path: &str, caller: &Caller) -> Result<Option<Doc>> {
         let dp = doc_path(path)?;
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let rules = rules_in(c, id)?;
             if !rules.allows(&dp.path, Op::Read, caller) {
                 return Ok(None);
@@ -629,9 +658,10 @@ impl Store {
         pin: Pin,
         caller: &Caller,
     ) -> Result<Written> {
+        let body = Body::new(data);
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |_| Ok(Some(data)))
+            write_in(tx, id, &rules, caller, path, pin, |_| body.map(Some))
         })
     }
 
@@ -653,7 +683,7 @@ impl Store {
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             write_in(tx, id, &rules, caller, path, pin, |cur| {
-                update_body(path, cur, patch)
+                Body::of(update_body(path, cur, patch))
             })
         })
     }
@@ -693,7 +723,7 @@ impl Store {
         }
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
-            write_in(tx, id, &rules, caller, path, pin, |cur| {
+            write_in(tx, id, &rules, caller, path, pin, |cur| Body::of((|| {
                 let cur = cur.ok_or_else(|| CoreError::DocNotFound { path: path.to_string() })?;
                 let mut data = cur.data.clone();
                 let Some(Value::String(text)) = data.get_mut(&r.field) else {
@@ -711,7 +741,7 @@ impl Store {
                 }
                 *text = if r.replace_all { text.replace(&r.old_str, &r.new_str) } else { text.replacen(&r.old_str, &r.new_str, 1) };
                 Ok(Some(data))
-            })
+            })()))
         })
     }
 
@@ -747,7 +777,7 @@ impl Store {
                 "a query with order_by is a single page; drop cursor",
             ));
         }
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let rules = rules_in(c, id)?;
             let after = q.cursor.as_ref().map_or(String::new(), |cur| format!("{collection}/{cur}"));
             let mut stmt = c.prepare(&format!("{SELECT_DOC} WHERE artifact_id = ?1 AND collection = ?2 AND path > ?3 ORDER BY path"))?;
@@ -839,29 +869,38 @@ impl Store {
                 check_body(p, true).map_err(|e| in_batch(i, &w.path, e))?;
             }
         }
+        // Set bodies are checked and serialised before the transaction; a bad
+        // one still fails at its own place in the batch.
+        let writes: Vec<(BatchWrite, Option<Result<Body>>)> = writes
+            .into_iter()
+            .map(
+                |mut w| match std::mem::replace(&mut w.op, BatchOp::Delete) {
+                    BatchOp::Set(data) => (w, Some(Body::new(data))),
+                    op => (BatchWrite { op, ..w }, None),
+                },
+            )
+            .collect();
         self.with_tx(|tx| {
             let rules = rules_in(tx, id)?;
             writes
                 .into_iter()
                 .enumerate()
-                .map(|(i, w)| {
+                .map(|(i, (w, body))| {
                     let pin = Pin {
                         if_version: w.if_version,
                         lww,
                     };
                     let path = w.path.as_str();
-                    match w.op {
-                        BatchOp::Set(data) => {
-                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(Some(data)))
+                    match (w.op, body) {
+                        (_, Some(body)) => {
+                            write_in(tx, id, &rules, caller, path, pin, |_| body.map(Some))
                         }
-                        BatchOp::Update(patch) => {
+                        (BatchOp::Update(patch), None) => {
                             write_in(tx, id, &rules, caller, path, pin, |cur| {
-                                update_body(path, cur, patch)
+                                Body::of(update_body(path, cur, patch))
                             })
                         }
-                        BatchOp::Delete => {
-                            write_in(tx, id, &rules, caller, path, pin, |_| Ok(None))
-                        }
+                        (_, None) => write_in(tx, id, &rules, caller, path, pin, |_| Ok(None)),
                     }
                     .map_err(|e| in_batch(i, path, e))
                 })
@@ -940,7 +979,7 @@ impl Store {
             let (version, change) = match a.data {
                 Some(patch) => {
                     let w = write_in(tx, id, &rules, caller, &dp.path, Pin { if_version: None, lww: true }, |cur| {
-                        Ok(Some(merged(cur.map_or(&empty, |d| &d.data), patch)))
+                        Body::new(merged(cur.map_or(&empty, |d| &d.data), patch)).map(Some)
                     })?;
                     (w.doc.map(|d| d.version), w.change)
                 }
@@ -1686,7 +1725,7 @@ mod tests {
             renew.acquired && renew.version == Some(1),
             "renewal without data writes nothing"
         );
-        st.with_conn(|c| {
+        st.with_write(|c| {
             Ok(c.execute(
                 "UPDATE leases SET expires_at = '2000-01-01T00:00:00.000Z'",
                 [],
@@ -1743,7 +1782,7 @@ mod tests {
         .unwrap();
         st.delete_artifact(&id).unwrap();
         let left: i64 = st
-            .with_conn(|c| {
+            .with_read(|c| {
                 Ok(c.query_row(
                     "SELECT (SELECT COUNT(*) FROM docs) + (SELECT COUNT(*) FROM leases)",
                     [],
@@ -1759,7 +1798,7 @@ mod tests {
     }
 
     fn doc_count(st: &Store, table: &str) -> i64 {
-        st.with_conn(|c| {
+        st.with_read(|c| {
             Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
         })
         .unwrap()
@@ -1972,7 +2011,7 @@ mod tests {
             acq("l/0").unwrap().0.acquired,
             "renewing a held lease is not a new one"
         );
-        st.with_conn(|c| {
+        st.with_write(|c| {
             Ok(c.execute(
                 "UPDATE leases SET expires_at = '2000-01-01T00:00:00.000Z' WHERE path <> 'l/0'",
                 [],

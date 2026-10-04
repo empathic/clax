@@ -319,7 +319,7 @@ fn check_all(c: &Connection, stats: &str) {
 #[test]
 fn hot_queries_use_their_indexes_with_and_without_statistics() {
     let (_d, st): (_, Store) = store();
-    st.with_conn(|c| {
+    st.with_write(|c| {
         seed(c);
         let has_stat1: bool = c.query_row(
             "SELECT EXISTS (SELECT 1 FROM sqlite_schema WHERE name = 'sqlite_stat1')",
@@ -340,7 +340,7 @@ fn hot_queries_use_their_indexes_with_and_without_statistics() {
 #[test]
 fn optimize_runs_on_a_seeded_store() {
     let (_d, st) = store();
-    st.with_conn(|c| {
+    st.with_write(|c| {
         seed(c);
         Ok(())
     })

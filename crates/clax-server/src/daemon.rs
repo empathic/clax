@@ -292,28 +292,27 @@ pub async fn serve(
     let reaper = tokio::spawn(async move {
         loop {
             tokio::time::sleep(reap_interval).await;
-            let store = reaper_store.clone();
             let ctx = fctx.clone();
-            let reaped = tokio::task::spawn_blocking(move || {
-                let r = store.reap_sessions(SESSION_IDLE, &pid_alive)?;
-                crate::feedback::apply(&ctx, &store, &r.touched);
-                for id in &r.ended {
-                    ctx.waiters.forget(id);
-                    crate::working::announce(
-                        &ctx.events,
-                        &ctx.working,
-                        &ctx.working.end_session(id),
-                    );
-                    ctx.followers.forget(id);
-                }
-                Ok::<_, clax_core::CoreError>(r)
-            })
-            .await;
+            let reaped = reaper_store
+                .call(move |store| {
+                    let r = store.reap_sessions(SESSION_IDLE, &pid_alive)?;
+                    crate::feedback::apply(&ctx, store, &r.touched);
+                    for id in &r.ended {
+                        ctx.waiters.forget(id);
+                        crate::working::announce(
+                            &ctx.events,
+                            &ctx.working,
+                            &ctx.working.end_session(id),
+                        );
+                        ctx.followers.forget(id);
+                    }
+                    Ok(r)
+                })
+                .await;
             match reaped {
-                Ok(Ok(r)) if r.ended.is_empty() => {}
-                Ok(Ok(r)) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
-                Ok(Err(e)) => tracing::warn!(error = %e, "session reaper failed"),
-                Err(e) => tracing::warn!(error = %e, "session reaper task failed"),
+                Ok(r) if r.ended.is_empty() => {}
+                Ok(r) => tracing::info!(count = r.ended.len(), "ended idle sessions"),
+                Err(e) => tracing::warn!(error = %e, "session reaper failed"),
             }
         }
     });
@@ -323,11 +322,8 @@ pub async fn serve(
         every.tick().await;
         loop {
             every.tick().await;
-            let store = optimize_store.clone();
-            match tokio::task::spawn_blocking(move || store.optimize()).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => tracing::warn!(error = %e, "planner statistics refresh failed"),
-                Err(e) => tracing::warn!(error = %e, "planner statistics task failed"),
+            if let Err(e) = optimize_store.call(|store| store.optimize()).await {
+                tracing::warn!(error = %e, "planner statistics refresh failed");
             }
         }
     });

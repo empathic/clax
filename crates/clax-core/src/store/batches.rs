@@ -145,7 +145,7 @@ impl Store {
 
     /// The batches that sent `thread_id`, oldest first (its send history).
     pub fn thread_sends(&self, thread_id: &str) -> Result<Vec<ThreadSend>> {
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare(
                 "SELECT b.id, b.size, b.note, b.sent_by, b.created_at FROM batch_threads t JOIN send_batches b ON b.id = t.batch_id
                  WHERE t.thread_id = ?1 ORDER BY b.created_at, b.id",

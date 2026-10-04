@@ -271,23 +271,44 @@ fn insert_mentions(tx: &Connection, comment_id: &str, body: &str) -> Result<()> 
     Ok(())
 }
 
-/// Writes `bytes` to `path` via a temporary file in `dir`, creating `dir`.
-fn write_clip(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<()> {
-    std::fs::create_dir_all(dir)?;
-    let tmp = path.with_extension("png.tmp");
-    if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
-        let _ = std::fs::remove_file(&tmp);
-        return Err(e.into());
+/// A clip image written ahead of its thread's transaction; unless kept, its
+/// file is removed on drop.
+struct PendingClip {
+    path: std::path::PathBuf,
+    keep: bool,
+}
+
+impl PendingClip {
+    /// Writes `bytes` to `path` via a temporary file in `dir`, creating `dir`.
+    fn write(dir: &std::path::Path, path: &std::path::Path, bytes: &[u8]) -> Result<PendingClip> {
+        std::fs::create_dir_all(dir)?;
+        let tmp = path.with_extension("png.tmp");
+        if let Err(e) = std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        Ok(PendingClip {
+            path: path.to_path_buf(),
+            keep: false,
+        })
     }
-    Ok(())
+}
+
+impl Drop for PendingClip {
+    fn drop(&mut self) {
+        if self.keep {
+            return;
+        }
+        let _ = std::fs::remove_file(&self.path);
+    }
 }
 
 impl Store {
     /// Creates a thread on version `t.version_n` of the live artifact `id` with
-    /// its first (viewer) comment. Liveness, the version, the rows, and the
-    /// clip are checked and written in one transaction; when it fails, no rows
-    /// remain and no clip file is left behind. Callers check the clip with
-    /// [`clip_problem`] first.
+    /// its first (viewer) comment. The clip file is written first; liveness,
+    /// the version, and the rows are then checked and written in one
+    /// transaction. When either fails, no rows remain and no clip file is
+    /// left behind. Callers check the clip with [`clip_problem`] first.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `invalid_anchor` (also
@@ -300,7 +321,20 @@ impl Store {
         let now = Store::now();
         let clip_path = self.home.clip_path(id, &tid);
         let anchor_json = serde_json::to_string(&t.anchor).expect("anchors serialise");
-        let inserted = self.with_tx(|tx| {
+        // Checked again in the transaction; checked here so a missing
+        // artifact gets no clip directory.
+        if t.clip.is_some() && !self.with_read(|c| artifact_live(c, id.as_str()))? {
+            return Err(CoreError::NotFound);
+        }
+        let clip = match &t.clip {
+            Some(bytes) => Some(PendingClip::write(
+                &self.home.clips_dir(id),
+                &clip_path,
+                bytes,
+            )?),
+            None => None,
+        };
+        self.with_tx(|tx| {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
@@ -346,18 +380,10 @@ impl Store {
                 params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
-            // Written last, still inside the transaction: a failed write rolls
-            // the rows back, and a failed commit removes the file below.
-            if let Some(bytes) = &t.clip {
-                write_clip(&self.home.clips_dir(id), &clip_path, bytes)?;
-            }
             Ok(())
-        });
-        if let Err(e) = inserted {
-            if t.clip.is_some() {
-                let _ = std::fs::remove_file(&clip_path);
-            }
-            return Err(e);
+        })?;
+        if let Some(mut clip) = clip {
+            clip.keep = true;
         }
         self.get_thread(&tid)?.ok_or(CoreError::NotFound)
     }
@@ -424,7 +450,7 @@ impl Store {
     /// # Errors
     /// `Corrupt` when its `anchor_json` does not parse.
     pub fn get_thread(&self, thread_id: &str) -> Result<Option<Thread>> {
-        self.with_conn(|c| thread_in(c, thread_id))
+        self.with_read(|c| thread_in(c, thread_id))
     }
 
     /// Threads of the live artifact `id`, oldest first; resolved ones only with
@@ -444,7 +470,7 @@ impl Store {
         limit: usize,
     ) -> Result<(Vec<Thread>, Option<String>)> {
         let limit = limit.max(1);
-        self.with_conn(|c| {
+        self.with_read(|c| {
             if !artifact_live(c, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
@@ -509,7 +535,7 @@ impl Store {
         if thread_ids.is_empty() {
             return Ok(HashMap::new());
         }
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut stmt = c.prepare_cached(THREAD_STATUSES)?;
             let rows = stmt.query_map(params![id.as_str(), id_array(thread_ids)], |r| {
                 Ok((r.get(0)?, r.get(1)?))
@@ -533,7 +559,7 @@ impl Store {
             .filter(|p| crate::is_public_id(p))
             .map(str::to_string)
             .collect();
-        self.with_conn(|c| {
+        self.with_read(|c| {
             let mut states = feedback_states_in(c, &ids, codex_push)?;
             let arr = id_array(&ids);
             let mut addressed: HashMap<String, Vec<u32>> = HashMap::new();
@@ -970,7 +996,7 @@ mod tests {
     }
 
     fn thread_rows(st: &Store) -> i64 {
-        st.with_conn(|c| Ok(c.query_row("SELECT count(*) FROM threads", [], |r| r.get(0))?))
+        st.with_read(|c| Ok(c.query_row("SELECT count(*) FROM threads", [], |r| r.get(0))?))
             .unwrap()
     }
 
@@ -985,7 +1011,7 @@ mod tests {
                     .id
             })
             .collect();
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute(
                 "UPDATE threads SET anchor_json = '{' WHERE id = ?1",
                 [&ids[1]],
@@ -1039,7 +1065,7 @@ mod tests {
     fn failed_insert_writes_no_clip() {
         let (_d, st) = store();
         let aid = artifact(&st, None);
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute_batch(
                 "CREATE TRIGGER refuse BEFORE INSERT ON comments BEGIN SELECT RAISE(ABORT, 'refused'); END;",
             )?;
@@ -1059,7 +1085,7 @@ mod tests {
         let (_d, st) = store();
         let aid = artifact(&st, None);
         // A deferred foreign-key violation passes every statement and fails the commit.
-        st.with_conn(|c| {
+        st.with_write(|c| {
             c.execute_batch(
                 "CREATE TABLE parent (id TEXT PRIMARY KEY);
                  CREATE TABLE child (p TEXT REFERENCES parent(id) DEFERRABLE INITIALLY DEFERRED);
@@ -1181,7 +1207,7 @@ mod tests {
         assert_eq!(st.get_thread(&t.id).unwrap(), None);
         assert!(!clip.exists());
         let left: i64 = st
-            .with_conn(|c| {
+            .with_read(|c| {
                 Ok(c.query_row(
                     "SELECT (SELECT COUNT(*) FROM comments) + (SELECT COUNT(*) FROM feedback)",
                     [],

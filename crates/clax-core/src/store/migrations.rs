@@ -283,7 +283,7 @@ mod tests {
         assert!(is_public_id(&lost.public_id));
         assert_ne!(lost.public_id, alex.public_id);
         let by = |tid: &str| {
-            st.with_conn(|c| {
+            st.with_read(|c| {
                 Ok(c.query_row(
                     "SELECT resolved_by FROM threads WHERE id = ?1",
                     params![tid],
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(by("t3"), "viewer:anonymous");
         assert_eq!(by("t4"), "agent:codex");
         let all = st
-            .with_conn(|c| {
+            .with_read(|c| {
                 let mut s = c.prepare("SELECT resolved_by FROM threads")?;
                 Ok(s.query_map([], |r| r.get::<_, String>(0))?
                     .collect::<rusqlite::Result<Vec<_>>>()?)
@@ -330,7 +330,7 @@ mod tests {
         }
         let st = Store::open(&home).unwrap();
         let version: u32 = st
-            .with_conn(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as u32);
         let id = crate::ArtifactId::parse("7q3k9mzx2b4t").unwrap();
@@ -383,7 +383,7 @@ mod tests {
         }
         let st = Store::open(&home).unwrap();
         let row = st
-            .with_conn(|c| {
+            .with_read(|c| {
                 Ok(c.query_row(
                     "SELECT (SELECT user_version FROM pragma_user_version),
                             f.notified_at, f.batch_id,
@@ -422,7 +422,7 @@ mod tests {
             "batch_threads",
         ] {
             let n: i64 = st
-                .with_conn(|c| {
+                .with_read(|c| {
                     Ok(c.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))?)
                 })
                 .unwrap();

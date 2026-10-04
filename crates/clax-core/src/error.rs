@@ -42,6 +42,13 @@ pub enum CoreError {
         column: &'static str,
         version: Option<u32>,
     },
+    /// A read ran longer than the store's read limit
+    /// ([`crate::store::exec::READ_LIMIT`] by default) and was interrupted.
+    #[error("a database read ran too long and was stopped")]
+    ReadTimeout,
+    /// A store job panicked, or the thread that would run it stopped.
+    #[error("storage task failed")]
+    TaskFailed,
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
