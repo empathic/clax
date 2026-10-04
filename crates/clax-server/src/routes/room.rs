@@ -364,8 +364,8 @@ async fn session(
                 let _ = socket.send(close(4409, "replaced")).await;
                 return;
             }
-            Ok(ev) = events.recv() => {
-                let gone = match &ev {
+            Ok(stamped) = events.recv() => {
+                let gone = match &stamped.event {
                     Event::ArtifactDeleted { artifact_id } => *artifact_id == aid,
                     // A new version may drop `room` (a metadata edit emits no
                     // event: it takes effect at the next connection).

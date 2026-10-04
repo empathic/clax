@@ -7,7 +7,9 @@ import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
-import { type ArtifactEvent, subscribe } from "../events";
+import type { ArtifactEvent } from "../events";
+import { REQUEST_STUCK, connTrouble } from "../conn-notice";
+import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
 import { nav } from "../nav";
 import { artifactOrigin, cachedOriginOk, pageSrc, probeOrigin } from "../origin";
@@ -199,7 +201,8 @@ export class ArtifactController {
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private captureTimer: ReturnType<typeof setTimeout> | undefined;
   private stream: (() => void) | null = null;
-  private readonly offs: (() => void)[] = [];
+  /** Owns every listener, timer and stream this view starts. */
+  private readonly life = new Lifecycle();
   /** The snapshot before this turn's first change, until the turn renders. */
   private turnFrom: ViewState | null = null;
   /** Rendered changes (from, to, the host at that render) whose reactions
@@ -663,16 +666,21 @@ export class ArtifactController {
     this.live = true;
     const boot = this.init.boot ?? null;
     // This viewer, once known (the bootstrap, a lookup, or a rename).
-    this.offs.push(onViewer(v => this.set({ me: v })));
+    this.life.defer(onViewer(v => this.set({ me: v })));
     if (boot) {
       seedViewer(boot.viewer);
       this.set({ threads: boot.threads });
       this.loaded(boot.artifact, boot.attention ?? null);
     } else {
-      getArtifact(this.id).then(d => this.loaded(d), e => this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }));
+      // A daemon that does not answer is retried (with a notice); an answer, even an error, is shown.
+      retrying(this.life, signal => getArtifact(this.id, { signal }), { retry: e => !(e instanceof ApiError), trouble: on => connTrouble("artifact", on, REQUEST_STUCK) })
+        .then(d => this.loaded(d), e => { if (!this.disposed) this.set({ error: e instanceof ApiError && e.status === 404 ? "Artifact not found" : String(e) }); });
     }
     this.decideOrigin(boot);
-    this.offs.push(onShieldPress(() => this.showHint(this.s.commenting ? MOVE_TO_PICK : MOVE_TO_CLICK)));
+    // Leaving the page ends the view: nothing it started outlives it, also
+    // into the back/forward cache (`artifact-main` reloads a restored page).
+    onPageCache(this.life, () => { this.reporter?.leave(); this.dispose(); }, () => {});
+    this.life.defer(onShieldPress(() => this.showHint(this.s.commenting ? MOVE_TO_PICK : MOVE_TO_CLICK)));
     this.listen();
     // The stream's first `ready` reloads the threads either way.
     if (!boot) this.loadThreads();
@@ -689,7 +697,7 @@ export class ArtifactController {
     this.writeSeen();
     if (!this.presenceAsked) {
       this.presenceAsked = true;
-      this.offs.push(afterPaint(() => this.startPresence()));
+      this.life.defer(afterPaint(() => this.startPresence()));
     }
   }
 
@@ -703,7 +711,7 @@ export class ArtifactController {
       if (this.disposed) return;
       const r = new m.PresenceReporter(this.id, () => this.s, s => !!s.me && viewReady(s) && !s.deleted, people => this.set({ presence: people }));
       this.reporter = r;
-      this.offs.push(() => r.dispose());
+      this.life.defer(() => r.dispose());
       r.fetch();
       r.report(true);
     }, () => {});
@@ -818,7 +826,7 @@ export class ArtifactController {
     if (this.disposed) return;
     this.disposed = true;
     this.live = false;
-    for (const off of this.offs.splice(0)) off();
+    this.life.dispose();
     this.cancelFlush();
     this.stream?.();
     this.stream = null;
@@ -983,7 +991,7 @@ export class ArtifactController {
     const mq = typeof matchMedia === "function" ? matchMedia("(max-width: 480px)") : null;
     const onNarrow = () => this.set({ narrow: !!mq?.matches });
     mq?.addEventListener?.("change", onNarrow);
-    this.offs.push(() => {
+    this.life.defer(() => {
       unforward();
       removeEventListener("message", onMessage);
       removeEventListener("mouseover", onOver);
@@ -1188,22 +1196,23 @@ export class ArtifactController {
   }
 
   private openStream(): void {
-    const open = async (resync: boolean) => {
-      // The owner shell passes its token (null on a LAN view) so the daemon
-      // counts its stream as the owner shell's.
-      const token = await getToken();
+    const open = async (viewerChanged: boolean) => {
+      // The owner shell's token request sets the events cookie first, so the
+      // daemon counts its stream as the owner shell's (a LAN view gets none).
+      // The stream's code loads here, off the artifact entry.
+      const [{ pageStream }] = await Promise.all([import("../stream"), getToken()]);
       if (!this.live) return;
-      this.stream?.();
-      this.stream = subscribe(this.id, e => this.onEvent(e), token);
-      // Events between the old and the new stream are lost: refetch as on a resync.
-      if (resync) this.onEvent({ type: "resync", dropped: 0 });
+      if (!this.stream) this.stream = pageStream().watch({ artifact: this.id }, e => this.onEvent(e));
+      else pageStream().reconnect();
+      // The viewer's level is fixed when the stream opens: refetch at the new one.
+      if (viewerChanged) this.onEvent({ type: "resync", dropped: 0 });
     };
     // The daemon reads the viewer cookie when the stream opens (its level for
     // `doc` events is fixed then), so open it once the lookup has set the
     // cookie, and reopen when a later lookup or a rename changes the viewer.
     const first = () => { if (this.live && !this.stream) void open(false); };
     void getViewer().then(first, first);
-    this.offs.push(onViewer(() => { if (this.live && this.stream) void open(true); }));
+    this.life.defer(onViewer(() => { if (this.live && this.stream) void open(true); }));
   }
 
   private onEvent(e: ArtifactEvent): void {

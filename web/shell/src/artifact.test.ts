@@ -247,9 +247,10 @@ describe("ArtifactView", () => {
     await waitFor(() => buttonNamed(root, /^Threads/).textContent === "Threads 1", "thread from the reload");
   });
 
-  it("opens the event stream only after the viewer lookup answered, with the owner shell's token", async () => {
+  it("opens the event stream only after the viewer lookup and the token request answered, with no token in its URL", async () => {
     let answerViewer!: () => void;
-    const view = await mountView(async url => new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))),
+    let tokenAsked = false;
+    const view = await mountView(async url => { if (url === "/api/token") tokenAsked = true; return new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))); },
       url => url.includes("/threads")
         ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
         : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));
@@ -259,7 +260,9 @@ describe("ArtifactView", () => {
     expect(FakeES.last).toBeUndefined();
     answerViewer();
     const es = await waitFor(() => FakeES.last, "event stream");
-    expect(es.url).toBe(`/api/events?artifact=${ID}&token=tk`);
+    // The token request set the events cookie, which stands for the token.
+    expect(tokenAsked).toBe(true);
+    expect(es.url).toBe(`/api/events?artifact=${ID}`);
   });
 
   it("keeps a thread event that arrives while an older thread list is in flight", async () => {

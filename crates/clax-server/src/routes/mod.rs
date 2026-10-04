@@ -178,7 +178,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/_test/sleep/{ms}", get(test_sleep))
         .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
     #[cfg(debug_assertions)]
-    let api_fast = api_fast.route("/api/_test/working/skew", post(working::skew));
+    let api_fast = api_fast
+        .route("/api/_test/working/skew", post(working::skew))
+        .route("/api/_test/events/open", get(events::open_streams));
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = with_timeout(api_fast, state.request_timeout);

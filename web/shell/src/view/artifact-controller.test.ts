@@ -742,6 +742,8 @@ describe("ArtifactController", () => {
       const [t1, t2] = ctl.state.get().threads;
       ctl.toggleSelect(t1, false);
       ctl.toggleSelect(t2, false);
+      // The stream's code loads after the view starts.
+      await vi.waitFor(() => expect(FakeES.last).toBeDefined());
       FakeES.last!.emit("thread_deleted", { type: "thread_deleted", artifact_id: ID, thread_id: "t1" });
       await Promise.resolve();
       expect(ctl.state.get().selection.ids).toEqual(["t2"]);

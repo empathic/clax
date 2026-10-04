@@ -1,18 +1,13 @@
-// The gallery's event stream, apart from `events.ts` so the gallery's lazy
-// working module does not share the artifact entry's event code.
+// The gallery's watch of the page's event stream.
 import type { ArtifactEvent } from "./events";
-/** Subscribes to every artifact's `working`, `version`, `thread`,
- * `thread_deleted` and `artifact_deleted` events (the gallery's chips and the
- * cards they name); a no-op where `EventSource` is undefined. */
+import { pageStream } from "./stream";
+
+/** The events the gallery's chips and cards follow. */
+export const GALLERY_TYPES = ["working", "version", "thread", "thread_deleted", "artifact_deleted"] as const;
+
+/** Watches every artifact's `working`, `version`, `thread`, `thread_deleted`
+ * and `artifact_deleted` events (the gallery's chips and the cards they
+ * name) on the page's one stream; returns the unwatch. */
 export function subscribeGallery(onEvent: (e: ArtifactEvent) => void): () => void {
-  if (typeof EventSource === "undefined") return () => {};
-  const es = new EventSource("/api/events?types=working,version,thread,thread_deleted,artifact_deleted");
-  const handler = (e: MessageEvent) => { try { onEvent(JSON.parse(e.data)); } catch { /* ignore malformed */ } };
-  for (const name of ["working", "version", "thread", "thread_deleted", "artifact_deleted"]) es.addEventListener(name, handler);
-  es.addEventListener("ready", () => onEvent({ type: "ready" }));
-  es.addEventListener("error", () => onEvent({ type: "stream_down" }));
-  es.addEventListener("resync", (e: MessageEvent) => {
-    try { onEvent({ type: "resync", dropped: Number(JSON.parse(e.data).dropped) || 0 }); } catch { onEvent({ type: "resync", dropped: 0 }); }
-  });
-  return () => es.close();
+  return pageStream().watch({ types: GALLERY_TYPES }, onEvent);
 }

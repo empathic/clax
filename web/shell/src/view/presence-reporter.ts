@@ -22,7 +22,7 @@ export class PresenceReporter {
     if (this.reported?.state === "away" && document.visibilityState === "visible") this.report();
   };
   /** Leaving the page: away at once, rather than here until the report lapses. */
-  private readonly onHide = () => {
+  readonly leave = () => {
     if (this.done || !this.may(this.state())) return;
     this.reported = { state: "away", where: null, at: Date.now() };
     void putPresence(this.id, "away", null, true);
@@ -33,7 +33,7 @@ export class PresenceReporter {
    * artifact is loaded and not deleted); `take` receives the artifact's presence. */
   constructor(private readonly id: string, private readonly state: () => ViewState, private readonly may: (s: ViewState) => boolean, private readonly take: (people: PresenceView[]) => void) {
     document.addEventListener("visibilitychange", this.onVisible);
-    addEventListener("pagehide", this.onHide);
+    addEventListener("pagehide", this.leave);
     for (const t of INPUTS) addEventListener(t, this.onInput, { passive: true, capture: true });
     this.beat = setInterval(() => this.report(true), 30_000);
   }
@@ -69,7 +69,7 @@ export class PresenceReporter {
   dispose(): void {
     this.done = true;
     document.removeEventListener("visibilitychange", this.onVisible);
-    removeEventListener("pagehide", this.onHide);
+    removeEventListener("pagehide", this.leave);
     for (const t of INPUTS) removeEventListener(t, this.onInput, { capture: true });
     clearInterval(this.beat);
     clearTimeout(this.timer);

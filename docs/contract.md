@@ -1088,8 +1088,9 @@ artifact's entry alone, as `GET /api/artifacts` lists it, or `[]` when it
 is not live; a malformed ID is 400.
 
 The open gallery fetches the list and this attention in full when it loads,
-when its event stream (`/api/events?types=working,version,thread,thread_deleted,artifact_deleted`)
-opens or sends `resync`, and once a minute while the page is visible. A
+when its event stream (`/api/events?types=working,version,thread,thread_deleted,artifact_deleted`;
+see "The event stream") says `ready` without resuming or sends `resync`, and
+once a minute while the page is visible. A
 `version`, `thread`, `thread_deleted` or `artifact_deleted` event refetches
 only the artifact it names, with `?artifact=<aid>` on both routes, at most
 once a second per artifact, and updates that card in place (or removes it).
@@ -2283,6 +2284,60 @@ harness and the daemon, each `ok` or failed with the fix:
   a lock whose process has gone is taken over, and separate worktrees run in
   parallel.
 
+## The event stream
+
+`GET /api/events` is a Server-Sent Events stream of the daemon's changes:
+`version`, `artifact_deleted`, `thread`, `comment`, `thread_resolved`,
+`thread_deleted`, `feedback_state`, `working`, `presence` and `doc` events,
+each carrying the JSON of the change. The query narrows it:
+`artifact=<id>[,<id>...]` keeps the events of those artifacts, and
+`types=<name>[,<name>...]` the events of those names; `ready` and `resync`
+always come.
+
+- **Opening.** The stream opens with `event: ready` and data
+  `{"resumed": <bool>}`. A `: keep-alive` comment comes every 15 s while it
+  is idle, and the stream ends when the daemon shuts down.
+- **Resuming.** Every event, `ready` included, carries an SSE `id` of the
+  form `<epoch>-<n>`, where `<epoch>` is 16 hex digits naming this daemon
+  run and `<n>` counts its events. A client that reconnects with the last
+  ID it saw, in the `Last-Event-ID` header or as `?last_event_id=<id>`,
+  first receives the events it missed that its query keeps, and `ready`
+  says `"resumed": true`. The daemon keeps its latest 256 events for this.
+  An ID from another daemon run, a malformed one, or one older than every
+  event kept gets `"resumed": false` and only live events: the client
+  should refetch what it shows.
+- **Falling behind.** A stream more than 256 events behind gets
+  `event: resync` with `{"dropped": <n>}` and continues with the oldest event
+  kept; the client should refetch what it shows.
+- **Who is listening.** The subscriber's level is worked out as for the
+  `db` routes when the stream opens and filters `doc` events (see "Security
+  model"). The token counts when it comes in `Authorization`, as
+  `?token=`, or as the events cookie. `GET /api/token` sets that cookie
+  when the browser marks the request same-origin (`Sec-Fetch-Site:
+  same-origin`, the shell's own request):
+  `clax_events_<port>=<SHA-256 of the token, hex>; Path=/api/events;
+  HttpOnly; SameSite=Strict`, where `<port>` is the port in the request's
+  `Host` (80 when it names none). The cookie never holds the token and no
+  other route reads it.
+
+The shell holds at most one event stream per page. The gallery and the
+artifact view watch it with their own topics; the stream carries their
+union and hands each the events its topics name. It reopens with other
+topics, or after a failure, resuming after the last event it saw, and a
+view refetches only when the reconnect could not resume. It opens after
+`GET /api/token` has set the events cookie (on this machine), so its URL
+never carries the token. A failed stream is retried after 0.5 s, doubling
+up to 30 s, each wait spread by a fifth either way; a stream that has not
+said `ready` within 5 s counts as failed. Once the stream has been down
+for 1.5 s, the page shows a quiet notice ("Live updates paused.
+Reconnecting…") until it is back. A first load of the gallery or the
+artifact that has not answered within 8 s, or failed to connect, is
+abandoned and retried the same way, with a notice. As the page is hidden
+(a navigation, a reload, a close, or the back/forward cache) the stream
+closes, and the artifact view ends with every listener, timer, request and
+socket it started. When the back/forward cache restores the gallery, its
+stream resumes; a restored artifact view loads again.
+
 ## Security model
 
 - The daemon binds `127.0.0.1` by default. `clax serve --bind 0.0.0.0` (or
@@ -2388,9 +2443,11 @@ harness and the daemon, each `ok` or failed with the fix:
   body. An event for a path inside a viewer's private subtree goes only to
   that viewer's stream (never to the owner's browser or an agent); any other
   goes only to subscribers whose level meets the path's read rule, with the
-  level worked out as for the `db` routes when the stream opens. The owner's
-  browser cannot send headers on an event stream, so it sends the token as
-  `?token=`; the daemon never logs that route's query string.
+  level worked out as for the `db` routes when the stream opens. An
+  `EventSource` cannot send headers, so the stream also takes the token as
+  `?token=` (the daemon never logs that route's query string) and as the
+  events cookie; the owner's browser uses the cookie and never puts the
+  token in the stream's URL (see "The event stream").
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").
