@@ -27,7 +27,12 @@ Budgets live in scripts/perf-daemon-budget.json:
   clamp(idle p95 / quiet_idle_p95_ms, 1, max_scale), the idle p95 measured
   in the same run, so a machine busy with other work gets proportionally
   more room, up to `max_scale`;
-- `rounds`, `window_s`: how many rounds, and each phase's length.
+- `rounds`, `window_s`: how many rounds, and each phase's length;
+- `seed`: the seeded home's shape;
+- `quick`: what `--quick` (quality_gates.sh) overrides: shorter windows,
+  judged by the same budgets and the same idle scaling. The seed stays
+  whole: it takes about a second, and with fewer threads a regression in
+  the attention queries would show less.
 
 Exits 0 when every median is within its limit, 1 when one is not, 2 on a
 setup failure. The scratch home and the daemon are removed on every exit.
@@ -358,7 +363,8 @@ class Loads:
                 b = ex.submit(cs[1].req, "GET", "/api/viewers/me/attention", None, self.ck)
                 expect(a.result()[0] == 200 and b.result()[0] == 200, "gallery tab refresh failed")
                 n += 1
-                time.sleep(max(0, 1 - (time.time() - t0)))
+                # Once a second, but never past the window.
+                time.sleep(max(0, min(1 - (time.time() - t0), deadline - time.time())))
         return f"{n} refreshes"
 
     def galleries(self, deadline):
@@ -509,10 +515,11 @@ def attention_alone(d, st, n=ATTENTION_SAMPLES):
     return statistics.median(ts)
 
 
-def main(binary, budget_path):
+def main(binary, budget_path, quick):
     cfg = json.load(open(budget_path))
-    seed_cfg = {"artifacts": 300, "threads_per_artifact": 8, "comments_per_thread": 3, "sessions": 50,
-                "large_artifacts": 3, "assets": 6, "db_docs": 1000}
+    if quick:
+        cfg = {**cfg, **cfg["quick"]}
+    seed_cfg = cfg["seed"]
     scratch = tempfile.mkdtemp(prefix="clax-perf-daemon.")
     d = None
     try:
@@ -560,7 +567,7 @@ def main(binary, budget_path):
     print()
     print(f"idle p95 {idle_p95:.1f} ms (quiet is {quiet} ms or less): limits scaled by {scale:.2f}: "
           f"p95 {lim_p95:.0f} ms, max {lim_max:.0f} ms, attention alone {lim_att:.0f} ms")
-    print(f"medians over {rounds} rounds of {window} s windows")
+    print(f"medians over {rounds} rounds of {window} s windows{' (quick)' if quick else ''}")
     print()
     print(f"{'load':<14} {'probe':<24} {'n':>5} {'p95 ms':>9} {'max ms':>9}  verdict")
     failed = []
@@ -597,9 +604,12 @@ if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "--probe":
         probe_main(int(sys.argv[2]), sys.argv[3], sys.argv[4])
         sys.exit(0)
-    if len(sys.argv) != 3:
-        print("usage: perf-daemon.py <clax binary> <budget.json>", file=sys.stderr)
+    args = sys.argv[1:]
+    quick = "--quick" in args
+    args = [a for a in args if a != "--quick"]
+    if len(args) != 2:
+        print("usage: perf-daemon.py [--quick] <clax binary> <budget.json>", file=sys.stderr)
         sys.exit(2)
     # A signal ends the run through `finally`, so the daemon and the scratch home go too.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
-    sys.exit(main(sys.argv[1], sys.argv[2]))
+    sys.exit(main(args[0], args[1], quick))

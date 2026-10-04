@@ -31,10 +31,14 @@ trap cleanup EXIT
 trap 'exit 130' INT TERM
 
 # The daemon serves web/dist; it must be built from the current sources.
+# scripts/build-web.sh keeps the times of output it did not change and marks
+# the build's time in web/node_modules/.clax-web-built.
 for out in web/dist/index.html web/dist/_clax/bridge.js; do
     [ -f "$out" ] || die "$out is missing: run (cd web && npm run build) first"
+    built="$out"
+    if [ web/node_modules/.clax-web-built -nt "$out" ]; then built=web/node_modules/.clax-web-built; fi
     newer="$(find web/shell web/bridge web/vite.shell.config.ts web/vite.bridge.config.ts web/package.json web/package-lock.json \
-        -type f ! -name '*.test.ts' -newer "$out" -print -quit)"
+        -type f ! -name '*.test.ts' -newer "$built" -print -quit)"
     [ -z "$newer" ] || die "web/dist is older than $newer: run (cd web && npm run build) first"
 done
 

@@ -771,9 +771,12 @@ fn open_fails_when_the_opener_fails() {
             std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
     };
+    // The fakes exit at once; a debug build waits for them however slowly
+    // they start on a loaded machine, so neither counts as still running.
     fake(1);
     e.cmd()
         .env("PATH", &path)
+        .env("CLAX_TEST_OPEN_WAIT_MS", "30000")
         .args(["open", &id])
         .assert()
         .failure()
@@ -782,6 +785,7 @@ fn open_fails_when_the_opener_fails() {
     fake(0);
     e.cmd()
         .env("PATH", &path)
+        .env("CLAX_TEST_OPEN_WAIT_MS", "30000")
         .args(["open", &id])
         .assert()
         .success()

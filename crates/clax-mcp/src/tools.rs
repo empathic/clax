@@ -641,6 +641,7 @@ pub struct ClaxTools {
     upgrade_hold: Option<UpgradeHoldProbe>,
     channel: Option<crate::channel::ChannelState>,
     opener: Opener,
+    open_wait: std::time::Duration,
     tool_router: ToolRouter<Self>,
 }
 
@@ -682,6 +683,7 @@ impl ClaxTools {
             upgrade_hold: None,
             channel: None,
             opener: Opener::default(),
+            open_wait: open_wait(),
             tool_router: Self::tool_router(),
         }
     }
@@ -712,6 +714,13 @@ impl ClaxTools {
     /// These tools with `opener` showing the URLs `open` returns.
     pub fn with_opener(mut self, opener: Opener) -> ClaxTools {
         self.opener = opener;
+        self
+    }
+
+    /// These tools waiting up to `wait` for the opener to exit, instead of
+    /// [`OPEN_WAIT`].
+    pub fn with_open_wait(mut self, wait: std::time::Duration) -> ClaxTools {
+        self.open_wait = wait;
         self
     }
 
@@ -1035,8 +1044,8 @@ impl ClaxTools {
         };
         let opened = match program {
             Some(program) => {
-                let url = url.clone();
-                tokio::task::spawn_blocking(move || run_opener(&program, &url))
+                let (url, wait) = (url.clone(), self.open_wait);
+                tokio::task::spawn_blocking(move || run_opener(&program, &url, wait))
                     .await
                     .unwrap_or(false)
             }
@@ -1577,13 +1586,27 @@ impl ClaxTools {
 /// How long [`open_in_browser`] waits for the opener to exit.
 pub const OPEN_WAIT: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// [`OPEN_WAIT`]; in a debug build, `CLAX_TEST_OPEN_WAIT_MS` milliseconds
+/// when set, so a test's fake opener that is slow to start on a loaded
+/// machine is still waited for. Release builds always wait [`OPEN_WAIT`].
+fn open_wait() -> std::time::Duration {
+    if cfg!(debug_assertions)
+        && let Some(ms) = std::env::var("CLAX_TEST_OPEN_WAIT_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+    {
+        return std::time::Duration::from_millis(ms);
+    }
+    OPEN_WAIT
+}
+
 /// Runs the platform opener (`open` on macOS, `xdg-open` elsewhere) on `url`
 /// with stdio detached and waits up to [`OPEN_WAIT`] for it. True when it
 /// exits successfully in time, or is still running then (best effort: some
 /// openers hand off and linger; it is reaped in the background); false when it
 /// cannot start or exits unsuccessfully. Blocks the calling thread.
 pub fn open_in_browser(url: &str) -> bool {
-    run_opener(Path::new(platform_opener()), url)
+    run_opener(Path::new(platform_opener()), url, open_wait())
 }
 
 /// `open` on macOS, `xdg-open` elsewhere.
@@ -1595,8 +1618,8 @@ fn platform_opener() -> &'static str {
     }
 }
 
-/// [`open_in_browser`] with `program` as the opener.
-fn run_opener(program: &Path, url: &str) -> bool {
+/// [`open_in_browser`] with `program` as the opener, waiting up to `wait`.
+fn run_opener(program: &Path, url: &str, wait: std::time::Duration) -> bool {
     let Ok(mut child) = std::process::Command::new(program)
         .arg(url)
         .stdin(std::process::Stdio::null())
@@ -1606,7 +1629,7 @@ fn run_opener(program: &Path, url: &str) -> bool {
     else {
         return false;
     };
-    let deadline = std::time::Instant::now() + OPEN_WAIT;
+    let deadline = std::time::Instant::now() + wait;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => return status.success(),

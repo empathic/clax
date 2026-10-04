@@ -15,5 +15,10 @@
   "idle_cpu_pct": 2,
   "slow_rss_growth_kb": 2048,
   "quiet_idle_p95_ms": 5,
-  "max_scale": 3
+  "max_scale": 3,
+  "quick": {
+    "baseline_s": 1,
+    "idle_s": 3,
+    "load_s": 3
+  }
 }

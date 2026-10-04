@@ -187,7 +187,8 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   `clax doctor` (none of which stalled cheap requests when measured by
   hand), and judges no request slower than its probes, such as
   `GET /api/artifacts`. A release build for the gate costs about a minute
-  when nothing is cached.
+  when nothing is cached; `quality_gates.sh` builds it once for all the
+  perf gates, alongside the Rust lane.
 - **Published pages go out uncompressed.** API JSON, the shell's pages and
   bundles, and the bridge and its parts are compressed (`gzip`, or `br`
   where accepted); wrapped pages and supporting files under `/c/...` and on
@@ -242,12 +243,17 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
 These tests have failed intermittently under heavy machine load and passed
 on rerun; each is parked for a fix:
 
-- `clax-mcp` `open_status`: relies on a 1.5 s wait for the fake browser opener.
 - `web/e2e/gesture.spec.ts`, the N14 sandbox closed-shadow-root
   `sendToClaude` case: a 120 s timeout under load. Suspected fix (frame
   load before click) in e5dfa42; confirm under a loaded full gates run.
 - `web/shell/src/artifact.test.ts`, "says so when the page of an opened thread
   never greets": races a 50 ms wait against 120 ms sleeps.
+- `web/shell/src/artifact.test.ts`, "tells a custom-anchors page areas are off
+  while a send is in flight, …", `web/shell/src/gallery.test.ts`, "without a
+  token renders no buttons", `web/shell/src/topbar-style.test.ts` and
+  `web/scripts/inline-css.test.ts` (5 s timeouts): failed with cargo builds
+  and tests running alongside; passed alone. `quality_gates.sh` runs the web
+  unit tests before anything else starts.
 - `web/e2e/subpages.spec.ts`, "sandbox: one link inside the frame is one
   history entry": failed about 1 run in 120 under load; passed 10 of 10 alone.
 - `clax-hooks` golden `no_daemon_prints_nothing_and_starts_none`:
@@ -261,4 +267,39 @@ on rerun; each is parked for a fix:
 
 `scripts/quality_gates.sh` takes a lock per checkout and is read whole before
 it runs, so concurrent runs and mid-run edits no longer break it.
+
+## Gate speed
+
+`scripts/quality_gates.sh` runs everything but web e2e in about a minute and
+a half on a warm cache and an otherwise idle machine. What is left:
+
+- **The critical path is the Rust tests and the Pi tests, about 30 s each.**
+  The slowest Rust tests wait out real production timeouts on purpose:
+  `clax-cli` `client::tests` (the 7 s shutdown grace before SIGTERM, the 5 s
+  readiness deadline), `clax-hooks` golden
+  `session_end_gives_up_within_codexs_three_second_cap`, and the `clax-mcp`
+  `channel` tests' 3 to 5 s windows that show no second event arrives. The
+  Pi tests' longest holds the start lock for 12 s to show `ensure` outwaits
+  the old 10 s limit, and another waits 6 s to show the injection loop never
+  starts a stopped daemon.
+- **A bare `cargo nextest run` races on `target/debug/clax`.** The tests that
+  cannot name the binary (`clax-hooks` golden, `clax-mcp` shim and channel)
+  build it when `CLAX_TEST_BIN` is unset, once per process under nextest, and
+  each build replaces `target/debug/clax` while other tests run it. `just
+  test` and the gates set `CLAX_TEST_BIN`; a nextest setup script could do it
+  for any run once that feature is stable.
+- **The lanes slow each other.** Next to the Rust tests the script tests take
+  two to three times their time alone, and after a Rust change the release
+  build runs alongside the tests too. The release build could wait for the
+  tests, at the cost of a slower run whenever the Rust code changed.
+- **The shell's unit tests run alone** (about 11 s) because several are
+  timing-sensitive (see "Tests" above); once those are fixed they can join
+  the lanes.
+- **Time to usable starts its daemon with `cargo run`**
+  (`web/e2e/fixtures.ts`), not the run's prebuilt binary.
+- **The quick perf gates keep the full seed and client count** and shorten
+  only their windows (and the daemon gate keeps three rounds, so one noisy
+  round cannot fail it). With the attention queries' planner hints removed,
+  the quick daemon latency gate failed `attention alone` at about 460 ms
+  against its 50 ms limit.
 

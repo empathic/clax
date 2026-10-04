@@ -5,7 +5,9 @@
 # scripts/perf-daemon.py for the loads and how the budgets are judged).
 # Prints a table; exits non-zero when a median is over its limit.
 #
-# Usage: scripts/perf-daemon.sh
+# Usage: scripts/perf-daemon.sh [--quick]
+# --quick runs the short version quality_gates.sh uses: the same budgets,
+# fewer and shorter measurements (the budget file's `quick` overrides).
 # CLAX_PERF_BIN=<path> uses that binary instead of building the release one.
 # The release build embeds web/dist, so build the web UI first
 # (`cd web && npm run build`); quality_gates.sh does.
@@ -21,4 +23,4 @@ if [ -z "$BIN" ]; then
     cargo build -q --release -p clax-cli
     BIN="$PWD/target/release/clax"
 fi
-exec python3 scripts/perf-daemon.py "$BIN" scripts/perf-daemon-budget.json
+exec python3 scripts/perf-daemon.py "$@" "$BIN" scripts/perf-daemon-budget.json

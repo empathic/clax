@@ -524,15 +524,16 @@ export function htmlTitle(html: string): string | undefined {
   return title === "" ? undefined : title;
 }
 
-/** How long [`openInBrowser`] waits for the opener to exit. */
+/** How long [`openInBrowser`] waits for the opener to exit, unless
+ * `openWaitMs` says otherwise. */
 export const OPEN_WAIT_MS = 1_500;
 
 /** Runs the platform opener (`open` on macOS, `xdg-open` elsewhere, looked up
- * on `env`'s `PATH`) on `url` with stdio detached and waits up to
- * [`OPEN_WAIT_MS`] for it. True when it exits successfully in time, or is
- * still running then (best effort: some openers hand off and linger); false
- * when it cannot start or exits unsuccessfully. */
-function openInBrowser(url: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+ * on `env`'s `PATH`) on `url` with stdio detached and waits up to `waitMs`
+ * for it. True when it exits successfully in time, or is still running then
+ * (best effort: some openers hand off and linger); false when it cannot
+ * start or exits unsuccessfully. */
+function openInBrowser(url: string, env: NodeJS.ProcessEnv, waitMs: number): Promise<boolean> {
   const opener = process.platform === "darwin" ? "open" : "xdg-open";
   return new Promise(resolve => {
     let timer: NodeJS.Timeout | undefined;
@@ -544,7 +545,7 @@ function openInBrowser(url: string, env: NodeJS.ProcessEnv): Promise<boolean> {
       const child = spawn(opener, [url], { stdio: "ignore", detached: true, env });
       child.once("error", () => done(false));
       child.once("exit", code => done(code === 0));
-      timer = setTimeout(() => { child.unref(); done(true); }, OPEN_WAIT_MS);
+      timer = setTimeout(() => { child.unref(); done(true); }, waitMs);
     } catch {
       done(false);
     }
@@ -561,6 +562,9 @@ export interface ClaxOptions {
   env?: NodeJS.ProcessEnv;
   /** Port for a daemon the extension starts; the CLI's default when absent. */
   port?: number;
+  /** How long `open` waits for the browser opener to exit;
+   * [`OPEN_WAIT_MS`] when absent. */
+  openWaitMs?: number;
 }
 
 /** The Clax tools for one Pi session. */
@@ -774,7 +778,7 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
     return { url, opened };
   }
 
@@ -783,7 +787,7 @@ class Tools {
     const c = this.clientFor(ctx);
     await this.call(() => c.healthz());
     const url = `${this.browserBase(c)}/`;
-    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env));
+    const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
     return { url, opened };
   }
 

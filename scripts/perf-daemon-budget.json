@@ -5,5 +5,17 @@
   "quiet_idle_p95_ms": 5,
   "max_scale": 3,
   "rounds": 3,
-  "window_s": 3
+  "window_s": 3,
+  "seed": {
+    "artifacts": 300,
+    "threads_per_artifact": 8,
+    "comments_per_thread": 3,
+    "sessions": 50,
+    "large_artifacts": 3,
+    "assets": 6,
+    "db_docs": 1000
+  },
+  "quick": {
+    "window_s": 0.5
+  }
 }

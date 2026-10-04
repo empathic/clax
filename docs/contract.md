@@ -2424,7 +2424,8 @@ harness and the daemon, each `ok` or failed with the fix:
   steady rate, and judges delivery latency, cheap requests under that load,
   memory per client, idle CPU, and a client that never reads, against
   `scripts/perf-clients-budget.json`; `CLAX_PERF_CLIENTS=<n>` runs another
-  count.
+  count. The quality gates run it with `--quick` (shorter idle and load
+  windows, the same budgets); `just perf` runs it in full.
 - `scripts/quality_gates.sh` takes a lock per checkout
   (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
   a lock whose process has gone is taken over, and separate worktrees run in

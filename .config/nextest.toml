@@ -1,0 +1,7 @@
+# cargo nextest runs each test in its own process, all of them in parallel.
+[profile.default]
+# A test running past 30 s is reported as slow, and one still running at
+# 2 minutes is ended and fails, so a hung test cannot hold the gates.
+slow-timeout = { period = "30s", terminate-after = 4 }
+# The run's summary lists the slow tests as well as the failures.
+final-status-level = "slow"

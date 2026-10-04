@@ -6,7 +6,9 @@
 # (see scripts/perf-clients.py for the run and how it is judged).
 # Prints a table; exits non-zero when a measure is over its limit.
 #
-# Usage: scripts/perf-clients.sh
+# Usage: scripts/perf-clients.sh [--quick]
+# --quick runs the short version quality_gates.sh uses: the same budgets,
+# fewer and shorter measurements (the budget file's `quick` overrides).
 # CLAX_PERF_BIN=<path> uses that binary instead of building the release one.
 # CLAX_PERF_CLIENTS=<n> opens n clients instead of the budget's count.
 # The release build embeds web/dist, so build the web UI first
@@ -23,4 +25,4 @@ if [ -z "$BIN" ]; then
     cargo build -q --release -p clax-cli
     BIN="$PWD/target/release/clax"
 fi
-exec python3 scripts/perf-clients.py "$BIN" scripts/perf-clients-budget.json
+exec python3 scripts/perf-clients.py "$@" "$BIN" scripts/perf-clients-budget.json
