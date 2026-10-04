@@ -23,7 +23,8 @@
   $effect(() => { if (p.s.menu === "people" && !Panel) void import("./PeoplePanel.svelte").then(m => { Panel = m.default; }, () => {}); });
   // The elapsed clock ticks each second while anyone works.
   const tick = ticker(() => p.s.working.length > 0, () => undefined);
-  const parts = $derived(p.s.data.artifact.participants ?? { people: [], agents: [] });
+  // The agents as last refetched (they join and end as the stream says), the people as loaded.
+  const parts = $derived({ people: p.s.data.artifact.participants?.people ?? [], agents: p.s.agents });
   const names = $derived(agentNames(p.s.working, parts.agents));
   const busy = $derived(new Set(p.s.working.map(w => w.agent)));
   const sum = $derived(summary({

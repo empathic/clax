@@ -2485,8 +2485,10 @@ BroadcastChannel; the next tab in line takes over when it leaves. Without
 Web Locks or BroadcastChannel either, each tab holds its own. So the number
 of connections does not grow with tabs, and a tab costs the daemon nothing.
 
-Views subscribe as they mount and unsubscribe as they unmount; no
-connection opens or closes on a view change, and the connection closes 3 s
+Views subscribe as they mount and unsubscribe as they unmount (the artifact
+view once its frame has loaded, or 1.5 s after it starts, so the shared
+worker and the stream's requests never compete with the page's first
+paint); no connection opens or closes on a view change, and the connection closes 3 s
 after no tab watches any topic. A view fetches its state when its topics go
 live (on subscribing, when its page shows again, or after a reconnect that
 could not resume) and on `resync`, and applies each event's delta to what

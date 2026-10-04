@@ -3,9 +3,13 @@
 // `presence:<id>` and `working:<id>` topics, and `docs:<id>` for a page that
 // declares `db`. Thread and presence deltas are applied to what the view
 // holds, and the view handles the full events they amount to.
+import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
+import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
-import type { Thread } from "../threads";
+import { type Thread, upsert } from "../threads";
+import type { ArtifactController } from "./artifact-controller";
+import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
 import type { PresenceView } from "./presence-model";
 
@@ -59,7 +63,13 @@ export class ArtifactStream {
 
   private on(e: StreamEvent): void {
     const v = this.v;
-    if (v.disposed() || e.type === "refused") return;
+    if (v.disposed()) return;
+    if (e.type === "refused") {
+      // The daemon would not subscribe the artifact's topic (it was deleted
+      // before the view subscribed, say): the view refetches, and learns why.
+      if (e.topic === `artifact:${this.id}`) v.event({ type: "resync", topic: e.topic });
+      return;
+    }
     if (e.type === "thread") {
       const d = (e as unknown as { thread: ThreadDelta }).thread;
       const r = applyThread(v.threads(), d);
@@ -84,5 +94,54 @@ export class ArtifactStream {
       return;
     }
     v.event(e as unknown as ArtifactEvent);
+  }
+}
+
+/** The artifact view's handling of one full event from its stream. It
+ * lives here, off the artifact entry, as it runs only once the stream is
+ * open. Working deltas and the refetches on `ready` and `resync` are
+ * ordered by the view's clock: an answer never replaces working state a
+ * delta set after its request started. */
+export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
+  if (c.disposed) return;
+  c.host?.onEvent(e);
+  if (e.type === "version" && e.by_page && e.n > c.shown()) {
+    // The page republished itself (artifact.publish): every unpinned view
+    // follows at once, on the page it shows (the new version carries every
+    // file forward); a pinned view is offered Reload in the top bar. The
+    // publishing view reloads itself after its call result is posted; while
+    // one of its own publishes is in flight, another view's publish waits
+    // for it to settle.
+    if (c.ownPublish.active > 0) { c.deferredPublish = Math.max(c.deferredPublish ?? 0, e.n); return; }
+    if (c.pinnedVersion === null) {
+      c.latestKnown = Math.max(c.latestKnown, e.n);
+      holdKeysAcrossLoad();
+      nav.assign(c.here(null));
+      return;
+    }
+  }
+  if (e.type === "version" && e.n > c.latestKnown) { c.latestKnown = e.n; c.set({ newer: e.n }); }
+  if (e.type === "artifact_deleted") c.set({ deleted: true });
+  if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
+  if (e.type === "presence") c.set({ presence: e.people });
+  // An agent may have started or ended: the Send target and the roster follow.
+  if (e.type === "working" || e.type === "version") c.refreshAgents();
+  if (e.type === "thread") c.changeThreads(ts => upsert(ts, e.thread));
+  if (e.type === "thread_deleted") { c.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); c.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
+  if (e.type === "feedback_state") c.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
+  // A (re)connect may follow a daemon restart that dropped events without a
+  // resync; reload like a resync. The first one also covers anything
+  // published between the initial load and the stream opening.
+  if (e.type === "resync" || e.type === "ready") {
+    c.loadThreads();
+    c.reporter?.fetch();
+    const t = ++c.clock;
+    getArtifact(c.id).then(d => {
+      const n = d.artifact.current_version;
+      // A working delta heard since the request started is newer than its answer.
+      c.set(s => ({ working: c.workingAt > t ? s.working : d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
+      c.agentsFetched(t, d.artifact.participants?.agents ?? []);
+      if (n > c.latestKnown) { c.latestKnown = n; c.set({ newer: n }); }
+    }, err => { if (err instanceof ApiError && err.status === 404) c.set({ deleted: true }); });
   }
 }

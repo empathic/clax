@@ -19,7 +19,8 @@
   let panel: HTMLDivElement | undefined = $state();
   // Elapsed clocks tick each second while anyone works; "last here" lines each minute.
   const tick = ticker(() => s.working.length > 0, () => undefined, 60_000);
-  const parts = $derived(s.data.artifact.participants ?? { people: [], agents: [] });
+  // The agents as last refetched, as the top bar's roster shows them.
+  const parts = $derived({ people: s.data.artifact.participants?.people ?? [], agents: s.agents });
   const present = $derived(new Map(s.presence.map(p => [p.public_id, p])));
   const me = $derived(s.me?.public_id ?? null);
   const RANK = { here: 0, away: 1, gone: 2 } as const;

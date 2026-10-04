@@ -288,6 +288,51 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("opens the stream once the frame has loaded, so it never competes with the page's first paint", async () => {
+    const { ctl } = await started();
+    await vi.waitFor(() => expect(ctl.state.get().data).not.toBeNull());
+    await new Promise(r => setTimeout(r, 50));
+    expect(FakeES.last).toBeUndefined();
+    ctl.frameLoaded();
+    await vi.waitFor(() => expect(FakeES.last).toBeDefined());
+    ctl.dispose();
+  });
+
+  for (const order of ["before", "after"] as const) {
+    it(`a refetch that started before a working delta never undoes it (delta ${order} the agents list)`, async () => {
+      const w = { key: "k", agent: "a_2222bbbb", harness: "claude", message: null, thread_ids: ["t1"], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z" };
+      const agent = { handle: "a_2222bbbb", harness: "claude", live: true };
+      const { ctl } = await started();
+      const deadline = Date.now() + 2000;
+      while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      await vi.waitFor(() => expect(ctl.state.get().data).not.toBeNull());
+      // From here the artifact's answers wait for the test.
+      const held: (() => void)[] = [];
+      const base = fetch as unknown as (u: string, i?: RequestInit) => Promise<Response>;
+      vi.stubGlobal("fetch", vi.fn((u: string, i?: RequestInit) => {
+        if (u !== `/api/artifacts/${ID}`) return base(u, i);
+        // Answered as the daemon was when the request started: nobody working, no agent.
+        const body = JSON.stringify({ ...loaded, artifact: { ...loaded.artifact, working: [], participants: { people: [], agents: held.length ? [agent] : [] } } });
+        return new Promise<Response>(r => held.push(() => r(new Response(body))));
+      }));
+      // The topics go live: the view refetches the artifact.
+      FakeES.last!.emit("ready", {});
+      await vi.waitFor(() => expect(held).toHaveLength(1));
+      if (order === "after") { held[0](); await new Promise(r => setTimeout(r, 0)); }
+      // The agent starts working; the delta arrives while the refetch is in flight (or after).
+      FakeES.last!.emit("working", { type: "working", artifact_id: ID, working: [w] });
+      expect(ctl.state.get().working).toEqual([w]);
+      // The working event refetches the agents; both answers land now.
+      await vi.waitFor(() => expect(held.length).toBeGreaterThanOrEqual(2));
+      for (const r of held) r();
+      await new Promise(r => setTimeout(r, 10));
+      expect(ctl.state.get().working).toEqual([w]);
+      // The roster's agents are the ones refetched, so the working agent shows as working.
+      expect(ctl.state.get().agents.map(a => a.handle)).toEqual(["a_2222bbbb"]);
+      ctl.dispose();
+    });
+  }
+
   it("reports presence with where this viewer looks, takes presence events, and keeps the location private when sharing is off", async () => {
     const quoted = thread("t1", { anchor: { ...thread("t1").anchor, quote: "Quarterly goals" } });
     const { ctl } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
@@ -737,8 +782,8 @@ describe("ArtifactController", () => {
       const [t1, t2] = ctl.state.get().threads;
       ctl.toggleSelect(t1, false);
       ctl.toggleSelect(t2, false);
-      // The stream's code loads after the view starts.
-      await vi.waitFor(() => expect(FakeES.last).toBeDefined());
+      // The stream opens once the frame has loaded (or after `STREAM_WAIT_MS`).
+      await vi.waitFor(() => expect(FakeES.last).toBeDefined(), { timeout: 3000 });
       FakeES.last!.emit("thread_deleted", { type: "thread_deleted", artifact_id: ID, thread_id: "t1" });
       await Promise.resolve();
       expect(ctl.state.get().selection.ids).toEqual(["t2"]);

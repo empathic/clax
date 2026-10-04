@@ -7,7 +7,6 @@ import { acceptByeFromFrame, acceptFromFrame, helloMatches, sendToFrame } from "
 import type { Declared } from "../caps/availability";
 import { HINT_MS, frameGesture, onShieldPress, pickHintAllowed, setForwardedKeys } from "../caps/gesture";
 import { CapabilityHost, type CommentsUi } from "../caps/host";
-import type { ArtifactEvent } from "../events";
 import { REQUEST_STUCK, connTrouble } from "../conn-notice";
 import { Lifecycle, onPageCache, retrying } from "../lifecycle";
 import { LOAD_FAILED, OPEN_FAILED, PART_FAILED, POST_FAILED, RESOLVE_FAILED, SEND_FAILED, SHEET_FAILED, report, scopedNotice } from "../failure";
@@ -121,6 +120,9 @@ export function viewReady(s: ViewState): s is ViewState & { data: Loaded } {
 /** How long a pick's start stays valid for its pick (longer than the
  * longest clip render, an area's 12 s). */
 const PICK_WAIT_MS = 20_000;
+/** The longest the stream waits for the frame's first load before opening:
+ * it opens after the page has painted, so it never competes with it. */
+export const STREAM_WAIT_MS = 1500;
 
 /** The notice kind for a thread the daemon kept without its screenshot. */
 const CLIP_DROPPED = "Posted without its screenshot";
@@ -152,10 +154,12 @@ export class ArtifactController {
   frame: FrameHost | null = null;
   readonly commentsUi: CommentsUi;
 
-  private disposed = false;
+  /** @internal (read by the stream module) */
+  disposed = false;
   /** The event stream may (re)open: from `start` until `dispose`. */
   private live = false;
-  private latestKnown = 0;
+  /** @internal */
+  latestKnown = 0;
   /** The artifact, version and origin the gate was last reset for. */
   private gateFor = "";
   /** The view (artifact, version, origin and data) the capability host was made for. */
@@ -183,14 +187,17 @@ export class ArtifactController {
   // A page anchors threads itself (comments.customAnchors): pins come from
   // its placements only, and the frame is not asked to resolve anchors.
   private customLive = false;
-  private host: CapabilityHost | null = null;
+  /** @internal */
+  host: CapabilityHost | null = null;
   // How many of this view's own page publishes are in flight (the `artifact`
   // handler counts them; one that ends in a reload keeps its count). A page
   // publish by another view that arrives meanwhile is remembered in
   // `deferredPublish` (its version) and applied once the count drops to 0
   // without a reload: a reload to the latest, or Reload in the top bar when pinned.
-  private readonly ownPublish: { active: number; settled?(): void } = { active: 0 };
-  private deferredPublish: number | null = null;
+  /** @internal */
+  readonly ownPublish: { active: number; settled?(): void } = { active: 0 };
+  /** @internal */
+  deferredPublish: number | null = null;
   // A thread on another page the viewer opened: the frame was sent to that
   // page, and it is scrolled to once that page greets, or given up after
   // `pageWait.ms` with a notice.
@@ -386,7 +393,8 @@ export class ArtifactController {
 
   // ---- state and reactions ----
 
-  private set(patch: Partial<ViewState> | ((s: ViewState) => Partial<ViewState>)): void {
+  /** @internal */
+  set(patch: Partial<ViewState> | ((s: ViewState) => Partial<ViewState>)): void {
     if (this.disposed) return;
     const prev = this.s;
     this.state.set(patch);
@@ -485,7 +493,8 @@ export class ArtifactController {
     this.captureTimer = setTimeout(() => this.set(s => ({ draft: withClip(s.draft, token, null, CAPTURE_LATE) })), captureWait.ms);
   }
 
-  private changeThreads(f: ThreadChange): void {
+  /** @internal */
+  changeThreads(f: ThreadChange): void {
     this.threadLoad.change(f);
   }
 
@@ -598,6 +607,7 @@ export class ArtifactController {
    * load closes the gate and loses its page and pins. */
   frameLoaded(): void {
     if (this.disposed) return;
+    this.openStream();
     if (this.held) { this.held.push(LOADED); return; }
     if (this.gate.load()) { this.leaveDocument(); this.failedParts.clear(); this.set({ file: null, resolved: {} }); }
   }
@@ -683,15 +693,18 @@ export class ArtifactController {
     onPageCache(this.life, () => { this.reporter?.leave(); this.dispose(); }, () => {});
     this.life.defer(onShieldPress(() => this.showHint(this.s.commenting ? MOVE_TO_PICK : MOVE_TO_CLICK)));
     this.listen();
-    // The stream's first `ready` reloads the threads either way.
+    // The stream's first `ready` reloads the threads either way; it opens
+    // once the frame has loaded (or after `STREAM_WAIT_MS`), so its worker
+    // and requests come after the page's first paint.
     if (!boot) this.loadThreads();
-    this.openStream();
+    this.life.timeout(() => this.openStream(), STREAM_WAIT_MS);
   }
 
   private loaded(d: Loaded, attention: Attention | null = d.attention ?? null): void {
     if (this.disposed) return;
     this.latestKnown = Math.max(this.latestKnown, d.artifact.current_version);
-    this.set(s => ({ data: d, working: d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
+    // The stream opens after the load starts: a working delta already heard is newer.
+    this.set(s => ({ data: d, working: this.workingAt ? s.working : d.artifact.working ?? [], attention, looked: { ...s.looked, ...attention?.looked }, newer: s.newer !== null && s.newer <= d.artifact.current_version ? null : s.newer }));
     this.agentsChanged(d.artifact.participants?.agents ?? []);
     this.viewChanged();
     this.decideChangelog();
@@ -707,7 +720,8 @@ export class ArtifactController {
 
   private presenceAsked = false;
   /** The reporter, once its code loaded after the first paint. */
-  private reporter: PresenceReporter | null = null;
+  /** @internal */
+  reporter: PresenceReporter | null = null;
   private startPresence(): void {
     void import("./presence-reporter").then(m => {
       if (this.disposed) return;
@@ -1192,12 +1206,17 @@ export class ArtifactController {
     }
   }
 
-  private loadThreads(): void {
+  /** @internal */
+  loadThreads(): void {
     const done = this.threadLoad.begin();
     void report(listThreads(this.id), LOAD_FAILED, this.noticeFor(LOAD_FAILED)).then(done);
   }
 
+  private streamAsked = false;
+  /** Opens the stream, once. */
   private openStream(): void {
+    if (this.streamAsked || !this.live || this.disposed) return;
+    this.streamAsked = true;
     const open = async (viewerChanged: boolean) => {
       // The owner shell's token request sets the events cookie first, so the
       // daemon counts its stream as the owner shell's (a LAN view gets none).
@@ -1212,7 +1231,7 @@ export class ArtifactController {
         presence: () => this.s.presence,
         changeThreads: f => this.changeThreads(f),
         beginThread: tid => this.threadLoad.beginThread(tid),
-        event: e => this.onEvent(e),
+        event: e => m.onArtifactEvent(this, e),
         page: e => this.host?.onEvent(e),
         disposed: () => this.disposed,
       });
@@ -1231,59 +1250,44 @@ export class ArtifactController {
     if (this.s.data?.artifact.capabilities?.db) this.stream?.watchDocs();
   }
 
-  private onEvent(e: ArtifactEvent): void {
-    if (this.disposed) return;
-    this.host?.onEvent(e);
-    if (e.type === "version" && e.by_page && e.n > this.shown()) {
-      // The page republished itself (artifact.publish): every unpinned view
-      // follows at once, on the page it shows (the new version carries every
-      // file forward); a pinned view is offered Reload in the top bar. The publishing view
-      // reloads itself after its call result is posted; while one of its own
-      // publishes is in flight, another view's publish waits for it to settle.
-      if (this.ownPublish.active > 0) { this.deferredPublish = Math.max(this.deferredPublish ?? 0, e.n); return; }
-      if (this.pinnedVersion === null) {
-        this.latestKnown = Math.max(this.latestKnown, e.n);
-        holdKeysAcrossLoad();
-        nav.assign(this.here(null));
-        return;
-      }
-    }
-    if (e.type === "version" && e.n > this.latestKnown) { this.latestKnown = e.n; this.set({ newer: e.n }); }
-    if (e.type === "artifact_deleted") this.set({ deleted: true });
-    if (e.type === "working") this.set({ working: e.working });
-    if (e.type === "presence") this.set({ presence: e.people });
-    // An agent may have started or ended: the Send target follows.
-    if (e.type === "working" || e.type === "version") this.refreshAgents();
-    if (e.type === "thread") this.changeThreads(ts => upsert(ts, e.thread));
-    if (e.type === "thread_deleted") { this.changeThreads(ts => ts.filter(t => t.id !== e.thread_id)); this.set(s => ({ selected: s.selected === e.thread_id ? null : s.selected })); }
-    if (e.type === "feedback_state") this.changeThreads(ts => ts.map(t => t.id === e.thread_id ? { ...t, feedback_state: { thread_id: e.thread_id, state: e.state, tier: e.tier, since: e.since, resends: e.resends, exhausted: e.exhausted } } : t));
-    // A (re)connect may follow a daemon restart that dropped events without a
-    // resync; reload like a resync. The first one also covers anything
-    // published between the initial load and the stream opening.
-    if (e.type === "resync" || e.type === "ready") {
-      this.loadThreads();
-      this.reporter?.fetch();
-      getArtifact(this.id).then(d => {
-        const n = d.artifact.current_version;
-        this.set(s => ({ working: d.artifact.working ?? [], attention: d.attention ?? s.attention, looked: { ...s.looked, ...d.attention?.looked } }));
-        this.agentsChanged(d.artifact.participants?.agents ?? []);
-        if (n > this.latestKnown) { this.latestKnown = n; this.set({ newer: n }); }
-      }, err => { if (err instanceof ApiError && err.status === 404) this.set({ deleted: true }); });
-    }
-  }
-
   /** Takes the artifact's agents as listed now: the Send target stays while
    * it names a live agent, else becomes the default (`defaultTarget`). */
   private agentsChanged(agents: AgentView[]): void {
     this.set(s => ({ agents, sendTo: s.sendTo !== null && agents.some(a => a.live && a.handle === s.sendTo) ? s.sendTo : defaultTarget(this.id, agents) }));
   }
 
+  /** Orders the artifact's refetches against the stream's working deltas:
+   * each takes a ticket, and an answer never replaces what a later one, or
+   * a delta heard after it started, already set. */
+  /** @internal */
+  clock = 0;
+  /** @internal */
+  workingAt = 0;
+  private agentsAt = 0;
+
+  /** The agents a refetch with ticket `t` answered, unless a later refetch's answer is in. */
+  /** @internal */
+  agentsFetched(t: number, agents: AgentView[]): void {
+    if (t < this.agentsAt) return;
+    this.agentsAt = t;
+    this.agentsChanged(agents);
+  }
+
   private agentsFetch = false;
-  /** Refetches the artifact's agents; one request at a time. */
-  private refreshAgents(): void {
-    if (this.agentsFetch || this.disposed) return;
+  /** Refetches the artifact's agents; one request at a time, and again
+   * after it when asked meanwhile, so the last answer is from after the
+   * last change. */
+  private agentsAgain = false;
+  /** @internal */
+  refreshAgents(): void {
+    if (this.disposed) return;
+    if (this.agentsFetch) { this.agentsAgain = true; return; }
     this.agentsFetch = true;
-    getArtifact(this.id).then(d => this.agentsChanged(d.artifact.participants?.agents ?? []), () => {}).finally(() => { this.agentsFetch = false; });
+    const t = ++this.clock;
+    getArtifact(this.id).then(d => this.agentsFetched(t, d.artifact.participants?.agents ?? []), () => {}).finally(() => {
+      this.agentsFetch = false;
+      if (this.agentsAgain) { this.agentsAgain = false; this.refreshAgents(); }
+    });
   }
 
   /** A send to `to` (or without one): remembered as this viewer's target on

@@ -51,4 +51,16 @@ describe("the artifact stream", () => {
     expect(threads[0].status).toBe("resolved");
     s.stop();
   });
+  it("refetches when the daemon refuses the artifact's topic (it was deleted before the view subscribed)", () => {
+    const heard: unknown[] = [];
+    const s = new ArtifactStream(A, {
+      threads: () => [], presence: () => [], changeThreads: () => {}, beginThread: () => () => {},
+      event: e => heard.push(e), page: () => {}, disposed: () => false,
+    });
+    on!({ type: "refused", topic: `presence:${A}`, code: "not_found" });
+    expect(heard).toEqual([]);
+    on!({ type: "refused", topic: `artifact:${A}`, code: "not_found" });
+    expect(heard).toEqual([{ type: "resync", topic: `artifact:${A}` }]);
+    s.stop();
+  });
 });
