@@ -179,6 +179,15 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   - N4-N5: a second Ctrl-C during cleanup can leave the scratch root behind;
     ignore signals at the top of `cleanup`.
 
+- **The daemon latency gate covers one viewer on loopback**
+  (`scripts/perf-daemon.sh`). It loads the daemon with gallery refreshes,
+  gallery loads, `docs:batch` writes, long polls and event streams, and big
+  publishes, one at a time. It does not run them together, does not cover
+  several viewers, asset uploads, MCP `wait_for_feedback`, the sweepers or
+  `clax doctor` (none of which stalled cheap requests when measured by
+  hand), and judges no request slower than its probes, such as
+  `GET /api/artifacts`. A release build for the gate costs about a minute
+  when nothing is cached.
 - **The daemon compresses no response** (Svelte port, Task 12). The shell's
   JavaScript, the bridge and its parts, and wrapped pages go out
   uncompressed. On loopback this costs little; on a LAN view it lengthens
