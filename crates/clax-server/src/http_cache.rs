@@ -77,6 +77,87 @@ pub fn html(req: &HeaderMap, page: &str) -> Response {
     })
 }
 
+/// Middleware for the JSON `GET` routes: a `200` JSON response gets an
+/// `ETag` of its bytes and, unless the route set its own, `Cache-Control:
+/// no-cache`; a request whose `If-None-Match` names that tag gets `304` with
+/// no body. The tag hashes the bytes sent, so a response that differs by
+/// caller (the token, a viewer cookie) never matches another caller's copy.
+pub async fn api_etag(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    if req.method() != axum::http::Method::GET {
+        return next.run(req).await;
+    }
+    let inm = req.headers().clone();
+    let res = next.run(req).await;
+    let json = res
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.starts_with("application/json"));
+    if res.status() != StatusCode::OK || !json || res.headers().contains_key(header::ETAG) {
+        return res;
+    }
+    let (mut parts, body) = res.into_parts();
+    // JSON responses are whole buffers already.
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let tag = etag_of(&bytes);
+    parts.headers.insert(
+        header::ETAG,
+        HeaderValue::from_str(&tag).expect("hex in quotes is a valid header value"),
+    );
+    parts
+        .headers
+        .entry(header::CACHE_CONTROL)
+        .or_insert(HeaderValue::from_static(REVALIDATE));
+    if matches(&inm, &tag) {
+        parts.status = StatusCode::NOT_MODIFIED;
+        parts.headers.remove(header::CONTENT_LENGTH);
+        parts.headers.remove(header::CONTENT_TYPE);
+        return Response::from_parts(parts, axum::body::Body::empty());
+    }
+    Response::from_parts(parts, axum::body::Body::from(bytes))
+}
+
+/// Smallest body worth compressing.
+pub const COMPRESS_MIN_BYTES: u16 = 1024;
+
+/// Whether a response of `content_type` is text worth compressing: JSON,
+/// HTML, JavaScript, CSS, SVG and plain text. Event streams, images, fonts
+/// and other already-compressed or binary types are sent as they are.
+pub fn compressible(content_type: &str) -> bool {
+    [
+        "application/json",
+        "text/html",
+        "text/javascript",
+        "application/javascript",
+        "text/css",
+        "image/svg+xml",
+        "text/plain",
+    ]
+    .iter()
+    .any(|t| content_type.starts_with(t))
+}
+
+/// gzip and brotli, as the request's `Accept-Encoding` prefers, for bodies
+/// of [`COMPRESS_MIN_BYTES`] or more whose type is [`compressible`].
+pub fn compression()
+-> tower_http::compression::CompressionLayer<impl tower_http::compression::Predicate> {
+    use tower_http::compression::predicate::{Predicate, SizeAbove};
+    let text =
+        |_: StatusCode, _: axum::http::Version, h: &HeaderMap, _: &axum::http::Extensions| {
+            h.get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(compressible)
+        };
+    // Level 4 of either: most of the size win at a small part of the CPU.
+    tower_http::compression::CompressionLayer::new()
+        .no_deflate()
+        .no_zstd()
+        .quality(tower_http::CompressionLevel::Precise(4))
+        .compress_when(SizeAbove::new(COMPRESS_MIN_BYTES).and(text))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +178,27 @@ mod tests {
         assert!(matches(&with("*"), &tag));
         assert!(!matches(&with("\"x\""), &tag));
         assert!(!matches(&HeaderMap::new(), &tag));
+    }
+
+    #[test]
+    fn only_text_types_compress() {
+        for t in [
+            "application/json",
+            "text/html; charset=utf-8",
+            "text/javascript",
+            "image/svg+xml",
+        ] {
+            assert!(compressible(t), "{t}");
+        }
+        for t in [
+            "text/event-stream",
+            "image/png",
+            "font/woff2",
+            "application/zip",
+            "application/octet-stream",
+        ] {
+            assert!(!compressible(t), "{t}");
+        }
     }
 
     #[test]

@@ -188,12 +188,42 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   hand), and judges no request slower than its probes, such as
   `GET /api/artifacts`. A release build for the gate costs about a minute
   when nothing is cached.
-- **The daemon compresses no response** (Svelte port, Task 12). The shell's
-  JavaScript, the bridge and its parts, and wrapped pages go out
-  uncompressed. On loopback this costs little; on a LAN view it lengthens
-  link to first paint and to comment ready. Compress text responses
-  (`gzip`, or `br` where accepted) and measure time to usable on a LAN link
-  before and after.
+- **Published pages go out uncompressed.** API JSON, the shell's pages and
+  bundles, and the bridge and its parts are compressed (`gzip`, or `br`
+  where accepted); wrapped pages and supporting files under `/c/...` and on
+  artifact origins are not. On loopback this costs little; on a LAN view it
+  lengthens link to first paint. Time to usable on a LAN link has not been
+  measured before and after compression.
+- **The realtime load gate stops near 16,000 clients.** It runs its
+  clients on the daemon's own machine over loopback, from one source
+  address, so it runs out of client ports, not daemon limits.
+- **The gallery fetches attention per event.** The `gallery` topic is
+  shared by every viewer, so it cannot carry this viewer's attention
+  (addressed threads, new replies, open threads): a `version`, `thread` or
+  `thread_deleted` there still fetches the viewer's attention on that one
+  artifact, and the card's roster (participants) is only as fresh as the
+  last full fetch (on going live, `resync`, and once a minute). A
+  per-viewer topic, or attention computed from the thread summary, would
+  remove the fetch.
+- **Thread deltas fetch a thread whose comments do not add up.** The
+  `artifact:<aid>` topic carries a thread's newest comment and its count;
+  a view that missed a comment, or holds one deleted or edited before the
+  newest, fetches that thread whole.
+- **A hidden tab's catch-up is a refetch.** A tab that let its topics go
+  after 30 s hidden fetches its state again when it shows; the shared
+  connection has no per-tab resume point. Per-topic rings in the worker
+  would let a briefly hidden tab replay instead.
+- **The shared worker is checked only by its pings.** A tab counts its
+  hub gone after 35 s without a ping (or at once where the browser fires
+  `close` on the worker's port); a worker that lives but hangs is not
+  restarted, since a new SharedWorker of the same name reaches the same
+  instance. Leader tabs are not pinged at all: a hidden leader's timers are
+  throttled, and its followers would replace it needlessly.
+- **The 30-tab check runs in the web e2e gate, not in `perf-clients.sh`.**
+  `web/e2e/streams.spec.ts` opens 30 tabs and checks the daemon's own count
+  of open streams (`/api/_test/stream/open`, debug builds), a new tab's
+  ready time, and publish-to-tab latency; the release-build load gate
+  still drives raw `/api/stream` clients.
 - **The bridge says nothing while it waits, or when a part recovers**
   (Svelte port, Task 13 review, M4). Both need protocol additions:
   - While a page's own scripts hold up the parse, comment mode and `use()`

@@ -1,31 +1,37 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { STREAM_DOWN, connNoticeText } from "./conn-notice";
-import type { ArtifactEvent } from "./events";
-import { CONNECT_MS, EventStream, NOTICE_MS } from "./stream";
-
-class FakeES {
-  static all: FakeES[] = [];
-  static get open() { return FakeES.all.filter(e => !e.closed); }
-  listeners = new Map<string, ((e: MessageEvent) => void)[]>();
-  closed = false;
-  constructor(public url: string) { FakeES.all.push(this); }
-  addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, [...(this.listeners.get(t) ?? []), fn]); }
-  close() { this.closed = true; }
-  emit(t: string, data: unknown, id = "") {
-    for (const fn of this.listeners.get(t) ?? []) fn(new MessageEvent(t, { data: JSON.stringify(data), lastEventId: id }));
-  }
-}
+import { DEAD_MS, EventStream, HIDDEN_MS, type Link, type LinkMaker, NOTICE_MS, type StreamEvent, leaderLink } from "./stream";
+import type { HubMsg, TabMsg } from "./stream-hub";
+import { Net } from "./test/fake-net";
 
 const A = "7q3k9mzx2b4t";
 const B = "8r4m0nzy3c5v";
+
+/** A link the test drives: what the page sent, and hub messages handed back. */
+class FakeLink implements Link {
+  msgs: TabMsg[] = [];
+  closed = false;
+  constructor(public on: (m: HubMsg) => void, public lost: () => void, public pinged = true) {}
+  send(m: TabMsg) { this.msgs.push(m); }
+  close() { this.closed = true; }
+  get topics(): string[] { const t = this.msgs.filter(m => m.t === "topics").at(-1); return t && t.t === "topics" ? t.topics : []; }
+}
+
+let links: FakeLink[];
+const maker: LinkMaker = async (on, lost) => { const l = new FakeLink(on, lost); links.push(l); return l; };
 const page = (type: string, persisted: boolean) => { const e = new Event(type); Object.defineProperty(e, "persisted", { value: persisted }); dispatchEvent(e); };
+let visibility: DocumentVisibilityState = "visible";
+const setVisibility = (v: DocumentVisibilityState) => { visibility = v; document.dispatchEvent(new Event("visibilitychange")); };
+const flush = () => vi.advanceTimersByTimeAsync(0);
 
 let s: EventStream;
 beforeEach(() => {
   vi.useFakeTimers();
-  vi.stubGlobal("EventSource", FakeES);
-  FakeES.all = [];
-  s = new EventStream();
+  links = [];
+  visibility = "visible";
+  Object.defineProperty(document, "visibilityState", { configurable: true, get: () => visibility });
+  vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 403 })));
+  s = new EventStream(window, maker);
 });
 afterEach(() => {
   s.close();
@@ -34,164 +40,180 @@ afterEach(() => {
 });
 
 describe("EventStream", () => {
-  it("holds one stream for every watcher, carrying the union of their topics", () => {
-    const gallery: ArtifactEvent[] = [];
-    const artifact: ArtifactEvent[] = [];
-    s.watch({ types: ["working", "version"] }, e => gallery.push(e));
-    expect(FakeES.open.map(e => e.url)).toEqual(["/api/events?types=working,version"]);
-    s.watch({ artifact: A }, e => artifact.push(e));
-    // Another watcher needs more: the stream reopens, and there is still one.
-    expect(FakeES.open.map(e => e.url)).toEqual(["/api/events"]);
-    const es = FakeES.open[0];
-    es.emit("ready", { resumed: false }, "e-1");
-    es.emit("thread", { type: "thread", artifact_id: A, thread: {} }, "e-2");
-    es.emit("version", { type: "version", artifact_id: B, n: 2 }, "e-3");
-    // Each watcher hears its own topics, and `ready`.
-    expect(gallery.map(e => e.type)).toEqual(["ready", "version"]);
-    expect(artifact.map(e => e.type)).toEqual(["ready", "thread"]);
+  it("holds one link for every watcher, sends the union of their topics once, and routes by topic", async () => {
+    const gallery: StreamEvent[] = [];
+    const artifact: StreamEvent[] = [];
+    s.watch(["gallery"], e => gallery.push(e));
+    s.watch([`artifact:${A}`, `presence:${A}`], e => artifact.push(e));
+    await flush();
+    expect(links).toHaveLength(1);
+    expect(links[0].msgs.filter(m => m.t === "topics")).toEqual([{ t: "topics", topics: [`artifact:${A}`, "gallery", `presence:${A}`] }]);
+    links[0].on({ t: "live", topics: [`artifact:${A}`, `presence:${A}`] });
+    links[0].on({ t: "event", topic: `artifact:${A}`, name: "version", data: { topic: `artifact:${A}`, artifact_id: A, n: 2 } });
+    links[0].on({ t: "event", topic: "gallery", name: "version", data: { topic: "gallery", artifact_id: B, n: 3 } });
+    links[0].on({ t: "resync", topic: "gallery" });
+    expect(artifact).toEqual([{ type: "ready" }, { type: "version", topic: `artifact:${A}`, artifact_id: A, n: 2 }]);
+    expect(gallery).toEqual([{ type: "version", topic: "gallery", artifact_id: B, n: 3 }, { type: "resync", topic: "gallery" }]);
   });
 
-  it("merges artifact watchers into one comma list", () => {
-    const offA = s.watch({ artifact: A }, () => {});
-    s.watch({ artifact: B }, () => {});
-    expect(FakeES.open.map(e => e.url)).toEqual([`/api/events?artifact=${A},${B}`]);
-    // A narrower set keeps the open stream.
+  it("changes topics on the same link as views mount and unmount", async () => {
+    const offA = s.watch([`artifact:${A}`], () => {});
+    await flush();
+    const offG = s.watch(["gallery"], () => {});
     offA();
-    expect(FakeES.all).toHaveLength(2);
-    expect(FakeES.open).toHaveLength(1);
+    await flush();
+    expect(links).toHaveLength(1);
+    expect(links[0].topics).toEqual(["gallery"]);
+    offG();
+    await flush();
+    expect(links[0].topics).toEqual([]);
+    expect(links).toHaveLength(1);
   });
 
-  it("closes the stream when its last watcher goes", () => {
-    const off1 = s.watch({ artifact: A }, () => {});
-    const off2 = s.watch({ artifact: A }, () => {});
-    expect(FakeES.all).toHaveLength(1);
-    off1();
-    expect(FakeES.open).toHaveLength(1);
-    off2();
-    expect(FakeES.open).toHaveLength(0);
-    vi.advanceTimersByTime(60_000);
-    expect(FakeES.all).toHaveLength(1);
-  });
-
-  it("gives a watcher that joins an open stream its own first ready", async () => {
-    s.watch({ artifact: A }, () => {});
-    FakeES.open[0].emit("ready", { resumed: false }, "e-5");
-    const late: ArtifactEvent[] = [];
-    s.watch({ artifact: A }, e => late.push(e));
-    expect(FakeES.all).toHaveLength(1);
-    await Promise.resolve();
-    expect(late).toEqual([{ type: "ready" }]);
-  });
-
-  it("reopens a stream that failed with backoff, resuming after the last event, and refetches nothing when it resumed", () => {
-    const seen: ArtifactEvent[] = [];
-    s.watch({ artifact: A }, e => seen.push(e));
-    FakeES.open[0].emit("ready", { resumed: false }, "ep-1");
-    FakeES.open[0].emit("version", { type: "version", artifact_id: A, n: 2 }, "ep-2");
-    FakeES.open[0].emit("error", {});
-    expect(FakeES.open).toHaveLength(0);
-    expect(seen.map(e => e.type)).toEqual(["ready", "version", "stream_down"]);
-    vi.advanceTimersByTime(600);
-    expect(FakeES.open.map(e => e.url)).toEqual([`/api/events?artifact=${A}&last_event_id=ep-2`]);
-    FakeES.open[0].emit("ready", { resumed: true }, "ep-2");
-    FakeES.open[0].emit("version", { type: "version", artifact_id: A, n: 3 }, "ep-3");
-    expect(seen.map(e => e.type)).toEqual(["ready", "version", "stream_down", "version"]);
-    // A reconnect the daemon could not resume says `ready`: refetch.
-    FakeES.open[0].emit("error", {});
-    vi.advanceTimersByTime(600);
-    expect(FakeES.open[0].url).toContain("last_event_id=ep-3");
-    FakeES.open[0].emit("ready", { resumed: false }, "other-9");
-    expect(seen.map(e => e.type).slice(-2)).toEqual(["stream_down", "ready"]);
-  });
-
-  it("backs off further after each failure in a row, and starts over once up", () => {
-    s.watch({ artifact: A }, () => {});
-    const opens = () => FakeES.all.length;
-    FakeES.all.at(-1)!.emit("error", {});
-    vi.advanceTimersByTime(399);
-    expect(opens()).toBe(1);
-    vi.advanceTimersByTime(201);
-    expect(opens()).toBe(2);
-    FakeES.all.at(-1)!.emit("error", {});
-    vi.advanceTimersByTime(799);
-    expect(opens()).toBe(2);
-    vi.advanceTimersByTime(401);
-    expect(opens()).toBe(3);
-    FakeES.all.at(-1)!.emit("ready", {});
-    FakeES.all.at(-1)!.emit("error", {});
-    vi.advanceTimersByTime(600);
-    expect(opens()).toBe(4);
-  });
-
-  it("counts a stream that never says ready as stuck, and retries it", () => {
-    const seen: ArtifactEvent[] = [];
-    s.watch({ artifact: A }, e => seen.push(e));
-    vi.advanceTimersByTime(CONNECT_MS - 1);
-    expect(FakeES.all[0].closed).toBe(false);
-    vi.advanceTimersByTime(1);
-    expect(FakeES.all[0].closed).toBe(true);
-    expect(seen).toEqual([{ type: "stream_down" }]);
-    vi.advanceTimersByTime(600);
-    expect(FakeES.open).toHaveLength(1);
-  });
-
-  it("shows the notice only once the stream has been down a while, and hides it when it is back", () => {
-    s.watch({ artifact: A }, () => {});
-    FakeES.open[0].emit("ready", {});
-    FakeES.open[0].emit("error", {});
-    expect(connNoticeText()).toBeNull();
-    vi.advanceTimersByTime(NOTICE_MS);
-    expect(connNoticeText()).toBe(STREAM_DOWN);
-    expect(document.querySelector(".conn-notice")?.getAttribute("role")).toBe("status");
-    FakeES.open.at(-1)!.emit("ready", {});
-    expect(connNoticeText()).toBeNull();
-  });
-
-  it("tells watchers the stream is down once per outage", () => {
-    const seen: ArtifactEvent[] = [];
-    s.watch({ artifact: A }, e => seen.push(e));
-    for (let i = 0; i < 3; i++) {
-      FakeES.all.at(-1)!.emit("error", {});
-      vi.advanceTimersByTime(30_000);
-    }
-    expect(seen.filter(e => e.type === "stream_down")).toHaveLength(1);
-  });
-
-  it("closes as the page is hidden and resumes when the back/forward cache restores it", () => {
-    const seen: ArtifactEvent[] = [];
-    s.watch({ types: ["version"] }, e => seen.push(e));
-    FakeES.open[0].emit("ready", {}, "ep-7");
-    page("pagehide", true);
-    expect(FakeES.open).toHaveLength(0);
-    // Hidden: no retry and no notice.
-    vi.advanceTimersByTime(60_000);
-    expect(FakeES.all).toHaveLength(1);
-    expect(connNoticeText()).toBeNull();
-    page("pageshow", true);
-    expect(FakeES.open.map(e => e.url)).toEqual(["/api/events?types=version&last_event_id=ep-7"]);
-    FakeES.open[0].emit("ready", { resumed: true }, "ep-7");
+  it("releases its topics after the page has been hidden a while, and takes them again (with ready) when it shows", async () => {
+    const seen: StreamEvent[] = [];
+    s.watch(["gallery"], e => seen.push(e));
+    await flush();
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(HIDDEN_MS - 100);
+    expect(links[0].topics).toEqual(["gallery"]);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(links[0].topics).toEqual([]);
+    setVisibility("visible");
+    await flush();
+    expect(links[0].topics).toEqual(["gallery"]);
+    links[0].on({ t: "live", topics: ["gallery"] });
     expect(seen).toEqual([{ type: "ready" }]);
   });
 
-  it("stays closed after a page hide that is a real unload", () => {
-    s.watch({ artifact: A }, () => {});
-    page("pagehide", false);
-    expect(FakeES.open).toHaveLength(0);
-    page("pageshow", false);
-    vi.advanceTimersByTime(60_000);
-    expect(FakeES.open).toHaveLength(0);
+  it("keeps its topics through a short hide", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    setVisibility("hidden");
+    await vi.advanceTimersByTimeAsync(HIDDEN_MS / 2);
+    setVisibility("visible");
+    await vi.advanceTimersByTimeAsync(HIDDEN_MS);
+    expect(links[0].msgs.filter(m => m.t === "topics")).toHaveLength(1);
   });
 
-  it("reconnects on request, resuming", () => {
-    s.watch({ artifact: A }, () => {});
-    FakeES.open[0].emit("ready", {}, "ep-4");
-    s.reconnect();
-    expect(FakeES.all[0].closed).toBe(true);
-    expect(FakeES.open.map(e => e.url)).toEqual([`/api/events?artifact=${A}&last_event_id=ep-4`]);
+  it("shows the notice while the hub says the stream is down, and says when it is back", async () => {
+    const seen: StreamEvent[] = [];
+    s.watch(["gallery"], e => seen.push(e));
+    await flush();
+    links[0].on({ t: "status", up: false });
+    expect(seen).toEqual([{ type: "stream_down" }]);
+    expect(connNoticeText()).toBeNull();
+    await vi.advanceTimersByTimeAsync(NOTICE_MS);
+    expect(connNoticeText()).toBe(STREAM_DOWN);
+    links[0].on({ t: "status", up: true });
+    expect(seen).toEqual([{ type: "stream_down" }, { type: "stream_up" }]);
+    expect(connNoticeText()).toBeNull();
   });
 
-  it("never puts a token in its URL", () => {
-    s.watch({ artifact: A }, () => {});
-    expect(FakeES.all[0].url).not.toContain("token");
+  it("leaves the hub as the page is hidden for good, and joins again from the back/forward cache", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    page("pagehide", true);
+    expect(links[0].closed).toBe(true);
+    page("pageshow", true);
+    await flush();
+    expect(links).toHaveLength(2);
+    expect(links[1].topics).toEqual(["gallery"]);
+  });
+
+  it("counts a silent hub dead, shows the notice, and joins a new one", async () => {
+    const seen: StreamEvent[] = [];
+    s.watch(["gallery"], e => seen.push(e));
+    await flush();
+    await vi.advanceTimersByTimeAsync(DEAD_MS + DEAD_MS / 3);
+    expect(links[0].closed).toBe(true);
+    expect(links).toHaveLength(2);
+    expect(links[1].topics).toEqual(["gallery"]);
+    expect(seen).toEqual([{ type: "stream_down" }]);
+    await vi.advanceTimersByTimeAsync(NOTICE_MS);
+    expect(connNoticeText()).toBe(STREAM_DOWN);
+    links[1].on({ t: "live", topics: ["gallery"] });
+    expect(connNoticeText()).toBeNull();
+    expect(seen.at(-1)).toEqual({ type: "ready" });
+  });
+
+  it("joins a new hub at once when the link says the hub is gone", async () => {
+    s.watch(["gallery"], () => {});
+    await flush();
+    links[0].lost();
+    await flush();
+    expect(links).toHaveLength(2);
+    expect(links[1].topics).toEqual(["gallery"]);
+  });
+});
+
+/** Web Locks in one realm: a request waits until the name is free. */
+class Locks {
+  held = new Set<string>();
+  queue = new Map<string, (() => void)[]>();
+  request(name: string, cb: () => unknown): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const run = () => {
+        this.held.add(name);
+        Promise.resolve().then(cb).then(resolve, reject).finally(() => {
+          this.held.delete(name);
+          this.queue.get(name)?.shift()?.();
+        });
+      };
+      if (this.held.has(name)) this.queue.set(name, [...(this.queue.get(name) ?? []), run]);
+      else run();
+    });
+  }
+}
+
+/** BroadcastChannel in one realm: delivered to every other channel of the name. */
+class Channel {
+  static all = new Set<Channel>();
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  constructor(public name: string) { Channel.all.add(this); }
+  postMessage(m: unknown) {
+    const data = structuredClone(m);
+    for (const c of Channel.all) if (c !== this && c.name === this.name) queueMicrotask(() => c.onmessage?.({ data }));
+  }
+  close() { Channel.all.delete(this); }
+}
+
+describe("the leader fallback", () => {
+  let net: Net;
+  beforeEach(() => {
+    net = new Net();
+    Channel.all.clear();
+    vi.stubGlobal("BroadcastChannel", Channel);
+    vi.stubGlobal("fetch", net.fetch);
+    Object.defineProperty(navigator, "locks", { configurable: true, value: new Locks() });
+  });
+  afterEach(() => { Object.defineProperty(navigator, "locks", { configurable: true, value: undefined }); });
+
+  it("elects one tab to hold the connection for all, routes to the others, and hands over when it leaves", async () => {
+    const heard: HubMsg[][] = [[], [], []];
+    const tabs = await Promise.all(heard.map(h => leaderLink(m => h.push(m), () => {})));
+    tabs[0].send({ t: "topics", topics: ["gallery"] });
+    tabs[1].send({ t: "topics", topics: [`artifact:${A}`] });
+    tabs[2].send({ t: "topics", topics: [`artifact:${A}`, "gallery"] });
+    await flush();
+    expect(net.conns).toHaveLength(1);
+    net.ready(net.conns[0], "0123456789abcdef0123456789abcdef");
+    await flush();
+    net.event(net.conns[0], "0123456789abcdef0123456789abcdef", 1, `artifact:${A}`, "version", { artifact_id: A, n: 2 });
+    await flush();
+    const events = heard.map(h => h.filter(m => m.t === "event").length);
+    expect(events).toEqual([0, 1, 1]);
+    expect(heard.map(h => h.some(m => m.t === "live"))).toEqual([true, true, true]);
+    // The leader leaves: the next in line opens the connection, and every
+    // remaining tab's topics come with it.
+    tabs[0].close();
+    await flush();
+    expect(net.open).toHaveLength(1);
+    expect(net.conns).toHaveLength(2);
+    net.ready(net.open[0], "fedcba9876543210fedcba9876543210");
+    await flush();
+    expect(new Set(net.posts.at(-1)!.body.subscribe)).toEqual(new Set([`artifact:${A}`, "gallery"]));
+    tabs[1].close();
+    tabs[2].close();
   });
 });

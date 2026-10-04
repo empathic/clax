@@ -43,7 +43,8 @@ pub fn token_matches(presented: &str, token: &str) -> bool {
     constant_time_eq(presented.as_bytes(), token.as_bytes())
 }
 
-/// The name of the cookie that stands for the token on `GET /api/events`:
+/// The name of the cookie that stands for the token on the event streams
+/// (`/api/events`, `/api/stream`):
 /// `clax_events_<port>`, the port from the request's `Host` (80 when it
 /// names none), so daemons on one host name but different ports keep apart.
 pub fn events_cookie_name(host: &str) -> String {
@@ -72,7 +73,8 @@ pub fn events_cookie_value(token: &str) -> String {
 }
 
 /// True when `headers` carry this port's events cookie with the value for
-/// `token` (compared in constant time). Only `GET /api/events` reads it.
+/// `token` (compared in constant time). Only the event streams read it:
+/// `GET /api/events`, `GET /api/stream` and `POST /api/stream/<id>`.
 pub fn has_events_cookie(headers: &axum::http::HeaderMap, token: &str) -> bool {
     let host = headers
         .get(axum::http::header::HOST)
@@ -111,6 +113,37 @@ impl
     for Conn
 {
     fn connect_info(stream: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        let peer = *stream.remote_addr();
+        Conn {
+            peer,
+            local: stream.io().local_addr().unwrap_or(peer),
+        }
+    }
+}
+
+/// The daemon's listener: a TCP listener that sets socket options on each
+/// connection it accepts (see [`crate::daemon::tune_connection`]).
+pub struct TunedListener(pub tokio::net::TcpListener);
+
+impl axum::serve::Listener for TunedListener {
+    type Io = tokio::net::TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        let (mut io, addr) = axum::serve::Listener::accept(&mut self.0).await;
+        crate::daemon::tune_connection(&mut io);
+        (io, addr)
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.0.local_addr()
+    }
+}
+
+impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, TunedListener>>
+    for Conn
+{
+    fn connect_info(stream: axum::serve::IncomingStream<'_, TunedListener>) -> Self {
         let peer = *stream.remote_addr();
         Conn {
             peer,

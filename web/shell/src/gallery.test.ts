@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { relativeTime } from "./format";
+import { FakeWorker, workerWith } from "./test/fake-worker";
 
 describe("relativeTime", () => {
   const now = new Date("2026-09-28T12:00:00Z");
@@ -232,23 +233,18 @@ describe("Gallery", () => {
     expect(calls.filter(c => c.method === "GET" && c.url.startsWith("/api/artifacts")).map(c => c.url)).toEqual(["/api/artifacts", "/api/artifacts?artifact=aaaaaaaaaaaa"]);
   });
 
-  it("an event naming an artifact refetches only that card and its attention, and updates it in place", async () => {
-    let emit: ((t: string, data: unknown) => void) | null = null;
-    vi.stubGlobal("EventSource", class {
-      listeners = new Map<string, (e: MessageEvent) => void>();
-      constructor() { emit = (t, data) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-      addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-      close() {}
-    });
+  it("a version on the gallery topic updates its card in place, fetching only this viewer's attention on it", async () => {
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
     const calls = stubApi(200, "ok");
     const root = await mountGallery();
-    await waitFor(() => emit, "the gallery's stream");
+    const w = await workerWith("gallery");
     const before = calls.length;
-    edits = { aaaaaaaaaaaa: { current_version: 2, updated_at: "2026-09-28T11:30:00Z" } };
-    emit!("version", { type: "version", artifact_id: "aaaaaaaaaaaa", n: 2 });
+    w.emit("gallery", "version", { artifact_id: "aaaaaaaaaaaa", n: 2, title: "Other", at: "2026-09-28T11:30:00Z" });
     const card = () => Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Other"));
     await waitFor(() => card()?.querySelector(".v")?.textContent === "v2", "the card to show v2");
-    expect(calls.slice(before).map(c => c.url).sort()).toEqual(["/api/artifacts?artifact=aaaaaaaaaaaa", "/api/viewers/me/attention?artifact=aaaaaaaaaaaa"]);
+    await waitFor(() => calls.length > before, "the attention request");
+    expect(calls.slice(before).map(c => c.url).sort()).toEqual(["/api/viewers/me/attention?artifact=aaaaaaaaaaaa"]);
     expect(Array.from(root.querySelectorAll("a.card")).find(c => c.textContent!.includes("Pinned one"))?.querySelector(".v")?.textContent).toBe("v3");
   });
 

@@ -1088,13 +1088,16 @@ artifact's entry alone, as `GET /api/artifacts` lists it, or `[]` when it
 is not live; a malformed ID is 400.
 
 The open gallery fetches the list and this attention in full when it loads,
-when its event stream (`/api/events?types=working,version,thread,thread_deleted,artifact_deleted`;
-see "The event stream") says `ready` without resuming or sends `resync`, and
-once a minute while the page is visible. A
-`version`, `thread`, `thread_deleted` or `artifact_deleted` event refetches
-only the artifact it names, with `?artifact=<aid>` on both routes, at most
-once a second per artifact, and updates that card in place (or removes it).
-`working` events carry the whole list and need no fetch.
+when its `gallery` topic on the shared event stream (see "The event
+stream") goes live without resuming or gets `resync`, and once a minute
+while the page is visible. In between it applies the topic's deltas: a
+`version` updates its card in place (number, title, time), an
+`artifact_deleted` removes it, and a `working` summary replaces its chips,
+with no fetch. Attention is this viewer's own and the shared topic cannot
+carry it, so a `version`, `thread` or `thread_deleted` fetches only this
+viewer's attention on the artifact it names (`?artifact=<aid>`), at most
+once a second per artifact; a `version` of an artifact the gallery does not
+hold yet fetches that card, with `?artifact=<aid>` on both routes.
 
 `GET /api/artifacts` (each artifact) and `GET /api/artifacts/<aid>`
 (`artifact`) carry `participants`:
@@ -1898,8 +1901,8 @@ plan for:
   exactly `{"__delete__": true}` is the `db_update` tool's delete marker,
   and page writes honour it too: in `update` it removes the field instead of
   storing that value, and `set` rejects it `invalid_argument`. Who a viewer
-  is for live updates is fixed when the viewer's event stream opens; the
-  shell reopens it after the viewer enters a name.
+  is for live updates is fixed when the browser's event stream opens; the
+  shell opens a new one, for every tab, after the viewer enters a name.
 - `downloads`: `too_large` and `extension_not_enabled` are never returned.
 - `assets`: asset IDs are 26-character ULIDs, not 32 characters. SVG is
   checked to be an SVG document but not sanitised: it is stored as uploaded
@@ -2052,6 +2055,139 @@ The shell maps every refusal into `sample.d.ts`'s `SampleErrorCode`: 401 to
 session), 404 to `not_declared`, 413 to `prompt_too_large`, a code that is
 one of `SampleErrorCode`'s to itself, and any other code (such as `forbidden`,
 `forbidden_origin` or `timeout`) to `upstream_error`.
+
+## Event stream protocol
+
+`GET /api/stream` is one Server-Sent Events stream per client that carries
+any number of topics; the client subscribes and unsubscribes while it stays
+open, and a dropped connection resumes where it left off. `GET /api/events`
+is still served, unchanged, beside it.
+
+**Opening.** `GET /api/stream` with the viewer cookie and, for the owner,
+`Authorization: Bearer <token>` or the events cookie (see "The event
+stream"); this route never takes the token in the URL. The caller's level is worked out once, when the
+stream opens, as for the `db` routes: the token without a viewer is `owner`,
+with one `admin`, a named viewer alone `interact`, anything else `view`. The
+response is `text/event-stream`, never compressed. Its first event has no
+`id`:
+
+```
+event: ready
+data: {"stream": "<32 hex digits>", "seq": 41, "resumed": false, "topics": []}
+```
+
+`stream` names the stream in the calls below; `seq` is the daemon's event
+sequence when the stream opened.
+
+**Subscribing.** `POST /api/stream/<stream>` with `{"subscribe": [<topic>,
+...], "unsubscribe": [<topic>, ...]}` (either may be left out, each at most
+256 names) changes the stream's topics in one step and answers `{"seq": <n>,
+"topics": [<topic>, ...]}`: every event of a newly subscribed topic numbered
+above `seq` reaches the stream, and `topics` is the whole list after the
+change. A client subscribes first, then fetches the topic's state, and
+applies events on top; every event is an upsert or a removal, so one that
+the fetch already reflects changes nothing. Checks run once, here:
+
+- each subscribed artifact exists (404 `not_found` otherwise);
+- `docs:<aid>` needs the artifact to declare `db` unless the caller holds
+  the token (403 `not_declared`);
+- the request comes from the caller that opened the stream (the same token
+  or none, in `Authorization` or as the events cookie, and the same
+  viewer), or it is 404 `unknown_stream`, as it is for a stream that is not
+  held;
+- a stream holds at most 256 topics (429 `limit_reached`), room for the
+  union of dozens of tabs' views; a name that is not a topic is 400
+  `invalid_topic`;
+- a foreign `Origin` is refused like the viewer routes (403
+  `forbidden_origin`).
+
+Subscribing to a topic the stream holds, or unsubscribing from one it does
+not, changes nothing.
+
+**Topics.** Anyone who may open the stream may subscribe to each of these,
+except as noted:
+
+| Topic | Carries |
+|---|---|
+| `gallery` | `version`, `thread` (summary), `thread_deleted`, `artifact_deleted` and `working` (summary) for every artifact. |
+| `artifact:<aid>` | That artifact's `version`, `thread`, `thread_deleted`, `feedback_state` and `artifact_deleted`. |
+| `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
+| `working:<aid>` | Its `working` list, and `artifact_deleted`. |
+| `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
+
+**Events.** Every event but `ready` and `resync` carries `id:
+<stream>:<seq>`. `seq` is one sequence for the whole daemon, rising with
+each write; one write that reaches two topics of a stream (a version on
+`gallery` and on `artifact:<aid>`) is two events with the same `seq`. Every
+event's data names its `topic`. Events carry what changed:
+
+- `version`: `{topic, artifact_id, n, title, at}`: the new version's number,
+  the artifact's title after the publish, and the version's creation time.
+  On `artifact:<aid>`, `"by_page": true` is added when the page published it
+  through the `artifact` capability.
+- `artifact_deleted`: `{topic, artifact_id}`.
+- `thread` on `artifact:<aid>`: `{topic, artifact_id, thread}`, where
+  `thread` is the thread view (as `GET /api/artifacts/<aid>/threads/<tid>`
+  answers it without the token) with `comments` replaced by `comment_count`
+  and `last_comment`, the newest comment's view (`null` for none). Every
+  change to a thread sends it: a new thread, a comment (as `last_comment`),
+  a send, a resolve or reopen, a version linked to it. The client upserts
+  the thread by `thread.id` and appends `last_comment` when it does not hold
+  that comment's ID. `comment` and `thread_resolved` events are not sent on
+  this stream, since this one carries both.
+- `thread` on `gallery`: `{topic, artifact_id, thread_id, status,
+  sent_to_agent, comments, last_at}`: the comment count and the newest
+  comment's time, never a comment's text or author.
+- `thread_deleted`: `{topic, artifact_id, thread_id}`.
+- `feedback_state`: `{topic, artifact_id, thread_id, state, tier, since,
+  resends, exhausted}`, as on `/api/events`.
+- `working` on `working:<aid>`: `{topic, artifact_id, working: [view]}`, the
+  artifact's whole list, as on `/api/events`.
+- `working` on `gallery`: `{topic, artifact_id, working: [{agent, harness,
+  threads, started_at}]}`: each record's agent handle, harness, how many
+  threads it names, and when it started; never its message.
+- `presence`: `{topic, artifact_id, people: [view], gone: [public ID]}`: the
+  people whose entry is new or changed, and the public IDs no longer listed.
+  A report that changed nothing is not sent. Seed the list from `GET
+  /api/artifacts/<aid>/presence`.
+- `doc`: `{topic, artifact_id, path, version}` (`version` is `null` after a
+  delete), never a body. An event for a path in a viewer's private subtree
+  reaches only that viewer's streams; any other reaches only callers whose
+  level meets the path's read rule, or the viewer whose `{self}` subtree
+  holds it at that subtree's level.
+
+No event carries a session ID, a viewer cookie, a clip path, or a document
+body.
+
+**Falling behind.** Each stream has a queue of 64 events. When it is full
+(the client reads slower than events arrive), the stream stops taking that
+topic's events, drops the ones of that topic still queued, and sends
+
+```
+event: resync
+data: {"topic": "artifact:7q3k9mzx2b4t", "reason": "behind"}
+```
+
+with no `id`; the topic's events flow again after it. The client refetches
+that topic's state, which is then at least as new as every event dropped.
+The daemon's memory for a stream never grows with its backlog.
+
+**Resuming.** A stream whose connection drops is held for 60 seconds with
+its topics (at most 4,096 such streams are held; past that the one dropped
+longest ago goes first). `GET /api/stream` with `Last-Event-ID:
+<stream>:<seq>` (an `EventSource` sends the last `id` it saw itself) from
+the caller that opened that stream reattaches it: `ready` says `"resumed":
+true` and lists its topics, then come the events after `<seq>` that each
+topic still keeps (its last 64), in order, and live events after them. A
+topic whose kept events no longer reach back to `<seq>` gets `resync` with
+`"reason": "gap"` instead. Any other `GET /api/stream` (no `Last-Event-ID`,
+a stream no longer held, another caller) opens a new stream, `"resumed":
+false`, and the client subscribes and refetches again. Resuming a stream
+whose earlier connection is still open moves it to the new connection; the
+earlier one's body ends.
+
+A `: keep-alive` comment is sent every 15 seconds while a stream is idle.
+The stream ends when the daemon shuts down.
 
 ## Installation and the wrapper
 
@@ -2279,6 +2415,16 @@ harness and the daemon, each `ok` or failed with the fix:
   and a scratch port, and prints a PASS/FAIL line for each live check
   (install and uninstall, session and hooks, the Stop hand-over, both
   plugins enabled, the monitor wake, and `grok --version`).
+- `clax serve` raises its soft limit on open descriptors to the hard
+  limit (at most 1,048,576) when it starts, and logs both values; it turns
+  off Nagle's delay on every connection and sends TCP keep-alive probes
+  after a minute idle, so a peer that vanished frees its connection.
+- `scripts/perf-clients.sh` (a quality gate) opens 1,000 `/api/stream`
+  clients on a scratch release daemon, writes versions and comments at a
+  steady rate, and judges delivery latency, cheap requests under that load,
+  memory per client, idle CPU, and a client that never reads, against
+  `scripts/perf-clients-budget.json`; `CLAX_PERF_CLIENTS=<n>` runs another
+  count.
 - `scripts/quality_gates.sh` takes a lock per checkout
   (`<git dir>/quality-gates.lock`): a second run in the same checkout waits,
   a lock whose process has gone is taken over, and separate worktrees run in
@@ -2314,29 +2460,54 @@ always come.
   model"). The token counts when it comes in `Authorization`, as
   `?token=`, or as the events cookie. `GET /api/token` sets that cookie
   when the browser marks the request same-origin (`Sec-Fetch-Site:
-  same-origin`, the shell's own request):
-  `clax_events_<port>=<SHA-256 of the token, hex>; Path=/api/events;
-  HttpOnly; SameSite=Strict`, where `<port>` is the port in the request's
-  `Host` (80 when it names none). The cookie never holds the token and no
-  other route reads it.
+  same-origin`, the shell's own request), twice, once for each event
+  stream: `clax_events_<port>=<SHA-256 of the token, hex>;
+  Path=/api/events; HttpOnly; SameSite=Strict`, and the same with
+  `Path=/api/stream` (which covers `POST /api/stream/<stream>`), where
+  `<port>` is the port in the request's `Host` (80 when it names none).
+  The cookie never holds the token, and only the event streams read it.
 
-The shell holds at most one event stream per page. The gallery and the
-artifact view watch it with their own topics; the stream carries their
-union and hands each the events its topics name. It reopens with other
-topics, or after a failure, resuming after the last event it saw, and a
-view refetches only when the reconnect could not resume. It opens after
-`GET /api/token` has set the events cookie (on this machine), so its URL
-never carries the token. A failed stream is retried after 0.5 s, doubling
-up to 30 s, each wait spread by a fifth either way; a stream that has not
-said `ready` within 5 s counts as failed. Once the stream has been down
-for 1.5 s, the page shows a quiet notice ("Live updates paused.
+`GET /api/events` stays for agents and other clients; the shell does not
+open it. The shell's pages share one `GET /api/stream` connection per
+browser (see "Event stream protocol"). A shared worker holds it for every
+Clax tab of the origin: it subscribes the stream to the union of the
+topics the tabs' views watch (`gallery` for the gallery; `artifact:<aid>`,
+`presence:<aid>`, `working:<aid>`, and `docs:<aid>` for a page that
+declares `db`, for an artifact view), hands each event only to the tabs
+watching its topic, and unsubscribes a topic when the last tab watching it
+lets it go. Where shared workers are missing, the tabs elect a leader with
+Web Locks, which holds the connection and reaches the other tabs over a
+BroadcastChannel; the next tab in line takes over when it leaves. Without
+Web Locks or BroadcastChannel either, each tab holds its own. So the number
+of connections does not grow with tabs, and a tab costs the daemon nothing.
+
+Views subscribe as they mount and unsubscribe as they unmount; no
+connection opens or closes on a view change, and the connection closes 3 s
+after no tab watches any topic. A view fetches its state when its topics go
+live (on subscribing, when its page shows again, or after a reconnect that
+could not resume) and on `resync`, and applies each event's delta to what
+it holds in between. A page hidden for 30 s lets its topics go and takes
+them again, with a fetch, when it shows. As a page is left (a navigation, a
+reload, a close, or the back/forward cache) it leaves the shared
+connection; the gallery rejoins when the back/forward cache restores it,
+and a restored artifact view loads again. The artifact view ends with
+every listener, timer, request and socket it started.
+
+The connection carries the events cookie, so its URL never carries the
+token and it holds the token's level on this machine; each page requests
+`GET /api/token` before it joins. A dropped connection is resumed with
+`Last-Event-ID`, retried after 0.5 s, doubling up to 30 s, each wait
+spread by a fifth either way, and each retry first requests `GET
+/api/token` again, which renews the cookie after a daemon restart. A
+stream that has not said `ready` within 5 s, or has been silent for 40 s
+(the daemon's keep-alive comes every 15 s), counts as failed, and so does
+a subscription request that has not answered within 8 s. The shared worker
+pings each tab every 10 s; a visible tab that has heard nothing from it for
+35 s counts it gone and starts a new one. Once the stream has been down for
+1.5 s, every tab shows a quiet notice ("Live updates paused.
 Reconnecting…") until it is back. A first load of the gallery or the
 artifact that has not answered within 8 s, or failed to connect, is
-abandoned and retried the same way, with a notice. As the page is hidden
-(a navigation, a reload, a close, or the back/forward cache) the stream
-closes, and the artifact view ends with every listener, timer, request and
-socket it started. When the back/forward cache restores the gallery, its
-stream resumes; a restored artifact view loads again.
+abandoned and retried the same way, with a notice.
 
 ## Security model
 
@@ -2446,8 +2617,14 @@ stream resumes; a restored artifact view loads again.
   level worked out as for the `db` routes when the stream opens. An
   `EventSource` cannot send headers, so the stream also takes the token as
   `?token=` (the daemon never logs that route's query string) and as the
-  events cookie; the owner's browser uses the cookie and never puts the
-  token in the stream's URL (see "The event stream").
+  events cookie (see "The event stream").
+- `GET /api/stream` carries the same `doc` events under the same rules, and
+  takes the token in `Authorization` or as the events cookie, never in its
+  URL; the owner's browser uses the cookie. Its subscriptions (`POST
+  /api/stream/<stream>`) are checked once, when made, and only the caller
+  that opened a stream may change it or resume it; a stream's ID is sent
+  only on that stream. Its `gallery` topic carries no comment text or
+  author and no working message.
 - `artifact.publish` goes through the shell with the token, so only the
   owner's browser on this machine can republish a page, and only from the
   viewer's own gesture in the page (see "Runtime capabilities").
@@ -2481,6 +2658,19 @@ stream resumes; a restored artifact view loads again.
   contains the bridge URL is left alone.
 - Supporting files that are not HTML, and uploaded assets (`/_blob/...`),
   are immutable: their URLs name bytes that never change.
+- The shell's bundles under `/_clax/shell/` are named by a hash of their
+  bytes and are immutable in a release build, with an `ETag`; a debug
+  build, which reads them from disk, sends them `no-cache`.
+- A `200` JSON answer to an API `GET` carries an `ETag` (a hash of the bytes
+  sent, so answers that differ by caller never share one) and `Cache-Control:
+  no-cache` unless the route sets its own (`private, no-cache` with a viewer
+  cookie); a request whose `If-None-Match` names it gets `304 Not Modified`
+  with no body.
+- API responses and the shell's pages, bundles and bridge are compressed
+  with `br` or `gzip`, as `Accept-Encoding` prefers, when the body is JSON,
+  HTML, JavaScript, CSS, SVG or plain text of 1 KiB or more. Event streams,
+  images and fonts never are; published pages and their files are sent as
+  stored.
 - The runtime contract's type definitions,
   `/_clax/contract/0.2.61/<name>.d.ts` (built into the daemon from
   `web/contract/0.2.61/`, claude.ai's files unchanged), and Clax's additions
@@ -2576,11 +2766,13 @@ stream resumes; a restored artifact view loads again.
   comments, sends to the agent and `db` documents at their level, with no
   rate limit; the LAN bind is for a network the person trusts. Room sockets
   and event streams have no idle timeout and no cap on how many one caller
-  holds open; each needs an open connection.
+  holds open; each needs an open connection. A dropped `/api/stream` is held
+  for 60 seconds, at most 4,096 of them.
 - What any viewer may read, including over the LAN without the token: every
-  artifact, its threads (also on `/api/events?types=thread`), working lists
-  with agent messages (`/api/events?types=working`), presence, and the
-  public seen marks, each the viewer's own claim. A page that declares
+  artifact, its threads (also on `/api/events?types=thread` and
+  `/api/stream`), working lists with agent messages
+  (`/api/events?types=working`, `working:<aid>` on `/api/stream`), presence,
+  and the public seen marks, each the viewer's own claim. A page that declares
   `comments` reads its own artifact's working list (`working()`,
   `onWorking`) without consent.
 - Token holders are trusted with every working record: a working write

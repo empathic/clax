@@ -352,7 +352,13 @@ Browser caching (every route above):
 - Non-HTML supporting files (`/c/<aid>/v/<n>/<path>`) and `/_blob/<asset_id>`
   are `public, max-age=31536000, immutable`: their URLs name one version's
   or one asset's bytes, which never change. The shell's own bundles under
-  `/_clax/shell/` have content-hashed names.
+  `/_clax/shell/` have content-hashed names and are immutable too in a
+  release build (`no-cache` with an `ETag` in a debug build).
+- A `200` JSON answer to an API `GET` carries an `ETag` of its bytes and
+  `Cache-Control: no-cache` unless the route sets its own; a matching
+  `If-None-Match` gets `304`. API responses and the shell's pages, bundles
+  and bridge are compressed (`br` or `gzip`, by `Accept-Encoding`) when the
+  body is text of 1 KiB or more; event streams, images and fonts never are.
 - `GET /api/events?artifact=<aid>` SSE stream: `version`, `thread`,
   `comment`, `thread_resolved`, `thread_deleted`, `feedback_state`, `doc` events (rooms use their own WebSocket, not SSE).
   `artifact_deleted` is sent when an
@@ -364,6 +370,42 @@ Browser caching (every route above):
   `types=<name>,<name>` narrows the stream to those event names (`ready` and
   `resync` are always sent); the gallery opens `?types=working` with no
   `artifact` filter.
+- `GET /api/stream` is the multiplexed form: one SSE stream per client,
+  whose topics change over `POST /api/stream/<stream>` (`{"subscribe":
+  [...], "unsubscribe": [...]}`, answered `{seq, topics}`) without
+  reopening it. Topics are `gallery` (versions, thread summaries without
+  bodies, deletions and working summaries without messages, for every
+  artifact), `artifact:<aid>` (its versions, threads as deltas and feedback
+  states), `presence:<aid>` (changed people and the public IDs gone),
+  `working:<aid>` (its whole working list) and `docs:<aid>` (document
+  events at the caller's level). The caller (token in `Authorization` or as
+  the events cookie, the viewer cookie) is fixed when the stream opens, and
+  each subscription is checked once, when made, with the `db` routes'
+  levels. Every event names its topic and carries `id: <stream>:<seq>`,
+  one daemon-wide sequence.
+  Fan-out: one channel per subscribed topic, each keeping its last 64
+  events; per stream, a queue of 64. A stream whose queue fills gets
+  `resync` (`{topic, reason: "behind"}`) for that topic, its queued events
+  of the topic dropped. A dropped connection's stream is held 60 s; a
+  reconnect from the same caller with `Last-Event-ID: <stream>:<seq>`
+  resumes it with the events it missed, or `resync` (`reason: "gap"`) for a
+  topic whose 64 kept events no longer reach back. The full protocol is in
+  `docs/contract.md` "Event stream protocol"; `/api/events` is served
+  unchanged beside it, for agents and other clients.
+- The shell uses `/api/stream` only, through one connection per browser: a
+  SharedWorker holds it for every Clax tab of the origin, subscribes it to
+  the union of the tabs' topics, routes each event to the tabs that watch
+  its topic, and drops a topic when its last tab lets it go (where
+  SharedWorker is missing, tabs elect a leader with Web Locks and a
+  BroadcastChannel; without those, one stream per tab). Views subscribe and
+  unsubscribe as they mount and unmount; they refetch only when their
+  topics go live or get `resync`, and apply deltas otherwise. A tab hidden
+  for 30 s lets its topics go and takes them again when it shows; the
+  connection closes when no tab watches anything. The connection
+  authenticates with the events cookie (`Path=/api/stream`, as for
+  `/api/events`), never a token in a URL. The number of connections does
+  not grow with tabs, and each client costs the daemon a bounded queue and
+  one entry per topic.
 
 Agent- and shell-facing JSON API under `/api`:
 
@@ -679,7 +721,8 @@ file under `v/<digits>/` is reachable only through the versioned form):
   navigation cannot reach the API same-origin. A bare sandbox stops Chrome
   rendering PDFs top-level; assets are meant for `<img>`, `<video>`,
   `<a download>`, and fonts.
-- Live updates: the shell subscribes to `/api/events`; a new version shows
+- Live updates: the shell watches its artifact's topics on the browser's
+  shared `/api/stream` connection; a new version shows
   "v4 published" in the top bar's summary with a Reload button beside it
   unless the page published it itself via the
   `artifact` capability, in which case it reloads immediately as on
@@ -2136,6 +2179,14 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   `web/scripts/bundle-size.mjs` (gzip sizes of
   each entry's critical JavaScript and of the eager bridge, budgets in
   `web/perf/bundle-budget.json`).
+- Two gates hold the daemon under load, each on a scratch release daemon
+  with budgets scaled by the run's own idle baseline:
+  `scripts/perf-daemon.sh` (cheap requests stay fast beside heavy ones,
+  `scripts/perf-daemon-budget.json`) and `scripts/perf-clients.sh` (1,000
+  `/api/stream` clients: write-to-client latency, cheap requests under that
+  load, RSS per client, idle CPU, and a client that never reads getting
+  `resync` without the daemon's memory growing,
+  `scripts/perf-clients-budget.json`).
 
 ## 17. Phases
 

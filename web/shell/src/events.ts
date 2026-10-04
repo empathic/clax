@@ -19,10 +19,13 @@ export type ArtifactEvent =
   | { type: "working"; artifact_id: string; working: Working[] }
   /** Who has the artifact open, here or away, or was here lately: its whole list. */
   | { type: "presence"; artifact_id: string; people: PresenceView[] }
-  /** The stream connected for this watcher, or reconnected without being
-   * able to resume: anything published meanwhile may be missed, so refetch state. */
+  /** The watcher's topics went live: on first subscribing, after the page
+   * shows again, or after a reconnect that could not resume. Anything
+   * published meanwhile may be missed, so refetch state. */
   | { type: "ready" }
-  /** The stream failed and is reconnecting (or gave up): nothing is announced until the next `ready`. */
+  /** The stream failed and is reconnecting: nothing is announced until `stream_up` or the next `ready`. */
   | { type: "stream_down" }
-  /** The stream dropped events; refetch state. */
-  | { type: "resync"; dropped: number };
+  /** The stream is back after `stream_down` and resumed: nothing was missed. */
+  | { type: "stream_up" }
+  /** The stream dropped events of `topic` (the view's when absent); refetch state. */
+  | { type: "resync"; topic?: string };

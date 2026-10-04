@@ -352,6 +352,10 @@ export const dbHandler: HandlerFactory = env => {
           stopPoll();
         }
         for (const sub of subs.keys()) schedule(sub);
+      } else if (e.type === "stream_up") {
+        // Back and resumed: nothing was missed, so the polling stops.
+        streamDown = false;
+        stopPoll();
       } else if (e.type === "stream_down") {
         streamDown = true;
         startPoll();

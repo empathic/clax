@@ -367,7 +367,7 @@ describe("db handler", () => {
     const { h, posted } = setup(null, () => json(answer, status));
     await h.call("subscribe", ["s1", { kind: "doc", path: "tasks/t1" }]);
     answer = { doc: doc("tasks/t1", 2) };
-    h.onEvent!({ type: "resync", dropped: 0 });
+    h.onEvent!({ type: "resync" });
     await vi.advanceTimersByTimeAsync(SNAPSHOT_DEBOUNCE_MS + 1);
     answer = { error: { code: "not_found", message: "gone" } };
     status = 404;

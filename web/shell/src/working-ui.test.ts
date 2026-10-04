@@ -1,4 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
+
+/** The `gallery` topic as the feed hears it, driven by the test. */
+const topic = vi.hoisted(() => ({ on: null as ((e: Record<string, unknown> & { type: string }) => void) | null }));
+vi.mock("./working-events", () => ({ subscribeGallery: (on: (e: Record<string, unknown> & { type: string }) => void) => { topic.on = on; return () => { topic.on = null; }; } }));
 import { WorkingFeed } from "./ui/working-feed.svelte";
 import { mount } from "./test/svelte";
 import Roster from "./ui/Roster.svelte";
@@ -36,13 +40,7 @@ describe("working UI", () => {
   });
 
   it("the gallery's feed keeps an event newer than the list that seeds it", () => {
-    let emit: ((t: string, data: unknown) => void) | null = null;
-    vi.stubGlobal("EventSource", class {
-      listeners = new Map<string, (e: MessageEvent) => void>();
-      constructor() { emit = (t, data) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-      addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-      close() {}
-    });
+    const emit = (type: string, data: Record<string, unknown> = {}) => topic.on?.({ ...data, type, topic: "gallery" });
     try {
       const w = { key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" };
       const art = (id: string, working: unknown[]) => ({ id, title: id, description: null, icon: null, updated_at: "x", current_version: 1, pinned: false, working }) as never;
@@ -50,7 +48,7 @@ describe("working UI", () => {
       feed.seed([art("a", [w]), art("b", [w])]);
       feed.start(() => {});
       const since = feed.events;
-      emit!("working", { type: "working", artifact_id: "a", working: [] });
+      emit("working", { artifact_id: "a", working: [] });
       feed.seed([art("a", [w]), art("b", [])], since);
       expect(feed.byId).toEqual({ a: [], b: [] });
       feed.stop();
@@ -59,40 +57,36 @@ describe("working UI", () => {
     }
   });
 
-  it("the gallery's feed passes each event's artifact to onChange at most once a second per artifact", () => {
-    let emit: ((t: string, data: unknown) => void) | null = null;
-    vi.stubGlobal("EventSource", class {
-      listeners = new Map<string, (e: MessageEvent) => void>();
-      constructor() { emit = (t, data) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-      addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-      close() {}
-    });
+  it("the gallery's feed passes each event's artifact to onChange at most once a second per artifact, and card deltas to onDelta at once", () => {
+    const emit = (type: string, data: Record<string, unknown> = {}) => topic.on?.({ ...data, type, topic: "gallery" });
     vi.useFakeTimers();
     try {
       const onChange = vi.fn();
       const onResync = vi.fn();
+      const onDelta = vi.fn();
       const feed = new WorkingFeed();
-      feed.start(onResync, onChange);
-      emit!("version", { type: "version", artifact_id: "a", n: 2 });
-      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
-      emit!("thread", { type: "thread", artifact_id: "b", thread: {} });
+      feed.start(onResync, onChange, onDelta);
+      emit("version", { artifact_id: "a", n: 2, title: "A", at: "t" });
+      emit("thread", { artifact_id: "a", thread_id: "t", comments: 1 });
+      emit("thread", { artifact_id: "b", thread_id: "u", comments: 1 });
       vi.advanceTimersByTime(0);
       expect(onChange.mock.calls).toEqual([["a"], ["b"]]);
-      emit!("thread_deleted", { type: "thread_deleted", artifact_id: "a", thread_id: "t" });
-      emit!("artifact_deleted", { type: "artifact_deleted", artifact_id: "c" });
+      emit("thread_deleted", { artifact_id: "a", thread_id: "t" });
+      emit("artifact_deleted", { artifact_id: "c" });
       vi.advanceTimersByTime(0);
-      expect(onChange.mock.calls).toEqual([["a"], ["b"], ["c"]]);
+      expect(onChange.mock.calls).toEqual([["a"], ["b"]]);
+      expect(onDelta.mock.calls.map(([d]) => [d.type, d.artifact_id])).toEqual([["version", "a"], ["artifact_deleted", "c"]]);
       vi.advanceTimersByTime(999);
-      expect(onChange).toHaveBeenCalledTimes(3);
+      expect(onChange).toHaveBeenCalledTimes(2);
       vi.advanceTimersByTime(1);
-      expect(onChange.mock.calls[3]).toEqual(["a"]);
+      expect(onChange.mock.calls[2]).toEqual(["a"]);
       expect(onResync).not.toHaveBeenCalled();
-      emit!("resync", { dropped: 3 });
+      emit("resync");
       expect(onResync).toHaveBeenCalledTimes(1);
-      emit!("thread", { type: "thread", artifact_id: "a", thread: {} });
+      emit("thread", { artifact_id: "a", thread_id: "t", comments: 2 });
       feed.stop();
       vi.advanceTimersByTime(2000);
-      expect(onChange).toHaveBeenCalledTimes(4);
+      expect(onChange).toHaveBeenCalledTimes(3);
     } finally {
       vi.useRealTimers();
       vi.unstubAllGlobals();

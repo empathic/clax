@@ -16,11 +16,13 @@ async function comment(page: Page, aid: string, body: string): Promise<string> {
   }, [aid, body] as const);
 }
 
-test("a new version updates only its own card, in place, without a full attention fetch", async ({ page }) => {
+test("a new version updates only its own card, in place from the stream's delta, fetching only its attention", async ({ page }) => {
   const s = await registerSession(d.base, d.token, "claude", "gallery-live");
   const a = (await publishAs(d.base, d.token, s.id, "Live roadmap", { "index.html": PAGE })).artifact.id;
   const b = (await publishAs(d.base, d.token, s.id, "Live budget", { "index.html": PAGE })).artifact.id;
   await page.goto(`${d.base}/`);
+  // Its topic has gone live (and refetched) before the counting starts.
+  await expect.poll(() => page.evaluate(() => (window as unknown as { claxStreamLive?: number }).claxStreamLive ?? 0)).toBeGreaterThan(0);
   await page.evaluate(() => fetch("/api/viewers/me"));
   const tid = await comment(page, a, "Two columns");
   await comment(page, b, "Which quarter?");
@@ -53,7 +55,8 @@ test("a new version updates only its own card, in place, without a full attentio
   const after = gets.slice(before).filter(u => u.startsWith("/api/"));
   expect(after.filter(u => u === "/api/viewers/me/attention" || u === "/api/artifacts"), "no full refetch").toEqual([]);
   expect(after).toContain(`/api/viewers/me/attention?artifact=${a}`);
-  expect(after).toContain(`/api/artifacts?artifact=${a}`);
+  // The delta carried the version, title and time: the card is not fetched.
+  expect(after).not.toContain(`/api/artifacts?artifact=${a}`);
   expect(after.filter(u => u.includes(b)), "nothing about the other card").toEqual([]);
   await expect(page.locator(".card-wrap[data-mark=a]")).toHaveCount(1);
   await expect(page.locator(".card-wrap[data-mark=a] .v")).toHaveText("v3");

@@ -1,17 +1,21 @@
 // Reads a `text/event-stream` response body (the sample route's), yielding one
-// {event, data} per event; comments (keep-alives) are skipped.
+// {event, data} per event; comments (keep-alives) are skipped. `parseBlock`
+// also serves the shared event stream, whose events carry an `id`.
 
-export type SseMessage = { event: string; data: string };
+export type SseMessage = { event: string; data: string; id?: string };
 
 export function parseBlock(block: string): SseMessage | null {
   let event = "message";
+  let id: string | undefined;
   const data: string[] = [];
   for (const line of block.split("\n")) {
     if (line.startsWith(":")) continue;
     if (line.startsWith("event:")) event = line.slice(6).trim();
     else if (line.startsWith("data:")) data.push(line.slice(5).replace(/^ /, ""));
+    else if (line.startsWith("id:")) id = line.slice(3).replace(/^ /, "");
   }
-  return data.length ? { event, data: data.join("\n") } : null;
+  if (!data.length) return null;
+  return id === undefined ? { event, data: data.join("\n") } : { event, data: data.join("\n"), id };
 }
 
 export async function* readSse(body: ReadableStream<Uint8Array>): AsyncGenerator<SseMessage> {

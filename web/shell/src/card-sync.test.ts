@@ -6,16 +6,11 @@ import { WorkingFeed } from "./ui/working-feed.svelte";
 const art = (id: string, v = 1): Artifact => ({ id, title: id, description: null, icon: null, updated_at: "x", current_version: v, pinned: false });
 const mark = (open: string[]): AttentionSummary => ({ addressed: [], addressed_v: null, new_replies: [], open_in: open, seen: null });
 
-/** A stream the test drives, as `EventSource` would deliver it. */
+/** The `gallery` topic as the feed hears it, driven by the test. */
+const topic = vi.hoisted(() => ({ on: null as ((e: Record<string, unknown> & { type: string }) => void) | null }));
+vi.mock("./working-events", () => ({ subscribeGallery: (on: (e: Record<string, unknown> & { type: string }) => void) => { topic.on = on; return () => { topic.on = null; }; } }));
 function stubStream() {
-  const s = { emit: (_t: string, _d: unknown) => {} };
-  vi.stubGlobal("EventSource", class {
-    listeners = new Map<string, (e: MessageEvent) => void>();
-    constructor() { s.emit = (t, d) => this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(d) })); }
-    addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-    close() {}
-  });
-  return s;
+  return { emit: (type: string, d: Record<string, unknown> = {}) => topic.on?.({ ...d, type, topic: "gallery" }) };
 }
 
 /** The daemon as the gallery sees it: `answer` maps a URL to its body; each
@@ -41,19 +36,33 @@ const settle = () => new Promise(r => setTimeout(r, 0));
 describe("CardSync", () => {
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-  it("an event naming an artifact refetches that card and its attention alone, and updates it in place", async () => {
+  it("a version delta updates its card in place, and an event naming an artifact fetches only this viewer's attention on it", async () => {
     const stream = stubStream();
-    const urls = stubApi(url => url.startsWith("/api/artifacts?artifact=b") ? { artifacts: [art("b", 2)] }
-      : url === "/api/viewers/me/attention?artifact=b" ? { artifacts: { b: mark(["t2"]) } } : { artifacts: [] });
+    const urls = stubApi(url => url === "/api/viewers/me/attention?artifact=b" ? { artifacts: { b: mark(["t2"]) } } : { artifacts: [] });
     const { g, sync } = gallery([art("a"), art("b"), art("c")], { a: mark(["t1"]) });
     sync.start();
-    stream.emit("version", { type: "version", artifact_id: "b", n: 2 });
-    stream.emit("thread", { type: "thread", artifact_id: "b", thread: {} });
-    await vi.waitFor(() => expect(g.list[1].current_version).toBe(2));
+    stream.emit("version", { artifact_id: "b", n: 2, title: "B two", at: "2026-10-01T00:00:00Z" });
+    expect(g.list[1]).toMatchObject({ current_version: 2, title: "B two", updated_at: "2026-10-01T00:00:00Z" });
+    stream.emit("thread", { artifact_id: "b", thread_id: "t2", status: "open", comments: 1 });
+    await vi.waitFor(() => expect(g.att.b).toEqual(mark(["t2"])));
     await settle();
-    expect(urls).toEqual(["/api/artifacts?artifact=b", "/api/viewers/me/attention?artifact=b"]);
+    expect(urls).toEqual(["/api/viewers/me/attention?artifact=b"]);
     expect(g.list.map(a => [a.id, a.current_version])).toEqual([["a", 1], ["b", 2], ["c", 1]]);
     expect(g.att).toEqual({ a: mark(["t1"]), b: mark(["t2"]) });
+    sync.stop();
+  });
+
+  it("a deleted artifact's card goes at once, and an artifact the gallery does not hold has its card fetched", async () => {
+    const stream = stubStream();
+    const urls = stubApi(url => url === "/api/artifacts?artifact=n" ? { artifacts: [art("n", 1)] } : { artifacts: url.includes("attention") ? {} : [] });
+    const { g, sync } = gallery([art("a"), art("b")], { a: mark(["t1"]), b: mark([]) });
+    sync.start();
+    stream.emit("artifact_deleted", { artifact_id: "a" });
+    expect(g.list.map(a => a.id)).toEqual(["b"]);
+    expect(g.att).toEqual({ b: mark([]) });
+    stream.emit("version", { artifact_id: "n", n: 1, title: "n", at: "x" });
+    await vi.waitFor(() => expect(g.list.map(a => a.id)).toEqual(["b", "n"]));
+    expect(urls).toEqual(["/api/artifacts?artifact=n", "/api/viewers/me/attention?artifact=n"]);
     sync.stop();
   });
 
@@ -94,11 +103,11 @@ describe("CardSync", () => {
     }));
     const { g, sync } = gallery([art("a")], { a: mark(["t"]) });
     sync.start();
-    stream.emit("ready", {});
+    stream.emit("ready");
     await vi.waitFor(() => expect(g.list[0].current_version).toBe(2));
     expect(urls).toEqual(["/api/artifacts", "/api/viewers/me/attention"]);
     fail = true;
-    stream.emit("resync", { dropped: 1 });
+    stream.emit("resync");
     await vi.waitFor(() => expect(urls.length).toBe(4));
     await settle();
     expect(g.list[0].current_version).toBe(2);

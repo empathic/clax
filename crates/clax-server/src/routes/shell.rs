@@ -375,6 +375,18 @@ pub async fn static_file(
         );
         return Ok(res);
     }
+    // The shell's bundles are named by a hash of their bytes. A debug build
+    // reads them from disk, where a rebuild may replace them, so it revalidates.
+    if path.starts_with("shell/") && hashed_name(&path) {
+        let cc = if cfg!(debug_assertions) {
+            REVALIDATE
+        } else {
+            IMMUTABLE
+        };
+        return Ok(http_cache::tagged(&req, &f.data, cc, || {
+            ([(header::CONTENT_TYPE, ct)], f.data.clone().into_owned()).into_response()
+        }));
+    }
     Ok((
         [
             (header::CONTENT_TYPE, ct),
@@ -383,6 +395,21 @@ pub async fn static_file(
         f.data.into_owned(),
     )
         .into_response())
+}
+
+/// Whether the file name ends in a bundler's content hash: `<name>-<8 of
+/// [A-Za-z0-9_-]>.<ext>`.
+fn hashed_name(path: &str) -> bool {
+    let file = path.rsplit('/').next().unwrap_or(path);
+    let Some((stem, _ext)) = file.rsplit_once('.') else {
+        return false;
+    };
+    stem.len() > 9
+        && stem.is_char_boundary(stem.len() - 9)
+        && stem[stem.len() - 9..].starts_with('-')
+        && stem[stem.len() - 8..]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 #[cfg(test)]
@@ -407,6 +434,16 @@ mod tests {
             within(limit, std::future::pending()).await.is_none(),
             "a store slower than the limit"
         );
+    }
+
+    #[test]
+    fn hashed_names_are_recognised() {
+        assert!(hashed_name("shell/artifact-CbAhy43s.js"));
+        assert!(hashed_name("shell/HaikuLine-Be2ioBd-.js"));
+        assert!(hashed_name("shell/haiku-DXXqhL_5.json"));
+        assert!(!hashed_name("shell/manifest.json"));
+        assert!(!hashed_name("fonts/ibm-plex-mono-latin-400.woff2"));
+        assert!(!hashed_name("shell/x-short.js"));
     }
 
     #[test]

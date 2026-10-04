@@ -1,14 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach, onTestFinished } from "vitest";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 
-class FakeES {
-  static last: FakeES | undefined;
-  listeners = new Map<string, (e: MessageEvent) => void>();
-  constructor(public url: string) { FakeES.last = this; }
-  addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-  close() {}
-  emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-}
+import { FakeWorker, artifactStreams } from "./test/fake-worker";
 
 async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
   const deadline = Date.now() + 2000;
@@ -21,6 +14,8 @@ async function waitFor<T>(check: () => T | null | undefined | false, what: strin
 }
 
 const ID = "7q3k9mzx2b4t";
+/** The view's stream, driven by event name. */
+const FakeES = artifactStreams(ID);
 const artifact = (n: number, files: Record<string, unknown> = {}) => ({ artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "2026-09-28T11:00:00Z", current_version: n, pinned: false, owner_harness: "claude" }, versions: [{ artifact_id: ID, n, label: null, created_at: "x", files }] });
 const page = { content_type: "text/html", size: 1 };
 
@@ -38,7 +33,7 @@ afterEach(() => { for (const stop of mountedViews) stop(); mountedViews.clear();
 
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
-  vi.stubGlobal("EventSource", FakeES);
+  vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/threads") || url.startsWith("/api/viewers/")) {
@@ -222,11 +217,11 @@ describe("ArtifactView", () => {
     const root = view.root;
     await waitFor(() => root.querySelector("iframe.frame"), "viewer");
     expect(root.querySelector("button.reload")).toBeNull();
-    (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
+    (await waitFor(() => FakeES.last, "event stream")).emit("resync", {});
     await new Promise(r => setTimeout(r, 30));
     expect(root.querySelector("button.reload")).toBeNull();
     current = 4;
-    (await waitFor(() => FakeES.last, "event stream")).emit("resync", { dropped: 3 });
+    (await waitFor(() => FakeES.last, "event stream")).emit("resync", {});
     await waitFor(() => root.querySelector("button.reload"), "the Reload button");
   });
 
@@ -262,7 +257,7 @@ describe("ArtifactView", () => {
     const es = await waitFor(() => FakeES.last, "event stream");
     // The token request set the events cookie, which stands for the token.
     expect(tokenAsked).toBe(true);
-    expect(es.url).toBe(`/api/events?artifact=${ID}`);
+    expect(es.topics).toEqual([`artifact:${ID}`, `presence:${ID}`, `working:${ID}`]);
   });
 
   it("keeps a thread event that arrives while an older thread list is in flight", async () => {

@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { FakeWorker } from "./test/fake-worker";
 import { dispatchTrusted } from "../../bridge/test/trusted";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,7 +16,6 @@ const SANDBOXED = `<iframe class="frame" title="artifact content" src="/c/${ID}/
 const SUBDOMAIN = `<iframe class="frame" title="artifact content" src="${SUB}" allow="clipboard-write; fullscreen"></iframe>`;
 const HELLO = { type: "clax:hello", artifact: ID, version: 2, file: "index.html" };
 
-class FakeES { addEventListener() {} close() {} }
 
 async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
   const deadline = Date.now() + 2000;
@@ -55,7 +55,7 @@ function stubFetch(probe: () => Promise<Response>) {
     return new Response(JSON.stringify(loaded));
   });
   vi.stubGlobal("fetch", f);
-  vi.stubGlobal("EventSource", FakeES);
+  vi.stubGlobal("SharedWorker", FakeWorker);
   return f;
 }
 

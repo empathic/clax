@@ -1,12 +1,16 @@
 // The gallery's cards once its first list has painted: a full refresh when
-// the stream opens or resyncs and every `SAFETY_MS` while the page is
-// visible, and a refresh of one card (its entry and this viewer's attention
-// on it, nothing else) when an event names its artifact. Each refresh takes a
-// ticket when it starts; its answer replaces a card's entry, or its
-// attention, only where no refresh started later has already done so.
+// the stream's `gallery` topic goes live or resyncs and every `SAFETY_MS`
+// while the page is visible. In between the topic's deltas apply in place:
+// a new version updates its card, a deleted artifact's card goes, and only
+// this viewer's attention on the artifact an event names (which the shared
+// topic cannot carry) is fetched; an artifact the gallery does not hold yet
+// has its card fetched. Each refresh, and each delta, takes a ticket; an
+// answer replaces a card's entry, or its attention, only where nothing
+// started later has already done so.
 import { type Artifact, type AttentionSummary, getAttention, listArtifacts } from "../api";
 import { Lifecycle, onPageCache } from "../lifecycle";
-import type { WorkingFeed } from "./working-feed.svelte";
+import { applyVersion } from "../view/deltas";
+import type { CardDelta, WorkingFeed } from "./working-feed.svelte";
 
 /** How often a visible gallery refetches everything, as a safety net. */
 export const SAFETY_MS = 60_000;
@@ -43,7 +47,7 @@ export class CardSync {
   start(): void {
     if (this.#life) return;
     const life = (this.#life = new Lifecycle());
-    this.feed.start(() => void this.full(), id => void this.one(id));
+    this.feed.start(() => void this.full(), id => void this.changed(id), d => this.apply(d));
     life.defer(() => this.feed.stop());
     this.#arm();
     life.listen(document, "visibilitychange", this.#shown);
@@ -71,6 +75,39 @@ export class CardSync {
    * whose artifact is no longer live goes. */
   one(id: string): Promise<void> {
     return this.#fetch(id);
+  }
+
+  /** Applies a `gallery` delta to the cards. */
+  apply(d: CardDelta): void {
+    const list = this.cards.list();
+    if (!list) return;
+    const t = ++this.#n;
+    if (d.type === "artifact_deleted") {
+      this.#lists.set(d.artifact_id, t);
+      this.#atts.set(d.artifact_id, t);
+      this.cards.setList(list.filter(a => a.id !== d.artifact_id));
+      const att = { ...this.cards.att() };
+      delete att[d.artifact_id];
+      this.cards.setAtt(att);
+      return;
+    }
+    const next = applyVersion(list, d);
+    if (next && next !== list) {
+      this.#lists.set(d.artifact_id, t);
+      this.cards.setList(next);
+    }
+  }
+
+  /** An event named artifact `id`: its card is fetched when the gallery
+   * does not hold it, else only this viewer's attention on it. */
+  changed(id: string): Promise<void> {
+    if (!(this.cards.list() ?? []).some(a => a.id === id)) return this.#fetch(id);
+    const t = ++this.#n;
+    return getAttention(id).then(att => {
+      if (!att) return;
+      const old = new Map(Object.entries(this.cards.att()));
+      this.cards.setAtt(Object.fromEntries(merge(this.#atts, t, old, new Map(Object.entries(att)), [id])));
+    });
   }
 
   #fetch(id: string | null): Promise<void> {

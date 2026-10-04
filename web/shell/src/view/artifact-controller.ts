@@ -22,6 +22,7 @@ import type { Decided } from "./changelog-model";
 import { rallyOnce } from "./rally";
 import { type Boot, rememberFrameMode } from "./boot";
 import { CAPTURE_LATE, type Draft, MAX_CLIP_BYTES, captureWait, nextDraft, withClip } from "./composer-model";
+import type { ArtifactStream } from "./artifact-stream";
 import { FrameGate } from "./frame-gate";
 import type { PresenceView } from "./presence-model";
 import type { PresenceReporter } from "./presence-reporter";
@@ -200,7 +201,7 @@ export class ArtifactController {
   private hashFrame = 0;
   private hintTimer: ReturnType<typeof setTimeout> | undefined;
   private captureTimer: ReturnType<typeof setTimeout> | undefined;
-  private stream: (() => void) | null = null;
+  private stream: ArtifactStream | null = null;
   /** Owns every listener, timer and stream this view starts. */
   private readonly life = new Lifecycle();
   /** The snapshot before this turn's first change, until the turn renders. */
@@ -695,6 +696,7 @@ export class ArtifactController {
     this.viewChanged();
     this.decideChangelog();
     this.writeSeen();
+    this.watchDocs();
     if (!this.presenceAsked) {
       this.presenceAsked = true;
       this.life.defer(afterPaint(() => this.startPresence()));
@@ -828,7 +830,7 @@ export class ArtifactController {
     this.live = false;
     this.life.dispose();
     this.cancelFlush();
-    this.stream?.();
+    this.stream?.stop();
     this.stream = null;
     // A deferred publish belongs to this artifact: dropped before the host is
     // disposed, so the dispose's `settled` applies nothing.
@@ -1200,12 +1202,20 @@ export class ArtifactController {
       // The owner shell's token request sets the events cookie first, so the
       // daemon counts its stream as the owner shell's (a LAN view gets none).
       // The stream's code loads here, off the artifact entry.
-      const [{ pageStream }] = await Promise.all([import("../stream"), getToken()]);
+      const [m] = await Promise.all([import("./artifact-stream"), getToken()]);
       if (!this.live) return;
-      if (!this.stream) this.stream = pageStream().watch({ artifact: this.id }, e => this.onEvent(e));
-      else pageStream().reconnect();
-      // The viewer's level is fixed when the stream opens: refetch at the new one.
-      if (viewerChanged) this.onEvent({ type: "resync", dropped: 0 });
+      // A new viewer is another caller: every tab's stream reopens, and each
+      // view hears `ready` and refetches at the new level.
+      if (viewerChanged) m.reconnect();
+      this.stream ??= new m.ArtifactStream(this.id, {
+        threads: () => this.s.threads,
+        presence: () => this.s.presence,
+        changeThreads: f => this.changeThreads(f),
+        event: e => this.onEvent(e),
+        page: e => this.host?.onEvent(e),
+        disposed: () => this.disposed,
+      });
+      this.watchDocs();
     };
     // The daemon reads the viewer cookie when the stream opens (its level for
     // `doc` events is fixed then), so open it once the lookup has set the
@@ -1213,6 +1223,11 @@ export class ArtifactController {
     const first = () => { if (this.live && !this.stream) void open(false); };
     void getViewer().then(first, first);
     this.life.defer(onViewer(() => { if (this.live && this.stream) void open(true); }));
+  }
+
+  /** The `docs` topic, once the stream is open, for a page that declares `db`. */
+  private watchDocs(): void {
+    if (this.s.data?.artifact.capabilities?.db) this.stream?.watchDocs();
   }
 
   private onEvent(e: ArtifactEvent): void {

@@ -1,221 +1,385 @@
-// The page's one event stream to the daemon (`GET /api/events`). Every view
-// on the page watches it with its topics; the stream carries their union and
-// hands each watcher the events its own topics name. It reopens with other
-// topics when a watcher needs more, and after a failure with backoff, each
-// time resuming after the last event it saw (`last_event_id`), so nothing is
-// refetched unless the daemon could not resume. It closes as the page is
-// hidden (a navigation, a reload, the back/forward cache) and resumes when
-// the back/forward cache restores the page. While it is down the page shows
-// a quiet notice. The token never goes in its URL: the daemon reads the
-// events cookie `GET /api/token` sets for the shell.
+// The page's client of the browser's one event stream (`GET /api/stream`,
+// held by `stream-hub.ts`). Views watch topics (`gallery`, `artifact:<id>`,
+// `presence:<id>`, `working:<id>`, `docs:<id>`) as they mount and unwatch
+// them as they unmount; the page tells the hub the union, and no connection
+// opens or closes on a view change. The hub lives in a shared worker, so
+// every Clax tab of this origin shares one connection; where shared workers
+// are missing, the tabs elect a leader that holds it for them (Web Locks and
+// a BroadcastChannel), and without those each tab holds its own.
+//
+// A watcher hears `ready` when its topics go live (refetch, then apply the
+// deltas that follow), `resync` when a topic's events were dropped (refetch
+// it), `stream_down` and `stream_up` around an outage, during which the
+// page shows a quiet notice. A page hidden for `HIDDEN_MS` releases its
+// topics and takes them again (with a `ready`) when it shows; as it is
+// hidden for good or enters the back/forward cache it leaves the hub. The
+// token never goes in a URL: the hub's requests carry the events cookie
+// that `GET /api/token` sets for the shell.
+import { getToken } from "./api";
 import { STREAM_DOWN, connTrouble } from "./conn-notice";
-import type { ArtifactEvent } from "./events";
-import { backoff } from "./lifecycle";
+import type { HubMsg, TabMsg } from "./stream-hub";
 
-/** Every event the daemon sends by name, besides `ready` and `resync`. */
-export const EVENT_NAMES = ["version", "artifact_deleted", "thread", "comment", "thread_resolved", "thread_deleted", "feedback_state", "doc", "working", "presence"] as const;
+/** One message on the stream, as a watcher hears it: `ready`, `resync`
+ * (with its `topic`), `refused` (with its `topic` and `code`),
+ * `stream_down`, `stream_up`, or a stream event by name, carrying its
+ * `topic` and the fields of the daemon's delta. */
+export type StreamEvent = { type: string; topic?: string; [field: string]: unknown };
 
-/** What a watcher hears: one artifact's events (all when absent), of these
- * names (all when absent). `ready`, `resync` and `stream_down` reach every
- * watcher. */
-export type Topics = { artifact?: string; types?: readonly string[] };
-
-/** How long a connection may take to say `ready` before it counts as stuck. */
-export const CONNECT_MS = 5000;
 /** How long the stream may be down before the notice shows. */
 export const NOTICE_MS = 1500;
+/** How long a hidden page keeps its topics. */
+export const HIDDEN_MS = 30_000;
+/** How long a shared worker's hub may stay silent (it pings every 10 s)
+ * before the page counts it dead and connects to a new one. */
+export const DEAD_MS = 35_000;
+/** How long the page waits for the token request (which sets the events
+ * cookie) before connecting without it. */
+export const TOKEN_WAIT_MS = 3000;
+
+/** The page's line to the hub; `pinged` when the hub's pings show it alive. */
+export type Link = { send(m: TabMsg): void; close(): void; pinged?: boolean };
+/** Makes a link that hands the hub's messages to `on`, and calls `lost`
+ * when it can tell the hub is gone. */
+export type LinkMaker = (on: (m: HubMsg) => void, lost: () => void) => Promise<Link>;
 
 type Timer = ReturnType<typeof setTimeout>;
-type Watcher = { topics: Topics; on: (e: ArtifactEvent) => void; fresh: boolean };
+type Watcher = { topics: Set<string>; on: (e: StreamEvent) => void };
 
-const unique = (xs: string[]) => [...new Set(xs)];
-
-/** Whether `e`, a named event, is one `t` asks for. */
-function wants(t: Topics, e: ArtifactEvent): boolean {
-  if (t.types && !t.types.includes(e.type)) return false;
-  return !t.artifact || ("artifact_id" in e && e.artifact_id === t.artifact);
+/** Holds Web Lock `name` until the returned function runs; null without Web Locks. */
+export async function holdLock(name: string): Promise<(() => void) | null> {
+  const locks = typeof navigator === "undefined" ? undefined : navigator.locks;
+  if (!locks) return null;
+  return new Promise(granted => {
+    void locks.request(name, () => new Promise<void>(release => granted(release))).catch(() => granted(null));
+  });
 }
+
+const newId = () => (typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
+
+/** A link to the shared worker's hub. */
+export const workerLink: LinkMaker = async (on, lost) => {
+  const w = new SharedWorker(new URL("./stream-worker.ts", import.meta.url), { name: "clax-stream" });
+  const port = w.port;
+  let closed = false;
+  port.onmessage = e => { if (!closed) on(e.data as HubMsg); };
+  // Where the browser says so, the worker's end closing (it crashed).
+  port.addEventListener("close", () => { if (!closed) lost(); });
+  w.addEventListener("error", () => { if (!closed) lost(); });
+  port.start();
+  const lock = `clax-tab:${newId()}`;
+  const release = await holdLock(lock);
+  port.postMessage({ t: "hello", lock: release ? lock : undefined } satisfies TabMsg);
+  return {
+    pinged: true,
+    send: m => { if (!closed) port.postMessage(m); },
+    close: () => {
+      if (closed) return;
+      port.postMessage({ t: "bye" } satisfies TabMsg);
+      closed = true;
+      port.close();
+      release?.();
+    },
+  };
+};
+
+/** The name of the leader's Web Lock and BroadcastChannel. */
+export const LEADER = "clax-stream";
+
+/** A link to the hub of the leader tab, which this tab may be: the tab
+ * holding Web Lock `clax-stream` runs the hub and reaches the others over
+ * BroadcastChannel `clax-stream`. When the leader leaves, the next tab in
+ * line takes the lock and announces itself, and every tab sends it its
+ * state again. */
+export const leaderLink: LinkMaker = async on => {
+  const { Hub } = await import("./stream-hub");
+  const id = newId();
+  const lock = `clax-tab:${id}`;
+  const releaseTab = await holdLock(lock);
+  const bc = new BroadcastChannel(LEADER);
+  let hub: InstanceType<typeof Hub> | null = null;
+  let resign: (() => void) | null = null;
+  let closed = false;
+  // What a new leader needs to hear again: the hello and the latest topics.
+  const hello: TabMsg = { t: "hello", lock: releaseTab ? lock : undefined };
+  let topics: TabMsg | null = null;
+  const post = (m: TabMsg) => {
+    if (hub) hub.receive(id, m);
+    else bc.postMessage({ k: "tab", from: id, msg: m });
+  };
+  const resend = () => { post(hello); if (topics) post(topics); };
+  bc.onmessage = (e: MessageEvent) => {
+    const m = e.data;
+    if (closed || !m || typeof m !== "object") return;
+    if (m.k === "hub" && Array.isArray(m.to) && m.to.includes(id)) on(m.msg as HubMsg);
+    else if (m.k === "tab" && hub && typeof m.from === "string") hub.receive(m.from, m.msg as TabMsg);
+    else if (m.k === "leader" && !hub) resend();
+  };
+  void navigator.locks.request(LEADER, () => {
+    if (closed) return;
+    hub = new Hub({
+      send(ids, msg) {
+        const others = ids.filter(x => x !== id);
+        if (others.length) bc.postMessage({ k: "hub", to: others, msg });
+        if (others.length !== ids.length) on(msg);
+      },
+      watchLock: (name, gone) => { void navigator.locks.request(name, () => gone()).catch(() => {}); },
+    });
+    resend();
+    bc.postMessage({ k: "leader" });
+    return new Promise<void>(r => { resign = r; });
+  }).catch(() => {});
+  post(hello);
+  return {
+    send: m => { if (closed) return; if (m.t === "topics") topics = m; post(m); },
+    close: () => {
+      if (closed) return;
+      post({ t: "bye" });
+      closed = true;
+      hub?.close();
+      hub = null;
+      resign?.();
+      bc.close();
+      releaseTab?.();
+    },
+  };
+};
+
+/** A hub of this tab's own: one connection per tab. */
+export const localLink: LinkMaker = async on => {
+  const { Hub } = await import("./stream-hub");
+  const hub = new Hub({ send: (_ids, msg) => on(msg) });
+  return { send: m => hub.receive("self", m), close: () => hub.close() };
+};
+
+/** The best link this browser supports. */
+export const bestLink: LinkMaker = async (on, lost) => {
+  if (typeof SharedWorker === "function") {
+    try { return await workerLink(on, lost); } catch { /* blocked: fall back */ }
+  }
+  if (typeof BroadcastChannel === "function" && typeof navigator !== "undefined" && navigator.locks) return leaderLink(on, lost);
+  return localLink(on, lost);
+};
 
 export class EventStream {
   private watchers: Watcher[] = [];
-  private es: EventSource | null = null;
-  /** The topics part of the open (or next) stream's query. */
-  private query = "";
-  /** The ID of the last event heard: the resume point. */
-  private lastId = "";
-  private failures = 0;
-  /** The open stream said `ready`. */
-  private up = false;
-  /** Watchers were told `stream_down` for this outage. */
+  private link: Link | null = null;
+  /** The link being made; replaced or cleared when the page leaves meanwhile. */
+  private linking: object | null = null;
+  /** The topics last sent to the hub, as a key. */
+  private sent = "";
+  private queued = false;
+  /** The page has been hidden for `HIDDEN_MS`: its topics are released. */
+  private released = false;
+  /** The page is leaving (or in the back/forward cache). */
+  private gone = false;
+  /** Watchers were told `stream_down`, and not yet `stream_up`. */
   private down = false;
-  /** The page is hidden (leaving, or in the back/forward cache). */
-  private hidden = false;
-  private retry: Timer | undefined;
-  private watchdog: Timer | undefined;
+  private heard = Date.now();
+  private hiddenTimer: Timer | undefined;
   private noticeTimer: Timer | undefined;
-  private pageHooked = false;
+  private watchdog: ReturnType<typeof setInterval> | undefined;
+  private hooked = false;
 
-  constructor(private readonly win: Window = window) {}
+  constructor(private readonly win: Window = window, private readonly makeLink: LinkMaker = bestLink) {}
 
-  /** The URL of the open stream, or null (tests). */
-  get url(): string | null { return this.es?.url ?? null; }
+  /** The topics this page holds now (tests). */
+  get topics(): string[] { return this.sent ? this.sent.split("\n") : []; }
 
-  /** Hands `on` the events `topics` name, until the returned function runs.
-   * A watcher's first `ready` comes once the stream is up; after that,
-   * `ready` comes only when a reconnect could not resume. */
-  watch(topics: Topics, on: (e: ArtifactEvent) => void): () => void {
-    const w: Watcher = { topics, on, fresh: true };
+  /** Hands `on` the events of `topics` until the returned function runs. */
+  watch(topics: readonly string[], on: (e: StreamEvent) => void): () => void {
+    const w: Watcher = { topics: new Set(topics), on };
     this.watchers.push(w);
-    this.hookPage();
-    if (this.hidden) return () => this.unwatch(w);
-    if (!this.es && this.retry === undefined) this.open();
-    else if (this.es && this.topicsQuery() !== this.query) this.open();
-    else if (this.up) {
-      queueMicrotask(() => {
-        if (!w.fresh || !this.up || !this.watchers.includes(w)) return;
-        w.fresh = false;
-        w.on({ type: "ready" });
-      });
-    }
-    return () => this.unwatch(w);
+    this.hook();
+    this.schedule();
+    return () => {
+      const i = this.watchers.indexOf(w);
+      if (i < 0) return;
+      this.watchers.splice(i, 1);
+      this.schedule();
+    };
   }
 
-  /** Reopens now, resuming after the last event (the subscriber's level is
-   * fixed when a stream opens: a new viewer cookie takes effect so). */
-  reconnect(): void {
-    if (this.watchers.length && !this.hidden) this.open();
-  }
+  /** Opens a new stream for every tab: the viewer changed, and the daemon
+   * fixes a stream's caller when it opens. Every watcher hears `ready`. */
+  reconnect(): void { this.link?.send({ t: "reconnect" }); }
 
-  /** Closes the stream and forgets every watcher. */
+  /** Leaves the hub and forgets every watcher. */
   close(): void {
     this.watchers = [];
-    this.stop();
-    this.lastId = "";
-    if (this.pageHooked) {
+    this.leave();
+    clearTimeout(this.hiddenTimer);
+    this.hiddenTimer = undefined;
+    if (this.hooked) {
       this.win.removeEventListener("pagehide", this.onHide);
       this.win.removeEventListener("pageshow", this.onShow);
-      this.pageHooked = false;
+      this.win.document.removeEventListener("visibilitychange", this.onVisibility);
+      this.hooked = false;
     }
   }
 
-  private unwatch(w: Watcher): void {
-    const i = this.watchers.indexOf(w);
-    if (i < 0) return;
-    this.watchers.splice(i, 1);
-    // A narrower set of topics keeps the open stream: the watchers filter.
-    if (!this.watchers.length) this.close();
-  }
-
-  private hookPage(): void {
-    if (this.pageHooked) return;
-    this.pageHooked = true;
+  private hook(): void {
+    if (this.hooked) return;
+    this.hooked = true;
     this.win.addEventListener("pagehide", this.onHide);
     this.win.addEventListener("pageshow", this.onShow);
+    this.win.document.addEventListener("visibilitychange", this.onVisibility);
+    if (this.win.document.visibilityState === "hidden") this.onVisibility();
   }
 
   private onHide = () => {
-    this.hidden = true;
-    this.stop();
+    this.gone = true;
+    this.leave();
   };
 
   private onShow = (e: Event) => {
     if (!(e as PageTransitionEvent).persisted) return;
-    this.hidden = false;
-    this.down = false;
-    if (this.watchers.length) this.open();
+    this.gone = false;
+    this.schedule();
   };
 
-  private topicsQuery(): string {
-    const ws = this.watchers;
-    const parts: string[] = [];
-    if (ws.length && ws.every(w => w.topics.artifact)) parts.push(`artifact=${unique(ws.map(w => w.topics.artifact!)).map(encodeURIComponent).join(",")}`);
-    if (ws.length && ws.every(w => w.topics.types)) parts.push(`types=${unique(ws.flatMap(w => [...w.topics.types!])).map(encodeURIComponent).join(",")}`);
-    return parts.join("&");
+  private onVisibility = () => {
+    clearTimeout(this.hiddenTimer);
+    this.hiddenTimer = undefined;
+    if (this.win.document.visibilityState === "hidden") {
+      // Browser tests set `claxHiddenMs` to wait less.
+      const ms = (this.win as unknown as { claxHiddenMs?: number }).claxHiddenMs ?? HIDDEN_MS;
+      this.hiddenTimer = setTimeout(() => { this.hiddenTimer = undefined; this.released = true; this.schedule(); }, ms);
+    } else if (this.released) {
+      this.released = false;
+      this.schedule();
+    }
+  };
+
+  /** Sends the page's topics once the current task is done, so a view
+   * mounting several watchers sends one set. */
+  private schedule(): void {
+    if (this.queued) return;
+    this.queued = true;
+    queueMicrotask(() => { this.queued = false; this.sync(); });
   }
 
-  /** Ends the open stream and every timer; the watchers stay. */
-  private stop(): void {
-    this.closeSource();
-    clearTimeout(this.retry);
-    this.retry = undefined;
+  private union(): string[] {
+    if (this.released || this.gone) return [];
+    const out = new Set<string>();
+    for (const w of this.watchers) for (const t of w.topics) out.add(t);
+    return [...out].sort();
+  }
+
+  private sync(): void {
+    const topics = this.union();
+    const key = topics.join("\n");
+    if (!this.link) {
+      if (topics.length) this.connect();
+      return;
+    }
+    if (key === this.sent) return;
+    this.sent = key;
+    this.link.send({ t: "topics", topics });
+    // The hub is watched only while the page holds topics.
+    if (!topics.length) { clearInterval(this.watchdog); this.watchdog = undefined; }
+    else if (this.link.pinged && !this.watchdog) { this.heard = Date.now(); this.watchdog = setInterval(() => this.check(), DEAD_MS / 3); }
+  }
+
+  private connect(): void {
+    if (this.linking) return;
+    const ticket = {};
+    this.linking = ticket;
+    const box: { link: Link | null } = { link: null };
+    const on = (m: HubMsg) => { if (box.link && this.link === box.link) this.onMessage(m); };
+    const lost = () => { if (box.link) this.lost(box.link); };
+    void (async () => {
+      // The token request sets the events cookie the hub's requests carry.
+      await Promise.race([getToken(), new Promise(r => setTimeout(r, TOKEN_WAIT_MS))]);
+      let link: Link;
+      try { link = await this.makeLink(on, lost); } catch { link = await localLink(on, lost); }
+      box.link = link;
+      if (this.linking !== ticket) { link.close(); return; }
+      this.linking = null;
+      this.link = link;
+      this.sent = "";
+      this.sync();
+    })();
+  }
+
+  /** Leaves the hub: its topics go, and the notice with them. */
+  private leave(): void {
+    this.linking = null;
+    this.link?.close();
+    this.link = null;
+    this.sent = "";
+    clearInterval(this.watchdog);
+    this.watchdog = undefined;
     clearTimeout(this.noticeTimer);
     this.noticeTimer = undefined;
-    connTrouble("stream", false, STREAM_DOWN, this.win.document);
-  }
-
-  private closeSource(): void {
-    clearTimeout(this.watchdog);
-    this.watchdog = undefined;
-    this.es?.close();
-    this.es = null;
-    this.up = false;
-  }
-
-  private open(): void {
-    this.closeSource();
-    clearTimeout(this.retry);
-    this.retry = undefined;
-    if (this.hidden || !this.watchers.length || typeof EventSource === "undefined") return;
-    this.query = this.topicsQuery();
-    const q = [this.query, this.lastId ? `last_event_id=${encodeURIComponent(this.lastId)}` : ""].filter(Boolean).join("&");
-    const es = new EventSource(`/api/events${q ? `?${q}` : ""}`);
-    this.es = es;
-    const mine = (fn: (e: MessageEvent) => void) => (e: Event) => { if (this.es === es) fn(e as MessageEvent); };
-    for (const name of EVENT_NAMES) es.addEventListener(name, mine(e => this.event(e)));
-    es.addEventListener("ready", mine(e => this.ready(e)));
-    es.addEventListener("resync", mine(e => {
-      let dropped = 0;
-      try { dropped = Number(JSON.parse(e.data).dropped) || 0; } catch { /* malformed: 0 */ }
-      this.tell({ type: "resync", dropped });
-    }));
-    es.addEventListener("error", mine(() => this.fail()));
-    this.watchdog = setTimeout(() => { if (this.es === es && !this.up) this.fail(); }, CONNECT_MS);
-  }
-
-  private ready(e: MessageEvent): void {
-    clearTimeout(this.watchdog);
-    this.watchdog = undefined;
-    if (e.lastEventId) this.lastId = e.lastEventId;
-    let resumed = false;
-    try { resumed = JSON.parse(e.data)?.resumed === true; } catch { /* not resumed */ }
-    this.up = true;
     this.down = false;
-    this.failures = 0;
-    clearTimeout(this.noticeTimer);
-    this.noticeTimer = undefined;
     connTrouble("stream", false, STREAM_DOWN, this.win.document);
-    for (const w of [...this.watchers]) {
-      if (!w.fresh && resumed) continue;
-      w.fresh = false;
-      w.on({ type: "ready" });
-    }
   }
 
-  private event(e: MessageEvent): void {
-    if (e.lastEventId) this.lastId = e.lastEventId;
-    let ev: ArtifactEvent;
-    try { ev = JSON.parse(e.data); } catch { return; }
-    for (const w of [...this.watchers]) if (wants(w.topics, ev)) w.on(ev);
+  /** The hub is gone (its worker crashed, or went silent): the page says
+   * the stream is down and connects to a new hub, whose `live` refetches. */
+  private lost(link: Link): void {
+    if (this.link !== link) return;
+    this.link = null;
+    link.close();
+    this.sent = "";
+    clearInterval(this.watchdog);
+    this.watchdog = undefined;
+    this.markDown();
+    this.sync();
   }
 
-  private tell(e: ArtifactEvent): void {
-    for (const w of [...this.watchers]) w.on(e);
+  private check(): void {
+    if (!this.link || !this.sent || this.win.document.visibilityState === "hidden") return;
+    if (Date.now() - this.heard > DEAD_MS) this.lost(this.link);
   }
 
-  /** The stream failed or is stuck: closed, retried after a backoff, and the
-   * notice shown once it has been down a while. */
-  private fail(): void {
-    this.closeSource();
-    if (!this.down) {
-      this.down = true;
-      this.tell({ type: "stream_down" });
-    }
-    if (this.hidden || !this.watchers.length) return;
-    this.retry = setTimeout(() => { this.retry = undefined; this.open(); }, backoff(this.failures++));
+  private markDown(): void {
+    if (this.down) return;
+    this.down = true;
+    this.tell(() => true, { type: "stream_down" });
     this.noticeTimer ??= setTimeout(() => {
       this.noticeTimer = undefined;
-      if (!this.up && !this.hidden && this.watchers.length) connTrouble("stream", true, STREAM_DOWN, this.win.document);
+      if (this.down && !this.gone) connTrouble("stream", true, STREAM_DOWN, this.win.document);
     }, NOTICE_MS);
+  }
+
+  private markUp(): void {
+    clearTimeout(this.noticeTimer);
+    this.noticeTimer = undefined;
+    connTrouble("stream", false, STREAM_DOWN, this.win.document);
+    if (!this.down) return;
+    this.down = false;
+    this.tell(() => true, { type: "stream_up" });
+  }
+
+  private tell(pick: (w: Watcher) => boolean, e: StreamEvent): void {
+    for (const w of [...this.watchers]) if (this.watchers.includes(w) && pick(w)) w.on(e);
+  }
+
+  private onMessage(m: HubMsg): void {
+    this.heard = Date.now();
+    switch (m.t) {
+      case "event": {
+        // Counts browser tests read: events this page has been handed, and `live` messages.
+        const d = this.win as unknown as { claxStreamEvents?: number };
+        d.claxStreamEvents = (d.claxStreamEvents ?? 0) + 1;
+        this.tell(w => w.topics.has(m.topic), { ...m.data, type: m.name, topic: m.topic });
+        break;
+      }
+      case "live": {
+        // A topic went live, so the stream is up (a new hub says so this way).
+        const d = this.win as unknown as { claxStreamLive?: number };
+        d.claxStreamLive = (d.claxStreamLive ?? 0) + 1;
+        this.markUp();
+        const live = new Set(m.topics);
+        this.tell(w => [...w.topics].some(t => live.has(t)), { type: "ready" });
+        break;
+      }
+      case "resync": this.tell(w => w.topics.has(m.topic), { type: "resync", topic: m.topic }); break;
+      case "refused": this.tell(w => w.topics.has(m.topic), { type: "refused", topic: m.topic, code: m.code }); break;
+      case "status": if (m.up) this.markUp(); else this.markDown(); break;
+      case "ping": break;
+    }
   }
 }
 

@@ -2,13 +2,13 @@
 // inside the topbar's island: a selector that stops matching through the
 // island would drop their style without failing anything else.
 import { readFileSync } from "node:fs";
+import { FakeWorker } from "./test/fake-worker";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
 const css = readFileSync(join(__dirname, "theme.css"), "utf8");
 
 const ID = "7q3k9mzx2b4t";
-class FakeES { addEventListener() {} close() {} }
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 1, label: null, created_at: "x", files: {} }, { artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
 
 /** theme.css as (selector, declarations) pairs, media rules' inner rules included. */
@@ -26,7 +26,7 @@ afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.unst
 it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in red-orange, and no case transform", async () => {
   vi.resetModules();
   history.replaceState(null, "", `/a/${ID}`);
-  vi.stubGlobal("EventSource", FakeES);
+  vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (url: string) => new Response(JSON.stringify(
     url.includes("/threads") ? { threads: [], next_cursor: null } : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } } : url === "/api/token" ? { token: "tk" } : loaded))));
   Object.defineProperty(navigator, "clipboard", { value: { writeText: async () => {} }, configurable: true });

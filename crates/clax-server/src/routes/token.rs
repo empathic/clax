@@ -12,9 +12,10 @@ use axum::{
 /// address and the `Host` a literal local name (not the LAN bind address),
 /// else 403 `not_loopback`. A request the browser marks same-origin
 /// (`Sec-Fetch-Site: same-origin`: the shell's own) also gets the events
-/// cookie ([`crate::auth::events_cookie_name`]), HttpOnly, `SameSite=Strict`
-/// and scoped to `/api/events`, so the shell's `EventSource` holds the
-/// token's level without the token in its URL.
+/// cookie ([`crate::auth::events_cookie_name`]), HttpOnly, `SameSite=Strict`,
+/// set twice: scoped to `/api/events` and to `/api/stream` (which covers its
+/// subscription route), so the shell's event stream holds the token's level
+/// without the token in its URL.
 pub async fn token(
     State(s): State<AppState>,
     ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
@@ -39,13 +40,15 @@ pub async fn token(
         .get("sec-fetch-site")
         .is_some_and(|v| v.as_bytes() == b"same-origin");
     if same_origin {
-        let cookie = format!(
-            "{}={}; Path=/api/events; HttpOnly; SameSite=Strict",
-            crate::auth::events_cookie_name(host),
-            crate::auth::events_cookie_value(&s.token)
-        );
-        if let Ok(v) = header::HeaderValue::from_str(&cookie) {
-            res.headers_mut().append(header::SET_COOKIE, v);
+        for path in ["/api/events", "/api/stream"] {
+            let cookie = format!(
+                "{}={}; Path={path}; HttpOnly; SameSite=Strict",
+                crate::auth::events_cookie_name(host),
+                crate::auth::events_cookie_value(&s.token)
+            );
+            if let Ok(v) = header::HeaderValue::from_str(&cookie) {
+                res.headers_mut().append(header::SET_COOKIE, v);
+            }
         }
     }
     Ok(res)

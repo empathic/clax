@@ -157,6 +157,8 @@ async fn lagged_subscriber_receives_resync_with_dropped_count() {
             artifact_id: "7q3k9mzx2b4t".into(),
             n,
             by_page: false,
+            title: None,
+            at: None,
         });
     }
     let dropped = sent - capacity;
@@ -371,13 +373,21 @@ async fn the_token_route_sets_the_events_cookie_for_the_shell_only() {
         .send()
         .await
         .unwrap();
-    let set = shell.headers()["set-cookie"].to_str().unwrap().to_string();
-    assert!(set.starts_with(&format!("clax_events_{port}=")), "{set}");
-    assert!(
-        set.contains("; Path=/api/events; HttpOnly; SameSite=Strict"),
-        "{set}"
-    );
-    assert!(!set.contains(&ts.token), "the cookie never holds the token");
+    let sets: Vec<String> = shell
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().to_string())
+        .collect();
+    assert_eq!(sets.len(), 2, "{sets:?}");
+    for (set, path) in sets.iter().zip(["/api/events", "/api/stream"]) {
+        assert!(set.starts_with(&format!("clax_events_{port}=")), "{set}");
+        assert!(
+            set.contains(&format!("; Path={path}; HttpOnly; SameSite=Strict")),
+            "{set}"
+        );
+        assert!(!set.contains(&ts.token), "the cookie never holds the token");
+    }
     for site in ["cross-site", "same-site"] {
         let other = ts
             .client

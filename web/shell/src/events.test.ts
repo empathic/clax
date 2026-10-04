@@ -1,103 +1,60 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import type { ArtifactEvent } from "./events";
-import { pageStream } from "./stream";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { type StreamEvent, pageStream } from "./stream";
+import { FakeWorker, workerWith } from "./test/fake-worker";
 import { subscribeGallery } from "./working-events";
 
-const watchArtifact = (on: (e: ArtifactEvent) => void) => pageStream().watch({ artifact: "7q3k9mzx2b4t" }, on);
-
-class FakeES {
-  static last: FakeES;
-  listeners = new Map<string, (e: MessageEvent) => void>();
-  closed = false;
-  constructor(public url: string) { FakeES.last = this; }
-  addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-  close() { this.closed = true; }
-  emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-}
+const A = "7q3k9mzx2b4t";
 
 describe("the page stream", () => {
+  beforeEach(() => {
+    FakeWorker.all = [];
+    vi.stubGlobal("SharedWorker", FakeWorker);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ token: "t" }))));
+  });
   afterEach(() => { pageStream().close(); vi.unstubAllGlobals(); });
 
-  it("opens a filtered stream, forwards parsed events, and closes on unsubscribe", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
-    const off = watchArtifact(e => seen.push(e));
-    expect(FakeES.last.url).toBe("/api/events?artifact=7q3k9mzx2b4t");
-    FakeES.last.emit("version", { type: "version", artifact_id: "7q3k9mzx2b4t", n: 4 });
-    FakeES.last.emit("artifact_deleted", { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" });
-    expect(seen).toEqual([{ type: "version", artifact_id: "7q3k9mzx2b4t", n: 4 }, { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" }]);
-    off();
-    expect(FakeES.last.closed).toBe(true);
+  it("joins the shared worker by name, says hello, and sends its topics", async () => {
+    pageStream().watch([`artifact:${A}`, `presence:${A}`], () => {});
+    const w = await workerWith(`artifact:${A}`);
+    expect(FakeWorker.all).toHaveLength(1);
+    expect(w.opts?.name).toBe("clax-stream");
+    expect(String(w.url)).toMatch(/stream-worker/);
+    expect(w.msgs[0]).toMatchObject({ t: "hello" });
+    expect(w.topics).toEqual([`artifact:${A}`, `presence:${A}`]);
   });
 
-  it("turns a resync event into a typed event carrying the dropped count", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
-    watchArtifact(e => seen.push(e));
-    FakeES.last.emit("resync", { dropped: 7 });
-    expect(seen).toEqual([{ type: "resync", dropped: 7 }]);
+  it("forwards each topic's events with their fields, ready when live, and resync", async () => {
+    const seen: StreamEvent[] = [];
+    pageStream().watch([`artifact:${A}`], e => seen.push(e));
+    const w = await workerWith(`artifact:${A}`);
+    w.live();
+    w.emit(`artifact:${A}`, "feedback_state", { artifact_id: A, thread_id: "01J9", state: "sent" });
+    w.emit(`artifact:${A}`, "doc", { artifact_id: A, path: "tasks/a", version: null });
+    w.send({ t: "resync", topic: `artifact:${A}` });
+    expect(seen).toEqual([
+      { type: "ready" },
+      { type: "feedback_state", topic: `artifact:${A}`, artifact_id: A, thread_id: "01J9", state: "sent" },
+      { type: "doc", topic: `artifact:${A}`, artifact_id: A, path: "tasks/a", version: null },
+      { type: "resync", topic: `artifact:${A}` },
+    ]);
   });
 
-  it("forwards every ready event, so a reconnect can reload what it missed", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
-    watchArtifact(e => seen.push(e));
-    FakeES.last.emit("ready", {});
-    FakeES.last.emit("ready", {});
-    expect(seen).toEqual([{ type: "ready" }, { type: "ready" }]);
-  });
-
-  it("forwards the comment events", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
-    watchArtifact(e => seen.push(e));
-    const fs = { type: "feedback_state", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", state: "sent", tier: "stop_hook", since: "2026-09-29T10:00:00.000Z", resends: 0, exhausted: false };
-    const thread = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "01J9" } };
-    const comment = { type: "comment", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", comment: { id: "c" } };
-    const resolved = { type: "thread_resolved", artifact_id: "7q3k9mzx2b4t", thread_id: "01J9", resolved_by: "viewer:u_0123456789abcdef012345", resolved_at: "t" };
-    FakeES.last.emit("feedback_state", fs);
-    FakeES.last.emit("thread", thread);
-    FakeES.last.emit("comment", comment);
-    const working = { type: "working", artifact_id: "7q3k9mzx2b4t", working: [] };
-    FakeES.last.emit("thread_resolved", resolved);
-    FakeES.last.emit("working", working);
-    expect(seen).toEqual([fs, thread, comment, resolved, working]);
-  });
-
-  it("forwards doc events, and reports a failed stream as stream_down", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
-    watchArtifact(e => seen.push(e));
-    const d = { type: "doc", artifact_id: "7q3k9mzx2b4t", path: "tasks/a", version: null };
-    FakeES.last.emit("doc", d);
-    FakeES.last.listeners.get("error")?.(new MessageEvent("error"));
-    expect(seen).toEqual([d, { type: "stream_down" }]);
-  });
-
-  it("subscribeGallery opens the gallery's stream and forwards parsed working, version, thread and deletion events", () => {
-    vi.stubGlobal("EventSource", FakeES);
-    const seen: unknown[] = [];
+  it("subscribeGallery watches the gallery topic, and its unwatch leaves the hub's topics", async () => {
+    const seen: StreamEvent[] = [];
     const off = subscribeGallery(e => seen.push(e));
-    expect(FakeES.last.url).toBe("/api/events?types=working,version,thread,thread_deleted,artifact_deleted");
-    const w = { type: "working", artifact_id: "7q3k9mzx2b4t", working: [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "s", last_heartbeat: "s" }] };
-    const v = { type: "version", artifact_id: "7q3k9mzx2b4t", n: 2 };
-    const t = { type: "thread", artifact_id: "7q3k9mzx2b4t", thread: { id: "t1" } };
-    FakeES.last.emit("working", w);
-    FakeES.last.emit("version", v);
-    FakeES.last.emit("thread", t);
-    const td = { type: "thread_deleted", artifact_id: "7q3k9mzx2b4t", thread_id: "t1" };
-    const ad = { type: "artifact_deleted", artifact_id: "7q3k9mzx2b4t" };
-    FakeES.last.emit("thread_deleted", td);
-    FakeES.last.emit("artifact_deleted", ad);
-    FakeES.last.emit("ready", {});
-    FakeES.last.emit("resync", { dropped: 2 });
-    expect(seen).toEqual([w, v, t, td, ad, { type: "ready" }, { type: "resync", dropped: 2 }]);
+    const w = await workerWith("gallery");
+    w.emit("gallery", "working", { artifact_id: A, working: [{ agent: "a_1111aaaa", harness: "claude", threads: 2, started_at: "s" }] });
+    expect(seen).toEqual([{ type: "working", topic: "gallery", artifact_id: A, working: [{ agent: "a_1111aaaa", harness: "claude", threads: 2, started_at: "s" }] }]);
     off();
-    expect(FakeES.last.closed).toBe(true);
+    await vi.waitFor(() => expect(w.topics).toEqual([]));
   });
 
-  it("subscribeGallery is a no-op without EventSource", () => {
-    vi.stubGlobal("EventSource", undefined);
-    expect(() => subscribeGallery(() => {})()).not.toThrow();
+  it("falls back to a hub of its own without shared workers, Web Locks or BroadcastChannel", async () => {
+    vi.stubGlobal("SharedWorker", undefined);
+    vi.stubGlobal("BroadcastChannel", undefined);
+    const urls: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (u: string) => { urls.push(String(u)); return new Promise<Response>(() => {}); }));
+    pageStream().watch(["gallery"], () => {});
+    await vi.waitFor(() => expect(urls).toContain("/api/stream"));
   });
 });

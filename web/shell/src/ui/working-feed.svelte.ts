@@ -1,12 +1,19 @@
 // The gallery's live working lists, by artifact: seeded from
-// `GET /api/artifacts`, then kept current by the gallery's event stream,
-// which opens only after the gallery has rendered. Its `version`, `thread`,
-// `thread_deleted` and `artifact_deleted` events call `onChange` with the
-// artifact they name, at most once a second per artifact: a burst on one
-// artifact is one call, and other artifacts do not wait for it.
+// `GET /api/artifacts`, then kept current by the `gallery` topic of the
+// page's event stream, which the gallery watches only after it has
+// rendered. `working` deltas replace an artifact's list. `version` and
+// `artifact_deleted` deltas go to `onDelta` at once; `version`, `thread`
+// and `thread_deleted` also call `onChange` with the artifact they name, at
+// most once a second per artifact: a burst on one artifact is one call, and
+// other artifacts do not wait for it.
 import type { Artifact } from "../api";
+import type { StreamEvent } from "../stream";
+import { type WorkingSummary, workingFromSummary } from "../view/deltas";
 import type { Working } from "../view/working-model";
 import { subscribeGallery } from "../working-events";
+
+/** A `gallery` delta the cards apply themselves. */
+export type CardDelta = { type: "version"; artifact_id: string; n: number; title?: string | null; at?: string | null } | { type: "artifact_deleted"; artifact_id: string };
 
 export class WorkingFeed {
   byId = $state<Record<string, Working[]>>({});
@@ -30,14 +37,18 @@ export class WorkingFeed {
     this.byId = next;
   }
   #newer(id: string, since: number): boolean { return (this.#at[id] ?? 0) > since; }
-  start(onResync: () => void, onChange: (id: string) => void = () => {}): void {
+  start(onResync: () => void, onChange: (id: string) => void = () => {}, onDelta: (d: CardDelta) => void = () => {}): void {
     if (this.#stop) return;
-    this.#stop = subscribeGallery(e => {
-      if (e.type === "working") {
-        this.#at[e.artifact_id] = ++this.events;
-        this.byId = { ...this.byId, [e.artifact_id]: e.working };
-      } else if (e.type === "version" || e.type === "thread" || e.type === "thread_deleted" || e.type === "artifact_deleted") {
-        const id = e.artifact_id;
+    this.#stop = subscribeGallery((e: StreamEvent) => {
+      const id = typeof e.artifact_id === "string" ? e.artifact_id : null;
+      if (e.type === "working" && id) {
+        this.#at[id] = ++this.events;
+        this.byId = { ...this.byId, [id]: workingFromSummary((e.working ?? []) as WorkingSummary[]) };
+      } else if ((e.type === "version" || e.type === "artifact_deleted") && id) {
+        onDelta(e as unknown as CardDelta);
+        if (e.type === "artifact_deleted") { const next = { ...this.byId }; delete next[id]; this.byId = next; }
+      }
+      if ((e.type === "version" || e.type === "thread" || e.type === "thread_deleted") && id) {
         if (this.#soon.has(id)) return;
         const wait = Math.max(0, (this.#last.get(id) ?? 0) + 1000 - Date.now());
         this.#soon.set(id, setTimeout(() => { this.#soon.delete(id); this.#last.set(id, Date.now()); onChange(id); }, wait));

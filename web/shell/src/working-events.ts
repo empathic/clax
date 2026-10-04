@@ -1,13 +1,9 @@
 // The gallery's watch of the page's event stream.
-import type { ArtifactEvent } from "./events";
-import { pageStream } from "./stream";
+import { type StreamEvent, pageStream } from "./stream";
 
-/** The events the gallery's chips and cards follow. */
-export const GALLERY_TYPES = ["working", "version", "thread", "thread_deleted", "artifact_deleted"] as const;
-
-/** Watches every artifact's `working`, `version`, `thread`, `thread_deleted`
- * and `artifact_deleted` events (the gallery's chips and the cards they
- * name) on the page's one stream; returns the unwatch. */
-export function subscribeGallery(onEvent: (e: ArtifactEvent) => void): () => void {
-  return pageStream().watch({ types: GALLERY_TYPES }, onEvent);
+/** Watches the `gallery` topic on the page's one stream: every artifact's
+ * `version`, `thread` (a summary without comments), `thread_deleted`,
+ * `artifact_deleted` and `working` (a summary per agent); returns the unwatch. */
+export function subscribeGallery(onEvent: (e: StreamEvent) => void): () => void {
+  return pageStream().watch(["gallery"], onEvent);
 }

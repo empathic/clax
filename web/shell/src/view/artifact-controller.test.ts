@@ -1,18 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
+import { FakeWorker, artifactStreams } from "../test/fake-worker";
 import type { Thread } from "../threads";
 
 const ID = "7q3k9mzx2b4t";
 const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, updated_at: "x", current_version: 2, pinned: false }, versions: [{ artifact_id: ID, n: 2, label: null, created_at: "x", files: {} }] };
 
-class FakeES {
-  static last: FakeES | undefined;
-  listeners = new Map<string, (e: MessageEvent) => void>();
-  constructor() { FakeES.last = this; }
-  addEventListener(t: string, fn: (e: MessageEvent) => void) { this.listeners.set(t, fn); }
-  close() {}
-  emit(t: string, data: unknown) { this.listeners.get(t)?.(new MessageEvent(t, { data: JSON.stringify(data) })); }
-}
+/** The view's stream, driven by event name. */
+const FakeES = artifactStreams(ID);
 
 type Seed = { threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
 const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
@@ -22,7 +17,7 @@ const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
 });
 
 async function started(seed: Seed = {}) {
-  vi.stubGlobal("EventSource", FakeES);
+  vi.stubGlobal("SharedWorker", FakeWorker);
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const own = seed.routes?.(url, init);
     if (own !== undefined) return new Response(JSON.stringify(own));

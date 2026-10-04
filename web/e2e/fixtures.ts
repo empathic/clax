@@ -12,37 +12,43 @@ export const NO_KEY_CONFIG = '[sample]\napi_key_env = "CLAX_E2E_UNSET_KEY"\n';
 /** The stub provider: canned, deterministic answers (see crates/clax-server/src/sample/stub.rs). */
 export const STUB_CONFIG = '[sample]\nprovider = "stub"\nstub_delay_ms = 150\n';
 
-/** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default). */
-export async function startDaemon(opts: { config?: string } = {}) {
-  const home = mkdtempSync(join(tmpdir(), "clax-e2e-"));
+/** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
+ * with `opts.home` and `opts.port`, on that home and port (a restart). `stop({ keepHome: true })` leaves the home. */
+export async function startDaemon(opts: { config?: string; home?: string; port?: number } = {}) {
+  const home = opts.home ?? mkdtempSync(join(tmpdir(), "clax-e2e-"));
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
-  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", "0"],
+  rmSync(join(home, "daemon.json"), { force: true });
+  const child: ChildProcess = spawn("cargo", ["run", "-q", "-p", "clax-cli", "--", "serve", "--foreground", "--bind", "127.0.0.1", "--port", String(opts.port ?? 0)],
     { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "inherit"] });
   const infoPath = join(home, "daemon.json");
   let base = "";
   let token = "";
-  const stop = async () => {
+  let port = 0;
+  const stop = async (o: { keepHome?: boolean } = {}) => {
+    const exited = child.exitCode === null && child.signalCode === null ? new Promise<void>(resolve => child.once("exit", () => resolve())) : Promise.resolve();
     if (base && token) await fetch(`${base}/api/admin/shutdown`, { method: "POST", headers: { authorization: `Bearer ${token}` } }).catch(() => {});
     if (child.exitCode === null && child.signalCode === null) {
-      const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
-      child.kill();
+      // The shutdown lets the daemon end on its own; it is killed if it has not within 5 s.
+      await Promise.race([exited, new Promise<void>(resolve => setTimeout(resolve, 5000))]);
+      if (child.exitCode === null && child.signalCode === null) child.kill();
       await Promise.race([exited, new Promise<void>(resolve => setTimeout(resolve, 5000))]);
     }
-    rmSync(home, { recursive: true, force: true });
+    if (!o.keepHome) rmSync(home, { recursive: true, force: true });
   };
   try {
     const deadline = Date.now() + 120_000;
     while (!existsSync(infoPath)) { if (Date.now() > deadline) throw new Error("daemon did not start"); await new Promise(r => setTimeout(r, 200)); }
     const info = JSON.parse(readFileSync(infoPath, "utf8"));
     token = info.token as string;
+    port = info.port as number;
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
       if (Date.now() > deadline) throw new Error("daemon did not become healthy");
       await new Promise(r => setTimeout(r, 100));
     }
-  } catch (e) { await stop(); throw e; }
-  return { base, token, stop };
+  } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }
+  return { base, token, stop, home, port };
 }
 
 export async function publish(base: string, token: string, title: string, files: Record<string, string>, ifVersion?: number, id?: string) {
