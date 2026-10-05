@@ -676,15 +676,19 @@ describe("comments", () => {
     const home = join(scratch, "inject-restart");
     const env = withBin(claxBin);
     const stop = () => execFileSync(claxBin, ["stop"], { env: { ...env, CLAX_HOME: home }, stdio: "ignore" });
+    // A short pause between polls, so the loop polls the stopped daemon
+    // several times in the wait below (the default pause is pinned by the
+    // tests that count INJECT_RETRY_MS timers).
+    const injectRetryMs = 250;
     try {
       await ensure(home, { env, port: 0 });
       const pi = new FakePi();
-      claxExtension({ home, env, port: 0 })(pi.api);
+      claxExtension({ home, env, port: 0, injectRetryMs })(pi.api);
       const { ctx } = fakeContext(scratch, "pi-inject-restart");
       loaded.push({ pi, ctx });
       await pi.emit("session_start", {}, ctx);
       stop();
-      await new Promise(r => setTimeout(r, 6000));
+      await new Promise(r => setTimeout(r, 6 * injectRetryMs));
       expect(existsSync(join(home, "daemon.json"))).toBe(false);
       expect(await discover(home)).toBeNull();
 

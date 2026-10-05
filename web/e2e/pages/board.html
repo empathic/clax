@@ -14,7 +14,7 @@
 </style>
 </head>
 <body>
-<section class="card" id="goals"><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat.</p><button class="comment">Comment</button> <button class="note">Add a note</button></section>
+<section class="card" id="goals"><h2>Quarterly goals</h2><p>Grow revenue and keep costs flat.</p><button class="comment" disabled>Comment</button> <button class="note" disabled>Add a note</button></section>
 <canvas id="canvas" width="300" height="120"></canvas>
 <p id="status" role="status">waiting</p>
 <div id="spacer" style="height: 1600px"></div>
@@ -31,6 +31,9 @@
       status.textContent = "created " + typeof r.threadId;
     } catch (e) { status.textContent = e.code; }
   };
+  // The buttons stay disabled until their handlers are set: a click before
+  // the capability is ready would do nothing.
+  for (const b of card.querySelectorAll("button")) b.disabled = false;
   const canvas = document.getElementById("canvas");
   const g = canvas.getContext("2d");
   g.fillStyle = "#c2410c"; g.fillRect(20, 20, 60, 60);

@@ -3,12 +3,12 @@
 # line prefixed with its gate's name.
 #
 # The web UI is built and its unit tests run first, alone. The other
-# independent gates then run concurrently in lanes (web, Rust, the release
-# build, Pi, scripts), each printing a line per gate as it finishes. The perf
-# gates then run alone, in their quick mode, on the one release binary, and
-# web e2e runs last. At the end a table gives each gate's time and the total;
-# times are reported, never judged. `just perf` runs the perf gates' full
-# versions.
+# independent gates then run concurrently in lanes (web e2e, Rust, web, the
+# release build, Pi, scripts), each printing a line per gate as it finishes;
+# the lanes that take longest start first. The perf gates then run alone, in
+# their quick mode, on the one release binary. At the end a table gives each
+# gate's time and the total; times are reported, never judged. `just perf`
+# runs the perf gates' full versions.
 #
 # The script is functions and one call at its end, so bash reads all of it
 # before running any of it: editing this file during a run cannot break that
@@ -42,8 +42,9 @@ if [ -n "${CI:-}" ]; then PLAYWRIGHT_INSTALL="npx playwright install --with-deps
 export PLAYWRIGHT_INSTALL
 # One debug `clax` (no test features) for every gate that runs the binary:
 # the Rust tests that cannot name it (CLAX_TEST_BIN), the plugin wrapper
-# test and the comment loop. A copy, so a later `cargo build` that replaces
-# target/debug/clax cannot pull it from under a running gate.
+# test, the comment loop, the Pi tests and the browser tests' daemons. A
+# copy, so a later `cargo build` that replaces target/debug/clax cannot pull
+# it from under a running gate.
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
 # The one release `clax` the perf gates share.
 export CLAX_PERF_BIN="$GATES_TMP/release/clax"
@@ -63,11 +64,15 @@ lane_pi() {
 lane_scripts() {
     run "justfile"              scripts/test-justfile.sh &&
     run "release scripts"       scripts/test-release.sh &&
-    run "release installer"     scripts/test-install.sh &&
     run "tool hook gate"        scripts/test-tool-hook.sh
 }
+lane_installer() {
+    run "release installer"     scripts/test-install.sh
+}
+lane_dev() {
+    run "dev scripts"           scripts/test-dev.sh
+}
 lane_plugins() {
-    run "dev scripts"           scripts/test-dev.sh &&
     run "plugins"               scripts/test-plugins.sh
 }
 lane_binary() {
@@ -75,27 +80,48 @@ lane_binary() {
     run "plugin wrapper"        scripts/test-ensure-clax.sh &&
     run "comment loop"          scripts/smoke-comment-loop.sh
 }
+# Web e2e starts once cargo has built and checked everything (at once on a
+# warm cache), so no compile loads the machine under the browser tests.
+lane_e2e() {
+    run "playwright browser"    bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null' &&
+    await tests-built rust &&
+    await linted lint &&
+    await release-built release &&
+    run "web e2e"               bash -c 'cd web && npm run e2e'
+}
+# The Rust tests are built before clippy runs, so they start running as soon
+# as they can: cargo builds one thing at a time in target/, and clippy's
+# checks share no artifacts with the test build.
 lane_rust() {
     run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && cp target/debug/clax "$CLAX_TEST_BIN"' &&
     mark clax-built &&
+    if cargo nextest --version >/dev/null 2>&1; then
+        run "build tests"       cargo nextest run --cargo-quiet --workspace --no-run &&
+        mark tests-built &&
+        run "cargo nextest"     cargo nextest run --workspace --no-fail-fast
+    else
+        run "build tests"       cargo test -q --workspace --no-run &&
+        mark tests-built &&
+        run "cargo test"        bash -c 'echo "WARNING: cargo-nextest is not installed, so the Rust tests ran under cargo test (slower); install it with: cargo install --locked cargo-nextest"; cargo test --workspace'
+    fi
+}
+lane_lint() {
     # No `unsafe` in any Rust source (the `unsafe_code` lint forbids it too);
     # a line counts only where the word appears before any `//` comment.
     run "no unsafe code"        bash -c 'find crates -name "*.rs" -not -path "*/target/*" -print0 | xargs -0 perl -ne '"'"'(my $c = $_) =~ s{//.*}{}; if ($c =~ /\bunsafe\b/) { print "$ARGV:$.: $_"; $bad = 1 } close ARGV if eof; END { exit($bad ? 1 : 0) }'"'"'' &&
     run "cargo fmt --check"     cargo fmt --all -- --check &&
+    await tests-built rust &&
     run "cargo clippy"          cargo clippy --workspace --all-targets -- -D warnings &&
     # The libraries and binaries alone, so without the test-only features
     # that dev-dependencies turn on. Clippy denies rustc's warnings too, and
     # shares the flags and dependency builds of the pass above, which a
     # `RUSTFLAGS=-Dwarnings cargo check` would not.
     run "clippy (no test features)" cargo clippy --workspace -- -D warnings &&
-    if cargo nextest --version >/dev/null 2>&1; then
-        run "cargo nextest"     cargo nextest run --workspace --no-fail-fast
-    else
-        run "cargo test"        bash -c 'echo "WARNING: cargo-nextest is not installed, so the Rust tests ran under cargo test (slower); install it with: cargo install --locked cargo-nextest"; cargo test --workspace'
-    fi
+    mark linted
 }
 lane_release() {
-    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && cp target/release/clax "$CLAX_PERF_BIN"'
+    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && cp target/release/clax "$CLAX_PERF_BIN"' &&
+    mark release-built
 }
 
 # The web UI is built first: a debug build serves web/dist from disk and a
@@ -106,14 +132,20 @@ run "web npm ci"            scripts/npm-ci-stamped.sh web --silent || exit 1
 run "web build"             scripts/build-web.sh || exit 1
 run "web unit"              bash -c 'cd web && npm test -- --reporter=dot' || exit 1
 
-echo "quality gates: concurrent lanes (web, Pi, scripts, Rust, release build)"
-lane web lane_web
+# Web e2e runs beside the other lanes: they wait mostly on processes and
+# sockets, not the CPU, while the browser tests need the CPU.
+echo "quality gates: concurrent lanes (web e2e, Rust, web, Pi, scripts, release build)"
+lane e2e lane_e2e
 lane rust lane_rust
-lane release lane_release
-lane pi lane_pi
+lane installer lane_installer
 lane binary lane_binary
+lane dev lane_dev
 lane scripts lane_scripts
+lane pi lane_pi
+lane web lane_web
 lane plugins lane_plugins
+lane lint lane_lint
+lane release lane_release
 FAILED=""
 for entry in $LANES; do
     if ! wait "${entry%%:*}"; then FAILED="$FAILED ${entry#*:}"; fi
@@ -127,12 +159,10 @@ fi
 
 # The perf gates measure latency, so they run alone, one at a time; their
 # quick modes keep the full runs' budgets and idle-baseline scaling.
-echo "quality gates: perf gates and web e2e, one at a time"
+echo "quality gates: perf gates, one at a time"
 run "daemon latency"        scripts/perf-daemon.sh --quick || exit 1
 run "realtime clients"      scripts/perf-clients.sh --quick || exit 1
-run "playwright browser"    bash -c 'cd web && $PLAYWRIGHT_INSTALL >/dev/null' || exit 1
 run "time to usable"        bash -c 'cd web && CLAX_PERF_QUICK=1 npm run perf' || exit 1
-run "web e2e"               bash -c 'cd web && npm run e2e' || exit 1
 echo "all gates passed"
 }
 
@@ -223,14 +253,7 @@ finish() {
         echo
         echo "gate times (reported only; a slow gate never fails the run):"
         awk -F'\t' '{ printf "  %-30s %7ss%s\n", $1, $2, ($3 == 0 ? "" : "  (failed)") }' "$GATES_TMP/times"
-        perl -e '
-            my ($start, $end, $file) = @ARGV;
-            my $e2e = 0;
-            open my $f, "<", $file or die;
-            while (<$f>) { my @c = split /\t/; $e2e += $c[1] if $c[0] eq "web e2e" }
-            printf "  %-30s %7.1fs\n", "total (wall clock)", $end - $start;
-            printf "  %-30s %7.1fs\n", "total without web e2e", $end - $start - $e2e if $e2e;
-        ' "$START" "$(now)" "$GATES_TMP/times"
+        perl -e 'printf "  %-30s %7.1fs\n", "total (wall clock)", $ARGV[1] - $ARGV[0]' "$START" "$(now)"
     fi
     rm -rf "$GATES_TMP" "$LOCK"
     exit "$rc"

@@ -1,6 +1,6 @@
 import { type Page } from "@playwright/test";
 import { readFileSync, existsSync } from "node:fs";
-import { test, expect, type Daemon, api, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, publishAs, registerSession, setName } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -24,6 +24,7 @@ for (const mode of ["subdomain", "sandbox"] as const) test(`${mode}: comment in 
   const frame = await contentFrame(page, artifact.id, 1);
   expect(frame.url()).toContain(mode === "subdomain" ? `${artifact.id}.localhost:` : `/c/${artifact.id}/v/1/`);
   await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await commentModeIn(frame);
   await frame.locator("h2").hover();
   await expect(frame.locator("clax-overlay .o")).toBeVisible();
   await frame.locator("h2").click();

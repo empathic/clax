@@ -20,7 +20,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
 <h1>Ask about this page</h1>
 <p id="status" class="muted">loading</p>
 <textarea id="prompt" aria-label="Prompt">What is a haiku?</textarea>
-<p><button id="ask">Ask</button> <button id="stop">Stop</button> <button id="tool">Ask with a tool</button></p>
+<p><button id="ask" disabled>Ask</button> <button id="stop" disabled>Stop</button> <button id="tool" disabled>Ask with a tool</button></p>
 <pre id="out"></pre>
 <p class="muted">updates <span id="updates">0</span> · tool runs <span id="tool-runs">0</span> · <span id="note"></span></p>
 <pre id="kept"></pre>
@@ -61,6 +61,9 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; }
   document.getElementById("tool").onclick = () => ask({
     tools: [{ name: "getColor", description: "Returns the page's accent colour name.", execute: () => { document.getElementById("tool-runs").textContent = String(++runs); return "teal"; } }],
   });
+  // The buttons stay disabled until their handlers are set: a click before
+  // the capability is ready would do nothing.
+  for (const id of ["ask", "stop", "tool"]) document.getElementById(id).disabled = false;
 })();
 </script>
 </body>

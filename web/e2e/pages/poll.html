@@ -15,7 +15,7 @@
 <body data-votes="0">
 <h1>Lunch poll</h1>
 <p>Tacos: <span id="count"></span> votes</p>
-<button id="vote">Vote for tacos</button>
+<button id="vote" disabled>Vote for tacos</button>
 <p id="status" role="status"></p>
 <script>
 const SOURCE = document.currentScript.textContent;
@@ -23,12 +23,14 @@ const STYLE = document.querySelector("style").textContent;
 const votes = Number(document.body.dataset.votes);
 document.getElementById("count").textContent = String(votes);
 function render(n) {
-  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Lunch Poll</title>\n<style>" + STYLE + "</style>\n</head>\n<body data-votes=\"" + n + "\">\n<h1>Lunch poll</h1>\n<p>Tacos: <span id=\"count\"></span> votes</p>\n<button id=\"vote\">Vote for tacos</button>\n<p id=\"status\" role=\"status\"></p>\n<script>" + SOURCE + "</scr" + "ipt>\n</body>\n</html>\n";
+  return "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n<title>Lunch Poll</title>\n<style>" + STYLE + "</style>\n</head>\n<body data-votes=\"" + n + "\">\n<h1>Lunch poll</h1>\n<p>Tacos: <span id=\"count\"></span> votes</p>\n<button id=\"vote\" disabled>Vote for tacos</button>\n<p id=\"status\" role=\"status\"></p>\n<script>" + SOURCE + "</scr" + "ipt>\n</body>\n</html>\n";
 }
 (async () => {
   const artifact = await claude.use("artifact");
+  // The button stays disabled until its handler is set: a click before
+  // the capability is ready would do nothing.
   const button = document.getElementById("vote");
-  if (!artifact) { button.disabled = true; return; }
+  if (!artifact) return;
   button.onclick = async () => {
     button.disabled = true;
     try {
@@ -39,6 +41,7 @@ function render(n) {
       button.disabled = false;
     }
   };
+  button.disabled = false;
 })();
 </script>
 </body>

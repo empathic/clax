@@ -106,16 +106,19 @@ bounded() {
         sleep "$limit" &
         s=$!
         wait "$s"
+        : > "$dir/timed-out"
         kill -KILL "$p"
     ) > /dev/null 2>&1 &
     w=$!
     wait "$p"
     RUN_RC=$?
-    if kill -0 "$w" 2>/dev/null; then
+    # The watcher marks the cut-off before it kills: once it has killed, it
+    # may still be running when this wait returns.
+    if [ -e "$dir/timed-out" ]; then
+        RUN_RC=124
+    else
         kill "$w" 2>/dev/null
         wait "$w" 2>/dev/null
-    else
-        RUN_RC=124
     fi
     RUN_OUT="$(cat "$dir/out" 2>/dev/null)"
     RUN_ERR="$(cat "$dir/err" 2>/dev/null)"

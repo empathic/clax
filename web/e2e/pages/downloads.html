@@ -13,8 +13,8 @@
 </head>
 <body>
 <h1>Quarterly numbers</h1>
-<button id="csv">Download CSV</button>
-<button id="exe">Download installer</button>
+<button id="csv" disabled>Download CSV</button>
+<button id="exe" disabled>Download installer</button>
 <p id="status" role="status"></p>
 <script>
 (async () => {
@@ -27,6 +27,9 @@
   };
   document.getElementById("csv").onclick = () => save("q3 report.csv", "quarter,revenue\nQ3,120\n");
   document.getElementById("exe").onclick = () => save("setup.exe", new Uint8Array([77, 90]));
+  // The buttons stay disabled until their handlers are set: a click before
+  // the capability is ready would do nothing.
+  for (const id of ["csv", "exe"]) document.getElementById(id).disabled = false;
 })();
 </script>
 </body>

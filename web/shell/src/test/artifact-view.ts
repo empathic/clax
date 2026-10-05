@@ -32,6 +32,24 @@ afterEach(() => { for (const g of gestureModules) g.unwatchShell(); gestureModul
 export const mountedViews = new Set<() => void>();
 afterEach(() => { for (const stop of mountedViews) stop(); mountedViews.clear(); });
 
+/** Loads each content frame put under `root`, as a browser does and jsdom
+ * does not: the view opens its stream once the frame has loaded, and
+ * otherwise only after `STREAM_WAIT_MS`. The load comes as the frame is
+ * inserted, before any hello a test sends it. */
+export function loadFrames(root: Element): void {
+  const seen = new WeakSet<Element>();
+  const load = () => {
+    for (const f of root.querySelectorAll("iframe.frame")) {
+      if (seen.has(f)) continue;
+      seen.add(f);
+      f.dispatchEvent(new Event("load"));
+    }
+  };
+  const mo = new MutationObserver(load);
+  mo.observe(root, { childList: true, subtree: true });
+  afterEach(() => mo.disconnect());
+}
+
 /** Answers the comment routes (no threads, an anonymous viewer) unless `comments` is given; everything else goes to `fetchImpl`. */
 export async function mountView(fetchImpl: (url: string, init?: RequestInit) => Promise<Response>, comments?: (url: string, init?: RequestInit) => Promise<Response>, file?: string, pinned: number | null = null) {
   vi.stubGlobal("SharedWorker", FakeWorker);
@@ -49,6 +67,7 @@ export async function mountView(fetchImpl: (url: string, init?: RequestInit) => 
   gestureModules.add(gesture);
   const root = document.createElement("div");
   document.body.appendChild(root);
+  loadFrames(root);
   const view = mountArtifactView(root, { id: ID, pinnedVersion: pinned, file });
   let stopped = false;
   const stop = () => { if (!stopped) { stopped = true; mountedViews.delete(stop); view.unmount(); } };

@@ -17,8 +17,8 @@
 <h1>Team tracker</h1>
 <form id="new"><input id="title" aria-label="New task" placeholder="New task"> <button>Add</button></form>
 <ul id="tasks"></ul>
-<p><label>My private note <input id="note" aria-label="Private note"></label> <button id="save-note">Save note</button></p>
-<p><button id="lock">Lock the board</button></p>
+<p><label>My private note <input id="note" aria-label="Private note"></label> <button id="save-note" disabled>Save note</button></p>
+<p><button id="lock" disabled>Lock the board</button></p>
 <p id="status" role="status">loading</p>
 <script>
 (async () => {
@@ -49,6 +49,9 @@
     try { await db.doc("settings/board").set({ locked: true }); status.textContent = "locked"; }
     catch (e) { status.textContent = "lock " + e.code; }
   };
+  // The buttons stay disabled until their handlers are set: a click before
+  // the capability is ready would do nothing.
+  for (const id of ["save-note", "lock"]) document.getElementById(id).disabled = false;
 })();
 </script>
 </body>

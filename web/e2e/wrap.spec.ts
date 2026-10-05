@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, contentFrame, openArtifact, publish, publishWith } from "./fixtures";
+import { test, expect, type Daemon, commentModeIn, contentFrame, openArtifact, publish, publishWith } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -111,6 +111,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const id = artifact.id;
     const f = await openArtifact(page, d.base, id, 1, mode);
     await page.getByRole("button", { name: "Comment", exact: true }).click();
+    await commentModeIn(f);
     await f.locator("h2").hover();
     await f.locator("h2").click();
     const composer = page.locator(".composer");

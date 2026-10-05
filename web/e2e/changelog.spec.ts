@@ -25,6 +25,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishAs(d.base, d.token, s.id, `Changelog ${mode}`, { "index.html": PAGE });
     await openArtifact(page, d.base, artifact.id, 1, mode);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
+    // The viewer was made behind the shell's back, which learns of them as
+    // the page loads again, and then marks v1 seen.
+    await page.reload();
+    await contentFrame(page, artifact.id, 1);
     await expect.poll(() => seenOf(page, artifact.id)).toBe(1);
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { note: "Two columns", addresses: [tid] });
     await page.getByRole("button", { name: "Reload" }).click();
@@ -68,6 +72,11 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const { artifact } = await publishAs(d.base, d.token, s.id, `Jump ${mode}`, { "index.html": PAGE });
     await openArtifact(page, d.base, artifact.id, 1, mode);
     const tid = await commentAs(page, artifact.id, "alex", "Two columns");
+    // The viewer was made behind the shell's back, which learns of them as
+    // the page loads again, and then marks v1 seen.
+    await page.reload();
+    await contentFrame(page, artifact.id, 1);
+    await expect.poll(() => seenOf(page, artifact.id)).toBe(1);
     await publishNext(d.base, d.token, s.id, artifact.id, 1, { addresses: [tid] });
     // Below 900px the sidebar starts closed, so no card is on screen long
     // enough to count as looked at while the pinned view waits.

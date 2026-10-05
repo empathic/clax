@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, existsSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { advance } from "./time";
+import { advance, quietEval } from "./time";
 
 /** Playwright's `expect`, whose `poll` checks again after 10, 20 and 50 ms,
  * then every 100 ms (Playwright's own waits 100, 250, 500 ms, then every
@@ -172,11 +172,32 @@ export async function skewWorking(base: string, token: string, secs: number) {
 
 export type FrameMode = "subdomain" | "sandbox";
 
-/** The content frame showing version `n` of artifact `id`, in either frame mode. */
+/** The content frame showing version `n` of artifact `id`, in either frame
+ * mode, once its document has been parsed (a test that reads or scrolls the
+ * page at once would otherwise race the parser). */
 export async function contentFrame(page: Page, id: string, n: number): Promise<Frame> {
   const url = new RegExp(`(${id}\\.localhost:\\d+/v/${n}/|/c/${id}/v/${n}/)$`);
   await expect.poll(() => page.frame({ url }) !== null, { timeout: 10_000 }).toBe(true);
-  return page.frame({ url })!;
+  const frame = page.frame({ url })!;
+  await frame.waitForLoadState("domcontentloaded");
+  return frame;
+}
+
+/** Waits until `page`'s view hears the daemon's events as they happen: its
+ * stream's topics are live (`claxStreamLive`, shell/src/stream.ts), read
+ * without granting a gesture. A view whose stream opens after an event
+ * catches up by refetching, and a version a page published then is offered
+ * as Reload rather than followed; a test of how open views react to an event
+ * waits for this before causing it. */
+export async function streamLive(page: Page): Promise<void> {
+  await expect.poll(() => quietEval<number>(page, "window.claxStreamLive ?? 0")).toBeGreaterThan(0);
+}
+
+/** Waits until the bridge in `frame` is in comment mode (its crosshair):
+ * the shell's toggle shows the mode before the frame has heard of it, and a
+ * hover or click there before then goes to the page. */
+export async function commentModeIn(frame: Frame): Promise<void> {
+  await expect.poll(() => frame.evaluate(() => document.documentElement.style.cursor)).toBe("crosshair");
 }
 
 /** Opens the artifact's shell in `mode`. `lan: true` answers `/api/token` with

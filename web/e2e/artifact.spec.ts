@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith } from "./fixtures";
+import { test, expect, type Daemon, reach, contentFrame, openArtifact, publishWith, streamLive } from "./fixtures";
 import { advance, settle } from "./time";
 
 let d: Daemon;
@@ -26,6 +26,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     await openArtifact(pb, d.base, artifact.id, 1, mode);
+    for (const p of [pa, pb]) await streamLive(p);
     await expect(a.locator("#count")).toHaveText("0");
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
@@ -59,6 +60,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     }
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     const b = await openArtifact(pb, d.base, artifact.id, 1, mode);
+    for (const p of [pa, pb]) await streamLive(p);
     const isPublish = (r: import("@playwright/test").Response) => r.url().endsWith(`/api/artifacts/${artifact.id}/versions`) && r.request().method() === "POST";
     // Both publishes are held until both are in flight, so they race at the daemon.
     let arrived = 0;
@@ -99,6 +101,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       await p.goto(`${d.base}/a/${artifact.id}/votes/poll.html`);
     }
     const a = await fileFrame(pa, artifact.id, 1, "votes/poll.html");
+    await fileFrame(pb, artifact.id, 1, "votes/poll.html");
+    for (const p of [pa, pb]) await streamLive(p);
     await expect(a.locator("#count")).toHaveText("0");
     await a.locator("#vote").click();
     for (const p of [pa, pb]) {
@@ -148,6 +152,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const [pa, pb] = [await ctx.newPage(), await ctx.newPage()];
     const a = await openArtifact(pa, d.base, artifact.id, 1, mode);
     await openArtifact(pb, d.base, artifact.id, 1, mode);
+    for (const p of [pa, pb]) await streamLive(p);
     await advance(pa, 6_000);
     await a.locator("#vote").click();
     await voteSoon(pb, await contentFrame(pb, artifact.id, 2));

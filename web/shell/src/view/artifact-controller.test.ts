@@ -40,6 +40,15 @@ async function started(seed: Seed = {}) {
   return { ctl, frame: stage.querySelector("iframe")! };
 }
 
+/** The view's stream, once open. The frame loads first, as in a browser
+ * (jsdom loads none), so the stream opens then rather than after
+ * `STREAM_WAIT_MS`. */
+async function streamOf(frame: HTMLIFrameElement) {
+  frame.dispatchEvent(new Event("load"));
+  await vi.waitFor(() => expect(FakeES.last).toBeDefined());
+  return FakeES.last!;
+}
+
 const fromFrame = (win: Window, data: unknown) => dispatchTrusted(window, new MessageEvent("message", { data, origin: "null", source: win }));
 const hello = (win: Window, version = 2) => fromFrame(win, { type: "clax:hello", artifact: ID, version, file: "index.html" });
 
@@ -275,14 +284,13 @@ describe("ArtifactController", () => {
 
   it("seeds the working list from the artifact, and a working event replaces it without touching the data", async () => {
     const w = { key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: ["t1"], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z" };
-    const { ctl } = await started({ artifact: { working: [w] }, attention: { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: null, looked: {} } });
+    const { ctl, frame } = await started({ artifact: { working: [w] }, attention: { addressed: [], addressed_v: null, new_replies: [], open_in: ["t1"], seen: null, looked: {} } });
     expect(ctl.state.get().working).toEqual([w]);
     expect(ctl.state.get().attention?.open_in).toEqual(["t1"]);
     const data = ctl.state.get().data;
-    const deadline = Date.now() + 2000;
-    while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+    const es = await streamOf(frame);
     const next = { ...w, key: "k2", message: "Two columns" };
-    FakeES.last!.emit("working", { type: "working", artifact_id: ID, working: [next] });
+    es.emit("working", { type: "working", artifact_id: ID, working: [next] });
     expect(ctl.state.get().working).toEqual([next]);
     expect(ctl.state.get().data).toBe(data);
     ctl.dispose();
@@ -302,9 +310,8 @@ describe("ArtifactController", () => {
     it(`a refetch that started before a working delta never undoes it (delta ${order} the agents list)`, async () => {
       const w = { key: "k", agent: "a_2222bbbb", harness: "claude", message: null, thread_ids: ["t1"], started_at: "2026-09-30T10:00:00.000Z", last_heartbeat: "2026-09-30T10:00:00.000Z" };
       const agent = { handle: "a_2222bbbb", harness: "claude", live: true };
-      const { ctl } = await started();
-      const deadline = Date.now() + 2000;
-      while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
+      const { ctl, frame } = await started();
+      await streamOf(frame);
       await vi.waitFor(() => expect(ctl.state.get().data).not.toBeNull());
       // From here the artifact's answers wait for the test.
       const held: (() => void)[] = [];
@@ -335,7 +342,7 @@ describe("ArtifactController", () => {
 
   it("reports presence with where this viewer looks, takes presence events, and keeps the location private when sharing is off", async () => {
     const quoted = thread("t1", { anchor: { ...thread("t1").anchor, quote: "Quarterly goals" } });
-    const { ctl } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
+    const { ctl, frame } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
     const reports = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
       .filter(([u, i]) => String(u) === "/api/viewers/me/presence" && (i as RequestInit | undefined)?.method === "PUT")
       .map(([, i]) => JSON.parse((i as RequestInit).body as string));
@@ -349,8 +356,7 @@ describe("ArtifactController", () => {
     await vi.waitFor(() => expect(reports().at(-1)).toEqual({ artifact_id: ID, state: "here" }));
     expect(localStorage.getItem("clax.shareWhere")).toBe("0");
     const people = [{ public_id: "u_2", display_name: "Mia", state: "here", where: "«p95 chart»", since: "x" }];
-    while (!FakeES.last) await new Promise(r => setTimeout(r, 5));
-    FakeES.last.emit("presence", { type: "presence", artifact_id: ID, people });
+    (await streamOf(frame)).emit("presence", { type: "presence", artifact_id: ID, people });
     expect(ctl.state.get().presence).toEqual(people);
     Object.defineProperty(document, "visibilityState", { value: "hidden", configurable: true });
     document.dispatchEvent(new Event("visibilitychange"));
@@ -367,9 +373,7 @@ describe("ArtifactController", () => {
     win.postMessage = ((m: { type: string }) => { posted.push(m); }) as Window["postMessage"];
     hello(win);
     expect(posted.map(m => m.type)).toContain("clax:welcome");
-    const deadline = Date.now() + 2000;
-    while (!FakeES.last && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
-    FakeES.last!.emit("artifact_deleted", { type: "artifact_deleted", artifact_id: ID });
+    (await streamOf(frame)).emit("artifact_deleted", { type: "artifact_deleted", artifact_id: ID });
     await Promise.resolve();
     expect(frame.isConnected).toBe(false);
     // The reactions still pending from the render before the deletion ran
@@ -779,14 +783,12 @@ describe("ArtifactController", () => {
     });
 
     it("drops a thread from the selection when it disappears", async () => {
-      const { ctl } = await started(batchSeed);
+      const { ctl, frame } = await started(batchSeed);
       await vi.waitFor(() => expect(ctl.state.get().threads.length).toBe(2));
       const [t1, t2] = ctl.state.get().threads;
       ctl.toggleSelect(t1, false);
       ctl.toggleSelect(t2, false);
-      // The stream opens once the frame has loaded (or after `STREAM_WAIT_MS`).
-      await vi.waitFor(() => expect(FakeES.last).toBeDefined(), { timeout: 3000 });
-      FakeES.last!.emit("thread_deleted", { type: "thread_deleted", artifact_id: ID, thread_id: "t1" });
+      (await streamOf(frame)).emit("thread_deleted", { type: "thread_deleted", artifact_id: ID, thread_id: "t1" });
       await Promise.resolve();
       expect(ctl.state.get().selection.ids).toEqual(["t2"]);
       ctl.dispose();

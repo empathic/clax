@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, reach, api, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, reach, api, commentModeIn, openArtifact, publish } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -86,6 +86,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(about.locator("#team")).toHaveText("Our team");
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await commentModeIn(about);
     await about.locator("#team").hover();
     await about.locator("#team").click();
     await expect(page.locator(".composer .file-label")).toHaveText("on about.html");

@@ -7,7 +7,7 @@
 </head>
 <body>
 <h1>Publish burst</h1>
-<button id="burst">Publish 12 times</button>
+<button id="burst" disabled>Publish 12 times</button>
 <script>
 (async () => {
   const artifact = await claude.use("artifact");
@@ -15,6 +15,8 @@
     const page = "<!doctype html>\n<html><body><p id=\"done\">republished</p></body></html>\n";
     for (let i = 0; i < 12; i++) artifact.publish(page).catch(() => {});
   };
+  // Enabled once its handler is set: a click before then would do nothing.
+  document.getElementById("burst").disabled = false;
 })();
 </script>
 </body>

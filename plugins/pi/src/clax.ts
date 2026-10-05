@@ -565,6 +565,9 @@ export interface ClaxOptions {
   /** How long `open` waits for the browser opener to exit;
    * [`OPEN_WAIT_MS`] when absent. */
   openWaitMs?: number;
+  /** The injection loop's pause before it polls again;
+   * [`INJECT_RETRY_MS`] when absent. */
+  injectRetryMs?: number;
 }
 
 /** The Clax tools for one Pi session. */
@@ -1075,6 +1078,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     // and any pause at once, leaving no timer behind.
     let live = false;
     let stopInject: (() => void) | undefined;
+    const retryMs = opts.injectRetryMs ?? INJECT_RETRY_MS;
     const startInject = (c: DaemonClient) => {
       if (!live || stopInject) return;
       const abort = new AbortController();
@@ -1094,14 +1098,14 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
             res = await c.pollFeedback("inject", INJECT_WAIT_S, abort.signal);
           } catch {
             if (abort.signal.aborted) return;
-            await pause(INJECT_RETRY_MS);
+            await pause(retryMs);
             continue;
           }
           if (abort.signal.aborted) return;
           if (typeof res.text === "string" && res.text) {
             pi.sendUserMessage(res.text, { deliverAs: "followUp" });
           } else if (Date.now() - started < INJECT_EARLY_MS) {
-            await pause(INJECT_RETRY_MS);
+            await pause(retryMs);
           }
         }
       })();

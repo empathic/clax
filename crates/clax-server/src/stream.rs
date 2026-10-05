@@ -1169,6 +1169,7 @@ mod tests {
         let hub = Hub::new();
         let c = viewer(Level::View, None);
         let n = MAX_DETACHED * 4;
+        let opening = Instant::now();
         let opened: Vec<Opened> = (0..n)
             .map(|_| {
                 let o = hub.open(c.clone(), None);
@@ -1176,6 +1177,7 @@ mod tests {
                 o
             })
             .collect();
+        let open_took = opening.elapsed();
         // Every connection drops at once (a network blip). Each detach must
         // not scan every stream: that is quadratic under the hub's lock.
         let start = Instant::now();
@@ -1183,9 +1185,13 @@ mod tests {
             hub.detach(&o.id, o.epoch);
         }
         let took = start.elapsed();
+        // Detaching costs about half as much as opening (both linear); a
+        // quadratic detach takes seconds. On a busy machine both slow down
+        // alike, so the limit grows with the opening's time past 1.5 s.
+        let limit = Duration::from_millis(1500).max(open_took * 4);
         assert!(
-            took < Duration::from_millis(1500),
-            "{n} detaches took {took:?}"
+            took < limit,
+            "{n} detaches took {took:?} (opening them took {open_took:?})"
         );
         assert_eq!(hub.stats().streams, MAX_DETACHED);
         // The longest detached went first; the newest can still resume.

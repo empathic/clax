@@ -1,5 +1,5 @@
 import { type Browser, type BrowserContext, type CDPSession, type Page } from "@playwright/test";
-import { test, expect, type Daemon, publish, startDaemon } from "./fixtures";
+import { test, expect, type Daemon, publish, setName, startDaemon } from "./fixtures";
 import { advance, settle } from "./time";
 
 // As in Chrome: the new headless mode, with the back/forward cache on
@@ -23,22 +23,29 @@ async function eventStreams(): Promise<number> {
 }
 
 /** Every request the browser's shared workers make (Playwright does not
- * report them), through the DevTools protocol. */
+ * report them), through the DevTools protocol, from the moment `enabled`
+ * resolves: a worker's own requests before then can go unseen. */
 async function workerRequests(browser: Browser) {
   const cdp = await browser.newBrowserCDPSession();
   const urls: string[] = [];
   let n = 1;
+  const enables = new Set<number>();
+  let enabled!: () => void;
+  const ready = new Promise<void>(r => { enabled = r; });
   cdp.on("Target.receivedMessageFromTarget", e => {
     const m = JSON.parse(e.message);
     if (m.method === "Network.requestWillBeSent") urls.push(`${m.params.request.method} ${m.params.request.url}`);
+    if (enables.has(m.id)) enabled();
   });
   cdp.on("Target.targetCreated", async e => {
     if (e.targetInfo.type !== "shared_worker") return;
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: e.targetInfo.targetId, flatten: false });
-    await cdp.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id: n++, method: "Network.enable", params: {} }) });
+    const id = n++;
+    enables.add(id);
+    await cdp.send("Target.sendMessageToTarget", { sessionId, message: JSON.stringify({ id, method: "Network.enable", params: {} }) });
   });
   await cdp.send("Target.setDiscoverTargets", { discover: true });
-  return { urls, close: () => cdp.detach() };
+  return { urls, enabled: ready, close: () => cdp.detach() };
 }
 
 /** A page's count of `live` messages: its topics went live that many times. */
@@ -140,12 +147,17 @@ test("the stream carries no token in its URL, and the events cookie gives it the
   const page = await ctx.newPage();
   await page.goto(`${d.base}/a/${a}`);
   await expect.poll(() => live(page)).toBeGreaterThan(0);
-  await expect.poll(() => reqs.urls.some(u => u.includes("/api/stream"))).toBe(true);
+  // The worker may have opened its stream before its network events were on:
+  // a new viewer name reopens every tab's stream, now in view.
+  await reqs.enabled;
+  const before = reqs.urls.filter(u => u.includes("/api/stream")).length;
+  await setName(page, "Wren");
+  await expect.poll(() => reqs.urls.filter(u => u.includes("/api/stream")).length).toBeGreaterThan(before);
   expect(reqs.urls.join(" ")).not.toContain(d.token);
   expect(reqs.urls.join(" ")).not.toContain("token=");
   // A worker sends no Authorization header: the cookie made this stream the
   // owner's browser's (`admin`, with its viewer cookie).
-  expect((await streams()).levels).toEqual(["admin"]);
+  await expect.poll(async () => (await streams()).levels).toEqual(["admin"]);
   const ev = (await ctx.cookies()).filter(c => c.name === `clax_events_${new URL(d.base).port}`);
   expect(ev.map(c => c.path).sort()).toEqual(["/api/events", "/api/stream"]);
   for (const c of ev) {

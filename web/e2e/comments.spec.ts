@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, publish, publishAs, registerSession, setName } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, publish, publishAs, registerSession, setName } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -17,6 +17,7 @@ async function pickHeading(page: Page, id: string, n: number) {
   const frame = await contentFrame(page, id, n);
   await page.getByRole("button", { name: "Comment", exact: true }).click();
   await expect(page.getByRole("button", { name: "Comment", exact: true })).toHaveAttribute("aria-pressed", "true");
+  await commentModeIn(frame);
   await frame.locator("h2").hover();
   await frame.locator("h2").click();
   await expect(page.locator(".composer")).toBeVisible();
@@ -54,6 +55,7 @@ test("range thread quotes the selected text", async ({ page }) => {
   await page.goto(`${d.base}/a/${artifact.id}`);
   const frame = await contentFrame(page, artifact.id, 1);
   await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await commentModeIn(frame);
   const box = (await frame.locator("p").boundingBox())!;
   await page.mouse.move(box.x + 3, box.y + box.height / 2);
   await page.mouse.down();

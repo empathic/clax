@@ -210,6 +210,14 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   `artifact:<aid>` topic carries a thread's newest comment and its count;
   a view that missed a comment, or holds one deleted or edited before the
   newest, fetches that thread whole.
+- **A view that missed a page's publish offers Reload rather than following
+  it.** A page's publish (`artifact.publish`) moves every open unpinned view
+  to the new version when the view hears its `version` event, which carries
+  `by_page`. A view whose stream goes live only after that publish (one
+  opened a moment before it) learns of the version from the refetch on
+  `ready`, which cannot tell who published, and offers Reload in the top
+  bar. The browser tests wait for each view's stream before a vote
+  (`streamLive` in `web/e2e/fixtures.ts`).
 - **A hidden tab's catch-up is a refetch.** A tab that left the connection
   after 30 s hidden fetches its state again when it shows; the shared
   connection has no per-tab resume point. Per-topic rings in the worker
@@ -258,9 +266,6 @@ on rerun; each is parked for a fix:
   history entry": failed about 1 run in 120 under load; passed 10 of 10 alone.
 - `clax-hooks` golden `no_daemon_prints_nothing_and_starts_none`:
   timing under load.
-- `web/e2e/artifact.spec.ts`, "sandbox: a second viewer's vote 2 s after
-  another viewer's vote reloaded it publishes": the reloaded frame did not
-  appear within 30 s once in a full gates run; passed 10 of 10 alone.
 - `web/e2e/echo-chrome.spec.ts`, "subdomain: the artifact deleted while the
   viewer types in it leaves the keyboard free: Tab reaches the shell's
   controls": took 6.2 min in one gates run; passed 5 of 5 alone.
@@ -270,36 +275,48 @@ it runs, so concurrent runs and mid-run edits no longer break it.
 
 ## Gate speed
 
-`scripts/quality_gates.sh` runs everything but web e2e in about a minute and
-a half on a warm cache and an otherwise idle machine. What is left:
+`scripts/quality_gates.sh` runs in about 110 s on a warm cache and an
+otherwise idle machine: the web build and unit tests (about 10 s), then the
+lanes with web e2e beside the rest (about 55 s), then the perf gates alone
+(about 41 s). What is left:
 
-- **The critical path is the Rust tests and the Pi tests, about 30 s each.**
-  The slowest Rust tests wait out real production timeouts on purpose:
-  `clax-cli` `client::tests` (the 7 s shutdown grace before SIGTERM, the 5 s
-  readiness deadline), `clax-hooks` golden
+- **macOS assesses each new executable before it first runs.** Gatekeeper
+  scans every unsigned executable a process tree runs for the first time
+  (`GK performScan` in syspolicyd's log): an XProtect analysis and an online
+  notarization lookup, about 0.15 s for a small script and 1.35 s for the
+  80 MB debug `clax`. The verdict is kept per process tree, and cargo and
+  nextest each start a new one, so every Rust test that runs `clax` pays the
+  1.35 s once (about 150 tests: most of the 260 s the Rust tests add up to),
+  and the script tests pay for each fake binary and copied script they
+  make. syspolicyd handles these one at a time, so the lanes wait on each
+  other through it while the CPU stays mostly idle (2 to 3 of 12 cores in
+  use). Terminals listed under System Settings, Privacy & Security,
+  Developer Tools are not assessed; that is a setting of the machine, not
+  of the repository. A smaller debug binary would shorten each scan
+  (`opt-level = 1` gives 32 MB and 0.76 s, at twice the cold build time).
+- **The slowest Rust tests wait out real production timeouts on purpose:**
+  `clax-cli` `client::tests` (the 7 s shutdown grace before SIGTERM, the
+  5 s readiness deadline), `clax-hooks` golden
   `session_end_gives_up_within_codexs_three_second_cap`, and the `clax-mcp`
-  `channel` tests' 3 to 5 s windows that show no second event arrives. The
-  Pi tests' longest holds the start lock for 12 s to show `ensure` outwaits
-  the old 10 s limit, and another waits 6 s to show the injection loop never
-  starts a stopped daemon.
+  `channel` tests' 3 to 5 s windows that show no second event arrives.
+- **The Pi `ensure` test holds the start lock for 12 s** to show `ensure`
+  outwaits the old 10 s limit; it runs in a file of its own, beside the
+  extension's tests, which take about as long.
+- **The plugin wrapper test waits out the 5 s `--version` limit** once,
+  with a binary that hangs.
 - **A bare `cargo nextest run` races on `target/debug/clax`.** The tests that
   cannot name the binary (`clax-hooks` golden, `clax-mcp` shim and channel)
   build it when `CLAX_TEST_BIN` is unset, once per process under nextest, and
   each build replaces `target/debug/clax` while other tests run it. `just
   test` and the gates set `CLAX_TEST_BIN`; a nextest setup script could do it
-  for any run once that feature is stable.
-- **The lanes slow each other.** Next to the Rust tests the script tests take
-  two to three times their time alone, and after a Rust change the release
-  build runs alongside the tests too. The release build could wait for the
-  tests, at the cost of a slower run whenever the Rust code changed.
-- **The shell's unit tests run alone** (about 11 s) because several are
+  for any run once that feature is stable. The browser tests' daemons use
+  `CLAX_TEST_BIN` when it is set for the same reason, since they now run
+  beside the Rust tests.
+- **The shell's unit tests run alone** (about 9 s) because several are
   timing-sensitive (see "Tests" above); once those are fixed they can join
   the lanes.
-- **Time to usable starts its daemon with `cargo run`**
-  (`web/e2e/fixtures.ts`), not the run's prebuilt binary.
 - **The quick perf gates keep the full seed and client count** and shorten
   only their windows (and the daemon gate keeps three rounds, so one noisy
   round cannot fail it). With the attention queries' planner hints removed,
   the quick daemon latency gate failed `attention alone` at about 460 ms
   against its 50 ms limit.
-

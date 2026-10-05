@@ -1,7 +1,7 @@
 import { createServer, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, openArtifact, publish } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, contentFrame, openArtifact, publish } from "./fixtures";
 import { settle } from "./time";
 
 let d: Daemon;
@@ -32,6 +32,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const toggle = page.getByRole("button", { name: "Comment", exact: true });
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await commentModeIn(about);
     await about.locator("h2").hover();
     await about.locator("h2").click();
     const composer = page.locator(".composer");

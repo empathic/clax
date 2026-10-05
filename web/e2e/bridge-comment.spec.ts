@@ -1,5 +1,5 @@
 import { type Page } from "@playwright/test";
-import { test, expect, type Daemon, expectVisibleClip, last, publish, record } from "./fixtures";
+import { test, expect, type Daemon, commentModeIn, expectVisibleClip, last, publish, record } from "./fixtures";
 
 let d: Daemon;
 test.beforeEach(({ daemon }) => { d = daemon; });
@@ -30,6 +30,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const toggle = page.getByRole("button", { name: "Comment", exact: true });
     await toggle.click();
     await expect(toggle).toHaveAttribute("aria-pressed", "true");
+    await commentModeIn(frame);
     await frame.locator("h2").hover();
     await expect(frame.locator("clax-overlay .o")).toBeVisible();
     expect((await last(page, "clax:hover")).selector).toBe("body > main > h2");

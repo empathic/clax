@@ -1,5 +1,5 @@
 import { type Frame, type Page } from "@playwright/test";
-import { test, expect, type Daemon, api, contentFrame, openArtifact, record, registerSession, nameField, reach } from "./fixtures";
+import { test, expect, type Daemon, api, commentModeIn, contentFrame, openArtifact, record, registerSession, nameField, reach } from "./fixtures";
 import { activationLapsed, advance, quietEval, settle } from "./time";
 
 /** The shell's rules (web/shell/src/caps/gesture.ts): no strict gesture within
@@ -130,8 +130,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(page.locator(".composer")).toHaveCount(0);
     // The viewer's own click on the page's button opens it. The name field
     // sits in the people panel, over the page, so the pointer moves onto the
-    // button first, as a hand's does.
-    await reach(page, f.locator("#b"));
+    // button first, as a hand's does. Within the activation the name field's
+    // click left, that move would let the page's own calls open the composer
+    // (the composer tier's residual, gesture.ts), five of them using up its
+    // opens budget before the click lands; so the viewer rests until it
+    // lapses, and the page, still pulling focus with the pointer on it, opens
+    // nothing before their click. (The button's box is read first, and the
+    // composer counted quietly: a Playwright read grants activation.)
+    const b = (await f.locator("#b").boundingBox())!;
+    await activationLapsed(page);
+    await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 5 });
+    await callsMore(page, 3);
+    expect(await quietEval<number>(page, `document.querySelectorAll(".composer").length`)).toBe(0);
     await f.locator("#b").click();
     await expect(f.locator("#clicked")).toHaveText(JSON.stringify({ opened: true }));
     await expect(page.locator(".composer")).toHaveCount(1);
@@ -314,9 +324,11 @@ async function openReady(page: Page, id: string, mode: "subdomain" | "sandbox") 
   return f;
 }
 
-/** The viewer picks the paragraph (moving there from the shell) and gets the composer. */
+/** The viewer picks the paragraph (moving there from the shell) and gets the
+ * composer, once the page is in comment mode. */
 async function pickPara(page: Page, f: Frame) {
   await page.getByRole("button", { name: "Comment", exact: true }).click();
+  await commentModeIn(f);
   await f.locator("#para").click();
   const composer = page.locator(".composer");
   await expect(composer.locator(".composer-quote")).toContainText("worth a comment");
@@ -667,6 +679,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
         let at: { x: number; y: number };
         if (target === "composer") {
           await page.getByRole("button", { name: "Comment", exact: true }).click();
+          await commentModeIn(f);
           const pb = (await f.locator("#p").boundingBox())!;
           await page.mouse.move(pb.x + 20, pb.y + pb.height / 2, { steps: 8 });
           await page.mouse.down();
