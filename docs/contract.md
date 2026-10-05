@@ -1057,18 +1057,27 @@ request is the owner's when it carries an owner credential:
 
 - the bearer token (the CLI, scripts, and the owner's shell);
 - the events cookie (only the event streams receive it);
-- the owner cookie, `clax_owner_<port>` (`HttpOnly`, host-only, `Path=/`,
-  `SameSite=Lax`): a hash of the token, never the token, set beside the
-  events cookie when the shell on this machine fetches the token (`GET
-  /api/token` from a loopback peer with a literal local `Host`, marked
-  `Sec-Fetch-Site: same-origin`). It counts only on requests the browser
-  does not mark as made from another origin, and a new token voids it.
+- the owner cookie, `clax_owner_<port>` (`HttpOnly`, host-only,
+  `SameSite=Lax`, set twice: `Path=/api` and `Path=/a`): a hash of the
+  token, never the token, set beside the events cookie when the shell on
+  this machine fetches the token (`GET /api/token` from a loopback peer with
+  a literal local `Host`, marked `Sec-Fetch-Site: same-origin`). A new token
+  voids it.
+
+The events and owner cookies count only on a request from this machine (a
+loopback peer and a `Host` of `localhost`, `127.0.0.1` or `[::1]`, the
+rule the token is served by) that the browser does not mark as made from
+another origin: cookies ignore ports, so a page of another local server may
+send them, and a copy replayed from another machine is no one's.
 
 Everyone else (a LAN viewer, or a local browser that never fetched the
-token) is the viewer its `clax_viewer` cookie names, as before. An owner
-credential decides who a request speaks for, not what it may do: the owner
-cookie alone has a viewer's level (`interact` once the owner has a name),
-and only the token raises it (see "Security model").
+token) is the viewer its `clax_viewer` cookie names. That cookie never names
+the owner. When a request carries several `clax_viewer` values (another
+page can set one scoped to a longer path, which is sent first), none is
+trusted: the request names no viewer. An owner credential decides who a
+request speaks for, not what it may do: the owner cookie alone has a
+viewer's level (`interact` once the owner has a name), and only the token
+raises it (see "Security model").
 
 The owner's public ID is stable across browsers and the CLI; its display
 name is the one `PUT /api/viewers/me` sets from any of them (the shell's
@@ -1076,18 +1085,29 @@ name is the one `PUT /api/viewers/me` sets from any of them (the shell's
 any viewer's, is announced at once in the `presence` of every artifact that
 lists the viewer, so every open view shows the new name.
 
+The owner is made on first use. A browser of the owner's makes it, and its
+IDs are that browser's from then on. The token alone reads the owner
+without making one (`GET /api/viewers/me` answers `{"viewer": null}` before
+it exists); acting (a reply, a resolve, a name) makes one, which gives way
+to the first browser claimed below: that browser keeps its user ID, and the
+earlier owner's history, private documents and name move to it.
+
 Existing data: nothing stored before this identity existed tells which
-viewers were the owner's browsers, so none is converted when the daemon
-upgrades. Instead, when a browser's token request carries a `clax_viewer`
-cookie, that viewer is claimed for the owner and the cookie removed: the
-first one claimed becomes the owner (keeping its public ID, name and
-history); a later one is folded into the owner (its comments' author, its
-mentions, the threads it resolved, its seen marks (the higher) and looked-at
-marks (the later), and its name when the owner has none) and removed, so its
-old public ID names no one from then on. Page data that stored that old ID
-(a `data/users/<id>/` document, say) is not rewritten. A viewer the CLI
-kept for itself in `<home>/cli_viewer` is no longer used; the file is
-ignored, and that viewer's past comments keep their author.
+viewers were the owner's browsers, so no existing viewer is ever converted:
+their history stays theirs. From now on the daemon records whether it
+minted a viewer cookie for a request from this machine. When the shell's
+token request carries exactly one `clax_viewer` cookie and it names a
+viewer minted on this machine, that viewer is claimed for the owner and the
+cookie removed: the first one claimed becomes the owner, keeping its public
+ID, name and history, under a new private ID so the old cookie names no
+one; a later one is folded into the owner and removed. Folding moves its
+comments' author, its mentions, the threads it resolved, its seen marks
+(the higher) and looked-at marks (the later), its name when the owner has
+none, and its private documents: each `data/users/<old ID>/...` document
+moves under `data/users/<owner ID>/` with a new version, unless the owner
+already has one at that path, in which case the owner's stays and the old
+one is left where it was. The folded viewer's old public ID names no one
+from then on; it leaves every `presence` list and room at once.
 
 ### Versions, seen marks and attention
 

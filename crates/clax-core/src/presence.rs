@@ -237,6 +237,21 @@ impl Presence {
         changed
     }
 
+    /// Drops `public_id` from every artifact (a viewer that no longer exists:
+    /// it was folded into the owner); returns the artifacts it was on.
+    pub fn forget(&self, public_id: &str) -> Vec<String> {
+        let mut map = self.entries.lock().unwrap();
+        let mut gone = Vec::new();
+        map.retain(|(aid, pid), _| {
+            let keep = pid != public_id;
+            if !keep {
+                gone.push(aid.clone());
+            }
+            keep
+        });
+        gone
+    }
+
     /// Notes lapsed reports (a viewer whose every tab lapsed is `Gone`),
     /// drops viewers gone past [`GONE_KEEP_SECS`], and returns the artifacts
     /// whose view changed.

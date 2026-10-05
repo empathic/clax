@@ -166,11 +166,12 @@ pub async fn assemble(
     s: &AppState,
     route: ShellRoute,
     headers: &HeaderMap,
+    peer: Option<std::net::SocketAddr>,
 ) -> Result<Option<Injected>, ApiError> {
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let who = crate::identity::Identity::of(headers, &s.token);
+    let who = crate::identity::Identity::of(headers, &s.token, peer);
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
     let working = s.working.for_artifact(id.as_str());

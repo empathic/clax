@@ -225,12 +225,17 @@ pub const MIGRATIONS: &[&str] = &[
     // 14: the session a thread was last sent to with `to`. Later viewer
     // comments on the thread follow it while it is live. Never served.
     "ALTER TABLE threads ADD COLUMN target_session_id TEXT;",
-    // 15: the owner identity. One viewer row stands for the person who owns
-    // this install: every browser of theirs, the CLI and any other owner
-    // credential act as it. Nothing stored tells which existing viewers were
-    // the owner's browsers, so none is flagged here; a browser's viewer is
-    // claimed when it next presents an owner credential (`claim_for_owner`).
+    // 15: the owner identity. One viewer row (`owner = 1`) stands for the
+    // person who owns this install: every browser of theirs, the CLI and any
+    // other owner credential act as it. `claimed` marks an owner row that
+    // holds a browser's identity (one made for the CLI first gives way to the
+    // first browser claimed). `minted_local` records whether the daemon minted
+    // the viewer's cookie for a request from this machine (1), from elsewhere
+    // (0), or before this was recorded (NULL); only a locally minted viewer is
+    // ever claimed for the owner, so no existing viewer is.
     "ALTER TABLE viewers ADD COLUMN owner INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE viewers ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE viewers ADD COLUMN minted_local INTEGER;
     CREATE UNIQUE INDEX viewers_one_owner ON viewers(owner) WHERE owner = 1;",
 ];
 
@@ -334,11 +339,13 @@ mod tests {
             .unwrap();
         }
         let st = Store::open(&home).unwrap();
-        assert!(
-            !st.is_owner_viewer(COOKIE).unwrap(),
-            "stored data cannot tell"
+        assert_eq!(st.owner().unwrap(), None, "stored data cannot tell");
+        assert_eq!(
+            st.claim_for_owner(COOKIE).unwrap(),
+            crate::store::viewers::Claim::Nothing,
+            "a viewer of unknown origin is never claimed"
         );
-        let owner = st.owner_viewer().unwrap();
+        let owner = st.owner_viewer(true).unwrap();
         assert_ne!(owner.id, COOKIE);
         assert_eq!(owner.display_name, None);
         // Only one row may be the owner.

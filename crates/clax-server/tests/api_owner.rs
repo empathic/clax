@@ -359,3 +359,246 @@ async fn the_owner_cookie_is_identity_not_the_token() {
         "the token from the owner's browser is admin"
     );
 }
+
+/// A non-loopback IPv4 address of this machine (connecting a UDP socket sends nothing).
+fn non_loopback_ipv4() -> Option<std::net::IpAddr> {
+    let sock = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    sock.connect("10.255.255.255:1").ok()?;
+    let ip = sock.local_addr().ok()?.ip();
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// A daemon on every interface, and a LAN viewer of it: its cookie, minted
+/// for a request from `ip`, and its public ID.
+async fn lan_daemon() -> Option<(TestServer, std::net::IpAddr)> {
+    let Some(ip) = non_loopback_ipv4() else {
+        eprintln!("skipping: this machine has no non-loopback IPv4 address");
+        return None;
+    };
+    let ts = TestServer::spawn_on(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+        |_| {},
+    )
+    .await;
+    Some((ts, ip))
+}
+
+async fn lan_viewer(ts: &TestServer, ip: std::net::IpAddr) -> (String, String) {
+    let res = ts
+        .client
+        .get(format!("http://{ip}:{}/api/viewers/me", ts.addr.port()))
+        .send()
+        .await
+        .unwrap();
+    let cookie = res.headers()["set-cookie"]
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .trim_start_matches("clax_viewer=")
+        .to_string();
+    let v: Value = res.json().await.unwrap();
+    (
+        cookie,
+        v["viewer"]["public_id"].as_str().unwrap().to_string(),
+    )
+}
+
+/// The shell's token request in a browser holding `cookies`.
+async fn shell_token(ts: &TestServer, cookies: &str) -> reqwest::Response {
+    ts.client
+        .get(format!("{}/api/token", ts.base))
+        .header("sec-fetch-site", "same-origin")
+        .header("cookie", cookies)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_planted_lan_cookie_is_never_adopted_as_the_owner() {
+    let Some((ts, ip)) = lan_daemon().await else {
+        return;
+    };
+    let (planted, lan_id) = lan_viewer(&ts, ip).await;
+    // Another local page set `clax_viewer=<the LAN viewer's cookie>`; the
+    // owner's shell then fetches the token.
+    shell_token(&ts, &format!("clax_viewer={planted}")).await;
+    let owner = me(&ts, &owner_browser(&ts, None)).await;
+    assert_ne!(
+        owner["public_id"],
+        lan_id.as_str(),
+        "the LAN viewer did not become the owner"
+    );
+    // The planted cookie still names the LAN viewer alone, never the owner.
+    let as_lan = me(&ts, &format!("clax_viewer={planted}")).await;
+    assert_eq!(as_lan["public_id"], lan_id.as_str());
+    assert_ne!(as_lan["public_id"], owner["public_id"]);
+}
+
+#[tokio::test]
+async fn a_planted_lan_cookie_never_merges_its_comments_into_the_owner() {
+    let Some((ts, ip)) = lan_daemon().await else {
+        return;
+    };
+    let a = ts
+        .publish("T", &[("index.html", "<main><h2>x</h2></main>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    // The owner exists, adopted from a browser of this machine.
+    let chrome = ts.viewer(Some("Alex")).await;
+    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    let (planted, lan_id) = lan_viewer(&ts, ip).await;
+    let t = ts.thread_as(&aid, &planted, "spam").await;
+    shell_token(&ts, &format!("clax_viewer={planted}")).await;
+    let v: Value = ts
+        .get(&format!(
+            "/api/artifacts/{aid}/threads/{}",
+            t["id"].as_str().unwrap()
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        v["thread"]["comments"][0]["author_public_id"],
+        lan_id.as_str()
+    );
+    assert_eq!(
+        me(&ts, &format!("clax_viewer={planted}")).await["public_id"],
+        lan_id.as_str()
+    );
+}
+
+#[tokio::test]
+async fn a_shadowing_viewer_cookie_claims_nothing() {
+    let ts = TestServer::spawn().await;
+    let mine = ts.viewer(Some("Alex")).await;
+    let other = ts.viewer(Some("Other")).await;
+    // A cookie scoped to /api/token is sent before the browser's own.
+    let res = shell_token(
+        &ts,
+        &format!("clax_viewer={}; clax_viewer={}", other.cookie, mine.cookie),
+    )
+    .await;
+    assert!(
+        !res.headers()
+            .get_all("set-cookie")
+            .iter()
+            .any(|v| v.to_str().unwrap().starts_with("clax_viewer=")),
+        "nothing claimed, nothing cleared"
+    );
+    let owner = me(&ts, &owner_browser(&ts, None)).await;
+    assert_ne!(owner["public_id"], mine.public_id.as_str());
+    assert_ne!(owner["public_id"], other.public_id.as_str());
+}
+
+#[tokio::test]
+async fn an_adopted_viewers_old_cookie_names_no_one() {
+    let ts = TestServer::spawn().await;
+    let chrome = ts.viewer(Some("Alex")).await;
+    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    let owner = me(&ts, &owner_browser(&ts, None)).await;
+    assert_eq!(owner["public_id"], chrome.public_id.as_str());
+    // Replaying the old cookie (it reached every localhost port) is not the owner.
+    let replay = me(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    assert_ne!(replay["public_id"], owner["public_id"]);
+    let res = put_name(
+        &ts,
+        Some(&format!("clax_viewer={}", chrome.cookie)),
+        "Mallory",
+    )
+    .await;
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        me(&ts, &owner_browser(&ts, None)).await["display_name"],
+        "Alex"
+    );
+}
+
+#[tokio::test]
+async fn a_lan_peer_replaying_the_owner_cookie_is_not_the_owner() {
+    let Some((ts, ip)) = lan_daemon().await else {
+        return;
+    };
+    let owner = ts.owner_public_id().await;
+    for site in [None, Some("same-origin")] {
+        let mut r = ts
+            .client
+            .get(format!("http://{ip}:{}/api/viewers/me", ts.addr.port()))
+            .header("host", format!("localhost:{}", ts.addr.port()))
+            .header("cookie", ts.owner_cookie());
+        if let Some(s) = site {
+            r = r.header("sec-fetch-site", s);
+        }
+        let v: Value = r.send().await.unwrap().json().await.unwrap();
+        assert_ne!(v["viewer"]["public_id"], owner.as_str(), "{site:?}");
+    }
+}
+
+#[tokio::test]
+async fn the_cli_reads_the_owner_without_making_one_and_a_browser_claimed_later_keeps_its_id() {
+    let ts = TestServer::spawn().await;
+    let a = ts
+        .publish("T", &[("index.html", "<main><h2>x</h2></main>")])
+        .await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let v: Value = ts.get_authed("/api/viewers/me").await.json().await.unwrap();
+    assert_eq!(v["viewer"], Value::Null, "reading makes no owner");
+    // The CLI names the owner and replies before any browser was claimed.
+    assert_eq!(put_name(&ts, None, "Alex").await.status(), 200);
+    let t = ts.thread(&aid, 1, "first").await;
+    let tid = t["id"].as_str().unwrap().to_string();
+    let from_cli = reply(ts.authed(ts.client.post(comments_url(&ts, &aid, &tid)))).await;
+    let cli_id = from_cli["author_public_id"].as_str().unwrap().to_string();
+    // The browser the person used before keeps its user ID; the CLI's
+    // history and name move to it.
+    let chrome = ts.viewer(None).await;
+    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    let owner = me(&ts, &owner_browser(&ts, None)).await;
+    assert_eq!(owner["public_id"], chrome.public_id.as_str());
+    assert_eq!(owner["display_name"], "Alex");
+    let v: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        v["thread"]["comments"][1]["author_public_id"],
+        chrome.public_id.as_str()
+    );
+    let gone: Value = ts
+        .get(&format!("/api/viewers?ids={cli_id}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(gone["viewers"], json!([]));
+}
+
+#[tokio::test]
+async fn a_merged_viewer_leaves_presence_at_once() {
+    let ts = TestServer::spawn().await;
+    let a = ts.publish("T", &[("index.html", "<p>")]).await;
+    let aid = a["artifact"]["id"].as_str().unwrap().to_string();
+    let chrome = ts.viewer(Some("Alex")).await;
+    shell_token(&ts, &format!("clax_viewer={}", chrome.cookie)).await;
+    let safari = ts.viewer(Some("Alex S")).await;
+    let res = ts
+        .client
+        .put(format!("{}/api/viewers/me/presence", ts.base))
+        .header("cookie", format!("clax_viewer={}", safari.cookie))
+        .json(&json!({"artifact_id": aid, "state": "here"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut ev = ts.events(&format!("?artifact={aid}&types=presence")).await;
+    shell_token(&ts, &format!("clax_viewer={}", safari.cookie)).await;
+    let e = tokio::time::timeout(std::time::Duration::from_secs(5), ev.next_named("presence"))
+        .await
+        .expect("the merged viewer's presence is dropped at once");
+    assert_eq!(e["people"], json!([]), "{e}");
+}

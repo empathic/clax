@@ -50,9 +50,20 @@ impl Paint {
 }
 
 /// Unicode format characters that reorder or hide text on a terminal
-/// (bidirectional overrides and isolates, the line and paragraph separators).
+/// (bidirectional marks, overrides and isolates, the Arabic letter mark, the
+/// line and paragraph separators, and the zero-width characters).
 fn is_invisible_control(c: char) -> bool {
-    matches!(c, '\u{200e}' | '\u{200f}' | '\u{2028}' | '\u{2029}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+    matches!(
+        c,
+        '\u{61c}'
+            | '\u{200b}'..='\u{200f}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{202a}'..='\u{202e}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{2069}'
+            | '\u{feff}'
+    )
 }
 
 /// `raw` (text from a person or an agent) safe to print on one line: line
@@ -150,6 +161,17 @@ mod tests {
         let text = clean_text(raw);
         assert!(text.ends_with("evil end\nnext"), "{text}");
         assert!(!text.chars().any(|c| c.is_control() && c != '\n'));
+    }
+
+    #[test]
+    fn the_arabic_letter_mark_and_zero_width_characters_are_shown() {
+        for c in [
+            '\u{61c}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}', '\u{2061}', '\u{2062}',
+            '\u{2063}', '\u{2064}', '\u{feff}',
+        ] {
+            let line = clean_line(&format!("a{c}b"));
+            assert_eq!(line, format!("a\\u{{{:x}}}b", c as u32), "{:x}", c as u32);
+        }
     }
 
     #[test]

@@ -624,33 +624,36 @@ async fn viewer_routes_refuse_foreign_origins() {
 }
 
 #[tokio::test]
-async fn the_first_valid_viewer_cookie_wins() {
+async fn malformed_viewer_cookies_are_skipped_and_disagreeing_ones_name_no_one() {
     let ts = TestServer::spawn().await;
     let a = clax_core::new_ulid();
     let b = clax_core::new_ulid();
-    let res = ts
-        .client
-        .get(format!("{}/api/viewers/me", ts.base))
-        .header(
-            "cookie",
-            format!("clax_viewer=junk; clax_viewer={a}; clax_viewer={b}"),
-        )
-        .send()
-        .await
-        .unwrap();
+    let me = |cookies: String| {
+        let ts = &ts;
+        async move {
+            ts.client
+                .get(format!("{}/api/viewers/me", ts.base))
+                .header("cookie", cookies)
+                .send()
+                .await
+                .unwrap()
+        }
+    };
+    let res = me(format!(
+        "clax_viewer=junk; clax_viewer={a}; clax_viewer={a}"
+    ))
+    .await;
     assert!(res.headers().get("set-cookie").is_none());
     let got = res.json::<Value>().await.unwrap()["viewer"]["public_id"].clone();
-    let only_a: Value = ts
-        .client
-        .get(format!("{}/api/viewers/me", ts.base))
-        .header("cookie", format!("clax_viewer={a}"))
-        .send()
-        .await
-        .unwrap()
-        .json()
-        .await
-        .unwrap();
+    let only_a: Value = me(format!("clax_viewer={a}")).await.json().await.unwrap();
     assert_eq!(got, only_a["viewer"]["public_id"]);
+    // Two values: one was planted by another page (cookies ignore ports, and
+    // a longer path is sent first). Neither is trusted, so neither wins.
+    let res = me(format!("clax_viewer={b}; clax_viewer={a}")).await;
+    let fresh = res.headers().get("set-cookie").is_some();
+    let got = res.json::<Value>().await.unwrap()["viewer"]["public_id"].clone();
+    assert!(fresh, "a new viewer is minted");
+    assert_ne!(got, only_a["viewer"]["public_id"]);
 }
 
 /// The viewer cookie is a credential and the session ID names a live agent:

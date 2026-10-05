@@ -103,12 +103,9 @@ const CASES: Record<string, Case> = {
     },
     async check(f) {
       await expect(f.locator("#facts")).not.toHaveText("waiting");
-      // The person is the owner, one viewer on this daemon whose name other
-      // tests may have set: whatever it is, the page reads it.
-      const owner = (await (await fetch(`${d.base}/api/viewers/me`, { headers: { authorization: `Bearer ${d.token}` } })).json()).viewer.display_name ?? "";
       expect(JSON.parse((await f.locator("#facts").textContent())!)).toEqual({
         isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true,
-        name: owner, meResolved: owner, isMe: true, stranger: "", other: wren, search: 1,
+        name: "", meResolved: "", isMe: true, stranger: "", other: wren, search: 1,
       });
     },
   },
@@ -205,7 +202,9 @@ test("every sample page is a plain claude.ai page with a case here", () => {
 
 for (const mode of ["subdomain", "sandbox"] as const) {
   for (const [file, c] of Object.entries(CASES)) {
-    test(`${mode}: ${file} runs unchanged`, async ({ page }) => {
+    // who.html reads the owner's name, unset only on a daemon of its own
+    // (the owner is one viewer per daemon, and other tests name it).
+    const run = async (page: Page) => {
       const src = c.page ? await c.page() : html(file);
       const { artifact } = await publishWith(d.base, d.token, `${file} ${mode}`, src, c.caps);
       if (file === "tracker.html") {
@@ -215,7 +214,9 @@ for (const mode of ["subdomain", "sandbox"] as const) {
       const f = await openArtifact(page, d.base, artifact.id, 1, mode);
       expect(f.url()).toMatch(frameUrl(mode, artifact.id));
       await c.check(f, page, artifact.id);
-    });
+    };
+    if (file === "who.html") test(`${mode}: ${file} runs unchanged`, async ({ page, freshDaemon }) => { d = freshDaemon; await run(page); });
+    else test(`${mode}: ${file} runs unchanged`, async ({ page }) => run(page));
   }
 }
 

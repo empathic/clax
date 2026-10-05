@@ -255,14 +255,17 @@ SQLite tables (abridged; columns beyond keys are illustrative):
   `collection` its parent path, indexed for queries.
 - `leases(artifact_id, path, holder, expires_at)` for the `db` single-writer
   lease (`acquire({holder})`, 30 s TTL).
-- `viewers(id, public_id, display_name, created_at, owner)` for comment
+- `viewers(id, public_id, display_name, created_at, owner, claimed,
+  minted_local)` for comment
   authors and the `user` capability, keyed by the `clax_viewer` cookie
   (`id`, a ULID). The cookie is the viewer's credential and never appears in
   a response body, event, thread view, comment, or log. `public_id` (`u_` and
   22 lowercase hex digits from 11 random bytes, unique, assigned on
   creation) is how the viewer is named to anyone else. At most one row has
-  `owner = 1`: the owner identity (§6, "The owner identity"), which every
-  owner credential acts as; its `id` is never handed out as a cookie.
+  `owner = 1`: the owner identity (§11, "The owner identity"), which every
+  owner credential acts as; its `id` is never handed out as a cookie, and
+  `claimed` says it holds a browser's identity. `minted_local` records
+  whether the cookie was minted for a request from this machine.
 - `session_env(session_id, codex_home, push_error, push_error_at)`:
   per-session environment the daemon needs to push to a harness;
   `codex_home` is the `CODEX_HOME` the Codex `session_start` hook reported;
@@ -1697,25 +1700,34 @@ live, else gone.
 ### The owner identity
 
 The person who owns the install is one viewer, the owner: a `viewers` row
-with `owner = 1`, made on first use. Every owner credential acts as it, so
-comments, resolves, sends, seen and looked-at marks, presence and the name
-show one author with one public ID:
+with `owner = 1`. Every owner credential acts as it, so comments, resolves,
+sends, seen and looked-at marks, presence and the name show one author with
+one public ID:
 
 - the bearer token (the CLI, scripts, the owner's shell);
 - the events cookie, on the event streams;
 - the owner cookie `clax_owner_<port>` (a SHA-256 of the token under its
-  own label; `HttpOnly`, host-only, `Path=/`, `SameSite=Lax`, five years),
-  which `GET /api/token` sets beside the events cookie when it answers the
-  shell on this machine. It counts only on requests the browser does not
-  mark as from another origin, and a new token voids it.
+  own label; `HttpOnly`, host-only, `SameSite=Lax`, five years, set for
+  `Path=/api` and `Path=/a`, the artifact pages whose bootstrap names the
+  viewer), which `GET /api/token` sets beside the events cookie when it
+  answers the shell on this machine. A new token voids it.
+
+The two cookies count only on a request from this machine (a loopback peer
+and a literal local `Host`, the rule `GET /api/token` serves by) that the
+browser does not mark as made from another origin: cookies ignore ports, so
+another local server's page may send them, and a copy replayed from another
+machine is no one's.
 
 `crate::identity::Identity` in the daemon is the one place that maps
 credentials to the owner; a future credential (the Chrome extension's) is
 added there. Everyone else is the viewer the `clax_viewer` cookie names: a
-LAN viewer, or a local browser that never fetched the token. An owner
-credential decides identity only: without the token the owner cookie's
-caller has a viewer's level (`interact` once the owner is named), and the
-token alone (the CLI, agents) still reads data as no viewer (no
+LAN viewer, or a local browser that never fetched the token. That cookie
+never names the owner's row (whose private ID is never handed out), and
+when a request carries several distinct `clax_viewer` values (another page
+can plant one with a longer path, which is sent first) it names no viewer.
+An owner credential decides identity only: without the token the owner
+cookie's caller has a viewer's level (`interact` once the owner is named),
+and the token alone (the CLI, agents) still reads data as no viewer (no
 `attention`, `db` level `owner` with no viewer).
 
 The owner's name is the owner row's `display_name`, set by `PUT
@@ -1726,17 +1738,34 @@ own entry's name as its viewer's, so every open browser shows it at once.
 The shell fetches the token before `GET /api/viewers/me`, so an owner's
 browser never mints a viewer cookie of its own.
 
-Existing data: no stored field says which viewers were the owner's
-browsers (the token was never recorded with a viewer), so migration 15
-flags none. A browser's viewer is claimed when the shell's token request
-carries its `clax_viewer` cookie: the first claimed becomes the owner,
-keeping its public ID, name and history; a later one is merged into the
-owner (comment authors, mentions, `resolved_by`, seen marks taking the
-higher, looked-at marks taking the later, its name when the owner has
-none) and deleted, so its old public ID names no one; page data holding
-that ID is not rewritten. The cookie is then removed. The CLI's former
-`<home>/cli_viewer` file is ignored, and the viewer it named keeps its
-history as a separate viewer.
+When the owner row is made: a browser of the owner's makes it on first use,
+marked `claimed` (it holds a browser's identity). The token alone reads the
+owner without making one (`GET /api/viewers/me` answers `{viewer: null}`);
+when it acts (a reply, a resolve, a name) before any browser, it makes an
+unclaimed owner row. The first browser viewer claimed then keeps its IDs:
+the unclaimed row is folded into it (its name kept when it has one) and
+retired, and the browser's viewer becomes the owner. So a person's user ID
+in pages never changes because they used the CLI first.
+
+Claiming, and existing data: `viewers.minted_local` records whether the
+daemon minted a viewer's cookie for a request from this machine (1), from
+elsewhere (0), or before migration 15 (NULL). No stored field says which
+earlier viewers were the owner's browsers, so viewers with NULL are never
+claimed and keep their history as it is. When the shell's token request
+carries exactly one `clax_viewer` cookie naming a viewer with
+`minted_local = 1`, that viewer is claimed and the cookie removed: with no
+owner, or an unclaimed one, it becomes the owner (above) under a fresh
+private ID, so the old cookie, which reached every localhost port, names
+no one; otherwise it is folded into the owner. Folding moves comment
+authors, mentions, `resolved_by`, seen marks (the higher), looked-at marks
+(the later), the name when the target has none, and the private documents:
+each `data/users/<old>/...` moves to `data/users/<new>/...` with a new
+version in the same transaction, unless the destination exists, in which
+case the destination stays and the old document is left in place (logged).
+The folded viewer's row is deleted, its public ID names no one, and it
+leaves every presence list and room (its sockets are closed) at once.
+Planted cookies gain nothing: a LAN viewer's cookie was minted elsewhere,
+and a cookie naming no row names nothing.
 
 ### Sessions
 

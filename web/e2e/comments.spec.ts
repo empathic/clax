@@ -24,7 +24,9 @@ async function pickHeading(page: Page, id: string, n: number) {
   return frame;
 }
 
-test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ page }) => {
+test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ page, freshDaemon }) => {
+  // A daemon of its own: the owner is one viewer per daemon, unnamed here.
+  d = freshDaemon;
   const s = await registerSession(d.base, d.token);
   const { artifact } = await publishAs(d.base, d.token, s.id, "Goals", { "index.html": PAGE });
   await page.goto(`${d.base}/a/${artifact.id}`);
@@ -46,7 +48,7 @@ test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ 
   await expect(card.locator(".waiting")).toHaveText("seen by the agent");
   await card.getByRole("button", { name: "Resolve" }).click();
   await expect(page.locator(".section-resolved .thread-card")).toHaveCount(1);
-  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText(/ resolved$/);
+  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText("Viewer resolved");
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });
 
