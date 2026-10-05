@@ -15,6 +15,11 @@
 //!   every browser of the owner's is the owner on every route without the
 //!   token.
 //!
+//! - the Clax Chrome extension's credential: the extension gateway
+//!   ([`crate::extension::gateway`]) checks it and marks the request it admits
+//!   with [`crate::extension::ViaExtension`], which counts as a browser of the
+//!   owner's (spec 2026-10-05-chrome-overlay-design L6).
+//!
 //! The two cookies count only on a request from this machine (a loopback
 //! peer naming a literal local host, the rule `GET /api/token` serves by)
 //! that the browser does not mark as made from another origin: cookies
@@ -131,6 +136,9 @@ pub struct Identity {
     pub cookie: Option<String>,
     /// The request comes from this machine ([`is_local`]).
     pub local: bool,
+    /// The extension gateway admitted the request with a live extension
+    /// credential ([`crate::extension::ViaExtension`]).
+    pub extension: bool,
 }
 
 impl Identity {
@@ -145,18 +153,34 @@ impl Identity {
             owner_cookie: cookies_count && has_owner_cookie(headers, token),
             cookie: crate::viewer::read(headers),
             local,
+            extension: false,
+        }
+    }
+
+    /// The credentials of a request with `headers` and `extensions` (its peer,
+    /// and whether the extension gateway admitted it), for a daemon whose
+    /// token is `token`.
+    pub fn from_parts(
+        headers: &HeaderMap,
+        extensions: &axum::http::Extensions,
+        token: &str,
+    ) -> Identity {
+        Identity {
+            extension: extensions.get::<crate::extension::ViaExtension>().is_some(),
+            ..Identity::of(headers, token, peer_of(extensions))
         }
     }
 
     /// Whether the request speaks for the owner: any owner credential.
     pub fn is_owner(&self) -> bool {
-        self.token || self.events_cookie || self.owner_cookie
+        self.token || self.events_cookie || self.owner_cookie || self.extension
     }
 
     /// Whether the request comes from a browser of the owner's: only the
-    /// shell's token request hands out the owner and events cookies.
+    /// shell's token request hands out the owner and events cookies, and the
+    /// extension is a browser of the owner's.
     pub fn owner_browser(&self) -> bool {
-        self.owner_cookie || self.events_cookie
+        self.owner_cookie || self.events_cookie || self.extension
     }
 
     /// The viewer the request speaks for: the owner's row for the owner
@@ -205,10 +229,10 @@ impl Identity {
 impl FromRequestParts<AppState> for Identity {
     type Rejection = Infallible;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Infallible> {
-        Ok(Identity::of(
+        Ok(Identity::from_parts(
             &parts.headers,
+            &parts.extensions,
             &state.token,
-            peer_of(&parts.extensions),
         ))
     }
 }
@@ -306,6 +330,16 @@ mod tests {
             assert!(!Identity::of(&h, "tok", None).is_owner(), "{cookie}");
             assert!(Identity::of(&h, "tok", LOOPBACK).is_owner(), "{cookie}");
         }
+    }
+
+    #[test]
+    fn the_extension_gateways_mark_is_a_browser_of_the_owners() {
+        let h = headers(&[("host", "localhost:7480")]);
+        let mut ext = axum::http::Extensions::new();
+        assert!(!Identity::from_parts(&h, &ext, "tok").is_owner());
+        ext.insert(crate::extension::ViaExtension);
+        let id = Identity::from_parts(&h, &ext, "tok");
+        assert!(id.extension && id.is_owner() && id.owner_browser() && !id.token);
     }
 
     #[test]

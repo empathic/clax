@@ -173,14 +173,31 @@ pub fn element_anchor() -> serde_json::Value {
         "prefix": "", "suffix": "", "html_hash": "sha256:00", "rect": null, "custom_name": null})
 }
 
-/// Reads Server-Sent Events from one `/api/events` response.
+/// Reads Server-Sent Events from one `/api/events` or `/api/stream` response.
 pub struct EventReader {
     stream: std::pin::Pin<Box<dyn futures::Stream<Item = Result<Vec<u8>, String>> + Send>>,
     buf: String,
+    /// Whether `ready` events are returned rather than skipped.
+    keep_ready: bool,
 }
 
 impl EventReader {
-    /// The next event other than `ready` and keep-alive comments, as (name, data), within 5 s.
+    /// A reader of `res`'s body that returns every event, `ready` included
+    /// (an `/api/stream` response opens with `ready`, naming the stream).
+    pub fn from_response(res: reqwest::Response) -> EventReader {
+        use futures::StreamExt;
+        let stream = res
+            .bytes_stream()
+            .map(|r| r.map(|b| b.to_vec()).map_err(|e| e.to_string()));
+        EventReader {
+            stream: Box::pin(stream),
+            buf: String::new(),
+            keep_ready: true,
+        }
+    }
+
+    /// The next event other than keep-alive comments (and `ready`, unless
+    /// made by [`EventReader::from_response`]), as (name, data), within 20 s.
     pub async fn next(&mut self) -> (String, serde_json::Value) {
         use futures::StreamExt;
         loop {
@@ -199,7 +216,7 @@ impl EventReader {
                     .lines()
                     .find_map(|l| l.strip_prefix("data: "))
                     .unwrap_or("null");
-                if name == "ready" {
+                if name == "ready" && !self.keep_ready {
                     continue;
                 }
                 return (
@@ -338,6 +355,7 @@ impl TestServer {
         EventReader {
             stream: Box::pin(stream),
             buf: String::new(),
+            keep_ready: false,
         }
     }
 }

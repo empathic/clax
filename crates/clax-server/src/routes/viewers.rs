@@ -267,7 +267,7 @@ pub async fn attention(
     if let Some(id) = &one {
         sees.check(&s.live_ids, id.as_str())?;
     }
-    let hidden = (!sees.0).then(|| s.live_ids.clone());
+    let hidden = (!sees.may_see).then(|| s.live_ids.clone());
     let mut out = s
         .store_call(move |st| {
             Ok(match (who.viewer(st)?, one) {

@@ -367,8 +367,7 @@ pub async fn get(
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let who =
-        crate::identity::Identity::of(&headers, &s.token, crate::identity::peer_of(&extensions));
+    let who = crate::identity::Identity::from_parts(&headers, &extensions, &s.token);
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.cookie.is_some();
     let mut v = s

@@ -91,9 +91,16 @@ fn live_route(path: &str) -> bool {
     path.starts_with("/api/live/")
 }
 
-/// Whether a request may see live pages, for handlers that take an
-/// artifact ID outside the path (a query or a body): [`sees_live_pages`].
-pub struct SeesLive(pub bool);
+/// Which artifacts a request may name, for handlers that take an artifact ID
+/// outside the path (a query or a body): live pages only when
+/// [`sees_live_pages`]; and nothing but live pages when the extension
+/// gateway admitted it ([`crate::extension::ViaExtension`]).
+pub struct SeesLive {
+    /// The request may see live pages ([`sees_live_pages`]).
+    pub may_see: bool,
+    /// The request may name live pages alone (the extension's).
+    pub live_only: bool,
+}
 
 impl FromRequestParts<crate::state::AppState> for SeesLive {
     type Rejection = std::convert::Infallible;
@@ -101,32 +108,36 @@ impl FromRequestParts<crate::state::AppState> for SeesLive {
         parts: &mut Parts,
         s: &crate::state::AppState,
     ) -> Result<Self, Self::Rejection> {
-        Ok(SeesLive(sees_live_pages(
-            &parts.headers,
-            &parts.extensions,
-            &s.token,
-        )))
+        Ok(SeesLive {
+            may_see: sees_live_pages(&parts.headers, &parts.extensions, &s.token),
+            live_only: parts
+                .extensions
+                .get::<crate::extension::ViaExtension>()
+                .is_some(),
+        })
     }
 }
 
 impl SeesLive {
     /// 404 `not_found`, as for a missing artifact, when `id` is a live page
-    /// this request may not see.
+    /// this request may not see, or is not a live page and the request may
+    /// name live pages alone.
     ///
     /// # Errors
     /// That 404.
     pub fn check(&self, ids: &LiveIds, id: &str) -> Result<(), ApiError> {
-        if self.0 || !ids.contains(id) {
-            Ok(())
-        } else {
+        let live = ids.contains(id);
+        if (live && !self.may_see) || (!live && self.live_only) {
             Err(CoreError::NotFound.into())
+        } else {
+            Ok(())
         }
     }
 }
 
 /// `seg` percent-decoded as the router decodes a path parameter; `None`
 /// when it does not decode to UTF-8 (the router refuses it too).
-fn percent_decoded(seg: &str) -> Option<String> {
+pub(crate) fn percent_decoded(seg: &str) -> Option<String> {
     if !seg.contains('%') {
         return Some(seg.to_string());
     }

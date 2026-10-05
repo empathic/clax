@@ -1062,7 +1062,10 @@ request is the owner's when it carries an owner credential:
   token, never the token, set beside the events cookie when the shell on
   this machine fetches the token (`GET /api/token` from a loopback peer with
   a literal local `Host`, marked `Sec-Fetch-Site: same-origin`). A new token
-  voids it.
+  voids it;
+- the Clax Chrome extension's credential, accepted only through the
+  extension gateway (see "Security model"), which acts as one of the
+  owner's browsers on live pages.
 
 The events and owner cookies count only on a request from this machine (a
 loopback peer and a `Host` of `localhost`, `127.0.0.1` or `[::1]`, the
@@ -1977,7 +1980,8 @@ bytes). The daemon stores only its SHA-256 and never logs it. A credential
 is live while it is not revoked and has been used within 30 days. A use is
 recorded at most once an hour. At most 8 live credentials exist per
 extension ID, and minting a ninth revokes the oldest. A credential names no
-viewer: it acts as the owner.
+viewer: it acts as the owner, within the extension gateway's routes and on
+live pages only (see "Security model").
 
 All three routes need the token (401 `unauthorized` without it):
 
@@ -3015,6 +3019,44 @@ abandoned and retried the same way, with a notice.
   request with the token; to anyone else they do not exist (404, left out
   of lists and of the stream), and their snapshots are served with a policy
   that runs no script but Clax's own.
+- The Clax Chrome extension (origin `chrome-extension://<ID in effect>`)
+  holds a credential (see "The Clax extension's credentials") only in its
+  service worker's session storage, never in a URL, a page, a message to
+  its overlay or composer, or a log; the daemon keeps only its SHA-256.
+  The extension sends it as `Authorization: Clax-Extension <credential>`,
+  with no cookies, to `http://localhost:<port>` or `http://127.0.0.1:<port>`.
+  The daemon admits that origin only through its extension gateway: from a
+  loopback peer, with a live credential, and only to these routes: `GET
+  /api/live/pages`, `POST /api/live/threads` and `/api/live/snapshots`,
+  `GET`/`PUT /api/viewers/me`, `PUT /api/viewers/me/looked` and
+  `/api/viewers/me/presence`, `GET /api/stream` and `POST
+  /api/stream/<stream>`, and, for live pages only, `GET
+  /api/artifacts/<id>`, its `threads`, `working` and `presence`, `GET` and
+  `DELETE .../threads/<tid>`, `GET .../threads/<tid>/clip`, `POST
+  .../threads/<tid>/comments`, `/send`, `/resolve` and `/reopen`, and `POST
+  .../threads:send`. Anything else from that origin is 403 `forbidden`; a
+  missing, unknown, idle or revoked credential is 401 `unknown_credential`;
+  an artifact that is not a live page, in the path or in a body, is 404 as
+  a missing one; a request from another machine is 403 `forbidden`, and so
+  is the bearer token from that origin. A `Clax-Extension` credential from
+  any other origin, or with none, is 403 `forbidden_origin`. An admitted
+  request reaches its route as the owner, one of the owner's browsers: its
+  name, looked-at marks, presence, comments, sends and resolves are the
+  owner's, at the level the owner cookie gives (`interact` once the owner
+  has a name), never the token's. The gateway removes its `Origin`,
+  `Sec-Fetch-Site`, `Cookie` and `Authorization` first, so the viewer
+  routes' own rules apply unchanged, and removes `Set-Cookie` from the
+  response. Every response to that origin carries
+  `Access-Control-Allow-Origin: chrome-extension://<ID>` and `Vary: Origin`
+  (never a wildcard and never `Access-Control-Allow-Credentials`);
+  preflights are answered 204 only for the routes above and 403 otherwise.
+  A stream opened through the gateway is live-only: subscribing it to
+  `gallery`, a `docs` topic, or a topic of an artifact that is not a live
+  page is 403 `forbidden`, and it resumes only as such a stream. A stolen
+  credential therefore acts as the owner on live pages alone until revoked;
+  it cannot publish, delete artifacts, read sessions or the token, use
+  `db`, or see an artifact that is not a live page. Every other origin's
+  requests are untouched by the gateway.
 - `GET /api/token` hands the token to the gallery in a local browser. On top
   of the `Host` rule above, it answers only when the connection comes from a
   loopback address and the `Host` header is literally `localhost`,

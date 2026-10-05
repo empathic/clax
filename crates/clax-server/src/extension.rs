@@ -5,10 +5,19 @@
 //! no store. A credential unused for [`CREDENTIAL_TTL_DAYS`] stops being
 //! accepted while the daemon runs, as it would after a restart. A live
 //! credential is the owner identity (spec L6); it names no viewer.
+//!
+//! Also the extension gateway ([`gateway`], spec L5, §9.2, §10 item 6), the
+//! one way a request from the extension's origin reaches a handler.
 
+use crate::error::ApiError;
+use crate::state::AppState;
+use axum::extract::{Request, State};
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::middleware::Next;
+use axum::response::{IntoResponse, Response};
 use chrono::{DateTime, Duration, Utc};
 use clax_core::Store;
-use clax_core::extension::CREDENTIAL_TTL_DAYS;
+use clax_core::extension::{CREDENTIAL_TTL_DAYS, credential_hash, extension_origin, is_credential};
 use clax_core::working::{Clock, SystemClock};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -132,6 +141,246 @@ impl Credentials {
     }
 }
 
+/// The `Authorization` scheme of the extension's requests:
+/// `Authorization: Clax-Extension <credential>`.
+pub const SCHEME: &str = "Clax-Extension";
+
+/// Marks a request the gateway admitted. [`crate::identity::Identity`] counts
+/// it as a browser of the owner's; [`crate::live::SeesLive`] and the stream
+/// read it as "live pages only". Only [`gateway`] inserts it, after checking
+/// the credential.
+#[derive(Clone, Copy, Debug)]
+pub struct ViaExtension;
+
+/// What a route needs besides the credential: nothing more, or that the
+/// artifact its path names (percent-encoded as in the path) is a live page.
+#[derive(Debug, PartialEq, Eq)]
+enum Rule<'a> {
+    Any,
+    Live(&'a str),
+}
+
+/// The routes the extension may use, and what each needs (spec 2026-10-05
+/// §9.2); `None` for every other route. Routes taking an artifact ID in the
+/// body or a topic check it themselves through [`crate::live::SeesLive`].
+fn rule<'a>(m: &Method, path: &'a str) -> Option<Rule<'a>> {
+    let segs: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
+    let (get, post, put, del) = (
+        m == Method::GET,
+        m == Method::POST,
+        m == Method::PUT,
+        m == Method::DELETE,
+    );
+    match segs.as_slice() {
+        ["api", "live", "pages"] if get => Some(Rule::Any),
+        ["api", "live", "threads" | "snapshots"] if post => Some(Rule::Any),
+        ["api", "viewers", "me"] if get || put => Some(Rule::Any),
+        ["api", "viewers", "me", "looked" | "presence"] if put => Some(Rule::Any),
+        ["api", "stream"] if get => Some(Rule::Any),
+        ["api", "stream", _] if post => Some(Rule::Any),
+        ["api", "artifacts", aid] if get => Some(Rule::Live(aid)),
+        ["api", "artifacts", aid, "threads" | "working" | "presence"] if get => {
+            Some(Rule::Live(aid))
+        }
+        ["api", "artifacts", aid, "threads:send"] if post => Some(Rule::Live(aid)),
+        ["api", "artifacts", aid, "threads", _] if get || del => Some(Rule::Live(aid)),
+        ["api", "artifacts", aid, "threads", _, "clip"] if get => Some(Rule::Live(aid)),
+        [
+            "api",
+            "artifacts",
+            aid,
+            "threads",
+            _,
+            "comments" | "send" | "resolve" | "reopen",
+        ] if post => Some(Rule::Live(aid)),
+        _ => None,
+    }
+}
+
+/// Lets the extension's origin read `res`.
+fn cors(res: &mut Response, origin: &str) {
+    let h = res.headers_mut();
+    if let Ok(o) = HeaderValue::from_str(origin) {
+        h.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, o);
+    }
+    h.append(header::VARY, HeaderValue::from_static("Origin"));
+}
+
+/// `e`, readable by the extension's origin.
+fn refuse(e: ApiError, origin: &str) -> Response {
+    let mut r = e.into_response();
+    cors(&mut r, origin);
+    r
+}
+
+/// The values of `headers`' `Authorization` headers.
+fn authorizations(h: &HeaderMap) -> impl Iterator<Item = &str> {
+    h.get_all(header::AUTHORIZATION)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+}
+
+/// Whether `v` is an `Authorization` value of `scheme` (case-insensitive).
+fn has_scheme(v: &str, scheme: &str) -> bool {
+    v.split_once(' ')
+        .is_some_and(|(s, _)| s.eq_ignore_ascii_case(scheme))
+}
+
+/// The well-formed credential in `Authorization: Clax-Extension <credential>`.
+fn presented(h: &HeaderMap) -> Option<&str> {
+    authorizations(h)
+        .filter(|v| has_scheme(v, SCHEME))
+        .find_map(|v| {
+            let c = v.split_once(' ')?.1.trim();
+            is_credential(c).then_some(c)
+        })
+}
+
+/// Middleware: the extension gateway (spec 2026-10-05-chrome-overlay-design
+/// L5, L6, §9.2, §10 item 6).
+///
+/// A request whose `Origin` is the extension's (`chrome-extension://<ID in
+/// effect>`) is admitted only from a loopback peer, only to [`rule`]'s
+/// routes, only with a live credential for that ID, and only for live pages;
+/// otherwise 403 `forbidden` (401 `unknown_credential` for a missing,
+/// unknown, expired or revoked credential; 404 for an artifact that is not
+/// a live page, as for a missing one). A bearer token from that origin is
+/// refused 403. An admitted request reaches its handler without `Origin`,
+/// `Sec-Fetch-Site`, `Cookie` or `Authorization`, marked [`ViaExtension`]
+/// (the owner identity, a browser of the owner's); `Set-Cookie` is removed
+/// from its response. Every response to the extension's origin, refusals
+/// included, carries `Access-Control-Allow-Origin: <that origin>` and
+/// `Vary: Origin`. Preflights are answered 204 for the allowlisted routes and
+/// 403 otherwise, without `Access-Control-Allow-Credentials` (the extension
+/// sends no cookies).
+///
+/// A `Clax-Extension` credential with any other `Origin`, or none, is
+/// refused 403 `forbidden_origin`. Every other request passes untouched.
+pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
+    let origin = extension_origin(&s.extension_id);
+    let ours = req
+        .headers()
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        == Some(origin.as_str());
+    if !ours {
+        if authorizations(req.headers()).any(|v| has_scheme(v, SCHEME)) {
+            return ApiError::forbidden(
+                "forbidden_origin",
+                "the extension's credential is accepted only from the extension",
+            )
+            .into_response();
+        }
+        return next.run(req).await;
+    }
+    let loopback = crate::identity::peer_of(req.extensions()).is_some_and(crate::auth::is_loopback);
+    if !loopback {
+        return refuse(
+            ApiError::forbidden(
+                "forbidden",
+                "the extension reaches the daemon on this machine only",
+            ),
+            &origin,
+        );
+    }
+    if req.method() == Method::OPTIONS {
+        return preflight(&req, &origin);
+    }
+    if authorizations(req.headers()).any(|v| has_scheme(v, "Bearer")) {
+        return refuse(
+            ApiError::forbidden(
+                "forbidden",
+                "the daemon token is not accepted from the extension",
+            ),
+            &origin,
+        );
+    }
+    let path = req.uri().path().to_string();
+    let Some(r) = rule(req.method(), &path) else {
+        return refuse(
+            ApiError::forbidden("forbidden", "the extension may not use this route"),
+            &origin,
+        );
+    };
+    let unknown = || {
+        refuse(
+            ApiError::new(
+                StatusCode::UNAUTHORIZED,
+                "unknown_credential",
+                "the extension's credential is not live; pair again",
+            ),
+            &origin,
+        )
+    };
+    let Some(hash) = presented(req.headers()).map(credential_hash) else {
+        return unknown();
+    };
+    if s.ext_creds
+        .get(&hash)
+        .is_none_or(|c| c.extension_id != s.extension_id)
+    {
+        return unknown();
+    }
+    if let Rule::Live(aid) = r
+        && !crate::live::percent_decoded(aid).is_some_and(|a| s.live_ids.contains(&a))
+    {
+        return refuse(clax_core::CoreError::NotFound.into(), &origin);
+    }
+    if s.ext_creds.due_for_touch(&hash) {
+        let store = s.store.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = store.touch_extension_credential(&hash) {
+                tracing::warn!(error = %e, "could not record an extension credential's use");
+            }
+        });
+    }
+    let h = req.headers_mut();
+    for name in [header::ORIGIN, header::COOKIE, header::AUTHORIZATION] {
+        h.remove(name);
+    }
+    h.remove("sec-fetch-site");
+    req.extensions_mut().insert(ViaExtension);
+    let mut res = next.run(req).await;
+    res.headers_mut().remove(header::SET_COOKIE);
+    cors(&mut res, &origin);
+    res
+}
+
+/// The answer to a preflight from the extension's `origin`: 204 with the
+/// CORS grant when the method it asks for is allowed on the path, else 403.
+fn preflight(req: &Request, origin: &str) -> Response {
+    let asked = req
+        .headers()
+        .get(header::ACCESS_CONTROL_REQUEST_METHOD)
+        .and_then(|v| Method::from_bytes(v.as_bytes()).ok());
+    if asked
+        .as_ref()
+        .and_then(|m| rule(m, req.uri().path()))
+        .is_none()
+    {
+        return refuse(
+            ApiError::forbidden("forbidden", "the extension may not use this route"),
+            origin,
+        );
+    }
+    let mut r = StatusCode::NO_CONTENT.into_response();
+    let h = r.headers_mut();
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, POST, PUT, DELETE"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static("authorization, content-type, last-event-id"),
+    );
+    h.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("600"),
+    );
+    cors(&mut r, origin);
+    r
+}
+
 /// Whether `e` has been used within [`CREDENTIAL_TTL_DAYS`] of `now`.
 fn live(e: &Entry, now: DateTime<Utc>) -> bool {
     now - e.last_used <= Duration::days(CREDENTIAL_TTL_DAYS)
@@ -170,6 +419,85 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         (dir, Arc::new(st))
+    }
+
+    #[test]
+    fn the_allowlist_names_each_route_and_the_artifact_it_needs_live() {
+        let (g, p, u, d) = (Method::GET, Method::POST, Method::PUT, Method::DELETE);
+        for (m, path, want) in [
+            (&g, "/api/live/pages", Some(Rule::Any)),
+            (&p, "/api/live/threads", Some(Rule::Any)),
+            (&p, "/api/live/snapshots", Some(Rule::Any)),
+            (&g, "/api/viewers/me", Some(Rule::Any)),
+            (&u, "/api/viewers/me", Some(Rule::Any)),
+            (&u, "/api/viewers/me/looked", Some(Rule::Any)),
+            (&u, "/api/viewers/me/presence", Some(Rule::Any)),
+            (&g, "/api/stream", Some(Rule::Any)),
+            (&p, "/api/stream/s1", Some(Rule::Any)),
+            (&g, "/api/artifacts/A", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/threads", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/working", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/presence", Some(Rule::Live("A"))),
+            (&p, "/api/artifacts/A/threads:send", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/threads/T", Some(Rule::Live("A"))),
+            (&d, "/api/artifacts/A/threads/T", Some(Rule::Live("A"))),
+            (&g, "/api/artifacts/A/threads/T/clip", Some(Rule::Live("A"))),
+            (
+                &p,
+                "/api/artifacts/A/threads/T/comments",
+                Some(Rule::Live("A")),
+            ),
+            (&p, "/api/artifacts/A/threads/T/send", Some(Rule::Live("A"))),
+            (
+                &p,
+                "/api/artifacts/A/threads/T/resolve",
+                Some(Rule::Live("A")),
+            ),
+            (
+                &p,
+                "/api/artifacts/A/threads/T/reopen",
+                Some(Rule::Live("A")),
+            ),
+            (&p, "/api/artifacts/A/threads", None),
+            (&d, "/api/artifacts/A", None),
+            (&p, "/api/artifacts", None),
+            (&g, "/api/artifacts", None),
+            (&g, "/api/artifacts/A/docs", None),
+            (&g, "/api/artifacts/A/versions", None),
+            (&g, "/api/viewers/me/seen", None),
+            (&g, "/api/viewers/me/attention", None),
+            (&g, "/api/token", None),
+            (&g, "/api/events", None),
+            (&g, "/api/extension", None),
+            (&g, "/api/live/pages/", None),
+            (&g, "//api/live/pages", None),
+            (&g, "api/live/pages", None),
+            (&p, "/api/live/pages", None),
+            (&g, "/c/A/v/1/", None),
+        ] {
+            assert_eq!(rule(m, path), want, "{m} {path}");
+        }
+    }
+
+    #[test]
+    fn only_a_well_formed_extension_credential_is_presented() {
+        let c = clax_core::extension::new_credential();
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::AUTHORIZATION,
+            format!("clax-extension {c}").parse().unwrap(),
+        );
+        assert_eq!(presented(&h), Some(c.as_str()));
+        h.insert(
+            header::AUTHORIZATION,
+            format!("Bearer {c}").parse().unwrap(),
+        );
+        assert_eq!(presented(&h), None);
+        h.insert(
+            header::AUTHORIZATION,
+            "Clax-Extension cxe_short".parse().unwrap(),
+        );
+        assert_eq!(presented(&h), None);
     }
 
     #[test]

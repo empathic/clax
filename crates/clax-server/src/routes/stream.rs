@@ -32,7 +32,9 @@ use std::convert::Infallible;
 /// or a newer connection resumes the same stream. A stream opened by a
 /// request that may not see live pages ([`crate::live::sees_live_pages`])
 /// receives no gallery event of a live page and cannot subscribe to a live
-/// page's topics; it resumes only from a request of the same kind.
+/// page's topics; it resumes only from a request of the same kind. A stream
+/// opened through the extension gateway is live-only
+/// ([`crate::stream::live_only_admits`]), and resumes only as one.
 pub async fn open(
     State(s): State<AppState>,
     who: crate::identity::Identity,
@@ -40,6 +42,7 @@ pub async fn open(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
+    let live_only = extensions.get::<crate::extension::ViaExtension>().is_some();
     let token = token_or_cookie(&headers, &s.token, &who);
     let caller = s
         .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
@@ -48,7 +51,7 @@ pub async fn open(
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
-    let opened = s.stream.open(caller, local, resume);
+    let opened = s.stream.open(caller, local, live_only, resume);
     let conn = Conn::new(
         s.stream.clone(),
         opened,
@@ -128,7 +131,9 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller; 429 `limit_reached` past
 /// [`crate::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
-/// that is not a topic. Refuses a foreign `Origin` like the viewer routes.
+/// that is not a topic. On a live-only stream (the extension's), 403
+/// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
+/// that is not a live page. Refuses a foreign `Origin` like the viewer routes.
 pub async fn update(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -148,6 +153,13 @@ pub async fn update(
     }
     let add = topics(&b.subscribe)?;
     let remove = topics(&b.unsubscribe)?;
+    if sees.live_only
+        && !add
+            .iter()
+            .all(|t| crate::stream::live_only_admits(&s.live_ids, t))
+    {
+        return Err(live_only_refusal());
+    }
     for aid in add.iter().filter_map(Topic::artifact) {
         sees.check(&s.live_ids, aid)?;
     }
@@ -174,10 +186,19 @@ pub async fn update(
             "no open stream has that ID for this caller; open /api/stream again",
         )),
         Err(SubError::Hidden) => Err(CoreError::NotFound.into()),
+        Err(SubError::Forbidden) => Err(live_only_refusal()),
         Err(SubError::TooMany) => Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "limit_reached",
             format!("a stream holds at most {MAX_TOPICS} topics"),
         )),
     }
+}
+
+/// 403 `forbidden`: a topic a live-only stream may not take.
+fn live_only_refusal() -> ApiError {
+    ApiError::forbidden(
+        "forbidden",
+        "the extension's stream takes live pages' artifact, presence and working topics only",
+    )
 }

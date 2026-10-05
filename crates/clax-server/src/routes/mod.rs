@@ -287,9 +287,16 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     }
     // Live pages answer 404 to callers that may not see them, before any
     // handler runs (spec 2026-10-05-chrome-overlay-design L10).
+    // The extension gateway runs first (the last layer is outermost): only
+    // what it admits from the extension's origin reaches the rest (spec
+    // 2026-10-05-chrome-overlay-design L5).
     r.layer(axum::middleware::from_fn_with_state(
         state.clone(),
         crate::live::hide_live_pages,
+    ))
+    .layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::extension::gateway,
     ))
     .with_state(state)
 }

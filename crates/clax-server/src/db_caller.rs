@@ -144,11 +144,7 @@ impl FromRequestParts<AppState> for CallerParts {
         };
         Ok(CallerParts {
             token: has_token(&parts.headers, &state.token),
-            who: Identity::of(
-                &parts.headers,
-                &state.token,
-                crate::identity::peer_of(&parts.extensions),
-            ),
+            who: Identity::from_parts(&parts.headers, &parts.extensions, &state.token),
             as_level,
         })
     }
@@ -203,11 +199,7 @@ impl FromRequestParts<AppState> for Subscriber {
             .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
         Ok(Subscriber {
             token: query_token || has_token(&parts.headers, &state.token),
-            who: Identity::of(
-                &parts.headers,
-                &state.token,
-                crate::identity::peer_of(&parts.extensions),
-            ),
+            who: Identity::from_parts(&parts.headers, &parts.extensions, &state.token),
         })
     }
 }
