@@ -1,5 +1,5 @@
 {
-  "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/clax-mcp/src/tools.rs, clax-core html_title) and the Pi extension (plugins/pi/src/clax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources.",
+  "_comment": "Inputs and expected outputs shared by the Rust MCP tools (crates/clax-mcp/src/tools.rs and target.rs, clax-core html_title) and the Pi extension (plugins/pi/src/clax.ts). scripts/test-plugins.sh checks that each tool description appears verbatim in both sources.",
   "artifact_ref": [
     {
       "input": "7q3k9mzx2b4t",
@@ -87,6 +87,82 @@
       "error": "invalid_id"
     }
   ],
+  "target": {
+    "daemon_base": "http://localhost:7480",
+    "cases": [
+      {
+        "input": "7q3k9mzx2b4t",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://localhost:7480/a/7q3k9mzx2b4t/v/3",
+        "id": "7q3k9mzx2b4t",
+        "version": 3
+      },
+      {
+        "input": "http://127.0.0.1:7480/c/7q3k9mzx2b4t/v/2/x.html",
+        "id": "7q3k9mzx2b4t",
+        "version": 2
+      },
+      {
+        "input": "http://192.168.1.20:7480/a/7q3k9mzx2b4t",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://7q3k9mzx2b4t.localhost:7480/v/1/",
+        "id": "7q3k9mzx2b4t",
+        "version": 1
+      },
+      {
+        "input": "localhost:7480/a/7q3k9mzx2b4t",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "/a/7q3k9mzx2b4t/v/4?x=1",
+        "id": "7q3k9mzx2b4t",
+        "version": 4
+      },
+      {
+        "input": "http://localhost:5173/",
+        "page": "http://localhost:5173/"
+      },
+      {
+        "input": " http://localhost:5173/settings?tab=b ",
+        "page": "http://localhost:5173/settings?tab=b"
+      },
+      {
+        "input": "http://localhost:5173/a/7q3k9mzx2b4t",
+        "page": "http://localhost:5173/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "https://example.com/x?y#/z",
+        "page": "https://example.com/x?y#/z"
+      },
+      {
+        "input": "http://localhost:80/a/7q3k9mzx2b4t",
+        "page": "http://localhost:80/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "nope",
+        "error": "invalid_id"
+      },
+      {
+        "input": "ftp://localhost:7480/a/7q3k9mzx2b4t",
+        "error": "invalid_id"
+      },
+      {
+        "input": "http://localhost:7480/settings",
+        "error": "invalid_id"
+      },
+      {
+        "input": "http://[bad",
+        "error": "invalid_id"
+      }
+    ]
+  },
   "text_prefix": [
     {
       "hex": "61c3a9",
@@ -358,7 +434,7 @@
     },
     {
       "name": "watch",
-      "description": "Watch an artifact so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
+      "description": "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
     },
     {
       "name": "wait_for_feedback",

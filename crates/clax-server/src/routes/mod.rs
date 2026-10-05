@@ -149,6 +149,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/viewers/me", get(viewers::me).put(viewers::set_me))
         .route("/api/sessions/{id}/watches", get(watches::list))
         .route(
+            "/api/sessions/{id}/live-watches",
+            axum::routing::put(watches::live_put).delete(watches::live_delete),
+        )
+        .route(
             "/api/sessions/{id}/watches/{aid}",
             axum::routing::put(watches::put).delete(watches::delete),
         )

@@ -45,7 +45,8 @@ fn fetch(c: &Connection, session_id: &str, id: &ArtifactId) -> Result<Watch> {
 
 impl Store {
     /// Creates or updates the watch of live session `session_id` on the live
-    /// artifact `id`, setting `replies_armed`.
+    /// artifact `id`, setting `replies_armed`. The watch is direct: removing
+    /// a scope watch that also covers the artifact keeps it.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session; `NotFound` for a
@@ -55,7 +56,7 @@ impl Store {
             check(tx, session_id, id)?;
             tx.execute(
                 "INSERT INTO watches (session_id, artifact_id, replies_armed, created_at) VALUES (?1, ?2, ?3, ?4)
-                 ON CONFLICT(session_id, artifact_id) DO UPDATE SET replies_armed = excluded.replies_armed",
+                 ON CONFLICT(session_id, artifact_id) DO UPDATE SET replies_armed = excluded.replies_armed, source = 'direct'",
                 params![session_id, id.as_str(), replies_armed, Store::now()],
             )?;
             fetch(tx, session_id, id)

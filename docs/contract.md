@@ -1489,10 +1489,10 @@ entry of the shell's own; copy link includes it.
 
 | Tool | Arguments | Result |
 |---|---|---|
-| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state}], next_cursor, note}` |
+| `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state, addressed_pending, page_url?, snapshot_path?}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
-| `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
+| `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 
@@ -1506,8 +1506,12 @@ line names it. `clip_path` is the absolute path of the clip, or
 `null` when none was captured. `feedback_state` is the
 thread's delivery state (`{thread_id, state, tier, since, resends,
 exhausted}`, see "What the person sees"), or `null` when nothing on it was
-sent. `note` says that comment text comes from people viewing the page.
-Through a session, reading acknowledges the returned comments of sent threads
+sent. `addressed_pending` is true while an agent's address of the thread
+waits for a live page's next snapshot (see "Live pages"). A live page's
+thread also carries `page_url` (the page's URL with the thread's route) and
+`snapshot_path` (the absolute path of its version's `index.html`, the
+snapshot it was made on). `note` says that comment text comes from people
+viewing the page. Through a session, reading acknowledges the returned comments of sent threads
 for that session (a comment added after the read stays pending).
 
 `comments_reply` posts the reply as the agent; the person sees it under the
@@ -1522,13 +1526,33 @@ session saw them); comments already handed over are not resent.
 artifact still receives its comments through tiers 1, 3 and 4. Watching an
 artifact hands the session any of its comments that were waiting untargeted.
 
+`watch` with a page URL makes a **scope watch** (see "Live pages"): it
+covers the live pages of the URL's origin whose path is the URL's path or
+below it, now and as new ones are created, and it creates the live page the
+URL names (with a placeholder version) when there is none. `scope` names
+what it covers: `http://localhost:5173/*` for a path ending in `/` (`/`
+covers the whole origin), `http://localhost:5173/docs and
+http://localhost:5173/docs/*` otherwise. With `on: false` it removes the
+scope watch and the watches only it made; a page the session watches
+directly (`watch` on the artifact), or through another of its scope watches,
+stays watched.
+
+Which tool argument names what: an artifact ID, text without a scheme
+(`localhost:7480/a/<id>`, `/a/<id>`), and an `http(s)` URL on the daemon's
+port (whatever its host: `localhost`, `127.0.0.1`, a LAN address, or
+`<id>.localhost`) are Clax references, read as "Shell URLs" describes; any
+other `http(s)` URL is a page URL, even one whose path holds `/a/<id>`. The
+comment tools, `working` and `wait_for_feedback` resolve a page URL to its
+live page (`invalid_id` when it has none yet), and so does every other tool
+taking `url_or_id`.
+
 `wait_for_feedback` returns as soon as comments sent to this session arrive
 (only those on `url_or_id` when given), or after `timeout_s` seconds with
 `feedback: []` and `call_again: true`. `timeout_s` is raised to 1 and capped
 at 600. `waited_s` is whole seconds.
 
 Error codes besides the common ones: `invalid_id` (`url_or_id` names no
-artifact), `invalid_args` (a `thread_id` that is not a thread ID, empty
+artifact, or a page URL with no live page), `invalid_args` (a `thread_id` that is not a thread ID, empty
 `text`), `invalid_comment` (`text` over 10,000 characters), `invalid_cursor`
 (a `cursor` that is not a thread of the artifact), `not_found` (the artifact
 or thread is gone), `no_session` (`watch` and `wait_for_feedback` through
@@ -1598,9 +1622,26 @@ second text block; the Stop hook's `reason`, the prompt hook's
 `additionalContext`, `codex queue --message`, and Pi's follow-up message carry
 it without `---`. The structured form is each result's `feedback` array:
 `{feedback_id, thread_id, comment_id, artifact_id, artifact_title, url,
-version, anchor, clip_path, author, via_page, body, resent, created_at}`;
-`via_page` is true for a comment the page wrote through the `comments`
-capability.
+version, anchor, clip_path, author, via_page, body, resent, created_at,
+batch, live}`; `via_page` is true for a comment the page wrote through the
+`comments` capability, and `live` is `{page_url, snapshot_path}` for a
+comment on a live page, else `null`.
+
+A comment on a live page is rendered with the page's URL (with the thread's
+route) beside the Clax view, the snapshot's version, and the snapshot's
+`index.html` on disk:
+
+```
+[clax] Comment sent to you on "Settings" (live page http://localhost:5173/settings?tab=billing; Clax view http://localhost:7480/a/7q3k9mzx2b4t), thread 01J9...
+Anchored on: ?tab=billing › main > form > button  «Save»  (snapshot v3)
+Clip: /Users/alex/.clax/artifacts/7q3k9mzx2b4t/clips/01J9....png
+Snapshot: /Users/alex/.clax/artifacts/7q3k9mzx2b4t/versions/3/index.html
+Alex: "The save button overflows at phone width."
+Reply with comments_reply (addressed: true once the page shows the fix), then comments_resolve when done.
+```
+
+The page URL and the snapshot path have control characters, U+2028 and
+U+2029 written as `\uXXXX`, so each stays on its line.
 
 Comments the person sent together arrive together. After the counted
 header, a line `[clax] N comments on "<title>", sent together by <name>.`
@@ -1824,6 +1865,29 @@ versions is a snapshot of the page, taken when a comment is posted.
   clip_error?}`; a clip that fails the thread clip rules is dropped and
   reported in `clip_error`. Both routes are viewer routes: no token, and the
   `Origin` rule of the other viewer routes.
+- **Scope watches.** `PUT /api/sessions/<sid>/live-watches` (token)
+  `{url, replies_armed?}` (default true) makes a scope watch of the live
+  session on the page `url` names: it covers the live pages of that origin
+  whose path is the watched path or below it (`/` covers the origin;
+  `/docs` covers `/docs` and `/docs/...`, not `/docsx`). The live page `url`
+  names is created (its version 1 a placeholder) when there is none. The
+  session then watches every covered page, through `watches` rows marked
+  `scope` (a page it already watches keeps its watch and arming), and every
+  live page created later under the scope (by a comment, or another scope
+  watch) is watched by it as it is created, with the scope's
+  `replies_armed`. Comments on covered pages waiting with no live target
+  are handed to the session. It answers `{live_watch: {origin, path, scope,
+  replies_armed}, page, covered}` (`covered`: the artifact IDs of the
+  covered pages); 400 `unknown_session` for a missing or ended session, and
+  the URL errors above (`own_origin` too). Watching the same URL again
+  sets `replies_armed`, on its `scope` watches too. `DELETE /api/sessions/<sid>/live-watches?url=`
+  (token) removes it and the `scope` watches no other scope watch of the
+  session covers, answering `{removed}` (their artifact IDs); a direct
+  `PUT .../watches/<id>` turns a page's watch `direct`, which a removal
+  keeps. A session's scope watches end with the session.
+- **Thread views** of a live page carry `page_url` (the page's URL with the
+  thread's route) and, with the token, `snapshot_path` (the absolute path of
+  the thread's version's `index.html`; `null` without the token).
 - **Views.** Every artifact view (`GET /api/artifacts`,
   `GET /api/artifacts/<id>`, the shell's bootstrap) carries `kind` (`html` or
   `live`); a live page's also carries `live: {origin, path, page_url}`.

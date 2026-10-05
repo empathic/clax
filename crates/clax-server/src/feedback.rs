@@ -4,6 +4,7 @@
 use crate::state::AppState;
 use clax_core::feedback::Touched;
 use clax_core::model::Thread;
+use clax_core::store::live::LivePage;
 use clax_core::{ArtifactId, Event, EventBus, Store};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -227,6 +228,9 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 /// `null` when that viewer has none or the thread was not resolved by a
 /// viewer; and `addressed_pending`, `{harness, at}` while an agent's address
 /// of a live page's thread waits for the page's next snapshot, else `null`.
+/// A live page's thread also carries `page_url` (the page's URL with the
+/// thread's route) and `snapshot_path` (its version's `index.html` on disk,
+/// only when `with_path`, else `null`).
 pub fn thread_view(
     st: &Store,
     t: &Thread,
@@ -248,6 +252,13 @@ pub fn thread_views(
     with_path: bool,
 ) -> clax_core::Result<Vec<Value>> {
     let extras = st.thread_extras(threads, codex_push)?;
+    let mut live: HashMap<&str, Option<LivePage>> = HashMap::new();
+    for t in threads {
+        if !live.contains_key(t.artifact_id.as_str()) {
+            let p = st.live_page_of(&ArtifactId::parse(&t.artifact_id)?)?;
+            live.insert(&t.artifact_id, p);
+        }
+    }
     threads
         .iter()
         .zip(extras)
@@ -275,6 +286,25 @@ pub fn thread_views(
                 Some((harness, at)) => json!({"harness": harness, "at": at}),
                 None => Value::Null,
             };
+            if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
+                v["page_url"] = json!(format!(
+                    "{}{}{}",
+                    p.origin,
+                    p.path,
+                    t.anchor.route.as_deref().unwrap_or("")
+                ));
+                v["snapshot_path"] = if with_path {
+                    let id = ArtifactId::parse(&t.artifact_id)?;
+                    json!(
+                        st.home()
+                            .version_dir(&id, t.version_n)
+                            .join(clax_core::publish::INDEX)
+                            .to_string_lossy()
+                    )
+                } else {
+                    Value::Null
+                };
+            }
             Ok(v)
         })
         .collect()

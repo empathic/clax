@@ -489,6 +489,21 @@ export class DaemonClient {
     await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
   }
 
+  /** `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page `url`; `{live_watch, page, covered}`. */
+  liveWatch(url: string, replies: boolean): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/live-watches`, this.jsonBody("PUT", { url, replies_armed: replies }));
+  }
+
+  /** `DELETE /api/sessions/<sid>/live-watches?url=`: `{removed}`. */
+  liveUnwatch(url: string): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/live-watches?${new URLSearchParams({ url })}`, { method: "DELETE" });
+  }
+
+  /** `GET /api/live/pages?url=`: `{page, route}`, `page` null when the URL has no live page. */
+  livePage(url: string): Promise<any> {
+    return this.json(`/api/live/pages?${new URLSearchParams({ url })}`, { method: "GET" });
+  }
+
   /** `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`. */
   setWorking(id: string, body: { thread_ids?: string[]; message?: string }): Promise<any> {
     return this.json(() => `${this.sessionPath()}/working/${id}`, this.jsonBody("PUT", body));

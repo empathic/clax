@@ -97,6 +97,19 @@ pub struct FeedbackItem {
     /// The batch this comment was sent in, when it was sent with others.
     #[serde(default)]
     pub batch: Option<FeedbackBatch>,
+    /// The live page the comment was made on, for a live page's thread.
+    #[serde(default)]
+    pub live: Option<LiveRef>,
+}
+
+/// Where a comment on a live page was made, for the payload (spec 2026-10-05
+/// §9.3).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LiveRef {
+    /// The page's URL with the thread's route.
+    pub page_url: String,
+    /// The snapshot's `index.html` on disk.
+    pub snapshot_path: String,
 }
 
 /// A batch send (several threads sent together): its ID, how many threads it
@@ -181,13 +194,39 @@ fn one_line(s: &str) -> String {
     out
 }
 
-/// The five-line payload for one item (spec §10 "Feedback payload").
+/// The five-line payload for one item (spec §10 "Feedback payload"); six
+/// lines for a comment on a live page, naming the page and its snapshot
+/// (spec 2026-10-05 §9.3).
 pub fn render_item(i: &FeedbackItem) -> String {
     let resent = if i.resent { " (resent)" } else { "" };
     let clip = i
         .clip_path
         .clone()
         .unwrap_or_else(|| "none (no screenshot was captured for this comment)".to_string());
+    if let Some(l) = &i.live {
+        return format!(
+            "[clax] Comment sent to you{resent} on {title} (live page {page}; Clax view {url}), thread {tid}\n\
+             Anchored on: {anchor}  (snapshot v{v})\n\
+             Clip: {clip}\n\
+             Snapshot: {snapshot}\n\
+             {author}{by_page}: {body}\n\
+             Reply with comments_reply (addressed: true once the page shows the fix), then comments_resolve when done.",
+            title = quoted(&i.artifact_title),
+            page = one_line(&l.page_url),
+            url = i.url,
+            tid = i.thread_id,
+            anchor = one_line(&i.anchor.summary()),
+            v = i.version,
+            snapshot = one_line(&l.snapshot_path),
+            author = display_name(&i.author),
+            by_page = if i.via_page {
+                " (written by the page)"
+            } else {
+                ""
+            },
+            body = quoted(&i.body),
+        );
+    }
     format!(
         "[clax] Comment sent to you{resent} on {title} ({url}), thread {tid}\n\
          Anchored on: {anchor}  (v{v})\n\
@@ -319,7 +358,32 @@ mod tests {
             resent: false,
             created_at: "2026-09-29T10:00:00.000Z".into(),
             batch: None,
+            live: None,
         }
+    }
+
+    #[test]
+    fn a_live_page_payload_names_the_page_and_the_snapshot() {
+        let mut i = item();
+        i.anchor.route = Some("?tab=billing".into());
+        i.live = Some(LiveRef {
+            page_url: "http://localhost:5173/settings?tab=billing\u{2028}x".into(),
+            snapshot_path: "/h/.clax/artifacts/a/versions/3/index.html".into(),
+        });
+        let out = render_item(&i);
+        assert!(out.contains(
+            "(live page http://localhost:5173/settings?tab=billing\\u2028x; Clax view http://localhost:7480/a/7q3k9mzx2b4t), thread "
+        ), "{out}");
+        assert!(out.contains("Anchored on: ?tab=billing › "), "{out}");
+        assert!(out.contains("(snapshot v3)"), "{out}");
+        assert!(
+            out.contains("\nSnapshot: /h/.clax/artifacts/a/versions/3/index.html\n"),
+            "{out}"
+        );
+        assert!(out.ends_with(
+            "Reply with comments_reply (addressed: true once the page shows the fix), then comments_resolve when done."
+        ));
+        assert_eq!(out.lines().count(), 6);
     }
 
     #[test]

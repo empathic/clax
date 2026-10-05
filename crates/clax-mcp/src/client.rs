@@ -661,6 +661,42 @@ impl DaemonClient {
         .map(|_| ())
     }
 
+    /// `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page
+    /// `url`; `{live_watch, page, covered}`.
+    pub async fn live_watch(&self, url: &str, replies: bool) -> Result<Value> {
+        let body = json!({"url": url, "replies_armed": replies});
+        self.json(|c| {
+            c.request(
+                reqwest::Method::PUT,
+                &format!("{}/live-watches", c.session_path()),
+            )
+            .json(&body)
+        })
+        .await
+    }
+
+    /// `DELETE /api/sessions/<sid>/live-watches?url=`: `{removed}`.
+    pub async fn live_unwatch(&self, url: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(
+                reqwest::Method::DELETE,
+                &format!("{}/live-watches", c.session_path()),
+            )
+            .query(&[("url", url)])
+        })
+        .await
+    }
+
+    /// `GET /api/live/pages?url=`: `{page, route}`, `page` null when the URL
+    /// has no live page.
+    pub async fn live_page(&self, url: &str) -> Result<Value> {
+        self.json(|c| {
+            c.request(reqwest::Method::GET, "/api/live/pages")
+                .query(&[("url", url)])
+        })
+        .await
+    }
+
     /// `PUT /api/sessions/<sid>/working/<id>`: `{working, message_truncated}`.
     pub async fn set_working(&self, id: &str, body: &Value) -> Result<Value> {
         self.json(|c| {

@@ -162,7 +162,7 @@ pub const MIN_WAIT_S: u64 = 1;
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommentsReadArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
     /// One thread to read; every open thread when absent.
     pub thread_id: Option<String>,
@@ -175,7 +175,7 @@ pub struct CommentsReadArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommentsReplyArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
     /// The thread to reply to.
     pub thread_id: String,
@@ -190,7 +190,7 @@ pub struct CommentsReplyArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommentsResolveArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
     /// The thread to resolve.
     pub thread_id: String,
@@ -199,7 +199,7 @@ pub struct CommentsResolveArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WatchArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
     /// Watch (true, default) or stop watching (false).
     pub on: Option<bool>,
@@ -210,7 +210,7 @@ pub struct WatchArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WaitArgs {
-    /// Only comments on this artifact (URL or ID); any watched artifact when absent.
+    /// Only comments on this artifact (URL or ID, or a web page's URL); any watched artifact when absent.
     pub url_or_id: Option<String>,
     /// Seconds to wait, from 1 to 600 (default 50).
     pub timeout_s: Option<u64>,
@@ -219,7 +219,7 @@ pub struct WaitArgs {
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WorkingArgs {
-    /// Artifact URL or ID.
+    /// Artifact URL or ID, or a web page's URL (its live page).
     pub url_or_id: String,
     /// Threads of the artifact you are acting on (at most 20); replaces the ones named before.
     pub thread_ids: Option<Vec<String>>,
@@ -419,7 +419,9 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
 /// or a URL of one of these forms (query and fragment ignored):
 /// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
 /// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the per-artifact
-/// origin `http://<id>.localhost:<port>/v/<n>/...`.
+/// origin `http://<id>.localhost:<port>/v/<n>/...`. The CLI's reading of a
+/// reference; the tools read theirs with [`crate::target::target`], which
+/// also takes page URLs.
 pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();
     let s = s.split(['?', '#']).next().unwrap_or("");
@@ -454,11 +456,6 @@ pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolRe
     ))
 }
 
-/// The artifact ID in a reference accepted by [`artifact_ref`].
-fn artifact_id(url_or_id: &str) -> Result<String, CallToolResult> {
-    artifact_ref(url_or_id).map(|(id, _)| id)
-}
-
 /// `invalid_args` unless `tid` is a ULID, so it cannot reshape the request path.
 fn check_thread_id(tid: &str) -> Result<(), CallToolResult> {
     if clax_core::is_ulid(tid) {
@@ -487,7 +484,10 @@ fn sent_comment_ids(threads: &[Value]) -> Vec<String> {
 /// A daemon thread view as `comments_read` returns it: the quote shortened,
 /// the anchor's drawn `area` (null unless it is an area anchor) and its
 /// one-line `summary` (as the payload's "Anchored on" line; null for an anchor
-/// that does not parse), comments cut down to their ID, author, body, and time.
+/// that does not parse), comments cut down to their ID, author, body, and time,
+/// and `addressed_pending` (an agent's address waits for a live page's next
+/// snapshot). A live page's thread also carries `page_url` and
+/// `snapshot_path` (null without the token).
 pub fn thread_summary(t: &Value) -> Value {
     let comments: Vec<Value> = t["comments"]
         .as_array()
@@ -505,7 +505,7 @@ pub fn thread_summary(t: &Value) -> Value {
             })
         })
         .collect();
-    json!({
+    let mut out = json!({
         "thread_id": t["id"],
         "status": t["status"],
         "sent_to_agent": t["sent_to_agent"],
@@ -524,7 +524,13 @@ pub fn thread_summary(t: &Value) -> Value {
         "clip_path": t["clip_path"],
         "comments": comments,
         "feedback_state": t["feedback_state"],
-    })
+        "addressed_pending": !t["addressed_pending"].is_null(),
+    });
+    if let Some(page) = t.get("page_url") {
+        out["page_url"] = page.clone();
+        out["snapshot_path"] = t["snapshot_path"].clone();
+    }
+    out
 }
 
 async fn read_local(path: &Path) -> Result<Vec<u8>, CallToolResult> {
@@ -748,6 +754,40 @@ impl ClaxTools {
         render::client_error(e, &self.log_path)
     }
 
+    /// The artifact `url_or_id` names ([`crate::target::target`]), and the
+    /// version when it names one; a page URL is resolved to its live page.
+    ///
+    /// # Errors
+    /// `invalid_id` for a reference that names nothing, or a page URL with
+    /// no live page yet.
+    async fn resolve_ref(&self, url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
+        match crate::target::target(url_or_id, &self.browser_base())? {
+            crate::target::Target::Artifact { id, version } => Ok((id, version)),
+            crate::target::Target::Page(url) => {
+                let res = self
+                    .client
+                    .live_page(&url)
+                    .await
+                    .map_err(|e| self.fail(e))?;
+                match res["page"]["artifact_id"].as_str() {
+                    Some(id) => Ok((id.to_string(), None)),
+                    None => Err(render::error(
+                        "invalid_id",
+                        format!(
+                            "no live page at {url} yet: watch it, or comment on it in Chrome with the Clax extension first"
+                        ),
+                        json!({}),
+                    )),
+                }
+            }
+        }
+    }
+
+    /// The artifact ID of [`Self::resolve_ref`].
+    async fn resolve_id(&self, url_or_id: &str) -> Result<String, CallToolResult> {
+        self.resolve_ref(url_or_id).await.map(|(id, _)| id)
+    }
+
     fn artifact_url(&self, id: &str) -> String {
         format!("{}/a/{id}", self.browser_base())
     }
@@ -821,7 +861,7 @@ impl ClaxTools {
         };
         let target = match (&a.id, &a.url) {
             (Some(_), Some(_)) => return Err(invalid("pass at most one of id and url")),
-            (Some(t), None) | (None, Some(t)) => Some(artifact_id(t)?),
+            (Some(t), None) | (None, Some(t)) => Some(self.resolve_id(t).await?),
             (None, None) => None,
         };
         let mut files = Map::new();
@@ -945,7 +985,7 @@ impl ClaxTools {
     }
 
     async fn do_read(&self, a: ReadArgs) -> Outcome {
-        let (id, url_version) = artifact_ref(&a.url_or_id)?;
+        let (id, url_version) = self.resolve_ref(&a.url_or_id).await?;
         let got = self.client.get(&id).await.map_err(|e| self.fail(e))?;
         let n = match a.version.or(url_version) {
             Some(n) => n,
@@ -1020,13 +1060,13 @@ impl ClaxTools {
     }
 
     async fn do_delete(&self, a: TargetArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         self.client.delete(&id).await.map_err(|e| self.fail(e))?;
         Ok(json!({"artifact_id": id, "deleted": true}))
     }
 
     async fn set_pinned(&self, a: TargetArgs, pinned: bool) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         let res = self
             .client
             .patch(&id, &json!({"pinned": pinned}))
@@ -1036,7 +1076,7 @@ impl ClaxTools {
     }
 
     async fn do_open(&self, a: TargetArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         self.client.get(&id).await.map_err(|e| self.fail(e))?;
         let url = self.artifact_url(&id);
         let program = match &self.opener {
@@ -1059,7 +1099,7 @@ impl ClaxTools {
     }
 
     async fn do_asset_upload(&self, a: AssetUploadArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         self.prepare_session(
             a.file_path
                 .iter()
@@ -1223,7 +1263,7 @@ impl ClaxTools {
     }
 
     async fn do_comments_read(&self, a: CommentsReadArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         let (threads, next) = match &a.thread_id {
             Some(tid) => {
                 check_thread_id(tid)?;
@@ -1270,7 +1310,7 @@ impl ClaxTools {
     }
 
     async fn do_comments_reply(&self, a: CommentsReplyArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         check_thread_id(&a.thread_id)?;
         if a.text.trim().is_empty() {
             return Err(invalid("text must not be empty"));
@@ -1293,7 +1333,7 @@ impl ClaxTools {
     }
 
     async fn do_comments_resolve(&self, a: CommentsResolveArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         check_thread_id(&a.thread_id)?;
         let res = self
             .client
@@ -1309,7 +1349,37 @@ impl ClaxTools {
     }
 
     async fn do_watch(&self, a: WatchArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let url = match crate::target::target(&a.url_or_id, &self.browser_base())? {
+            crate::target::Target::Page(url) => url,
+            crate::target::Target::Artifact { id, .. } => {
+                return self.do_watch_artifact(id, a).await;
+            }
+        };
+        self.require_session().await?;
+        if a.on.unwrap_or(true) {
+            let res = self
+                .client
+                .live_watch(&url, a.replies.unwrap_or(true))
+                .await
+                .map_err(|e| self.fail(e))?;
+            Ok(json!({
+                "artifact_id": res["page"]["artifact_id"],
+                "url": res["page"]["url"],
+                "page_url": res["page"]["page_url"],
+                "scope": res["live_watch"]["scope"],
+                "watching": true,
+                "replies_armed": res["live_watch"]["replies_armed"],
+            }))
+        } else {
+            self.client
+                .live_unwatch(&url)
+                .await
+                .map_err(|e| self.fail(e))?;
+            Ok(json!({"page_url": url, "watching": false, "replies_armed": false}))
+        }
+    }
+
+    async fn do_watch_artifact(&self, id: String, a: WatchArgs) -> Outcome {
         self.require_session().await?;
         if a.on.unwrap_or(true) {
             let res = self
@@ -1335,7 +1405,7 @@ impl ClaxTools {
     }
 
     async fn do_working(&self, a: WorkingArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         if let Some(t) = &a.thread_ids {
             if t.len() > clax_core::working::MAX_WORKING_THREADS {
                 return Err(invalid("at most 20 thread_ids"));
@@ -1404,7 +1474,7 @@ impl ClaxTools {
     }
 
     async fn do_db_get(&self, a: DbGetArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         let path = db_path(&a.collection, &a.doc_id)?;
         let doc = match self.client.doc_get(&id, &path, level(a.as_level)).await {
             Ok(v) => Some(doc_view(&v["doc"])),
@@ -1423,7 +1493,7 @@ impl ClaxTools {
     }
 
     async fn do_db_list(&self, a: DbQueryArgs, allow_filters: bool) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         refuse_me(&a.collection)?;
         clax_core::db::collection_path(&a.collection)
             .map_err(|e| render::error("invalid_argument", e.to_string(), json!({})))?;
@@ -1470,7 +1540,7 @@ impl ClaxTools {
     }
 
     async fn do_db_write(&self, a: DbWriteArgs, update: bool) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         check_pin(a.if_version)?;
         self.prepare_session(a.file_path.as_deref().into_iter())
             .await;
@@ -1498,7 +1568,7 @@ impl ClaxTools {
     }
 
     async fn do_db_delete(&self, a: DbDeleteArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         check_pin(a.if_version)?;
         let path = db_path(&a.collection, &a.doc_id)?;
         let r = self
@@ -1510,7 +1580,7 @@ impl ClaxTools {
     }
 
     async fn do_db_str_replace(&self, a: DbStrReplaceArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         check_pin(a.if_version)?;
         let path = db_path(&a.collection, &a.doc_id)?;
         let mut body = json!({"path": path, "field": a.field, "old_str": a.old_str, "new_str": a.new_str, "replace_all": a.replace_all.unwrap_or(false)});
@@ -1526,7 +1596,7 @@ impl ClaxTools {
     }
 
     async fn do_db_batch(&self, a: DbBatchArgs) -> Outcome {
-        let id = artifact_id(&a.url_or_id)?;
+        let id = self.resolve_id(&a.url_or_id).await?;
         if a.writes.is_empty() || a.writes.len() > 50 {
             return Err(invalid("writes holds 1 to 50 entries"));
         }
@@ -1561,9 +1631,12 @@ impl ClaxTools {
 
     /// Tier 4. Its own result carries the feedback, so no piggyback follows.
     async fn do_wait(&self, a: WaitArgs) -> CallToolResult {
-        let artifact = match a.url_or_id.as_deref().map(artifact_id).transpose() {
-            Ok(x) => x,
-            Err(e) => return e,
+        let artifact = match &a.url_or_id {
+            Some(r) => match self.resolve_id(r).await {
+                Ok(id) => Some(id),
+                Err(e) => return e,
+            },
+            None => None,
         };
         if let Err(e) = self.require_session().await {
             return e;
@@ -1770,7 +1843,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Watch an artifact so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
+        description = "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
     )]
     pub async fn watch(
         &self,

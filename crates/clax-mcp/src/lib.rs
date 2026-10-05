@@ -8,6 +8,7 @@ pub mod probe;
 pub mod render;
 pub mod shim;
 pub mod standdown;
+pub mod target;
 pub mod tools;
 
 pub use client::{ClientError, DaemonClient};

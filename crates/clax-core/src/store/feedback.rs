@@ -41,13 +41,17 @@ fn live_targets(c: &Connection, aid: &str, owner: Option<&str>) -> Result<Vec<St
         .collect::<rusqlite::Result<Vec<String>>>()?)
 }
 
-/// Releases session `sid` after it ended: drops its watches; each of its
+/// Releases session `sid` after it ended: drops its watches and scope watches; each of its
 /// undelivered rows is deleted when another live session is a target of the
 /// same comment, else untargeted for the next session that publishes or watches.
 pub(crate) fn release_session(tx: &Transaction<'_>, sid: &str) -> Result<Touched> {
     let now = Store::now();
     let mut touched = Touched::default();
     tx.execute("DELETE FROM watches WHERE session_id = ?1", params![sid])?;
+    tx.execute(
+        "DELETE FROM live_watches WHERE session_id = ?1",
+        params![sid],
+    )?;
     let rows: Vec<(String, String, String, String)> = {
         let mut stmt = tx.prepare(
             "SELECT f.id, f.comment_id, f.thread_id, t.artifact_id FROM feedback f JOIN threads t ON t.id = f.thread_id
@@ -346,7 +350,23 @@ impl Store {
                         let clip_path = p.has_clip.then(|| {
                             self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned()
                         });
-                        good.push((p, anchor, clip_path));
+                        let live = super::live::live_page_of_conn(tx, &p.artifact_id)?.map(|lp| {
+                            crate::feedback::LiveRef {
+                                page_url: format!(
+                                    "{}{}{}",
+                                    lp.origin,
+                                    lp.path,
+                                    anchor.route.as_deref().unwrap_or("")
+                                ),
+                                snapshot_path: self
+                                    .home
+                                    .version_dir(&aid, p.version_n)
+                                    .join(crate::publish::INDEX)
+                                    .to_string_lossy()
+                                    .into_owned(),
+                            }
+                        });
+                        good.push((p, anchor, clip_path, live));
                     }
                     None => tracing::warn!(
                         feedback_id = p.id.as_str(),
@@ -356,7 +376,7 @@ impl Store {
                     ),
                 }
             }
-            for (p, _, _) in &good {
+            for (p, _, _, _) in &good {
                 if p.delivered {
                     tx.execute(
                         "UPDATE feedback SET resend_count = resend_count + 1, last_sent_at = ?2,
@@ -375,7 +395,7 @@ impl Store {
         })?;
         let mut touched = Touched::default();
         let mut items = Vec::with_capacity(pending.len());
-        for (p, anchor, clip_path) in pending {
+        for (p, anchor, clip_path, live) in pending {
             touched
                 .threads
                 .insert((p.artifact_id.clone(), p.thread_id.clone()));
@@ -395,6 +415,7 @@ impl Store {
                 resent: p.delivered,
                 created_at: p.created_at,
                 batch: p.batch,
+                live,
             });
         }
         Ok((items, touched))

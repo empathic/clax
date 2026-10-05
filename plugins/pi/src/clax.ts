@@ -34,6 +34,7 @@ const opt = <T extends TSchema>(t: T) => Type.Optional(t);
 const str = (description: string) => Type.String({ description });
 const version = (description: string) => Type.Integer({ minimum: 0, description });
 const urlOrId = str("Artifact URL or ID.");
+const pageOrId = str("Artifact URL or ID, or a web page's URL (its live page).");
 
 const FileArg = Type.Object({
   path: opt(str("Local file to read; text files are sent as UTF-8, others as base64.")),
@@ -85,34 +86,34 @@ const StatusArgs = Type.Object({}, strict);
 const threadId = (description: string) => Type.String({ description });
 
 const CommentsReadArgs = Type.Object({
-  url_or_id: urlOrId,
+  url_or_id: pageOrId,
   thread_id: opt(threadId("One thread to read; every open thread when absent.")),
   cursor: opt(str("`next_cursor` from the previous call, for the next page of threads.")),
   include_resolved: opt(Type.Boolean({ description: "Also return resolved threads (default false)." })),
 }, strict);
 
 const CommentsReplyArgs = Type.Object({
-  url_or_id: urlOrId,
+  url_or_id: pageOrId,
   thread_id: threadId("The thread to reply to."),
   text: str("The reply, shown to the person under its harness's name, such as `claude`."),
   addressed: opt(Type.Boolean({ description: "On a live page: the page now shows the fix, so the thread is listed as addressed in the page's next snapshot. Not for artifacts (publish with `addresses` instead)." })),
 }, strict);
 
-const CommentsResolveArgs = Type.Object({ url_or_id: urlOrId, thread_id: threadId("The thread to resolve.") }, strict);
+const CommentsResolveArgs = Type.Object({ url_or_id: pageOrId, thread_id: threadId("The thread to resolve.") }, strict);
 
 const WatchArgs = Type.Object({
-  url_or_id: urlOrId,
+  url_or_id: pageOrId,
   on: opt(Type.Boolean({ description: "Watch (true, default) or stop watching (false)." })),
   replies: opt(Type.Boolean({ description: "Let comments sent to the agent end your turn (Stop hook) or wake the session (native push); default true." })),
 }, strict);
 
 const WaitArgs = Type.Object({
-  url_or_id: opt(str("Only comments on this artifact (URL or ID); any watched artifact when absent.")),
+  url_or_id: opt(str("Only comments on this artifact (URL or ID, or a web page's URL); any watched artifact when absent.")),
   timeout_s: opt(Type.Integer({ minimum: 0, description: "Seconds to wait, from 1 to 600 (default 50)." })),
 }, strict);
 
 const WorkingArgs = Type.Object({
-  url_or_id: urlOrId,
+  url_or_id: pageOrId,
   thread_ids: opt(Type.Array(Type.String(), { description: "Threads of the artifact you are acting on (at most 20); replaces the ones named before." })),
   message: opt(str("What you are doing, in a few words (at most 140 characters).")),
   done: opt(Type.Boolean({ description: "Clear it now (with `thread_ids`, only those threads)." })),
@@ -289,6 +290,43 @@ export function artifactRef(urlOrId: string): { id: string; version?: number } {
   throw toolError("invalid_id", `'${urlOrId}' is not an artifact ID or URL`);
 }
 
+/** What a tool's `url_or_id` names (spec 2026-10-05 §6.2), for a daemon
+ * reached at `daemonBase`: an http(s) URL on the daemon's port is an artifact
+ * reference (whatever its host); any other http(s) URL is a page. An artifact
+ * reference, and text without a scheme, are read as `artifactRef` reads them.
+ * Anything else is `invalid_id`. */
+export function target(urlOrId: string, daemonBase: string): { kind: "artifact"; id: string; version?: number } | { kind: "page"; url: string } {
+  const s = urlOrId.trim();
+  const invalidId = () => toolError("invalid_id", `'${s}' is not an artifact ID, a Clax URL, or an http(s) page URL`);
+  if (s.includes("://")) {
+    let u: URL;
+    try {
+      u = new URL(s);
+    } catch {
+      throw invalidId();
+    }
+    if (u.protocol !== "http:" && u.protocol !== "https:") throw invalidId();
+    const daemonPort = portOf(daemonBase);
+    if (daemonPort === undefined || portOf(s) !== daemonPort) return { kind: "page", url: s };
+  }
+  try {
+    return { kind: "artifact", ...artifactRef(s) };
+  } catch {
+    throw invalidId();
+  }
+}
+
+/** The port of an http(s) URL, the scheme's default when none is written. */
+function portOf(url: string): number | undefined {
+  try {
+    const u = new URL(url);
+    if (u.port) return Number(u.port);
+    return u.protocol === "https:" ? 443 : u.protocol === "http:" ? 80 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A thread ID is a canonical ULID (as `clax_core::is_ulid`); checking it
  * keeps it from reshaping the request path. */
 const ULID_RE = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/;
@@ -381,10 +419,12 @@ function anchorSummary(a: Json): string | null {
 
 /** A daemon thread view as `comments_read` returns it: the quote shortened,
  * the anchor's drawn `area` (null unless it is an area anchor) and its
- * one-line `summary`, comments cut down to their ID, author, body, and time. */
+ * one-line `summary`, comments cut down to their ID, author, body, and time,
+ * and `addressed_pending` (an agent's address waits for a live page's next
+ * snapshot). A live page's thread also carries `page_url` and `snapshot_path`. */
 function threadSummary(t: Json): Json {
   const quote = t.anchor?.quote;
-  return {
+  const out: Json = {
     thread_id: t.id ?? null,
     status: t.status ?? null,
     sent_to_agent: t.sent_to_agent ?? null,
@@ -403,7 +443,13 @@ function threadSummary(t: Json): Json {
       id: c.id ?? null, author_kind: c.author_kind ?? null, author_name: c.author_name ?? null, body: c.body ?? null, created_at: c.created_at ?? null,
     })),
     feedback_state: t.feedback_state ?? null,
+    addressed_pending: t.addressed_pending != null,
   };
+  if (t.page_url !== undefined) {
+    out.page_url = t.page_url;
+    out.snapshot_path = t.snapshot_path ?? null;
+  }
+  return out;
 }
 
 /** The IDs of the comments in `threads` (daemon thread views) that were sent to the agent. */
@@ -619,6 +665,27 @@ class Tools {
     return `${this.browserBase(c)}/a/${id}`;
   }
 
+  /** What `urlOrId` names (`target`), finding the daemon first when a URL
+   * must be compared with its port. */
+  private async targetOf(c: DaemonClient, urlOrId: string): Promise<ReturnType<typeof target>> {
+    if (urlOrId.includes("://") && c.browserBase() === undefined) await this.call(() => c.ensureSession());
+    return target(urlOrId, this.browserBase(c));
+  }
+
+  /** The artifact `urlOrId` names (`target`), and the version when it names
+   * one; a page URL is resolved to its live page (`invalid_id` when it has
+   * none yet). */
+  private async resolveRef(c: DaemonClient, urlOrId: string): Promise<{ id: string; version?: number }> {
+    const t = await this.targetOf(c, urlOrId);
+    if (t.kind === "artifact") return t.version === undefined ? { id: t.id } : { id: t.id, version: t.version };
+    const r = await this.call(() => c.livePage(t.url));
+    const id = r.page?.artifact_id;
+    if (typeof id !== "string") {
+      throw toolError("invalid_id", `no live page at ${t.url} yet: watch it, or comment on it in Chrome with the Clax extension first`);
+    }
+    return { id };
+  }
+
   /** Runs `f`, turning daemon failures into error results. */
   private async call<T>(f: () => Promise<T>): Promise<T> {
     try {
@@ -659,7 +726,8 @@ class Tools {
     else throw invalid("pass exactly one of file_path and html");
     if (a.id !== undefined && a.url !== undefined) throw invalid("pass at most one of id and url");
     const ref = a.id ?? a.url;
-    const target = ref === undefined ? undefined : artifactRef(ref).id;
+    const c = this.clientFor(ctx);
+    const targetId = ref === undefined ? undefined : (await this.resolveRef(c, ref)).id;
     const files: Json = {};
     for (const [name, f] of Object.entries(a.files ?? {}).sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))) {
       if (name === INDEX) throw invalid("index.html comes from file_path or html, not files");
@@ -667,7 +735,7 @@ class Tools {
     }
     // A new artifact needs a title: the given one, else the page's <title>.
     let title = a.title;
-    if (target === undefined && title === undefined) {
+    if (targetId === undefined && title === undefined) {
       title = page.encoding === "utf8" ? htmlTitle(page.content) : undefined;
       if (title === undefined) throw invalid("a new artifact needs a title: pass `title`, or give the page a non-empty <title>");
     }
@@ -680,14 +748,13 @@ class Tools {
       for (const t of a.addresses) checkThreadId(t);
       body.addresses = a.addresses;
     }
-    const c = this.clientFor(ctx);
     const res = await this.call(async () => {
-      if (target === undefined) return c.create(body);
-      body.if_version = a.if_version ?? Number((await c.get(target)).artifact?.current_version ?? 0);
+      if (targetId === undefined) return c.create(body);
+      body.if_version = a.if_version ?? Number((await c.get(targetId)).artifact?.current_version ?? 0);
       try {
-        return await c.publishVersion(target, body);
+        return await c.publishVersion(targetId, body);
       } catch (e) {
-        if (e instanceof ClientError && e.kind === "api" && e.status === 409) throw await this.conflict(c, target, e);
+        if (e instanceof ClientError && e.kind === "api" && e.status === 409) throw await this.conflict(c, targetId, e);
         throw e;
       }
     });
@@ -728,8 +795,8 @@ class Tools {
   }
 
   async read(ctx: ExtensionContext, a: Static<typeof ReadArgs>): Promise<Json> {
-    const { id, version: urlVersion } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const { id, version: urlVersion } = await this.resolveRef(c, a.url_or_id);
     const got = await this.call(() => c.get(id));
     const n = a.version ?? urlVersion ?? Number(got.artifact?.current_version ?? 0);
     const version = (got.versions ?? []).find((v: Json) => v.n === n);
@@ -764,22 +831,22 @@ class Tools {
   }
 
   async delete(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     await this.call(() => c.delete(id));
     return { artifact_id: id, deleted: true };
   }
 
   async setPinned(ctx: ExtensionContext, a: Static<typeof TargetArgs>, pinned: boolean): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     const res = await this.call(() => c.patch(id, { pinned }));
     return { artifact_id: id, pinned: res.artifact?.pinned ?? null };
   }
 
   async open(ctx: ExtensionContext, a: Static<typeof TargetArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     await this.call(() => c.get(id));
     const url = this.artifactUrl(c, id);
     const opened = this.env.CLAX_NO_OPEN === undefined && (await openInBrowser(url, this.env, this.opts.openWaitMs ?? OPEN_WAIT_MS));
@@ -796,14 +863,14 @@ class Tools {
   }
 
   async assetUpload(ctx: ExtensionContext, a: Static<typeof AssetUploadArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     const paths = [...(a.file_path === undefined ? [] : [a.file_path]), ...(a.file_paths ?? [])];
     if (paths.length === 0) throw invalid("pass file_path or file_paths");
     const files = paths.map(p => {
       const path = this.localPath(ctx, p);
       return { name: basename(path) || "file", bytes: readLocal(path) };
     });
-    const c = this.clientFor(ctx);
     const assets: Json[] = [];
     for (const { name, bytes } of files) {
       const res = await this.call(() => c.uploadAsset(id, name, undefined, bytes));
@@ -852,8 +919,8 @@ class Tools {
   }
 
   async commentsRead(ctx: ExtensionContext, a: Static<typeof CommentsReadArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     let threads: Json[];
     let next: unknown = null;
     if (a.thread_id !== undefined) {
@@ -881,10 +948,10 @@ class Tools {
   }
 
   async commentsReply(ctx: ExtensionContext, a: Static<typeof CommentsReplyArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     checkThreadId(a.thread_id);
     if (!a.text.trim()) throw invalid("text must not be empty");
-    const c = this.clientFor(ctx);
     const r = await this.call(() => c.reply(id, a.thread_id, a.text, a.addressed ?? false));
     if (typeof r.guidance === "string") return { thread_id: a.thread_id, replied: false, guidance: r.guidance };
     const out: Json = { thread_id: a.thread_id, replied: true, comment_id: r.comment?.id ?? null };
@@ -893,9 +960,9 @@ class Tools {
   }
 
   async commentsResolve(ctx: ExtensionContext, a: Static<typeof CommentsResolveArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
-    checkThreadId(a.thread_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
+    checkThreadId(a.thread_id);
     const r = await this.call(() => c.resolve(id, a.thread_id));
     return typeof r.guidance === "string"
       ? { thread_id: a.thread_id, resolved: false, guidance: r.guidance }
@@ -903,8 +970,24 @@ class Tools {
   }
 
   async watch(ctx: ExtensionContext, a: Static<typeof WatchArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
     const c = this.clientFor(ctx);
+    const t = await this.targetOf(c, a.url_or_id);
+    if (t.kind === "page") {
+      if (a.on ?? true) {
+        const r = await this.call(() => c.liveWatch(t.url, a.replies ?? true));
+        return {
+          artifact_id: r.page?.artifact_id ?? null,
+          url: r.page?.url ?? null,
+          page_url: r.page?.page_url ?? null,
+          scope: r.live_watch?.scope ?? null,
+          watching: true,
+          replies_armed: r.live_watch?.replies_armed ?? null,
+        };
+      }
+      await this.call(() => c.liveUnwatch(t.url));
+      return { page_url: t.url, watching: false, replies_armed: false };
+    }
+    const id = t.id;
     if (a.on ?? true) {
       const r = await this.call(() => c.watch(id, a.replies ?? true));
       return { artifact_id: id, url: this.artifactUrl(c, id), watching: true, replies_armed: r.watch?.replies_armed ?? null };
@@ -914,12 +997,12 @@ class Tools {
   }
 
   async working(ctx: ExtensionContext, a: Static<typeof WorkingArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     if (a.thread_ids) {
       if (a.thread_ids.length > 20) throw invalid("at most 20 thread_ids");
       for (const t of a.thread_ids) checkThreadId(t);
     }
-    const c = this.clientFor(ctx);
     const url = this.artifactUrl(c, id);
     if (a.done) {
       const r = await this.call(() => c.clearWorking(id, a.thread_ids));
@@ -952,9 +1035,9 @@ class Tools {
   }
 
   async dbGet(ctx: ExtensionContext, a: Static<typeof DbGetArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
-    const path = dbPath(a.collection, a.doc_id);
     const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
+    const path = dbPath(a.collection, a.doc_id);
     let doc: Json | null = null;
     try {
       doc = docView((await c.docGet(id, path, a.as_level)).doc ?? {});
@@ -969,7 +1052,8 @@ class Tools {
   }
 
   async dbList(ctx: ExtensionContext, a: Static<typeof DbQueryArgs>, allowFilters: boolean): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     refuseMe(a.collection);
     collectionPath(a.collection);
     const q = a.query ?? {};
@@ -986,18 +1070,17 @@ class Tools {
     if (q.limit !== undefined) pairs.push(["limit", String(q.limit)]);
     if (q.cursor !== undefined) pairs.push(["cursor", q.cursor]);
     if (a.as_level !== undefined) pairs.push(["as_level", a.as_level]);
-    const c = this.clientFor(ctx);
     const r = await this.call(() => c.docList(id, pairs));
     return { artifact_id: id, collection: a.collection, docs: (r.docs ?? []).map(docView), next_cursor: r.next_cursor ?? null, note: DOC_NOTE };
   }
 
   async dbWrite(ctx: ExtensionContext, a: Static<typeof DbWriteArgs>, update: boolean): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
     const body: Json = { data: this.dbBody(ctx, a.data as Json | undefined, a.file_path) };
     if (a.if_version !== undefined) body.if_version = a.if_version;
-    const c = this.clientFor(ctx);
     const r = await this.call(() => (update ? c.docPatch(id, path, body, a.as_level) : c.docPut(id, path, body, a.as_level)));
     const out: Json = { artifact_id: id, path, version: r.doc?.version ?? null };
     if (!update) out.created = r.created ?? null;
@@ -1005,27 +1088,28 @@ class Tools {
   }
 
   async dbDelete(ctx: ExtensionContext, a: Static<typeof DbDeleteArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
-    const c = this.clientFor(ctx);
     const r = await this.call(() => c.docDelete(id, path, a.if_version, a.as_level));
     return { artifact_id: id, path, deleted: r.deleted ?? null };
   }
 
   async dbStrReplace(ctx: ExtensionContext, a: Static<typeof DbStrReplaceArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     checkPin(a.if_version);
     const path = dbPath(a.collection, a.doc_id);
     const body: Json = { path, field: a.field, old_str: a.old_str, new_str: a.new_str, replace_all: a.replace_all ?? false };
     if (a.if_version !== undefined) body.if_version = a.if_version;
-    const c = this.clientFor(ctx);
     const r = await this.call(() => c.docStrReplace(id, body, a.as_level));
     return { artifact_id: id, path, version: r.doc?.version ?? null };
   }
 
   async dbBatch(ctx: ExtensionContext, a: Static<typeof DbBatchArgs>): Promise<Json> {
-    const { id } = artifactRef(a.url_or_id);
+    const c = this.clientFor(ctx);
+    const { id } = await this.resolveRef(c, a.url_or_id);
     if (a.writes.length < 1 || a.writes.length > 50) throw invalid("writes holds 1 to 50 entries");
     const writes = a.writes.map(w => {
       checkPin(w.if_version);
@@ -1039,7 +1123,6 @@ class Tools {
       if (w.if_version !== undefined) e.if_version = w.if_version;
       return e;
     });
-    const c = this.clientFor(ctx);
     const r = await this.call(() => c.docBatch(id, { writes }, a.as_level));
     return { artifact_id: id, atomic: true, results: r.results ?? [] };
   }
@@ -1049,9 +1132,9 @@ class Tools {
    * feedback items, and the daemon's prose rendering of them for the trailing
    * block. */
   async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>): Promise<{ result: Json; feedback: unknown[]; text: string | null }> {
-    const artifact = a.url_or_id === undefined ? undefined : artifactRef(a.url_or_id).id;
-    const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
     const c = this.clientFor(ctx);
+    const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id)).id;
+    const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
     const r = await this.call(() => c.feedback("wait", secs, artifact));
     const feedback: unknown[] = Array.isArray(r.feedback) ? r.feedback : [];
     return {
@@ -1234,7 +1317,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Resolve a Clax comment thread you have acted on",
       CommentsResolveArgs, (ctx, a) => tools.commentsResolve(ctx, a));
     define("watch", "Clax watch",
-      "Watch an artifact so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
+      "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",

@@ -287,19 +287,33 @@ Tools:
 
 - `comments_read` (`url_or_id`; optional `thread_id`, `cursor`,
   `include_resolved`): threads with `anchor`, `clip_path`, `comments`,
-  `sent_to_agent`, `status`, and `feedback_state`.
+  `sent_to_agent`, `status`, `feedback_state`, and `addressed_pending`; on a
+  live page also `page_url` and `snapshot_path`.
 - `comments_reply` (`url_or_id`, `thread_id`, `text`): `replied: true`, or
   `replied: false` with `guidance` on a thread that was not sent to you.
 - `comments_resolve` (`url_or_id`, `thread_id`): `resolved: true`, or
   `resolved: false` with `guidance` on a thread that was not sent to you.
 - `watch` (`url_or_id`; `on` default true; `replies` default true): follow an
-  artifact you did not publish, or stop following one. Publishing already
+  artifact you did not publish, or a page URL (your dev server's), covering
+  every page under it; or stop following one. Publishing already
   watches with replies on (an existing watch keeps its setting).
   `replies: false` keeps comments out of your Stop
   hook and out of native push; they still arrive on tool results, with the
   person's next message, and from `wait_for_feedback`.
 - `wait_for_feedback` (optional `url_or_id`; `timeout_s` default 50, at most
   600): `{"feedback": [...], "waited_s": n, "call_again": true|false}`.
+
+**Live pages.** When you run a web app's dev server (or any page the person
+will look at in Chrome), call `watch` with its URL, for example
+`watch({url_or_id: "http://localhost:5173/"})`, right after it starts. That
+watches every page under that URL: comments the person makes there with the
+Clax extension reach you like comments on artifacts, with the page URL, a
+screenshot (`Clip:`) and a snapshot of the page's HTML (`Snapshot:`). After
+your change shows in the page (hot reload or restart), reply with
+`comments_reply` and `addressed: true`; the next snapshot of the page is
+recorded as addressing the thread. You cannot `publish` a live page. If the
+person has not set up the extension, tell them to run `/clax:extension`
+(Claude Code) or `clax init`, then load `~/.clax/extension` once in Chrome.
 
 Showing that you are working: when a comment reaches you, the person's page
 already shows you as working on its thread, and it clears when you reply to

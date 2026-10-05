@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@mariozechner/pi-coding-agent";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, textPrefix } from "../src/clax.ts";
+import { artifactRef, claxExtension, htmlTitle, INJECT_RETRY_MS, isText, RENEW_EVERY_MS, target, textPrefix, ToolError } from "../src/clax.ts";
 import { DaemonClient } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
@@ -461,6 +461,30 @@ async function browserThread(aid: string, body: string, base = daemon.base, anch
   return (await res.json()).thread.id;
 }
 
+/** A comment on the web page `url` as a named viewer, with its snapshot and
+ * clip, as the Chrome extension posts it; the live page's artifact ID and the
+ * thread ID. */
+async function liveThread(url: string, body: string): Promise<{ aid: string; tid: string }> {
+  const me = await fetch(`${daemon.base}/api/viewers/me`);
+  const cookie = (me.headers.get("set-cookie") ?? "").split(";")[0];
+  const named = await fetch(`${daemon.base}/api/viewers/me`, {
+    method: "PUT", headers: { cookie, "content-type": "application/json" }, body: JSON.stringify({ display_name: "Alex" }),
+  });
+  expect(named.status).toBe(200);
+  const form = new FormData();
+  form.set("url", url);
+  form.set("title", "Settings");
+  form.set("anchor", JSON.stringify({ kind: "element", selector: "body", file: "index.html" }));
+  form.set("body", body);
+  form.set("pending", "[]");
+  form.set("snapshot", new Blob(["<!doctype html><p>x"], { type: "text/html" }));
+  form.set("clip", new Blob([Buffer.from("89504e470d0a1a0a636c61782d74657374", "hex")], { type: "image/png" }));
+  const res = await fetch(`${daemon.base}/api/live/threads`, { method: "POST", headers: { cookie }, body: form });
+  expect(res.status).toBe(201);
+  const r = await res.json();
+  return { aid: r.page.artifact_id, tid: r.thread.id };
+}
+
 /** The JSON block and the trailing block of a tool result. */
 function parts(o: { content: { type: string; text?: string }[]; isError: boolean }) {
   expect(o.isError).toBe(false);
@@ -506,6 +530,29 @@ describe("comments", () => {
     const status = parts(await pi.callToolAsPi("clax_status", {}, ctx)).json;
     expect(status.watches[0]).toMatchObject({ artifact_id: aid, replies_armed: false });
     expect(status.push).toMatchObject({ tier: "inject", available: true });
+  });
+
+  it("watch, comments_read, and wait_for_feedback take a page URL", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-live");
+    const w = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/" }, ctx)).json;
+    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true });
+    expect(w.url).toMatch(new RegExp(`/a/${w.artifact_id}$`));
+    // `@agent` sends the thread.
+    const { aid, tid } = await liveThread("http://localhost:5173/settings", "@agent the button overflows");
+    const waited = await pi.callToolAsPi("clax_wait_for_feedback", { url_or_id: "http://localhost:5173/settings", timeout_s: 5 }, ctx);
+    const got = parts(waited);
+    expect(got.json.feedback).toHaveLength(1);
+    expect(got.json.feedback[0]).toMatchObject({ thread_id: tid, live: { page_url: "http://localhost:5173/settings" } });
+    expect(got.trailing).toContain("(live page http://localhost:5173/settings; Clax view ");
+    const read = parts(await pi.callToolAsPi("clax_comments_read", { url_or_id: "http://localhost:5173/settings" }, ctx)).json;
+    expect(read.artifact_id).toBe(aid);
+    expect(read.threads[0]).toMatchObject({ thread_id: tid, page_url: "http://localhost:5173/settings", addressed_pending: false });
+    expect(read.threads[0].snapshot_path).toMatch(/\/versions\/1\/index\.html$/);
+    const never = await pi.callTool("clax_comments_read", { url_or_id: "http://localhost:5173/never" }, ctx);
+    expect(never.isError).toBe(true);
+    expect(json(never).error.code).toBe("invalid_id");
+    const off = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/", on: false }, ctx)).json;
+    expect(off).toMatchObject({ page_url: "http://localhost:5173/", watching: false });
   });
 
   it("wait_for_feedback returns within a second of a send and asks to call again", async () => {
@@ -927,6 +974,26 @@ describe("helpers match the shared contract fixture", () => {
     for (const c of FIXTURE.artifact_ref) {
       if (c.error) expect(() => artifactRef(c.input), c.input).toThrow(new RegExp(c.error));
       else expect(artifactRef(c.input), c.input).toEqual(c.version === null ? { id: c.id } : { id: c.id, version: c.version });
+    }
+  });
+
+  it("target", () => {
+    const { daemon_base: base, cases } = FIXTURE.target;
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      if (c.error) {
+        let code: unknown;
+        try {
+          target(c.input, base);
+        } catch (e) {
+          code = e instanceof ToolError ? e.error.code : e;
+        }
+        expect(code, c.input).toBe(c.error);
+      } else if (c.page) {
+        expect(target(c.input, base), c.input).toEqual({ kind: "page", url: c.page });
+      } else {
+        expect(target(c.input, base), c.input).toEqual(c.version === null ? { kind: "artifact", id: c.id } : { kind: "artifact", id: c.id, version: c.version });
+      }
     }
   });
 
