@@ -1,7 +1,11 @@
 // Every message between the extension's parts (spec 2026-10-05 §9.4), and
 // one validator per receiver. A receiver drops anything its validator
 // refuses: content scripts share the page's DOM, so the worker treats what
-// they send as checked input, never as trusted.
+// they send as checked input, never as trusted. The validators deny by
+// default: a message is a plain object whose own fields are exactly its
+// type's (optional ones aside), each checked for type and bounds; an
+// unknown field, a field read through a prototype, or a symbol key refuses
+// it.
 import type { Anchor, AnchorResult } from "../../bridge/src/protocol";
 import type { Participants, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
@@ -10,10 +14,15 @@ import type { Working } from "../../shell/src/view/working-model";
 export const MAX_URL = 4096;
 export const MAX_BODY = 10_000;
 export const MAX_TITLE = 1000;
+/** A transport bound in UTF-16 code units; the daemon enforces the 8 MiB cap on the snapshot's bytes. */
 export const MAX_SNAPSHOT_CHARS = 8 * 1024 * 1024;
+export const MAX_ROUTE = 512;
+/** Why a pick carries a placeholder or no snapshot (the serializer's `error`). */
+export type SnapshotError = "too_large";
 export const PICK_ID = /^[0-9a-f]{32}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const HANDLE = /^a_[0-9a-f]{22}$/;
+const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
 
 export type Rect = { x: number; y: number; w: number; h: number };
 export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string };
@@ -22,7 +31,7 @@ export type OverlayToWorker =
   | { t: "hello"; url: string }
   | { t: "route"; url: string }
   | { t: "capture"; rect: Rect; dpr: number }
-  | { t: "pick"; pickId: string; anchor: Anchor; url: string; title: string; snapshot: string | null; snapshotError: string | null }
+  | { t: "pick"; pickId: string; anchor: Anchor; url: string; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
   | { t: "quiet"; url: string; title: string; snapshot: string }
   | { t: "resolved"; results: AnchorResult[] }
   | { t: "comment-mode"; on: boolean }
@@ -87,82 +96,122 @@ export type PanelToWorker =
 
 type Obj = Record<string, unknown>;
 const obj = (v: unknown): v is Obj => typeof v === "object" && v !== null && !Array.isArray(v);
+/** A plain object whose own string keys are all `required` (each present) and some of `optional`, and nothing else. */
+function shape(v: unknown, required: readonly string[], optional: readonly string[] = []): v is Obj {
+  if (!obj(v)) return false;
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return false;
+  return Reflect.ownKeys(v).every(k => typeof k === "string" && (required.includes(k) || optional.includes(k)))
+    && required.every(k => Object.hasOwn(v, k));
+}
 const str = (v: unknown, max: number): v is string => typeof v === "string" && v.length <= max;
 const strOrNull = (v: unknown, max: number) => v === null || str(v, max);
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const bool = (v: unknown): v is boolean => typeof v === "boolean";
 const url = (v: unknown) => str(v, MAX_URL) && /^https?:\/\//.test(v);
 const ulid = (v: unknown) => typeof v === "string" && ULID.test(v);
 const pickId = (v: unknown) => typeof v === "string" && PICK_ID.test(v);
 const text = (v: unknown, max: number) => str(v, max) && v.trim().length > 0;
-const rect = (v: unknown): v is Rect => obj(v) && num(v.x) && num(v.y) && num(v.w) && num(v.h) && v.w >= 0 && v.h >= 0;
-const numbers = (v: unknown, keys: string[]) => obj(v) && keys.every(k => num(v[k]));
+const BOX = ["x", "y", "w", "h"];
+const box = (v: unknown): v is Rect => shape(v, BOX) && BOX.every(k => num(v[k])) && (v.w as number) >= 0 && (v.h as number) >= 0;
 
 const KINDS = new Set(["element", "range", "area"]);
+const ANCHOR = ["kind", "selector", "quote", "prefix", "suffix", "html_hash", "rect", "custom_name", "file"];
+const ANCHOR_RECT = ["x", "y", "w", "h", "scrollX", "scrollY", "viewportW"];
+/** At most 64 characters, none of them a control character or a line separator (the daemon's fingerprint rule). */
+const fingerprint = (v: unknown) => v === undefined || (typeof v === "string" && [...v].length <= 64 && !/[\p{Cc}\u2028\u2029]/u.test(v));
+/** A drawn rectangle as fractions of its element's box, inside it, with some width and height. */
+function area(v: unknown): boolean {
+  if (!shape(v, BOX, ["tag", "text", "children"]) || !BOX.every(k => num(v[k]) && (v[k] as number) >= 0 && (v[k] as number) <= 1)) return false;
+  const { x, y, w, h } = v as Rect;
+  return w > 0 && h > 0 && x + w <= 1 + 1e-4 && y + h <= 1 + 1e-4
+    && fingerprint(v.tag) && fingerprint(v.text) && (v.children === undefined || (count(v.children) && v.children <= 0xffff_ffff));
+}
 /** An anchor as the overlay builds one (spec main §9 "Anchors"); the daemon validates it again. */
 export function isAnchor(v: unknown): v is Anchor {
-  if (!obj(v) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html" || "route" in v) return false;
+  if (!shape(v, ANCHOR, ["area"]) || typeof v.kind !== "string" || !KINDS.has(v.kind) || v.file !== "index.html") return false;
   if (!strOrNull(v.selector, 1024) || !strOrNull(v.quote, 2000) || !strOrNull(v.prefix, 64) || !strOrNull(v.suffix, 64)) return false;
   if (!strOrNull(v.html_hash, 80) || v.custom_name !== null) return false;
-  if (v.rect !== null && !numbers(v.rect, ["x", "y", "w", "h", "scrollX", "scrollY", "viewportW"])) return false;
-  if (v.area !== undefined && !numbers(v.area, ["x", "y", "w", "h"])) return false;
+  if (v.rect !== null && !(shape(v.rect, ANCHOR_RECT) && ANCHOR_RECT.every(k => num((v.rect as Obj)[k])))) return false;
+  if (Object.hasOwn(v, "area") && !area(v.area)) return false;
   return true;
 }
 
+const METHODS = new Set(["exact", "selector", "quote", "custom"]);
+const result = (r: unknown) => shape(r, ["id", "found", "method", "rect"]) && ulid(r.id) && bool(r.found)
+  && (r.method === null || (typeof r.method === "string" && METHODS.has(r.method))) && (r.rect === null || box(r.rect));
+
+const PAGE = ["artifact_id", "origin", "path", "page_url", "title", "current_version", "url"];
+/** A live page as the daemon describes it (`PageView`). */
+const page = (v: unknown): v is PageView => shape(v, PAGE) && typeof v.artifact_id === "string" && ARTIFACT_ID.test(v.artifact_id)
+  && str(v.origin, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(v.origin) && str(v.path, MAX_URL) && v.path.startsWith("/")
+  && url(v.page_url) && str(v.title, MAX_TITLE) && count(v.current_version) && url(v.url);
+
 export function isFromOverlay(m: unknown): m is OverlayToWorker {
-  if (!obj(m)) return false;
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
-    case "hello": case "route": return url(m.url);
-    case "capture": return rect(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
-    case "pick": return pickId(m.pickId) && isAnchor(m.anchor) && url(m.url) && str(m.title, MAX_TITLE)
-      && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && strOrNull(m.snapshotError, 40) && (m.snapshot !== null || m.snapshotError !== null);
-    case "quiet": return url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS);
-    case "resolved": return Array.isArray(m.results) && m.results.length <= 500 && m.results.every(r => obj(r) && ulid(r.id) && bool(r.found));
-    case "comment-mode": return bool(m.on);
-    case "cancel": return m.pickId === null || pickId(m.pickId);
-    case "pin": return ulid(m.threadId);
-    case "removed": case "ping": return true;
+    case "hello": case "route": return has("url") && url(m.url);
+    case "capture": return has("rect", "dpr") && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
+    case "pick": return has("pickId", "anchor", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && isAnchor(m.anchor) && url(m.url)
+      && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large")
+      && (m.snapshot !== null || m.snapshotError !== null);
+    case "quiet": return has("url", "title", "snapshot") && url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS);
+    case "resolved": return has("results") && Array.isArray(m.results) && m.results.length <= 500 && m.results.every(result);
+    case "comment-mode": return has("on") && bool(m.on);
+    case "cancel": return has("pickId") && (m.pickId === null || pickId(m.pickId));
+    case "pin": return has("threadId") && ulid(m.threadId);
+    case "removed": case "ping": return has();
     default: return false;
   }
 }
 
+/** The overlay's view of a thread is the daemon's; the worker relays it, so only its ID is checked here. */
+const thread = (v: unknown) => obj(v) && ulid(v.id);
+
 export function isFromWorker(m: unknown): m is WorkerToOverlay {
-  if (!obj(m)) return false;
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
-    case "state": return Array.isArray(m.threads) && bool(m.commentMode) && bool(m.pending);
-    case "comment-mode": return bool(m.on);
-    case "close-composer": return pickId(m.pickId) && bool(m.posted);
-    case "scroll-to": return ulid(m.threadId);
-    case "focus": return m.threadId === null || ulid(m.threadId);
-    case "snapshot-now": return true;
+    case "state": return has("page", "route", "threads", "commentMode", "pending") && (m.page === null || page(m.page)) && strOrNull(m.route, MAX_ROUTE)
+      && Array.isArray(m.threads) && m.threads.length <= 1000 && m.threads.every(thread) && bool(m.commentMode) && bool(m.pending);
+    case "comment-mode": return has("on") && bool(m.on);
+    case "close-composer": return has("pickId", "posted") && pickId(m.pickId) && bool(m.posted);
+    case "scroll-to": return has("threadId") && ulid(m.threadId);
+    case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
+    case "snapshot-now": return has();
     default: return false;
   }
 }
 
 export function isFromComposer(m: unknown): m is ComposerToWorker {
-  if (!obj(m)) return false;
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
-    case "ready": case "cancel": return true;
-    case "post": return text(m.body, MAX_BODY);
+    case "ready": case "cancel": return has();
+    case "post": return has("body") && text(m.body, MAX_BODY);
     default: return false;
   }
 }
 
 export function isFromPanel(m: unknown): m is PanelToWorker {
-  if (!obj(m)) return false;
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   const to = (v: unknown) => v === null || (typeof v === "string" && HANDLE.test(v));
   switch (m.t) {
-    case "watch-tab": return Number.isSafeInteger(m.tabId) && (m.tabId as number) >= 0;
-    case "send": return ulid(m.threadId) && to(m.to);
-    case "send-batch": return Array.isArray(m.threadIds) && m.threadIds.length >= 1 && m.threadIds.length <= 20 && m.threadIds.every(ulid) && strOrNull(m.note, 280) && to(m.to);
-    case "reply": return ulid(m.threadId) && text(m.body, MAX_BODY);
-    case "resolve": case "reopen": case "delete": return ulid(m.threadId);
-    case "looked": return Array.isArray(m.threadIds) && m.threadIds.length <= 50 && m.threadIds.every(ulid);
-    case "set-name": return str(m.name, 64);
-    case "select": return m.threadId === null || ulid(m.threadId);
-    case "comment-mode": return bool(m.on);
-    case "navigate": return m.route === null || str(m.route, 512);
-    case "turn-off": case "retry": case "ping": return true;
+    case "watch-tab": return has("tabId") && count(m.tabId);
+    case "send": return has("threadId", "to") && ulid(m.threadId) && to(m.to);
+    case "send-batch": return has("threadIds", "note", "to") && Array.isArray(m.threadIds) && m.threadIds.length >= 1 && m.threadIds.length <= 20
+      && m.threadIds.every(ulid) && strOrNull(m.note, 280) && to(m.to);
+    case "reply": return has("threadId", "body") && ulid(m.threadId) && text(m.body, MAX_BODY);
+    case "resolve": case "reopen": case "delete": return has("threadId") && ulid(m.threadId);
+    case "looked": return has("threadIds") && Array.isArray(m.threadIds) && m.threadIds.length <= 50 && m.threadIds.every(ulid);
+    case "set-name": return has("name") && str(m.name, 64);
+    case "select": return has("threadId") && (m.threadId === null || ulid(m.threadId));
+    case "comment-mode": return has("on") && bool(m.on);
+    case "navigate": return has("route") && (m.route === null || str(m.route, MAX_ROUTE));
+    case "turn-off": case "retry": case "ping": return has();
     default: return false;
   }
 }

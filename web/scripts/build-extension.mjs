@@ -7,31 +7,19 @@
 // HTML pages. The manifest is extension-manifest.mjs's. Nothing under
 // web/extension/key/ is copied: the key reaches a build only as the
 // manifest's `key`.
-import { lstatSync, mkdirSync, readdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import { build } from "vite";
+import { cleanOut } from "./extension-clean.mjs";
 import { drawIcons } from "./extension-icons.mjs";
 import { extensionManifest } from "./extension-manifest.mjs";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
 const root = `${web}extension/`;
 
-/** Empties `out` but for its .gitkeep, never following a symlink out of it. */
-function clean(out) {
-  let s = null;
-  try { s = lstatSync(out); } catch (e) { if (e.code !== "ENOENT") throw e; }
-  if (s?.isSymbolicLink()) throw new Error(`${out} is a symlink; refusing to build outside web/. Replace it with a real directory.`);
-  mkdirSync(out, { recursive: true });
-  for (const e of readdirSync(out, { withFileTypes: true })) {
-    if (e.name === ".gitkeep") continue;
-    if (e.isSymbolicLink()) unlinkSync(`${out}/${e.name}`);
-    else rmSync(`${out}/${e.name}`, { recursive: true, force: true });
-  }
-}
-
 async function variant(out, test) {
-  clean(out);
+  cleanOut(out);
   const shared = { configFile: false, logLevel: "warn", publicDir: false, define: { __CLAX_EXT_TEST__: JSON.stringify(test), __CLAX_TEST_CLOCK__: "false" } };
   const scripts = [["sw", "sw/main.ts", "es"], ["loader", "content/loader.ts", "iife"], ["overlay", "content/overlay.ts", "iife"]];
   for (const [name, entry, format] of scripts) {

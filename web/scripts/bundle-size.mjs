@@ -7,10 +7,10 @@
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
-// content script, and its build may carry no key file. --record lowers the
-// shell's and the bridge's budgets to the measured sizes plus 10%, never
-// raising one, and adds one that is missing; the extension's budgets are the
-// spec's ceilings and are never recorded.
+// content script, and its build may carry no key file and no test hook.
+// --record lowers the shell's and the bridge's budgets to the measured
+// sizes plus 10%, never raising one, and adds one that is missing; the
+// extension's budgets are the spec's ceilings and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
 // node:zlib: Node links whichever zlib its build chose (the official builds
@@ -90,10 +90,16 @@ for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
 
 // The extension's release build.
 const ext = new URL("../dist-extension/", import.meta.url);
-const extGz = f => gzipSync(readFileSync(new URL(f, ext)), { level: 9 }).length;
+const extGz = f => pako.gzip(readFileSync(new URL(f, ext)), { level: 9 }).length;
 const extManifest = JSON.parse(readFileSync(new URL("manifest.json", ext), "utf8"));
 for (const k of ["host_permissions", "content_scripts"]) {
   if (k in extManifest) throw new Error(`dist-extension/manifest.json declares ${k}; the release build grants hosts only at runtime`);
+}
+// The worker's test hook (`globalThis.claxTest`, built only when
+// __CLAX_EXT_TEST__ is true) belongs to dist-extension-test alone.
+for (const f of filesIn(ext)) {
+  const text = readFileSync(f, "latin1");
+  if (text.includes("claxTest") || text.includes("__CLAX_EXT_TEST__")) throw new Error(`${f.pathname} carries the extension's test hook; dist-extension must be built with __CLAX_EXT_TEST__ false`);
 }
 for (const f of filesIn(ext)) {
   if (/(^|\/)key(\/|\.pub)/.test(f.pathname.slice(ext.pathname.length))) throw new Error(`${f.pathname} is a key file; the key reaches the build only as the manifest's key`);

@@ -13,8 +13,8 @@ const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><
 /** The extension's release manifest as the build writes it. */
 const EXT_MANIFEST = { manifest_version: 3, name: "Clax", version: "1.0.0", optional_host_permissions: ["http://*/*", "https://*/*"] };
 
-/** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `extFiles` are extra files put in dist-extension. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[] } = {}) {
+/** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `extFiles` are extra files put in dist-extension; `extBodies` are files written there with the given content. */
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[], extBodies = {} as Record<string, string> } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -52,6 +52,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   ext("sidepanel.html", `<script type="module" src="./assets/panel.js"></script><link rel="stylesheet" href="./assets/panel.css">`);
   ext("composer.html", `<script type="module" src="./assets/composer.js"></script>`);
   for (const f of extFiles) ext(f, "x");
+  for (const [f, body] of Object.entries(extBodies)) ext(f, body);
   writeFileSync(join(web, "perf/bundle-budget.json"), JSON.stringify(budget));
   return spawnSync(process.execPath, [join(web, "scripts/bundle-size.mjs"), ...args], { encoding: "utf8" });
 }
@@ -175,6 +176,15 @@ describe("bundle-size.mjs", () => {
       rmSync(root, { recursive: true, force: true });
     }
     expect(run(full, ENTRY, [], { extFiles: ["assets/keyboard.js", "monkey.js"] }).status).toBe(0);
+  });
+
+  it("fails when a file of the extension's release build carries the test hook", () => {
+    for (const [f, body] of [["sw.js", "globalThis.claxTest={comment}"], ["assets/panel-2.js", "if(__CLAX_EXT_TEST__)x()"], ["overlay.js", "self.claxTest=1"]]) {
+      const r = run(full, ENTRY, [], { extFiles: [], extBodies: { [f]: body } });
+      expect(r.status, f).toBe(1);
+      expect(r.stderr).toContain("test hook");
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("never records the extension's ceilings, nor adds a missing one", () => {
