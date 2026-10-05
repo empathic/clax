@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts",
+    "build": "node scripts/clean-dist.mjs && node scripts/build-parts.mjs && vite build -c vite.bridge.config.ts && vite build -c vite.shell.config.ts && node scripts/build-extension.mjs",
     "dev": "vite -c vite.shell.config.ts",
     "test": "vitest run",
-    "lint": "oxlint --deny-warnings shell bridge e2e perf scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
+    "lint": "oxlint --deny-warnings shell bridge extension e2e perf scripts vite.shell.config.ts vite.bridge.config.ts vite.bridge-parts.config.ts vitest.config.ts svelte.config.js playwright.config.ts",
     "typecheck": "tsc --noEmit && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
     "e2e": "playwright test",
     "perf": "playwright test -c perf/playwright.config.ts"
@@ -15,6 +15,7 @@
     "@playwright/test": "^1.50.0",
     "@sveltejs/vite-plugin-svelte": "^6.2.4",
     "@testing-library/svelte": "^5.4.2",
+    "@types/chrome": "^0.0.300",
     "@types/node": "^22.20.4",
     "jsdom": "^26.0.0",
     "oxlint": "^1.86.0",

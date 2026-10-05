@@ -2,6 +2,9 @@ target/
 node_modules/
 web/dist/*
 !web/dist/.gitkeep
+web/dist-extension/*
+!web/dist-extension/.gitkeep
+web/dist-extension-test/
 web/playwright-report/
 web/test-results/
 .DS_Store

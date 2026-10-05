@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -10,8 +10,11 @@ afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
 const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
 
-/** `fonts` are font files put in dist (none by default); `index` is the gallery entry. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>" } = {}) {
+/** The extension's release manifest as the build writes it. */
+const EXT_MANIFEST = { manifest_version: 3, name: "Clax", version: "1.0.0", optional_host_permissions: ["http://*/*", "https://*/*"] };
+
+/** `fonts` are font files put in dist (none by default); `index` is the gallery entry; `extFiles` are extra files put in dist-extension. */
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>", extManifest = EXT_MANIFEST as Record<string, unknown>, extFiles = [] as string[] } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -38,12 +41,23 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
     "r.ts": { file: "room-1.js", name: "room", isEntry: true },
     "s.ts": { file: "sample-1.js", name: "sample", isEntry: true },
   }));
+  // The extension: the side panel names its script and stylesheet; the composer names one script.
+  mkdirSync(join(web, "dist-extension/assets"), { recursive: true });
+  const ext = (p: string, s: string) => { mkdirSync(join(web, "dist-extension", p, ".."), { recursive: true }); writeFileSync(join(web, "dist-extension", p), s); };
+  ext("manifest.json", JSON.stringify(extManifest));
+  for (const f of ["sw.js", "loader.js", "overlay.js"]) ext(f, f.repeat(20));
+  ext("assets/panel.js", "panel-script ".repeat(400));
+  ext("assets/panel.css", "panel-style ".repeat(300));
+  ext("assets/composer.js", "composer");
+  ext("sidepanel.html", `<script type="module" src="./assets/panel.js"></script><link rel="stylesheet" href="./assets/panel.css">`);
+  ext("composer.html", `<script type="module" src="./assets/composer.js"></script>`);
+  for (const f of extFiles) ext(f, "x");
   writeFileSync(join(web, "perf/bundle-budget.json"), JSON.stringify(budget));
   return spawnSync(process.execPath, [join(web, "scripts/bundle-size.mjs"), ...args], { encoding: "utf8" });
 }
 
 describe("bundle-size.mjs", () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extLoader: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -131,7 +145,51 @@ describe("bundle-size.mjs", () => {
     expect(run(noBaseline, ENTRY, ["--record"]).status).toBe(1);
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample"])("fails when the %s budget is missing or not a number", k => {
+  it("counts each extension page with the scripts and stylesheets it names, against its own budget", () => {
+    const sizes = (r: ReturnType<typeof run>) => Object.fromEntries([...r.stdout.matchAll(/(loader|overlay|worker|composer|panel) (\d+)/g)].map(m => [m[1], Number(m[2])]));
+    const s = sizes(run(full));
+    expect(s.panel).toBeGreaterThan(s.composer);
+    for (const k of ["loader", "overlay", "worker", "composer", "panel"]) expect(s[k], k).toBeGreaterThan(0);
+    for (const [key, size] of [["extPanel", s.panel], ["extComposer", s.composer], ["extLoader", s.loader], ["extOverlay", s.overlay], ["extWorker", s.worker]] as const) {
+      rmSync(root, { recursive: true, force: true });
+      const r = run({ ...full, [key]: size - 1 });
+      expect(r.status, key).toBe(1);
+      expect(r.stderr).toContain(key);
+    }
+  });
+
+  it("fails when the extension's release manifest grants hosts or declares content scripts", () => {
+    for (const extra of [{ host_permissions: ["<all_urls>"] }, { content_scripts: [{ matches: ["<all_urls>"], js: ["loader.js"] }] }]) {
+      const r = run(full, ENTRY, [], { extManifest: { ...EXT_MANIFEST, ...extra } });
+      expect(r.status, JSON.stringify(extra)).toBe(1);
+      expect(r.stderr).toContain(Object.keys(extra)[0]);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails when the extension's build carries a key file", () => {
+    for (const f of ["key/key.pub.b64", "key.pub.b64", "key/.gitkeep"]) {
+      const r = run(full, ENTRY, [], { extFiles: [f] });
+      expect(r.status, f).toBe(1);
+      expect(r.stderr).toContain("is a key file");
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(run(full, ENTRY, [], { extFiles: ["assets/keyboard.js", "monkey.js"] }).status).toBe(0);
+  });
+
+  it("never records the extension's ceilings, nor adds a missing one", () => {
+    expect(run(full, ENTRY, ["--record"]).status).toBe(0);
+    const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
+    for (const k of ["extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"]) expect(recorded[k], k).toBe(10_000);
+    expect(recorded.gallery).toBeLessThan(10_000);
+    rmSync(root, { recursive: true, force: true });
+    const { extPanel: _, ...noPanel } = full;
+    const r = run(noPanel, ENTRY, ["--record"]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("extPanel");
+  });
+
+  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);

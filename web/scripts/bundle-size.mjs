@@ -1,11 +1,16 @@
 // Gzip sizes of what must load before each shell entry can render (the HTML
 // and its module script with that script's static imports, per the Vite
 // manifest), of the eager bridge, of each of the bridge's lazy parts with
-// the files it imports (per the parts build's manifest), against
-// web/perf/bundle-budget.json. The shell sets its type in the system's faces,
-// so the build may carry no font file and no entry may load one. --record
-// lowers the budgets to the measured sizes plus 10%, never raising one, and
-// adds a budget that is missing.
+// the files it imports (per the parts build's manifest), and of the Chrome
+// extension's release build (web/dist-extension: its worker, loader and
+// overlay scripts, and each page with the scripts and stylesheets it names),
+// against web/perf/bundle-budget.json. The shell sets its type in the
+// system's faces, so the build may carry no font file and no entry may load
+// one. The extension's release manifest may grant no host and declare no
+// content script, and its build may carry no key file. --record lowers the
+// shell's and the bridge's budgets to the measured sizes plus 10%, never
+// raising one, and adds one that is missing; the extension's budgets are the
+// spec's ceilings and are never recorded.
 //
 // Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
 // node:zlib: Node links whichever zlib its build chose (the official builds
@@ -82,14 +87,37 @@ function part(name) {
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}`);
 
-const MEASURED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
+// The extension's release build.
+const ext = new URL("../dist-extension/", import.meta.url);
+const extGz = f => gzipSync(readFileSync(new URL(f, ext)), { level: 9 }).length;
+const extManifest = JSON.parse(readFileSync(new URL("manifest.json", ext), "utf8"));
+for (const k of ["host_permissions", "content_scripts"]) {
+  if (k in extManifest) throw new Error(`dist-extension/manifest.json declares ${k}; the release build grants hosts only at runtime`);
+}
+for (const f of filesIn(ext)) {
+  if (/(^|\/)key(\/|\.pub)/.test(f.pathname.slice(ext.pathname.length))) throw new Error(`${f.pathname} is a key file; the key reaches the build only as the manifest's key`);
+}
+sizes.extLoader = extGz("loader.js");
+sizes.extOverlay = extGz("overlay.js");
+sizes.extWorker = extGz("sw.js");
+// The pages: the HTML and every script and stylesheet in assets/ it names.
+for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidepanel.html"]]) {
+  const text = readFileSync(new URL(html, ext), "utf8");
+  const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
+  sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
+}
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: loader ${sizes.extLoader}, overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+
+const RECORDED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
+const EXTENSION = ["extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"];
+const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
 // A missing or non-numeric budget would turn its check off; refuse it instead.
-// Recording may add a missing measured budget, never the baseline.
-const bad = (budget ? KEYS.filter(k => !Number.isFinite(budget[k])) : []).filter(k => !process.argv.includes("--record") || !MEASURED.includes(k));
+// Recording may add a missing recorded budget, never the baseline or an
+// extension ceiling.
+const bad = (budget ? KEYS.filter(k => !Number.isFinite(budget[k])) : []).filter(k => !process.argv.includes("--record") || !RECORDED.includes(k));
 if (bad.length) {
   console.error(`web/perf/bundle-budget.json lacks a numeric budget for: ${bad.join(", ")}`);
   process.exit(1);
@@ -97,7 +125,7 @@ if (bad.length) {
 if (process.argv.includes("--record")) {
   const up = n => Math.floor(n * 1.1);
   const next = { ...(budget ?? { bridgeBaseline: sizes.bridge }) };
-  for (const k of MEASURED) next[k] = Math.min(up(sizes[k]), Number.isFinite(budget?.[k]) ? budget[k] : Infinity);
+  for (const k of RECORDED) next[k] = Math.min(up(sizes[k]), Number.isFinite(budget?.[k]) ? budget[k] : Infinity);
   writeFileSync(budgetFile, JSON.stringify(next, null, 2) + "\n");
   process.exit(0);
 }
