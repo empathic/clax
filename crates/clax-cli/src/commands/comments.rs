@@ -8,9 +8,10 @@
 //! thread ID alone (a ULID, unique across artifacts).
 //!
 //! Acting on a thread goes through the routes the owner's browser uses, with
-//! what it sends: the token and a viewer cookie. The CLI's viewer is its own,
-//! kept in `<home>/cli_viewer`; its display name (`clax comments name`)
-//! authors replies, as the browser's "Your name" does there.
+//! the token, which makes the CLI the owner identity: the one viewer every
+//! browser of the owner's is too. Replies, resolves and sends carry the
+//! owner's name, the one `clax comments name` sets and the browser's "Your
+//! name" field shows.
 
 use crate::client::Client;
 use crate::term::{self, Paint};
@@ -641,34 +642,10 @@ fn show(cli: &crate::Cli, home: &Home, raw: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// The CLI's viewer cookie, made on first use (`<home>/cli_viewer`, mode
-/// 0600), and its viewer row created on the daemon as a browser's first
-/// visit creates one. Returns the cookie and the viewer.
-fn viewer(c: &Client, home: &Home) -> anyhow::Result<(String, Value)> {
-    use std::io::Write;
-    use std::os::unix::fs::OpenOptionsExt;
-    let path = home.root().join("cli_viewer");
-    let id = match std::fs::read_to_string(&path) {
-        Ok(s) if clax_core::is_ulid(s.trim()) => s.trim().to_string(),
-        Ok(_) => anyhow::bail!(
-            "{} does not hold a viewer ID; delete it to start a new one",
-            path.display()
-        ),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let id = clax_core::new_ulid();
-            let mut f = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .mode(0o600)
-                .open(&path)
-                .map_err(|e| anyhow::anyhow!("cannot create {}: {e}", path.display()))?;
-            f.write_all(id.as_bytes())?;
-            id
-        }
-        Err(e) => anyhow::bail!("cannot read {}: {e}", path.display()),
-    };
-    let me = c.as_viewer(Method::GET, "/api/viewers/me", &id, None)?;
-    Ok((id, me["viewer"].clone()))
+/// The owner identity the CLI acts as (the token makes it the owner's, as
+/// the owner's browsers are).
+fn owner(c: &Client) -> anyhow::Result<Value> {
+    Ok(c.send(Method::GET, "/api/viewers/me", None)?["viewer"].clone())
 }
 
 fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
@@ -684,12 +661,11 @@ fn reply(cli: &crate::Cli, home: &Home, r: &ReplyArgs) -> anyhow::Result<()> {
     }
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, &r.thread)?;
-    let (cookie, me) = viewer(&c, home)?;
+    let me = owner(&c)?;
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
-    let res = c.as_viewer(
+    let res = c.send(
         Method::POST,
         &format!("/api/artifacts/{}/threads/{tid}/comments", g.artifact_id),
-        &cookie,
         Some(&json!({"body": text})),
     )?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
@@ -726,16 +702,14 @@ enum Action {
 fn act(cli: &crate::Cli, home: &Home, raw: &str, action: Action) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, raw)?;
-    let (cookie, _) = viewer(&c, home)?;
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
     let (verb, key) = match action {
         Action::Resolve => ("resolve", "resolved"),
         Action::Reopen => ("reopen", "reopened"),
     };
-    let res = c.as_viewer(
+    let res = c.send(
         Method::POST,
         &format!("/api/artifacts/{}/threads/{tid}/{verb}", g.artifact_id),
-        &cookie,
         None,
     )?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
@@ -748,7 +722,6 @@ fn act(cli: &crate::Cli, home: &Home, raw: &str, action: Action) -> anyhow::Resu
 fn send(cli: &crate::Cli, home: &Home, a: &SendArgs) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
     let (g, i) = locate_raw(&c, &a.thread)?;
-    let (cookie, _) = viewer(&c, home)?;
     let tid = g.threads[i]["id"].as_str().unwrap_or_default();
     let art = c.get(&format!("/api/artifacts/{}", g.artifact_id))?;
     let agents: Vec<&Value> = art["artifact"]["participants"]["agents"]
@@ -770,10 +743,9 @@ fn send(cli: &crate::Cli, home: &Home, a: &SendArgs) -> anyhow::Result<()> {
             .map(str::to_string)
     });
     let body = to.as_ref().map(|h| json!({"to": h}));
-    let res = c.as_viewer(
+    let res = c.send(
         Method::POST,
         &format!("/api/artifacts/{}/threads/{tid}/send", g.artifact_id),
-        &cookie,
         body.as_ref(),
     )?;
     let reference = format!("{}#{}", g.artifact_id, i + 1);
@@ -799,16 +771,15 @@ fn send(cli: &crate::Cli, home: &Home, a: &SendArgs) -> anyhow::Result<()> {
 
 fn name(cli: &crate::Cli, home: &Home, a: &NameArgs) -> anyhow::Result<()> {
     let c = Client::connect(home, cli.port_for(home)?)?;
-    let (cookie, mut me) = viewer(&c, home)?;
-    if let Some(n) = &a.name {
-        me = c.as_viewer(
+    let me = match &a.name {
+        Some(n) => c.send(
             Method::PUT,
             "/api/viewers/me",
-            &cookie,
             Some(&json!({"display_name": n})),
         )?["viewer"]
-            .clone();
-    }
+            .clone(),
+        None => owner(&c)?,
+    };
     let out = json!({"display_name": me["display_name"], "public_id": me["public_id"]});
     super::print(cli, out, |j| match j["display_name"].as_str() {
         Some(n) => term::clean_line(n),

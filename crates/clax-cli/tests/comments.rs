@@ -515,17 +515,54 @@ fn acting_on_threads_is_acting_as_the_owner_in_the_browser() {
     assert!(v["to"].is_null());
     let text = d.ok(&["comments", "send", &format!("{}#1", w.roadmap)]);
     assert!(text.contains("no agent is live"), "{text}");
-    // The viewer is kept for the next run, readable by its owner alone.
-    let path = d.home().join("cli_viewer");
-    use std::os::unix::fs::PermissionsExt;
-    assert_eq!(
-        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
+    // The CLI keeps no viewer of its own.
+    assert!(!d.home().join("cli_viewer").exists());
 }
 
 #[test]
-fn an_unnamed_cli_viewer_replies_as_viewer_with_a_hint() {
+fn the_cli_is_the_owner_the_browsers_are_and_ignores_an_old_cli_viewer() {
+    let w = world();
+    let d = &w.d;
+    // A file an earlier CLI kept its own viewer in is ignored.
+    std::fs::write(d.home().join("cli_viewer"), "01J9Z3K4M5N6P7Q8R9S0T1V2W3").unwrap();
+    let name = d.json(&["comments", "name", "Alex"]);
+    // The owner's browser (the owner cookie, as the shell's token request
+    // sets it) is the same viewer, with the same name.
+    let host = d.base().trim_start_matches("http://").to_string();
+    let cookie = format!(
+        "{}={}",
+        clax_server::identity::owner_cookie_name(&host),
+        clax_server::identity::owner_cookie_value(&d.token())
+    );
+    let browser: Value = d
+        .http()
+        .get(format!("{}/api/viewers/me", d.base()))
+        .header("cookie", cookie)
+        .send()
+        .unwrap()
+        .json()
+        .unwrap();
+    assert_eq!(browser["viewer"]["public_id"], name["public_id"]);
+    assert_eq!(browser["viewer"]["display_name"], "Alex");
+    // A reply from the CLI is authored by that viewer.
+    let v = d.json(&["comments", "reply", &format!("{}#1", w.roadmap), "hi"]);
+    assert_eq!(v["author_name"], "Alex");
+    let t = d.api(
+        reqwest::Method::GET,
+        &format!("/api/artifacts/{}/threads", w.roadmap),
+        None,
+    );
+    let last = t["threads"][0]["comments"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    assert_eq!(last["author_public_id"], name["public_id"]);
+}
+
+#[test]
+fn an_unnamed_owner_replies_as_viewer_with_a_hint() {
     let w = world();
     let out =
         w.d.run(&["comments", "reply", &format!("{}#1", w.roadmap), "hi"]);

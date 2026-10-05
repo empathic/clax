@@ -158,8 +158,10 @@ fn without_sessions(artifact: Value, versions: Value) -> Value {
 /// artifact the store has. The data is what an unauthenticated browser reads
 /// from `GET /api/artifacts/<id>` (less its session IDs),
 /// `GET /api/artifacts/<id>/threads?include_resolved=true` without the token
-/// (no `clip_path`), and `GET /api/viewers/me` for the cookie's existing
-/// viewer: never the token or the viewer cookie, and no viewer is created.
+/// (no `clip_path`), and `GET /api/viewers/me` for the request's existing
+/// viewer (the owner's for the owner cookie, see [`crate::identity`]): never
+/// the token or a cookie, and no viewer is created (but the owner's row,
+/// made on first use).
 pub async fn assemble(
     s: &AppState,
     route: ShellRoute,
@@ -168,7 +170,7 @@ pub async fn assemble(
     let ShellRoute::Artifact { id, version, file } = route else {
         return Ok(None);
     };
-    let viewer_id = crate::viewer::read(headers);
+    let who = crate::identity::Identity::of(headers, &s.token);
     let codex = s.feedback_ctx().codex_push();
     let lookup = id.clone();
     let working = s.working.for_artifact(id.as_str());
@@ -192,10 +194,7 @@ pub async fn assemble(
                     None => break,
                 }
             }
-            let viewer = match &viewer_id {
-                Some(v) => st.get_viewer(v)?,
-                None => None,
-            };
+            let viewer = who.browser_viewer(st)?;
             let attention = match &viewer {
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,

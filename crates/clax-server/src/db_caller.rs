@@ -1,13 +1,16 @@
 //! The caller level of a `db` request (spec §9 "db", §14): the bearer token
-//! without a viewer (an agent, the CLI, a script; a cookie that names no
-//! viewer row is no viewer) is `owner`; the bearer token with a viewer (the
-//! owner shell on localhost) is `admin`; a cookie naming a viewer with a
-//! display name is `interact`; anything else is `view`. `?as_level=view|interact|admin` narrows the level
-//! and never raises it. The caller's viewer identity is the cookie's viewer's
-//! public ID, whatever the level.
+//! from no browser (an agent, the CLI, a script; a cookie that names no
+//! viewer row is no browser) is `owner`; the bearer token from a browser (the
+//! owner shell on localhost) is `admin`; without the token, a viewer with a
+//! display name is `interact`; anything else is `view`.
+//! `?as_level=view|interact|admin` narrows the level and never raises it. The
+//! caller's viewer identity is the public ID of the viewer the request speaks
+//! for ([`crate::identity`]: the owner's for an owner's browser), whatever the
+//! level.
 
 use crate::auth::has_token;
 use crate::error::ApiError;
+use crate::identity::Identity;
 use crate::state::AppState;
 use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
@@ -55,18 +58,37 @@ fn percent_decode(raw: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
-/// The level and viewer of a caller that holds the token (`token`) and/or
-/// the viewer cookie `cookie` (a cookie with no viewer row is no viewer).
-fn base_caller(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Result<Caller> {
-    let viewer = match cookie {
+/// The level and viewer of a caller that holds the token (`token`: in
+/// `Authorization`, or the events cookie on a stream) with the credentials
+/// `who`. With the token, a browser (the owner or events cookie, or a viewer
+/// cookie that names a viewer row) is `admin` as the owner's viewer; without
+/// one (an agent, the CLI, a script) `owner` with no viewer. Without the
+/// token, the owner cookie's caller is the owner's viewer and a viewer
+/// cookie's its viewer: `interact` when that viewer has a name, else `view`.
+fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Caller> {
+    let cookie_viewer = match &who.cookie {
         Some(c) => st.get_viewer(c)?,
         None => None,
     };
-    let level = if token && viewer.is_none() {
-        Level::Owner
-    } else if token {
-        Level::Admin
-    } else if viewer.as_ref().is_some_and(|v| v.display_name.is_some()) {
+    if token {
+        return Ok(if who.owner_browser() || cookie_viewer.is_some() {
+            Caller {
+                level: Level::Admin,
+                viewer: Some(st.owner_viewer()?.public_id),
+            }
+        } else {
+            Caller {
+                level: Level::Owner,
+                viewer: None,
+            }
+        });
+    }
+    let viewer = if who.is_owner() {
+        Some(st.owner_viewer()?)
+    } else {
+        cookie_viewer
+    };
+    let level = if viewer.as_ref().is_some_and(|v| v.display_name.is_some()) {
         Level::Interact
     } else {
         Level::View
@@ -77,15 +99,13 @@ fn base_caller(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Resu
     })
 }
 
-/// The level and viewer of a caller that holds the token (`token`) and/or
-/// the viewer cookie `cookie`, with the rules of the `db` routes: the token
-/// without a viewer is `owner`, with one `admin`; a named viewer alone is
-/// `interact`, anything else `view`. A cookie with no viewer row is no viewer.
+/// The level and viewer of a caller that holds the token (`token`) with the
+/// credentials `who`, with the rules of the `db` routes (see `base_caller`).
 ///
 /// # Errors
 /// When reading the viewer fails.
-pub fn caller_of(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Result<Caller> {
-    base_caller(st, token, cookie)
+pub fn caller_of(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Caller> {
+    base_caller(st, token, who)
 }
 
 /// Who is making a `db` request: whether it carries the bearer token, its
@@ -94,7 +114,7 @@ pub fn caller_of(st: &Store, token: bool, cookie: Option<&str>) -> clax_core::Re
 /// not validly encoded, with 400 `invalid_argument`.
 pub struct CallerParts {
     pub token: bool,
-    pub cookie: Option<String>,
+    pub who: Identity,
     pub as_level: Option<Level>,
 }
 
@@ -124,7 +144,7 @@ impl FromRequestParts<AppState> for CallerParts {
         };
         Ok(CallerParts {
             token: has_token(&parts.headers, &state.token),
-            cookie: crate::viewer::read(&parts.headers),
+            who: Identity::of(&parts.headers, &state.token),
             as_level,
         })
     }
@@ -134,7 +154,7 @@ impl CallerParts {
     /// The caller, looking up the cookie's viewer (a cookie with no viewer row
     /// is no viewer).
     pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
-        let base = base_caller(st, self.token, self.cookie.as_deref())?;
+        let base = base_caller(st, self.token, &self.who)?;
         Ok(Caller {
             level: self.as_level.map_or(base.level, |l| l.min(base.level)),
             viewer: base.viewer,
@@ -163,7 +183,7 @@ impl CallerParts {
 /// The query string of this route must never be logged.
 pub struct Subscriber {
     token: bool,
-    cookie: Option<String>,
+    who: Identity,
 }
 
 impl FromRequestParts<AppState> for Subscriber {
@@ -179,7 +199,7 @@ impl FromRequestParts<AppState> for Subscriber {
             .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
         Ok(Subscriber {
             token: query_token || has_token(&parts.headers, &state.token),
-            cookie: crate::viewer::read(&parts.headers),
+            who: Identity::of(&parts.headers, &state.token),
         })
     }
 }
@@ -190,16 +210,13 @@ impl Subscriber {
     pub fn or_events_cookie(self, headers: &axum::http::HeaderMap, token: &str) -> Self {
         Subscriber {
             token: self.token || crate::auth::has_events_cookie(headers, token),
-            cookie: self.cookie,
+            who: self.who,
         }
     }
 
-    /// The subscriber's level and viewer: a valid token with a viewer is
-    /// `admin` (the owner shell), without one `owner` (an agent, the CLI);
-    /// a cookie alone is `interact` for a named viewer, else `view`; neither
-    /// is `view`.
+    /// The subscriber's level and viewer, as `base_caller` decides them.
     pub fn resolve(&self, st: &Store) -> clax_core::Result<Caller> {
-        base_caller(st, self.token, self.cookie.as_deref())
+        base_caller(st, self.token, &self.who)
     }
 }
 

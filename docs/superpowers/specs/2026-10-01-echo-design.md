@@ -280,7 +280,10 @@ own name is edited here, with a "Share where I'm looking" switch.
   is the anchor of the selected thread or of the comment being written; Clax
   never tracks scroll position. A "Share where I'm looking" switch in the
   people panel is on by default and stored per browser. The viewer's name
-  moves into the people panel.
+  moves into the people panel. A person is one entry however many tabs or
+  browsers they have open; the owner's browsers on this machine are one
+  person with one name (clax-design §11, "The owner identity"), and a name
+  set in one shows in the others at once.
 - **Q6. Keys** work only while focus is in Clax's chrome. While the page has
   focus, keys are the page's. Escape keeps its behaviour.
 - **Q7. Reading state.** The last version each person viewed is public: it

@@ -6,6 +6,7 @@ describe("NameSaver", () => {
     const calls: string[] = [];
     let answer!: (r: Response) => void;
     vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/token") return Promise.resolve(new Response("{}", { status: 403 }));
       calls.push(`${init?.method ?? "GET"} ${url}`);
       if (!init?.method) return new Promise<Response>(r => { answer = r; });
       return Promise.resolve(new Response(JSON.stringify({ viewer: { public_id: "u_1", display_name: "Ada", created_at: "x" } })));
@@ -28,8 +29,8 @@ describe("NameSaver", () => {
   });
   it("shows the stored name when the viewer did not type, and reports the viewer after a load and after a save", async () => {
     const viewer = (name: string) => ({ public_id: "u_1", display_name: name, created_at: "x" });
-    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) =>
-      Promise.resolve(new Response(JSON.stringify({ viewer: viewer(init?.method ? "Cy" : "Bo") })))));
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) =>
+      Promise.resolve(url === "/api/token" ? new Response("{}", { status: 403 }) : new Response(JSON.stringify({ viewer: viewer(init?.method ? "Cy" : "Bo") })))));
     const { NameSaver } = await import("./viewer-name-model");
     const shown: string[] = [];
     const viewers: string[] = [];

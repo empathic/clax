@@ -6,8 +6,9 @@ use super::assets::multipart_error;
 use crate::auth::{RequireToken, has_token};
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view, thread_views};
+use crate::identity::Identity;
 use crate::state::AppState;
-use crate::viewer::{SameOrigin, ViewerCookie, author};
+use crate::viewer::{SameOrigin, author};
 use axum::Json;
 use axum::body::{Body, Bytes};
 use axum::extract::multipart::MultipartRejection;
@@ -230,7 +231,7 @@ pub async fn create(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     aid: Result<Path<String>, PathRejection>,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
@@ -318,7 +319,7 @@ pub async fn create(
     let with_path = has_token(&headers, &s.token);
     let view = s
         .store_call(move |st| {
-            let (author, author_public_id) = author(st, viewer.0.as_deref())?;
+            let (author, author_public_id) = author(st, &who)?;
             let body_text = text.unwrap_or_default();
             let mention = !via_page && mentions_agent(&body_text);
             let mut t = st.create_thread(
@@ -384,7 +385,7 @@ pub async fn comment(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     p: Result<Path<(String, String)>, PathRejection>,
     req: Result<Json<CommentBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
@@ -438,7 +439,7 @@ pub async fn comment(
                 crate::working::announce(&ctx.events, &ctx.working, &changed);
                 c
             } else {
-                let (name, author_public_id) = author(st, viewer.0.as_deref())?;
+                let (name, author_public_id) = author(st, &who)?;
                 let c = st.add_comment(
                     &tid,
                     NewComment {
@@ -548,13 +549,14 @@ pub struct BatchBody {
 /// agent as one batch ([`Store::send_batch`]), all or nothing, to the agent
 /// `to` names or, without it, to every live owner and watcher. The same
 /// access as the single send (no token; a foreign `Origin` is refused); the
-/// viewer cookie names the sender. One fan-out for the whole batch, so every
+/// sender is the viewer the request speaks for ([`Identity`]: the owner for
+/// an owner credential, else the viewer cookie's). One fan-out for the whole batch, so every
 /// tier hands its rows over together.
 pub async fn send_batch(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     aid: Result<Path<String>, PathRejection>,
     req: Result<Json<BatchBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
@@ -566,7 +568,7 @@ pub async fn send_batch(
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             let to = send_target(st, &id, b.to.as_deref())?;
-            let sent_by = author(st, viewer.0.as_deref())?.0;
+            let sent_by = author(st, &who)?.0;
             let r = st.send_batch(&id, SendBatch { thread_ids: b.thread_ids, note: b.note, sent_by, to })?;
             apply(&ctx, st, &r.touched);
             let sent = r
@@ -602,9 +604,10 @@ struct ResolveBody {
 /// Resolves as the viewer (no token) or, with `{"as": "agent"}`, as the agent
 /// (token and `X-Clax-Session` naming a live session, else 400
 /// `unknown_session`; only on sent threads, otherwise guidance). An empty body
-/// resolves as the viewer. `resolved_by` is `viewer:<public ID>` (the viewer
-/// row is created for a cookie seen for the first time), `viewer:anonymous`
-/// without a cookie, or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
+/// resolves as the viewer. `resolved_by` is `viewer:<public ID>` (the
+/// owner's for an owner credential; else the cookie's viewer, its row created
+/// for a cookie seen for the first time), `viewer:anonymous` without either,
+/// or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
 /// `feedback_state` event follows when delivered rows remain, and when none
 /// remain the `thread` event carries `feedback_state: null`. A request with a
 /// foreign `Origin` is refused ([`SameOrigin`]).
@@ -612,7 +615,7 @@ pub async fn resolve(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Response, ApiError> {
@@ -639,8 +642,8 @@ pub async fn resolve(
                 resolver = Some(sess.id);
                 format!("agent:{}", sess.harness)
             } else {
-                match viewer.0.as_deref() {
-                    Some(cookie) => format!("viewer:{}", st.upsert_viewer(cookie, None)?.public_id),
+                match who.ensure_viewer(st)? {
+                    Some(v) => format!("viewer:{}", v.public_id),
                     None => "viewer:anonymous".to_string(),
                 }
             };
@@ -694,24 +697,16 @@ fn acting_as(raw: &[u8]) -> Result<bool, ApiError> {
 }
 
 /// Reopening and deleting need caller level `interact` or above: the token
-/// (the owner shell, or an agent, whose session is checked separately), or a
-/// viewer cookie naming a viewer with a display name. Anyone else gets 403
+/// (the owner shell, the CLI, or an agent, whose session is checked
+/// separately), or a request whose viewer ([`Identity::viewer`]) has a
+/// display name. Anyone else gets 403
 /// `forbidden` asking them to set a name.
-async fn require_interact(
-    s: &AppState,
-    authed: bool,
-    cookie: Option<String>,
-) -> Result<(), ApiError> {
+async fn require_interact(s: &AppState, authed: bool, who: Identity) -> Result<(), ApiError> {
     if authed {
         return Ok(());
     }
     let named = s
-        .store_call(move |st| {
-            Ok(match cookie {
-                Some(c) => st.get_viewer(&c)?.is_some_and(|v| v.display_name.is_some()),
-                None => false,
-            })
-        })
+        .store_call(move |st| Ok(who.viewer(st)?.is_some_and(|v| v.display_name.is_some())))
         .await?;
     if named {
         Ok(())
@@ -730,7 +725,7 @@ pub async fn reopen(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     p: Result<Path<(String, String)>, PathRejection>,
     raw: Bytes,
 ) -> Result<Response, ApiError> {
@@ -741,7 +736,7 @@ pub async fn reopen(
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
-    require_interact(&s, authed, viewer.0).await?;
+    require_interact(&s, authed, who).await?;
     let session = session_header(&headers)?;
     let ctx = s.feedback_ctx();
     let o = s
@@ -778,7 +773,7 @@ pub async fn delete(
     State(s): State<AppState>,
     headers: HeaderMap,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     p: Result<Path<(String, String)>, PathRejection>,
     q: Result<Query<DeleteQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
@@ -790,7 +785,7 @@ pub async fn delete(
     if agent && !authed {
         return Err(ApiError::unauthorized());
     }
-    require_interact(&s, authed, viewer.0).await?;
+    require_interact(&s, authed, who).await?;
     let session = session_header(&headers)?;
     let ctx = s.feedback_ctx();
     let o = s

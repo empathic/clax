@@ -136,13 +136,16 @@ async fn presence_and_messages_reach_every_peer_with_sender_fields() {
     let ts = TestServer::spawn().await;
     let aid = artifact(&ts, caps()).await;
     let (ann, ben) = (ts.viewer(Some("Ann")).await, ts.viewer(Some("Ben")).await);
+    // The token with a browser's cookie is the owner's browser: it speaks as
+    // the owner identity, not as the viewer its cookie named.
+    let owner = ts.owner_public_id().await;
     let mut a = connect(&ts, &aid, A, Some(ts.token.as_str()), &[cookie(&ann)]).await;
     let first = a.next().await;
     assert_eq!(first["t"], "peers");
     assert_eq!(first["room"], Value::Null);
     assert_eq!(
         first["peers"],
-        json!([{"peer": A, "by": ann.public_id, "isMe": true, "sameTab": true, "kind": "viewer", "guest": false, "presence": {}}])
+        json!([{"peer": A, "by": owner, "isMe": true, "sameTab": true, "kind": "viewer", "guest": false, "presence": {}}])
     );
     let mut b = connect(&ts, &aid, B, None, &[cookie(&ben)]).await;
     assert_eq!(b.next().await["peers"].as_array().unwrap().len(), 2);

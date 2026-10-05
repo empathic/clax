@@ -652,19 +652,24 @@ async fn a_subscribers_level_is_fixed_when_its_stream_opens() {
         json!({"db": {"rules": [{"path": "staff", "read": "admin", "write": "admin"}]}}),
     )
     .await;
+    // With the token, a browser's cookie makes the subscriber the owner's
+    // browser, which speaks as the owner identity.
     let shell_q = format!("?artifact={aid}&token={}", ts.token);
     let mut before_cookie = ts.events(&shell_q).await;
-    let owner = ts.viewer(Some("Owner")).await;
-    let mut after_cookie = ts.events_as(&shell_q, Some(&owner.cookie)).await;
-    let private = format!("data/users/{}/p", owner.public_id);
+    let browser = ts.viewer(None).await;
+    let mut after_cookie = ts.events_as(&shell_q, Some(&browser.cookie)).await;
+    let private = format!("data/users/{}/p", ts.owner_public_id().await);
+    // The owner, named, writes their own private document from a browser.
+    ts.authed(ts.client.put(format!("{}/api/viewers/me", ts.base)))
+        .json(&json!({"display_name": "Owner"}))
+        .send()
+        .await
+        .unwrap();
     send(
-        req(
-            &ts,
-            Method::PUT,
-            &format!("/api/artifacts/{aid}/docs/{private}"),
-            &Who::Viewer(&owner),
-        )
-        .json(&json!({"data": {}, "lww": true})),
+        ts.client
+            .put(format!("{}/api/artifacts/{aid}/docs/{private}", ts.base))
+            .header("cookie", ts.owner_cookie())
+            .json(&json!({"data": {}, "lww": true})),
     )
     .await;
     send(
@@ -1071,8 +1076,13 @@ async fn the_events_cookie_counts_as_the_token_on_the_event_stream_only() {
         .send()
         .await
         .unwrap();
-    let set = shell.headers()["set-cookie"].to_str().unwrap();
-    let events_cookie = set.split(';').next().unwrap().to_string();
+    let events_cookie = shell
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .map(|v| v.to_str().unwrap().split(';').next().unwrap().to_string())
+        .find(|c| c.starts_with("clax_events_"))
+        .unwrap();
     let q = format!("?artifact={aid}");
     let cookies = format!("clax_viewer={}; {events_cookie}", owner.cookie);
     let mut with = ts.events_with(&q, |r| r.header("cookie", cookies)).await;

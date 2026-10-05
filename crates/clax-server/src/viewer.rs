@@ -1,4 +1,5 @@
-//! The `clax_viewer` cookie: a host-only ULID naming a browser viewer.
+//! The `clax_viewer` cookie: a host-only ULID naming a browser viewer that
+//! holds no owner credential (see [`crate::identity`]).
 
 use crate::error::ApiError;
 use axum::extract::FromRequestParts;
@@ -6,19 +7,8 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, header};
 use clax_core::feedback::display_name;
 use clax_core::{Store, is_ulid};
-use std::convert::Infallible;
 
 pub const COOKIE: &str = "clax_viewer";
-
-/// The viewer ID from the request's cookie; `None` when absent or not a ULID.
-pub struct ViewerCookie(pub Option<String>);
-
-impl<S: Send + Sync> FromRequestParts<S> for ViewerCookie {
-    type Rejection = Infallible;
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Infallible> {
-        Ok(ViewerCookie(read(&parts.headers)))
-    }
-}
 
 /// The first `clax_viewer` cookie whose value is a ULID; malformed ones
 /// (including earlier duplicates) are skipped.
@@ -97,13 +87,14 @@ pub fn set_cookie(id: &str) -> HeaderValue {
     .expect("ULIDs are header-safe")
 }
 
-/// The comment author for `cookie`: the viewer's display name, sanitised,
-/// else `Viewer`; and the viewer's public ID when the cookie names a viewer.
-pub fn author(st: &Store, cookie: Option<&str>) -> clax_core::Result<(String, Option<String>)> {
-    let v = match cookie {
-        Some(id) => st.get_viewer(id)?,
-        None => None,
-    };
+/// The comment author for the request: its viewer's display name
+/// ([`crate::identity::Identity::viewer`]: the owner's for an owner
+/// credential), sanitised, else `Viewer`; and that viewer's public ID.
+pub fn author(
+    st: &Store,
+    who: &crate::identity::Identity,
+) -> clax_core::Result<(String, Option<String>)> {
+    let v = who.viewer(st)?;
     let name = display_name(
         v.as_ref()
             .and_then(|v| v.display_name.as_deref())

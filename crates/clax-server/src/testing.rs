@@ -371,6 +371,28 @@ impl TestServer {
         }
     }
 
+    /// The owner identity's public ID (`GET /api/viewers/me` with the token).
+    pub async fn owner_public_id(&self) -> String {
+        let v: serde_json::Value = self
+            .get_authed("/api/viewers/me")
+            .await
+            .json()
+            .await
+            .unwrap();
+        v["viewer"]["public_id"].as_str().unwrap().to_string()
+    }
+
+    /// The owner cookie a browser of the owner's holds (`name=value`), as the
+    /// shell's token request sets it.
+    pub fn owner_cookie(&self) -> String {
+        let host = self.base.trim_start_matches("http://");
+        format!(
+            "{}={}",
+            crate::identity::owner_cookie_name(host),
+            crate::identity::owner_cookie_value(&self.token)
+        )
+    }
+
     /// Creates a thread as the viewer whose cookie value is `cookie`; returns the thread view.
     pub async fn thread_as(&self, aid: &str, cookie: &str, body: &str) -> serde_json::Value {
         let form = reqwest::multipart::Form::new()

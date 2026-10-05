@@ -379,8 +379,20 @@ async fn the_token_route_sets_the_events_cookie_for_the_shell_only() {
         .iter()
         .map(|v| v.to_str().unwrap().to_string())
         .collect();
-    assert_eq!(sets.len(), 2, "{sets:?}");
-    for (set, path) in sets.iter().zip(["/api/events", "/api/stream"]) {
+    assert_eq!(sets.len(), 3, "{sets:?}");
+    // The owner cookie, for every route: identity, not the token's level.
+    assert!(
+        sets[0].starts_with(&format!("clax_owner_{port}=")),
+        "{}",
+        sets[0]
+    );
+    assert!(
+        sets[0].ends_with("; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax"),
+        "{}",
+        sets[0]
+    );
+    assert!(!sets[0].contains(&ts.token));
+    for (set, path) in sets[1..].iter().zip(["/api/events", "/api/stream"]) {
         assert!(set.starts_with(&format!("clax_events_{port}=")), "{set}");
         assert!(
             set.contains(&format!("; Path={path}; HttpOnly; SameSite=Strict")),

@@ -322,17 +322,19 @@ pub async fn create(
 }
 
 /// The artifact (with the owner fields of [`with_owner`]) and its versions.
-/// Without the token, no session ID is included. With a viewer cookie, also
-/// that viewer's `attention`, and the response is private to the cookie.
+/// Without the token, no session ID is included. From a browser with a viewer
+/// (the owner for the owner cookie, else the viewer cookie's; see
+/// [`crate::identity`]), also that viewer's `attention`, and the response is
+/// private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let viewer = crate::viewer::read(&headers);
+    let who = crate::identity::Identity::of(&headers, &s.token);
     let working = s.working.for_artifact(id.as_str());
-    let has_viewer = viewer.is_some();
+    let has_viewer = who.owner_browser() || who.cookie.is_some();
     let mut v = s
         .store_call(move |st| {
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -345,8 +347,8 @@ pub async fn get(
                 "artifact": with_owner(&a, owner.as_ref(), &working, &st.participants(&id)?),
                 "versions": versions,
             });
-            if let Some(vid) = viewer {
-                v["attention"] = json!(st.attention(&vid, &id)?);
+            if let Some(viewer) = who.browser_viewer(st)? {
+                v["attention"] = json!(st.attention(&viewer.id, &id)?);
             }
             Ok(v)
         })

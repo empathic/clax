@@ -1,5 +1,7 @@
-//! `GET/PUT /api/viewers/me`: the browser viewer behind the `clax_viewer`
-//! cookie; `GET/PUT /api/viewers/me/seen`: its version seen marks;
+//! `GET/PUT /api/viewers/me`: the viewer the request speaks for
+//! ([`Identity`]: the owner for an owner credential, else the browser viewer
+//! behind the `clax_viewer` cookie); `GET/PUT /api/viewers/me/seen`: its
+//! version seen marks;
 //! `GET /api/viewers/me/attention` and `PUT /api/viewers/me/looked`: its
 //! attention per artifact and its looked-at marks on threads;
 //! `PUT /api/viewers/me/presence`: its presence on an artifact;
@@ -8,8 +10,9 @@
 
 use super::artifacts::{body, parse_id};
 use crate::error::ApiError;
+use crate::identity::Identity;
 use crate::state::AppState;
-use crate::viewer::{SameOrigin, ViewerCookie, set_cookie};
+use crate::viewer::{SameOrigin, set_cookie};
 use axum::Json;
 use axum::extract::Query;
 use axum::extract::State;
@@ -27,44 +30,59 @@ pub struct NameBody {
     display_name: String,
 }
 
-async fn respond(
-    s: AppState,
-    cookie: Option<String>,
-    name: Option<String>,
-) -> Result<Response, ApiError> {
-    let (id, fresh) = match cookie {
-        Some(id) => (id, false),
-        None => (new_ulid(), true),
-    };
-    let id2 = id.clone();
-    let viewer = s
-        .store_call(move |st| st.upsert_viewer(&id2, name.as_deref()))
+async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Response, ApiError> {
+    let fresh = (!who.is_owner() && who.cookie.is_none()).then(new_ulid);
+    let minted = fresh.clone();
+    let (before, viewer) = s
+        .store_call(move |st| {
+            // Not the owner: the cookie's viewer, or the one just minted.
+            let id = if who.is_owner() {
+                st.owner_viewer()?.id
+            } else {
+                who.cookie.clone().or(minted).unwrap_or_default()
+            };
+            let before = st.get_viewer(&id)?.and_then(|v| v.display_name);
+            Ok((before, st.upsert_viewer(&id, name.as_deref())?))
+        })
         .await?;
+    if before != viewer.display_name {
+        for aid in s
+            .presence
+            .rename(&viewer.public_id, viewer.display_name.as_deref())
+        {
+            crate::presence::announce(&s.events, &s.presence, &aid);
+        }
+    }
     let mut res = Json(json!({"viewer": viewer})).into_response();
-    if fresh {
+    if let Some(id) = fresh {
         res.headers_mut().insert(SET_COOKIE, set_cookie(&id));
     }
     Ok(res)
 }
 
-/// The viewer, created (and its cookie set) on first contact.
+/// The viewer the request speaks for ([`Identity`]): the owner for an owner
+/// credential (the token, or the owner cookie of the owner's browsers), else
+/// the cookie's viewer, created (and its cookie set) on first contact.
 pub async fn me(
     State(s): State<AppState>,
     _o: SameOrigin,
-    ViewerCookie(c): ViewerCookie,
+    who: Identity,
 ) -> Result<Response, ApiError> {
-    respond(s, c, None).await
+    respond(s, who, None).await
 }
 
-/// Sets the display name; an empty name clears it.
+/// Sets the display name of the viewer [`me`] answers (for the owner, the
+/// owner's one name, in every browser and the CLI); an empty name clears it.
+/// A change reaches everyone at once through the presence of every artifact
+/// that lists the viewer.
 pub async fn set_me(
     State(s): State<AppState>,
     _o: SameOrigin,
-    ViewerCookie(c): ViewerCookie,
+    who: Identity,
     req: Result<Json<NameBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let b = body(req)?;
-    respond(s, c, Some(b.display_name)).await
+    respond(s, who, Some(b.display_name)).await
 }
 
 /// Most public IDs one lookup takes.
@@ -152,7 +170,7 @@ pub struct SeenQuery {
 pub async fn seen(
     State(s): State<AppState>,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     q: Result<Query<SeenQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
@@ -160,11 +178,8 @@ pub async fn seen(
     let n = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            match viewer.0.as_deref() {
-                Some(cookie) => match st.get_viewer(cookie)? {
-                    Some(v) => st.seen(&v.id, &id),
-                    None => Ok(None),
-                },
+            match who.viewer(st)? {
+                Some(v) => st.seen(&v.id, &id),
                 None => Ok(None),
             }
         })
@@ -184,18 +199,23 @@ pub struct SeenBody {
 pub async fn set_seen(
     State(s): State<AppState>,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     req: Result<Json<SeenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
-    let cookie = viewer
-        .0
-        .ok_or_else(|| ApiError::bad_request("no_viewer", "open /api/viewers/me first"))?;
+    if !who.is_owner() && who.cookie.is_none() {
+        return Err(ApiError::bad_request(
+            "no_viewer",
+            "open /api/viewers/me first",
+        ));
+    }
     let n = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            let v = st.upsert_viewer(&cookie, None)?;
+            let v = who
+                .ensure_viewer(st)?
+                .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
             st.mark_seen(&v.id, &id, b.version)
         })
         .await?;
@@ -221,29 +241,23 @@ pub struct AttentionQuery {
 pub async fn attention(
     State(s): State<AppState>,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let one = q.artifact.as_deref().map(parse_id).transpose()?;
-    let out = match viewer.0 {
-        Some(v) => {
-            s.store_call(move |st| {
-                Ok(match (st.get_viewer(&v)?, one) {
-                    (None, _) => json!({}),
-                    (Some(_), None) => json!(st.attention_all(&v)?),
-                    (Some(_), Some(id)) => match st.attention_one(&v, &id)? {
-                        Some(a) => {
-                            Value::Object([(id.to_string(), json!(a))].into_iter().collect())
-                        }
-                        None => json!({}),
-                    },
-                })
+    let out = s
+        .store_call(move |st| {
+            Ok(match (who.viewer(st)?, one) {
+                (None, _) => json!({}),
+                (Some(v), None) => json!(st.attention_all(&v.id)?),
+                (Some(v), Some(id)) => match st.attention_one(&v.id, &id)? {
+                    Some(a) => Value::Object([(id.to_string(), json!(a))].into_iter().collect()),
+                    None => json!({}),
+                },
             })
-            .await?
-        }
-        None => json!({}),
-    };
+        })
+        .await?;
     Ok((
         [
             (header::CACHE_CONTROL, "private, no-cache"),
@@ -260,7 +274,7 @@ pub async fn attention(
 pub async fn set_looked(
     State(s): State<AppState>,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     req: Result<Json<LookedBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
@@ -275,18 +289,13 @@ pub async fn set_looked(
             format!("thread_ids: 1 to {max} thread IDs"),
         ));
     }
-    let Some(vid) = viewer.0 else {
-        return Err(ApiError::bad_request(
-            "no_viewer",
-            "open /api/viewers/me first",
-        ));
-    };
     let looked = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.get_viewer(&vid)?
+            let v = who
+                .viewer(st)?
                 .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))?;
-            st.mark_looked(&vid, &id, &b.thread_ids)
+            st.mark_looked(&v.id, &id, &b.thread_ids)
         })
         .await?;
     Ok(Json(json!({"looked": looked})))
@@ -306,6 +315,10 @@ pub struct PresenceBody {
     state: ReportedState,
     #[serde(default)]
     r#where: Option<String>,
+    /// Which of the viewer's open views reports (any short string); reports
+    /// from several tabs or browsers of one viewer combine.
+    #[serde(default)]
+    tab: Option<String>,
 }
 
 /// `PUT /api/viewers/me/presence`: reports this viewer here or away on an
@@ -317,22 +330,16 @@ pub struct PresenceBody {
 pub async fn set_presence(
     State(s): State<AppState>,
     _o: SameOrigin,
-    viewer: ViewerCookie,
+    who: Identity,
     req: Result<Json<PresenceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     use clax_core::presence::State as P;
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
-    let Some(vid) = viewer.0 else {
-        return Err(ApiError::bad_request(
-            "no_viewer",
-            "open /api/viewers/me first",
-        ));
-    };
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
-            st.get_viewer(&vid)?
+            who.viewer(st)?
                 .ok_or_else(|| CoreError::invalid("no_viewer", "open /api/viewers/me first"))
         })
         .await?;
@@ -342,12 +349,13 @@ pub async fn set_presence(
     };
     let changed = s
         .presence
-        .report(
+        .report_tab(
             &b.artifact_id,
             &v.public_id,
             v.display_name.as_deref(),
             state,
             b.r#where.as_deref(),
+            b.tab.as_deref().unwrap_or(""),
         )
         .ok_or_else(|| {
             ApiError::new(

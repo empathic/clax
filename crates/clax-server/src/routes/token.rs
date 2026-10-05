@@ -15,7 +15,11 @@ use axum::{
 /// cookie ([`crate::auth::events_cookie_name`]), HttpOnly, `SameSite=Strict`,
 /// set twice: scoped to `/api/events` and to `/api/stream` (which covers its
 /// subscription route), so the shell's event stream holds the token's level
-/// without the token in its URL.
+/// without the token in its URL; and the owner cookie
+/// ([`crate::identity::owner_cookie_name`]), so the browser is the owner on
+/// every route. Such a request is the owner's browser: the viewer its
+/// `clax_viewer` cookie names is claimed for the owner
+/// ([`clax_core::Store::claim_for_owner`]) and the cookie removed.
 pub async fn token(
     State(s): State<AppState>,
     ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
@@ -40,6 +44,15 @@ pub async fn token(
         .get("sec-fetch-site")
         .is_some_and(|v| v.as_bytes() == b"same-origin");
     if same_origin {
+        if let Some(v) = crate::identity::set_owner_cookie(host, &s.token) {
+            res.headers_mut().append(header::SET_COOKIE, v);
+        }
+        if let Some(cookie) = crate::viewer::read(&headers) {
+            let claimed = s.store_call(move |st| st.claim_for_owner(&cookie)).await?;
+            tracing::debug!(?claimed, "claimed a browser viewer for the owner");
+            res.headers_mut()
+                .append(header::SET_COOKIE, crate::identity::clear_viewer_cookie());
+        }
         for path in ["/api/events", "/api/stream"] {
             let cookie = format!(
                 "{}={}; Path={path}; HttpOnly; SameSite=Strict",

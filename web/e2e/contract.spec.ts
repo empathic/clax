@@ -103,9 +103,12 @@ const CASES: Record<string, Case> = {
     },
     async check(f) {
       await expect(f.locator("#facts")).not.toHaveText("waiting");
+      // The person is the owner, one viewer on this daemon whose name other
+      // tests may have set: whatever it is, the page reads it.
+      const owner = (await (await fetch(`${d.base}/api/viewers/me`, { headers: { authorization: `Bearer ${d.token}` } })).json()).viewer.display_name ?? "";
       expect(JSON.parse((await f.locator("#facts").textContent())!)).toEqual({
         isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true,
-        name: "", meResolved: "", isMe: true, stranger: "", other: wren, search: 1,
+        name: owner, meResolved: owner, isMe: true, stranger: "", other: wren, search: 1,
       });
     },
   },

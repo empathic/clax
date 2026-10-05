@@ -46,7 +46,7 @@ test("element thread: pick, compose, pin, send, agent reply, resolve", async ({ 
   await expect(card.locator(".waiting")).toHaveText("seen by the agent");
   await card.getByRole("button", { name: "Resolve" }).click();
   await expect(page.locator(".section-resolved .thread-card")).toHaveCount(1);
-  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText("Viewer resolved");
+  await expect(page.locator(".section-resolved .thread-card .hist")).toContainText(/ resolved$/);
   await expect(page.locator("button.thread-pin")).toHaveCount(0);
 });
 

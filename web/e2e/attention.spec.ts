@@ -27,7 +27,8 @@ for (const mode of ["subdomain"] as const) {
     const alex = await (await browser.newContext()).newPage();
     const mia = await (await browser.newContext()).newPage();
     await openArtifact(alex, d.base, artifact.id, 1, mode);
-    await openArtifact(mia, d.base, artifact.id, 1, mode);
+    // Mia is on another machine: the owner's browsers are all one viewer.
+    await openArtifact(mia, d.base, artifact.id, 1, mode, { lan: true });
     await name(alex, "alex");
     await name(mia, "Mia");
     const tid = await comment(alex, artifact.id, "Two columns");

@@ -2,7 +2,8 @@
 //! "Sample protocol"). All three refuse a foreign `Origin`: pages reach them
 //! only through the shell, which asks the viewer's consent first. Only the
 //! owner's browser spends the key: the call and tool-result routes need the
-//! bearer token (401 `unauthorized`) and a viewer cookie (403 `forbidden`:
+//! bearer token (401 `unauthorized`) and a browser: the owner cookie, or a
+//! viewer cookie not yet claimed for the owner (403 `forbidden`:
 //! an agent or a script holding the token is not a browser), and the status
 //! route answers `available: false` to a caller without the token. The call
 //! route streams `start`, `text`, `tool_call`, and one `done` or `error` over
@@ -10,6 +11,7 @@
 
 use crate::auth::{RequireToken, has_token};
 use crate::error::ApiError;
+use crate::identity::Identity;
 use crate::routes::artifacts::parse_id;
 use crate::sample::cache::AnswerCache;
 use crate::sample::flight::Done;
@@ -18,7 +20,7 @@ use crate::sample::request::CachePolicy;
 use crate::sample::request::{self, MAX_TOOL_RESULT_BYTES, SampleBody};
 use crate::sample::{Deliver, ToolOutput};
 use crate::state::AppState;
-use crate::viewer::{SameOrigin, ViewerCookie};
+use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::JsonRejection;
 use axum::extract::{Path, State};
@@ -67,10 +69,14 @@ async fn declared(s: &AppState, aid: &str) -> Result<String, ApiError> {
     Ok(canonical)
 }
 
-/// The viewer cookie of the owner's browser making a call; 403 `forbidden`
-/// without one.
-fn owner_browser(cookie: Option<String>) -> Result<String, ApiError> {
-    cookie.ok_or_else(|| {
+/// The key of the owner's browser making a call (the owner's browsers are one
+/// person, so they share one key; a browser not yet claimed for the owner is
+/// its viewer cookie); 403 `forbidden` from no browser.
+fn owner_browser(who: Identity) -> Result<String, ApiError> {
+    if who.owner_browser() {
+        return Ok("owner".to_string());
+    }
+    who.cookie.ok_or_else(|| {
         ApiError::forbidden(
             "forbidden",
             "sample() is spent from the owner's browser only",
@@ -134,11 +140,11 @@ pub async fn sample(
     Path(aid): Path<String>,
     _o: SameOrigin,
     _t: RequireToken,
-    ViewerCookie(cookie): ViewerCookie,
+    who: Identity,
     body: Result<Json<SampleBody>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     // `Some` from here on: the per-viewer APIs below take the cookie as an option.
-    let cookie = Some(owner_browser(cookie)?);
+    let cookie = Some(owner_browser(who)?);
     let aid = declared(&s, &aid).await?;
     let Some(provider) = s.sample.provider().cloned() else {
         return Err(ApiError::forbidden(
@@ -232,10 +238,10 @@ pub async fn tool_result(
     Path((aid, call)): Path<(String, String)>,
     _o: SameOrigin,
     _t: RequireToken,
-    ViewerCookie(cookie): ViewerCookie,
+    who: Identity,
     body: Result<Json<ToolResultBody>, JsonRejection>,
 ) -> Result<StatusCode, ApiError> {
-    let cookie = Some(owner_browser(cookie)?);
+    let cookie = Some(owner_browser(who)?);
     parse_id(&aid)?;
     let Json(b) = body.map_err(|e| ApiError::bad_request("invalid_request", e.body_text()))?;
     if b.content.len() > MAX_TOOL_RESULT_BYTES {

@@ -225,6 +225,13 @@ pub const MIGRATIONS: &[&str] = &[
     // 14: the session a thread was last sent to with `to`. Later viewer
     // comments on the thread follow it while it is live. Never served.
     "ALTER TABLE threads ADD COLUMN target_session_id TEXT;",
+    // 15: the owner identity. One viewer row stands for the person who owns
+    // this install: every browser of theirs, the CLI and any other owner
+    // credential act as it. Nothing stored tells which existing viewers were
+    // the owner's browsers, so none is flagged here; a browser's viewer is
+    // claimed when it next presents an owner credential (`claim_for_owner`).
+    "ALTER TABLE viewers ADD COLUMN owner INTEGER NOT NULL DEFAULT 0;
+    CREATE UNIQUE INDEX viewers_one_owner ON viewers(owner) WHERE owner = 1;",
 ];
 
 #[cfg(test)]
@@ -307,6 +314,41 @@ mod tests {
         for secret in [COOKIE, LOST, SID] {
             assert!(!all.contains(secret), "{all}");
         }
+    }
+
+    #[test]
+    fn migration_15_flags_no_existing_viewer_as_the_owner() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..14] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", 14).unwrap();
+            c.execute_batch(&format!(
+                "INSERT INTO viewers (id, public_id, display_name, created_at)
+                    VALUES ('{COOKIE}', 'u_00000000000000000000aa', 'Alex', 'x');"
+            ))
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        assert!(
+            !st.is_owner_viewer(COOKIE).unwrap(),
+            "stored data cannot tell"
+        );
+        let owner = st.owner_viewer().unwrap();
+        assert_ne!(owner.id, COOKIE);
+        assert_eq!(owner.display_name, None);
+        // Only one row may be the owner.
+        let second = st.with_write(|c| {
+            Ok(c.execute(
+                &format!("UPDATE viewers SET owner = 1 WHERE id = '{COOKIE}'"),
+                [],
+            )?)
+        });
+        assert!(second.is_err());
     }
 
     #[test]
