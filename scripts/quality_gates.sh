@@ -44,7 +44,10 @@ export PLAYWRIGHT_INSTALL
 # the Rust tests that cannot name it (CLAX_TEST_BIN), the plugin wrapper
 # test, the comment loop, the Pi tests and the browser tests' daemons. A
 # copy, so a later `cargo build` that replaces target/debug/clax cannot pull
-# it from under a running gate.
+# it from under a running gate. Each copy is run once (`--version`) when it
+# is made: macOS assesses a new executable on its first run, which can take
+# seconds on a loaded machine, and that must not land inside a gate's time
+# limit (scripts/fake-exe.sh does the same for the gates' fakes).
 export CLAX_TEST_BIN="$GATES_TMP/debug/clax"
 # The one release `clax` the perf gates share.
 export CLAX_PERF_BIN="$GATES_TMP/release/clax"
@@ -91,16 +94,18 @@ lane_e2e() {
 }
 # The Rust tests are built before clippy runs, so they start running as soon
 # as they can: cargo builds one thing at a time in target/, and clippy's
-# checks share no artifacts with the test build.
+# checks share no artifacts with the test build. The test build's `clax`
+# (the one the Rust tests name) is run once when it is built, as
+# CLAX_TEST_BIN is.
 lane_rust() {
-    run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && cp target/debug/clax "$CLAX_TEST_BIN"' &&
+    run "build clax"            bash -c 'cargo build -q -p clax-cli && mkdir -p "$(dirname "$CLAX_TEST_BIN")" && cp target/debug/clax "$CLAX_TEST_BIN" && "$CLAX_TEST_BIN" --version >/dev/null' &&
     mark clax-built &&
     if cargo nextest --version >/dev/null 2>&1; then
-        run "build tests"       cargo nextest run --cargo-quiet --workspace --no-run &&
+        run "build tests"       bash -c 'cargo nextest run --cargo-quiet --workspace --no-run && target/debug/clax --version >/dev/null' &&
         mark tests-built &&
         run "cargo nextest"     cargo nextest run --workspace --no-fail-fast
     else
-        run "build tests"       cargo test -q --workspace --no-run &&
+        run "build tests"       bash -c 'cargo test -q --workspace --no-run && target/debug/clax --version >/dev/null' &&
         mark tests-built &&
         run "cargo test"        bash -c 'echo "WARNING: cargo-nextest is not installed, so the Rust tests ran under cargo test (slower); install it with: cargo install --locked cargo-nextest"; cargo test --workspace'
     fi
@@ -120,7 +125,7 @@ lane_lint() {
     mark linted
 }
 lane_release() {
-    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && cp target/release/clax "$CLAX_PERF_BIN"' &&
+    run "release build"         bash -c 'cargo build -q --release -p clax-cli && mkdir -p "$(dirname "$CLAX_PERF_BIN")" && cp target/release/clax "$CLAX_PERF_BIN" && "$CLAX_PERF_BIN" --version >/dev/null' &&
     mark release-built
 }
 

@@ -17,6 +17,8 @@ trap cleanup EXIT
 PY="$(python3 -c 'import sys; print(sys.executable)')"
 ORIG_PATH="$PATH"
 FAILED=0
+# shellcheck source=scripts/fake-exe.sh
+. "$HERE/fake-exe.sh"
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 V=0.3.0
@@ -52,14 +54,12 @@ new_env() {
     fake_uid 1000
 }
 fake_uid() { # what `id -u` prints; the tests never run as root
-    printf '#!/bin/sh\necho %s\n' "$1" > "$SANDBOX/bin/id"
-    chmod +x "$SANDBOX/bin/id"
+    printf '#!/bin/sh\necho %s\n' "$1" | fake_exe "$SANDBOX/bin/id"
 }
 fake_uname() { # os arch [hw.optional.arm64, default 0]
     # shellcheck disable=SC2016 # $1 belongs to the generated script
-    printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' "$1" "$2" > "$SANDBOX/bin/uname"
-    printf '#!/bin/sh\necho %s\n' "${3:-0}" > "$SANDBOX/bin/sysctl"
-    chmod +x "$SANDBOX/bin/uname" "$SANDBOX/bin/sysctl"
+    printf '#!/bin/sh\ncase "$1" in -s) echo %s ;; -m) echo %s ;; esac\n' "$1" "$2" | fake_exe "$SANDBOX/bin/uname"
+    printf '#!/bin/sh\necho %s\n' "${3:-0}" | fake_exe "$SANDBOX/bin/sysctl"
 }
 # Prints a directory holding links to the tools install.sh uses, minus those
 # named, for a PATH of "$SANDBOX/bin:<that directory>".
@@ -237,8 +237,7 @@ else fail "a failed copy (rc=$RC out=$OUT)"; fi
 new_env
 fake_uname Linux x86_64
 mkdir -p "$SANDBOX/dest"
-printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/mv"
-chmod +x "$SANDBOX/bin/mv"
+printf '#!/bin/sh\nexit 1\n' | fake_exe "$SANDBOX/bin/mv"
 CLAX_INSTALL_DIR="$SANDBOX/dest" inst ok "$V"
 rm -f "$SANDBOX/bin/mv"
 if [ "$RC" != 0 ] && [ -z "$(ls -A "$SANDBOX/dest")" ]; then

@@ -24,15 +24,16 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# A fake codex that records `codex queue` calls. The daemon takes it from
-# CLAX_CODEX_BIN, inherited from the shim that starts it, so the real
-# codex on PATH is never run.
-cat >"$FAKE/codex" <<SH
+# A fake codex that records `codex queue` calls in codex-args.txt, beside
+# its directory. The daemon takes it from CLAX_CODEX_BIN, inherited from the
+# shim that starts it, so the real codex on PATH is never run.
+# shellcheck source=scripts/fake-exe.sh
+. scripts/fake-exe.sh
+fake_exe "$FAKE/codex" <<'SH'
 #!/bin/sh
-printf '%s\n' "\$@" > "$SCRATCH/codex-args.txt"
+printf '%s\n' "$@" > "${0%/*}/../codex-args.txt"
 exit 0
 SH
-chmod +x "$FAKE/codex"
 export CLAX_CODEX_BIN="$FAKE/codex"
 
 if [ -z "${CLAX_TEST_BIN:-}" ]; then

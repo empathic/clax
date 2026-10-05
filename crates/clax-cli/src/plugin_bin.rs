@@ -393,12 +393,7 @@ mod tests {
     use super::*;
 
     fn fake_clax(dir: &Path, line: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(dir).unwrap();
-        let p = dir.join("clax");
-        std::fs::write(&p, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p
+        clax_fake_exe::install(&dir.join("clax"), &format!("#!/bin/sh\necho '{line}'\n"))
     }
 
     fn home(t: &tempfile::TempDir) -> Home {
@@ -566,7 +561,7 @@ mod tests {
                 .unwrap()
                 .contains("not 'clax 3.0.1'")
         );
-        std::fs::write(&bin, "#!/bin/sh\necho 'clax 3.0.0'\n# changed\n").unwrap();
+        clax_fake_exe::install(&bin, "#!/bin/sh\necho 'clax 3.0.0'\n# changed\n");
         assert!(
             managed_problem(&dir, "3.0.0")
                 .unwrap()

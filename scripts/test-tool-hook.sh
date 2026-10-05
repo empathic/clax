@@ -9,15 +9,16 @@ pass() { echo "PASS: $1"; }
 T="$(mktemp -d)"
 trap 'rm -rf "$T"' EXIT
 mkdir -p "$T/bin" "$T/fakehome"
-cp scripts/tool-hook.sh "$T/bin/tool-hook.sh"
-cat > "$T/bin/ensure-clax.sh" <<'SH'
+# shellcheck source=scripts/fake-exe.sh
+. scripts/fake-exe.sh
+fake_exe "$T/bin/tool-hook.sh" < scripts/tool-hook.sh
+fake_exe "$T/bin/ensure-clax.sh" <<'SH'
 #!/bin/sh
 { printf '%s|' "$*"; cat; echo; } >> "$CALLS"
 echo '{"noise": true}'
 echo 'noise' >&2
 exit 3
 SH
-chmod +x "$T/bin/tool-hook.sh" "$T/bin/ensure-clax.sh"
 export HOME="$T/fakehome" CLAX_HOME="$T/home" CALLS="$T/calls"
 STAMPS="$CLAX_HOME/run/tool-hook"
 calls() { if [ -f "$CALLS" ]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi; }

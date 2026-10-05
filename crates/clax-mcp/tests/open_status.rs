@@ -5,7 +5,6 @@ use clax_mcp::{ClaxTools, DaemonClient};
 use clax_server::testing::TestServer;
 use rmcp::handler::server::wrapper::Parameters;
 use serde_json::Value;
-use std::os::unix::fs::PermissionsExt;
 use std::time::{Duration, Instant};
 
 fn text(r: &rmcp::model::CallToolResult) -> Value {
@@ -14,17 +13,14 @@ fn text(r: &rmcp::model::CallToolResult) -> Value {
 
 #[tokio::test]
 async fn opened_follows_the_openers_exit_status() {
-    // A fake opener that behaves as the file `mode` says: exit with the code
-    // it holds, or keep running when it says `hang`.
+    // A fake opener that behaves as the file `mode` beside it says: exit
+    // with the code it holds, or keep running when it says `hang`.
     let dir = tempfile::tempdir().unwrap();
     let mode = dir.path().join("mode");
-    let script = format!(
-        "#!/bin/sh\nm=$(cat '{}')\nif [ \"$m\" = hang ]; then sleep 5; exit 0; fi\nexit \"$m\"\n",
-        mode.display()
+    let opener = clax_fake_exe::install(
+        &dir.path().join("open"),
+        "#!/bin/sh\nm=$(cat \"$(dirname \"$0\")/mode\")\nif [ \"$m\" = hang ]; then sleep 5; exit 0; fi\nexit \"$m\"\n",
     );
-    let opener = dir.path().join("open");
-    std::fs::write(&opener, &script).unwrap();
-    std::fs::set_permissions(&opener, std::fs::Permissions::from_mode(0o755)).unwrap();
 
     let ts = TestServer::spawn().await;
     let tools = |wait: Duration| {

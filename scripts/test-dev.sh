@@ -9,6 +9,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd -P)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
 trap 'rm -rf "$T"' EXIT
+# shellcheck source=scripts/fake-exe.sh
+. "$HERE/fake-exe.sh"
 FAILED=0
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
@@ -85,14 +87,13 @@ else fail "stop_orphan_daemon stopped the daemon of ~/.clax"; fi
 # stop_installed_daemon stops a home's daemon through `<clax> stop` only when
 # the daemon runs that clax; the fake clax records the call and ends the PID.
 mkdir -p "$T/cargo/bin" "$T/inst"
-cat > "$T/cargo/bin/clax" <<SH
+fake_exe "$T/cargo/bin/clax" <<'SH'
 #!/bin/sh
-echo "clax \$* home=\${CLAX_HOME:-}" >> "$T/inst/calls"
-if [ "\$1" = stop ]; then
-    kill "\$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "\$CLAX_HOME/daemon.json")"
+echo "clax $* home=${CLAX_HOME:-}" >> "${0%/*}/../../inst/calls"
+if [ "$1" = stop ]; then
+    kill "$(sed -n 's/.*"pid": *\([0-9]*\).*/\1/p' "$CLAX_HOME/daemon.json")"
 fi
 SH
-chmod +x "$T/cargo/bin/clax"
 sleep 60 &
 same=$!
 mkdir -p "$T/i1"
@@ -127,17 +128,14 @@ rm -rf "$HOME/.clax"
 FAKE="$T/fake"
 mkdir -p "$FAKE"
 for h in claude codex grok pi; do
-    cat > "$FAKE/$h" <<SH
+    fake_exe "$FAKE/$h" <<'SH'
 #!/bin/sh
-c="\$(command -v clax)"
-echo "$h \$* | clax=\$c (\$(clax --version)) home=\${CLAX_HOME:-} codex_home=\${CODEX_HOME:-} grok_home=\${GROK_HOME:-} clax_bin=\${CLAX_BIN:-} argc=\$#" >> "$T/calls"
+c="$(command -v clax)"
+echo "${0##*/} $* | clax=$c ($(clax --version)) home=${CLAX_HOME:-} codex_home=${CODEX_HOME:-} grok_home=${GROK_HOME:-} clax_bin=${CLAX_BIN:-} argc=$#" >> "${0%/*}/../calls"
 SH
-    chmod +x "$FAKE/$h"
 done
-printf '#!/bin/sh\necho "cargo $*" >> "%s/calls"\nexit 1\n' "$T" > "$FAKE/cargo"
-chmod +x "$FAKE/cargo"
-printf '#!/bin/sh\necho "clax 9.9.9-dev"\n' > "$T/clax-build"
-chmod +x "$T/clax-build"
+printf '#!/bin/sh\necho "cargo $*" >> "${0%%/*}/../calls"\nexit 1\n' | fake_exe "$FAKE/cargo"
+printf '#!/bin/sh\necho "clax 9.9.9-dev"\n' | fake_exe "$T/clax-build"
 devrun() { : > "$T/calls"; CLAX_DEV_BIN="$T/clax-build" PATH="$FAKE:$PATH" "$HERE/dev.sh" "$@" >"$T/out" 2>"$T/err"; }
 
 if [ "$(PATH="$FAKE:$PATH" command -v cargo)" != "$FAKE/cargo" ]; then
@@ -192,8 +190,7 @@ else fail "CLAX_HOME override ($(cat "$T/calls"))"; fi
 
 : > "$T/calls"
 mkdir -p "$T/fake-fail"
-printf '#!/bin/sh\nexit 3\n' > "$T/fake-fail/claude"
-chmod +x "$T/fake-fail/claude"
+printf '#!/bin/sh\nexit 3\n' | fake_exe "$T/fake-fail/claude"
 CLAX_DEV_BIN="$T/clax-build" PATH="$T/fake-fail:$FAKE:$PATH" "$HERE/dev.sh" claude >"$T/out" 2>&1
 rc=$?
 tmpdir="$(sed -n 's#^clax dev: clax 9.9.9-dev at \(.*\)/clax, .*#\1#p' "$T/out")"
@@ -274,8 +271,7 @@ if command -v just >/dev/null 2>&1; then
     # installed clax in a scratch CARGO_HOME, and a fake agents' daemon (a
     # sleep) in the scratch ~/.clax that records that clax as its executable.
     mkdir -p "$T/fake-cargo"
-    printf '#!/bin/sh\necho "cargo $*" >> "%s/inst/calls"\n' "$T" > "$T/fake-cargo/cargo"
-    chmod +x "$T/fake-cargo/cargo"
+    printf '#!/bin/sh\necho "cargo $*" >> "${0%%/*}/../inst/calls"\n' | fake_exe "$T/fake-cargo/cargo"
     if [ "$(PATH="$T/fake-cargo:$PATH" command -v cargo)" != "$T/fake-cargo/cargo" ]; then
         echo "FAIL: the fake cargo is not first on PATH; not running the recipes"; exit 1
     fi

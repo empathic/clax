@@ -37,4 +37,5 @@ sha2 = "0.11"
 assert_cmd.workspace = true
 predicates.workspace = true
 tempfile.workspace = true
+clax-fake-exe = { path = "../clax-fake-exe" }
 rusqlite.workspace = true

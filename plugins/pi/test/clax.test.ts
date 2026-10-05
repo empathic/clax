@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { validateToolArguments, type Tool } from "@mariozechner/pi-ai";
@@ -12,6 +12,7 @@ import { DaemonClient } from "../src/client.ts";
 import { discover, endpointOf, ensure } from "../src/daemon.ts";
 import { api, claxBin, startDaemon, type TestDaemon } from "./daemon-fixture.ts";
 import { FakePi, fakeContext, json } from "./fake-api.ts";
+import { fakeExe } from "./fake-exe.ts";
 
 /** Inputs and expected outputs shared with the Rust tools. */
 const FIXTURE = JSON.parse(readFileSync(new URL("./fixtures/contract.json", import.meta.url), "utf8"));
@@ -277,8 +278,7 @@ describe("clax Pi extension", () => {
     const openWith = async (script: string, openWaitMs = 30_000) => {
       const bin = mkdtempSync(join(scratch, "opener-"));
       for (const name of ["open", "xdg-open"]) {
-        writeFileSync(join(bin, name), `#!/bin/sh\n${script}\n`);
-        chmodSync(join(bin, name), 0o755);
+        fakeExe(join(bin, name), `#!/bin/sh\n${script}\n`);
       }
       const env: NodeJS.ProcessEnv = { ...process.env, CLAX_BIN: claxBin, PATH: `${bin}:${process.env.PATH}` };
       delete env.CLAX_NO_OPEN;
@@ -309,8 +309,7 @@ describe("clax Pi extension", () => {
   it("status reports upgrade_held while a failed upgrade keeps the daemon at an older version", async () => {
     // A failed upgrade to a newer build, recorded as the Rust client records it.
     const exe = join(scratch, "held-clax");
-    writeFileSync(exe, "#!/bin/sh\nexit 1\n");
-    chmodSync(exe, 0o755);
+    fakeExe(exe, "#!/bin/sh\nexit 1\n");
     const record = join(daemon.home, "logs", "failed-upgrade.json");
     mkdirSync(join(daemon.home, "logs"), { recursive: true });
     writeFileSync(record, JSON.stringify({

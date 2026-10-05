@@ -126,10 +126,7 @@ struct Call {
 }
 
 fn write_exe(p: &Path, text: &str) {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-    std::fs::write(p, text).unwrap();
-    std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+    clax_fake_exe::install(p, text);
 }
 
 impl Run {
@@ -151,16 +148,15 @@ impl Run {
         );
         // Another clax on the caller's PATH, which must never be the one found.
         write_exe(&r.p("decoybin/clax"), "#!/bin/sh\necho decoy\nexit 1\n");
-        // A cargo that reports the wrapper as the build it made.
+        // A cargo that reports the wrapper (`../claxbin/clax` from its own
+        // directory) as the build it made.
         write_exe(
             &r.p("fakebin/cargo"),
-            &format!(
-                "#!/bin/sh\nprintf 'cargo %s\\tPWD=%s\\tHOME=%s\\tCARGO_TARGET_DIR=%s\\n' \"$*\" \"$PWD\" \"$HOME\" \"$CARGO_TARGET_DIR\" >> \"${{0%/*}}/../cargo.log\"\n\
-                 echo '{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"lib\"],\"name\":\"clax_core\"}},\"executable\":null}}'\n\
-                 echo '{{\"reason\":\"compiler-artifact\",\"target\":{{\"kind\":[\"bin\"],\"name\":\"clax\"}},\"executable\":\"{}\"}}'\n\
-                 echo '{{\"reason\":\"build-finished\",\"success\":true}}'\n",
-                r.wrapper().display()
-            ),
+            "#!/bin/sh\nprintf 'cargo %s\\tPWD=%s\\tHOME=%s\\tCARGO_TARGET_DIR=%s\\n' \"$*\" \"$PWD\" \"$HOME\" \"$CARGO_TARGET_DIR\" >> \"${0%/*}/../cargo.log\"\n\
+             wrapper=\"${0%/*}/../claxbin/clax\"\n\
+             echo '{\"reason\":\"compiler-artifact\",\"target\":{\"kind\":[\"lib\"],\"name\":\"clax_core\"},\"executable\":null}'\n\
+             echo '{\"reason\":\"compiler-artifact\",\"target\":{\"kind\":[\"bin\"],\"name\":\"clax\"},\"executable\":\"'\"$wrapper\"'\"}'\n\
+             echo '{\"reason\":\"build-finished\",\"success\":true}'\n",
         );
         let sentinel = r.p("sentinel");
         std::fs::create_dir_all(sentinel.join(".claude/plugins")).unwrap();
