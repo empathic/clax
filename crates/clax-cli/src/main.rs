@@ -115,6 +115,9 @@ pub enum Cmd {
     },
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
+    /// The Chrome native messaging host for the Clax extension (Chrome runs it).
+    #[command(hide = true)]
+    NativeHost(commands::native_host::Args),
 }
 
 impl Cli {
@@ -191,6 +194,9 @@ fn main() {
     let home = match home_from_env() {
         Ok(home) => home,
         Err(e) => {
+            if matches!(cli.cmd, Cmd::NativeHost(_)) {
+                commands::native_host::run_without_home(&e);
+            }
             eprintln!("error: {e}");
             std::process::exit(if hook { 0 } else { 1 });
         }
@@ -218,6 +224,7 @@ fn main() {
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Haiku => commands::haiku::run(&cli),
+        Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
     };
     if let Err(e) = result {
         eprintln!("error: {e:#}");

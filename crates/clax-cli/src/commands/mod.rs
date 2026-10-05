@@ -11,6 +11,7 @@ pub mod hook;
 pub mod init;
 pub mod list;
 pub mod mcp;
+pub mod native_host;
 pub mod open;
 pub mod pin;
 pub mod publish;
