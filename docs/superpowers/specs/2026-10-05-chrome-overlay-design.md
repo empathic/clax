@@ -72,7 +72,7 @@ L15 (2026-10-05); their rows say so.
 | L12 | `publish` refuses a live page (400 `live_page`). `read`, `list`, `delete`, `comments_*`, `working`, `watch` and `wait_for_feedback` work on it. | Snapshots come from the browser; an agent publishing a page under a live page's ID would break the timeline. |
 | L13 | The extension's files are embedded in the `clax` binary and written by `clax extension install`, which `clax init` runs. The extension compares its manifest version with the daemon's on pairing and calls `chrome.runtime.reload()` once per new version, which reloads an unpacked extension from disk. | After an upgrade the person never visits `chrome://extensions` again. |
 | L14 | The native host is launched through a script in `~/.clax/extension/host/` that execs a copy of the plugins' wrapper (`ensure-clax.sh exec native-host`), with `CLAX_HOME` fixed to the home that installed it. | A host manifest names one absolute path with no arguments. The wrapper already finds the right binary (`CLAX_BIN`, the `bin` setting, the pinned release) and survives upgrades that remove old version directories. |
-| L15 | No key is needed to build, install, test or use the extension locally. Without a `key` in `manifest.json`, Chromium derives an unpacked extension's ID from its canonicalized absolute install path (the first 128 bits of the path's SHA-256, each nibble written as a letter `a`–`p`). The **ID in effect** for a Clax home is therefore: the ID derived from the committed public key when `web/extension/key.pub.b64` exists, else the ID derived from `<home>/extension`. `clax extension install`, the native host's origin check, the credential routes and the gateway all use the ID in effect, computed once per home (`AppState`), and a test pins both derivations (path `/Users/alex/.clax/extension` → `bhhldgpcjhfhmcfjjnelbbdcefnocaln`; the e2e checks Chromium's own ID for the loaded extension against the derivation). The committed public key is optional and only fixes the ID ahead of a Web Store listing. The private key never enters Clax, the repository, the build or CI: it lives only in the owner's 1Password, referenced by `CLAX_EXTENSION_KEY_REF` (an `op://` reference), and is read only by the owner-run, approval-gated signing scripts (§6.7). | Owner decision (2026-10-05): test locally with no key, and sign through 1Password. Nothing in Tasks 1–16 waits on the owner. Adding the public key later changes the ID once (one more Load unpacked for each person, and a fresh native-host registration, which `clax extension install` writes). |
+| L15 | No key is needed to build, install, test or use the extension locally. Without a `key` in `manifest.json`, Chromium derives an unpacked extension's ID from its canonicalized absolute install path (the first 128 bits of the path's SHA-256, each nibble written as a letter `a`–`p`). The **ID in effect** for a Clax home is therefore: the ID derived from the committed public key when `web/extension/key/key.pub.b64` exists, else the ID derived from `<home>/extension`. `clax extension install`, the native host's origin check, the credential routes and the gateway all use the ID in effect, computed once per home (`AppState`), and a test pins both derivations (path `/Users/alex/.clax/extension` → `bhhldgpcjhfhmcfjjnelbbdcefnocaln`; the e2e checks Chromium's own ID for the loaded extension against the derivation). The committed public key is optional and only fixes the ID ahead of a Web Store listing. The private key never enters Clax, the repository, the build or CI: it lives only in the owner's 1Password, referenced by `CLAX_EXTENSION_KEY_REF` (an `op://` reference), and is read only by the owner-run, approval-gated signing scripts (§6.7). | Owner decision (2026-10-05): test locally with no key, and sign through 1Password. Nothing in Tasks 1–16 waits on the owner. Adding the public key later changes the ID once (one more Load unpacked for each person, and a fresh native-host registration, which `clax extension install` writes). |
 
 ### 2.1 Depends on: the owner identity
 
@@ -381,7 +381,7 @@ Manifest essentials:
   "manifest_version": 3,
   "name": "Clax",
   "version": "<clax version, numeric part>",
-  "key": "<base64 SPKI public key, only when web/extension/key.pub.b64 is committed (L15)>",
+  "key": "<base64 SPKI public key, only when web/extension/key/key.pub.b64 is committed (L15)>",
   "minimum_chrome_version": "116",
   "action": {"default_title": "Comment with Clax"},
   "background": {"service_worker": "sw.js", "type": "module"},
@@ -445,7 +445,7 @@ repository.
 
 - `scripts/extension-pubkey.sh` runs
   `op read "$CLAX_EXTENSION_KEY_REF" | openssl rsa -pubout -outform DER | base64`
-  and writes `web/extension/key.pub.b64` (one line), which is committed. The
+  and writes `web/extension/key/key.pub.b64` (one line), which is committed. The
   private key passes only through the pipe; 1Password asks the owner to
   approve each read.
 - `scripts/pack-extension.sh` builds the Web Store upload zip from the

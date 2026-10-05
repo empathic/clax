@@ -7,11 +7,11 @@
 use base64::Engine as _;
 use rand::RngCore as _;
 use sha2::{Digest, Sha256};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// The extension's manifest, as the repository holds it (no `key`).
 pub const MANIFEST: &str = include_str!("../../../web/extension/manifest.json");
-/// The committed public key (`web/extension/key.pub.b64`), when there is one;
+/// The committed public key (`web/extension/key/key.pub.b64`), when there is one;
 /// `build.rs` sets `CLAX_EXTENSION_PUBLIC_KEY` from it.
 pub const PUBLIC_KEY: Option<&str> = option_env!("CLAX_EXTENSION_PUBLIC_KEY");
 /// The native messaging host's name.
@@ -57,15 +57,22 @@ pub fn extension_id_from_path(dir: &Path) -> String {
     )
 }
 
-/// `dir` made absolute, with its nearest existing ancestor canonicalized.
+/// `dir` made absolute, with its nearest existing ancestor canonicalized and
+/// the rest appended with `.` and `..` resolved lexically.
 fn canonical_as_far_as_exists(dir: &Path) -> PathBuf {
     let abs = std::path::absolute(dir).unwrap_or_else(|_| dir.to_path_buf());
     for a in abs.ancestors() {
-        if let Ok(c) = a.canonicalize() {
-            return match abs.strip_prefix(a) {
-                Ok(rest) if !rest.as_os_str().is_empty() => c.join(rest),
-                _ => c,
-            };
+        if let Ok(mut out) = a.canonicalize() {
+            for part in abs.strip_prefix(a).unwrap_or(Path::new("")).components() {
+                match part {
+                    Component::ParentDir => {
+                        out.pop();
+                    }
+                    Component::Normal(p) => out.push(p),
+                    _ => {}
+                }
+            }
+            return out;
         }
     }
     abs
@@ -148,6 +155,11 @@ mod tests {
         let want =
             extension_id_of_path_bytes(real.join("ax/extension").as_os_str().as_encoded_bytes());
         assert_eq!(extension_id_from_path(&link.join("ax/extension")), want);
+        assert_eq!(
+            extension_id_from_path(&link.join("ax/missing/../extension")),
+            want,
+            "a `..` in the part that does not exist yet is resolved too"
+        );
         std::fs::create_dir_all(real.join("ax/extension")).unwrap();
         assert_eq!(extension_id_from_path(&link.join("ax/extension")), want);
     }

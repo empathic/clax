@@ -1961,6 +1961,45 @@ versions is a snapshot of the page, taken when a comment is posted.
   subscribing it to a live page's `artifact:`, `working:`, `presence:` or
   `docs:` topic answers 404 `not_found`.
 
+### The Clax extension's credentials
+
+The Clax Chrome extension pairs with the daemon through its native
+messaging host, which mints a credential with the token. The extension may
+pair only with the **ID in effect** for the daemon's home. That is the ID
+Chromium derives from the committed public key
+(`web/extension/key/key.pub.b64`) when the build has one. Otherwise it is
+the ID Chromium gives the unpacked extension at `<home>/extension`: the
+first 128 bits of the SHA-256 of the canonical path, each nibble written as
+a letter `a`–`p`.
+
+A credential is `cxe_` followed by 43 base64url characters (32 random
+bytes). The daemon stores only its SHA-256 and never logs it. A credential
+is live while it is not revoked and has been used within 30 days. A use is
+recorded at most once an hour. At most 8 live credentials exist per
+extension ID, and minting a ninth revokes the oldest. A credential names no
+viewer: it acts as the owner.
+
+All three routes need the token (401 `unauthorized` without it):
+
+- **`POST /api/extension/credentials`** `{extension_id}` (any other field is
+  400) answers `{credential, viewer, expires_in_s}`.
+  - `credential` is shown only this once.
+  - `viewer` is the owner viewer (`{public_id, display_name, created_at}`).
+    The extension counts as one of the owner's browsers, so the route makes
+    that viewer when there is none.
+  - `expires_in_s` is the idle lifetime, `2592000`.
+  - Any ID but the ID in effect is 400 `unknown_extension`.
+- **`GET /api/extension`** answers `{extension_id, live_credentials,
+  last_used_at, viewer}`.
+  - `extension_id` is the ID in effect.
+  - `live_credentials` is how many credentials are live.
+  - `last_used_at` is the latest use, or `null`.
+  - `viewer` is the owner viewer, or `null` while there is none. Reading
+    this never makes the owner viewer.
+  - It never shows a credential.
+- **`DELETE /api/extension/credentials`** revokes every credential and
+  answers `{revoked}`, the number of them that were live.
+
 ## Page contract
 
 Every page follows this contract so it renders well in the gallery, in light and

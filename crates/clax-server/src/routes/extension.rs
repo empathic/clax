@@ -7,7 +7,6 @@
 use super::artifacts::body;
 use crate::auth::RequireToken;
 use crate::error::ApiError;
-use crate::extension::Credentials;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::State;
@@ -42,8 +41,7 @@ pub async fn mint(
     let id = s.extension_id.clone();
     let (m, owner) = s
         .store_call(move |st| {
-            let m = st.mint_extension_credential(&id)?;
-            creds.replace_with(Credentials::load(st)?);
+            let m = creds.refresh(st, |st| st.mint_extension_credential(&id))?;
             Ok((m, st.owner_viewer(true)?))
         })
         .await?;
@@ -70,15 +68,11 @@ pub async fn status(State(s): State<AppState>, _t: RequireToken) -> Result<Json<
 }
 
 /// `DELETE /api/extension/credentials` (W): revokes every credential;
-/// `{revoked}` is how many it revoked.
+/// `{revoked}` is how many of them were live.
 pub async fn revoke(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
     let creds = s.ext_creds.clone();
     let n = s
-        .store_call(move |st| {
-            let n = st.revoke_extension_credentials()?;
-            creds.replace_with(Credentials::load(st)?);
-            Ok(n)
-        })
+        .store_call(move |st| creds.refresh(st, |st| st.revoke_extension_credentials()))
         .await?;
     Ok(Json(json!({"revoked": n})))
 }

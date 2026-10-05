@@ -7,13 +7,22 @@ use crate::extension::{CREDENTIAL_TTL_DAYS, MAX_CREDENTIALS, credential_hash, ne
 use crate::{Result, new_ulid};
 use rusqlite::params;
 
-/// A credential just minted.
-#[derive(Clone, Debug)]
+/// A credential just minted. Its `Debug` leaves the credential out.
+#[derive(Clone)]
 pub struct MintedCredential {
     /// The credential itself: handed to the extension once, never stored.
     pub credential: String,
     /// Its SHA-256 in lowercase hex, as stored.
     pub hash: String,
+}
+
+impl std::fmt::Debug for MintedCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MintedCredential")
+            .field("credential", &"<redacted>")
+            .field("hash", &self.hash)
+            .finish()
+    }
 }
 
 /// A credential neither revoked nor unused for [`CREDENTIAL_TTL_DAYS`].
@@ -87,13 +96,21 @@ impl Store {
         })
     }
 
-    /// Revokes every live credential; returns how many.
+    /// Revokes every credential not yet revoked, expired ones included;
+    /// returns how many of them were live.
     pub fn revoke_extension_credentials(&self) -> Result<usize> {
-        self.with_write(|c| {
-            Ok(c.execute(
+        self.with_tx(|tx| {
+            let live: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM extension_credentials
+                 WHERE revoked_at IS NULL AND last_used_at >= ?1",
+                params![cutoff()],
+                |r| r.get(0),
+            )?;
+            tx.execute(
                 "UPDATE extension_credentials SET revoked_at = ?1 WHERE revoked_at IS NULL",
                 params![Store::now()],
-            )?)
+            )?;
+            Ok(usize::try_from(live).unwrap_or(0))
         })
     }
 }
@@ -160,6 +177,36 @@ mod tests {
         assert_eq!(st.revoke_extension_credentials().unwrap(), MAX_CREDENTIALS);
         assert!(st.live_extension_credentials().unwrap().is_empty());
         assert_eq!(st.revoke_extension_credentials().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_minted_credential_never_prints_its_secret() {
+        let (_dir, st) = store();
+        let m = st.mint_extension_credential(EXT).unwrap();
+        let shown = format!("{m:?}");
+        assert!(!shown.contains(&m.credential[4..]), "{shown}");
+        assert!(shown.contains(&m.hash));
+    }
+
+    #[test]
+    fn revoking_counts_only_the_credentials_that_were_live() {
+        let (_dir, st) = store();
+        let old = st.mint_extension_credential(EXT).unwrap();
+        st.mint_extension_credential(EXT).unwrap();
+        st.with_write(|c| {
+            Ok(c.execute(
+                "UPDATE extension_credentials SET last_used_at = '2000-01-01T00:00:00.000Z'
+                 WHERE secret_sha256 = ?1",
+                params![old.hash],
+            )?)
+        })
+        .unwrap();
+        assert_eq!(st.revoke_extension_credentials().unwrap(), 1);
+        st.touch_extension_credential(&old.hash).unwrap();
+        assert!(
+            st.live_extension_credentials().unwrap().is_empty(),
+            "the expired one was revoked too"
+        );
     }
 
     #[test]
