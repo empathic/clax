@@ -47,8 +47,9 @@ the channels it already uses (§10 tiers 1–5).
 ## 2. Decisions
 
 The owner decided O1–O5 before this design; this document records them as
-decided and works out their consequences. L1–L14 are this design's
-decisions, each with its reason.
+decided and works out their consequences. L1–L15 are this design's
+decisions, each with its reason. On review the owner decided L6, L7, L8 and
+L15 (2026-10-05); their rows say so.
 
 | # | Decision | Reason |
 |---|---|---|
@@ -61,16 +62,40 @@ decisions, each with its reason.
 | L2 | A `watch` on a page URL is a **scope watch**: it covers that page and every live page of the same origin whose path is the watched path or below it (`/` covers the whole origin). Scope watches are materialized as ordinary `watches` rows (marked `source = 'scope'`) on every covered live page, now and as new ones are created. | An agent watching `http://localhost:5173/` must also hear about threads on `/settings`. Materializing keeps feedback targeting, participants, retargeting and every tier unchanged, since they read `watches`. |
 | L3 | A live page created without a snapshot (by `watch`) gets a placeholder version 1, an HTML page saying no snapshot exists yet. Every later version is a snapshot. | Every query of live artifacts, the doctor's cleanup and the shell assume at least one version; a placeholder keeps that invariant instead of special-casing a dozen queries. |
 | L4 | A snapshot becomes a new version only when its `index.html` differs from the current version's (byte-identical snapshots reuse the current version). The screenshot is the thread's clip, never a version file. | Versions stay a timeline of what the page looked like, not one per comment; the clip already has a home per thread (§9 "Clips"). |
-| L5 | The extension calls the daemon's existing viewer routes through an **extension gateway**: a middleware that admits a request carrying the extension's origin and a valid extension credential, checks it against an allowlist of routes and live-page artifacts, and hands it to the existing handler as that credential's viewer. | One code path for comments, sends, resolves and the stream, whether they come from the shell or the extension; the extension can reach nothing else. |
-| L6 | The extension is its own viewer: one `viewers` row per extension ID, created at first pairing and shared by every credential minted for that ID. The side panel asks for a display name once, as the shell does. | The shell's viewer lives in an `HttpOnly` cookie the extension cannot read without the `cookies` permission and broad host permissions on the daemon's origin. Separate viewers cost only per-viewer marks (looked-at, seen) not being shared between the side panel and the shell. |
-| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number. | Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. |
-| L8 | Comment mode is entered only by a gesture that grants `activeTab`: the toolbar icon, the keyboard command (Alt+Shift+C) or the page's context menu entry. The side panel's Comment button works while the tab already holds `activeTab` and otherwise says how to start. | `captureVisibleTab` needs `activeTab` or `<all_urls>`; per-origin host permissions are not enough. `<all_urls>` would ask for every site at install. |
+| L5 | The extension calls the daemon's existing viewer routes through an **extension gateway**: a middleware that admits a request carrying the extension's origin and a valid extension credential, checks it against an allowlist of routes and live-page artifacts, and hands it to the existing handler as the owner identity (L6). | One code path for comments, sends, resolves and the stream, whether they come from the shell or the extension; the extension can reach nothing else. |
+| L6 | The extension acts as the **owner identity**: the one viewer identity Clax gives its owner, shared by the person's browsers on this machine, the CLI with the token, and the extension (§2.1). A live extension credential maps to the owner identity through the owner identity's server-side hook, in the one place that maps credential kinds to it; the extension has no `viewers` row of its own. Its looked-at and seen marks, its name, its presence and the comments, sends and resolves it makes are the owner's. The side panel asks for a name only while the owner has none. | Owner decision (2026-10-05): one person, one identity, whichever client they use. The side panel and the shell then share looked-at and seen marks, and a thread the person read in one is not new in the other. The extension needs no cookie: the gateway, not a browser cookie, says who it is. |
+| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number. | Owner decision (2026-10-05), as proposed. Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. |
+| L8 | Comment mode is entered only by a gesture that grants `activeTab`: the toolbar icon, the keyboard command (Alt+Shift+C) or the page's context menu entry. The side panel's Comment button works while the tab already holds `activeTab` and otherwise says how to start. A plain key (such as C) is never taken from the page. | Owner decision (2026-10-05), as proposed. `captureVisibleTab` needs `activeTab` or `<all_urls>`; per-origin host permissions are not enough. `<all_urls>` would ask for every site at install. |
 | L9 | Snapshots are sanitized in the extension (§8.2) and served by the daemon with a second Content-Security-Policy that lets only the daemon's own `/_clax/` scripts run. Comment mode is off in the shell for live pages. | Page content is hostile. The client sanitizer removes secrets and scripts; the policy guarantees nothing the page wrote can run even if the sanitizer misses something, without a server-side HTML parser. |
 | L10 | Live pages are visible only to loopback peers and requests with the token. A daemon bound to the LAN serves LAN viewers its artifacts as today, and never its live pages. | Agents publish artifacts for people to see; live-page snapshots are of whatever the person browses. They must not reach the LAN. |
 | L11 | "Addressed" on a live page: the agent marks a thread addressed with `comments_reply` and `addressed: true` (or resolves it), which records a **pending address**. The next snapshot of the page links every pending address to its version, so the thread reads "addressed in vN" with the page as it looked after the fix. The extension takes that snapshot itself (DOM only, no screenshot) when the page is open, visible and has pending addresses, once the DOM has been quiet for 1 s. | There is no publish on a live page. Linking to the snapshot that shows the fix keeps Echo's meaning of "addressed in vN" (a version that handled the thread) and works for hot reloads, which change the page without a version. |
 | L12 | `publish` refuses a live page (400 `live_page`). `read`, `list`, `delete`, `comments_*`, `working`, `watch` and `wait_for_feedback` work on it. | Snapshots come from the browser; an agent publishing a page under a live page's ID would break the timeline. |
 | L13 | The extension's files are embedded in the `clax` binary and written by `clax extension install`, which `clax init` runs. The extension compares its manifest version with the daemon's on pairing and calls `chrome.runtime.reload()` once per new version, which reloads an unpacked extension from disk. | After an upgrade the person never visits `chrome://extensions` again. |
 | L14 | The native host is launched through a script in `~/.clax/extension/host/` that execs a copy of the plugins' wrapper (`ensure-clax.sh exec native-host`), with `CLAX_HOME` fixed to the home that installed it. | A host manifest names one absolute path with no arguments. The wrapper already finds the right binary (`CLAX_BIN`, the `bin` setting, the pinned release) and survives upgrades that remove old version directories. |
+| L15 | The owner generates the extension's private key and keeps it; neither Clax nor its implementers ever see it or its path. Clax's only input is the **public** key, which the owner supplies as the manifest's `key` value (base64 SubjectPublicKeyInfo DER: `openssl rsa -in <their.pem> -pubout -outform DER \| base64`) and which is committed with the manifest, since it is public. `EXTENSION_ID` is derived from it and pinned by a test. Nothing in the build, the tests or the plan generates the production key; until the owner supplies the public key, the work that needs it stops and asks for that value only. The test build carries the same public key (loading an unpacked extension needs no private key). The Web Store upload is the owner's manual step (§6.7). | Owner decision (2026-10-05). The fixed ID comes from the public key; keeping the same ID on the Web Store needs the matching private key at the listing's first upload. If it is lost before the listing, the listing gets a new ID and Clax ships a release with the new `key` and `EXTENSION_ID`, which costs every person one more Load unpacked. |
+
+### 2.1 Depends on: the owner identity
+
+The owner identity is built separately (branch `cli-comments`) and lands on
+main before this design is implemented. This design uses exactly two things
+from it, under whatever names it gives them:
+
+1. **The owner viewer**: one `viewers` row (public ID, display name) that
+   is the owner wherever they act, with a way for the daemon to resolve it
+   (creating it on first use if that work does so).
+2. **The hook**: the one server-side place that maps an authenticated
+   credential kind to the owner identity, so the viewer routes
+   (`/api/viewers/me`, looked-at, presence, comments, sends, resolves,
+   deletes, the stream) treat a request as the owner's. The gateway (L5)
+   registers the extension credential there as one more kind that maps to
+   the owner. If the hook works by presenting the owner viewer to the
+   existing handlers as the viewer cookie does, the gateway sets that; if it
+   is a principal the handlers read, the gateway sets that. Either way no
+   handler learns about the extension.
+
+The owner identity's level on the viewer routes is whatever that work
+gives the owner; the gateway's allowlist (§9.2) bounds what the extension
+can reach regardless, and the gateway never presents the daemon token.
 
 ## 3. User flows
 
@@ -89,7 +114,9 @@ decisions, each with its reason.
    comment mode on. The service worker pairs with the daemon on its first
    need (native host, under 300 ms with a running daemon; it starts one if
    none runs).
-4. The side panel asks for their name once ("Your name"), as the shell does.
+4. If the owner has no name yet (none set in the shell or the CLI), the side
+   panel asks for it once ("Your name"); the name is the owner's
+   everywhere.
 
 ### 3.2 Commenting
 
@@ -238,11 +265,6 @@ refuses it on other artifacts (`invalid_anchor`). Its summary prefix is
 ### 5.3 Migration 16: extension credentials
 
 ```sql
-CREATE TABLE extension_viewers (
-    extension_id TEXT PRIMARY KEY,
-    viewer_id TEXT NOT NULL REFERENCES viewers(id),
-    created_at TEXT NOT NULL
-);
 CREATE TABLE extension_credentials (
     id TEXT PRIMARY KEY,
     extension_id TEXT NOT NULL,
@@ -259,7 +281,8 @@ its SHA-256 is stored. A credential is live while not revoked and used within
 30 days; `last_used_at` is written at most once an hour per credential. At
 most 8 live credentials exist per extension ID: minting a ninth revokes the
 oldest. The daemon keeps an in-memory map of live credential hashes to
-`(extension_id, viewer_id)`, loaded on start and updated on mint and revoke.
+their extension ID, loaded on start and updated on mint and revoke. A
+credential carries no viewer: every live one is the owner identity (L6).
 
 ### 5.4 Files
 
@@ -409,6 +432,17 @@ is this home's `launch.sh`, then the directory. `status` reports, per
 browser, `missing`, `installed`, or `stale` (another path or origin), and
 whether the files match this binary.
 
+### 6.7 Distribution
+
+Until a Web Store listing exists, the extension is distributed only as the
+unpacked files `clax extension install` writes (§6.6); its ID is fixed by
+the public key in the committed manifest (L15). The listing's first upload
+is the owner's manual step, outside Clax and its build: it needs the
+private key the owner keeps, so that the listed extension has the same ID
+as the unpacked one. Nothing in the repository, the build or the release
+flow holds or asks for that key. `docs/verification.md` lists the upload
+among what only the owner does.
+
 ## 7. Live-page identity
 
 The daemon is the only normalizer; the extension sends `location.href` and
@@ -542,7 +576,8 @@ Messages:
 
 `pair` ensures a daemon (the discovery and auto-start of §7, which may take
 up to 5 s), then mints a credential with the token (`POST
-/api/extension/credentials`). A message whose `v` is not 1, or of another
+/api/extension/credentials`). `viewer` is the owner viewer's public view
+(L6), as the mint returns it. A message whose `v` is not 1, or of another
 type, is `unsupported_version` or `bad_request`. Chrome's own check of
 `allowed_origins` comes first; the host's check of its argument covers a
 manifest edited by hand.
@@ -579,10 +614,10 @@ origin is 403 `forbidden`.
 Token routes:
 
 - `POST /api/extension/credentials` `{extension_id}` → `{credential,
-  viewer, expires_in_s}`; 400 `unknown_extension` for any ID but
-  `EXTENSION_ID`.
+  viewer, expires_in_s}`, where `viewer` is the owner viewer (`{public_id,
+  display_name}`); 400 `unknown_extension` for any ID but `EXTENSION_ID`.
 - `GET /api/extension` → `{extension_id, live_credentials, last_used_at,
-  viewer}`.
+  viewer}` (`viewer` as above).
 - `DELETE /api/extension/credentials` → revokes all; `{revoked: n}`.
 
 ### 9.3 Agent-facing changes
@@ -660,6 +695,13 @@ stays alive while a panel or overlay port is open; each sends a ping every
 the hub resumes the stream with `Last-Event-ID` within the daemon's 60 s hold
 or refetches.
 
+Presence: while the panel shows a live page and is visible, the worker
+reports the owner `here` on it every 30 s. It never reports `away`: presence
+is keyed by viewer, so an `away` from the panel would also mark the owner
+away in a shell tab showing the same page. When the panel hides, the report
+lapses (the main spec's §10, "Presence") unless another of the owner's clients
+keeps it.
+
 ## 10. Security model
 
 What is protected, from whom:
@@ -671,9 +713,11 @@ What is protected, from whom:
    `chrome.storage.session` (memory only; the default access level keeps it
    from content scripts). It is never put in a URL, a DOM, a message to the
    overlay or composer, or a log. It grants exactly the gateway's allowlist,
-   on live pages only, as one viewer (`interact` once named, else `view`).
-   It cannot publish, delete artifacts, read sessions, read the token, use
-   `db`, or see any non-live artifact.
+   on live pages only, as the owner identity (L6). It cannot publish,
+   delete artifacts, read sessions, read the token, use `db`, or see any
+   non-live artifact. A stolen credential therefore acts as the owner on
+   live pages (comments, sends, resolves, the owner's name and marks) until
+   revoked; that is the cost of one identity, bounded by the allowlist.
 3. **The page cannot drive Clax.** No `externally_connectable` web origin; the
    isolated world's messages are validated; CommentMode acts only on trusted
    events (`isTrusted`), so page scripts cannot pick; posting a comment takes
@@ -694,8 +738,9 @@ What is protected, from whom:
    a bearer token from the extension's origin is refused 403 (no route mixes
    the two). The gateway strips the request's `Origin`, `Cookie`,
    `Sec-Fetch-Site` and `Authorization` before handing it to the existing
-   handler with the credential's viewer cookie, so the existing
-   `SameOrigin` and viewer rules apply unchanged, and the response carries
+   handler as the owner identity through the owner identity's hook (§2.1),
+   so the existing `SameOrigin` and viewer rules apply unchanged, and the
+   response carries
    `Access-Control-Allow-Origin: chrome-extension://<ID>` and `Vary: Origin`.
    Preflights are answered only for that origin and the allowlisted paths.
    The `/api` host rule (DNS rebinding) is unchanged: the worker uses
@@ -728,7 +773,7 @@ What is protected, from whom:
 | SPA route change | The overlay reports the new URL; the worker looks it up (`GET /api/live/pages`) and switches artifact or route; pins follow. |
 | Hot reload replaces the DOM | Mutations re-resolve anchors within one animation frame after a 150 ms quiet period; a thread whose anchor is gone goes to Detached. |
 | Agent addressed a thread while the page is closed | The address stays pending; the thread shows "waiting for a snapshot" until the page is next open in Chrome with the extension. |
-| Two Chrome profiles | Each loads the extension (same ID) and pairs separately, with its own credentials; both are the one viewer of that extension ID (L6). Accepted: one person, one name. |
+| Two Chrome profiles | Each loads the extension (same ID) and pairs separately, with its own credentials; both act as the owner identity (L6), as the shell in any browser on this machine does. |
 | Port of a dev server reused by another project | Same live pages (§7). The person deletes the live page to start over. |
 | LAN-bound daemon | Extension works (it talks to `localhost`); LAN viewers never see live pages (L10). |
 
@@ -755,7 +800,9 @@ What is protected, from whom:
   linking); scope-watch materialization and removal; the routes; the
   gateway (each allowlisted route works, everything else refused, wrong
   origin, revoked credential, bearer from the extension origin, CORS
-  preflight); L10 hiding; the snapshot policy header; native host framing and
+  preflight, and the extension acting as the owner identity: its
+  `/api/viewers/me` is the owner viewer, its name and looked-at marks are
+  the owner's); L10 hiding; the snapshot policy header; native host framing and
   origin check against the real binary; `clax extension install/uninstall`
   against `CLAX_NATIVE_HOST_DIRS` scratch directories; MCP `watch` with a
   page URL and the artifact-reference rule.
@@ -770,7 +817,8 @@ What is protected, from whom:
   panel shows it, send, an agent session (`watch` with the URL through the
   shim) receives it, HMR moves and then removes the element (pin follows,
   then Detached), `addressed: true` reply links on the auto snapshot, the
-  shell shows the live page in the gallery and the snapshot with its pin.
+  shell shows the live page in the gallery and the snapshot with its pin,
+  and the shell's viewer is the same owner viewer the extension paired as.
 - The test build differs from the release build only in
   `host_permissions: ["<all_urls>"]` (so capture and injection need no
   gesture Playwright cannot give) and a test hook on the worker that stands
@@ -808,8 +856,8 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
   later), Safari, Windows (registry-based host registration).
 - Snap and Flatpak Chromium on Linux (confined; the host path is not
   reachable). The Claude Code plugin's README says so.
-- The Web Store listing itself (this design keeps the ID ready for it).
-- Merging the extension's viewer with the shell's (L6).
+- The Web Store listing itself (this design keeps the ID ready for it; the
+  upload is the owner's manual step, §6.7).
 - Commenting on snapshots in the shell (L9).
 - Pages inside iframes (the overlay runs in the top frame only), `file://`,
   `chrome://` and the Web Store.
@@ -817,13 +865,5 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
 
 ## 17. Open questions
 
-1. **Who holds the extension's private key.** The fixed ID comes from the
-   public key in `manifest.json`; keeping the same ID on the Web Store needs
-   the matching private key at the listing's first upload. The plan's Task 5
-   generates a key pair, commits only the public key, and writes the private
-   key outside the repository. *Recommendation:* the owner generates the key
-   pair themselves before Task 5 (`openssl genrsa -out clax-extension.pem
-   2048`) and keeps the private key in their password manager; Task 5 takes
-   the public key from it. If it is lost before the listing, the listing gets
-   a new ID and Clax ships a release with the new `key` and `EXTENSION_ID`,
-   which costs every person one more Load unpacked.
+None. The extension's private key, the composer and how comment mode starts
+were decided by the owner (L15, L7, L8), as was the owner identity (L6).

@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-05-chrome-overlay-design.md` (and the main spec `docs/superpowers/specs/2026-09-28-clax-design.md`). Read both before Task 1; every task's requirements include the spec section it names.
 
+**Before Task 1:** execution starts only after the `cli-comments` branch (the owner identity, spec §2.1) is merged to main. Rebase this branch on main first, then read what that merge added: the owner viewer, how the daemon resolves it, and the hook that maps a credential kind to it. Tasks 5, 6, 10, 14 and 16 consume it (see "Owner identity" below); where this plan writes a placeholder name for it, use main's.
+
 ## Global Constraints
 
 - No `unsafe` Rust anywhere: every crate keeps `#![forbid(unsafe_code)]`, and the `no unsafe code` gate in `scripts/quality_gates.sh` stays green.
@@ -17,6 +19,8 @@
 - The whole `scripts/quality_gates.sh` stays within about 2 minutes on a warm cache: tests run in parallel, use fake or injected clocks, and never sleep a fixed time; browser tests wait on events. A new slow test is a defect.
 - Extension: Manifest V3, `minimum_chrome_version` `"116"`. The release manifest declares no `host_permissions` and no static `content_scripts`; it declares `"optional_host_permissions": ["http://*/*", "https://*/*"]` and `"externally_connectable": {"ids": []}`.
 - Native host name: `dev.empathic.clax`. Extension ID: `clax_core::extension::EXTENSION_ID`, derived from the manifest's `key` (a test checks they agree).
+- Extension key (spec L15): the owner generates and keeps the private key; Clax's only input is the **public** key, which the owner supplies as the manifest `key` value (one line of base64 DER, from `openssl rsa -in <their.pem> -pubout -outform DER | base64 | tr -d '\n'`) and which is committed (it is public). Never ask for, read, store or generate a production private key or its path. Until the owner has supplied the public key, Task 5 stops and asks for that value only. The test build carries the same public key; loading an unpacked extension needs no private key. The Web Store upload, which needs the private key, is the owner's manual step.
+- Owner identity (spec L6, §2.1): the extension acts as the owner identity, never as a viewer of its own. There is no extension viewer, no `extension_viewers` table, and no viewer ID on a credential. Consumes, from the owner identity on main (placeholder names; use main's): **`owner_viewer(&Store) -> Result<Viewer>`** (the owner's `viewers` row, created on first use if that work does so), **the owner hook** (the one place that maps an authenticated credential kind to the owner identity, for example a `Principal::Owner` resolved by one extractor or middleware), and test access to the owner viewer (**`TestServer::owner_viewer() -> Viewer`**; Task 5 adds it over `owner_viewer` if main has none). If main also changed what `TestServer::viewer` returns (for example, because every loopback browser is now the owner), keep Tasks 1–4's tests meaning what they say: two named people stay two distinct viewers.
 - Credential format: `cxe_` followed by 43 base64url characters (32 random bytes). Stored only as SHA-256 (lowercase hex). Never logged, never in a URL, never sent to a content script, composer or page.
 - The daemon token never reaches the extension, a content script or a web page.
 - Live-page key: origin (scheme, lowercased host, non-default port) + path; `route` = query without `utm_*`, `fbclid`, `gclid`, then a `#/…` or `#!/…` hash route; route at most 512 bytes.
@@ -46,7 +50,7 @@ crates/clax-core/src/live.rs                    page URL → key + route; placeh
 crates/clax-core/src/live-url-cases.json        normalization cases (Rust test)
 crates/clax-core/src/extension.rs               EXTENSION_ID, ID-from-key, credential format
 crates/clax-core/src/store/live.rs              live pages, snapshots, scope watches, pending addresses
-crates/clax-core/src/store/extension.rs         extension viewers and credentials
+crates/clax-core/src/store/extension.rs         extension credentials
 crates/clax-server/src/live.rs                  LiveIds cache; hiding live pages from the LAN
 crates/clax-server/src/routes/live.rs           /api/live/pages, /threads, /snapshots
 crates/clax-server/src/extension.rs             credential cache; the extension gateway middleware
@@ -2431,7 +2435,6 @@ git -c commit.gpgsign=false commit -m "Watch a page by its URL: scope watches, p
 
 **Files:**
 - Create: `web/extension/manifest.json`
-- Create: `scripts/extension-key.sh`
 - Create: `crates/clax-core/src/extension.rs`
 - Create: `crates/clax-core/src/store/extension.rs`
 - Create: `crates/clax-server/src/extension.rs` (the credential cache; Task 6 adds the gateway)
@@ -2441,39 +2444,26 @@ git -c commit.gpgsign=false commit -m "Watch a page by its URL: scope watches, p
 - Modify: `crates/clax-server/src/state.rs`, `daemon.rs`, `testing.rs`, `lib.rs`, `routes/mod.rs`
 
 **Interfaces:**
-- Consumes: `Store::upsert_viewer(id, None) -> Result<Viewer>`, `Store::get_viewer`.
+- Consumes:
+  - From the owner: the extension's **public** key, one line of base64 SubjectPublicKeyInfo DER (spec L15). Not a private key, not a path.
+  - From the owner identity on main (Global Constraints, "Owner identity"; placeholder names): `owner_viewer(&Store) -> Result<Viewer>`; `TestServer::owner_viewer()` (added here over `owner_viewer` if main has none).
 - Produces:
   - `clax_core::extension::{MANIFEST: &str, EXTENSION_ID: &str, HOST_NAME: &str = "dev.empathic.clax", CREDENTIAL_PREFIX: &str = "cxe_", CREDENTIAL_TTL_DAYS: i64 = 30, MAX_CREDENTIALS: usize = 8, extension_origin() -> String, extension_id_from_key(&str) -> Option<String>, new_credential() -> String, credential_hash(&str) -> String, is_credential(&str) -> bool}`
-  - `clax_core::store::extension::{MintedCredential {credential, hash, viewer: Viewer}, LiveCredential {hash, extension_id, viewer_id, last_used_at}}`
-  - `Store::{mint_extension_credential(&str) -> Result<MintedCredential>, live_extension_credentials() -> Result<Vec<LiveCredential>>, touch_extension_credential(hash: &str) -> Result<()>, revoke_extension_credentials() -> Result<usize>, extension_viewer(&str) -> Result<Option<Viewer>>}`
-  - `clax_server::extension::{Credentials, Cred {extension_id, viewer_id}}` with `Credentials::{load(&Store) -> Result<Credentials>, get(&self, hash) -> Option<Cred>, insert(&self, hash, Cred), replace_with(&self, Credentials), due_for_touch(&self, hash) -> bool}`
+  - `clax_core::store::extension::{MintedCredential {credential, hash}, LiveCredential {hash, extension_id, last_used_at}}`
+  - `Store::{mint_extension_credential(&str) -> Result<MintedCredential>, live_extension_credentials() -> Result<Vec<LiveCredential>>, touch_extension_credential(hash: &str) -> Result<()>, revoke_extension_credentials() -> Result<usize>}`
+  - `clax_server::extension::{Credentials, Cred {extension_id}}` with `Credentials::{load(&Store) -> Result<Credentials>, get(&self, hash) -> Option<Cred>, insert(&self, hash, Cred), replace_with(&self, Credentials), due_for_touch(&self, hash) -> bool}`
   - `AppState.ext_creds: Arc<Credentials>`
-  - `POST /api/extension/credentials` (W) `{extension_id}` → `{credential, viewer, expires_in_s}`; `GET /api/extension` (W) → `{extension_id, live_credentials, last_used_at, viewer}`; `DELETE /api/extension/credentials` (W) → `{revoked}`.
+  - `POST /api/extension/credentials` (W) `{extension_id}` → `{credential, viewer, expires_in_s}`; `GET /api/extension` (W) → `{extension_id, live_credentials, last_used_at, viewer}`; in both, `viewer` is the owner viewer (`owner_viewer`), serialized as `Viewer` is (never its cookie value). `DELETE /api/extension/credentials` (W) → `{revoked}`.
 
-- [ ] **Step 1: Generate the key and write the manifest**
+- [ ] **Step 1: The manifest, with the owner's public key**
 
-`scripts/extension-key.sh`:
+The public key is the owner's input (spec L15). If the task's brief does not carry it, **stop and ask the owner for the public key value** (produced by `openssl rsa -in <their private key> -pubout -outform DER | base64 | tr -d '\n'`). Ask for nothing else: never for the private key or its path, and never generate a key pair for the manifest yourself. Then derive the extension ID from it:
 
 ```bash
-#!/usr/bin/env bash
-# Prints the manifest `key` (base64 SubjectPublicKeyInfo DER) and the Chrome
-# extension ID of a private key, generating the key first when the file
-# does not exist. The private key never enters the repository: the owner
-# keeps it for the Web Store listing's first upload.
-#
-# Usage: scripts/extension-key.sh <private-key.pem>
-set -euo pipefail
-pem="${1:?usage: scripts/extension-key.sh <private-key.pem>}"
-repo="$(cd "$(dirname "$0")/.." && pwd -P)"
-dir="$(cd "$(dirname "$pem")" && pwd -P)"
-case "$dir/" in "$repo/"*) echo "refusing to keep a private key inside the repository" >&2; exit 1 ;; esac
-[ -e "$pem" ] || { umask 077; openssl genrsa -out "$pem" 2048 2>/dev/null; }
-key="$(openssl rsa -in "$pem" -pubout -outform DER 2>/dev/null | base64 | tr -d '\n')"
-id="$(printf '%s' "$key" | base64 -d | shasum -a 256 | cut -c1-32 | tr '0-9a-f' 'a-p')"
-printf 'key: %s\nid: %s\n' "$key" "$id"
+printf '%s' "$KEY" | base64 -d | shasum -a 256 | cut -c1-32 | tr '0-9a-f' 'a-p'
 ```
 
-`chmod +x scripts/extension-key.sh`, then run it with the private key the owner names (spec §17 question 1; if the owner has named none, use `~/.clax-extension-key.pem` and report its path in the task's hand-off). Create `web/extension/manifest.json` with the printed key:
+(the first 32 hex digits of the key's SHA-256, `0`–`f` written as `a`–`p`; `the_id_is_the_manifest_keys` in Step 2 checks the same derivation in Rust). Create `web/extension/manifest.json` with the key:
 
 ```json
 {
@@ -2481,7 +2471,7 @@ printf 'key: %s\nid: %s\n' "$key" "$id"
   "name": "Clax",
   "version": "0.0.0",
   "description": "Comment on any page and send your comments to your coding agent.",
-  "key": "PASTE THE key LINE scripts/extension-key.sh PRINTED",
+  "key": "THE OWNER'S PUBLIC KEY (one line of base64)",
   "minimum_chrome_version": "116",
   "action": {"default_title": "Comment with Clax", "default_icon": {"16": "icons/16.png", "32": "icons/32.png"}},
   "icons": {"16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png"},
@@ -2496,7 +2486,7 @@ printf 'key: %s\nid: %s\n' "$key" "$id"
 }
 ```
 
-(The `key` value is the one line of base64 the script printed after `key: `; `version` is replaced by Task 8's build.)
+(The `key` value is the owner's one line of base64; `version` is replaced by Task 8's build. The test build (Task 8) copies this manifest, so it carries the same public key and the same ID.)
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -2540,16 +2530,18 @@ mod tests {
     use crate::{Home, Store};
 
     #[test]
-    fn credentials_share_one_viewer_per_extension_and_the_oldest_go_past_the_cap() {
+    fn minting_past_the_cap_revokes_the_oldest_and_no_credential_carries_a_viewer() {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
+        let viewers = || -> i64 { st.with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM viewers", [], |r| r.get(0))?)).unwrap() };
+        let before = viewers();
         let first = st.mint_extension_credential(EXTENSION_ID).unwrap();
         assert_eq!(first.hash, credential_hash(&first.credential));
         let mut last = first.clone();
         for _ in 0..MAX_CREDENTIALS {
             last = st.mint_extension_credential(EXTENSION_ID).unwrap();
-            assert_eq!(last.viewer.public_id, first.viewer.public_id);
         }
+        assert_eq!(viewers(), before, "minting creates no viewer: the extension is the owner (spec L6)");
         let live = st.live_extension_credentials().unwrap();
         assert_eq!(live.len(), MAX_CREDENTIALS);
         assert!(!live.iter().any(|c| c.hash == first.hash), "the oldest was revoked");
@@ -2582,11 +2574,14 @@ async fn minting_needs_the_token_and_the_known_extension() {
     let v: Value = res.json().await.unwrap();
     let cred = v["credential"].as_str().unwrap().to_string();
     assert!(cred.starts_with("cxe_"));
-    assert!(v["viewer"]["public_id"].as_str().unwrap().starts_with("u_"));
+    let owner = ts.owner_viewer().await;
+    assert_eq!(v["viewer"]["public_id"], owner.public_id.as_str(), "the extension pairs as the owner");
+    assert!(v["viewer"].get("id").is_none(), "never the owner's cookie value");
     assert_eq!(v["expires_in_s"], 30 * 86_400);
     let st: Value = ts.get_authed("/api/extension").await.json().await.unwrap();
     assert_eq!(st["live_credentials"], 1);
     assert_eq!(st["extension_id"], EXTENSION_ID);
+    assert_eq!(st["viewer"]["public_id"], owner.public_id.as_str());
     assert!(!st.to_string().contains(&cred), "status never shows a credential");
     let r: Value = ts.authed(ts.client.delete(&url)).send().await.unwrap().json().await.unwrap();
     assert_eq!(r["revoked"], 1);
@@ -2604,13 +2599,9 @@ Append to `MIGRATIONS`:
 
 ```rust
     // 16: the Clax Chrome extension (spec 2026-10-05-chrome-overlay-design
-    // §5.3): one viewer per extension ID, and its credentials as hashes.
-    "CREATE TABLE extension_viewers (
-        extension_id TEXT PRIMARY KEY,
-        viewer_id TEXT NOT NULL REFERENCES viewers(id),
-        created_at TEXT NOT NULL
-    );
-    CREATE TABLE extension_credentials (
+    // §5.3): its credentials as hashes. A credential names no viewer: the
+    // extension acts as the owner identity.
+    "CREATE TABLE extension_credentials (
         id TEXT PRIMARY KEY,
         extension_id TEXT NOT NULL,
         secret_sha256 TEXT NOT NULL UNIQUE,
@@ -2635,7 +2626,7 @@ use sha2::{Digest, Sha256};
 /// The extension's manifest, as the repository holds it.
 pub const MANIFEST: &str = include_str!("../../../web/extension/manifest.json");
 /// The extension's ID: Chrome's ID for the manifest's `key` (a test checks they agree).
-pub const EXTENSION_ID: &str = "PASTE THE id LINE scripts/extension-key.sh PRINTED";
+pub const EXTENSION_ID: &str = "THE ID STEP 1 DERIVED FROM THE OWNER'S PUBLIC KEY";
 /// The native messaging host's name.
 pub const HOST_NAME: &str = "dev.empathic.clax";
 /// Every credential starts with this.
@@ -2678,32 +2669,30 @@ pub fn is_credential(c: &str) -> bool {
 }
 ```
 
-The two values marked `PASTE` are the two lines Step 1 printed (they exist only once the key does, which is why the plan cannot carry them); the test `the_id_is_the_manifest_keys` fails until both are. Use the `rand` API of the version the crate depends on (`rand::rng()` is 0.9; `rand::thread_rng()` is 0.8).
+`EXTENSION_ID` is the ID Step 1 derived from the owner's public key (the plan cannot carry it before the owner supplies the key); the test `the_id_is_the_manifest_keys` fails until the manifest's `key` and this constant agree, and its failure prints the derived ID. Use the `rand` API of the version the crate depends on (`rand::rng()` is 0.9; `rand::thread_rng()` is 0.8).
 
 `crates/clax-core/src/store/extension.rs`, above the tests:
 
 ```rust
-//! The extension's viewer and credentials (spec 2026-10-05 §5.3).
+//! The extension's credentials (spec 2026-10-05 §5.3). A credential names
+//! no viewer: every live one acts as the owner identity (spec L6).
 
 use super::Store;
 use crate::extension::{CREDENTIAL_TTL_DAYS, MAX_CREDENTIALS, credential_hash, new_credential};
-use crate::model::Viewer;
-use crate::{CoreError, Result, new_ulid};
-use rusqlite::{OptionalExtension, params};
+use crate::{Result, new_ulid};
+use rusqlite::params;
 
 #[derive(Clone, Debug)]
 pub struct MintedCredential {
     /// The credential itself: handed to the extension once, never stored.
     pub credential: String,
     pub hash: String,
-    pub viewer: Viewer,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LiveCredential {
     pub hash: String,
     pub extension_id: String,
-    pub viewer_id: String,
     pub last_used_at: String,
 }
 
@@ -2713,39 +2702,9 @@ fn cutoff() -> String {
 }
 
 impl Store {
-    /// The viewer of extension `extension_id`, if it has paired before.
-    pub fn extension_viewer(&self, extension_id: &str) -> Result<Option<Viewer>> {
-        let vid: Option<String> = self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT viewer_id FROM extension_viewers WHERE extension_id = ?1",
-                params![extension_id],
-                |r| r.get(0),
-            )
-            .optional()?)
-        })?;
-        match vid {
-            Some(v) => self.get_viewer(&v),
-            None => Ok(None),
-        }
-    }
-
-    /// Mints a credential for `extension_id`, creating its viewer on first
-    /// use; past [`MAX_CREDENTIALS`] live ones, the oldest are revoked.
+    /// Mints a credential for `extension_id`; past [`MAX_CREDENTIALS`] live
+    /// ones, the oldest are revoked.
     pub fn mint_extension_credential(&self, extension_id: &str) -> Result<MintedCredential> {
-        let viewer = match self.extension_viewer(extension_id)? {
-            Some(v) => v,
-            None => {
-                let v = self.upsert_viewer(&new_ulid(), None)?;
-                self.with_tx(|tx| {
-                    tx.execute(
-                        "INSERT OR IGNORE INTO extension_viewers (extension_id, viewer_id, created_at) VALUES (?1, ?2, ?3)",
-                        params![extension_id, v.id, Store::now()],
-                    )?;
-                    Ok(())
-                })?;
-                self.extension_viewer(extension_id)?.ok_or(CoreError::NotFound)?
-            }
-        };
         let credential = new_credential();
         let hash = credential_hash(&credential);
         self.with_tx(|tx| {
@@ -2764,20 +2723,19 @@ impl Store {
             )?;
             Ok(())
         })?;
-        Ok(MintedCredential { credential, hash, viewer })
+        Ok(MintedCredential { credential, hash })
     }
 
     /// Every credential neither revoked nor unused for [`CREDENTIAL_TTL_DAYS`].
     pub fn live_extension_credentials(&self) -> Result<Vec<LiveCredential>> {
         self.with_read(|c| {
             let mut st = c.prepare(
-                "SELECT k.secret_sha256, k.extension_id, v.viewer_id, k.last_used_at
-                 FROM extension_credentials k JOIN extension_viewers v ON v.extension_id = k.extension_id
-                 WHERE k.revoked_at IS NULL AND k.last_used_at >= ?1 ORDER BY k.created_at",
+                "SELECT secret_sha256, extension_id, last_used_at FROM extension_credentials
+                 WHERE revoked_at IS NULL AND last_used_at >= ?1 ORDER BY created_at",
             )?;
             let rows = st
                 .query_map(params![cutoff()], |r| {
-                    Ok(LiveCredential { hash: r.get(0)?, extension_id: r.get(1)?, viewer_id: r.get(2)?, last_used_at: r.get(3)? })
+                    Ok(LiveCredential { hash: r.get(0)?, extension_id: r.get(1)?, last_used_at: r.get(2)? })
                 })?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             Ok(rows)
@@ -2814,6 +2772,7 @@ Add `pub mod extension;` to `crates/clax-core/src/lib.rs` and `store/mod.rs`, an
 //! The extension's credentials on the daemon (spec 2026-10-05 §5.3, §10):
 //! an in-memory map of live credential hashes, loaded on start and replaced
 //! after every mint and revoke, so authenticating a request reads no store.
+//! A live credential is the owner identity (spec L6); it names no viewer.
 
 use clax_core::Store;
 use std::collections::HashMap;
@@ -2826,7 +2785,6 @@ const TOUCH_EVERY: Duration = Duration::from_secs(3600);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cred {
     pub extension_id: String,
-    pub viewer_id: String,
 }
 
 #[derive(Default)]
@@ -2843,7 +2801,7 @@ impl Credentials {
     pub fn load(st: &Store) -> clax_core::Result<Credentials> {
         let c = Credentials::default();
         for k in st.live_extension_credentials()? {
-            c.insert(&k.hash, Cred { extension_id: k.extension_id, viewer_id: k.viewer_id });
+            c.insert(&k.hash, Cred { extension_id: k.extension_id });
         }
         Ok(c)
     }
@@ -2882,7 +2840,8 @@ impl Credentials {
 ```rust
 //! `/api/extension` (spec 2026-10-05 §9.2): minting, reporting and revoking
 //! the extension's credentials. Token only: the native host mints with the
-//! token it reads from `daemon.json`.
+//! token it reads from `daemon.json`. The `viewer` these answer is the owner
+//! viewer, which every credential acts as (spec L6).
 
 use super::artifacts::body;
 use crate::auth::RequireToken;
@@ -2893,6 +2852,8 @@ use axum::Json;
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
 use clax_core::extension::{CREDENTIAL_TTL_DAYS, EXTENSION_ID};
+// Placeholder path: the owner identity's resolver as main names it.
+use clax_core::owner::owner_viewer;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -2913,20 +2874,20 @@ pub async fn mint(
         return Err(ApiError::bad_request("unknown_extension", "only the Clax extension can pair"));
     }
     let creds = s.ext_creds.clone();
-    let m = s
+    let (m, owner) = s
         .store_call(move |st| {
             let m = st.mint_extension_credential(EXTENSION_ID)?;
             creds.replace_with(Credentials::load(st)?);
-            Ok(m)
+            Ok((m, owner_viewer(st)?))
         })
         .await?;
-    Ok(Json(json!({"credential": m.credential, "viewer": m.viewer, "expires_in_s": CREDENTIAL_TTL_DAYS * 86_400})))
+    Ok(Json(json!({"credential": m.credential, "viewer": owner, "expires_in_s": CREDENTIAL_TTL_DAYS * 86_400})))
 }
 
 /// `GET /api/extension` (W): how many credentials are live and when one was last used.
 pub async fn status(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
     let (live, viewer) = s
-        .store_call(|st| Ok((st.live_extension_credentials()?, st.extension_viewer(EXTENSION_ID)?)))
+        .store_call(|st| Ok((st.live_extension_credentials()?, owner_viewer(st)?)))
         .await?;
     Ok(Json(json!({
         "extension_id": EXTENSION_ID,
@@ -2950,7 +2911,7 @@ pub async fn revoke(State(s): State<AppState>, _t: RequireToken) -> Result<Json<
 }
 ```
 
-Add `pub ext_creds: Arc<crate::extension::Credentials>` to `AppState` (built with `Credentials::load(&store)?` in `daemon.rs` and `testing.rs`), `pub mod extension;` to `crates/clax-server/src/lib.rs` and `routes/mod.rs`, and in `api_fast`: `.route("/api/extension", get(extension::status)).route("/api/extension/credentials", post(extension::mint).delete(extension::revoke))`.
+If main has no test access to the owner viewer, add to `TestServer` in `testing.rs`: `pub async fn owner_viewer(&self) -> clax_core::model::Viewer`, opening the store at `self.home` and calling `owner_viewer` (in `spawn_blocking`). Add `pub ext_creds: Arc<crate::extension::Credentials>` to `AppState` (built with `Credentials::load(&store)?` in `daemon.rs` and `testing.rs`), `pub mod extension;` to `crates/clax-server/src/lib.rs` and `routes/mod.rs`, and in `api_fast`: `.route("/api/extension", get(extension::status)).route("/api/extension/credentials", post(extension::mint).delete(extension::revoke))`.
 
 - [ ] **Step 6: Run the tests**
 
@@ -2960,7 +2921,7 @@ Expected: PASS.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add scripts/extension-key.sh web/extension/manifest.json crates
+git add web/extension/manifest.json crates
 git -c commit.gpgsign=false commit -m "Give the Chrome extension a fixed ID and daemon credentials"
 ```
 
@@ -2977,10 +2938,10 @@ git -c commit.gpgsign=false commit -m "Give the Chrome extension a fixed ID and 
 - Modify: `docs/contract.md` ("Security model")
 
 **Interfaces:**
-- Consumes: Task 5's `Credentials`, `credential_hash`, `is_credential`, `extension_origin`; Task 2's `LiveIds`.
+- Consumes: Task 5's `Credentials`, `credential_hash`, `is_credential`, `extension_origin`, `TestServer::owner_viewer`; Task 2's `LiveIds`; from the owner identity on main (placeholder names): `owner_viewer(&Store) -> Result<Viewer>` and **the owner hook**, the one place mapping a credential kind to the owner identity, where this task registers the extension credential.
 - Produces:
-  - `clax_server::extension::{gateway (middleware), ViaExtension {viewer_id: String}, SCHEME: &str = "Clax-Extension"}`.
-  - A request the gateway admits reaches the existing handler with `Cookie: clax_viewer=<the extension's viewer ID>` and no `Origin`, `Sec-Fetch-Site` or `Authorization`; every response to the extension's origin carries `Access-Control-Allow-Origin: chrome-extension://<ID>` and `Vary: Origin`.
+  - `clax_server::extension::{gateway (middleware), ViaExtension (unit marker), SCHEME: &str = "Clax-Extension"}`.
+  - A request the gateway admits reaches the existing handler as the **owner identity**, through the owner hook, with no `Origin`, `Sec-Fetch-Site`, `Cookie` or `Authorization` of its own; every response to the extension's origin carries `Access-Control-Allow-Origin: chrome-extension://<ID>` and `Vary: Origin`.
   - `Hub::open(caller, local, live_only, resume)`; a live-only stream refuses `gallery`, `docs:*` and other artifacts' topics with `SubError::Forbidden` (403 `forbidden`).
 
 - [ ] **Step 1: Write the failing tests**
@@ -3058,15 +3019,24 @@ async fn preflights_are_answered_for_the_extension_and_allowed_routes_only() {
 }
 
 #[tokio::test]
-async fn the_extension_comments_as_its_own_viewer_on_live_pages() {
+async fn the_extension_acts_as_the_owner_on_live_pages() {
     let ts = TestServer::spawn().await;
     let cred = credential(&ts).await;
+    let owner = ts.owner_viewer().await;
+    let me: Value = ext(&ts, Method::GET, "/api/viewers/me", &cred).send().await.unwrap().json().await.unwrap();
+    assert_eq!(me["viewer"]["public_id"], owner.public_id.as_str(), "the extension is the owner viewer");
     let res = ext(&ts, Method::PUT, "/api/viewers/me", &cred).json(&json!({"display_name": "Alex"})).send().await.unwrap();
     assert_eq!(res.status(), 200);
+    assert!(res.headers().get("set-cookie").is_none(), "the gateway never hands the extension a viewer cookie");
+    assert_eq!(ts.owner_viewer().await.display_name.as_deref(), Some("Alex"), "the name is the owner's");
     let (aid, tid) = live_thread(&ts, &cred).await;
     let t: Value = ext(&ts, Method::GET, &format!("/api/artifacts/{aid}/threads/{tid}"), &cred)
         .send().await.unwrap().json().await.unwrap();
     assert_eq!(t["thread"]["comments"][0]["author_name"], "Alex");
+    assert_eq!(t["thread"]["comments"][0]["author_public_id"], owner.public_id.as_str());
+    let looked = ext(&ts, Method::PUT, "/api/viewers/me/looked", &cred)
+        .json(&json!({"artifact_id": aid, "thread_ids": [tid]})).send().await.unwrap();
+    assert!(looked.status().is_success(), "looked-at marks are the owner's: {}", looked.status());
     for (m, path, body) in [
         (Method::POST, format!("/api/artifacts/{aid}/threads/{tid}/comments"), json!({"body": "more"})),
         (Method::POST, format!("/api/artifacts/{aid}/threads/{tid}/send"), json!({})),
@@ -3175,11 +3145,10 @@ use clax_core::extension::{credential_hash, extension_origin, is_credential};
 pub const SCHEME: &str = "Clax-Extension";
 
 /// Marks a request the gateway admitted, for handlers with rules of their
-/// own (a stream opened through it is live-only).
-#[derive(Clone, Debug)]
-pub struct ViaExtension {
-    pub viewer_id: String,
-}
+/// own (a stream opened through it is live-only). Who it is comes from the
+/// owner hook, not from here.
+#[derive(Clone, Copy, Debug)]
+pub struct ViaExtension;
 
 /// What a route needs besides the credential: nothing more, or that the
 /// artifact in its path is a live page.
@@ -3231,12 +3200,12 @@ fn presented(h: &HeaderMap) -> Option<&str> {
     (scheme.eq_ignore_ascii_case(SCHEME) && is_credential(c)).then_some(c)
 }
 
-/// Middleware (spec 2026-10-05 L5, §10 item 6). A request whose `Origin`
-/// is the extension's is admitted only to [`rule`]'s routes, only with a
-/// live credential, and only for live pages; it then reaches the route's
-/// handler as the credential's viewer (the viewer cookie set; `Origin`,
-/// `Sec-Fetch-Site`, `Cookie` and `Authorization` removed), and its
-/// response carries the extension's origin in
+/// Middleware (spec 2026-10-05 L5, L6, §10 item 6). A request whose
+/// `Origin` is the extension's is admitted only to [`rule`]'s routes, only
+/// with a live credential, and only for live pages; it then reaches the
+/// route's handler as the owner identity (`Origin`, `Sec-Fetch-Site`,
+/// `Cookie` and `Authorization` removed; the owner presented through the
+/// owner hook), and its response carries the extension's origin in
 /// `Access-Control-Allow-Origin`. A bearer token from that origin is
 /// refused. Requests from any other origin pass untouched.
 pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -3275,7 +3244,9 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
     };
     let unknown = || refuse(ApiError::new(StatusCode::UNAUTHORIZED, "unknown_credential", "pair the extension again"));
     let Some(hash) = presented(req.headers()).map(credential_hash) else { return unknown() };
-    let Some(cred) = s.ext_creds.get(&hash) else { return unknown() };
+    if s.ext_creds.get(&hash).is_none() {
+        return unknown();
+    }
     if let Rule::Live(aid) = r
         && !s.live_ids.contains(aid)
     {
@@ -3294,15 +3265,25 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
         h.remove(name);
     }
     h.remove("sec-fetch-site");
-    if let Ok(v) = HeaderValue::from_str(&format!("{}={}", crate::viewer::COOKIE, cred.viewer_id)) {
-        h.insert(header::COOKIE, v);
+    // The owner hook (spec §2.1): present this request as the owner identity
+    // in the one way main's owner identity defines. Placeholder below.
+    if let Err(e) = crate::owner::present_as_owner(&s, &mut req).await {
+        return refuse(e);
     }
-    req.extensions_mut().insert(ViaExtension { viewer_id: cred.viewer_id });
+    req.extensions_mut().insert(ViaExtension);
     let mut res = next.run(req).await;
+    res.headers_mut().remove(header::SET_COOKIE);
     cors(&mut res);
     res
 }
 ```
+
+`crate::owner::present_as_owner` stands for the owner hook. Implement this step against what main has, adding the extension credential as one more kind the hook maps to the owner, in that one place, not in the handlers:
+
+- If the owner identity is a viewer cookie the existing handlers read (the owner viewer's ID), resolve it with `owner_viewer` (in `store_call`; cache it on `AppState` if main does not already) and insert `Cookie: clax_viewer=<owner viewer ID>`, as the shell's own requests carry it.
+- If it is a principal the handlers read from the request (for example a `Principal::Owner` in the request's extensions, or an extractor over a credential enum), insert that principal, or add the extension credential's arm to the enum and the extractor.
+
+Either way: the extension's requests never carry the token, `SET_COOKIE` never reaches the extension (the owner's cookie value is the owner's credential), and `the_extension_acts_as_the_owner_on_live_pages` passes.
 
 In `routes/mod.rs`, add the gateway as the outermost layer of the final router, after `hide_live_pages`, so it runs first: `r.layer(axum::middleware::from_fn_with_state(state.clone(), crate::extension::gateway))`.
 
@@ -3336,7 +3317,7 @@ Expected: PASS: the gateway tests, and every earlier test unchanged (requests wi
 
 - [ ] **Step 6: Document and commit**
 
-`docs/contract.md` "Security model": one paragraph on the extension (spec §10 items 2, 3, 6 and 7): the credential and where it lives, the gateway's allowlist and live-only rule, CORS for the one origin, the refused bearer token, live-only streams.
+`docs/contract.md` "Security model": one paragraph on the extension (spec §10 items 2, 3, 6 and 7): the credential and where it lives, that it acts as the owner identity (its name, marks and actions are the owner's) within the gateway's allowlist and live-only rule, CORS for the one origin, the refused bearer token, live-only streams.
 
 ```bash
 git add crates docs/contract.md
@@ -3355,7 +3336,7 @@ git -c commit.gpgsign=false commit -m "Admit the Chrome extension through a cred
 **Interfaces:**
 - Consumes: Task 5's `EXTENSION_ID`, `extension_origin()`, `POST /api/extension/credentials`; `crate::client::Client::{connect, post, browser_url}`.
 - Produces:
-  - `clax native-host <origin> [chrome's other arguments]`: reads one native message, writes one, exits 0 (1 for a wrong origin).
+  - `clax native-host <origin> [chrome's other arguments]`: reads one native message, writes one, exits 0 (1 for a wrong origin). The `paired` reply's `viewer` is the mint's `viewer`, the owner viewer (spec L6), passed through unchanged.
   - `commands::native_host::{MAX_MESSAGE: usize = 65536, read_message(&mut impl Read) -> Result<Value, HostError>, write_message(&mut impl Write, &Value) -> std::io::Result<()>, answer(&Value, impl FnOnce() -> Result<Value, HostError>) -> Value, HostError {code: &'static str, message: String}}`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -4576,7 +4557,7 @@ git -c commit.gpgsign=false commit -m "Install the Chrome extension and its nati
 - Consumes: Task 8's `messages.ts` and `fake-chrome.ts`; `web/shell/src/stream-hub.ts` (`Hub`, `HubEnv`, `TabMsg`, `HubMsg`); `web/shell/src/view/deltas.ts` (`applyThread`, `ThreadDelta`); Task 7's native host protocol; Task 6's gateway routes.
 - Produces:
   - `pairing.ts`: `HOST = "dev.empathic.clax"`, `REPAIR_MS = 10_000`, `type Pairing = {daemon, credential, claxVersion}`, `class PairError(code, message)`, `interface PairEnv`, `class Pairer {current(): Promise<Pairing>; pair(): Promise<Pairing>; forget(): Promise<void>}`.
-  - `api.ts`: `class ApiFailure(code, message, status)`, `class Api(pairer, fetchFn?)` with `request(path, init?)`, `json<T>(path, init?)`, `lookup(url)`, `artifact(aid)`, `threads(aid)`, `working(aid)`, `postThread(form)`, `postSnapshot(form)`, `comment(aid, tid, body)`, `sendThread(aid, tid, to)`, `sendBatch(aid, ids, note, to)`, `resolve(aid, tid)`, `reopen(aid, tid)`, `remove(aid, tid)`, `me()`, `setName(name)`, `looked(aid, ids)`, `presence(aid, state)`.
+  - `api.ts`: `class ApiFailure(code, message, status)`, `class Api(pairer, fetchFn?)` with `request(path, init?)`, `json<T>(path, init?)`, `lookup(url)`, `artifact(aid)`, `threads(aid)`, `working(aid)`, `postThread(form)`, `postSnapshot(form)`, `comment(aid, tid, body)`, `sendThread(aid, tid, to)`, `sendBatch(aid, ids, note, to)`, `resolve(aid, tid)`, `reopen(aid, tid)`, `remove(aid, tid)`, `me()` (the owner viewer), `setName(name)` (the owner's name), `looked(aid, ids)` (the owner's marks), `presence(aid)` (reports the owner `here`; never `away`, spec §9.5).
   - `origins.ts`: `originOf(url) -> string | null`, `patternOf(origin)`, `scriptId(origin)`, `ask(env, origin): Promise<boolean>` (call it synchronously inside the gesture), `remember(env, origin)`, `forget(env, origin)`, `injectOverlay(env, tabId)`, `type OriginsEnv`.
   - `tabs.ts`: `class Tabs` with `state(tabId): TabState`, `hello(tabId, url)`, `route(tabId, url)`, `toggle(tabId, url)`, `fromHub(ids, msg)`, `fromOverlay(tabId, windowId, m)`, `attachPanel(port, onMessage: (tabId: number | null, m: unknown) => void)`, `panelState(tabId): PanelState`; `emptyTab(tabId, url): TabState`; `applyEvent(s: TabState, name: string, data: Record<string, unknown>): TabState`.
   - The worker's test hook (test build only): `globalThis.claxTest = {comment(tabId, url), state(tabId), pairer}`.
@@ -4920,7 +4901,8 @@ export class Api {
   me() { return this.json<{ viewer: Viewer }>("/api/viewers/me"); }
   setName(name: string) { return this.send<{ viewer: Viewer }>("PUT", "/api/viewers/me", { display_name: name }); }
   async looked(aid: string, threadIds: string[]) { ids(aid); return this.send<unknown>("PUT", "/api/viewers/me/looked", { artifact_id: aid, thread_ids: threadIds }); }
-  async presence(aid: string, state: "here" | "away") { ids(aid); return this.send<unknown>("PUT", "/api/viewers/me/presence", { artifact_id: aid, state }); }
+  // Only `here`: the extension is the owner, and an `away` from it would mark the owner away in a shell tab too (spec §9.5).
+  async presence(aid: string) { ids(aid); return this.send<unknown>("PUT", "/api/viewers/me/presence", { artifact_id: aid, state: "here" }); }
 }
 ```
 
@@ -6368,7 +6350,8 @@ git -c commit.gpgsign=false commit -m "Take a pick's screenshot, compose in an e
 - Produces:
   - `adapt.ts`: `asPages(threads: Thread[]): Thread[]` (a thread's route stands for its page) and `pageOfRoute(route: string | null): string`.
   - `link.svelte.ts`: `class PanelLink {state: PanelState (reactive); post(m: PanelToWorker): void}` over a `panel:<windowId>` port, following the window's active tab (`chrome.tabs.onActivated`, `chrome.tabs.onUpdated`).
-  - The worker answers every `PanelToWorker` message (spec §9.4) and reports presence (`here` while the panel shows a live page and is visible; `away` on hide).
+  - The worker answers every `PanelToWorker` message (spec §9.4) and reports the owner's presence (`here` every 30 s while the panel shows a live page and is visible; never `away`, so hiding the panel lets the report lapse instead of marking the owner away in a shell tab; spec §9.5).
+  - `PanelState.viewer` is the owner viewer (spec L6): the name the panel shows and sets is the owner's, shared with the shell and the CLI.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -6427,7 +6410,7 @@ describe("Panel", () => {
     expect(l.sent).toContainEqual({ t: "send", threadId: thread.id, to: `a_${"1".repeat(22)}` });
   });
 
-  it("asks an unnamed viewer for a name", async () => {
+  it("asks for the owner's name while the owner has none", async () => {
     const l = link(state({ viewer: { public_id: "u_x", display_name: null } }));
     render(Panel, { props: { link: l as never } });
     const input = screen.getByLabelText("Your name") as HTMLInputElement;
@@ -6516,7 +6499,8 @@ export class PanelLink {
 <script lang="ts">
   // The side panel (spec 2026-10-05 §6.4): the active tab's live page and
   // its threads in the shell's own sidebar, the Comment switch, the
-  // viewer's name, and Clax's menu for the page. Every action goes to the
+  // owner's name (asked for only while the owner has none), and Clax's
+  // menu for the page. Every action goes to the
   // worker, which alone talks to the daemon.
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
   import { agentName } from "../../../shell/src/view/history-model";
@@ -6609,7 +6593,7 @@ void chrome.windows.getCurrent().then(win => {
 });
 ```
 
-In `sw/main.ts`, fill `panelAction(tabId, m)`: `watch-tab` refreshes the tab (`tabs.route`) and loads `versions`/`participants` (`api.artifact`) and the viewer (`api.me`); `send` → `api.sendThread`, `send-batch` → `api.sendBatch`, `reply` → `api.comment`, `resolve`/`reopen`/`delete`, `looked`, `set-name` (then refresh the viewer), `select` (tell the overlay `scroll-to`), `comment-mode` (refuse with `failed` `no_capture_permission` when `chrome.permissions.contains({origins: ["<all_urls>"]})` is false and the tab was not given `activeTab` since its last navigation, which the worker tracks from gestures and `chrome.tabs.onUpdated` loads; otherwise toggle as the icon does), `navigate` (`chrome.tabs.update(tabId, {url: page_url + (route ?? "")})`), `turn-off` (`origins.forget`, close the overlay by reloading the tab), `retry` (`pairer.forget()` then `tabs.route`). Each failure posts `{t: "failed", code, message}` to the panel. Presence: while a panel port shows a live page, the worker reports `here` every 30 s and `away` when the port disconnects or the page changes.
+In `sw/main.ts`, fill `panelAction(tabId, m)`: `watch-tab` refreshes the tab (`tabs.route`) and loads `versions`/`participants` (`api.artifact`) and the viewer (`api.me`); `send` → `api.sendThread`, `send-batch` → `api.sendBatch`, `reply` → `api.comment`, `resolve`/`reopen`/`delete`, `looked`, `set-name` (then refresh the viewer), `select` (tell the overlay `scroll-to`), `comment-mode` (refuse with `failed` `no_capture_permission` when `chrome.permissions.contains({origins: ["<all_urls>"]})` is false and the tab was not given `activeTab` since its last navigation, which the worker tracks from gestures and `chrome.tabs.onUpdated` loads; otherwise toggle as the icon does), `navigate` (`chrome.tabs.update(tabId, {url: page_url + (route ?? "")})`), `turn-off` (`origins.forget`, close the overlay by reloading the tab), `retry` (`pairer.forget()` then `tabs.route`). Each failure posts `{t: "failed", code, message}` to the panel. Presence: while a panel port shows a live page and the panel is visible, the worker reports `here` (`api.presence(aid)`) every 30 s; when the port disconnects, the panel hides or the page changes it stops reporting and lets the owner's report lapse. It never reports `away` (spec §9.5).
 
 - [ ] **Step 4: Run the tests, the build and the gates**
 
@@ -6964,6 +6948,10 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   const shell = await ctx.newPage();
   await shell.goto(`${live.daemon.base}/`);
   await expect(shell.getByText("Live", { exact: true })).toBeVisible();
+  // The shell in this browser and the extension are one owner identity (spec L6).
+  const paired = await api(live, "/api/extension");
+  const shellMe = await shell.evaluate(() => fetch("/api/viewers/me").then(r => r.json()));
+  expect(shellMe.viewer.public_id).toBe(paired.viewer.public_id);
   await shell.goto(`${live.daemon.base}/a/${aid}/v/1`);
   await expect(shell.getByRole("button", { name: /^Comment/ })).toBeDisabled();
   await expect(shell.getByText("The save button needs more room")).toBeVisible();
@@ -6996,7 +6984,7 @@ Expected: `all gates passed`, with the new spec inside the web e2e lane and the 
 
 - [ ] **Step 6: The verification record and the main spec**
 
-Append to `docs/verification.md` a "Clax in Chrome" section: the exact commands (`clax init`; Load unpacked of `~/.clax/extension`; `scripts/quality_gates.sh`), what `chrome-overlay.spec.ts` exercised on this machine (the real extension, native host, daemon and Vite dev server: pick, screenshot, sanitized snapshot, side panel, send, agent feedback with the live payload, hot update, detach, addressed snapshot, gallery and snapshot view, re-pairing after a restart), and, plainly, what was not exercised and only a person can check: the toolbar icon and its permission prompt, the side panel opened by the icon, Alt+Shift+C and the context menu, `activeTab` lapsing on navigation, Chrome stable, Brave and Edge host registration on macOS and Linux, an agent in a real Claude Code or Codex session watching a dev server through the MCP tool, and the self-reload after `clax init` installs a newer extension. In the main spec, add row D19 to §2 ("Chrome overlay: comment on any page; see `2026-10-05-chrome-overlay-design.md`"), the new paths to §4, and the new tests to §16.
+Append to `docs/verification.md` a "Clax in Chrome" section: the exact commands (`clax init`; Load unpacked of `~/.clax/extension`; `scripts/quality_gates.sh`), what `chrome-overlay.spec.ts` exercised on this machine (the real extension, native host, daemon and Vite dev server: pick, screenshot, sanitized snapshot, side panel, send, agent feedback with the live payload, hot update, detach, addressed snapshot, gallery and snapshot view, re-pairing after a restart), and, plainly, what was not exercised and only a person can check: the toolbar icon and its permission prompt, the side panel opened by the icon, Alt+Shift+C and the context menu, `activeTab` lapsing on navigation, Chrome stable, Brave and Edge host registration on macOS and Linux, an agent in a real Claude Code or Codex session watching a dev server through the MCP tool, the self-reload after `clax init` installs a newer extension, and the shell and side panel sharing the owner's marks by hand (read a thread in one; it is not new in the other). Also list, as the owner's manual step outside Clax, the Web Store upload: it needs the private key the owner keeps (spec L15, §6.7), and nothing in the repository or the build has it. In the main spec, add row D19 to §2 ("Chrome overlay: comment on any page; see `2026-10-05-chrome-overlay-design.md`"), the new paths to §4, and the new tests to §16.
 
 - [ ] **Step 7: Commit**
 
