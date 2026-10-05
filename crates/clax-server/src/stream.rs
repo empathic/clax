@@ -224,9 +224,12 @@ struct StreamEntry {
     /// The stream may see live pages ([`crate::live::sees_live_pages`] of
     /// the request that opened it).
     local: bool,
-    /// The stream takes live pages' topics alone (opened through the
-    /// extension gateway; see [`live_only_admits`]).
-    live_only: bool,
+    /// The hash of the extension credential the stream was opened with
+    /// (through the extension gateway): such a stream takes live pages'
+    /// topics alone ([`live_only_admits`]), only requests with the same
+    /// credential change or resume it, and it ends when the credential
+    /// stops being live ([`Hub::end_streams_where`], [`Conn::checking`]).
+    credential: Option<String>,
     /// Each topic with the sequence current when it was subscribed.
     topics: BTreeMap<Topic, u64>,
     tx: Option<mpsc::Sender<Arc<Item>>>,
@@ -578,13 +581,14 @@ impl Hub {
     /// Opens a stream for `caller`, or reattaches the one `resume` names
     /// (its ID and the last sequence the client saw) when that stream is
     /// still held and belongs to the same caller with the same `local`
-    /// (whether it may see live pages) and `live_only` (whether it takes
-    /// live pages' topics alone; see [`live_only_admits`]).
+    /// (whether it may see live pages) and `credential` (the hash of the
+    /// extension credential of a request through the extension gateway,
+    /// which makes the stream live-only; see [`live_only_admits`]).
     pub fn open(
         &self,
         caller: Caller,
         local: bool,
-        live_only: bool,
+        credential: Option<String>,
         resume: Option<(&str, u64)>,
     ) -> Opened {
         let (tx, rx) = mpsc::channel(QUEUE);
@@ -592,9 +596,9 @@ impl Hub {
         sweep_locked(&mut g, Instant::now());
         let seq = g.seq;
         if let Some((id, last)) = resume
-            && g.streams
-                .get(id)
-                .is_some_and(|s| s.caller == caller && s.local == local && s.live_only == live_only)
+            && g.streams.get(id).is_some_and(|s| {
+                s.caller == caller && s.local == local && s.credential == credential
+            })
         {
             let Inner {
                 chans,
@@ -662,7 +666,7 @@ impl Hub {
             epoch: 1,
             caller,
             local,
-            live_only,
+            credential,
             topics: BTreeMap::new(),
             tx: Some(tx),
             shared: shared.clone(),
@@ -681,10 +685,8 @@ impl Hub {
         }
     }
 
-    /// Subscribes stream `id` to `add` and unsubscribes it from `remove`,
-    /// for `caller`, who must be the caller that opened it. Returns the
-    /// current sequence and the stream's topics after the change: every
-    /// event of an added topic numbered above that sequence reaches it.
+    /// [`Hub::update_via`] for a request that did not come through the
+    /// extension gateway.
     ///
     /// # Errors
     /// [`SubError`].
@@ -695,12 +697,32 @@ impl Hub {
         add: &[Topic],
         remove: &[Topic],
     ) -> Result<(u64, Vec<String>), SubError> {
+        self.update_via(id, caller, None, add, remove)
+    }
+
+    /// Subscribes stream `id` to `add` and unsubscribes it from `remove`,
+    /// for `caller` with `credential` (the extension credential's hash, for
+    /// a request through the extension gateway), who must be the caller
+    /// that opened it with the same credential, or none. Returns the
+    /// current sequence and the stream's topics after the change: every
+    /// event of an added topic numbered above that sequence reaches it.
+    ///
+    /// # Errors
+    /// [`SubError`].
+    pub fn update_via(
+        &self,
+        id: &str,
+        caller: &Caller,
+        credential: Option<&str>,
+        add: &[Topic],
+        remove: &[Topic],
+    ) -> Result<(u64, Vec<String>), SubError> {
         let mut g = self.lock();
         let seq = g.seq;
         let Inner { chans, streams, .. } = &mut *g;
         let s = streams
             .get_mut(id)
-            .filter(|s| s.caller == *caller)
+            .filter(|s| s.caller == *caller && s.credential.as_deref() == credential)
             .ok_or(SubError::UnknownStream)?;
         let after = s
             .topics
@@ -719,7 +741,7 @@ impl Hub {
         {
             return Err(SubError::Hidden);
         }
-        if s.live_only && !add.iter().all(|t| live_only_admits(&self.live, t)) {
+        if s.credential.is_some() && !add.iter().all(|t| live_only_admits(&self.live, t)) {
             return Err(SubError::Forbidden);
         }
         for t in remove {
@@ -796,6 +818,30 @@ impl Hub {
                 break;
             };
             drop_stream(&mut g, &oldest);
+        }
+    }
+
+    /// Ends every stream opened with an extension credential whose hash
+    /// `ended` holds (a revoked or expired one): it receives nothing more,
+    /// its connection's body ends, and it cannot be resumed.
+    pub fn end_streams_where(&self, ended: impl Fn(&str) -> bool) {
+        let mut g = self.lock();
+        let gone: Vec<String> = g
+            .streams
+            .iter()
+            .filter(|(_, s)| s.credential.as_deref().is_some_and(&ended))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in gone {
+            drop_stream(&mut g, &id);
+        }
+    }
+
+    /// Ends stream `id` while the connection of generation `epoch` holds it.
+    fn end(&self, id: &str, epoch: u64) {
+        let mut g = self.lock();
+        if g.streams.get(id).is_some_and(|s| s.epoch == epoch) {
+            drop_stream(&mut g, id);
         }
     }
 
@@ -886,6 +932,8 @@ pub struct Conn {
     keep_alive: tokio::time::Interval,
     shutdown: tokio::sync::watch::Receiver<bool>,
     shutdown_live: bool,
+    /// Whether the stream may still deliver (see [`Conn::checking`]).
+    check: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl Conn {
@@ -914,7 +962,27 @@ impl Conn {
             keep_alive,
             shutdown,
             shutdown_live: true,
+            check: None,
         }
+    }
+
+    /// This connection, asking `still_live` before it hands out each chunk:
+    /// once it answers `false` (the extension credential the stream was
+    /// opened with was revoked or expired), the stream ends and its body
+    /// with it, before anything more is delivered.
+    pub fn checking(mut self, still_live: impl Fn() -> bool + Send + Sync + 'static) -> Conn {
+        self.check = Some(Box::new(still_live));
+        self
+    }
+
+    /// `chunk`, unless the check refuses: then the stream ends.
+    fn deliver(&mut self, chunk: Bytes) -> Option<Bytes> {
+        if self.check.as_ref().is_some_and(|f| !f()) {
+            self.out.clear();
+            self.hub.end(&self.id, self.epoch);
+            return None;
+        }
+        Some(chunk)
     }
 
     /// The next chunk of the body; `None` ends it (daemon shutdown, or a
@@ -922,7 +990,7 @@ impl Conn {
     pub async fn next(&mut self) -> Option<Bytes> {
         loop {
             if let Some(b) = self.out.pop_front() {
-                return Some(b);
+                return self.deliver(b);
             }
             enum Wake {
                 Stop,
@@ -946,7 +1014,7 @@ impl Conn {
                 // No shutdown source: never end on it.
                 Wake::NoShutdown => self.shutdown_live = false,
                 Wake::Lagged => self.take_lagged(),
-                Wake::KeepAlive => return Some(Bytes::from_static(b": keep-alive\n\n")),
+                Wake::KeepAlive => return self.deliver(Bytes::from_static(b": keep-alive\n\n")),
                 Wake::Item(Some(i)) => {
                     if let Some(d) = self.dropped.get(&i.topic) {
                         if i.seq <= *d {
@@ -1040,8 +1108,8 @@ mod tests {
         live.insert(A);
         let hub = Hub::new(live);
         let c = viewer(Level::View, None);
-        let mut near = hub.open(c.clone(), true, false, None);
-        let mut far = hub.open(c.clone(), false, false, None);
+        let mut near = hub.open(c.clone(), true, None, None);
+        let mut far = hub.open(c.clone(), false, None, None);
         for o in [&near, &far] {
             hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         }
@@ -1062,8 +1130,8 @@ mod tests {
         // turns a stream local.
         let (fid, nid) = (far.id.clone(), near.id.clone());
         drop((near, far));
-        assert!(!hub.open(c.clone(), true, false, Some((&fid, 0))).resumed);
-        let mut back = hub.open(c.clone(), true, false, Some((&nid, 0)));
+        assert!(!hub.open(c.clone(), true, None, Some((&fid, 0))).resumed);
+        let mut back = hub.open(c.clone(), true, None, Some((&nid, 0)));
         assert!(back.resumed);
         assert_eq!(back.prelude.len(), 4, "two events, each with its id line");
         assert!(drain(&mut back).is_empty());
@@ -1075,13 +1143,13 @@ mod tests {
         live.insert(A);
         let hub = Hub::new(live);
         let c = viewer(Level::Interact, Some("u_x"));
-        let o = hub.open(c.clone(), true, true, None);
+        let o = hub.open(c.clone(), true, Some("h".into()), None);
         for t in [
             Topic::Artifact(A.into()),
             Topic::Working(A.into()),
             Topic::Presence(A.into()),
         ] {
-            assert!(hub.update(&o.id, &c, &[t], &[]).is_ok());
+            assert!(hub.update_via(&o.id, &c, Some("h"), &[t], &[]).is_ok());
         }
         for t in [
             Topic::Gallery,
@@ -1090,22 +1158,87 @@ mod tests {
             Topic::Presence("aaaaaaaaaaaa".into()),
         ] {
             assert_eq!(
-                hub.update(&o.id, &c, std::slice::from_ref(&t), &[]),
+                hub.update_via(&o.id, &c, Some("h"), std::slice::from_ref(&t), &[]),
                 Err(SubError::Forbidden),
                 "{}",
                 t.name()
             );
         }
-        // A refused change changes nothing, and the stream resumes only as
-        // a live-only stream.
-        assert_eq!(hub.update(&o.id, &c, &[], &[]).unwrap().1.len(), 3);
+        // A refused change changes nothing, and the stream resumes only with
+        // its own credential.
+        assert_eq!(
+            hub.update_via(&o.id, &c, Some("h"), &[], &[])
+                .unwrap()
+                .1
+                .len(),
+            3
+        );
         let id = o.id.clone();
         drop(o);
-        assert!(!hub.open(c.clone(), true, false, Some((&id, 0))).resumed);
-        let full = hub.open(c.clone(), true, false, None);
+        assert!(!hub.open(c.clone(), true, None, Some((&id, 0))).resumed);
+        assert!(
+            !hub.open(c.clone(), true, Some("other".into()), Some((&id, 0)))
+                .resumed
+        );
+        let full = hub.open(c.clone(), true, None, None);
         let fid = full.id.clone();
         drop(full);
-        assert!(!hub.open(c.clone(), true, true, Some((&fid, 0))).resumed);
+        assert!(
+            !hub.open(c.clone(), true, Some("h".into()), Some((&fid, 0)))
+                .resumed
+        );
+    }
+
+    #[test]
+    fn only_a_request_with_the_openers_credential_or_none_changes_a_stream() {
+        let live = Arc::new(crate::live::LiveIds::default());
+        live.insert(A);
+        let hub = Hub::new(live);
+        let c = viewer(Level::Interact, Some("u_x"));
+        let t = [Topic::Artifact(A.into())];
+        let ext = hub.open(c.clone(), true, Some("h".into()), None);
+        let shell = hub.open(c.clone(), true, None, None);
+        assert_eq!(
+            hub.update(&ext.id, &c, &t, &[]),
+            Err(SubError::UnknownStream)
+        );
+        assert_eq!(
+            hub.update_via(&ext.id, &c, Some("other"), &t, &[]),
+            Err(SubError::UnknownStream)
+        );
+        assert_eq!(
+            hub.update_via(&shell.id, &c, Some("h"), &t, &[]),
+            Err(SubError::UnknownStream)
+        );
+        assert!(hub.update_via(&ext.id, &c, Some("h"), &t, &[]).is_ok());
+        assert!(hub.update(&shell.id, &c, &t, &[]).is_ok());
+    }
+
+    #[test]
+    fn ending_a_credentials_streams_closes_them_and_forgets_them() {
+        let live = Arc::new(crate::live::LiveIds::default());
+        live.insert(A);
+        let hub = Hub::new(live);
+        let c = viewer(Level::Interact, Some("u_x"));
+        let t = [Topic::Artifact(A.into())];
+        let mut gone = hub.open(c.clone(), true, Some("revoked".into()), None);
+        let mut kept = hub.open(c.clone(), true, Some("live".into()), None);
+        let mut shell = hub.open(c.clone(), true, None, None);
+        hub.update_via(&gone.id, &c, Some("revoked"), &t, &[])
+            .unwrap();
+        hub.update_via(&kept.id, &c, Some("live"), &t, &[]).unwrap();
+        hub.update(&shell.id, &c, &t, &[]).unwrap();
+        hub.end_streams_where(|h| h == "revoked");
+        hub.dispatch(&version(2));
+        assert!(gone.rx.try_recv().is_err());
+        assert!(gone.rx.is_closed(), "its connection's body ends");
+        assert_eq!(drain(&mut kept).len(), 1);
+        assert_eq!(drain(&mut shell).len(), 1);
+        let id = gone.id.clone();
+        assert!(
+            !hub.open(c.clone(), true, Some("revoked".into()), Some((&id, 0)))
+                .resumed
+        );
     }
 
     #[test]
@@ -1114,7 +1247,7 @@ mod tests {
         live.insert(A);
         let hub = Hub::new(live);
         let c = viewer(Level::View, None);
-        let far = hub.open(c.clone(), false, false, None);
+        let far = hub.open(c.clone(), false, None, None);
         for t in [
             Topic::Artifact(A.into()),
             Topic::Working(A.into()),
@@ -1129,7 +1262,7 @@ mod tests {
             );
         }
         assert!(hub.update(&far.id, &c, &[Topic::Gallery], &[]).is_ok());
-        let near = hub.open(c.clone(), true, false, None);
+        let near = hub.open(c.clone(), true, None, None);
         assert!(
             hub.update(&near.id, &c, &[Topic::Artifact(A.into())], &[])
                 .is_ok()
@@ -1139,7 +1272,7 @@ mod tests {
     #[test]
     fn unsubscribed_topics_cost_no_sequence_and_no_channel() {
         let hub = Hub::new(Default::default());
-        let _o = hub.open(viewer(Level::View, None), true, false, None);
+        let _o = hub.open(viewer(Level::View, None), true, None, None);
         hub.dispatch(&version(2));
         assert_eq!(hub.lock().seq, 0);
         assert_eq!(hub.stats().channels, 0);
@@ -1149,7 +1282,7 @@ mod tests {
     fn events_reach_the_topics_subscribed_with_small_deltas() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let mut o = hub.open(c.clone(), true, false, None);
+        let mut o = hub.open(c.clone(), true, None, None);
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         hub.dispatch(&version(2));
         hub.dispatch(&Event::Thread {
@@ -1172,7 +1305,7 @@ mod tests {
     fn a_full_queue_marks_the_topic_behind_and_stops_offering_it() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let mut o = hub.open(c.clone(), true, false, None);
+        let mut o = hub.open(c.clone(), true, None, None);
         hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
         for n in 0..(QUEUE as u32 + 10) {
@@ -1197,8 +1330,8 @@ mod tests {
         let hub = Hub::new(Default::default());
         let me = viewer(Level::Interact, Some("u_me"));
         let other = viewer(Level::Admin, Some("u_other"));
-        let mut a = hub.open(me.clone(), true, false, None);
-        let mut b = hub.open(other.clone(), true, false, None);
+        let mut a = hub.open(me.clone(), true, None, None);
+        let mut b = hub.open(other.clone(), true, None, None);
         hub.update(&a.id, &me, &[Topic::Docs(A.into())], &[])
             .unwrap();
         hub.update(&b.id, &other, &[Topic::Docs(A.into())], &[])
@@ -1238,7 +1371,7 @@ mod tests {
     fn a_reconnect_replays_from_the_ring_or_resyncs_on_a_gap() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), true, false, None);
+        let o = hub.open(c.clone(), true, None, None);
         let id = o.id.clone();
         hub.update(&id, &c, &[Topic::Artifact(A.into()), Topic::Gallery], &[])
             .unwrap();
@@ -1247,7 +1380,7 @@ mod tests {
         drop(o);
         hub.detach(&id, epoch);
         hub.dispatch(&version(3));
-        let o = hub.open(c.clone(), true, false, Some((&id, 1)));
+        let o = hub.open(c.clone(), true, None, Some((&id, 1)));
         assert!(o.resumed);
         let text: Vec<String> = o
             .prelude
@@ -1261,7 +1394,7 @@ mod tests {
         );
         assert!(text[1].starts_with(&format!("id: {id}:2")));
         // Another caller cannot take the stream.
-        let o2 = hub.open(viewer(Level::Admin, None), true, false, Some((&id, 2)));
+        let o2 = hub.open(viewer(Level::Admin, None), true, None, Some((&id, 2)));
         assert!(!o2.resumed);
         // A gap the ring no longer covers is a resync.
         let epoch = o.epoch;
@@ -1270,7 +1403,7 @@ mod tests {
         for n in 0..(RING as u32 + 5) {
             hub.dispatch(&version(10 + n));
         }
-        let o = hub.open(c, true, false, Some((&id, 2)));
+        let o = hub.open(c, true, None, Some((&id, 2)));
         let first = String::from_utf8(o.prelude[0].to_vec()).unwrap();
         assert!(first.starts_with("event: resync"), "{first}");
         assert!(first.contains("\"reason\":\"gap\""));
@@ -1280,7 +1413,7 @@ mod tests {
     fn unsubscribing_the_last_subscriber_drops_the_channel() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), true, false, None);
+        let o = hub.open(c.clone(), true, None, None);
         let t = [Topic::Presence(A.into())];
         hub.update(&o.id, &c, &t, &[]).unwrap();
         assert_eq!(hub.stats().channels, 1);
@@ -1297,10 +1430,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_checked_connection_ends_before_delivering_once_the_check_fails() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let live = Arc::new(crate::live::LiveIds::default());
+        live.insert(A);
+        let hub = Hub::new(live);
+        let c = viewer(Level::View, None);
+        let o = hub.open(c.clone(), true, Some("h".into()), None);
+        let id = o.id.clone();
+        hub.update_via(&id, &c, Some("h"), &[Topic::Artifact(A.into())], &[])
+            .unwrap();
+        let live = Arc::new(AtomicBool::new(true));
+        let l = live.clone();
+        let (_tx, rx) = tokio::sync::watch::channel(false);
+        let mut conn = Conn::new(hub.clone(), o, Duration::from_secs(3600), rx)
+            .checking(move || l.load(Ordering::SeqCst));
+        assert!(conn.next().await.unwrap().starts_with(b"event: ready"));
+        hub.dispatch(&version(2));
+        assert!(conn.next().await.unwrap().starts_with(b"event: version"));
+        assert!(conn.next().await.unwrap().starts_with(b"id: "));
+        hub.dispatch(&version(3));
+        live.store(false, Ordering::SeqCst);
+        assert!(conn.next().await.is_none(), "nothing past the failed check");
+        assert_eq!(hub.stats().streams, 0, "the stream is gone, not resumable");
+    }
+
+    #[tokio::test]
     async fn a_topic_past_its_resync_leaves_no_mark_on_the_connection() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), true, false, None);
+        let o = hub.open(c.clone(), true, None, None);
         hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
         for n in 0..(QUEUE as u32 + 5) {
@@ -1337,7 +1496,7 @@ mod tests {
         let opening = Instant::now();
         let opened: Vec<Opened> = (0..n)
             .map(|_| {
-                let o = hub.open(c.clone(), true, false, None);
+                let o = hub.open(c.clone(), true, None, None);
                 hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
                 o
             })
@@ -1361,18 +1520,15 @@ mod tests {
         assert_eq!(hub.stats().streams, MAX_DETACHED);
         // The longest detached went first; the newest can still resume.
         let last = opened.last().unwrap();
-        assert!(
-            hub.open(c.clone(), true, false, Some((&last.id, 0)))
-                .resumed
-        );
-        assert!(!hub.open(c, true, false, Some((&opened[0].id, 0))).resumed);
+        assert!(hub.open(c.clone(), true, None, Some((&last.id, 0))).resumed);
+        assert!(!hub.open(c, true, None, Some((&opened[0].id, 0))).resumed);
     }
 
     #[test]
     fn a_stream_detached_past_the_grace_cannot_resume() {
         let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), true, false, None);
+        let o = hub.open(c.clone(), true, None, None);
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         hub.detach(&o.id, o.epoch);
         let now = Instant::now();
@@ -1387,7 +1543,7 @@ mod tests {
                 channels: 0
             }
         );
-        assert!(!hub.open(c, true, false, Some((&o.id, 0))).resumed);
+        assert!(!hub.open(c, true, None, Some((&o.id, 0))).resumed);
     }
 
     #[test]

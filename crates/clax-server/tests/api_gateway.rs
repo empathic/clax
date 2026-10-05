@@ -563,3 +563,181 @@ async fn the_extensions_stream_is_live_only() {
         .status();
     assert_eq!(st, 200);
 }
+
+/// Opens the extension's stream subscribed to `artifact:<aid>`, posts a
+/// comment as the owner's shell and reads its event: the stream delivers.
+async fn delivering_stream(
+    ts: &TestServer,
+    cred: &str,
+    aid: &str,
+    tid: &str,
+) -> clax_server::testing::EventReader {
+    let res = ext(ts, Method::GET, "/api/stream", cred)
+        .send()
+        .await
+        .unwrap();
+    let mut events = clax_server::testing::EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let st = ext(ts, Method::POST, &format!("/api/stream/{sid}"), cred)
+        .json(&json!({"subscribe": [format!("artifact:{aid}")]}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 200);
+    owner_comment(ts, aid, tid, "before").await;
+    let (name, _) = events.next().await;
+    assert_ne!(name, "ready", "the comment reaches the stream");
+    events
+}
+
+async fn owner_comment(ts: &TestServer, aid: &str, tid: &str, body: &str) {
+    let st = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            ts.base
+        ))
+        .header("cookie", ts.owner_cookie())
+        .json(&json!({"body": body}))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert!(st.is_success(), "{st}");
+}
+
+#[tokio::test]
+async fn revoking_the_credential_ends_the_extensions_open_stream() {
+    let ts = TestServer::spawn().await;
+    let cred = credential(&ts).await;
+    let (aid, tid) = live_thread(&ts, &cred).await;
+    let mut events = delivering_stream(&ts, &cred, &aid, &tid).await;
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/extension/credentials", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    owner_comment(&ts, &aid, &tid, "after").await;
+    assert_eq!(
+        events.rest().await,
+        Vec::<String>::new(),
+        "the stream ends and delivers nothing more"
+    );
+}
+
+#[tokio::test]
+async fn an_expired_credential_ends_the_extensions_open_stream() {
+    use clax_core::working::ManualClock;
+    let clock = std::sync::Arc::new(ManualClock::at(&clax_core::Store::now()));
+    let c = clock.clone();
+    let ts = TestServer::spawn_with(move |st| {
+        st.ext_creds = std::sync::Arc::new(
+            clax_server::extension::Credentials::load_with(&st.store, c).unwrap(),
+        );
+    })
+    .await;
+    let cred = credential(&ts).await;
+    let (aid, tid) = live_thread(&ts, &cred).await;
+    let mut events = delivering_stream(&ts, &cred, &aid, &tid).await;
+    clock.advance((clax_core::extension::CREDENTIAL_TTL_DAYS + 1) * 86_400);
+    owner_comment(&ts, &aid, &tid, "after").await;
+    assert_eq!(
+        events.rest().await,
+        Vec::<String>::new(),
+        "the stream ends and delivers nothing more"
+    );
+}
+
+#[tokio::test]
+async fn a_credential_for_another_extension_id_is_refused() {
+    let other = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let o = other.clone();
+    let ts = TestServer::spawn_with(move |st| {
+        let m = st.store.mint_extension_credential(&"p".repeat(32)).unwrap();
+        *o.lock().unwrap() = m.credential;
+        st.ext_creds =
+            std::sync::Arc::new(clax_server::extension::Credentials::load(&st.store).unwrap());
+    })
+    .await;
+    let cred = other.lock().unwrap().clone();
+    let res = ext(&ts, Method::GET, "/api/viewers/me", &cred)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 401);
+}
+
+#[tokio::test]
+async fn the_extension_and_the_shell_change_only_their_own_streams() {
+    let ts = TestServer::spawn().await;
+    let cred = credential(&ts).await;
+    let (aid, _) = live_thread(&ts, &cred).await;
+    // The owner's shell without the token: the same caller as the extension.
+    let res = ts
+        .client
+        .get(format!("{}/api/stream", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .send()
+        .await
+        .unwrap();
+    let mut shell = clax_server::testing::EventReader::from_response(res);
+    let shell_sid = shell.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ext(&ts, Method::GET, "/api/stream", &cred)
+        .send()
+        .await
+        .unwrap();
+    let mut mine = clax_server::testing::EventReader::from_response(res);
+    let ext_sid = mine.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let topic = json!({"subscribe": [format!("artifact:{aid}")]});
+    let res = ext(
+        &ts,
+        Method::POST,
+        &format!("/api/stream/{shell_sid}"),
+        &cred,
+    )
+    .json(&topic)
+    .send()
+    .await
+    .unwrap();
+    assert_eq!(res.status(), 404);
+    assert_eq!(code(res).await, "unknown_stream");
+    let res = ts
+        .client
+        .post(format!("{}/api/stream/{ext_sid}", ts.base))
+        .header("cookie", ts.owner_cookie())
+        .json(&topic)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    assert_eq!(code(res).await, "unknown_stream");
+    // Each changes its own.
+    for (sid, r) in [
+        (
+            &ext_sid,
+            ext(&ts, Method::POST, &format!("/api/stream/{ext_sid}"), &cred),
+        ),
+        (
+            &shell_sid,
+            ts.client
+                .post(format!("{}/api/stream/{shell_sid}", ts.base))
+                .header("cookie", ts.owner_cookie()),
+        ),
+    ] {
+        assert_eq!(r.json(&topic).send().await.unwrap().status(), 200, "{sid}");
+    }
+}

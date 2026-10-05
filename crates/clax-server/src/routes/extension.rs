@@ -45,6 +45,8 @@ pub async fn mint(
             Ok((m, st.owner_viewer(true)?))
         })
         .await?;
+    // A ninth credential revokes the oldest.
+    crate::extension::end_dead_streams(&s);
     Ok(Json(json!({
         "credential": m.credential,
         "viewer": owner,
@@ -67,12 +69,14 @@ pub async fn status(State(s): State<AppState>, _t: RequireToken) -> Result<Json<
     })))
 }
 
-/// `DELETE /api/extension/credentials` (W): revokes every credential;
-/// `{revoked}` is how many of them were live.
+/// `DELETE /api/extension/credentials` (W): revokes every credential and
+/// ends every stream opened with one; `{revoked}` is how many of them were
+/// live.
 pub async fn revoke(State(s): State<AppState>, _t: RequireToken) -> Result<Json<Value>, ApiError> {
     let creds = s.ext_creds.clone();
     let n = s
         .store_call(move |st| creds.refresh(st, |st| st.revoke_extension_credentials()))
         .await?;
+    crate::extension::end_dead_streams(&s);
     Ok(Json(json!({"revoked": n})))
 }

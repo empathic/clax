@@ -152,6 +152,33 @@ pub const SCHEME: &str = "Clax-Extension";
 #[derive(Clone, Copy, Debug)]
 pub struct ViaExtension;
 
+/// The hash of the credential an admitted request carried, beside
+/// [`ViaExtension`]: a stream opened with it ends when it stops being live.
+#[derive(Clone, Debug)]
+pub struct ExtensionCredential(String);
+
+impl ExtensionCredential {
+    /// The credential's SHA-256 (lowercase hex).
+    pub fn hash(&self) -> &str {
+        &self.0
+    }
+}
+
+/// Whether the credential whose hash is `hash` is live in `creds` and was
+/// minted for `extension_id` (the ID in effect).
+pub fn is_live(creds: &Credentials, hash: &str, extension_id: &str) -> bool {
+    creds
+        .get(hash)
+        .is_some_and(|c| c.extension_id == extension_id)
+}
+
+/// Ends the open streams of every extension credential that is no longer
+/// live in `s` (after a revoke, or a mint that revoked the oldest).
+pub fn end_dead_streams(s: &AppState) {
+    s.stream
+        .end_streams_where(|h| !is_live(&s.ext_creds, h, &s.extension_id));
+}
+
 /// What a route needs besides the credential: nothing more, or that the
 /// artifact its path names (percent-encoded as in the path) is a live page.
 #[derive(Debug, PartialEq, Eq)]
@@ -315,10 +342,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
     let Some(hash) = presented(req.headers()).map(credential_hash) else {
         return unknown();
     };
-    if s.ext_creds
-        .get(&hash)
-        .is_none_or(|c| c.extension_id != s.extension_id)
-    {
+    if !is_live(&s.ext_creds, &hash, &s.extension_id) {
         return unknown();
     }
     if let Rule::Live(aid) = r
@@ -328,6 +352,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
     }
     if s.ext_creds.due_for_touch(&hash) {
         let store = s.store.clone();
+        let hash = hash.clone();
         tokio::task::spawn_blocking(move || {
             if let Err(e) = store.touch_extension_credential(&hash) {
                 tracing::warn!(error = %e, "could not record an extension credential's use");
@@ -340,6 +365,7 @@ pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) ->
     }
     h.remove("sec-fetch-site");
     req.extensions_mut().insert(ViaExtension);
+    req.extensions_mut().insert(ExtensionCredential(hash));
     let mut res = next.run(req).await;
     res.headers_mut().remove(header::SET_COOKIE);
     cors(&mut res, &origin);

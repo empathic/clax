@@ -234,6 +234,32 @@ impl EventReader {
         }
     }
 
+    /// The names of the events (keep-alive comments aside) until the body
+    /// ends; panics when it has not ended within 20 s.
+    pub async fn rest(&mut self) -> Vec<String> {
+        use futures::StreamExt;
+        let mut names = vec![];
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            while let Some(end) = self.buf.find("\n\n") {
+                let block = self.buf[..end].to_string();
+                self.buf.drain(..end + 2);
+                if let Some(n) = block.lines().find_map(|l| l.strip_prefix("event: ")) {
+                    names.push(n.to_string());
+                }
+            }
+            let chunk = tokio::time::timeout_at(deadline, self.stream.next())
+                .await
+                .expect("the stream ends within 20 s");
+            match chunk {
+                Some(Ok(c)) => self
+                    .buf
+                    .push_str(std::str::from_utf8(&c).expect("UTF-8 events")),
+                _ => return names,
+            }
+        }
+    }
+
     /// Skips events until one named `name`; returns its data.
     pub async fn next_named(&mut self, name: &str) -> serde_json::Value {
         loop {

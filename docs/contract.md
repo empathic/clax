@@ -2001,8 +2001,9 @@ All three routes need the token (401 `unauthorized` without it):
   - `viewer` is the owner viewer, or `null` while there is none. Reading
     this never makes the owner viewer.
   - It never shows a credential.
-- **`DELETE /api/extension/credentials`** revokes every credential and
-  answers `{revoked}`, the number of them that were live.
+- **`DELETE /api/extension/credentials`** revokes every credential, ends
+  every event stream the extension opened with one, and answers
+  `{revoked}`, the number of them that were live.
 
 ## Page contract
 
@@ -3052,7 +3053,10 @@ abandoned and retried the same way, with a notice.
   preflights are answered 204 only for the routes above and 403 otherwise.
   A stream opened through the gateway is live-only: subscribing it to
   `gallery`, a `docs` topic, or a topic of an artifact that is not a live
-  page is 403 `forbidden`, and it resumes only as such a stream. A stolen
+  page is 403 `forbidden`; only a request with the credential that opened
+  it changes or resumes it (any other is 404 `unknown_stream`, and the
+  extension cannot change a stream it did not open); and it ends, delivering
+  nothing more, once that credential is revoked or expires. A stolen
   credential therefore acts as the owner on live pages alone until revoked;
   it cannot publish, delete artifacts, read sessions or the token, use
   `db`, or see an artifact that is not a live page. Every other origin's

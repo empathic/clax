@@ -34,7 +34,9 @@ use std::convert::Infallible;
 /// receives no gallery event of a live page and cannot subscribe to a live
 /// page's topics; it resumes only from a request of the same kind. A stream
 /// opened through the extension gateway is live-only
-/// ([`crate::stream::live_only_admits`]), and resumes only as one.
+/// ([`crate::stream::live_only_admits`]); only requests with the credential
+/// it was opened with change or resume it, and it ends, delivering nothing
+/// more, once that credential is revoked or expires.
 pub async fn open(
     State(s): State<AppState>,
     who: crate::identity::Identity,
@@ -42,7 +44,9 @@ pub async fn open(
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
     let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
-    let live_only = extensions.get::<crate::extension::ViaExtension>().is_some();
+    let credential = extensions
+        .get::<crate::extension::ExtensionCredential>()
+        .map(|c| c.hash().to_string());
     let token = token_or_cookie(&headers, &s.token, &who);
     let caller = s
         .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
@@ -51,13 +55,17 @@ pub async fn open(
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
-    let opened = s.stream.open(caller, local, live_only, resume);
-    let conn = Conn::new(
+    let opened = s.stream.open(caller, local, credential.clone(), resume);
+    let mut conn = Conn::new(
         s.stream.clone(),
         opened,
         s.sse_keep_alive,
         s.shutdown.clone(),
     );
+    if let Some(hash) = credential {
+        let (creds, id) = (s.ext_creds.clone(), s.extension_id.clone());
+        conn = conn.checking(move || crate::extension::is_live(&creds, &hash, &id));
+    }
     let chunks = futures::stream::unfold(conn, |mut c| async move {
         c.next().await.map(|b| (Ok::<_, Infallible>(b), c))
     });
@@ -129,7 +137,9 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// page the stream may not see (404 otherwise), and
 /// a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
-/// that ID for this caller; 429 `limit_reached` past
+/// that ID for this caller (a stream opened through the extension gateway
+/// is changed only with its own credential, and any other only without
+/// one); 429 `limit_reached` past
 /// [`crate::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
 /// that is not a topic. On a live-only stream (the extension's), 403
 /// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
@@ -139,6 +149,7 @@ pub async fn update(
     _o: SameOrigin,
     who: crate::identity::Identity,
     sees: crate::live::SeesLive,
+    via: Option<axum::Extension<crate::extension::ExtensionCredential>>,
     p: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     req: Result<Json<UpdateBody>, JsonRejection>,
@@ -178,7 +189,8 @@ pub async fn update(
             crate::db_caller::caller_of(st, token, &who)
         })
         .await?;
-    match s.stream.update(&id, &caller, &add, &remove) {
+    let credential = via.as_ref().map(|c| c.0.hash());
+    match s.stream.update_via(&id, &caller, credential, &add, &remove) {
         Ok((seq, topics)) => Ok(Json(json!({"seq": seq, "topics": topics}))),
         Err(SubError::UnknownStream) => Err(ApiError::new(
             StatusCode::NOT_FOUND,
