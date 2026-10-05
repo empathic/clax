@@ -54,7 +54,7 @@ async function publishLive(title: string, html: string, capabilities: Record<str
  * `verb`'s call ("open": openComposer; "send": sendToClaude), writing the
  * count and the latest result into #status; its button, and the key O, make
  * the same call from the viewer's input (disarming the timer first) into
- * #clicked. */
+ * #clicked. Once it listens, `#t` gets data-ready="yes". */
 const PULLER = (verb: "open" | "send", armed = true) => `<!doctype html><html><head><title>Puller</title>
 <style>body{margin:0;font:16px sans-serif}main{padding:16px}#b{padding:8px 16px}</style></head>
 <body><main><h2 id="t">Title</h2><button id="b">Do it</button><p id="status">0</p><p id="clicked">-</p><p id="focused">no</p></main>
@@ -80,6 +80,7 @@ const PULLER = (verb: "open" | "send", armed = true) => `<!doctype html><html><h
   b.addEventListener("focus", () => { document.getElementById("focused").textContent = "yes"; });
   document.addEventListener("keydown", async e => { if (e.key === "o") { window.armed = false; document.getElementById("clicked").textContent = await call().then(show, e => e.code); } });
   b.addEventListener("click", async () => { window.armed = false; document.getElementById("clicked").textContent = await call().then(show, e => e.code); });
+  el.dataset.ready = "yes";
 })().catch(e => { document.getElementById("status").textContent = "setup " + (e.code || e.message); });</script></body></html>`;
 
 /** The poll count in #status. */
@@ -199,6 +200,7 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a Tab from the shell into the page and a key there opens the composer`, async ({ page }) => {
     const id = await publishLive(`Tab ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, id, 1, mode);
+    await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     await (await nameField(page)).click();
     for (let i = 0; i < 30 && (await f.locator("#focused").textContent()) !== "yes"; i++) await page.keyboard.press("Tab");
     await expect(f.locator("#focused")).toHaveText("yes");
@@ -210,6 +212,8 @@ for (const mode of ["subdomain", "sandbox"] as const) {
   test(`${mode}: a key in the page after a click there opens the composer with the pointer moved back over the shell`, async ({ page }) => {
     const id = await publishLive(`Keys ${mode}`, PULLER("open", false), { comments: { composer_only: true } });
     const f = await openArtifact(page, d.base, id, 1, mode);
+    // The page listens for the key only once its setup is done.
+    await expect(f.locator("#t")).toHaveAttribute("data-ready", "yes");
     await f.locator("#t").click();
     await page.getByRole("button", { name: "Comment", exact: true }).hover();
     await page.keyboard.press("o");
@@ -524,17 +528,30 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await record(page);
     const f = await openArtifact(page, d.base, id, 1, mode);
     await callsMore(page, 3);
-    await (await nameField(page)).click();
+    // The press on the name field lands over the frame's box (the panel
+    // overlaps it), so the shield goes up: the same on every platform's fonts.
+    const field = await nameField(page);
+    const nb = (await field.boundingBox())!;
+    const fb = await frameBox(page);
+    expect(nb.x + 10 < fb.x + fb.width && nb.y + nb.height / 2 < fb.y + fb.height).toBe(true);
+    await field.click({ position: { x: 10, y: nb.height / 2 } });
     await callsMore(page, 6);
     const current = async () => ((await (await fetch(`${d.base}/api/artifacts/${id}`)).json()) as { artifact: { current_version: number } }).artifact.current_version;
     expect(await current()).toBe(1);
     await expect(f.locator("#status")).toHaveText("rate_limited: publish from the viewer's own input in the page, never on load or a timer");
+    // Where the page's button is, read now: a Playwright read in the frame
+    // grants user activation, which quietPast then waits out.
+    const sb = (await f.locator("#save").boundingBox())!;
     // More than 5.5 s after the click on the name field, the viewer's click
     // in the page publishes. The page's timer runs on: the click's
     // activation must lapse in Chromium as well, with the timer refused.
     await quietPast(page);
     expect(await current()).toBe(1);
-    await f.locator("#save").click();
+    // The viewer moves the pointer to the button (the shield's bands stay up
+    // until a move over them) and clicks it, with no read of the frame on the
+    // way: one would grant the page activation the timer could use.
+    await page.mouse.move(sb.x + sb.width / 2, sb.y + sb.height / 2, { steps: 5 });
+    await page.mouse.click(sb.x + sb.width / 2, sb.y + sb.height / 2);
     await expect.poll(current).toBe(2);
   });
 }
