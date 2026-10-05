@@ -29,12 +29,17 @@ use std::convert::Infallible;
 /// events with `id: <stream>:<seq>`, `resync` (`{topic, reason}`) for a
 /// topic the client must refetch, and a `: keep-alive` comment every
 /// `AppState::sse_keep_alive` while idle. It ends when the daemon shuts down
-/// or a newer connection resumes the same stream.
+/// or a newer connection resumes the same stream. A stream opened by a
+/// request that may not see live pages ([`crate::live::sees_live_pages`])
+/// receives no gallery event of a live page and cannot subscribe to a live
+/// page's topics; it resumes only from a request of the same kind.
 pub async fn open(
     State(s): State<AppState>,
     who: crate::identity::Identity,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
+    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
     let token = token_or_cookie(&headers, &s.token, &who);
     let caller = s
         .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
@@ -43,7 +48,7 @@ pub async fn open(
         .get("last-event-id")
         .and_then(|v| v.to_str().ok())
         .and_then(parse_last_event_id);
-    let opened = s.stream.open(caller, resume);
+    let opened = s.stream.open(caller, local, resume);
     let conn = Conn::new(
         s.stream.clone(),
         opened,
@@ -117,7 +122,8 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// `{seq, topics}`. Each subscribed topic's events numbered above `seq`
 /// reach the stream; `topics` is the stream's whole list after the change.
 ///
-/// Checked once, here: every subscribed artifact exists (404 otherwise), and
+/// Checked once, here: every subscribed artifact exists, and is not a live
+/// page the stream may not see (404 otherwise), and
 /// a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller; 429 `limit_reached` past
@@ -163,6 +169,7 @@ pub async fn update(
             "unknown_stream",
             "no open stream has that ID for this caller; open /api/stream again",
         )),
+        Err(SubError::Hidden) => Err(CoreError::NotFound.into()),
         Err(SubError::TooMany) => Err(ApiError::new(
             StatusCode::TOO_MANY_REQUESTS,
             "limit_reached",

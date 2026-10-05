@@ -55,13 +55,35 @@ fn content_policy(origin: &Option<Extension<OnArtifactOrigin>>, req: &HeaderMap)
     .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
 }
 
+/// The second policy on a live page's content (spec
+/// 2026-10-05-chrome-overlay-design §8.4): of scripts, only Clax's own under
+/// `/_clax/` on the request's host run, whatever the snapshot holds; no
+/// plugins, base URL, form posts, frames, connections or workers.
+fn snapshot_policy(req: &HeaderMap) -> HeaderValue {
+    let host = req
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("localhost");
+    HeaderValue::from_str(&format!(
+        "script-src http://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
+    ))
+    .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
+}
+
+/// Sets the content policy on `res`, and for a live page's content (`live`)
+/// appends [`snapshot_policy`]: both apply.
 fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
     req: &HeaderMap,
+    live: bool,
 ) -> Response {
     res.headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
+    if live {
+        res.headers_mut()
+            .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req));
+    }
     res
 }
 
@@ -81,11 +103,13 @@ pub async fn index(
 ) -> Result<Response, ApiError> {
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
+    let live = s.live_ids.contains(id.as_str());
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
         Served::Page(html) => Ok(framed_by_shell(
             http_cache::html(&req, &html),
             &origin,
             &req,
+            live,
         )),
         Served::Raw(..) => Err(ApiError::from(CoreError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -166,12 +190,14 @@ pub async fn file(
         return Ok(Redirect::permanent("./").into_response());
     }
     let tag_source = format!("{aid}/{n}/{rel}");
+    let live = s.live_ids.contains(id.as_str());
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
                 http_cache::html(&req, &html),
                 &origin,
                 &req,
+                live,
             ));
         }
         Served::Raw(disk, meta) => (disk, meta),
@@ -197,7 +223,7 @@ pub async fn file(
             )
                 .into_response()
         });
-        return Ok(framed_by_shell(res, &origin, &req));
+        return Ok(framed_by_shell(res, &origin, &req, live));
     }
     let cache_control = http_cache::IMMUTABLE;
     let res = (
@@ -211,7 +237,7 @@ pub async fn file(
         body,
     )
         .into_response();
-    Ok(framed_by_shell(res, &origin, &req))
+    Ok(framed_by_shell(res, &origin, &req, live))
 }
 
 /// `GET /api/artifacts/<id>/versions/<n>/files/<path>`: a file's stored bytes,

@@ -74,6 +74,29 @@ impl Store {
         })
     }
 
+    /// Every live page whose artifact is not deleted.
+    pub fn live_pages(&self) -> Result<Vec<LivePage>> {
+        self.with_read(|c| {
+            let mut st = c.prepare(
+                "SELECT p.artifact_id, p.origin, p.path FROM live_pages p
+                 JOIN artifacts a ON a.id = p.artifact_id WHERE a.deleted_at IS NULL",
+            )?;
+            let pages = st
+                .query_map([], row_to_page)?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            Ok(pages)
+        })
+    }
+
+    /// The artifact IDs of every live page that is not deleted.
+    pub fn live_page_ids(&self) -> Result<Vec<String>> {
+        Ok(self
+            .live_pages()?
+            .into_iter()
+            .map(|p| p.artifact_id)
+            .collect())
+    }
+
     /// Finds or creates the live page `key` and gives it the version a new
     /// thread belongs on: a new page's version 1 is `snapshot`, or the
     /// placeholder without one; an existing page takes `snapshot` as a new
@@ -233,6 +256,24 @@ mod tests {
     }
     fn index(st: &Store, id: &ArtifactId, n: u32) -> String {
         std::fs::read_to_string(st.home().version_dir(id, n).join("index.html")).unwrap()
+    }
+
+    #[test]
+    fn live_page_ids_name_the_pages_that_are_not_deleted() {
+        let (_d, st) = store();
+        let a = st.ensure_live_page(&key("/a"), "a", None).unwrap();
+        let b = st.ensure_live_page(&key("/b"), "b", None).unwrap();
+        let mut ids = st.live_page_ids().unwrap();
+        ids.sort();
+        let mut want = vec![a.artifact.id.clone(), b.artifact.id.clone()];
+        want.sort();
+        assert_eq!(ids, want);
+        st.delete_artifact(&ArtifactId::parse(&a.artifact.id).unwrap())
+            .unwrap();
+        assert_eq!(st.live_page_ids().unwrap(), vec![b.artifact.id.clone()]);
+        let pages = st.live_pages().unwrap();
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].path, "/b");
     }
 
     #[test]

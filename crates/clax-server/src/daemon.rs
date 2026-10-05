@@ -273,6 +273,7 @@ pub async fn serve(
 
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
+    let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -300,7 +301,8 @@ pub async fn serve(
         ))),
         rooms: Arc::new(crate::room::Rooms::default()),
         sample: cfg.sample.clone(),
-        stream: crate::stream::Hub::new(),
+        stream: crate::stream::Hub::new(live_ids.clone()),
+        live_ids,
     };
     state.stream.listen(&state.events);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");

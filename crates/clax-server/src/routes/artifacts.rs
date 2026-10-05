@@ -12,8 +12,10 @@ use axum::extract::{FromRequest, Request};
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
+use clax_core::live::KIND_LIVE;
 use clax_core::model::{Artifact, Session};
 use clax_core::publish::{PublishRequest, require_title, validate};
+use clax_core::store::live::LivePage;
 use clax_core::{ArtifactId, CoreError, Event, MetaPatch, Participants, Store};
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
@@ -162,6 +164,8 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended),
 /// `owner_harness` (the owner's harness, when it exists) and `participants`
 /// (people by public ID, agents by handle; see [`Store::participants`]).
+/// A live page (`kind` `live`) also carries `live: {origin, path, page_url}`
+/// from `live`.
 /// `working` is the artifact's working list (spec §10 "Working"), which
 /// never names a session. The
 /// artifact's own `owner_session_id` stays; token-less routes drop it with
@@ -171,13 +175,29 @@ pub(crate) fn with_owner(
     owner: Option<&Session>,
     working: &[clax_core::working::WorkingView],
     participants: &Participants,
+    live: Option<&LivePage>,
 ) -> Value {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
     v["working"] = json!(working);
     v["participants"] = json!(participants);
+    if let Some(p) = live {
+        v["live"] = json!({
+            "origin": p.origin,
+            "path": p.path,
+            "page_url": format!("{}{}", p.origin, p.path),
+        });
+    }
     v
+}
+
+/// The live page `a` is, when it is one.
+pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePage>> {
+    if a.kind != KIND_LIVE {
+        return Ok(None);
+    }
+    st.live_page_of(&ArtifactId::parse(&a.id)?)
 }
 
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
@@ -218,13 +238,17 @@ pub struct ListQuery {
 
 /// Each live artifact, with the owner fields of [`with_owner`]. Without the
 /// token, no session ID is included. With `?artifact=<aid>`, that artifact
-/// alone, or none when it is not live (400 for a malformed ID).
+/// alone, or none when it is not live (400 for a malformed ID). Live pages
+/// are left out for a caller that may not see them
+/// ([`crate::live::sees_live_pages`]).
 pub async fn list(
     State(s): State<AppState>,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
     q: Result<Query<ListQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let local = crate::live::sees_live_pages(&headers, &extensions, &s.token);
     let artifacts = match q.artifact.as_deref().map(parse_id).transpose()? {
         Some(id) => {
             let working = s.working.for_artifact(id.as_str());
@@ -232,6 +256,9 @@ pub async fn list(
                 let Some(a) = st.get_artifact(&id)? else {
                     return Ok(vec![]);
                 };
+                if !local && a.kind == KIND_LIVE {
+                    return Ok(vec![]);
+                }
                 let owner = match &a.owner_session_id {
                     Some(sid) => st.get_session(sid)?,
                     None => None,
@@ -241,6 +268,7 @@ pub async fn list(
                     owner.as_ref(),
                     &working,
                     &st.participants(&id)?,
+                    live_part(st, &a)?.as_ref(),
                 )])
             })
             .await?
@@ -255,14 +283,20 @@ pub async fn list(
                     .map(|s| (s.id.clone(), s))
                     .collect();
                 let participants = st.participants_all()?;
+                let pages: std::collections::HashMap<String, LivePage> = st
+                    .live_pages()?
+                    .into_iter()
+                    .map(|p| (p.artifact_id.clone(), p))
+                    .collect();
                 let none = Participants::default();
                 Ok(artifacts
                     .iter()
+                    .filter(|a| local || a.kind != KIND_LIVE)
                     .map(|a| {
                         let owner = a.owner_session_id.as_ref().and_then(|sid| owners.get(sid));
                         let working = all.get(&a.id).map(Vec::as_slice).unwrap_or(&[]);
                         let people = participants.get(&a.id).unwrap_or(&none);
-                        with_owner(a, owner, working, people)
+                        with_owner(a, owner, working, people, pages.get(&a.id))
                     })
                     .collect::<Vec<_>>())
             })
@@ -346,7 +380,13 @@ pub async fn get(
                 None => None,
             };
             let mut v = json!({
-                "artifact": with_owner(&a, owner.as_ref(), &working, &st.participants(&id)?),
+                "artifact": with_owner(
+                    &a,
+                    owner.as_ref(),
+                    &working,
+                    &st.participants(&id)?,
+                    live_part(st, &a)?.as_ref(),
+                ),
                 "versions": versions,
             });
             if let Some(viewer) = who.browser_viewer(st)? {
@@ -438,6 +478,7 @@ pub async fn delete(
     let events = s.events.clone();
     let cache = s.wrap_cache.clone();
     let working = s.working.clone();
+    let live_ids = s.live_ids.clone();
     s.store_call(move |st| {
         st.delete_artifact(&id)?;
         crate::working::announce(&events, &working, &working.artifact_gone(id.as_str()));
@@ -445,6 +486,9 @@ pub async fn delete(
         events.publish(Event::ArtifactDeleted {
             artifact_id: id.as_str().to_string(),
         });
+        // After the event, so a live page's deletion reaches only the
+        // streams that saw the page.
+        live_ids.remove(id.as_str());
         Ok(())
     })
     .await?;
@@ -479,6 +523,12 @@ pub async fn publish(
     req: Result<JsonBytes, JsonRejection>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let id = parse_id(&path(aid)?)?;
+    if s.live_ids.contains(id.as_str()) {
+        return Err(ApiError::bad_request(
+            "live_page",
+            "a live page takes snapshots from the Clax extension; it cannot be published",
+        ));
+    }
     let mut p = parse_body(req, "the publish limit", |r: PublishRequest| {
         Ok(validate(r)?)
     })

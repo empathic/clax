@@ -47,6 +47,7 @@ impl TestServer {
             .unwrap();
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
+        let live_ids = Arc::new(crate::live::LiveIds::load(&store).unwrap());
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -74,7 +75,8 @@ impl TestServer {
             rooms: Arc::new(crate::room::Rooms::default()),
             // Sampling off; tests that sample set their own with `spawn_with`.
             sample: Arc::new(crate::sample::Sampler::disabled()),
-            stream: crate::stream::Hub::new(),
+            stream: crate::stream::Hub::new(live_ids.clone()),
+            live_ids,
         };
         f(&mut state);
         state.stream.listen(&state.events);

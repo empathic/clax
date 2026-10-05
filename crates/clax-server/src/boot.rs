@@ -200,7 +200,13 @@ pub async fn assemble(
                 Some(v) => Some(st.attention(&v.id, &lookup)?),
                 None => None,
             };
-            let artifact = with_owner(&a, owner.as_ref(), &working, &st.participants(&lookup)?);
+            let artifact = with_owner(
+                &a,
+                owner.as_ref(),
+                &working,
+                &st.participants(&lookup)?,
+                crate::routes::artifacts::live_part(st, &a)?.as_ref(),
+            );
             Ok(Some((a, artifact, versions, threads, viewer, attention)))
         })
         .await?;

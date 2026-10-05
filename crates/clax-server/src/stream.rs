@@ -158,6 +158,9 @@ impl Chan {
 #[derive(Clone, Copy, Debug)]
 enum Gate {
     Any,
+    /// Only subscribers on this machine or holding the token (a live page's
+    /// gallery event; see [`crate::live::sees_live_pages`]).
+    Local,
     /// Subscribers at `min` or above, except those at `unless` or above
     /// (they have it from a `DocsAt` channel already).
     Level {
@@ -167,9 +170,10 @@ enum Gate {
 }
 
 impl Gate {
-    fn admits(self, level: Level) -> bool {
+    fn admits(self, level: Level, local: bool) -> bool {
         match self {
             Gate::Any => true,
+            Gate::Local => local,
             Gate::Level { min, unless } => level >= min && unless.is_none_or(|u| level < u),
         }
     }
@@ -196,6 +200,8 @@ struct Shared {
 struct Sub {
     tx: Option<mpsc::Sender<Arc<Item>>>,
     level: Level,
+    /// The stream may see live pages.
+    local: bool,
     lagged: bool,
     shared: Arc<Shared>,
 }
@@ -215,6 +221,9 @@ struct StreamEntry {
     /// Bumped by each connection that attaches; a connection detaches only its own.
     epoch: u64,
     caller: Caller,
+    /// The stream may see live pages ([`crate::live::sees_live_pages`] of
+    /// the request that opened it).
+    local: bool,
     /// Each topic with the sequence current when it was subscribed.
     topics: BTreeMap<Topic, u64>,
     tx: Option<mpsc::Sender<Arc<Item>>>,
@@ -240,12 +249,17 @@ pub enum SubError {
     UnknownStream,
     /// The stream would hold more than [`MAX_TOPICS`].
     TooMany,
+    /// A topic of a live page, on a stream that may not see live pages:
+    /// answered as a missing artifact.
+    Hidden,
 }
 
 /// The hub: every topic's channel and every stream.
 #[derive(Default)]
 pub struct Hub {
     inner: Mutex<Inner>,
+    /// The live pages, whose gallery events reach only local streams.
+    live: Arc<crate::live::LiveIds>,
 }
 
 /// Counts for logs and tests.
@@ -467,8 +481,13 @@ fn project(
 }
 
 impl Hub {
-    pub fn new() -> Arc<Hub> {
-        Arc::new(Hub::default())
+    /// A hub that keeps the gallery events of the pages in `live` to
+    /// streams that may see live pages.
+    pub fn new(live: Arc<crate::live::LiveIds>) -> Arc<Hub> {
+        Arc::new(Hub {
+            inner: Mutex::default(),
+            live,
+        })
     }
 
     /// Makes `bus` hand every event to this hub. A bus feeds one hub.
@@ -490,9 +509,14 @@ impl Hub {
         if g.chans.is_empty() {
             return;
         }
+        let live = self.live.contains(ev.artifact_id());
         let present: Vec<(Chan, Gate)> = routes(ev)
             .into_iter()
             .filter(|(c, _)| g.chans.contains_key(c))
+            .map(|(c, gate)| match c {
+                Chan::Gallery if live => (c, Gate::Local),
+                _ => (c, gate),
+            })
             .collect();
         if present.is_empty() {
             return;
@@ -518,7 +542,7 @@ impl Hub {
             }
             ch.ring.push_back(item.clone());
             for sub in ch.subs.values_mut() {
-                if sub.lagged || !item.gate.admits(sub.level) {
+                if sub.lagged || !item.gate.admits(sub.level, sub.local) {
                     continue;
                 }
                 let Some(tx) = &sub.tx else { continue };
@@ -537,14 +561,17 @@ impl Hub {
 
     /// Opens a stream for `caller`, or reattaches the one `resume` names
     /// (its ID and the last sequence the client saw) when that stream is
-    /// still held and belongs to the same caller.
-    pub fn open(&self, caller: Caller, resume: Option<(&str, u64)>) -> Opened {
+    /// still held and belongs to the same caller with the same `local`
+    /// (whether it may see live pages).
+    pub fn open(&self, caller: Caller, local: bool, resume: Option<(&str, u64)>) -> Opened {
         let (tx, rx) = mpsc::channel(QUEUE);
         let mut g = self.lock();
         sweep_locked(&mut g, Instant::now());
         let seq = g.seq;
         if let Some((id, last)) = resume
-            && g.streams.get(id).is_some_and(|s| s.caller == caller)
+            && g.streams
+                .get(id)
+                .is_some_and(|s| s.caller == caller && s.local == local)
         {
             let Inner {
                 chans,
@@ -582,7 +609,7 @@ impl Hub {
                         replay.extend(
                             ch.ring
                                 .iter()
-                                .filter(|i| i.seq > from && i.gate.admits(s.caller.level))
+                                .filter(|i| i.seq > from && i.gate.admits(s.caller.level, s.local))
                                 .cloned(),
                         );
                     }
@@ -611,6 +638,7 @@ impl Hub {
             key: g.next_key,
             epoch: 1,
             caller,
+            local,
             topics: BTreeMap::new(),
             tx: Some(tx),
             shared: shared.clone(),
@@ -660,6 +688,13 @@ impl Hub {
         if after > MAX_TOPICS {
             return Err(SubError::TooMany);
         }
+        if !s.local
+            && add
+                .iter()
+                .any(|t| t.artifact().is_some_and(|a| self.live.contains(a)))
+        {
+            return Err(SubError::Hidden);
+        }
         for t in remove {
             if s.topics.remove(t).is_some() {
                 leave(chans, s.key, &t.chans(&s.caller));
@@ -676,6 +711,7 @@ impl Hub {
                     Sub {
                         tx: s.tx.clone(),
                         level: s.caller.level,
+                        local: s.local,
                         lagged: false,
                         shared: s.shared.clone(),
                     },
@@ -972,9 +1008,72 @@ mod tests {
     }
 
     #[test]
+    fn a_live_pages_gallery_events_reach_only_local_streams() {
+        let live = Arc::new(crate::live::LiveIds::default());
+        live.insert(A);
+        let hub = Hub::new(live);
+        let c = viewer(Level::View, None);
+        let mut near = hub.open(c.clone(), true, None);
+        let mut far = hub.open(c.clone(), false, None);
+        for o in [&near, &far] {
+            hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
+        }
+        hub.dispatch(&version(2));
+        assert_eq!(drain(&mut near).len(), 1);
+        assert_eq!(drain(&mut far).len(), 0);
+        // Another artifact's gallery events reach both.
+        hub.dispatch(&Event::Version {
+            artifact_id: "2b4t7q3k9mzx".into(),
+            n: 1,
+            by_page: false,
+            title: None,
+            at: None,
+        });
+        assert_eq!(drain(&mut near).len(), 1);
+        assert_eq!(drain(&mut far).len(), 1);
+        // A resume replays the gallery to the local stream only, and never
+        // turns a stream local.
+        let (fid, nid) = (far.id.clone(), near.id.clone());
+        drop((near, far));
+        assert!(!hub.open(c.clone(), true, Some((&fid, 0))).resumed);
+        let mut back = hub.open(c.clone(), true, Some((&nid, 0)));
+        assert!(back.resumed);
+        assert_eq!(back.prelude.len(), 4, "two events, each with its id line");
+        assert!(drain(&mut back).is_empty());
+    }
+
+    #[test]
+    fn a_stream_that_may_not_see_live_pages_cannot_subscribe_to_one() {
+        let live = Arc::new(crate::live::LiveIds::default());
+        live.insert(A);
+        let hub = Hub::new(live);
+        let c = viewer(Level::View, None);
+        let far = hub.open(c.clone(), false, None);
+        for t in [
+            Topic::Artifact(A.into()),
+            Topic::Working(A.into()),
+            Topic::Presence(A.into()),
+            Topic::Docs(A.into()),
+        ] {
+            assert_eq!(
+                hub.update(&far.id, &c, std::slice::from_ref(&t), &[]),
+                Err(SubError::Hidden),
+                "{}",
+                t.name()
+            );
+        }
+        assert!(hub.update(&far.id, &c, &[Topic::Gallery], &[]).is_ok());
+        let near = hub.open(c.clone(), true, None);
+        assert!(
+            hub.update(&near.id, &c, &[Topic::Artifact(A.into())], &[])
+                .is_ok()
+        );
+    }
+
+    #[test]
     fn unsubscribed_topics_cost_no_sequence_and_no_channel() {
-        let hub = Hub::new();
-        let _o = hub.open(viewer(Level::View, None), None);
+        let hub = Hub::new(Default::default());
+        let _o = hub.open(viewer(Level::View, None), true, None);
         hub.dispatch(&version(2));
         assert_eq!(hub.lock().seq, 0);
         assert_eq!(hub.stats().channels, 0);
@@ -982,9 +1081,9 @@ mod tests {
 
     #[test]
     fn events_reach_the_topics_subscribed_with_small_deltas() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let mut o = hub.open(c.clone(), None);
+        let mut o = hub.open(c.clone(), true, None);
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         hub.dispatch(&version(2));
         hub.dispatch(&Event::Thread {
@@ -1005,9 +1104,9 @@ mod tests {
 
     #[test]
     fn a_full_queue_marks_the_topic_behind_and_stops_offering_it() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let mut o = hub.open(c.clone(), None);
+        let mut o = hub.open(c.clone(), true, None);
         hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
         for n in 0..(QUEUE as u32 + 10) {
@@ -1029,11 +1128,11 @@ mod tests {
 
     #[test]
     fn private_documents_reach_only_their_viewer_once() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let me = viewer(Level::Interact, Some("u_me"));
         let other = viewer(Level::Admin, Some("u_other"));
-        let mut a = hub.open(me.clone(), None);
-        let mut b = hub.open(other.clone(), None);
+        let mut a = hub.open(me.clone(), true, None);
+        let mut b = hub.open(other.clone(), true, None);
         hub.update(&a.id, &me, &[Topic::Docs(A.into())], &[])
             .unwrap();
         hub.update(&b.id, &other, &[Topic::Docs(A.into())], &[])
@@ -1071,9 +1170,9 @@ mod tests {
 
     #[test]
     fn a_reconnect_replays_from_the_ring_or_resyncs_on_a_gap() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), None);
+        let o = hub.open(c.clone(), true, None);
         let id = o.id.clone();
         hub.update(&id, &c, &[Topic::Artifact(A.into()), Topic::Gallery], &[])
             .unwrap();
@@ -1082,7 +1181,7 @@ mod tests {
         drop(o);
         hub.detach(&id, epoch);
         hub.dispatch(&version(3));
-        let o = hub.open(c.clone(), Some((&id, 1)));
+        let o = hub.open(c.clone(), true, Some((&id, 1)));
         assert!(o.resumed);
         let text: Vec<String> = o
             .prelude
@@ -1096,7 +1195,7 @@ mod tests {
         );
         assert!(text[1].starts_with(&format!("id: {id}:2")));
         // Another caller cannot take the stream.
-        let o2 = hub.open(viewer(Level::Admin, None), Some((&id, 2)));
+        let o2 = hub.open(viewer(Level::Admin, None), true, Some((&id, 2)));
         assert!(!o2.resumed);
         // A gap the ring no longer covers is a resync.
         let epoch = o.epoch;
@@ -1105,7 +1204,7 @@ mod tests {
         for n in 0..(RING as u32 + 5) {
             hub.dispatch(&version(10 + n));
         }
-        let o = hub.open(c, Some((&id, 2)));
+        let o = hub.open(c, true, Some((&id, 2)));
         let first = String::from_utf8(o.prelude[0].to_vec()).unwrap();
         assert!(first.starts_with("event: resync"), "{first}");
         assert!(first.contains("\"reason\":\"gap\""));
@@ -1113,9 +1212,9 @@ mod tests {
 
     #[test]
     fn unsubscribing_the_last_subscriber_drops_the_channel() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), None);
+        let o = hub.open(c.clone(), true, None);
         let t = [Topic::Presence(A.into())];
         hub.update(&o.id, &c, &t, &[]).unwrap();
         assert_eq!(hub.stats().channels, 1);
@@ -1133,9 +1232,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_topic_past_its_resync_leaves_no_mark_on_the_connection() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), None);
+        let o = hub.open(c.clone(), true, None);
         hub.update(&o.id, &c, &[Topic::Artifact(A.into())], &[])
             .unwrap();
         for n in 0..(QUEUE as u32 + 5) {
@@ -1166,13 +1265,13 @@ mod tests {
 
     #[test]
     fn a_disconnect_storm_costs_each_stream_little_and_keeps_the_newest_detached() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
         let n = MAX_DETACHED * 4;
         let opening = Instant::now();
         let opened: Vec<Opened> = (0..n)
             .map(|_| {
-                let o = hub.open(c.clone(), None);
+                let o = hub.open(c.clone(), true, None);
                 hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
                 o
             })
@@ -1196,15 +1295,15 @@ mod tests {
         assert_eq!(hub.stats().streams, MAX_DETACHED);
         // The longest detached went first; the newest can still resume.
         let last = opened.last().unwrap();
-        assert!(hub.open(c.clone(), Some((&last.id, 0))).resumed);
-        assert!(!hub.open(c, Some((&opened[0].id, 0))).resumed);
+        assert!(hub.open(c.clone(), true, Some((&last.id, 0))).resumed);
+        assert!(!hub.open(c, true, Some((&opened[0].id, 0))).resumed);
     }
 
     #[test]
     fn a_stream_detached_past_the_grace_cannot_resume() {
-        let hub = Hub::new();
+        let hub = Hub::new(Default::default());
         let c = viewer(Level::View, None);
-        let o = hub.open(c.clone(), None);
+        let o = hub.open(c.clone(), true, None);
         hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
         hub.detach(&o.id, o.epoch);
         let now = Instant::now();
@@ -1219,7 +1318,7 @@ mod tests {
                 channels: 0
             }
         );
-        assert!(!hub.open(c, Some((&o.id, 0))).resumed);
+        assert!(!hub.open(c, true, Some((&o.id, 0))).resumed);
     }
 
     #[test]

@@ -34,6 +34,7 @@ reqwest = { workspace = true, features = ["stream", "rustls-tls"] }
 base64.workspace = true
 tempfile = { workspace = true, optional = true }
 sha2 = "0.11"
+url.workspace = true
 
 [features]
 test-routes = []

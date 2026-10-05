@@ -43,4 +43,7 @@ pub struct AppState {
     /// The multiplexed event stream's topics and streams (`/api/stream`);
     /// fed by `events` once [`crate::stream::Hub::listen`] has run.
     pub stream: Arc<crate::stream::Hub>,
+    /// Every live page's artifact ID (spec 2026-10-05-chrome-overlay-design
+    /// L10), for hiding them from the LAN and serving their snapshots.
+    pub live_ids: Arc<crate::live::LiveIds>,
 }

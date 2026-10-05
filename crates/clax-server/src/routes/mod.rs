@@ -5,6 +5,7 @@ pub mod docs;
 pub mod events;
 pub mod feedback;
 pub mod health;
+pub mod live;
 pub mod mcp;
 pub mod room;
 pub mod sample;
@@ -130,6 +131,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             post(threads::reopen),
         )
         .route("/api/viewers", get(viewers::lookup))
+        .route("/api/live/pages", get(live::page))
         .route("/api/stream/{id}", post(stream::update))
         .route(
             "/api/viewers/me/seen",
@@ -207,6 +209,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/artifacts/{aid}/threads",
             post(threads::create.layer(DefaultBodyLimit::max(threads::THREAD_BODY_LIMIT))),
+        )
+        .route(
+            "/api/live/threads",
+            post(live::thread.layer(DefaultBodyLimit::max(live::LIVE_THREAD_LIMIT))),
         );
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
@@ -265,7 +271,13 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             }),
         );
     }
-    r.with_state(state)
+    // Live pages answer 404 to callers that may not see them, before any
+    // handler runs (spec 2026-10-05-chrome-overlay-design L10).
+    r.layer(axum::middleware::from_fn_with_state(
+        state.clone(),
+        crate::live::hide_live_pages,
+    ))
+    .with_state(state)
 }
 
 /// Sleeps for the milliseconds in the `x-clax-test-delay-ms` request

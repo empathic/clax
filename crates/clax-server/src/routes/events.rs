@@ -88,7 +88,9 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 /// `{self}` subtree, the level its own viewer needs). The subscriber's level
 /// and viewer ([`crate::db_caller::Subscriber`]: the token from
 /// `Authorization`, `?token=` or the events cookie, and the viewer cookie)
-/// are fixed when the stream opens.
+/// are fixed when the stream opens. A stream opened by a request that may
+/// not see live pages ([`crate::live::sees_live_pages`]) carries no event
+/// of a live page.
 ///
 /// Every event, `ready` included, carries an SSE `id` (`<epoch>-<n>`). A
 /// client reconnecting with that ID (the `Last-Event-ID` header, or
@@ -104,9 +106,12 @@ fn list(v: Option<String>) -> Option<BTreeSet<String>> {
 pub async fn events(
     State(s): State<AppState>,
     Query(q): Query<EventsQuery>,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
     who: crate::db_caller::Subscriber,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
+    let hidden = (!crate::live::sees_live_pages(&headers, &extensions, &s.token))
+        .then(|| s.live_ids.clone());
     let who = who.or_events_cookie();
     // Resolved when the stream opens: a name set later takes effect on reconnect.
     let me = s
@@ -130,6 +135,12 @@ pub async fn events(
     let filter = list(q.artifact);
     let types = list(q.types);
     let passes = move |ev: &Event| -> bool {
+        if hidden
+            .as_ref()
+            .is_some_and(|live| live.contains(ev.artifact_id()))
+        {
+            return false;
+        }
         if let Some(f) = &filter
             && !f.contains(ev.artifact_id())
         {

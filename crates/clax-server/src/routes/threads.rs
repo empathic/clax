@@ -221,6 +221,27 @@ pub async fn clip(
         .into_response())
 }
 
+/// Creates the thread `t` on `id`, sends it when its body mentions
+/// `@agent` (unless the page wrote it), publishes the `thread` event, and
+/// returns the thread view (with `clip_path` when `with_path`).
+pub(crate) fn create_thread_now(
+    st: &Store,
+    ctx: &crate::feedback::FeedbackCtx,
+    id: &ArtifactId,
+    t: NewThread,
+    with_path: bool,
+) -> clax_core::Result<Value> {
+    let mention = !t.via_page && mentions_agent(&t.body);
+    let mut thread = st.create_thread(id, t)?;
+    if mention {
+        let (sent, touched) = st.send_to_agent(&thread.id)?;
+        thread = sent;
+        apply(ctx, st, &touched);
+    }
+    publish_thread(ctx, st, &thread)?;
+    thread_view(st, &thread, ctx.codex_push(), with_path)
+}
+
 /// Multipart fields: `anchor` (JSON), `body`, `version`, optional `clip` (PNG),
 /// optional `via_page` (`true` when the page wrote the comment through the
 /// `comments` capability: the comment is marked so, and an `@agent` mention in
@@ -319,28 +340,22 @@ pub async fn create(
     let with_path = has_token(&headers, &s.token);
     let view = s
         .store_call(move |st| {
-            let (author, author_public_id) = author(st, &who)?;
-            let body_text = text.unwrap_or_default();
-            let mention = !via_page && mentions_agent(&body_text);
-            let mut t = st.create_thread(
+            let (author_name, author_public_id) = author(st, &who)?;
+            create_thread_now(
+                st,
+                &ctx,
                 &id,
                 NewThread {
                     author_public_id,
                     version_n,
                     anchor,
-                    author_name: author,
-                    body: body_text,
+                    author_name,
+                    body: text.unwrap_or_default(),
                     clip,
                     via_page,
                 },
-            )?;
-            if mention {
-                let (sent, touched) = st.send_to_agent(&t.id)?;
-                t = sent;
-                apply(&ctx, st, &touched);
-            }
-            publish_thread(&ctx, st, &t)?;
-            thread_view(st, &t, ctx.codex_push(), with_path)
+                with_path,
+            )
         })
         .await?;
     let mut out = json!({"thread": view});

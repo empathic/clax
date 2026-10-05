@@ -1774,6 +1774,68 @@ assistive technology's activation then does nothing and the action says
 "Click to <verb>". No key lifts it; a press that puts focus on a shell
 control does.
 
+## Live pages
+
+A live page is an artifact of kind `live` that stands for a page on another
+web server (a dev server, say) on which the Clax Chrome extension posts
+comments. It is keyed by the page URL's origin and path; each of its
+versions is a snapshot of the page, taken when a comment is posted.
+
+- **Key and route.** The daemon parses a page URL (WHATWG rules, `http` and
+  `https` only, otherwise 400 `unsupported_url`; at most 4096 bytes and
+  naming a host, otherwise 400 `invalid_url`). The **origin** is the scheme,
+  the lowercased host and the port when it is not the scheme's default; the
+  **path** is the parsed path, dot segments resolved and a trailing slash
+  kept (`/docs` and `/docs/` are two pages). The **route** is the query
+  without `utm_*`, `fbclid` and `gclid` parameters (order kept, `?` dropped
+  when nothing is left), then the fragment when it starts with `/` or `!/`;
+  any other fragment is dropped, and the route is cut to 512 bytes at a
+  character boundary. `http://LOCALHOST:5173/settings?tab=billing&utm_source=x#top`
+  is origin `http://localhost:5173`, path `/settings`, route `?tab=billing`.
+  A URL on the daemon's own port whose host is `localhost`, `127.0.0.1`,
+  `[::1]`, any `*.localhost`, or the host the daemon is reached at is
+  refused with 400 `own_origin`: Clax's own pages have their own comment
+  mode.
+- **`GET /api/live/pages?url=<page URL>`** answers `{page, route}`: the live
+  page the URL names, or `null`, and the URL's route, or `null`. It never
+  creates a page. `page` is `{artifact_id, origin, path, page_url, title,
+  current_version, url}`, where `page_url` is the origin followed by the path
+  and `url` the page's Clax view (`/a/<id>`).
+- **`POST /api/live/threads`** (multipart, at most 24 MiB): `url`, `title`,
+  `anchor` (JSON, as for a thread, without `route`), `body`, optional `clip`
+  (PNG), and `snapshot` (the page's HTML, at most 8 MiB, else 400
+  `snapshot_too_large`). It finds or creates the live page `url` names,
+  stores the snapshot as the page's next version (its only file,
+  `index.html`, noted `snapshot`) unless it is byte-identical to the current
+  version, and creates the thread on that version as the request's viewer,
+  with the anchor's `route` from `url`. An `@agent` mention sends it, as on
+  any thread. The page's title is the `title` field with whitespace
+  collapsed and other control characters dropped, cut to 200 characters (the
+  page URL when nothing is left). It answers `201 {thread, page, version,
+  clip_error?}`; a clip that fails the thread clip rules is dropped and
+  reported in `clip_error`. Both routes are viewer routes: no token, and the
+  `Origin` rule of the other viewer routes.
+- **Views.** Every artifact view (`GET /api/artifacts`,
+  `GET /api/artifacts/<id>`, the shell's bootstrap) carries `kind` (`html` or
+  `live`); a live page's also carries `live: {origin, path, page_url}`.
+- **No publishing.** `POST /api/artifacts/<id>/versions` on a live page
+  answers 400 `live_page`: its versions come only from snapshots.
+- **Serving a snapshot.** Every content response of a live page
+  (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its usual
+  policy, a second `Content-Security-Policy`: `script-src
+  http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
+  'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
+  `<Host>` is the request's `Host`. Both apply, so only the bridge runs,
+  whatever the snapshot holds; styles, images and fonts load from anywhere.
+- **This machine only.** Live pages are visible only to a request from a
+  loopback peer or one carrying the token: for anyone else (a LAN viewer)
+  they are left out of `GET /api/artifacts`, and every path naming one
+  (`/api/artifacts/<id>...`, `/c/<id>/...`, `/a/<id>...`) answers 404
+  `not_found`, as for a missing artifact. On `/api/stream`, a stream opened
+  by such a request receives no `gallery` event of a live page, and
+  subscribing it to a live page's `artifact:`, `working:`, `presence:` or
+  `docs:` topic answers 404 `not_found`.
+
 ## Page contract
 
 Every page follows this contract so it renders well in the gallery, in light and
@@ -2785,6 +2847,10 @@ abandoned and retried the same way, with a notice.
   owner's session row, and `owner_session_id` (with each version's
   `session_id`) only with the token. Content and asset URLs are readable by anyone who can
   reach the daemon and knows the unguessable artifact or asset ID.
+- Live pages (see "Live pages") are visible only to a loopback peer or a
+  request with the token; to anyone else they do not exist (404, left out
+  of lists and of the stream), and their snapshots are served with a policy
+  that runs no script but Clax's own.
 - `GET /api/token` hands the token to the gallery in a local browser. On top
   of the `Host` rule above, it answers only when the connection comes from a
   loopback address and the `Host` header is literally `localhost`,
