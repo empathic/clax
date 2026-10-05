@@ -10,8 +10,8 @@ afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root
 /** A scratch web/ with a copy of the script, a minimal build and `budget` as the budget file. */
 const ENTRY = "<head><script id=\"clax-early\"></script><!--clax:boot--></head><body><!--clax:frame--><h1>Clax</h1></body>";
 
-/** `fonts` are the WOFF2 file names under dist/_clax/fonts; `index` is the gallery entry. */
-function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = ["a.woff2", "b.woff2", "c.woff2"], index = "<p>gallery</p>" } = {}) {
+/** `fonts` are font files put in dist (none by default); `index` is the gallery entry. */
+function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] = [], { fonts = [] as string[], index = "<p>gallery</p>" } = {}) {
   root = mkdtempSync(join(tmpdir(), "clax-bundle-size-"));
   const web = join(root, "web");
   mkdirSync(join(web, "scripts"), { recursive: true });
@@ -19,11 +19,10 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   mkdirSync(join(web, "dist/.vite"), { recursive: true });
   mkdirSync(join(web, "dist/_clax/shell"), { recursive: true });
   mkdirSync(join(web, "dist/_clax/bridge/.vite"), { recursive: true });
-  mkdirSync(join(web, "dist/_clax/fonts"), { recursive: true });
   copyFileSync(join(__dirname, "bundle-size.mjs"), join(web, "scripts/bundle-size.mjs"));
   const dist = (p: string, s: string) => writeFileSync(join(web, "dist", p), s);
   dist("index.html", index);
-  for (const f of fonts) dist(`_clax/fonts/${f}`, "wOF2");
+  for (const f of fonts) { mkdirSync(join(web, "dist", f, ".."), { recursive: true }); dist(f, "wOF2"); }
   dist("artifact.html", artifact);
   dist("_clax/bridge.js", "bridge");
   dist("_clax/shell/a.js", "a");
@@ -42,7 +41,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, fonts: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -79,10 +78,13 @@ describe("bundle-size.mjs", () => {
     expect(r.stderr).toContain("partClip");
   });
 
-  it("fails on a fourth WOFF2 file", () => {
-    const r = run(full, ENTRY, [], { fonts: ["a.woff2", "b.woff2", "c.woff2", "d.woff2"] });
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("at most 3");
+  it("fails when the build carries a font file, wherever it is", () => {
+    for (const f of ["_clax/fonts/a.woff2", "_clax/shell/b.woff", "c.ttf", "_clax/bridge/d.otf"]) {
+      const r = run(full, ENTRY, [], { fonts: [f] });
+      expect(r.status, f).toBe(1);
+      expect(r.stderr).toContain("is a font file");
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("fails when an entry preloads a font", () => {
@@ -96,6 +98,7 @@ describe("bundle-size.mjs", () => {
       `<link href="/_clax/fonts/x.woff2" rel="preload" as="font">`,
       `<link rel='preload' href='/_clax/fonts/x.woff2' as='font'>`,
       `<link as=font href=/_clax/fonts/x.woff2 rel=preload crossorigin>`,
+      `<link rel="preload" href="/f" as="font" type="font/woff2">`,
     ]) {
       const r = run(full, ENTRY, [], { index: `${link}<p>gallery</p>` });
       expect(r.status, link).toBe(1);
@@ -105,22 +108,15 @@ describe("bundle-size.mjs", () => {
     expect(run(full, ENTRY, [], { index: `<link rel="modulepreload" href="/_clax/shell/a.js"><link rel="icon" href="/_clax/mark.svg"><p>gallery</p>` }).status).toBe(0);
   });
 
-  it("fails when an @font-face with a URL lacks font-display: swap, and passes a local-only face", () => {
+  it("fails when an @font-face fetches a font, swap or not, and passes a local-only face", () => {
     const face = (body: string) => ENTRY.replace("</head>", `<style>@font-face { ${body} }</style></head>`);
-    const r = run(full, face(`font-family: P; src: url("/_clax/fonts/a.woff2");`));
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("without font-display: swap");
-    rmSync(root, { recursive: true, force: true });
-    expect(run(full, face(`font-family: P; font-display: swap; src: url("/_clax/fonts/a.woff2");`)).status).toBe(0);
-    rmSync(root, { recursive: true, force: true });
+    for (const body of [`font-family: P; src: url("/_clax/fonts/a.woff2");`, `font-family: P; font-display: swap; src: url("/_clax/fonts/a.woff2");`]) {
+      const r = run(full, face(body));
+      expect(r.status, body).toBe(1);
+      expect(r.stderr).toContain("fetches a font");
+      rmSync(root, { recursive: true, force: true });
+    }
     expect(run(full, face(`font-family: F; src: local("Menlo");`)).status).toBe(0);
-  });
-
-  it("budgets the fonts by their raw bytes", () => {
-    const r = run({ ...full, fonts: 11 });
-    expect(r.stdout).toContain("fonts 12");
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain("fonts: 12");
   });
 
   it("adds a missing part budget when recording, never a missing baseline", () => {
@@ -133,7 +129,7 @@ describe("bundle-size.mjs", () => {
     expect(run(noBaseline, ENTRY, ["--record"]).status).toBe(1);
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "fonts"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);

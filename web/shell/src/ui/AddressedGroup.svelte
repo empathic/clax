@@ -17,7 +17,7 @@
 <style>
   :global {
     .gsub { margin: -4px 2px 10px 17px; font-size: 12px; color: var(--muted); line-height: 1.5; }
-    .section-addressed .thread-card { border-left: 3px solid var(--agent); background: var(--comment-hl); }
-    .section-addressed .thread-num { background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--agent); }
+    .section-addressed .thread-card { border-color: color-mix(in srgb, var(--agent) 30%, var(--border)); }
+    .section-addressed .thread-num { background: var(--agent); color: var(--on-accent); }
   }
 </style>

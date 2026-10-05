@@ -442,7 +442,7 @@ mod tests {
         assert!(hashed_name("shell/HaikuLine-Be2ioBd-.js"));
         assert!(hashed_name("shell/haiku-DXXqhL_5.json"));
         assert!(!hashed_name("shell/manifest.json"));
-        assert!(!hashed_name("fonts/ibm-plex-mono-latin-400.woff2"));
+        assert!(!hashed_name("mark.svg"));
         assert!(!hashed_name("shell/x-short.js"));
     }
 

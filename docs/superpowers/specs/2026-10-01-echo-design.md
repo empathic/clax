@@ -31,7 +31,7 @@ contract.
 ### The idea
 
 Clax is a call and its echo: comments go out, versions come back. The Echo
-mark is two half-discs facing a brown dot. The left arc is people
+mark is two half-discs facing an ink dot. The left arc is people
 (red-orange), the right arc is agents (green), and the dot is the page
 between them. The same layout recurs in the top bar's roster and in each
 gallery card's roster: people on the left, agents on the right.
@@ -40,21 +40,26 @@ gallery card's roster: people on the left, agents on the right.
 
 - The artifact is the star. Nothing Clax draws covers or moves it, except
   pins and the comment-mode outline.
-- Two voices with fixed jobs. IBM Plex Sans Condensed 600 sets Clax's
-  structure: titles, numerals, labels, buttons and group heads. IBM Plex Mono
-  sets everything people and agents write, and all meta.
-- Two colours with fixed meanings. Red-orange (`#ED5439`) is people: their
-  comments, pins and comment mode. Green (`#457D26`, lighter in dark mode) is
-  agents: their notes, working, and primary actions. Brown (`#2F0B04`) is
-  ink. Pink (`#F9C8BF`) is an accent only.
+- One voice, the system's. The system sans sets everything: Clax's
+  structure (titles, numerals, labels, group heads) at 600, buttons at 500,
+  and what people and agents write at 400. The system monospace is kept for
+  what is literal: code, key caps, IDs and counts.
+- A calm ground. Warm-neutral greys (`#F7F7F5` page, `#FFFFFF` surfaces,
+  `#1C1B19` ink; `#141413`, `#1C1C1A` and `#ECEBE7` in dark), 8-10px radii,
+  hairline borders and soft shadows. Buttons are quiet: borderless or
+  hairline, filled on hover. The primary action is solid ink; a send to an
+  agent is green.
+- Two colours with fixed meanings. Red-orange (`#E0532F`, `#FF7A57` in dark
+  mode) is people: their comments, pins and comment mode. Green (`#2F6F2A`,
+  `#7CC36F` in dark mode) is agents: their notes, working and sends. Each
+  has a soft tint for chips, tokens and pressed states, and an ink that
+  keeps WCAG AA on it.
 
 ### Type and labels
 
-- Plex Sans Condensed is one self-hosted WOFF2 of about 20 KB (SIL OFL 1.1),
-  `font-display: swap`, never preloaded, with `font-synthesis: none` and a
-  metric-adjusted fallback, so it never blocks first paint and its swap
-  barely moves the top bar. At most three font files load: Plex Mono 400 and
-  600, and Plex Sans Condensed 600.
+- No font file loads. The system's faces are already on the device, so
+  type never waits on the network, never swaps after first paint, and costs
+  nothing in the time to usable. `font-synthesis: none` stops faux bold.
 - Labels are sentence case. Nothing uses tracked capitals.
 
 ### Voice
@@ -74,8 +79,9 @@ the stored choice, so the shell follows the system again. There is no third
 
 ### Comment mode
 
-The Comment button turns red-orange and a 3px red-orange rule runs under the
-top bar. The C keycap shows on the Comment button only.
+The Comment button takes the people's tint, its label in red-orange ink,
+and a 3px red-orange rule runs under the top bar. The C keycap shows on the
+Comment button only.
 
 ### Keys
 
@@ -112,12 +118,12 @@ motion nothing moves.
 
 ### Participants
 
-- A person's token is their initials in a half-disc with a red-orange
-  outline: underlined for the viewer, a green dot when here, half opacity when
-  away.
-- An agent's token is a half-disc with a green outline: solid green with a
-  breathing dot while working (a still dot under reduced motion), outline
-  only when idle.
+- A person's token is their initials in a pill of the people's tint, in
+  red-orange ink: underlined for the viewer, a green dot when here, half
+  opacity when away.
+- An agent's token is a pill of the agents' tint, in green ink: solid green
+  with a breathing dot while working (a still dot under reduced motion), the
+  tint only when idle.
 - An agent is named by its harness: `claude`, `codex`, `pi`. When two agents
   on one artifact share a harness, each name gains a short suffix from its
   handle (`claude 7f3a`). A handle identifies an agent; the harness names it.

@@ -931,10 +931,18 @@ file under `v/<digits>/` is reachable only through the versioned form):
   selected one. The composer opens in the shell with the
   quote and clip preview.
 
-Look: Echo. Plex Sans Condensed 600 (one self-hosted WOFF2, `swap`, never
-preloaded) sets titles, numerals, labels and buttons in sentence case;
-Plex Mono sets everything people and agents write. Red-orange is people,
-green is agents, brown is ink, pink is an accent only. Haiku appear in the
+Look: Echo. The interface is set in the system's sans (`ui-sans-serif,
+-apple-system, "Segoe UI", system-ui, sans-serif`): titles, numerals,
+labels and group heads at 600, buttons at 500, everything in sentence case.
+The system's monospace (`ui-monospace, "SF Mono", Menlo, Consolas,
+monospace`) sets only what is literal: code, key caps, IDs and counts. The
+shell downloads no font. Greys are warm neutrals; surfaces have 8-10px
+radii, hairline borders and soft shadows; buttons are quiet and fill on
+hover, the primary action is solid ink and a send to an agent is green.
+Red-orange is people and green is agents, in soft tints for chips and
+tokens; text and controls meet WCAG AA in light and dark. Pins keep one
+literal set of colours in both themes, since they sit over the artifact.
+Haiku appear in the
 gallery footer and under an agent's working line, never in comment mode,
 never animated. Buttons are plain verbs; playful words appear only in status
 lines, hints and empty states. Clicking the gallery's mark makes its halves
@@ -2140,7 +2148,7 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   moment (the version button's dot and the Reload button), comment mode on element and range, clip produced, send to agent,
   agent reply visible via SSE, `window.claude.use` for each capability in
   both origin modes (`*.localhost` and opaque sandbox), db `onSnapshot`,
-  self-publish reload, Echo (fonts, theme switch, keys, the mark), the
+  self-publish reload, Echo (system type, theme switch, keys, the mark), the
   working summary, roster, card chips, thread marker, pins and capability,
   the Addressed group, version menu and history line, needs your eyes, batch
   send with the agent picker, and presence; every UI change is checked in

@@ -23,7 +23,7 @@ function rulesFor(el: Element, pseudo?: "::before"): string[] {
 
 afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.head.replaceChildren(); document.body.replaceChildren(); });
 
-it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in red-orange, and no case transform", async () => {
+it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in the people's tint and ink, and no case transform", async () => {
   vi.resetModules();
   history.replaceState(null, "", `/a/${ID}`);
   vi.stubGlobal("SharedWorker", FakeWorker);
@@ -42,7 +42,7 @@ it("styles the topbar controls through the island: a 3px red-orange rule under t
   comment.click();
   while ((comment.getAttribute("aria-pressed") !== "true" || !topbar.classList.contains("commenting")) && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
   expect(rulesFor(topbar).some(b => /box-shadow:\s*inset 0 -3px 0 var\(--you\)/.test(b))).toBe(true);
-  expect(rulesFor(comment).some(b => /background:\s*var\(--you\)/.test(b))).toBe(true);
+  expect(rulesFor(comment).some(b => /background:\s*var\(--comment-hl\)/.test(b) && /color:\s*var\(--you-ink\)/.test(b))).toBe(true);
   const inIsland = Array.from(topbar.querySelectorAll(".island *"));
   expect(inIsland.length).toBeGreaterThan(0);
   for (const el of inIsland) expect(rulesFor(el).some(b => /text-transform/.test(b)), el.outerHTML.slice(0, 60)).toBe(false);

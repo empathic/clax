@@ -1,11 +1,12 @@
 // Gzip sizes of what must load before each shell entry can render (the HTML
 // and its module script with that script's static imports, per the Vite
 // manifest), of the eager bridge, of each of the bridge's lazy parts with
-// the files it imports (per the parts build's manifest), and the raw bytes of
-// the self-hosted WOFF2 fonts, against
-// web/perf/bundle-budget.json. --record lowers the budgets to the measured
-// sizes plus 10%, never raising one, and adds a budget that is missing.
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+// the files it imports (per the parts build's manifest), against
+// web/perf/bundle-budget.json. The shell sets its type in the system's faces,
+// so the build may carry no font file and no entry may load one. --record
+// lowers the budgets to the measured sizes plus 10%, never raising one, and
+// adds a budget that is missing.
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 
 const dist = new URL("../dist/", import.meta.url);
@@ -45,21 +46,21 @@ for (const f of filesIn(dist)) {
   if (text.includes("claxTestClock") || text.includes("clax.test-clock")) throw new Error(`${f.pathname} carries the test clock hook; web/dist must be built without CLAX_TEST_CLOCK`);
 }
 
-// Fonts: at most three WOFF2 files, every @font-face swap, none preloaded;
-// their bytes (already compressed) are budgeted as `fonts`.
-const fontDir = new URL("_clax/fonts/", dist);
-const woffs = readdirSync(fontDir).filter(f => f.endsWith(".woff2"));
-if (woffs.length > 3) throw new Error(`dist/_clax/fonts holds ${woffs.length} WOFF2 files; at most 3`);
+// Fonts: none. No font file anywhere in the build, and no entry preloads
+// one or declares an @font-face that fetches one.
+const FONT_FILE = /\.(woff2?|ttf|otf|eot)$/i;
+for (const f of filesIn(dist)) {
+  if (FONT_FILE.test(f.pathname)) throw new Error(`${f.pathname} is a font file; the shell uses the system's faces and ships none`);
+}
 for (const html of ["index.html", "artifact.html"]) {
   const text = read(html).toString();
   // Each <link> tag on its own, so attribute order and quoting do not matter.
-  const preloadsFont = [...text.matchAll(/<link\b[^>]*>/gi)].some(([tag]) => /\brel\s*=\s*["']?[^"'>]*\bpreload\b/i.test(tag) && /\.woff2\b/i.test(tag));
-  if (preloadsFont) throw new Error(`dist/${html} preloads a font; fonts must never block or jump the queue`);
+  const preloadsFont = [...text.matchAll(/<link\b[^>]*>/gi)].some(([tag]) => /\brel\s*=\s*["']?[^"'>]*\bpreload\b/i.test(tag) && (/\bas\s*=\s*["']?font\b/i.test(tag) || /\.(woff2?|ttf|otf)\b/i.test(tag)));
+  if (preloadsFont) throw new Error(`dist/${html} preloads a font; the shell uses the system's faces`);
   for (const face of text.matchAll(/@font-face\s*\{([^}]*)\}/g)) {
-    if (/url\(/.test(face[1]) && !/font-display:\s*swap/.test(face[1])) throw new Error(`dist/${html}: an @font-face without font-display: swap`);
+    if (/url\(/.test(face[1])) throw new Error(`dist/${html}: an @font-face fetches a font; the shell uses the system's faces`);
   }
 }
-const fontBytes = woffs.reduce((n, f) => n + statSync(new URL(f, fontDir)).size, 0);
 
 const partsManifest = JSON.parse(read("_clax/bridge/.vite/manifest.json"));
 const partKeys = { comment: "partComment", clip: "partClip", caps: "partCaps", room: "partRoom", sample: "partSample" };
@@ -74,10 +75,9 @@ function part(name) {
 
 const sizes = { gallery: entry("index.html"), artifact: entry("artifact.html"), bridge: gz("_clax/bridge.js") };
 for (const [name, key] of Object.entries(partKeys)) sizes[key] = part(name);
-sizes.fonts = fontBytes;
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}; raw bytes: fonts ${sizes.fonts}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}`);
 
-const MEASURED = ["gallery", "artifact", "bridge", ...Object.values(partKeys), "fonts"];
+const MEASURED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;
 // A missing or non-numeric budget would turn its check off; refuse it instead.

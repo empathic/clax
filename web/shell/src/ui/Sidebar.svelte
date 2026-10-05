@@ -181,55 +181,60 @@
      shared with the pins. -->
 <style>
   :global {
-    .gh { display: flex; align-items: center; gap: 8px; margin: 6px 2px 8px; font: 600 19px/1.1 var(--grot); list-style: none; cursor: default; }
+    .gh { display: flex; align-items: center; gap: 8px; margin: 6px 2px 8px; font: 600 14px/1.2 var(--font); list-style: none; cursor: default; }
     .tail summary { list-style: none; cursor: pointer; }
     .tail summary::-webkit-details-marker { display: none; }
-    summary .gh { font-size: 16px; color: var(--muted); cursor: pointer; }
-    .gh .t { flex: 1; } .gh .c { font: 400 12px var(--mono); color: var(--muted); }
-    .gh .sw { width: 7px; height: 16px; flex: none; }
+    summary .gh { font-size: 13px; color: var(--muted); cursor: pointer; }
+    .gh .t { flex: 1; } .gh .c { font: 400 12px var(--mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+    .gh .sw { width: 6px; height: 14px; flex: none; }
     .gh.you .sw { border-radius: 0 8px 8px 0; background: var(--you); }
     .gh.ag .sw { border-radius: 8px 0 0 8px; background: var(--agent); } .gh.ag .t { color: var(--agent-ink); }
     .gh.oth .sw { border-radius: 0 8px 8px 0; box-shadow: inset 0 0 0 1.5px var(--you); }
     .gh.set .sw { border-radius: 50%; width: 10px; height: 10px; background: var(--border-strong); }
     .tail { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
-    .thread-card { background: var(--card); border: 1px solid var(--border); padding: 11px 12px 10px; margin-bottom: 10px; cursor: pointer; transition: background-color var(--t); }
-    .thread-card:hover { border-color: var(--border-strong); }
-    .thread-card.selected { box-shadow: inset 3px 0 0 var(--accent); background: var(--comment-hl); }
+    .thread-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 11px 12px 10px; margin-bottom: 10px; cursor: pointer; transition: border-color var(--t), box-shadow var(--t); }
+    .thread-card:hover { border-color: var(--border-hover); }
+    .thread-card.selected { border-color: var(--border-strong); box-shadow: var(--elev); }
     .thread-card header { margin-bottom: 8px; min-width: 0; }
-    .thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12px var(--mono); }
-    .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
-    .thread-card .thumb { display: block; max-width: 100%; max-height: 120px; min-height: 24px; margin-bottom: 6px; object-fit: cover; object-position: left top; border: 1px solid var(--border); background: var(--bg); }
-    .vt { font: 600 11px/15px var(--grot); padding: 0 4px; border: 1px solid var(--border-strong); color: var(--fg); background: var(--bg); white-space: nowrap; }
+    .thread-card .card-head { display: flex; gap: 8px; align-items: center; width: 100%; min-width: 0; min-height: 0; background: none; border: 0; padding: 0; color: var(--muted); text-align: left; font: 400 12.5px var(--font); }
+    .thread-card .card-head:not(:disabled):hover { background-color: transparent; }
+    .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+    .thread-card .thumb { display: block; max-width: 100%; max-height: 120px; min-height: 24px; margin-bottom: 6px; object-fit: cover; object-position: left top; border: 1px solid var(--border); border-radius: var(--radius-xs); background: var(--bg); }
+    .vt { font: 500 11px/16px var(--font); padding: 0 5px; border-radius: var(--radius-xs); color: var(--fg); background: var(--hover); white-space: nowrap; }
     .vt.out { color: var(--muted); }
     .msg { display: grid; gap: 3px; }
     .msg + .msg { margin-top: 10px; }
-    .msg .author { font: 600 14px/20px var(--grot); }
+    .msg .author { font: 600 13px/20px var(--font); }
     .msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .msg.you { border-left: 3px solid var(--you); padding: 1px 0 1px 10px; }
-    .msg.agent { border-right: 3px solid var(--agent); padding: 1px 10px 1px 0; margin-left: 26px; text-align: right; }
+    .msg.you { border-left: 2px solid var(--you); padding: 1px 0 1px 10px; }
+    .msg.agent { border-right: 2px solid var(--agent); padding: 1px 10px 1px 0; margin-left: 26px; text-align: right; }
     .msg.agent .author { color: var(--agent-ink); }
     .msg.agent .body { text-align: left; }
-    .st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px dashed var(--border); font-size: 12px; color: var(--muted); }
-    .st.ag { color: var(--agent-ink); font: 600 13.5px/1.2 var(--grot); } .st small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: auto; }
-    .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px dashed var(--border); font-size: 11.5px; color: var(--muted); line-height: 1.6; }
+    .st { display: flex; align-items: center; gap: 8px; margin: 10px 0 0; padding-top: 8px; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); }
+    .st.ag { color: var(--agent-ink); font: 600 13px/1.25 var(--font); } .st small { font: 400 11.5px var(--mono); font-variant-numeric: tabular-nums; color: var(--muted); margin-left: auto; }
+    .hist { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 9px 0 0; padding: 8px 0 0; list-style: none; border-top: 1px solid var(--border); font-size: 12px; color: var(--muted); line-height: 1.6; }
     .hist .sep { margin-right: 2px; }
     .hist .ev { white-space: nowrap; }
     /* Each version's events start a line; the "·" stays in the text, read and copied. */
     .hist .br { flex-basis: 100%; height: 0; }
     .hist .nl .sep { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
     .hist .ev b { font-weight: 600; color: var(--fg); }
-    .hist .ev.agent .vt { border-color: var(--agent); color: var(--agent-ink); }
+    .hist .ev.agent .vt { background: var(--accent-tint); color: var(--agent-ink); }
     .thread-card .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 8px; }
     .reply { display: flex; gap: 6px; margin-top: 8px; }
     .reply input { flex: 1; min-width: 0; }
     /* Batch send (spec §8): the cards' boxes, the shared Send and its agent picker. */
+    .thread-card .actions button.primary, .send button.primary, button.primary.send-unsent { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    .thread-card .actions button.primary:not(:disabled):hover, .send button.primary:not(:disabled):hover, button.primary.send-unsent:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
     .thread-card header { display: flex; align-items: center; gap: 8px; }
     .thread-check { width: 18px; height: 18px; margin: 0; accent-color: var(--accent); flex: none; cursor: pointer; }
-    .thread-card:has(.thread-check:checked) { box-shadow: inset 0 0 0 1px var(--accent); }
+    .thread-card:has(.thread-check:checked) { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
     .send { display: inline-flex; position: relative; }
     .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
-    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); display: flex; flex-direction: column; padding: 4px 0; }
-    .send-menu button { justify-content: flex-start; border: 0; min-height: 32px; }
+    .send > button.primary:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .send .caret { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); display: flex; flex-direction: column; padding: 4px 0; }
+    .send-menu button { justify-content: flex-start; border: 0; border-radius: 0; min-height: 32px; }
     .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
     .send-unsent { width: 100%; margin-bottom: 4px; }
     @media (max-width: 700px) { .send-menu button, .send-unsent { min-height: 40px; } }

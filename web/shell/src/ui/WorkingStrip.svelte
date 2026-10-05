@@ -16,7 +16,7 @@
 
 <style>
   :global {
-    .strip { margin: 0 0 4px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: center; }
-    .strip.ag { box-shadow: inset 3px 0 0 var(--agent); } .strip b { font: 600 15px/1.2 var(--grot); color: var(--agent-ink); overflow-wrap: anywhere; } .strip .hk { grid-column: 2; }
+    .strip { margin: 0 0 4px; padding: 10px 12px; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; align-items: center; }
+    .strip.ag { background: var(--accent-tint); border-color: transparent; } .strip b { font: 600 14px/1.3 var(--font); color: var(--agent-ink); overflow-wrap: anywhere; } .strip .hk { grid-column: 2; }
   }
 </style>

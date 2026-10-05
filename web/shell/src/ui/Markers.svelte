@@ -15,11 +15,11 @@
 
 <style>
   :global {
-    .chip.you { background: var(--you); color: var(--on-you); }
-    .chip.new { box-shadow: inset 0 0 0 1.5px var(--agent); color: var(--agent-ink); }
+    .chip.you { background: var(--comment-hl); color: var(--you-ink); }
+    .chip.new { background: var(--accent-tint); color: var(--agent-ink); }
     .chip.new::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--agent); }
-    .chip.rep { box-shadow: inset 0 0 0 1.5px var(--border-strong); }
-    .chip.oth { box-shadow: inset 0 0 0 1.5px var(--you); }
-    .card .ft .seen { font-size: 11px; color: var(--muted); margin-left: auto; }
+    .chip.rep { background: var(--hover); color: var(--fg); }
+    .chip.oth { box-shadow: inset 0 0 0 1px var(--you); color: var(--you-ink); }
+    .card .ft .seen { font-size: 12px; color: var(--muted); margin-left: auto; }
   }
 </style>

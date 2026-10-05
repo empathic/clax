@@ -10,15 +10,18 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await openArtifact(page, d.base, artifact.id, 1, mode);
     await expect(page.locator(".topbar h1")).toHaveText(`Echo ${mode}`);
     await expect(page.locator(".topbar .by")).toHaveText("published by claude");
+    // The title is the system sans; the page asks for no font file.
     const h1Font = await page.locator(".topbar h1").evaluate(e => getComputedStyle(e).fontFamily);
-    expect(h1Font).toContain("IBM Plex Sans Condensed");
+    expect(h1Font).toMatch(/^ui-sans-serif, -apple-system/);
+    expect(await page.evaluate(() => performance.getEntriesByType("resource").filter(r => /\.(woff2?|ttf|otf)(\?|$)/.test(r.name)).length)).toBe(0);
+    expect(await page.evaluate(() => document.fonts.size)).toBe(0);
     const comment = page.getByRole("button", { name: "Comment", exact: true });
     await comment.click();
     await expect(comment).toHaveAttribute("aria-pressed", "true");
     await expect(page.locator(".topbar")).toHaveClass(/commenting/);
     // The rule is --you, the people's red-orange.
     const you = await page.evaluate(() => { const p = document.body.appendChild(document.createElement("i")); p.style.color = "var(--you)"; const c = getComputedStyle(p).color; p.remove(); return c; });
-    expect(you).toBe("rgb(237, 84, 57)");
+    expect(you).toBe("rgb(224, 83, 47)");
     expect(await page.locator(".topbar").evaluate(e => getComputedStyle(e).boxShadow)).toBe(`${you} 0px -3px 0px 0px inset`);
     await page.keyboard.press("Escape");
     await expect(page.locator(".topbar")).not.toHaveClass(/commenting/);

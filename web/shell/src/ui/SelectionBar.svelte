@@ -39,10 +39,10 @@
 <!-- Its styles travel with its own lazy chunk. -->
 <style>
   :global {
-    .selbar { position: sticky; top: 0; z-index: 5; margin: 0 -14px 8px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--raised); border-bottom: 1px solid var(--border-strong); box-shadow: 0 8px 24px var(--shadow); }
+    .selbar { position: sticky; top: 0; z-index: 5; margin: 0 -14px 8px; display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; background: var(--raised); border-bottom: 1px solid var(--border); box-shadow: var(--elev); }
     .selbar-row { display: flex; align-items: center; gap: 12px; }
     .selbar .txt { flex: 1; min-width: 0; font-size: 12px; color: var(--muted); line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .selbar .txt b { color: var(--fg); font: 600 16px/1.1 var(--grot); }
+    .selbar .txt b { color: var(--fg); font: 600 15px/1.2 var(--font); }
     .selbar-act { justify-content: flex-end; }
     .selbar .act-hint { margin: 0; }
     .converge { position: relative; width: 46px; height: 24px; flex: none; }

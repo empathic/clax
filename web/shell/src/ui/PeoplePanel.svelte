@@ -117,19 +117,19 @@
 <!-- The panel's styles travel with its lazy chunk. -->
 <style>
   :global {
-    .people { position: absolute; top: 56px; left: 16px; z-index: 20; width: 420px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0 8px; }
-    .people h3 { margin: 10px 16px 6px; font: 600 14px var(--grot); color: var(--muted); display: flex; align-items: center; gap: 8px; }
+    .people { position: absolute; top: 56px; left: 16px; z-index: 20; width: 420px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0 8px; }
+    .people h3 { margin: 10px 16px 6px; font: 600 13px var(--font); color: var(--muted); display: flex; align-items: center; gap: 8px; }
     .people h3 .sw { width: 7px; height: 14px; } .people .ph .sw { border-radius: 0 7px 7px 0; background: var(--you); } .people .ah .sw { border-radius: 7px 0 0 7px; background: var(--agent); }
     .prow { display: grid; grid-template-columns: 52px 1fr; gap: 2px 10px; padding: 7px 16px; align-items: start; }
-    .prow b { font: 600 15px/1.2 var(--grot); } .prow b small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: 6px; }
+    .prow b { font: 600 14px/1.25 var(--font); } .prow b small { font: 400 12px var(--font); color: var(--muted); margin-left: 6px; }
     .prow p { grid-column: 2; margin: 0; font-size: 12.5px; line-height: 1.45; } .prow .tok { grid-row: span 2; justify-self: start; }
     .prow .hk { grid-column: 2; }
     .prow.edit { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 10px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: 12px; color: var(--muted); }
-    @media (max-width: 700px) { .people { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; } }
+    @media (max-width: 700px) { .people { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; border-radius: 0; } }
     .people:focus { outline: none; }
     .prow p.muted { color: var(--muted); } .prow .on { color: var(--agent-ink); font-weight: 600; }
-    .prow .hk { font-size: 11.5px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
-    .prow.edit .nm { font: 600 14px var(--grot); color: var(--fg); }
+    .prow .hk { font-size: 12px; color: var(--muted); line-height: 1.5; margin-top: 2px; }
+    .prow.edit .nm { font: 600 14px var(--font); color: var(--fg); }
     .prow.edit .viewer-name { flex: 1; min-width: 140px; }
     .prow.edit .share { flex-basis: 100%; display: flex; align-items: center; gap: 6px; color: var(--fg); }
     .prow.edit button.ghost { margin-left: auto; }

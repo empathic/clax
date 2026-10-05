@@ -74,8 +74,9 @@
      artifact entry's eager CSS does not carry them. -->
 <style>
   .more { position: relative; }
-  .more-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 180px; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0; display: flex; flex-direction: column; }
-  .more-menu > a, .more-menu > button { display: block; width: 100%; padding: 8px 14px; text-align: left; font: 600 14px/1.2 var(--grot); justify-content: flex-start; min-height: 0; border: 0; }
-  .more-menu > a:hover, .more-menu > button:not([aria-disabled]):hover { background: var(--bg); }
+  .more-menu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; min-width: 180px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0; display: flex; flex-direction: column; }
+  .more-menu > a, .more-menu > button { display: block; width: 100%; padding: 8px 14px; text-align: left; font: 500 14px/1.2 var(--font); justify-content: flex-start; min-height: 0; border: 0; border-radius: 0; }
+  .more-menu > a:hover, .more-menu > button:not([aria-disabled]):hover { background: var(--hover); }
+  .more-menu > button[aria-disabled]:hover { background: none; }
   .more-menu > button[aria-disabled] { cursor: default; }
 </style>

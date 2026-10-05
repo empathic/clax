@@ -43,17 +43,17 @@
 <!-- The panel's styles travel with its lazy chunk. -->
 <style>
   :global {
-    .vmenu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 440px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 14px 40px var(--shadow); padding: 6px 0; }
+    .vmenu { position: absolute; right: 0; top: calc(100% + 8px); z-index: 20; width: 440px; max-height: 70vh; overflow: auto; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); padding: 6px 0; }
     .vmenu ol { list-style: none; margin: 0; padding: 0; }
     .vrow a { display: grid; grid-template-columns: 48px 1fr; gap: 2px 10px; padding: 9px 16px; border-bottom: 1px solid var(--border); }
     .vrow:last-child a { border-bottom: 0; }
-    .vrow a:hover, .vrow a:focus-visible { background: var(--bg); outline: none; }
-    .vrow .g { font-size: 24px; line-height: 1; grid-row: span 4; }
-    .vrow.cur a { background: var(--bg); } .vrow.cur .g { color: var(--agent-ink); }
-    .vrow .h { font: 600 14px var(--grot); } .vrow .h small { font: 400 11.5px var(--mono); color: var(--muted); margin-left: 6px; }
+    .vrow a:hover, .vrow a:focus-visible { background: var(--hover); outline: none; }
+    .vrow .g { font-size: 18px; line-height: 1.1; grid-row: span 4; font-variant-numeric: tabular-nums; }
+    .vrow.cur a { background: var(--accent-tint); } .vrow.cur .g { color: var(--agent-ink); }
+    .vrow .h { font: 600 14px var(--font); } .vrow .h small { font: 400 12px var(--font); color: var(--muted); margin-left: 6px; }
     .vrow .cl { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 12px; color: var(--muted); align-items: center; }
-    .pc i { font-style: normal; display: inline-block; width: 17px; height: 17px; border-radius: 50%; font: 600 10px/17px var(--mono); text-align: center; background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--agent); }
+    .pc i { font-style: normal; display: inline-block; width: 17px; height: 17px; border-radius: 50%; font: 600 10px/17px var(--font); text-align: center; background: var(--card); color: var(--fg); box-shadow: inset 0 0 0 1.5px var(--agent); }
     .pc.open i { box-shadow: inset 0 0 0 1.5px var(--you); }
-    @media (max-width: 700px) { .vmenu { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; } }
+    @media (max-width: 700px) { .vmenu { position: fixed; left: 0; right: 0; top: 56px; bottom: 52px; width: auto; max-height: none; box-shadow: none; border-width: 1px 0 0; border-radius: 0; } }
   }
 </style>

@@ -57,21 +57,21 @@
     .ros .side { display: flex; gap: 2px; } .ros .ppl { flex-direction: row-reverse; }
     .ros:not(:has(.tok)) { display: none; }
     .ros .hub { width: 7px; height: 7px; border-radius: 50%; background: var(--fg); margin: 0 4px; flex: none; }
-    .tok { display: inline-grid; place-items: center; height: 26px; min-width: 30px; padding: 0 6px; font: 600 12px/1 var(--grot); flex: none; position: relative; }
-    .tok.p { border-radius: 0 13px 13px 0; padding-right: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--you); color: var(--fg); }
+    .tok { display: inline-grid; place-items: center; height: 26px; min-width: 30px; padding: 0 6px; font: 600 11.5px/1 var(--font); border-radius: 13px; flex: none; position: relative; }
+    .tok.p { background: var(--comment-hl); color: var(--you-ink); }
     .tok.p.away { opacity: .5; }
-    .tok.p.here::before { content: ""; position: absolute; right: 2px; top: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--agent); box-shadow: 0 0 0 1.5px var(--card); }
+    .tok.p.here::before { content: ""; position: absolute; right: 2px; top: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--agent); box-shadow: 0 0 0 1.5px var(--comment-hl); }
     .ros.sm .tok.p.here::before, .tok.sm.p.here::before { width: 4px; height: 4px; }
-    .tok.p.me::after { content: ""; position: absolute; left: 4px; right: 8px; bottom: 3px; height: 1.5px; background: currentColor; }
-    .tok.a { border-radius: 13px 0 0 13px; padding-left: 8px; background: var(--card); box-shadow: inset 0 0 0 1.5px var(--agent); color: var(--agent-ink); }
-    .tok.a.work { background: var(--agent); color: var(--on-accent); box-shadow: none; padding-left: 13px; }
+    .tok.p.me::after { content: ""; position: absolute; left: 7px; right: 7px; bottom: 3px; height: 1.5px; background: currentColor; }
+    .tok.a { background: var(--accent-tint); color: var(--agent-ink); }
+    .tok.a.work { background: var(--agent); color: var(--on-accent); padding-left: 13px; }
     .tok.a.work::before { content: ""; position: absolute; left: 5px; top: 50%; width: 4px; height: 4px; margin-top: -2px; border-radius: 50%; background: currentColor; animation: breathe 1.8s ease-in-out infinite; }
     .tok.more { background: none; box-shadow: none; color: var(--muted); min-width: 0; padding: 0 3px; }
     .ros.sm .tok, .tok.sm { height: 20px; min-width: 24px; font-size: 11px; padding: 0 5px; }
     .ros.sm .tok.a.work { padding-left: 11px; } .ros.sm .tok.a.work::before { left: 4px; }
     @keyframes breathe { 50% { opacity: .3; } }
     @media (prefers-reduced-motion: reduce) { .tok.a.work::before { animation: none; } }
-    .chip.ag { background: var(--agent); color: var(--on-accent); }
+    .chip.ag { background: var(--accent-tint); color: var(--agent-ink); }
     .card .ft .ros { margin-right: auto; }
   }
 </style>

@@ -37,7 +37,7 @@ test("the first paint already has the theme: the system's, or the stored choice 
       o.disconnect();
     }).observe(document, { childList: true, subtree: true });
   });
-  const DARK = "rgb(26, 13, 9)", LIGHT = "rgb(251, 244, 241)";
+  const DARK = "rgb(20, 20, 19)", LIGHT = "rgb(247, 247, 245)";
   for (const [scheme, choice, want] of [["dark", null, DARK], ["light", "dark", DARK], ["dark", "light", LIGHT]] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.goto(`${d.base}/`);

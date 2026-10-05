@@ -47,13 +47,13 @@
 <!-- The sheet's styles travel with its lazy chunk (injected on mount), so
      neither entry's eager CSS carries them. -->
 <style>
-  .keys-backdrop { position: fixed; inset: 0; z-index: 40; background: rgba(26,13,9,.55); display: grid; place-items: center; padding: var(--gutter); }
-  .keys-panel { background: var(--raised); border: 1px solid var(--border-strong); box-shadow: 0 16px 40px var(--shadow); width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 18px 20px 20px; }
-  .keys-panel h2 { margin: 0 0 4px; font-size: 22px; }
+  .keys-backdrop { position: fixed; inset: 0; z-index: 40; background: var(--scrim); display: grid; place-items: center; padding: var(--gutter); }
+  .keys-panel { background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); width: min(520px, 100%); max-height: calc(100dvh - 32px); overflow: auto; padding: 18px 20px 20px; }
+  .keys-panel h2 { margin: 0 0 4px; font-size: 17px; }
   .keys-panel .sub { margin: 0 0 14px; color: var(--muted); font-size: 12px; }
   .keys-panel dl { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; margin: 0; font-size: 13px; align-items: baseline; }
   .keys-panel dt { display: flex; gap: 4px; justify-content: flex-end; }
-  .keys-panel kbd { font: 600 12px/20px var(--mono); min-width: 24px; text-align: center; border: 1px solid var(--border-strong); border-bottom-width: 2px; padding: 0 6px; background: var(--card); }
+  .keys-panel kbd { font: 500 12px/20px var(--mono); min-width: 24px; text-align: center; border: 1px solid var(--border-hover); border-bottom-width: 2px; border-radius: var(--radius-xs); padding: 0 6px; background: var(--card); }
   .keys-panel dd { margin: 0; }
   .keys-panel .foot { margin-top: 16px; display: flex; justify-content: flex-end; }
 </style>
