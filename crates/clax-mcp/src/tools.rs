@@ -416,7 +416,7 @@ fn not_found(message: impl Into<String>) -> CallToolResult {
 /// `.../a/<id>`, `.../a/<id>/v/<n>`, either followed by a page's path
 /// (`.../a/<id>/about.html`), `.../c/<id>/v/<n>/...`, and the per-artifact
 /// origin `http://<id>.localhost:<port>/v/<n>/...`.
-fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
+pub fn artifact_ref(url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
     let s = url_or_id.trim();
     let s = s.split(['?', '#']).next().unwrap_or("");
     let parse = |c: &str| ArtifactId::parse(c).ok().map(|id| id.as_str().to_string());
@@ -484,7 +484,7 @@ fn sent_comment_ids(threads: &[Value]) -> Vec<String> {
 /// the anchor's drawn `area` (null unless it is an area anchor) and its
 /// one-line `summary` (as the payload's "Anchored on" line; null for an anchor
 /// that does not parse), comments cut down to their ID, author, body, and time.
-fn thread_summary(t: &Value) -> Value {
+pub fn thread_summary(t: &Value) -> Value {
     let comments: Vec<Value> = t["comments"]
         .as_array()
         .map(Vec::as_slice)
