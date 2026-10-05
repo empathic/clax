@@ -133,6 +133,7 @@ pub async fn update(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: crate::identity::Identity,
+    sees: crate::live::SeesLive,
     p: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     req: Result<Json<UpdateBody>, JsonRejection>,
@@ -147,6 +148,9 @@ pub async fn update(
     }
     let add = topics(&b.subscribe)?;
     let remove = topics(&b.unsubscribe)?;
+    for aid in add.iter().filter_map(Topic::artifact) {
+        sees.check(&s.live_ids, aid)?;
+    }
     let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();
     let caller = s

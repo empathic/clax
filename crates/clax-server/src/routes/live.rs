@@ -36,8 +36,9 @@ const LOCAL_NAMES: [&str; 3] = ["localhost", "127.0.0.1", "[::1]"];
 
 /// `raw` split into its live-page key and route (spec §7), refusing the
 /// daemon's own pages with `own_origin`: a URL on the daemon's port whose
-/// host is a local name (`localhost`, `127.0.0.1`, `[::1]`, any
-/// `*.localhost`) or the host the daemon is reached at.
+/// host is a local name (`localhost`, any `*.localhost`), a loopback or
+/// unspecified IP address (`127.0.0.0/8`, `::1`, `0.0.0.0`, `::`), or the
+/// host the daemon is reached at.
 ///
 /// # Errors
 /// `parse_page_url`'s, and `own_origin`.
@@ -50,8 +51,17 @@ pub(crate) fn page_url(s: &AppState, raw: &str) -> Result<PageUrl, ApiError> {
         .into_iter()
         .filter_map(|b| url::Url::parse(b).ok())
         .collect();
+    let ip = match origin.host() {
+        Some(url::Host::Ipv4(a)) => Some(std::net::IpAddr::V4(a)),
+        Some(url::Host::Ipv6(a)) => Some(std::net::IpAddr::V6(a)),
+        _ => None,
+    };
     let ours = LOCAL_NAMES.contains(&host)
         || host.ends_with(".localhost")
+        || ip.is_some_and(|ip| {
+            let ip = ip.to_canonical();
+            ip.is_loopback() || ip.is_unspecified()
+        })
         || own.iter().any(|u| u.host_str() == Some(host));
     let on_our_port = own
         .iter()
@@ -230,8 +240,7 @@ pub async fn thread(
     let key = pu.key;
     let (view, page, artifact, version) = s
         .store_call(move |st| {
-            let e = st.ensure_live_page(&key, &title, Some(&snapshot))?;
-            live_ids.insert(&e.artifact.id);
+            let e = live_ids.ensure_page(st, &key, &title, Some(&snapshot))?;
             let id = ArtifactId::parse(&e.artifact.id)?;
             if e.new_version {
                 events.publish(Event::Version {

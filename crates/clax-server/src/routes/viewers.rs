@@ -182,10 +182,12 @@ pub async fn seen(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    sees: crate::live::SeesLive,
     q: Result<Query<SeenQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let id = parse_id(&q.artifact)?;
+    sees.check(&s.live_ids, id.as_str())?;
     let n = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
@@ -211,10 +213,12 @@ pub async fn set_seen(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    sees: crate::live::SeesLive,
     req: Result<Json<SeenBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
+    sees.check(&s.live_ids, id.as_str())?;
     if !who.is_owner() && who.cookie.is_none() {
         return Err(ApiError::bad_request(
             "no_viewer",
@@ -247,17 +251,24 @@ pub struct AttentionQuery {
 
 /// `GET /api/viewers/me/attention`: this viewer's attention on every live
 /// artifact, without looked-at times; `{artifacts: {}}` without a cookie.
+/// Live pages are left out for a request that may not see them (and a
+/// `?artifact=` naming one is 404), as on every viewer route here.
 /// With `?artifact=<aid>`, on that artifact alone: `{artifacts: {<aid>:
 /// ...}}`, or `{artifacts: {}}` when it is not live (400 for a malformed ID).
 pub async fn attention(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    sees: crate::live::SeesLive,
     q: Result<Query<AttentionQuery>, QueryRejection>,
 ) -> Result<Response, ApiError> {
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let one = q.artifact.as_deref().map(parse_id).transpose()?;
-    let out = s
+    if let Some(id) = &one {
+        sees.check(&s.live_ids, id.as_str())?;
+    }
+    let hidden = (!sees.0).then(|| s.live_ids.clone());
+    let mut out = s
         .store_call(move |st| {
             Ok(match (who.viewer(st)?, one) {
                 (None, _) => json!({}),
@@ -269,6 +280,9 @@ pub async fn attention(
             })
         })
         .await?;
+    if let (Some(live), Some(map)) = (hidden, out.as_object_mut()) {
+        map.retain(|aid, _| !live.contains(aid));
+    }
     Ok((
         [
             (header::CACHE_CONTROL, "private, no-cache"),
@@ -286,10 +300,12 @@ pub async fn set_looked(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    sees: crate::live::SeesLive,
     req: Result<Json<LookedBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
+    sees.check(&s.live_ids, id.as_str())?;
     let max = clax_core::store::attention::MAX_LOOKED;
     if b.thread_ids.is_empty()
         || b.thread_ids.len() > max
@@ -342,11 +358,13 @@ pub async fn set_presence(
     State(s): State<AppState>,
     _o: SameOrigin,
     who: Identity,
+    sees: crate::live::SeesLive,
     req: Result<Json<PresenceBody>, JsonRejection>,
 ) -> Result<Json<Value>, ApiError> {
     use clax_core::presence::State as P;
     let b = body(req)?;
     let id = parse_id(&b.artifact_id)?;
+    sees.check(&s.live_ids, id.as_str())?;
     let v = s
         .store_call(move |st| {
             st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;

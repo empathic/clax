@@ -55,34 +55,54 @@ fn content_policy(origin: &Option<Extension<OnArtifactOrigin>>, req: &HeaderMap)
     .unwrap_or_else(|_| HeaderValue::from_static("frame-ancestors 'self'"))
 }
 
+/// The host and port in the daemon's browser base URL.
+fn own_host(s: &AppState) -> String {
+    s.browser_base
+        .strip_prefix("http://")
+        .unwrap_or(&s.browser_base)
+        .trim_end_matches('/')
+        .to_string()
+}
+
 /// The second policy on a live page's content (spec
 /// 2026-10-05-chrome-overlay-design §8.4): of scripts, only Clax's own under
 /// `/_clax/` on the request's host run, whatever the snapshot holds; no
-/// plugins, base URL, form posts, frames, connections or workers.
-fn snapshot_policy(req: &HeaderMap) -> HeaderValue {
+/// plugins, base URL, form posts, frames, connections or workers. A `Host`
+/// that is not a plain host and port (letters, digits, `.`, `-`, `:`, `[`,
+/// `]`) is not trusted: `fallback` (the daemon's own host) is used instead.
+fn snapshot_policy(req: &HeaderMap, fallback: &str) -> HeaderValue {
+    let plain = |h: &str| {
+        !h.is_empty()
+            && h.bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b".-:[]".contains(&b))
+    };
     let host = req
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .unwrap_or("localhost");
+        .filter(|h| plain(h))
+        .unwrap_or(fallback);
     HeaderValue::from_str(&format!(
         "script-src http://{host}/_clax/; object-src 'none'; base-uri 'none'; form-action 'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'"
     ))
     .unwrap_or_else(|_| HeaderValue::from_static("script-src 'none'"))
 }
 
-/// Sets the content policy on `res`, and for a live page's content (`live`)
-/// appends [`snapshot_policy`]: both apply.
+/// Sets the content policy on `res`, and for a live page's content (`live`:
+/// the daemon's host, the policy's fallback) appends [`snapshot_policy`]:
+/// both apply.
 fn framed_by_shell(
     mut res: Response,
     origin: &Option<Extension<OnArtifactOrigin>>,
     req: &HeaderMap,
-    live: bool,
+    live: Option<&str>,
 ) -> Response {
     res.headers_mut()
         .insert(header::CONTENT_SECURITY_POLICY, content_policy(origin, req));
-    if live {
-        res.headers_mut()
-            .append(header::CONTENT_SECURITY_POLICY, snapshot_policy(req));
+    if let Some(fallback) = live {
+        res.headers_mut().append(
+            header::CONTENT_SECURITY_POLICY,
+            snapshot_policy(req, fallback),
+        );
     }
     res
 }
@@ -103,7 +123,8 @@ pub async fn index(
 ) -> Result<Response, ApiError> {
     let (aid, n) = path(p)?;
     let id = parse_id(&aid)?;
-    let live = s.live_ids.contains(id.as_str());
+    let own = own_host(&s);
+    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
     match lookup(&s, id, n, INDEX.to_string(), true).await? {
         Served::Page(html) => Ok(framed_by_shell(
             http_cache::html(&req, &html),
@@ -190,7 +211,8 @@ pub async fn file(
         return Ok(Redirect::permanent("./").into_response());
     }
     let tag_source = format!("{aid}/{n}/{rel}");
-    let live = s.live_ids.contains(id.as_str());
+    let own = own_host(&s);
+    let live = s.live_ids.contains(id.as_str()).then_some(own.as_str());
     let (disk, meta) = match lookup(&s, id, n, rel, false).await? {
         Served::Page(html) => {
             return Ok(framed_by_shell(
@@ -270,4 +292,45 @@ pub async fn raw_file(
         body,
     )
         .into_response())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_snapshot_policy_names_a_plain_host_and_never_a_crafted_one() {
+        let mut h = HeaderMap::new();
+        h.insert(header::HOST, HeaderValue::from_static("127.0.0.1:7480"));
+        let p = snapshot_policy(&h, "localhost:7480");
+        assert!(
+            p.to_str()
+                .unwrap()
+                .starts_with("script-src http://127.0.0.1:7480/_clax/;")
+        );
+        h.insert(
+            header::HOST,
+            HeaderValue::from_static("a 'unsafe-inline' b"),
+        );
+        let p = snapshot_policy(&h, "localhost:7480");
+        let p = p.to_str().unwrap();
+        assert!(
+            p.starts_with("script-src http://localhost:7480/_clax/;"),
+            "{p}"
+        );
+        assert!(!p.contains("unsafe-inline"));
+        h.insert(header::HOST, HeaderValue::from_static("x;script-src *"));
+        assert!(
+            !snapshot_policy(&h, "localhost:7480")
+                .to_str()
+                .unwrap()
+                .contains('*')
+        );
+        assert!(
+            snapshot_policy(&HeaderMap::new(), "localhost:7480")
+                .to_str()
+                .unwrap()
+                .contains("http://localhost:7480/_clax/")
+        );
+    }
 }

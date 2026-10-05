@@ -510,11 +510,12 @@ async fn a_deleted_live_page_is_made_afresh_by_the_next_comment() {
     assert_ne!(body["page"]["artifact_id"], aid.as_str());
 }
 
-/// The next SSE event block of `stream` (not `ready`, not a comment) as
-/// (name, data), within 20 s.
-async fn next_event(
+/// The next SSE event of `stream` other than keep-alive comments, as
+/// (name, data), within 20 s; `ready` too when `with_ready`.
+async fn next_block(
     stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
     buf: &mut String,
+    with_ready: bool,
 ) -> (String, Value) {
     use futures::StreamExt;
     loop {
@@ -526,7 +527,7 @@ async fn next_event(
                 .find_map(|l| l.strip_prefix("event: "))
                 .unwrap_or("message")
                 .to_string();
-            if block.starts_with(':') || name == "ready" {
+            if block.starts_with(':') || (name == "ready" && !with_ready) {
                 continue;
             }
             let data = block
@@ -542,6 +543,14 @@ async fn next_event(
             .unwrap();
         buf.push_str(std::str::from_utf8(&chunk).unwrap());
     }
+}
+
+/// The next SSE event of `stream` other than `ready` and comments.
+async fn next_event(
+    stream: &mut (impl futures::Stream<Item = reqwest::Result<bytes::Bytes>> + Unpin),
+    buf: &mut String,
+) -> (String, Value) {
+    next_block(stream, buf, false).await
 }
 
 #[tokio::test]
@@ -588,5 +597,208 @@ async fn the_event_stream_carries_no_live_page_event_to_the_lan() {
     assert_eq!(
         data["artifact_id"], aid,
         "this machine sees the live page's events"
+    );
+}
+
+/// `aid` with its first character percent-encoded, as a path segment.
+fn encoded(aid: &str) -> String {
+    format!("%{:02X}{}", aid.as_bytes()[0], &aid[1..])
+}
+
+#[tokio::test]
+async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let Some(lan) = lan_base(&ts) else {
+        eprintln!("no LAN address; skipped");
+        return;
+    };
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    let tid = body["thread"]["id"].as_str().unwrap();
+    let enc = encoded(aid);
+    let get = |path: String| {
+        let req = ts.client.get(format!("{lan}{path}"));
+        async move { req.send().await.unwrap().status() }
+    };
+    // Percent-encoded IDs, and the clip.
+    for path in [
+        format!("/api/artifacts/{enc}"),
+        format!("/api/artifacts/{enc}/threads"),
+        format!("/api/artifacts/{enc}/versions"),
+        format!("/api/artifacts/{enc}/threads/{tid}/clip"),
+        format!("/api/artifacts/{aid}/threads/{tid}/clip"),
+        format!("/c/{enc}/v/1/"),
+        format!("/c/{enc}/v/1/index.html"),
+        format!("/a/{enc}"),
+    ] {
+        assert_eq!(get(path.clone()).await, 404, "{path}");
+    }
+    // The same forms answer on this machine, so the 404s above are the hiding.
+    for path in [
+        format!("/api/artifacts/{enc}"),
+        format!("/api/artifacts/{aid}/threads/{tid}/clip"),
+    ] {
+        assert_eq!(ts.get(&path).await.status(), 200, "{path}");
+    }
+    // `?artifact=` of the list.
+    let list: Value = ts
+        .client
+        .get(format!("{lan}/api/artifacts?artifact={aid}"))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["artifacts"], json!([]));
+    // The artifact host, sent to the LAN address.
+    let st = ts
+        .client
+        .get(format!("{lan}/v/1/"))
+        .header("host", format!("{aid}.localhost:{}", ts.addr.port()))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 404);
+    // A stream opened from the LAN cannot subscribe to the page's topics.
+    let res = ts
+        .client
+        .get(format!("{lan}/api/stream"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let mut stream = Box::pin(res.bytes_stream());
+    let mut buf = String::new();
+    let (name, ready) = next_block(&mut stream, &mut buf, true).await;
+    assert_eq!(name, "ready");
+    let sid = ready["stream"].as_str().unwrap();
+    for topic in ["artifact", "working", "presence", "docs"] {
+        let res = ts
+            .client
+            .post(format!("{lan}/api/stream/{sid}"))
+            .json(&json!({"subscribe": [format!("{topic}:{aid}")]}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404, "{topic}");
+    }
+}
+
+#[tokio::test]
+async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
+    let Some(lan) = lan_base(&ts) else {
+        eprintln!("no LAN address; skipped");
+        return;
+    };
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    let tid = body["thread"]["id"].as_str().unwrap();
+    let html = ts.publish("T", &[("index.html", "<p>")]).await;
+    let html_id = html["artifact"]["id"].as_str().unwrap();
+    ts.thread_as(html_id, &v.cookie, "on the html page").await;
+    let cookie = format!("clax_viewer={}", v.cookie);
+    // On this machine, the viewer's attention names both.
+    let near: Value = ts
+        .client
+        .get(format!("{}/api/viewers/me/attention", ts.base))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(near["artifacts"].get(aid).is_some(), "{near}");
+    let far: Value = ts
+        .client
+        .get(format!("{lan}/api/viewers/me/attention"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert!(far["artifacts"].get(aid).is_none(), "{far}");
+    assert!(far["artifacts"].get(html_id).is_some(), "{far}");
+    let res = ts
+        .client
+        .get(format!("{lan}/api/viewers/me/attention?artifact={aid}"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    let res = ts
+        .client
+        .get(format!("{lan}/api/viewers/me/seen?artifact={aid}"))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 404);
+    for (path, body) in [
+        (
+            "/api/viewers/me/seen",
+            json!({"artifact_id": aid, "version": 1}),
+        ),
+        (
+            "/api/viewers/me/looked",
+            json!({"artifact_id": aid, "thread_ids": [tid]}),
+        ),
+        (
+            "/api/viewers/me/presence",
+            json!({"artifact_id": aid, "state": "here"}),
+        ),
+    ] {
+        let res = ts
+            .client
+            .put(format!("{lan}{path}"))
+            .header("cookie", &cookie)
+            .json(&body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 404, "{path}");
+    }
+}
+
+#[tokio::test]
+async fn loopback_and_unspecified_addresses_on_the_daemons_port_are_its_own() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let port = ts.addr.port();
+    for own in [
+        format!("http://127.0.0.2:{port}/"),
+        format!("http://127.1.2.3:{port}/x"),
+        format!("http://0.0.0.0:{port}/"),
+        format!("http://[0:0:0:0:0:0:0:1]:{port}/"),
+        format!("http://[::]:{port}/"),
+    ] {
+        let res = post_thread(&ts, &v.cookie, &own, "<p>").await;
+        assert_eq!(res.status(), 400, "{own}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "own_origin",
+            "{own}"
+        );
+    }
+    let other = format!("http://127.0.0.2:{}/", port.wrapping_add(1));
+    assert_eq!(
+        post_thread(&ts, &v.cookie, &other, "<p>").await.status(),
+        201
     );
 }

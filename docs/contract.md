@@ -1792,8 +1792,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   any other fragment is dropped, and the route is cut to 512 bytes at a
   character boundary. `http://LOCALHOST:5173/settings?tab=billing&utm_source=x#top`
   is origin `http://localhost:5173`, path `/settings`, route `?tab=billing`.
-  A URL on the daemon's own port whose host is `localhost`, `127.0.0.1`,
-  `[::1]`, any `*.localhost`, or the host the daemon is reached at is
+  A URL on the daemon's own port whose host is `localhost`, any
+  `*.localhost`, a loopback or unspecified IP address (`127.0.0.0/8`,
+  `[::1]`, `0.0.0.0`, `[::]`), or the host the daemon is reached at is
   refused with 400 `own_origin`: Clax's own pages have their own comment
   mode.
 - **`GET /api/live/pages?url=<page URL>`** answers `{page, route}`: the live
@@ -1825,13 +1826,18 @@ versions is a snapshot of the page, taken when a comment is posted.
   policy, a second `Content-Security-Policy`: `script-src
   http://<Host>/_clax/; object-src 'none'; base-uri 'none'; form-action
   'none'; frame-src 'none'; connect-src 'none'; worker-src 'none'`, where
-  `<Host>` is the request's `Host`. Both apply, so only the bridge runs,
+  `<Host>` is the request's `Host` (the daemon's own host when that is not
+  a plain host and port). Both apply, so only the bridge runs,
   whatever the snapshot holds; styles, images and fonts load from anywhere.
 - **This machine only.** Live pages are visible only to a request from a
   loopback peer or one carrying the token: for anyone else (a LAN viewer)
   they are left out of `GET /api/artifacts`, and every path naming one
-  (`/api/artifacts/<id>...`, `/c/<id>/...`, `/a/<id>...`) answers 404
-  `not_found`, as for a missing artifact. On `/api/stream`, a stream opened
+  (`/api/artifacts/<id>...`, `/c/<id>/...`, `/a/<id>...`, with the ID
+  percent-encoded or not) answers 404 `not_found`, as for a missing
+  artifact; so do `/api/live/...` and the viewer routes that name an
+  artifact in a query or body (`/api/viewers/me/seen`, `.../looked`,
+  `.../presence`, `.../attention?artifact=`), and
+  `/api/viewers/me/attention` leaves live pages out. On `/api/stream`, a stream opened
   by such a request receives no `gallery` event of a live page, and
   subscribing it to a live page's `artifact:`, `working:`, `presence:` or
   `docs:` topic answers 404 `not_found`.
