@@ -98,6 +98,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/artifacts/{aid}/assets/{asset_id}",
             delete(assets::delete),
         )
+        .route("/api/threads", get(threads::list_all))
+        .route("/api/working", get(working::roster))
         .route("/api/artifacts/{aid}/threads", get(threads::list))
         .route(
             "/api/artifacts/{aid}/threads/{tid}",

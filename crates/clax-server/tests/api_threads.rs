@@ -1328,3 +1328,57 @@ async fn page_written_comments_are_marked_and_their_mentions_send_nothing() {
         "{text}"
     );
 }
+
+#[tokio::test]
+async fn every_thread_of_every_artifact_needs_the_token() {
+    let ts = TestServer::spawn().await;
+    let (_, aid) = setup(&ts).await;
+    let other = ts.publish("Empty", &[("index.html", "<p>none</p>")]).await;
+    let other = other["artifact"]["id"].as_str().unwrap().to_string();
+    let first = ts.thread(&aid, 1, "first").await;
+    let res = ts.create_thread(&aid, 1, "second", Some(FAKE_PNG)).await;
+    assert_eq!(res.status(), 201);
+    let second: Value = res.json().await.unwrap();
+    let second = second["thread"].clone();
+    ts.client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{}/resolve",
+            ts.base,
+            first["id"].as_str().unwrap()
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ts.get("/api/threads").await.status(), 401);
+
+    let open: Value = ts.get_authed("/api/threads").await.json().await.unwrap();
+    let groups = open["artifacts"].as_array().unwrap();
+    assert_eq!(
+        groups.len(),
+        1,
+        "an artifact without threads is left out: {open}"
+    );
+    let g = &groups[0];
+    assert_eq!(g["artifact_id"], aid.as_str());
+    assert_eq!(g["title"], "Quarterly Review");
+    assert_eq!(g["current_version"], 1);
+    assert_eq!(g["files"], json!(["index.html"]));
+    assert_eq!(g["threads"].as_array().unwrap().len(), 1);
+    assert_eq!(g["threads"][0]["id"], second["id"]);
+    assert!(
+        g["threads"][0]["clip_path"].as_str().is_some(),
+        "the token reads clip paths"
+    );
+    assert!(!open.to_string().contains(&other));
+
+    let all: Value = ts
+        .get_authed("/api/threads?include_resolved=true")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let threads = all["artifacts"][0]["threads"].as_array().unwrap();
+    assert_eq!(threads.len(), 2);
+    assert_eq!(threads[0]["id"], first["id"], "oldest first");
+    assert_eq!(threads[0]["status"], "resolved");
+}

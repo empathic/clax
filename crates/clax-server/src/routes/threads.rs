@@ -3,7 +3,7 @@
 
 use super::artifacts::{body, parse_id, path, publishing_session, session_header};
 use super::assets::multipart_error;
-use crate::auth::has_token;
+use crate::auth::{RequireToken, has_token};
 use crate::error::ApiError;
 use crate::feedback::{apply, thread_view, thread_views};
 use crate::state::AppState;
@@ -119,6 +119,62 @@ pub async fn list(
         })
         .await?;
     Ok(Json(json!({"threads": threads, "next_cursor": next})))
+}
+
+#[derive(Deserialize)]
+pub struct AllQuery {
+    #[serde(default)]
+    include_resolved: bool,
+}
+
+/// `GET /api/threads[?include_resolved=true]` (token): every thread of every
+/// live artifact, as `{artifacts: [{artifact_id, title, current_version,
+/// files, threads}]}`. `files` names the current version's files; each
+/// artifact's `threads` are thread views with `clip_path`, oldest first, and
+/// an artifact with none is left out. Artifacts come in the order of
+/// `GET /api/artifacts`.
+pub async fn list_all(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    q: Result<Query<AllQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let codex = s.feedback_ctx().codex_push();
+    let artifacts = s
+        .store_call(move |st| {
+            let mut out = Vec::new();
+            for a in st.list_artifacts()? {
+                let id = ArtifactId::parse(&a.id)?;
+                let mut threads = Vec::new();
+                let mut cursor: Option<String> = None;
+                loop {
+                    let (page, next) =
+                        st.list_threads(&id, q.include_resolved, cursor.as_deref(), 200)?;
+                    threads.extend(page);
+                    match next {
+                        Some(n) => cursor = Some(n),
+                        None => break,
+                    }
+                }
+                if threads.is_empty() {
+                    continue;
+                }
+                let files: Vec<String> = st
+                    .get_version(&id, a.current_version)?
+                    .map(|v| v.files.into_keys().collect())
+                    .unwrap_or_default();
+                out.push(json!({
+                    "artifact_id": a.id,
+                    "title": a.title,
+                    "current_version": a.current_version,
+                    "files": files,
+                    "threads": thread_views(st, &threads, codex, true)?,
+                }));
+            }
+            Ok(out)
+        })
+        .await?;
+    Ok(Json(json!({"artifacts": artifacts})))
 }
 
 pub async fn get(

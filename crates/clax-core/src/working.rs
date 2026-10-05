@@ -413,6 +413,20 @@ impl Working {
             .unwrap_or_default()
     }
 
+    /// Every live record with its session and artifact (the working roster),
+    /// newest `started_at` first.
+    pub fn roster(&self) -> Vec<SessionWorking> {
+        let now = self.now();
+        let map = self.records.lock().unwrap();
+        let mut v: Vec<_> = map
+            .iter()
+            .filter(|(_, r)| self.live(r, now))
+            .map(|((s, a), r)| (r.started_at, Self::session_view(s, a, r)))
+            .collect();
+        v.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.view.key.cmp(&a.1.view.key)));
+        v.into_iter().map(|(_, x)| x).collect()
+    }
+
     /// Every artifact with live records, and its list ([`Working::for_artifact`] order).
     pub fn all(&self) -> BTreeMap<String, Vec<WorkingView>> {
         let aids: BTreeSet<String> = self
@@ -467,6 +481,33 @@ mod tests {
         assert_eq!(v[0].key, key);
         assert_eq!(v[0].harness, "claude");
         assert_eq!(v[0].message, None);
+    }
+
+    #[test]
+    fn the_roster_names_sessions_and_artifacts_newest_first_and_drops_lapsed() {
+        let (c, w) = fixture();
+        w.mark(&claude("s1"), "a1", &ids(&["t1"]));
+        c.advance(100);
+        w.mark(&claude("s2"), "a2", &ids(&["t2"]));
+        let r = w.roster();
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            (r[0].session_id.as_str(), r[0].artifact_id.as_str()),
+            ("s2", "a2")
+        );
+        assert_eq!(
+            (r[1].session_id.as_str(), r[1].artifact_id.as_str()),
+            ("s1", "a1")
+        );
+        assert_eq!(r[1].view.thread_ids, ids(&["t1"]));
+        c.advance(30);
+        let r = w.roster();
+        assert_eq!(
+            r.len(),
+            1,
+            "s1's record lapsed 120 s after its last renewal"
+        );
+        assert_eq!(r[0].session_id, "s2");
     }
 
     #[test]
