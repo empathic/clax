@@ -291,3 +291,29 @@ async fn a_types_filter_drops_other_events() {
     assert_eq!(name, "working");
     assert_eq!(data["artifact_id"], aid.as_str());
 }
+
+#[tokio::test]
+async fn the_roster_names_every_live_record_with_its_session_for_the_token_only() {
+    let (ts, clock) = server().await;
+    let (sid, aid, tid) = setup(&ts).await;
+    put(
+        &ts,
+        &sid,
+        &aid,
+        json!({"thread_ids": [tid], "message": "Fixing"}),
+    )
+    .await;
+    assert_eq!(ts.get("/api/working").await.status(), 401);
+    let v: Value = ts.get_authed("/api/working").await.json().await.unwrap();
+    let r = v["working"].as_array().unwrap();
+    assert_eq!(r.len(), 1, "{v}");
+    assert_eq!(r[0]["session_id"], sid.as_str());
+    assert_eq!(r[0]["artifact_id"], aid.as_str());
+    assert_eq!(r[0]["harness"], "claude");
+    assert_eq!(r[0]["message"], "Fixing");
+    assert_eq!(r[0]["thread_ids"], json!([tid]));
+    assert!(r[0]["started_at"].is_string() && r[0]["expires_at"].is_string());
+    clock.advance(121);
+    let v: Value = ts.get_authed("/api/working").await.json().await.unwrap();
+    assert_eq!(v["working"], json!([]), "a lapsed record leaves the roster");
+}

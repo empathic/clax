@@ -171,6 +171,12 @@ pub async fn for_session(
     Ok(Json(json!({"working": list})))
 }
 
+/// `GET /api/working` (token): `{working}`, every live record with its
+/// session and artifact (the working roster), newest `started_at` first.
+pub async fn roster(State(s): State<AppState>, _t: RequireToken) -> Json<Value> {
+    Json(json!({"working": s.working.roster()}))
+}
+
 /// `GET /api/artifacts/<aid>/working` (no token): `{working}`, never naming a session.
 pub async fn for_artifact(
     State(s): State<AppState>,
