@@ -828,6 +828,28 @@ impl Client {
         )
         .map(|_| ())
     }
+    /// A request carrying what the owner's browser sends: the bearer token
+    /// and the `clax_viewer` cookie `viewer`, with `body` as JSON when given.
+    pub fn as_viewer(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        viewer: &str,
+        body: Option<&serde_json::Value>,
+    ) -> anyhow::Result<serde_json::Value> {
+        let mut req = self
+            .http
+            .request(method, format!("{}{path}", self.base))
+            .bearer_auth(&self.token)
+            .header(
+                reqwest::header::COOKIE,
+                format!("{}={viewer}", clax_server::viewer::COOKIE),
+            );
+        if let Some(b) = body {
+            req = req.json(b);
+        }
+        Self::check(req.send()?)
+    }
     pub fn shutdown(&self) -> anyhow::Result<()> {
         self.post("/api/admin/shutdown", &serde_json::json!({}))
             .map(|_| ())

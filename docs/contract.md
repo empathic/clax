@@ -52,12 +52,14 @@ Names as the model sees them:
 
 The command line covers the same operations for scripts and harnesses
 without MCP: `clax publish`, `read`, `list`, `open`, `delete`, `pin`,
-`unpin`, `asset upload` and `status`, each with `--json` for one JSON object
-on stdout. `clax read <ID|URL> [--version N] [--path P] [--max-bytes N]`
-and `clax asset upload <ID|URL> <file>...` run the `read` and
-`asset_upload` tools, and with `--json` print exactly the tool's result object
-(including `feedback`) on one line; a tool error exits 1 with
-`error: <code>: <message>` on stderr. Without `--json`, `read` writes the
+`unpin`, `asset upload`, `db` and `status`, each with `--json` for one JSON
+object on stdout. `clax read <ID|URL> [--version N] [--path P] [--max-bytes N]`,
+`clax asset upload <ID|URL> <file>...` and the `clax db` commands run the
+`read`, `asset_upload` and `db_*` tools, and with `--json` print exactly the
+tool's result object (including `feedback`) on one line; a tool error exits 1 with
+`error: <code>: <message>` on stderr. `clax comments`, `clax versions` and
+the working roster in `clax status` are described under "Comments, versions
+and the database from the command line". Without `--json`, `read` writes the
 file's content (no trailing newline added) and `asset upload` prints one asset
 URL per line. The other commands' JSON is their own shape, not the tool
 result shape below. `clax publish` takes a new artifact's title from
@@ -2462,6 +2464,95 @@ harness and the daemon, each `ok` or failed with the fix:
 - `claude_copy` (Grok only, never failed): whether the Claude Code plugin
   has stood down in a Grok session (its `standdown` lines in `hooks.log`),
   with `grok plugin disable clax` to remove its idle server.
+
+### Comments, versions and the database from the command line
+
+Readable output is coloured only when stdout is a terminal and `NO_COLOR`
+is unset or empty. Comment text, quotes, author names, agent messages and
+document content are printed with every control character other than a
+line break shown escaped (`\x1b`, `\u{9b}`), bidirectional formatting
+characters (U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and the
+line and paragraph separators included, so they cannot move the cursor,
+recolour, retitle or reorder the terminal. `--json` output is unchanged
+JSON.
+
+**Thread numbers and references.** Each artifact's threads are numbered
+`#1` upward in the order they were created, resolved threads included, so a
+number stays put when a thread is resolved or reopened and shifts only when
+an older thread is deleted. These are not the page's pin numbers, which
+count the open threads found on the page shown. A thread is named
+`<artifact>#<n>` (the artifact by ID or any URL `clax open` accepts), by its
+thread ID alone (a ULID, unique across artifacts), or `<artifact>#<thread
+ID>`. An artifact URL whose `#` fragment is neither is the artifact.
+
+- `clax comments [<artifact>] [--all]` lists open threads (with `--all`,
+  resolved ones too), grouped by artifact under its title, ID and URL. Every
+  artifact with any such thread is listed, or only the one named. Groups and
+  threads within them come newest activity first (a thread's activity is its
+  newest comment, its resolve, or its creation). Each thread shows its number,
+  its anchor summary, how long ago it was active, its latest comment (author
+  and text, cut to 100 characters), whether it is resolved, whether it is
+  detached, whether it was sent to the agent and its delivery, and each agent
+  working on it now with its message and for how long. Detached means its
+  anchor's page is not in the current version; whether an anchor's element is
+  still found takes the page, which only the browser has. `--json` prints,
+  for one artifact, the `comments_read` result shape for it (`artifact_id`,
+  `url`, `threads`, `next_cursor` (always null), `note`) plus `title`; with
+  no artifact, `{artifacts: [that shape without note], note}`. Each thread
+  is `comments_read`'s thread object plus `ref` (`<artifact ID>#<n>`), `n`,
+  `detached`, `created_at`, `last_activity_at`, `resolved_at`,
+  `resolved_by`, `resolved_by_name`, `addressed_in`, `sends` and `working`
+  (`[{agent, harness, session_id, message, started_at}]`).
+- `clax comments <thread>` (or `clax comments show <thread>`) prints the
+  whole thread: its reference and thread ID, state, anchor, full quote, clip
+  path, the version it was left on and the versions that addressed it, its
+  feedback state and batch sends, its resolution, the agents working on it,
+  and every comment with its author (agents marked `(agent)`) and age.
+  `--json` prints the one-artifact shape with that one thread.
+- `clax comments reply <thread> <text>` (`-` reads the text from stdin),
+  `resolve <thread>`, `reopen <thread>` and `send <thread> [--to <agent
+  handle>]` act as the owner does in the browser: they call the routes the
+  shell calls, with what the owner's shell sends, the token and a viewer
+  cookie. The CLI's viewer is its own, its cookie kept in
+  `<home>/cli_viewer` (mode 0600) and its viewer row created on first use;
+  replies are viewer comments authored with its display name (`Viewer` while
+  it has none, with a hint on stderr), and resolves record
+  `viewer:<its public ID>`. `clax comments name [<name>]` shows or sets that
+  name (empty clears it). A reply on a sent thread, or one mentioning
+  `@agent`, goes on to the agent as in the browser. `send` without `--to`
+  sends to the agent the page would pick when nothing was picked before: the
+  most recently active live agent on the artifact; with none live it sends
+  without `to`, and the thread waits for the next agent that publishes or
+  watches the artifact. Errors are the routes': `thread_resolved` for a
+  resolved thread, `unknown_agent` for a `--to` naming no live agent.
+  `--json`: reply `{thread_id, ref, replied, comment_id, author_name,
+  sent_to_agent}`; resolve `{thread_id, ref, resolved, status}`; reopen
+  `{thread_id, ref, reopened, status}`; send `{thread_id, ref, sent, to,
+  harness, feedback_state}`; name `{display_name, public_id}`.
+- `clax versions <artifact>` lists each version newest first: number,
+  label, publisher (an agent's harness and handle, or the command line),
+  age, change note, and the threads it addressed by number. `--json`:
+  `{artifact_id, url, title, current_version, versions: [{n, label, note,
+  created_at, publisher: {agent, harness} | null, files, addressed:
+  [{thread_id, ref}]}]}` (`ref` null for a thread since deleted).
+- `clax db get|list|query|set|update|delete|str-replace|batch` run the
+  `db_*` tools with the token and no viewer, so at caller level `owner`;
+  `--as-level view|interact|admin` narrows it as the tools' `as_level` does,
+  and `--if-version N` is their `if_version`. `set` and `update` take the
+  document as a JSON object argument (`-` reads stdin) or `--file <path>`;
+  `query` takes `--where '<JSON triple>'` (repeatable), `--order-by
+  <field>` and `--desc`; `list` and `query` take `--limit` and `--cursor`;
+  `batch` takes the `writes` array as JSON (`-` reads stdin), relative
+  `file_path`s resolving against the working directory. Readable output
+  prints the document (`get`), one line per document (`list`, `query`), or
+  what was written and its new version.
+- `clax status` also lists the working roster: every agent working on an
+  artifact now, newest first, with its harness and handle, the artifact's
+  title and ID, the threads it named (by number), its message, how long it
+  has been working, and its session ID. `--json` adds `working: [{agent,
+  harness, session_id, artifact_id, title, url, thread_ids, threads,
+  message, started_at, for_s}]` (`threads` holds each thread's
+  `<artifact>#<n>`, null for one not found).
 
 ### Other commands and scripts
 

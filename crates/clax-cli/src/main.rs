@@ -6,6 +6,7 @@ mod hooklog;
 mod host;
 mod plugin_bin;
 mod plugins;
+mod term;
 
 use clap::error::ErrorKind;
 use clap::{Parser, Subcommand};
@@ -34,7 +35,7 @@ pub enum Cmd {
     Serve(commands::serve::Args),
     /// Stop the running daemon.
     Stop,
-    /// Show whether a daemon is running.
+    /// Show whether a daemon is running, and which agents are working on what.
     Status(commands::status::Args),
     /// Publish a page (and files) as a new artifact or a new version.
     Publish(Box<commands::publish::Args>),
@@ -45,6 +46,27 @@ pub enum Cmd {
     /// Manage an artifact's assets.
     #[command(subcommand)]
     Asset(commands::asset::Cmd),
+    /// List open comment threads, show one, or act on it as you.
+    ///
+    /// With no argument, every open thread on every artifact, grouped by
+    /// artifact, newest activity first; with an artifact (ID or URL), that
+    /// artifact's; --all adds resolved threads.
+    ///
+    /// A thread is named `<artifact>#<n>`: the artifact's ID or URL, then the
+    /// number listings show (threads are numbered per artifact in the order
+    /// they were made, resolved ones included), or by its thread ID alone.
+    /// `clax comments <thread>` shows it, as `show` does.
+    ///
+    /// reply, resolve, reopen, and send act as you, as the page's own
+    /// buttons do in your browser; replies carry the name `clax comments
+    /// name` sets.
+    Comments(commands::comments::Args),
+    /// List an artifact's versions: label, publisher, time, and the threads
+    /// each addressed.
+    Versions(commands::versions::Args),
+    /// Read and write an artifact's page database, as the db_* tools do.
+    #[command(subcommand)]
+    Db(commands::db::Cmd),
     /// Open an artifact in the browser.
     Open(commands::open::Args),
     /// Delete an artifact.
@@ -181,6 +203,9 @@ fn main() {
         Cmd::List(a) => commands::list::run(&cli, &home, a),
         Cmd::Read(a) => commands::read::run(&cli, &home, a),
         Cmd::Asset(c) => commands::asset::run(&cli, &home, c),
+        Cmd::Comments(a) => commands::comments::run(&cli, &home, a),
+        Cmd::Versions(a) => commands::versions::run(&cli, &home, a),
+        Cmd::Db(c) => commands::db::run(&cli, &home, c),
         Cmd::Open(a) => commands::open::run(&cli, &home, a),
         Cmd::Delete(a) => commands::delete::run(&cli, &home, a),
         Cmd::Pin(a) => commands::pin::run(&cli, &home, a, true),

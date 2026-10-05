@@ -1,5 +1,7 @@
 pub mod asset;
 pub mod bin;
+pub mod comments;
+pub mod db;
 pub mod delete;
 pub mod doctor;
 pub mod doctor_agent;
@@ -17,6 +19,7 @@ pub mod serve;
 pub mod status;
 pub mod stop;
 pub mod tools;
+pub mod versions;
 
 use crate::client::Client;
 

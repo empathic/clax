@@ -459,6 +459,11 @@ Agent- and shell-facing JSON API under `/api`:
   threads only, else 200 `{guidance}`; reopen answers `{thread}`, delete
   `{deleted: true, thread_id}` and removes the comments, feedback rows, and
   clip). Thread views carry `clip_path` only for requests with the token.
+  `GET /api/threads[?include_resolved=true]` (token) answers every thread of
+  every live artifact as `{artifacts: [{artifact_id, title,
+  current_version, files, threads}]}`: `files` names the current version's
+  files, `threads` are thread views with `clip_path`, oldest first, and an
+  artifact with none is left out (`clax comments`).
 - Viewers: `GET /api/viewers/me` (creates the viewer and sets the
   `clax_viewer` cookie on first contact), `PUT /api/viewers/me`
   (`{display_name}`; empty clears it); both answer `{viewer: {public_id,
@@ -487,7 +492,10 @@ Agent- and shell-facing JSON API under `/api`:
   message_truncated}`), `DELETE /api/sessions/<sid>/working/<aid>` (W;
   optional `?thread_ids=<id>,<id>`; `{cleared, working}`), `POST
   /api/sessions/<sid>/working/renew` (W; `{renewed}`), `POST
-  /api/sessions/<sid>/working/end` (W, turn end; `{cleared}`). A view is
+  /api/sessions/<sid>/working/end` (W, turn end; `{cleared}`), `GET
+  /api/working` (token; every live record with `session_id`, `artifact_id`
+  and `expires_at`, newest `started_at` first: the working roster `clax
+  status` lists). A view is
   `{key, harness, message, thread_ids, started_at, last_heartbeat}`; `key` is
   a ULID minted for the record, never a session ID. `GET /api/artifacts` and
   `GET /api/artifacts/<aid>` carry each artifact's `working` list.
@@ -1756,7 +1764,29 @@ person.
 The CLI exposes the same operations as `clax <cmd> --json` for harnesses
 without MCP and for scripts, including `clax read` and `clax asset
 upload`, whose `--json` output is the `read` and `asset_upload` tool's result
-object. The other commands print their own JSON shape.
+object, and `clax db get|list|query|set|update|delete|str-replace|batch`,
+which run the `db_*` tools (level `owner`, `--as-level` narrowing it) and
+print their result objects. The other commands print their own JSON shape.
+
+The owner reads and acts on comments from the CLI as in the browser.
+`clax comments` lists open threads (`--all` adds resolved ones) on every
+artifact, or on one, grouped by artifact and newest activity first, each
+with its number, anchor, age, latest comment, delivery, detached state
+(its page left the current version) and the agents working on it.
+Threads are numbered per artifact in creation order, resolved ones
+included, and named `<artifact>#<n>` or by thread ID; `clax comments
+<thread>` shows one in full. `reply`, `resolve`, `reopen` and `send` call
+the shell's routes with the token and a viewer cookie of the CLI's own
+(kept in the home; `clax comments name` names it), so they are the
+owner's browser actions, authored as that viewer; `send` picks the
+target the page would. `clax versions <artifact>` lists versions with
+label, publisher, time and the threads each addressed. `clax status` adds
+the working roster: each agent working now, on which artifact and
+threads, with its message, for how long, and its session. Readable
+output is coloured only on a terminal without `NO_COLOR`, and escapes
+every control and bidirectional formatting character in people's text.
+`docs/contract.md` ("Comments, versions and the database from the
+command line") gives the shapes.
 
 ## 13. Plugins
 

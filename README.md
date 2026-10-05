@@ -109,7 +109,14 @@ clax open <ID>                       # open an artifact in the browser
 clax list                            # list artifacts
 clax read <ID> --path style.css      # print a published file (--json gives the read tool's result)
 clax asset upload <ID> photo.png     # upload assets; prints each asset URL
-clax status                          # show whether the daemon is running
+clax comments                        # open comment threads on every artifact, newest activity first (--all adds resolved)
+clax comments <ID>                   # one artifact's threads
+clax comments <ID>#2                 # show thread #2 in full (also: a thread ID)
+clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolve, reopen, send
+clax comments name "Alex"            # the name your replies carry
+clax versions <ID>                   # versions: label, publisher, time, threads addressed
+clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
+clax status                          # show whether the daemon is running and which agents are working on what
 clax doctor                          # check the home directory, daemon, database, and stored files
 clax doctor --fix                    # also remove stray temp files and stale rows (never live artifacts' rows)
 clax doctor --agent codex            # also check each layer of a harness's plugin: claude, codex, pi or grok
