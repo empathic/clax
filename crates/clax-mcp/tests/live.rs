@@ -153,6 +153,18 @@ async fn a_page_url_is_watched_read_and_waited_on() {
         .unwrap());
     assert_eq!(off["watching"], false);
     assert_eq!(off["page_url"], "http://localhost:5173/");
+    let off = ok(&t
+        .watch(Parameters(WatchArgs {
+            url_or_id: "http://localhost:5173/settings?tab=b#x".into(),
+            on: Some(false),
+            replies: None,
+        }))
+        .await
+        .unwrap());
+    assert_eq!(
+        off["page_url"], "http://localhost:5173/settings",
+        "normalized"
+    );
 }
 
 #[tokio::test]
@@ -197,4 +209,94 @@ async fn threads_carry_addressed_pending_and_only_live_pages_the_page_fields() {
         th.get("page_url").is_none() && th.get("snapshot_path").is_none(),
         "{th}"
     );
+}
+
+/// Tools over a managed client whose daemon is not running when the session
+/// starts (its first lookup fails), as the stdio shim builds them.
+#[tokio::test]
+async fn a_session_started_before_its_daemon_still_tells_clax_urls_from_pages() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let ts = TestServer::spawn().await;
+    let up = Arc::new(AtomicBool::new(false));
+    let endpoint = clax_mcp::client::Endpoint {
+        base: ts.base.clone(),
+        browser_base: format!("http://localhost:{}", ts.addr.port()),
+        token: ts.token.clone(),
+    };
+    let find: clax_mcp::client::Refresh = {
+        let up = up.clone();
+        Arc::new(move || {
+            if up.load(Ordering::SeqCst) {
+                Ok(endpoint.clone())
+            } else {
+                Err(anyhow::anyhow!("no clax daemon is running"))
+            }
+        })
+    };
+    let reg = clax_core::RegisterSession {
+        harness: "claude".into(),
+        harness_session_id: Some("late-1".into()),
+        cwd: "/work".into(),
+        pid: None,
+        parent_pid: None,
+    };
+    let client = DaemonClient::managed(find.clone(), find, reg);
+    assert!(client.ensure_session().await.is_err(), "no daemon yet");
+    let tools = ClaxTools::new(client.clone(), String::new(), None, ts.home.log_path());
+    up.store(true, Ordering::SeqCst);
+
+    let html = ts.publish("Plain", &[("index.html", "<p>x</p>")]).await;
+    let hid = html["artifact"]["id"].as_str().unwrap().to_string();
+    let read = ok(&tools
+        .comments_read(Parameters(CommentsReadArgs {
+            url_or_id: format!("http://localhost:{}/a/{hid}", ts.addr.port()),
+            ..Default::default()
+        }))
+        .await
+        .unwrap());
+    assert_eq!(read["artifact_id"], hid.as_str(), "{read}");
+
+    let w = ok(&tools
+        .watch(Parameters(WatchArgs {
+            url_or_id: "http://localhost:5173/".into(),
+            on: None,
+            replies: None,
+        }))
+        .await
+        .unwrap());
+    assert_eq!(w["scope"], "http://localhost:5173/*");
+}
+
+/// The same, with the first call a `watch` on a Clax URL.
+#[tokio::test]
+async fn a_first_watch_on_a_clax_url_watches_the_artifact() {
+    let ts = TestServer::spawn().await;
+    let endpoint = clax_mcp::client::Endpoint {
+        base: ts.base.clone(),
+        browser_base: format!("http://localhost:{}", ts.addr.port()),
+        token: ts.token.clone(),
+    };
+    let find: clax_mcp::client::Refresh = std::sync::Arc::new(move || Ok(endpoint.clone()));
+    let reg = clax_core::RegisterSession {
+        harness: "claude".into(),
+        harness_session_id: Some("late-2".into()),
+        cwd: "/work".into(),
+        pid: None,
+        parent_pid: None,
+    };
+    let client = DaemonClient::managed(find.clone(), find, reg);
+    let tools = ClaxTools::new(client, String::new(), None, ts.home.log_path());
+    let html = ts.publish("Plain", &[("index.html", "<p>x</p>")]).await;
+    let hid = html["artifact"]["id"].as_str().unwrap().to_string();
+    let w = ok(&tools
+        .watch(Parameters(WatchArgs {
+            url_or_id: format!("http://127.0.0.1:{}/a/{hid}", ts.addr.port()),
+            on: None,
+            replies: None,
+        }))
+        .await
+        .unwrap());
+    assert_eq!(w["artifact_id"], hid.as_str(), "{w}");
+    assert!(w.get("scope").is_none());
 }

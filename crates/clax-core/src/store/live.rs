@@ -200,7 +200,8 @@ pub(super) fn live_page_of_conn(c: &Connection, aid: &str) -> Result<Option<Live
 }
 
 /// Makes every live session whose scope watch covers `key` a watcher of the
-/// new page `aid`, with the scope's arming; returns those sessions, each once.
+/// new page `aid`, armed when any of its covering scopes is; returns those
+/// sessions, each once.
 pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<Vec<String>> {
     let rows: Vec<(String, String, bool)> = {
         let mut st = tx.prepare(
@@ -213,18 +214,49 @@ pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<V
         })?
         .collect::<rusqlite::Result<_>>()?
     };
-    let mut out: Vec<String> = Vec::new();
+    // Each covering session once, in order, armed when any of its covering
+    // scopes is.
+    let mut out: Vec<(String, bool)> = Vec::new();
     for (sid, path, armed) in rows {
         let scope = PageKey {
             origin: key.origin.clone(),
             path,
         };
-        if key.covered_by(&scope) && !out.contains(&sid) {
-            scope_row(tx, &sid, aid, armed)?;
-            out.push(sid);
+        if !key.covered_by(&scope) {
+            continue;
+        }
+        match out.iter_mut().find(|(s, _)| *s == sid) {
+            Some((_, a)) => *a |= armed,
+            None => out.push((sid, armed)),
         }
     }
-    Ok(out)
+    for (sid, armed) in &out {
+        scope_row(tx, sid, aid, *armed)?;
+    }
+    Ok(out.into_iter().map(|(sid, _)| sid).collect())
+}
+
+/// Whether any scope watch of `sid` covering `key` has replies armed, or
+/// `None` when none covers it.
+fn scope_arming(tx: &Connection, sid: &str, key: &PageKey) -> Result<Option<bool>> {
+    let mut st = tx.prepare(
+        "SELECT path, replies_armed FROM live_watches WHERE session_id = ?1 AND origin = ?2",
+    )?;
+    let rows: Vec<(String, bool)> = st
+        .query_map(params![sid, key.origin], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? != 0))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows
+        .into_iter()
+        .filter(|(path, _)| {
+            key.covered_by(&PageKey {
+                origin: key.origin.clone(),
+                path: path.clone(),
+            })
+        })
+        .map(|(_, armed)| armed)
+        .reduce(|a, b| a || b))
 }
 
 impl Store {
@@ -535,9 +567,10 @@ impl Store {
     }
 
     /// Creates or updates live session `sid`'s scope watch on `scope` and
-    /// makes it a watcher of every live page the scope covers (a page it
-    /// already watches keeps its watch). Returns the watch and the covered
-    /// pages' artifact IDs.
+    /// makes it a watcher of every live page the scope covers. A scope-made
+    /// watch is armed while any of the session's scope watches covering the
+    /// page is; a direct watch keeps its own arming. Returns the watch and
+    /// the covered pages' artifact IDs.
     ///
     /// # Errors
     /// `unknown_session` for a missing or ended session.
@@ -565,19 +598,17 @@ impl Store {
                  ON CONFLICT(session_id, origin, path) DO UPDATE SET replies_armed = excluded.replies_armed",
                 params![sid, scope.origin, scope.path, replies_armed, Store::now()],
             )?;
-            let covered: Vec<String> = pages_of(tx, &scope.origin)?
-                .into_iter()
-                .filter(|p| {
-                    PageKey {
-                        origin: p.origin.clone(),
-                        path: p.path.clone(),
-                    }
-                    .covered_by(scope)
-                })
-                .map(|p| p.artifact_id)
-                .collect();
-            for aid in &covered {
-                scope_row(tx, sid, aid, replies_armed)?;
+            let mut covered = Vec::new();
+            for p in pages_of(tx, &scope.origin)? {
+                let key = PageKey {
+                    origin: p.origin,
+                    path: p.path,
+                };
+                if key.covered_by(scope) {
+                    let armed = scope_arming(tx, sid, &key)?.unwrap_or(replies_armed);
+                    scope_row(tx, sid, &p.artifact_id, armed)?;
+                    covered.push(p.artifact_id);
+                }
             }
             let w = tx.query_row(
                 "SELECT session_id, origin, path, replies_armed, created_at FROM live_watches
@@ -599,8 +630,8 @@ impl Store {
 
     /// Removes `sid`'s scope watch on `scope` and the scope-made watches it
     /// alone justified: a page another scope watch of the session covers
-    /// keeps its watch, and direct watches are never removed. Returns the
-    /// artifact IDs of the pages no longer watched.
+    /// keeps its watch, armed as those scopes say, and direct watches are
+    /// never removed. Returns the artifact IDs of the pages no longer watched.
     ///
     /// # Errors
     /// Database errors only.
@@ -610,31 +641,27 @@ impl Store {
                 "DELETE FROM live_watches WHERE session_id = ?1 AND origin = ?2 AND path = ?3",
                 params![sid, scope.origin, scope.path],
             )?;
-            let others: Vec<String> = {
-                let mut st = tx
-                    .prepare("SELECT path FROM live_watches WHERE session_id = ?1 AND origin = ?2")?;
-                st.query_map(params![sid, scope.origin], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
             let mut removed = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
                 let key = PageKey {
-                    origin: p.origin.clone(),
-                    path: p.path.clone(),
+                    origin: p.origin,
+                    path: p.path,
                 };
-                let kept = others.iter().any(|o| {
-                    key.covered_by(&PageKey {
-                        origin: p.origin.clone(),
-                        path: o.clone(),
-                    })
-                });
-                if key.covered_by(scope) && !kept {
-                    let n = tx.execute(
-                        "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'",
-                        params![sid, p.artifact_id],
-                    )?;
-                    if n > 0 {
-                        removed.push(p.artifact_id);
+                if !key.covered_by(scope) {
+                    continue;
+                }
+                match scope_arming(tx, sid, &key)? {
+                    // Another scope of the session still covers it: its
+                    // arming now follows the scopes left.
+                    Some(armed) => scope_row(tx, sid, &p.artifact_id, armed)?,
+                    None => {
+                        let n = tx.execute(
+                            "DELETE FROM watches WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope'",
+                            params![sid, p.artifact_id],
+                        )?;
+                        if n > 0 {
+                            removed.push(p.artifact_id);
+                        }
                     }
                 }
             }
@@ -1184,5 +1211,43 @@ mod tests {
             st.live_watch(&sid, &key("/"), true),
             Err(crate::CoreError::Invalid { .. })
         ));
+    }
+
+    #[test]
+    fn a_page_is_armed_while_any_scope_covering_it_is() {
+        let (_d, st) = store();
+        let sid = crate::store::test_util::session(&st, "claude", "h1");
+        let armed = |aid: &str| {
+            st.list_watches(&sid)
+                .unwrap()
+                .into_iter()
+                .find(|w| w.artifact_id == aid)
+                .unwrap()
+                .replies_armed
+        };
+        st.live_watch(&sid, &key("/"), true).unwrap();
+        st.live_watch(&sid, &key("/docs"), false).unwrap();
+        let a = st
+            .ensure_live_page(&key("/docs/a"), "a", None)
+            .unwrap()
+            .artifact
+            .id;
+        assert!(armed(&a), "the armed / scope covers it");
+        st.live_watch(&sid, &key("/docs"), false).unwrap();
+        assert!(
+            armed(&a),
+            "re-watching /docs unarmed leaves it armed through /"
+        );
+        let b = st
+            .ensure_live_page(&key("/docs/b"), "b", None)
+            .unwrap()
+            .artifact
+            .id;
+        assert!(armed(&b));
+        st.live_unwatch(&sid, &key("/")).unwrap();
+        assert!(!armed(&a), "only the unarmed /docs scope covers it now");
+        assert!(!armed(&b));
+        st.live_watch(&sid, &key("/docs"), true).unwrap();
+        assert!(armed(&a));
     }
 }

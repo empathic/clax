@@ -754,14 +754,28 @@ impl ClaxTools {
         render::client_error(e, &self.log_path)
     }
 
-    /// The artifact `url_or_id` names ([`crate::target::target`]), and the
+    /// What `url_or_id` names ([`crate::target::target`]), judged against
+    /// the daemon's port: a managed client that has not found its daemon yet
+    /// finds it first (a failure to find it is left to the request that
+    /// follows), so a Clax URL is not read as a page URL.
+    async fn target(&self, url_or_id: &str) -> Result<crate::target::Target, CallToolResult> {
+        if url_or_id.contains("://")
+            && self.client.browser_base().is_none()
+            && let Err(e) = self.client.ensure_session().await
+        {
+            tracing::debug!(error = %e, "finding the daemon before reading a URL failed");
+        }
+        crate::target::target(url_or_id, &self.browser_base())
+    }
+
+    /// The artifact `url_or_id` names ([`Self::target`]), and the
     /// version when it names one; a page URL is resolved to its live page.
     ///
     /// # Errors
     /// `invalid_id` for a reference that names nothing, or a page URL with
     /// no live page yet.
     async fn resolve_ref(&self, url_or_id: &str) -> Result<(String, Option<u32>), CallToolResult> {
-        match crate::target::target(url_or_id, &self.browser_base())? {
+        match self.target(url_or_id).await? {
             crate::target::Target::Artifact { id, version } => Ok((id, version)),
             crate::target::Target::Page(url) => {
                 let res = self
@@ -1349,7 +1363,7 @@ impl ClaxTools {
     }
 
     async fn do_watch(&self, a: WatchArgs) -> Outcome {
-        let url = match crate::target::target(&a.url_or_id, &self.browser_base())? {
+        let url = match self.target(&a.url_or_id).await? {
             crate::target::Target::Page(url) => url,
             crate::target::Target::Artifact { id, .. } => {
                 return self.do_watch_artifact(id, a).await;
@@ -1371,11 +1385,12 @@ impl ClaxTools {
                 "replies_armed": res["live_watch"]["replies_armed"],
             }))
         } else {
-            self.client
+            let res = self
+                .client
                 .live_unwatch(&url)
                 .await
                 .map_err(|e| self.fail(e))?;
-            Ok(json!({"page_url": url, "watching": false, "replies_armed": false}))
+            Ok(json!({"page_url": res["page_url"], "watching": false, "replies_armed": false}))
         }
     }
 

@@ -675,7 +675,7 @@ impl DaemonClient {
         .await
     }
 
-    /// `DELETE /api/sessions/<sid>/live-watches?url=`: `{removed}`.
+    /// `DELETE /api/sessions/<sid>/live-watches?url=`: `{page_url, removed}`.
     pub async fn live_unwatch(&self, url: &str) -> Result<Value> {
         self.json(|c| {
             c.request(

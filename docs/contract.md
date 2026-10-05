@@ -1492,7 +1492,7 @@ entry of the shell's own; copy link includes it.
 | `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state, addressed_pending, page_url?, snapshot_path?}], next_cursor, note}` |
 | `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
-| `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` |
+| `watch` | `url_or_id` (an artifact, or a page URL); optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}`; for a page URL `{artifact_id, url, page_url, scope, watching: true, replies_armed}`, or `{page_url, watching: false, replies_armed: false}` with `on: false` (`page_url` without its route) |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
 | `working` | `url_or_id`; optional `thread_ids` (at most 20 open threads), `message` (at most 140 characters), `done` | `{artifact_id, url, working: true, message, thread_ids, started_at, expires_in_s, message_truncated}` or `{artifact_id, url, working: false, cleared}` |
 
@@ -1533,9 +1533,11 @@ URL names (with a placeholder version) when there is none. `scope` names
 what it covers: `http://localhost:5173/*` for a path ending in `/` (`/`
 covers the whole origin), `http://localhost:5173/docs and
 http://localhost:5173/docs/*` otherwise. With `on: false` it removes the
-scope watch and the watches only it made; a page the session watches
-directly (`watch` on the artifact), or through another of its scope watches,
-stays watched.
+scope watch and the watches only it made (the live pages stay); a page the
+session watches directly (`watch` on the artifact), or through another of its
+scope watches, stays watched. A session that has not found its daemon yet
+finds it before reading a URL, so the URL is compared with the daemon's
+current port.
 
 Which tool argument names what: an artifact ID, text without a scheme
 (`localhost:7480/a/<id>`, `/a/<id>`), and an `http(s)` URL on the daemon's
@@ -1880,9 +1882,12 @@ versions is a snapshot of the page, taken when a comment is posted.
   replies_armed}, page, covered}` (`covered`: the artifact IDs of the
   covered pages); 400 `unknown_session` for a missing or ended session, and
   the URL errors above (`own_origin` too). Watching the same URL again
-  sets `replies_armed`, on its `scope` watches too. `DELETE /api/sessions/<sid>/live-watches?url=`
+  sets its `replies_armed`. A `scope` watch is armed while any of the
+  session's scope watches covering the page is armed, and follows the scopes
+  left when one is removed. `DELETE /api/sessions/<sid>/live-watches?url=`
   (token) removes it and the `scope` watches no other scope watch of the
-  session covers, answering `{removed}` (their artifact IDs); a direct
+  session covers, answering `{page_url, removed}` (the scope's page URL and
+  the unwatched pages' artifact IDs); the live pages themselves stay; a direct
   `PUT .../watches/<id>` turns a page's watch `direct`, which a removal
   keeps. A session's scope watches end with the session.
 - **Thread views** of a live page carry `page_url` (the page's URL with the

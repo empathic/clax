@@ -160,6 +160,29 @@
       {
         "input": "http://[bad",
         "error": "invalid_id"
+      },
+      {
+        "input": "http://localhost:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "",
+        "page": "http://localhost:7480/a/7q3k9mzx2b4t"
+      },
+      {
+        "input": "7q3k9mzx2b4t",
+        "daemon_base": "",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "http://localhost:7480/a/7q3k9mzx2b4t",
+        "daemon_base": "http://192.168.1.20:7480",
+        "id": "7q3k9mzx2b4t",
+        "version": null
+      },
+      {
+        "input": "https://localhost:443/a/7q3k9mzx2b4t",
+        "daemon_base": "https://localhost",
+        "id": "7q3k9mzx2b4t",
+        "version": null
       }
     ]
   },

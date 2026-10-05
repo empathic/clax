@@ -553,6 +553,8 @@ describe("comments", () => {
     expect(json(never).error.code).toBe("invalid_id");
     const off = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/", on: false }, ctx)).json;
     expect(off).toMatchObject({ page_url: "http://localhost:5173/", watching: false });
+    const offRoute = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/settings?tab=b#x", on: false }, ctx)).json;
+    expect(offRoute).toMatchObject({ page_url: "http://localhost:5173/settings", watching: false });
   });
 
   it("wait_for_feedback returns within a second of a send and asks to call again", async () => {
@@ -978,9 +980,10 @@ describe("helpers match the shared contract fixture", () => {
   });
 
   it("target", () => {
-    const { daemon_base: base, cases } = FIXTURE.target;
+    const { daemon_base: section, cases } = FIXTURE.target;
     expect(cases.length).toBeGreaterThan(0);
     for (const c of cases) {
+      const base = c.daemon_base ?? section;
       if (c.error) {
         let code: unknown;
         try {

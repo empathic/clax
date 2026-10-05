@@ -182,6 +182,7 @@ async fn removing_a_scope_keeps_direct_watches() {
     assert_eq!(res.status(), 200);
     let removed: Value = res.json().await.unwrap();
     assert_eq!(removed["removed"], json!([root]));
+    assert_eq!(removed["page_url"], "http://localhost:5173/");
     let left = watches(&ts, sid).await;
     assert!(!left.contains(&root));
     assert!(left.contains(&other), "the direct watch stays");
@@ -282,4 +283,24 @@ async fn thread_views_carry_the_page_url_and_snapshot_path_of_a_live_page() {
         anon["thread"]["snapshot_path"].is_null(),
         "only with the token"
     );
+}
+
+#[tokio::test]
+async fn a_scope_keeps_its_trailing_slash_and_its_origin() {
+    let ts = TestServer::spawn().await;
+    let s = ts.register_session("claude", "w-8").await;
+    let sid = s["id"].as_str().unwrap();
+    let w = live_watch(&ts, sid, "http://localhost:5173/docs/").await;
+    assert_eq!(w["live_watch"]["scope"], "http://localhost:5173/docs/*");
+    let v = ts.viewer(Some("Alex")).await;
+    let aid = |c: Value| c["page"]["artifact_id"].as_str().unwrap().to_string();
+    let below = aid(comment(&ts, &v.cookie, "http://localhost:5173/docs/a").await);
+    let bare = aid(comment(&ts, &v.cookie, "http://localhost:5173/docs").await);
+    let port = aid(comment(&ts, &v.cookie, "http://localhost:3000/docs/a").await);
+    let scheme = aid(comment(&ts, &v.cookie, "https://localhost:5173/docs/a").await);
+    let w = watches(&ts, sid).await;
+    assert!(w.contains(&below));
+    assert!(!w.contains(&bare), "/docs/ does not cover /docs");
+    assert!(!w.contains(&port), "another port is another origin");
+    assert!(!w.contains(&scheme), "another scheme is another origin");
 }

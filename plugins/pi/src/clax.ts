@@ -984,8 +984,8 @@ class Tools {
           replies_armed: r.live_watch?.replies_armed ?? null,
         };
       }
-      await this.call(() => c.liveUnwatch(t.url));
-      return { page_url: t.url, watching: false, replies_armed: false };
+      const r = await this.call(() => c.liveUnwatch(t.url));
+      return { page_url: r.page_url ?? null, watching: false, replies_armed: false };
     }
     const id = t.id;
     if (a.on ?? true) {

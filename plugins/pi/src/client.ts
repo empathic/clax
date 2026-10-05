@@ -494,7 +494,7 @@ export class DaemonClient {
     return this.json(() => `${this.sessionPath()}/live-watches`, this.jsonBody("PUT", { url, replies_armed: replies }));
   }
 
-  /** `DELETE /api/sessions/<sid>/live-watches?url=`: `{removed}`. */
+  /** `DELETE /api/sessions/<sid>/live-watches?url=`: `{page_url, removed}`. */
   liveUnwatch(url: string): Promise<any> {
     return this.json(() => `${this.sessionPath()}/live-watches?${new URLSearchParams({ url })}`, { method: "DELETE" });
   }

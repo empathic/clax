@@ -122,7 +122,8 @@ mod tests {
         );
     }
 
-    /// The shared fixture's cases, also run by the Pi extension's `target()`.
+    /// The shared fixture's cases (a case's own `daemon_base` overrides the
+    /// section's), also run by the Pi extension's `target()`.
     #[test]
     fn target_matches_the_fixture() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -133,7 +134,7 @@ mod tests {
         assert!(!cases.is_empty());
         for c in cases {
             let input = c["input"].as_str().unwrap();
-            let got = target(input, base);
+            let got = target(input, c["daemon_base"].as_str().unwrap_or(base));
             if c.get("error").is_some() {
                 assert!(got.is_err(), "{input}");
             } else if let Some(p) = c["page"].as_str() {

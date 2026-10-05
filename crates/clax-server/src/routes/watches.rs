@@ -153,8 +153,8 @@ pub struct LiveUnwatchQuery {
 }
 
 /// `DELETE /api/sessions/<sid>/live-watches?url=` (W): removes the scope
-/// watch on the page `url` names and the watches only it justified.
-/// Answers `{removed: [artifact IDs]}`.
+/// watch on the page `url` names and the watches only it justified. The
+/// live page itself stays. Answers `{page_url, removed: [artifact IDs]}`.
 pub async fn live_delete(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -164,8 +164,9 @@ pub async fn live_delete(
     let sid = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let pu = page_url(&s, &q.url)?;
+    let page = pu.key.page_url();
     let removed = s
         .store_call(move |st| st.live_unwatch(&sid, &pu.key))
         .await?;
-    Ok(Json(json!({"removed": removed})))
+    Ok(Json(json!({"page_url": page, "removed": removed})))
 }

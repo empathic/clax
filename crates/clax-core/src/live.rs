@@ -39,7 +39,8 @@ impl PageKey {
     }
 
     /// Whether a scope watch on `scope` covers this page: the same origin,
-    /// and a path equal to the scope's or below it (`/` covers every path).
+    /// and a path equal to the scope's or below it (`/` covers every path):
+    /// the scope's path, without one trailing slash, followed by `/`.
     pub fn covered_by(&self, scope: &PageKey) -> bool {
         if self.origin != scope.origin {
             return false;
@@ -47,7 +48,7 @@ impl PageKey {
         if scope.path == "/" || self.path == scope.path {
             return true;
         }
-        let base = scope.path.trim_end_matches('/');
+        let base = scope.path.strip_suffix('/').unwrap_or(&scope.path);
         self.path.starts_with(&format!("{base}/"))
     }
 }
@@ -219,6 +220,20 @@ mod tests {
             !k("http://localhost:5173", "/docsx").covered_by(&k("http://localhost:5173", "/docs"))
         );
         assert!(!k("http://localhost:3000", "/").covered_by(&root));
+        assert!(
+            !k("http://localhost:5173", "/docs").covered_by(&k("http://localhost:5173", "/docs/")),
+            "a trailing slash is kept"
+        );
+        assert!(
+            !k("http://localhost:5173", "/docs/x")
+                .covered_by(&k("http://localhost:5173", "/docs//")),
+            "only one trailing slash ends the scope's path"
+        );
+        assert!(
+            k("http://localhost:5173", "/docs//x")
+                .covered_by(&k("http://localhost:5173", "/docs//"))
+        );
+        assert!(!k("http://localhost:5173", "/x").covered_by(&k("http://localhost:5173", "///")));
     }
 
     #[test]
