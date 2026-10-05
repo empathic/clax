@@ -30,8 +30,9 @@ impl LiveIds {
         )))
     }
 
-    /// [`Store::ensure_live_page`], recording the page in this set before
-    /// anything announces it. Every server path that finds or creates a
+    /// [`Store::ensure_live_page_linking`] (a version it writes links the
+    /// threads of `pending` still pending on the page), recording the page
+    /// in this set before anything announces it. Every server path that finds or creates a
     /// live page goes through here, so none can leave one out of the set.
     ///
     /// # Errors
@@ -42,8 +43,9 @@ impl LiveIds {
         key: &PageKey,
         title: &str,
         snapshot: Option<&[u8]>,
+        pending: &[String],
     ) -> clax_core::Result<EnsuredPage> {
-        let e = st.ensure_live_page(key, title, snapshot)?;
+        let e = st.ensure_live_page_linking(key, title, snapshot, pending)?;
         self.insert(&e.artifact.id);
         Ok(e)
     }
@@ -283,7 +285,9 @@ mod store_tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         let ids = LiveIds::default();
-        let e = ids.ensure_page(&st, &key("/"), "t", Some(b"<p>")).unwrap();
+        let e = ids
+            .ensure_page(&st, &key("/"), "t", Some(b"<p>"), &[])
+            .unwrap();
         assert!(ids.contains(&e.artifact.id));
     }
 }

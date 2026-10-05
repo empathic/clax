@@ -12,25 +12,33 @@ fn anchor() -> String {
         .to_string()
 }
 
-async fn post_thread_titled(
-    ts: &TestServer,
-    cookie: &str,
+/// The fields of a comment on a live page, naming the threads in `pending`.
+fn thread_form(
     url: &str,
     title: &str,
     snapshot: &str,
-) -> reqwest::Response {
-    let form = reqwest::multipart::Form::new()
+    pending: &[&str],
+) -> reqwest::multipart::Form {
+    reqwest::multipart::Form::new()
         .text("url", url.to_string())
         .text("title", title.to_string())
         .text("anchor", anchor())
         .text("body", "The button overflows")
+        .text("pending", json!(pending).to_string())
         .text("snapshot", snapshot.to_string())
         .part(
             "clip",
             reqwest::multipart::Part::bytes(FAKE_PNG.to_vec())
                 .mime_str("image/png")
                 .unwrap(),
-        );
+        )
+}
+
+async fn post_thread_form(
+    ts: &TestServer,
+    cookie: &str,
+    form: reqwest::multipart::Form,
+) -> reqwest::Response {
     ts.client
         .post(format!("{}/api/live/threads", ts.base))
         .header("cookie", format!("clax_viewer={cookie}"))
@@ -38,6 +46,16 @@ async fn post_thread_titled(
         .send()
         .await
         .unwrap()
+}
+
+async fn post_thread_titled(
+    ts: &TestServer,
+    cookie: &str,
+    url: &str,
+    title: &str,
+    snapshot: &str,
+) -> reqwest::Response {
+    post_thread_form(ts, cookie, thread_form(url, title, snapshot, &[])).await
 }
 
 async fn post_thread(
@@ -929,16 +947,17 @@ async fn a_comment_snapshot_also_links_pending_addresses() {
     let (aid, tid, sid) = sent_live_thread(&ts).await;
     agent_reply(&ts, &aid, &tid, &sid, true).await;
     let v = ts.viewer(Some("Mia")).await;
-    let body: Value = post_thread(
-        &ts,
-        &v.cookie,
+    let form = thread_form(
         "http://localhost:5173/",
+        "Settings",
         "<!doctype html><p>v2</p>",
-    )
-    .await
-    .json()
-    .await
-    .unwrap();
+        &[&tid],
+    );
+    let body: Value = post_thread_form(&ts, &v.cookie, form)
+        .await
+        .json()
+        .await
+        .unwrap();
     assert_eq!(body["version"], 2);
     let t: Value = ts
         .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
@@ -1272,4 +1291,100 @@ async fn a_snapshot_refuses_fields_it_does_not_take() {
         post_snapshot(&ts, &v.cookie, "<p>", &[&tid]).await.status(),
         200
     );
+}
+
+#[tokio::test]
+async fn a_comment_snapshot_links_only_the_pending_threads_it_names() {
+    let ts = TestServer::spawn().await;
+    let (aid, a, sid) = sent_live_thread(&ts).await;
+    let b = ts.thread(&aid, 1, "b").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.send_thread(&aid, &b).await;
+    assert_eq!(agent_reply(&ts, &aid, &a, &sid, true).await.status(), 201);
+    assert_eq!(agent_reply(&ts, &aid, &b, &sid, true).await.status(), 201);
+    let v = ts.viewer(Some("Mia")).await;
+    // An identical snapshot makes no version, so links nothing.
+    let form = thread_form(
+        "http://localhost:5173/",
+        "Settings",
+        "<!doctype html><p>v1</p>",
+        &[&a, &b],
+    );
+    let body: Value = post_thread_form(&ts, &v.cookie, form)
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(body["version"], 1);
+    let view = |tid: String| {
+        let ts = &ts;
+        let aid = aid.clone();
+        async move {
+            ts.get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+                .await
+                .json::<Value>()
+                .await
+                .unwrap()["thread"]
+                .clone()
+        }
+    };
+    assert!(view(a.clone()).await["addressed_pending"].is_object());
+    // A new version links the named thread only.
+    let form = thread_form(
+        "http://localhost:5173/",
+        "Settings",
+        "<!doctype html><p>fixed a</p>",
+        &[&a],
+    );
+    let res = post_thread_form(&ts, &v.cookie, form).await;
+    assert_eq!(res.status(), 201);
+    assert_eq!(res.json::<Value>().await.unwrap()["version"], 2);
+    let ta = view(a.clone()).await;
+    assert_eq!(ta["addressed_in"], json!([2]));
+    assert!(ta["addressed_pending"].is_null());
+    let tb = view(b.clone()).await;
+    assert_eq!(tb["addressed_in"], json!([]));
+    assert_eq!(tb["addressed_pending"]["harness"], "claude");
+}
+
+#[tokio::test]
+async fn a_comment_refuses_fields_it_does_not_take_and_needs_pending() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Mia")).await;
+    let url = "http://localhost:5173/";
+    let form = || thread_form(url, "Settings", "<p>", &[]);
+    for extra in ["bogus", "version"] {
+        let res = post_thread_form(&ts, &v.cookie, form().text(extra, "x")).await;
+        assert_eq!(res.status(), 400, "{extra}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_args",
+            "{extra}"
+        );
+    }
+    let twice = form().text("pending", "[]");
+    assert_eq!(post_thread_form(&ts, &v.cookie, twice).await.status(), 400);
+    let no_pending = reqwest::multipart::Form::new()
+        .text("url", url)
+        .text("anchor", anchor())
+        .text("body", "x")
+        .text("snapshot", "<p>");
+    let res = post_thread_form(&ts, &v.cookie, no_pending).await;
+    assert_eq!(res.status(), 400, "pending is required");
+    let bad = reqwest::multipart::Form::new()
+        .text("url", url)
+        .text("anchor", anchor())
+        .text("body", "x")
+        .text("pending", "{}")
+        .text("snapshot", "<p>");
+    assert_eq!(post_thread_form(&ts, &v.cookie, bad).await.status(), 400);
+    let page: Value = ts
+        .get(&format!("/api/live/pages?url={}", urlencode(url)))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(page["page"].is_null(), "nothing was created");
 }

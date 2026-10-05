@@ -158,8 +158,17 @@ struct Fields {
     body: Option<String>,
     clip: Option<Vec<u8>>,
     snapshot: Option<Vec<u8>>,
+    pending: Option<Vec<String>>,
 }
 
+/// `pending` as a multipart field gives it: a JSON array of thread IDs.
+fn parse_pending(text: &str) -> Result<Vec<String>, ApiError> {
+    serde_json::from_str(text)
+        .map_err(|_| ApiError::bad_request("invalid_args", "pending is a JSON array of thread IDs"))
+}
+
+/// Reads a `POST /api/live/threads`; any other field than its own, or one
+/// given twice, is 400 `invalid_args`.
 async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
     let mut f = Fields::default();
     while let Some(field) = mp
@@ -177,12 +186,13 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
                 ApiError::bad_request("invalid_args", format!("field '{name}' is not UTF-8"))
             })
         };
-        match name.as_str() {
-            "url" => f.url = Some(text()?),
-            "title" => f.title = Some(text()?),
-            "anchor" => f.anchor = Some(text()?),
-            "body" => f.body = Some(text()?),
-            "clip" => f.clip = Some(bytes.to_vec()),
+        let twice = match name.as_str() {
+            "url" => f.url.replace(text()?).is_some(),
+            "title" => f.title.replace(text()?).is_some(),
+            "anchor" => f.anchor.replace(text()?).is_some(),
+            "body" => f.body.replace(text()?).is_some(),
+            "pending" => f.pending.replace(parse_pending(&text()?)?).is_some(),
+            "clip" => f.clip.replace(bytes.to_vec()).is_some(),
             "snapshot" => {
                 if bytes.len() > MAX_SNAPSHOT {
                     return Err(ApiError::bad_request(
@@ -190,22 +200,37 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
                         "a snapshot is at most 8 MiB",
                     ));
                 }
-                f.snapshot = Some(bytes.to_vec());
+                f.snapshot.replace(bytes.to_vec()).is_some()
             }
-            _ => {}
+            _ => {
+                return Err(ApiError::bad_request(
+                    "invalid_args",
+                    format!(
+                        "unknown field '{name}': a comment takes url, title, anchor, body, pending, clip and snapshot"
+                    ),
+                ));
+            }
+        };
+        if twice {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                format!("field '{name}' is given twice"),
+            ));
         }
     }
     Ok(f)
 }
 
 /// `POST /api/live/threads` (multipart `url`, `title`, `anchor`, `body`,
-/// optional `clip`, `snapshot`): finds or creates the live page `url` names,
-/// stores `snapshot` as its next version when it differs from the current
-/// one (linking the page's pending addresses to that version), and creates
-/// the thread on that version as the request's viewer, with the anchor's
-/// `route` from `url` and `clip` as its screenshot; an `@agent` mention
-/// sends it. Answers `201 {thread, page, version,
-/// clip_error?}`; a clip failing `clip_problem` is dropped and reported.
+/// `pending`, optional `clip`, `snapshot`): finds or creates the live page
+/// `url` names, stores `snapshot` as its next version when it differs from
+/// the current one (linking to that version, in its transaction, the
+/// threads of `pending` still pending on the page; other addresses stay
+/// pending), and creates the thread on that version as the request's
+/// viewer, with the anchor's `route` from `url` and `clip` as its
+/// screenshot; an `@agent` mention sends it. Answers `201 {thread, page,
+/// version, clip_error?}`; a clip failing `clip_problem` is dropped and
+/// reported.
 pub async fn thread(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -230,6 +255,9 @@ pub async fn thread(
     let snapshot = f
         .snapshot
         .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'snapshot' is required"))?;
+    let pending = f
+        .pending
+        .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'pending' is required"))?;
     let title = clean_title(f.title.as_deref().unwrap_or(""), &pu.key.page_url());
     let clip_error = f.clip.as_deref().and_then(clip_problem);
     let clip = if clip_error.is_some() { None } else { f.clip };
@@ -241,7 +269,7 @@ pub async fn thread(
     let key = pu.key;
     let (view, page, artifact, version) = s
         .store_call(move |st| {
-            let e = live_ids.ensure_page(st, &key, &title, Some(&snapshot))?;
+            let e = live_ids.ensure_page(st, &key, &title, Some(&snapshot), &pending)?;
             let id = ArtifactId::parse(&e.artifact.id)?;
             if e.new_version {
                 events.publish(Event::Version {
@@ -251,7 +279,11 @@ pub async fn thread(
                     title: Some(e.artifact.title.clone()),
                     at: Some(e.version.created_at.clone()),
                 });
-                link_pending(st, &ctx, &id, e.version.n)?;
+            }
+            for tid in &e.linked {
+                if let Some(t) = st.get_thread(tid)? {
+                    publish_thread(&ctx, st, &t)?;
+                }
             }
             let (author_name, author_public_id) = author(st, &who)?;
             let view = create_thread_now(
@@ -282,23 +314,6 @@ pub async fn thread(
         out["clip_error"] = json!(e);
     }
     Ok((StatusCode::CREATED, Json(out)))
-}
-
-/// Links the pending addresses of the live page `id` to its new version `n`
-/// and publishes each linked thread; returns their IDs.
-fn link_pending(
-    st: &clax_core::Store,
-    ctx: &crate::feedback::FeedbackCtx,
-    id: &ArtifactId,
-    n: u32,
-) -> clax_core::Result<Vec<String>> {
-    let linked = st.link_pending(id, n)?;
-    for tid in &linked {
-        if let Some(t) = st.get_thread(tid)? {
-            publish_thread(ctx, st, &t)?;
-        }
-    }
-    Ok(linked)
 }
 
 /// The fields of a `POST /api/live/snapshots`.
@@ -346,12 +361,7 @@ async fn read_snapshot_fields(mut mp: Multipart) -> Result<SnapshotFields, ApiEr
         let twice = match name.as_str() {
             "url" => url.replace(text()?).is_some(),
             "title" => title.replace(text()?).is_some(),
-            "pending" => {
-                let ids: Vec<String> = serde_json::from_str(&text()?).map_err(|_| {
-                    ApiError::bad_request("invalid_args", "pending is a JSON array of thread IDs")
-                })?;
-                pending.replace(ids).is_some()
-            }
+            "pending" => pending.replace(parse_pending(&text()?)?).is_some(),
             _ => snapshot.replace(bytes.to_vec()).is_some(),
         };
         if twice {

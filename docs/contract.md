@@ -1806,12 +1806,17 @@ versions is a snapshot of the page, taken when a comment is posted.
   current_version, url}`, where `page_url` is the origin followed by the path
   and `url` the page's Clax view (`/a/<id>`).
 - **`POST /api/live/threads`** (multipart, at most 24 MiB): `url`, `title`,
-  `anchor` (JSON, as for a thread, without `route`), `body`, optional `clip`
-  (PNG), and `snapshot` (the page's HTML, at most 8 MiB, else 400
-  `snapshot_too_large`). It finds or creates the live page `url` names,
+  `anchor` (JSON, as for a thread, without `route`), `body`, `pending` (a
+  JSON array of the thread IDs the caller saw pending when it serialized the
+  page), optional `clip` (PNG), and `snapshot` (the page's HTML, at most 8
+  MiB, else 400 `snapshot_too_large`). A missing required field, a field
+  given twice, `pending` that is not an array of strings, or any other field
+  is 400 `invalid_args`. It finds or creates the live page `url` names,
   stores the snapshot as the page's next version (its only file,
   `index.html`, noted `snapshot`) unless it is byte-identical to the current
-  version, and creates the thread on that version as the request's viewer,
+  version, linking to that version, in the transaction that stores it, the
+  threads of `pending` still pending on the page (other pending addresses
+  wait; an identical snapshot links nothing), and creates the thread on that version as the request's viewer,
   with the anchor's `route` from `url`. An `@agent` mention sends it, as on
   any thread. The page's title is the `title` field with whitespace
   collapsed and other control characters dropped, cut to 200 characters (the
@@ -1843,9 +1848,12 @@ versions is a snapshot of the page, taken when a comment is posted.
   harness and when) while an address waits, else `null`. The page's next
   snapshot links pending addresses to its version (with their source), so
   the thread's `addressed_in` names the snapshot that shows the fix, and
-  clears them: a comment's snapshot that makes a new version links every
-  pending address of the page, and `POST /api/live/snapshots` links those of
-  the threads it names. Deleting the thread deletes its pending address.
+  clears them. Both routes that carry a snapshot follow one rule (ruling
+  2026-10-05: the snapshot names the pending threads it covers): a version
+  stored by `POST /api/live/threads` or `POST /api/live/snapshots` links the
+  pending addresses of the threads its `pending` field names, in the
+  transaction that stores it; other pending addresses wait for a later
+  snapshot. Deleting the thread deletes its pending address.
 - **`POST /api/live/snapshots`** (multipart, at most 24 MiB): `url`,
   optional `title`, `pending` (a JSON array of the thread IDs the caller saw
   pending when it serialized the page) and `snapshot` (at most 8 MiB, else

@@ -31,6 +31,9 @@ pub struct EnsuredPage {
     pub new_version: bool,
     /// Sessions a scope watch made watchers of the page in this call (Task 3).
     pub scoped_sessions: Vec<String>,
+    /// The threads whose pending addresses were linked to `version` in the
+    /// transaction that wrote it ([`Store::ensure_live_page_linking`]).
+    pub linked: Vec<String>,
 }
 
 /// How many times [`Store::store_snapshot`] tries to write a version while
@@ -203,6 +206,20 @@ impl Store {
         title: &str,
         snapshot: Option<&[u8]>,
     ) -> Result<EnsuredPage> {
+        self.ensure_live_page_linking(key, title, snapshot, &[])
+    }
+
+    /// [`Store::ensure_live_page`] that, when it writes a version, links to
+    /// it the threads of `pending` still pending on the page, in the
+    /// version's transaction (spec L11, as ruled 2026-10-05: a snapshot names
+    /// the pending threads it covers); other pending addresses stay pending.
+    pub fn ensure_live_page_linking(
+        &self,
+        key: &PageKey,
+        title: &str,
+        snapshot: Option<&[u8]>,
+        pending: &[String],
+    ) -> Result<EnsuredPage> {
         let (id, created) = self.with_tx(|tx| {
             if let Some(p) = page_by_key(tx, key)? {
                 return Ok((ArtifactId::parse(&p.artifact_id)?, false));
@@ -228,26 +245,30 @@ impl Store {
                 |r| r.get(0),
             )?)
         })?;
-        let (version, new_version) = if current == 0 {
+        let unchanged = |n: u32| -> Result<(Version, bool, Vec<String>)> {
+            Ok((
+                self.get_version(&id, n)?.ok_or(CoreError::NotFound)?,
+                false,
+                Vec::new(),
+            ))
+        };
+        let (version, new_version, linked) = if current == 0 {
             let html = snapshot
                 .map(<[u8]>::to_vec)
                 .unwrap_or_else(|| placeholder_html(key).into_bytes());
-            match self.write_snapshot(&id, 0, title, &html) {
-                Ok(v) => (v, true),
+            match self.write_snapshot(&id, 0, title, &html, pending) {
+                Ok((v, linked)) => (v, true, linked),
                 // Another first call wrote version 1 meanwhile: build on it.
                 Err(CoreError::Conflict { .. }) => match snapshot {
-                    Some(s) => self.store_snapshot(&id, title, s, false)?,
-                    None => (self.get_version(&id, 1)?.ok_or(CoreError::NotFound)?, false),
+                    Some(s) => self.snapshot_linking(&id, title, s, false, pending)?,
+                    None => unchanged(1)?,
                 },
                 Err(e) => return Err(e),
             }
         } else if let Some(s) = snapshot {
-            self.store_snapshot(&id, title, s, false)?
+            self.snapshot_linking(&id, title, s, false, pending)?
         } else {
-            (
-                self.get_version(&id, current)?.ok_or(CoreError::NotFound)?,
-                false,
-            )
+            unchanged(current)?
         };
         let artifact = self.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         Ok(EnsuredPage {
@@ -256,6 +277,7 @@ impl Store {
             created,
             new_version,
             scoped_sessions: Vec::new(),
+            linked,
         })
     }
 
@@ -277,6 +299,21 @@ impl Store {
         html: &[u8],
         force: bool,
     ) -> Result<(Version, bool)> {
+        self.snapshot_linking(id, title, html, force, &[])
+            .map(|(v, new, _)| (v, new))
+    }
+
+    /// [`Store::store_snapshot`], linking to a version it writes the threads
+    /// of `pending` still pending on the page, in the version's transaction;
+    /// also returns the linked thread IDs.
+    fn snapshot_linking(
+        &self,
+        id: &ArtifactId,
+        title: &str,
+        html: &[u8],
+        force: bool,
+        pending: &[String],
+    ) -> Result<(Version, bool, Vec<String>)> {
         let mut attempt = 1;
         loop {
             let a = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
@@ -294,11 +331,12 @@ impl Store {
                         self.get_version(id, a.current_version)?
                             .ok_or(CoreError::NotFound)?,
                         false,
+                        Vec::new(),
                     ));
                 }
             }
-            match self.write_snapshot(id, a.current_version, title, html) {
-                Ok(v) => return Ok((v, true)),
+            match self.write_snapshot(id, a.current_version, title, html, pending) {
+                Ok((v, linked)) => return Ok((v, true, linked)),
                 // Another snapshot took this version number: build on it.
                 Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
                 Err(e) => return Err(e),
@@ -421,17 +459,23 @@ impl Store {
         })
     }
 
-    /// Writes `html` as version `expected + 1` (its only file), noted `snapshot`.
+    /// Writes `html` as version `expected + 1` (its only file), noted
+    /// `snapshot`, linking to it, in its transaction, the threads of
+    /// `pending` still pending on the page; returns them with the version.
     fn write_snapshot(
         &self,
         id: &ArtifactId,
         expected: u32,
         title: &str,
         html: &[u8],
-    ) -> Result<Version> {
+        pending: &[String],
+    ) -> Result<(Version, Vec<String>)> {
         let p = snapshot_publish(expected, title, html)?;
-        let (_, v) = self.write_version(id, expected, &p, &BTreeMap::new(), None)?;
-        Ok(v)
+        let (_, v, linked) =
+            self.write_version_then(id, expected, &p, &BTreeMap::new(), None, |tx, n| {
+                link_pending_in(tx, id, n, Some(pending))
+            })?;
+        Ok((v, linked))
     }
 }
 
