@@ -614,6 +614,22 @@ impl Store {
         prev: &BTreeMap<String, FileMeta>,
         session_id: Option<&str>,
     ) -> Result<(Artifact, Version)> {
+        self.write_version_then(id, expected, p, prev, session_id, |_, _| Ok(()))
+            .map(|(a, v, ())| (a, v))
+    }
+
+    /// [`Store::write_version`], also running `then` in the version's
+    /// transaction once the version row and its links are written, with the
+    /// new version's number; an error from `then` rolls the version back.
+    pub(super) fn write_version_then<T>(
+        &self,
+        id: &ArtifactId,
+        expected: u32,
+        p: &ValidatedPublish,
+        prev: &BTreeMap<String, FileMeta>,
+        session_id: Option<&str>,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, u32) -> Result<T>,
+    ) -> Result<(Artifact, Version, T)> {
         let n = expected + 1;
         let carried: Vec<&String> = prev
             .keys()
@@ -679,6 +695,7 @@ impl Store {
                 params![id.as_str(), n, p.label, now, session_id, files_json, p.note],
             )?;
             link_version(tx, id.as_str(), n, p)?;
+            let extra = then(tx, n)?;
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3,
                     title = COALESCE(?4, title), description = COALESCE(?5, description), icon = COALESCE(?6, icon),
@@ -707,7 +724,7 @@ impl Store {
             fill_addresses(tx, id, std::slice::from_mut(&mut v))?;
             std::fs::rename(&staging.0, &vdir)?;
             renamed.store(true, std::sync::atomic::Ordering::Relaxed);
-            Ok((a, v))
+            Ok((a, v, extra))
         });
         if result.is_err() && renamed.load(std::sync::atomic::Ordering::Relaxed) {
             // Commit failed after the rename; no other writer can hold `n`

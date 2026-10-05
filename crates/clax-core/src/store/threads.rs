@@ -412,6 +412,40 @@ impl Store {
     /// `NotFound` when the thread or its artifact is gone; `invalid_author_kind`
     /// or `invalid_comment` for bad input.
     pub fn add_comment(&self, thread_id: &str, c: NewComment) -> Result<Comment> {
+        self.add_comment_then(thread_id, c, |_, _| Ok(()))
+    }
+
+    /// An agent reply `c` on thread `tid` of the live page `id` that also
+    /// records the thread's pending address (`explicit`, by `harness`; see
+    /// [`Store::mark_pending`]), in one transaction: both are written, or
+    /// neither.
+    ///
+    /// # Errors
+    /// As [`Store::add_comment`]; `NotFound` also when `tid` is not a thread of `id`.
+    pub fn add_addressed_reply(
+        &self,
+        id: &ArtifactId,
+        tid: &str,
+        c: NewComment,
+        harness: &str,
+    ) -> Result<Comment> {
+        self.add_comment_then(tid, c, |tx, t| {
+            if t.artifact_id != id.as_str() {
+                return Err(CoreError::NotFound);
+            }
+            super::live::mark_pending_in(tx, id, tid, "explicit", harness)?;
+            Ok(())
+        })
+    }
+
+    /// [`Store::add_comment`], running `then` with the thread in the
+    /// comment's transaction; an error from `then` writes nothing.
+    fn add_comment_then(
+        &self,
+        thread_id: &str,
+        c: NewComment,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+    ) -> Result<Comment> {
         if c.author_kind != AUTHOR_VIEWER && c.author_kind != AUTHOR_AGENT {
             return Err(CoreError::invalid(
                 "invalid_author_kind",
@@ -438,7 +472,7 @@ impl Store {
             created_at: Store::now(),
         };
         self.with_tx(|tx| {
-            thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
+            let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
                 "INSERT INTO comments (id, thread_id, author_kind, author_name, author_public_id, via_session_id, via_page, body, created_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
@@ -457,7 +491,7 @@ impl Store {
                     params![thread_id],
                 )?;
             }
-            Ok(())
+            then(tx, &t)
         })?;
         Ok(comment)
     }

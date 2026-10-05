@@ -851,11 +851,25 @@ async fn agent_reply(
     .unwrap()
 }
 
-async fn post_snapshot(ts: &TestServer, cookie: &str, html: &str) -> reqwest::Response {
+async fn post_snapshot(
+    ts: &TestServer,
+    cookie: &str,
+    html: &str,
+    pending: &[&str],
+) -> reqwest::Response {
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/")
         .text("title", "Home")
+        .text("pending", json!(pending).to_string())
         .text("snapshot", html.to_string());
+    post_snapshot_form(ts, cookie, form).await
+}
+
+async fn post_snapshot_form(
+    ts: &TestServer,
+    cookie: &str,
+    form: reqwest::multipart::Form,
+) -> reqwest::Response {
     ts.client
         .post(format!("{}/api/live/snapshots", ts.base))
         .header("cookie", format!("clax_viewer={cookie}"))
@@ -871,7 +885,9 @@ async fn an_addressed_reply_waits_for_the_next_snapshot_and_links_to_it() {
     let (aid, tid, sid) = sent_live_thread(&ts).await;
     let v = ts.viewer(Some("Mia")).await;
     assert_eq!(
-        post_snapshot(&ts, &v.cookie, "<p>x").await.status(),
+        post_snapshot(&ts, &v.cookie, "<p>x", &[&tid])
+            .await
+            .status(),
         409,
         "nothing pending yet"
     );
@@ -880,7 +896,7 @@ async fn an_addressed_reply_waits_for_the_next_snapshot_and_links_to_it() {
     let body: Value = res.json().await.unwrap();
     assert_eq!(body["addressed"], "pending");
     assert_eq!(body["thread"]["addressed_pending"]["harness"], "claude");
-    let snap: Value = post_snapshot(&ts, &v.cookie, "<!doctype html><p>v1</p>")
+    let snap: Value = post_snapshot(&ts, &v.cookie, "<!doctype html><p>v1</p>", &[&tid])
         .await
         .json()
         .await
@@ -899,7 +915,9 @@ async fn an_addressed_reply_waits_for_the_next_snapshot_and_links_to_it() {
     assert_eq!(t["thread"]["addressed_in"], json!([2]));
     assert!(t["thread"]["addressed_pending"].is_null());
     assert_eq!(
-        post_snapshot(&ts, &v.cookie, "<p>y").await.status(),
+        post_snapshot(&ts, &v.cookie, "<p>y", &[&tid])
+            .await
+            .status(),
         409,
         "the address was used up"
     );
@@ -1026,7 +1044,9 @@ async fn deleting_an_addressed_thread_drops_its_pending_address() {
     );
     let v = ts.viewer(Some("Mia")).await;
     assert_eq!(
-        post_snapshot(&ts, &v.cookie, "<p>x").await.status(),
+        post_snapshot(&ts, &v.cookie, "<p>x", &[&tid])
+            .await
+            .status(),
         409,
         "no address is left waiting"
     );
@@ -1113,6 +1133,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     assert_eq!(st, 200, "the token from the LAN sees it");
     let form = reqwest::multipart::Form::new()
         .text("url", "http://localhost:5173/")
+        .text("pending", "[]")
         .text("snapshot", "<p>");
     let st = ts
         .client
@@ -1135,6 +1156,120 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         .unwrap();
     assert_eq!(
         lan_get(format!("/_blob/{}", a.id)).await.unwrap().status(),
+        200
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_links_only_the_pending_threads_it_names() {
+    let ts = TestServer::spawn().await;
+    let (aid, a, sid) = sent_live_thread(&ts).await;
+    let v = ts.viewer(Some("Mia")).await;
+    let body: Value = post_thread(
+        &ts,
+        &v.cookie,
+        "http://localhost:5173/",
+        "<!doctype html><p>v1</p>",
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let b = body["thread"]["id"].as_str().unwrap().to_string();
+    let c = ts.thread(&aid, 1, "never addressed").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.send_thread(&aid, &b).await;
+    assert_eq!(agent_reply(&ts, &aid, &a, &sid, true).await.status(), 201);
+    assert_eq!(agent_reply(&ts, &aid, &b, &sid, true).await.status(), 201);
+    // The caller saw only `a` (and `c`, not pending) when it serialized.
+    let res = post_snapshot(&ts, &v.cookie, "<p>fixed a", &[&c, &a]).await;
+    assert_eq!(res.status(), 200);
+    let snap: Value = res.json().await.unwrap();
+    assert_eq!(snap["version"], 2);
+    assert_eq!(snap["linked"], json!([a]));
+    let tb: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{b}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(tb["thread"]["addressed_in"], json!([]));
+    assert_eq!(tb["thread"]["addressed_pending"]["harness"], "claude");
+    // Naming none of the pending threads writes nothing.
+    let res = post_snapshot(&ts, &v.cookie, "<p>x", &[&a, &c]).await;
+    assert_eq!(res.status(), 409);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "nothing_pending"
+    );
+    let page: Value = ts
+        .get(&format!("/api/artifacts/{aid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        page["artifact"]["current_version"], 2,
+        "no version for a 409"
+    );
+    // Two pending threads named together link oldest address first.
+    let d = ts.thread(&aid, 1, "d").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.send_thread(&aid, &d).await;
+    assert_eq!(agent_reply(&ts, &aid, &d, &sid, true).await.status(), 201);
+    let snap: Value = post_snapshot(&ts, &v.cookie, "<p>fixed b, d", &[&d, &b])
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(snap["version"], 3);
+    assert_eq!(snap["linked"], json!([b, d]));
+}
+
+#[tokio::test]
+async fn a_snapshot_refuses_fields_it_does_not_take() {
+    let ts = TestServer::spawn().await;
+    let (aid, tid, sid) = sent_live_thread(&ts).await;
+    assert_eq!(agent_reply(&ts, &aid, &tid, &sid, true).await.status(), 201);
+    let v = ts.viewer(Some("Mia")).await;
+    let base = || {
+        reqwest::multipart::Form::new()
+            .text("url", "http://localhost:5173/")
+            .text("pending", json!([tid]).to_string())
+            .text("snapshot", "<p>")
+    };
+    for extra in ["anchor", "body", "clip", "bogus"] {
+        let res = post_snapshot_form(&ts, &v.cookie, base().text(extra, "x")).await;
+        assert_eq!(res.status(), 400, "{extra}");
+        assert_eq!(
+            res.json::<Value>().await.unwrap()["error"]["code"],
+            "invalid_args",
+            "{extra}"
+        );
+    }
+    let no_pending = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("snapshot", "<p>");
+    let res = post_snapshot_form(&ts, &v.cookie, no_pending).await;
+    assert_eq!(res.status(), 400, "pending is required");
+    let bad = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("pending", "not json")
+        .text("snapshot", "<p>");
+    assert_eq!(post_snapshot_form(&ts, &v.cookie, bad).await.status(), 400);
+    let twice = base().text("pending", "[]");
+    assert_eq!(
+        post_snapshot_form(&ts, &v.cookie, twice).await.status(),
+        400,
+        "a field given twice"
+    );
+    // Nothing above wrote a version or used the address.
+    assert_eq!(
+        post_snapshot(&ts, &v.cookie, "<p>", &[&tid]).await.status(),
         200
     );
 }

@@ -1831,27 +1831,37 @@ versions is a snapshot of the page, taken when a comment is posted.
   (`POST .../threads/<tid>/comments` with `author_kind: "agent"`; the
   `comments_reply` tool's `addressed`) on a sent thread of a live page
   records a **pending address** (`explicit`) and answers `{comment, thread,
-  addressed: "pending"}`. `addressed: true` on a viewer comment, or on any
-  other artifact, is 400 `invalid_args` ("addressed is for live pages;
-  publish with addresses instead") and writes nothing. An agent resolve on a
+  addressed: "pending"}`; the reply and its pending address are written
+  together, or neither is. `addressed: true` on a viewer comment is 400
+  `invalid_args` ("addressed is only for agent replies"), and on any other
+  artifact 400 `invalid_args` ("addressed is for live pages; publish with
+  addresses instead"); either writes nothing. An agent resolve on a
   live page records a pending address (`resolve`) when the thread has no
   version link and no pending address yet, instead of linking the current
   version; an `explicit` address replaces a pending `resolve`. Every thread
   view carries `addressed_pending`: `{harness, at}` (the addressing agent's
   harness and when) while an address waits, else `null`. The page's next
-  snapshot links every pending address to its version (with its source), so
+  snapshot links pending addresses to its version (with their source), so
   the thread's `addressed_in` names the snapshot that shows the fix, and
-  clears them: a comment's snapshot that makes a new version does so, and so
-  does `POST /api/live/snapshots`. Deleting the thread deletes its pending
-  address.
+  clears them: a comment's snapshot that makes a new version links every
+  pending address of the page, and `POST /api/live/snapshots` links those of
+  the threads it names. Deleting the thread deletes its pending address.
 - **`POST /api/live/snapshots`** (multipart, at most 24 MiB): `url`,
-  `title`, `snapshot` (at most 8 MiB, else 400 `snapshot_too_large`). The
-  extension's snapshot of a page with pending addresses: always stored as a
-  new version, even when byte-identical to the current one, which every
-  pending address is linked to. It answers `{page, version, linked}` (the
-  linked thread IDs); 409 `nothing_pending` when the page has no pending
-  address or does not exist (it never creates a page). A viewer route, as
-  `POST /api/live/threads` is.
+  optional `title`, `pending` (a JSON array of the thread IDs the caller saw
+  pending when it serialized the page) and `snapshot` (at most 8 MiB, else
+  400 `snapshot_too_large`). A missing required field, a field given twice,
+  `pending` that is not an array of strings, or any other field (`anchor`,
+  `body`, `clip`, …) is 400 `invalid_args`. The extension's snapshot of a
+  page with pending addresses (ruling 2026-10-05: the snapshot names the
+  pending threads it covers): when some thread of `pending` still has a
+  pending address on the page, the snapshot is stored as a new version, even
+  when byte-identical to the current one, and those threads' addresses are
+  linked to it; other pending addresses wait for a later snapshot. The
+  check, the version and the links are one transaction. It answers `{page,
+  version, linked}` (the linked thread IDs, oldest address first); 409
+  `nothing_pending`, writing nothing, when none of `pending` is pending on
+  the page or the page does not exist (it never creates a page). A viewer
+  route, as `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
   (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its usual
   policy, a second `Content-Security-Policy`: `script-src

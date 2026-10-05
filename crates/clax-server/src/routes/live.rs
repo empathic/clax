@@ -301,28 +301,94 @@ fn link_pending(
     Ok(linked)
 }
 
-/// `POST /api/live/snapshots` (multipart `url`, `title`, `snapshot`): the
-/// extension's snapshot of a page with pending addresses (spec L11). Always
-/// a new version, even when identical to the current one, linking every
-/// pending address to it; answers `{page, version, linked}` (the linked
-/// thread IDs). 409 `nothing_pending` when the page has no pending address
-/// or does not exist; this route never creates a page.
+/// The fields of a `POST /api/live/snapshots`.
+struct SnapshotFields {
+    url: String,
+    title: Option<String>,
+    pending: Vec<String>,
+    snapshot: Vec<u8>,
+}
+
+/// Reads a `POST /api/live/snapshots`: `url`, `pending` (a JSON array of
+/// thread IDs) and `snapshot` are required, `title` is optional; any other
+/// field, or one given twice, is 400 `invalid_args`.
+async fn read_snapshot_fields(mut mp: Multipart) -> Result<SnapshotFields, ApiError> {
+    let (mut url, mut title, mut pending, mut snapshot) = (None, None, None, None);
+    while let Some(field) = mp
+        .next_field()
+        .await
+        .map_err(|e| multipart_error(e.status(), e.body_text()))?
+    {
+        let name = field.name().unwrap_or("").to_string();
+        if !matches!(name.as_str(), "url" | "title" | "pending" | "snapshot") {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                format!(
+                    "unknown field '{name}': a snapshot takes url, title, pending and snapshot"
+                ),
+            ));
+        }
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| multipart_error(e.status(), e.body_text()))?;
+        if name == "snapshot" && bytes.len() > MAX_SNAPSHOT {
+            return Err(ApiError::bad_request(
+                "snapshot_too_large",
+                "a snapshot is at most 8 MiB",
+            ));
+        }
+        let text = || {
+            String::from_utf8(bytes.to_vec()).map_err(|_| {
+                ApiError::bad_request("invalid_args", format!("field '{name}' is not UTF-8"))
+            })
+        };
+        let twice = match name.as_str() {
+            "url" => url.replace(text()?).is_some(),
+            "title" => title.replace(text()?).is_some(),
+            "pending" => {
+                let ids: Vec<String> = serde_json::from_str(&text()?).map_err(|_| {
+                    ApiError::bad_request("invalid_args", "pending is a JSON array of thread IDs")
+                })?;
+                pending.replace(ids).is_some()
+            }
+            _ => snapshot.replace(bytes.to_vec()).is_some(),
+        };
+        if twice {
+            return Err(ApiError::bad_request(
+                "invalid_args",
+                format!("field '{name}' is given twice"),
+            ));
+        }
+    }
+    let required =
+        |f: &str| ApiError::bad_request("invalid_args", format!("field '{f}' is required"));
+    Ok(SnapshotFields {
+        url: url.ok_or_else(|| required("url"))?,
+        title,
+        pending: pending.ok_or_else(|| required("pending"))?,
+        snapshot: snapshot.ok_or_else(|| required("snapshot"))?,
+    })
+}
+
+/// `POST /api/live/snapshots` (multipart `url`, `title`, `pending`,
+/// `snapshot`): the extension's snapshot of a page with pending addresses
+/// (spec L11). `pending` names the threads the extension saw pending when it
+/// serialized the page; of those, the ones still pending on the page are
+/// linked to the snapshot, stored as a new version even when identical to
+/// the current one, and any other pending address waits for a later
+/// snapshot. The check, the version and the links are one transaction.
+/// Answers `{page, version, linked}` (the linked thread IDs, oldest address
+/// first); 409 `nothing_pending`, writing nothing, when none of `pending` is
+/// pending or the page does not exist; this route never creates a page.
 pub async fn snapshot(
     State(s): State<AppState>,
     _o: SameOrigin,
     mp: Result<Multipart, MultipartRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
-    let f = read_fields(mp).await?;
-    let pu = page_url(
-        &s,
-        f.url
-            .as_deref()
-            .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'url' is required"))?,
-    )?;
-    let html = f
-        .snapshot
-        .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'snapshot' is required"))?;
+    let f = read_snapshot_fields(mp).await?;
+    let pu = page_url(&s, &f.url)?;
     let title = clean_title(f.title.as_deref().unwrap_or(""), &pu.key.page_url());
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
@@ -333,10 +399,10 @@ pub async fn snapshot(
                 return Ok(None);
             };
             let id = ArtifactId::parse(&p.artifact_id)?;
-            if !st.has_pending(&id)? {
+            let Some((v, linked)) = st.snapshot_pending(&id, &title, &f.snapshot, &f.pending)?
+            else {
                 return Ok(None);
-            }
-            let (v, _) = st.store_snapshot(&id, &title, &html, true)?;
+            };
             let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
             events.publish(Event::Version {
                 artifact_id: a.id.clone(),
@@ -345,7 +411,11 @@ pub async fn snapshot(
                 title: Some(a.title.clone()),
                 at: Some(v.created_at.clone()),
             });
-            let linked = link_pending(st, &ctx, &id, v.n)?;
+            for tid in &linked {
+                if let Some(t) = st.get_thread(tid)? {
+                    publish_thread(&ctx, st, &t)?;
+                }
+            }
             Ok(Some((p, a, v.n, linked)))
         })
         .await?;
@@ -353,7 +423,7 @@ pub async fn snapshot(
         return Err(ApiError::new(
             StatusCode::CONFLICT,
             "nothing_pending",
-            "the page has no address waiting for a snapshot",
+            "none of the named threads has an address waiting for a snapshot",
         ));
     };
     Ok(Json(json!({

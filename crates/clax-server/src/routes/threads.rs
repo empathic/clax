@@ -458,20 +458,19 @@ pub async fn comment(
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_REPLY));
                 }
-                let c = st.add_comment(
-                    &tid,
-                    NewComment {
-                        author_public_id: None,
-                        author_kind: AUTHOR_AGENT,
-                        author_name: sess.harness.clone(),
-                        via_session_id: Some(sess.id.clone()),
-                        body: b.body,
-                        via_page: false,
-                    },
-                )?;
-                if addressed {
-                    st.mark_pending(&id, &tid, "explicit", &sess.harness)?;
-                }
+                let reply = NewComment {
+                    author_public_id: None,
+                    author_kind: AUTHOR_AGENT,
+                    author_name: sess.harness.clone(),
+                    via_session_id: Some(sess.id.clone()),
+                    body: b.body,
+                    via_page: false,
+                };
+                let c = if addressed {
+                    st.add_addressed_reply(&id, &tid, reply, &sess.harness)?
+                } else {
+                    st.add_comment(&tid, reply)?
+                };
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
                 let changed = ctx.working.thread_done(&sess.id, id.as_str(), &tid);
                 crate::working::announce(&ctx.events, &ctx.working, &changed);

@@ -68,7 +68,7 @@ L15 (2026-10-05); their rows say so.
 | L8 | Comment mode is entered only by a gesture that grants `activeTab`: the toolbar icon, the keyboard command (Alt+Shift+C) or the page's context menu entry. The side panel's Comment button works while the tab already holds `activeTab` and otherwise says how to start. A plain key (such as C) is never taken from the page. | Owner decision (2026-10-05), as proposed. `captureVisibleTab` needs `activeTab` or `<all_urls>`; per-origin host permissions are not enough. `<all_urls>` would ask for every site at install. |
 | L9 | Snapshots are sanitized in the extension (§8.2) and served by the daemon with a second Content-Security-Policy that lets only the daemon's own `/_clax/` scripts run. Comment mode is off in the shell for live pages. | Page content is hostile. The client sanitizer removes secrets and scripts; the policy guarantees nothing the page wrote can run even if the sanitizer misses something, without a server-side HTML parser. |
 | L10 | Live pages are visible only to loopback peers and requests with the token. A daemon bound to the LAN serves LAN viewers its artifacts as today, and never its live pages. | Agents publish artifacts for people to see; live-page snapshots are of whatever the person browses. They must not reach the LAN. |
-| L11 | "Addressed" on a live page: the agent marks a thread addressed with `comments_reply` and `addressed: true` (or resolves it), which records a **pending address**. The next snapshot of the page links every pending address to its version, so the thread reads "addressed in vN" with the page as it looked after the fix. The extension takes that snapshot itself (DOM only, no screenshot) when the page is open, visible and has pending addresses, once the DOM has been quiet for 1 s. | There is no publish on a live page. Linking to the snapshot that shows the fix keeps Echo's meaning of "addressed in vN" (a version that handled the thread) and works for hot reloads, which change the page without a version. |
+| L11 | "Addressed" on a live page: the agent marks a thread addressed with `comments_reply` and `addressed: true` (or resolves it), which records a **pending address**. The next snapshot of the page links every pending address to its version, so the thread reads "addressed in vN" with the page as it looked after the fix. The extension takes that snapshot itself (DOM only, no screenshot) when the page is open, visible and has pending addresses, once the DOM has been quiet for 1 s. Ruling 2026-10-05: the snapshot names the pending threads it covers. The extension reads the pending thread IDs from the page state before it serializes the page and sends them with the snapshot; only those still pending are linked, and an address made after the serialization waits for the next snapshot. | There is no publish on a live page. Linking to the snapshot that shows the fix keeps Echo's meaning of "addressed in vN" (a version that handled the thread) and works for hot reloads, which change the page without a version. |
 | L12 | `publish` refuses a live page (400 `live_page`). `read`, `list`, `delete`, `comments_*`, `working`, `watch` and `wait_for_feedback` work on it. | Snapshots come from the browser; an agent publishing a page under a live page's ID would break the timeline. |
 | L13 | The extension's files are embedded in the `clax` binary and written by `clax extension install`, which `clax init` runs. The extension compares its manifest version with the daemon's on pairing and calls `chrome.runtime.reload()` once per new version, which reloads an unpacked extension from disk. | After an upgrade the person never visits `chrome://extensions` again. |
 | L14 | The native host is launched through a script in `~/.clax/extension/host/` that execs a copy of the plugins' wrapper (`ensure-clax.sh exec native-host`), with `CLAX_HOME` fixed to the home that installed it. | A host manifest names one absolute path with no arguments. The wrapper already finds the right binary (`CLAX_BIN`, the `bin` setting, the pinned release) and survives upgrades that remove old version directories. |
@@ -614,11 +614,16 @@ Every request from the worker carries `Origin: chrome-extension://<ID>`
   its scope-watch materialization), stores the snapshot (§8.3), creates the
   thread on the resulting version with `route` set, handles `@agent`, and
   answers `201 {thread, page, version, clip_error?}`.
-- `POST /api/live/snapshots` (multipart): `url`, `title`, `snapshot`.
-  Refused with 409 `nothing_pending` unless the page has pending addresses;
-  otherwise stores the snapshot as a new version (even when identical, so the
-  link has a version after the address), links the pending addresses, and
-  answers `{page, version, linked: [thread IDs]}`.
+- `POST /api/live/snapshots` (multipart): `url`, `title`, `pending` (a
+  JSON array of the thread IDs the extension saw pending when it serialized
+  the page), `snapshot`; any other field is 400 `invalid_args`. Refused with
+  409 `nothing_pending`, writing nothing, unless some thread of `pending`
+  still has a pending address on the page; otherwise stores the snapshot as
+  a new version (even when identical, so the link has a version after the
+  address), links those threads' pending addresses (others stay pending),
+  and answers `{page, version, linked: [thread IDs]}`. The check, the
+  version and the links are one transaction. (Ruling 2026-10-05: the
+  snapshot names the pending threads it covers.)
 
 The gateway also admits, for live-page artifacts only: `GET
 /api/artifacts/<aid>`, `GET …/threads`, `GET …/threads/<tid>`, `GET

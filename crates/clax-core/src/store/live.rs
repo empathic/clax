@@ -4,10 +4,10 @@
 use super::Store;
 use crate::live::{KIND_LIVE, PageKey, placeholder_html};
 use crate::model::{Artifact, CONTRACT_VERSION, Version};
-use crate::publish::{Encoding, FileInput, INDEX, PublishRequest};
+use crate::publish::{Encoding, FileInput, INDEX, PublishRequest, ValidatedPublish};
 use crate::{ArtifactId, CoreError, Result};
 use base64::Engine as _;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -53,6 +53,101 @@ fn page_by_key(c: &Connection, key: &PageKey) -> Result<Option<LivePage>> {
         row_to_page,
     )
     .optional()?)
+}
+
+/// The publish of a snapshot: `html` as the only file of version
+/// `expected + 1`, titled `title`, noted `snapshot`.
+fn snapshot_publish(expected: u32, title: &str, html: &[u8]) -> Result<ValidatedPublish> {
+    crate::publish::validate(PublishRequest {
+        title: Some(title.to_string()),
+        note: Some("snapshot".to_string()),
+        if_version: Some(expected),
+        files: BTreeMap::from([(
+            INDEX.to_string(),
+            Some(FileInput {
+                content: base64::engine::general_purpose::STANDARD.encode(html),
+                encoding: Encoding::Base64,
+                content_type: None,
+            }),
+        )]),
+        ..Default::default()
+    })
+}
+
+/// [`Store::mark_pending`] inside a transaction.
+pub(crate) fn mark_pending_in(
+    tx: &Transaction<'_>,
+    id: &ArtifactId,
+    tid: &str,
+    source: &str,
+    harness: &str,
+) -> Result<bool> {
+    if source == "resolve" {
+        let linked: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1)
+                OR EXISTS(SELECT 1 FROM live_pending WHERE thread_id = ?1)",
+            params![tid],
+            |r| r.get(0),
+        )?;
+        if linked {
+            return Ok(false);
+        }
+    }
+    tx.execute(
+        "INSERT INTO live_pending (artifact_id, thread_id, source, harness, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(artifact_id, thread_id) DO UPDATE SET source = excluded.source,
+            harness = excluded.harness, created_at = excluded.created_at",
+        params![id.as_str(), tid, source, harness, Store::now()],
+    )?;
+    Ok(true)
+}
+
+/// Whether any thread of `tids` has a pending address on the live page `id`.
+fn any_pending(c: &Connection, id: &ArtifactId, tids: &[String]) -> Result<bool> {
+    let arr = serde_json::to_string(tids).expect("strings serialise");
+    Ok(c.query_row(
+        "SELECT EXISTS(SELECT 1 FROM json_each(?2) j
+            JOIN live_pending lp ON lp.thread_id = j.value WHERE lp.artifact_id = ?1)",
+        params![id.as_str(), arr],
+        |r| r.get(0),
+    )?)
+}
+
+/// Links the pending addresses of the live page `id` (only those of the
+/// threads `only` names, when given) to its version `n`, each with its
+/// source, and deletes them; returns the linked thread IDs, oldest address
+/// first.
+fn link_pending_in(
+    tx: &Transaction<'_>,
+    id: &ArtifactId,
+    n: u32,
+    only: Option<&[String]>,
+) -> Result<Vec<String>> {
+    let only = only.map(|t| serde_json::to_string(t).expect("strings serialise"));
+    let ids: Vec<String> = {
+        let mut st = tx.prepare(
+            "SELECT thread_id FROM live_pending
+             WHERE artifact_id = ?1 AND (?2 IS NULL OR thread_id IN (SELECT value FROM json_each(?2)))
+             ORDER BY created_at, thread_id",
+        )?;
+        st.query_map(params![id.as_str(), only], |r| r.get(0))?
+            .collect::<rusqlite::Result<_>>()?
+    };
+    let now = Store::now();
+    for tid in &ids {
+        tx.execute(
+            "INSERT OR IGNORE INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
+             SELECT artifact_id, ?2, thread_id, source, ?3 FROM live_pending
+             WHERE artifact_id = ?1 AND thread_id = ?4",
+            params![id.as_str(), n, now, tid],
+        )?;
+        tx.execute(
+            "DELETE FROM live_pending WHERE artifact_id = ?1 AND thread_id = ?2",
+            params![id.as_str(), tid],
+        )?;
+    }
+    Ok(ids)
 }
 
 impl Store {
@@ -227,27 +322,7 @@ impl Store {
         source: &str,
         harness: &str,
     ) -> Result<bool> {
-        self.with_tx(|tx| {
-            if source == "resolve" {
-                let linked: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1)
-                        OR EXISTS(SELECT 1 FROM live_pending WHERE thread_id = ?1)",
-                    params![tid],
-                    |r| r.get(0),
-                )?;
-                if linked {
-                    return Ok(false);
-                }
-            }
-            tx.execute(
-                "INSERT INTO live_pending (artifact_id, thread_id, source, harness, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT(artifact_id, thread_id) DO UPDATE SET source = excluded.source,
-                    harness = excluded.harness, created_at = excluded.created_at",
-                params![id.as_str(), tid, source, harness, Store::now()],
-            )?;
-            Ok(true)
-        })
+        self.with_tx(|tx| mark_pending_in(tx, id, tid, source, harness))
     }
 
     /// Links every pending address of the live page `id` to its version `n`
@@ -257,27 +332,63 @@ impl Store {
     /// # Errors
     /// Database errors only.
     pub fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
-        self.with_tx(|tx| {
-            let ids: Vec<String> = {
-                let mut st = tx.prepare(
-                    "SELECT thread_id FROM live_pending WHERE artifact_id = ?1
-                     ORDER BY created_at, thread_id",
-                )?;
-                st.query_map(params![id.as_str()], |r| r.get(0))?
-                    .collect::<rusqlite::Result<_>>()?
-            };
-            tx.execute(
-                "INSERT OR IGNORE INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
-                 SELECT artifact_id, ?2, thread_id, source, ?3 FROM live_pending WHERE artifact_id = ?1
-                 ORDER BY created_at, thread_id",
-                params![id.as_str(), n, Store::now()],
-            )?;
-            tx.execute(
-                "DELETE FROM live_pending WHERE artifact_id = ?1",
-                params![id.as_str()],
-            )?;
-            Ok(ids)
-        })
+        self.with_tx(|tx| link_pending_in(tx, id, n, None))
+    }
+
+    /// Stores `html` as a new version of the live page `id` (even when
+    /// identical to the current one) and links to it the threads of
+    /// `pending` that still have a pending address on the page (spec L11, as
+    /// ruled 2026-10-05: the snapshot names the pending threads it covers).
+    /// The check, the version and the links are one transaction. Returns the
+    /// version and the linked thread IDs (oldest address first), or `None`,
+    /// writing nothing, when none of `pending` is pending. Other pending
+    /// addresses stay pending.
+    ///
+    /// # Errors
+    /// As [`Store::store_snapshot`].
+    pub fn snapshot_pending(
+        &self,
+        id: &ArtifactId,
+        title: &str,
+        html: &[u8],
+        pending: &[String],
+    ) -> Result<Option<(Version, Vec<String>)>> {
+        const NONE_PENDING: &str = "nothing_pending";
+        if !self.with_read(|c| any_pending(c, id, pending))? {
+            return Ok(None);
+        }
+        let mut attempt = 1;
+        loop {
+            let a = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+            if a.kind != KIND_LIVE {
+                return Err(CoreError::invalid(
+                    "not_live",
+                    format!("{id} is not a live page"),
+                ));
+            }
+            let p = snapshot_publish(a.current_version, title, html)?;
+            let written = self.write_version_then(
+                id,
+                a.current_version,
+                &p,
+                &BTreeMap::new(),
+                None,
+                |tx, n| {
+                    let linked = link_pending_in(tx, id, n, Some(pending))?;
+                    if linked.is_empty() {
+                        // Rolls the version back: nothing named is pending now.
+                        return Err(CoreError::invalid(NONE_PENDING, "nothing pending"));
+                    }
+                    Ok(linked)
+                },
+            );
+            match written {
+                Ok((_, v, linked)) => return Ok(Some((v, linked))),
+                Err(CoreError::Invalid { code, .. }) if code == NONE_PENDING => return Ok(None),
+                Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
+                Err(e) => return Err(e),
+            }
+        }
     }
 
     /// The pending address of thread `tid`: the addressing agent's harness
@@ -318,20 +429,7 @@ impl Store {
         title: &str,
         html: &[u8],
     ) -> Result<Version> {
-        let p = crate::publish::validate(PublishRequest {
-            title: Some(title.to_string()),
-            note: Some("snapshot".to_string()),
-            if_version: Some(expected),
-            files: BTreeMap::from([(
-                INDEX.to_string(),
-                Some(FileInput {
-                    content: base64::engine::general_purpose::STANDARD.encode(html),
-                    encoding: Encoding::Base64,
-                    content_type: None,
-                }),
-            )]),
-            ..Default::default()
-        })?;
+        let p = snapshot_publish(expected, title, html)?;
         let (_, v) = self.write_version(id, expected, &p, &BTreeMap::new(), None)?;
         Ok(v)
     }
@@ -593,5 +691,119 @@ mod tests {
         st.delete_thread(&tid).unwrap();
         assert!(st.pending_address(&tid).unwrap().is_none());
         assert!(!st.has_pending(&id).unwrap());
+    }
+    /// A second thread on the live page `id`, version 1.
+    fn another_thread(st: &Store, id: &ArtifactId) -> String {
+        let anchor: crate::Anchor = serde_json::from_value(serde_json::json!({
+            "kind": "element", "selector": "main", "file": "index.html"
+        }))
+        .unwrap();
+        st.create_thread(
+            id,
+            crate::store::threads::NewThread {
+                author_public_id: None,
+                version_n: 1,
+                anchor,
+                author_name: "B".into(),
+                body: "y".into(),
+                clip: None,
+                via_page: false,
+            },
+        )
+        .unwrap()
+        .id
+    }
+
+    #[test]
+    fn a_pending_snapshot_links_only_the_named_threads_still_pending() {
+        let (_d, st) = store();
+        let (id, a) = live_thread(&st);
+        let b = another_thread(&st, &id);
+        let c = another_thread(&st, &id);
+        st.mark_pending(&id, &a, "explicit", "claude").unwrap();
+        st.mark_pending(&id, &b, "resolve", "codex").unwrap();
+        let (v, linked) = st
+            .snapshot_pending(&id, "p", b"<p>1", &[b.clone(), a.clone(), c.clone()])
+            .unwrap()
+            .expect("two named threads are pending");
+        assert_eq!(v.n, 2);
+        assert_eq!(linked, vec![a.clone(), b.clone()], "oldest address first");
+        assert_eq!(v.addresses, vec![a.clone(), b.clone()]);
+        assert_eq!(link_source(&st, &b).as_deref(), Some("resolve"));
+        assert!(st.addressed_in(&c).unwrap().is_empty());
+        assert!(!st.has_pending(&id).unwrap());
+    }
+
+    #[test]
+    fn an_unnamed_address_waits_for_a_later_snapshot() {
+        let (_d, st) = store();
+        let (id, a) = live_thread(&st);
+        let b = another_thread(&st, &id);
+        st.mark_pending(&id, &a, "explicit", "claude").unwrap();
+        st.mark_pending(&id, &b, "explicit", "claude").unwrap();
+        let (_, linked) = st
+            .snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&a))
+            .unwrap()
+            .unwrap();
+        assert_eq!(linked, vec![a.clone()]);
+        assert_eq!(st.pending_address(&b).unwrap().unwrap().0, "claude");
+        let (v, linked) = st
+            .snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&b))
+            .unwrap()
+            .unwrap();
+        assert_eq!((v.n, linked), (3, vec![b.clone()]));
+    }
+
+    #[test]
+    fn a_snapshot_naming_nothing_pending_writes_no_version() {
+        let (_d, st) = store();
+        let (id, a) = live_thread(&st);
+        let b = another_thread(&st, &id);
+        st.mark_pending(&id, &b, "explicit", "claude").unwrap();
+        assert!(
+            st.snapshot_pending(&id, "p", b"<p>1", std::slice::from_ref(&a))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            st.snapshot_pending(&id, "p", b"<p>1", &[])
+                .unwrap()
+                .is_none()
+        );
+        let a_ = st.get_artifact(&id).unwrap().unwrap();
+        assert_eq!(a_.current_version, 1, "no version was written");
+        assert!(!st.home().version_dir(&id, 2).exists());
+        assert!(st.pending_address(&b).unwrap().is_some());
+    }
+
+    #[test]
+    fn an_addressed_reply_writes_its_comment_and_its_mark_together() {
+        let (_d, st) = store();
+        let (id, tid) = live_thread(&st);
+        let reply = |body: &str| crate::store::threads::NewComment {
+            author_kind: crate::store::threads::AUTHOR_AGENT,
+            author_name: "claude".into(),
+            author_public_id: None,
+            via_session_id: None,
+            body: body.into(),
+            via_page: false,
+        };
+        let c = st
+            .add_addressed_reply(&id, &tid, reply("Fixed"), "claude")
+            .unwrap();
+        assert_eq!(c.body, "Fixed");
+        assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
+        // A thread of another page: neither the comment nor a mark is written.
+        let (other, _) = {
+            let e = st.ensure_live_page(&key("/q"), "q", None).unwrap();
+            (ArtifactId::parse(&e.artifact.id).unwrap(), ())
+        };
+        let b = another_thread(&st, &id);
+        let err = st
+            .add_addressed_reply(&other, &b, reply("Fixed"), "claude")
+            .unwrap_err();
+        assert!(matches!(err, crate::CoreError::NotFound));
+        assert!(st.pending_address(&b).unwrap().is_none());
+        assert_eq!(st.get_thread(&b).unwrap().unwrap().comments.len(), 1);
     }
 }
