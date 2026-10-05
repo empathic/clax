@@ -326,3 +326,4 @@ lanes with web e2e beside the rest (about 55 s), then the perf gates alone
   round cannot fail it). With the attention queries' planner hints removed,
   the quick daemon latency gate failed `attention alone` at about 460 ms
   against its 50 ms limit.
+- e2e flakes under load (not fake-exe): subpages.spec.ts:95 page URL check; changelog.spec.ts:23 .thread-pin.addressed not found in 5s (seen 2026-10-05 at load 20-35)
