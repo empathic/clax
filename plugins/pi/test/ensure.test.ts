@@ -1,12 +1,13 @@
 // The `ensure` tests, in a file of their own so that Vitest runs them
 // alongside the extension's tests: one holds the start lock for 12 s.
 import { execFileSync, spawn } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { binaryVersion, ensure, findBinary, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
 import { buildClax, claxBin } from "./daemon-fixture.ts";
+import { fakeExe } from "./fake-exe.ts";
 
 let scratch: string;
 
@@ -67,8 +68,7 @@ describe("ensure", () => {
     writeFileSync(join(home, "config.toml"), `bin = "${claxBin}"\n`);
     const onPath = join(scratch, "path-bin");
     mkdirSync(onPath, { recursive: true });
-    writeFileSync(join(onPath, "clax"), "#!/bin/sh\necho 'clax 0.0.1'\n");
-    chmodSync(join(onPath, "clax"), 0o755);
+    fakeExe(join(onPath, "clax"), "#!/bin/sh\necho 'clax 0.0.1'\n");
     const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${onPath}:${process.env.PATH}` };
     delete env.CLAX_BIN;
     expect(await findBinary(home, env)).toBe(claxBin);
@@ -94,8 +94,7 @@ describe("ensure", () => {
 
   it("reads a binary's version only when it reports itself as clax", async () => {
     const other = join(scratch, "other-clax");
-    writeFileSync(other, "#!/bin/sh\necho 'other 1.0'\n");
-    chmodSync(other, 0o755);
+    fakeExe(other, "#!/bin/sh\necho 'other 1.0'\n");
     expect(await binaryVersion(other)).toBeNull();
     expect(await binaryVersion(join(scratch, "no-such-clax"))).toBeNull();
     const version = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;

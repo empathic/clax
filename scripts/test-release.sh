@@ -5,6 +5,8 @@
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 T="$(cd "$(mktemp -d)" && pwd -P)"
+# shellcheck source=scripts/fake-exe.sh
+. "$HERE/scripts/fake-exe.sh"
 SERVER_PID=""
 # shellcheck disable=SC2329 # run by the EXIT trap
 cleanup() {
@@ -90,8 +92,7 @@ elif echo "$out" | grep -q "is not a release version"; then pass "a bad version 
 else fail "a bad version is refused ($out)"; fi
 
 mkdir -p "$T/bin"
-printf '#!/bin/sh\necho "clax 1.2.3"\n' > "$T/bin/clax"
-chmod +x "$T/bin/clax"
+printf '#!/bin/sh\necho "clax 1.2.3"\n' | fake_exe "$T/bin/clax"
 "$T/scripts/package-release.sh" archive 1.2.3 x86_64-unknown-linux-musl "$T/bin/clax" "$T/dist" >/dev/null
 list="$(tar -tzf "$T/dist/clax-1.2.3-x86_64-unknown-linux-musl.tar.gz" | sed 's#/$##' | sort)"
 if [ "$list" = "$(printf 'clax-1.2.3-x86_64-unknown-linux-musl\nclax-1.2.3-x86_64-unknown-linux-musl/clax')" ]; then
@@ -115,8 +116,7 @@ else fail "SHA256SUMS covers every other file and verifies"; fi
 PY="$(python3 -c 'import sys; print(sys.executable)')"
 REL="$T/rel"
 mkdir -p "$REL/good/v$V" "$REL/good/v0.0.1"
-printf '#!/bin/sh\necho "clax %s"\n' "$V" > "$T/bin/clax-v"
-chmod +x "$T/bin/clax-v"
+printf '#!/bin/sh\necho "clax %s"\n' "$V" | fake_exe "$T/bin/clax-v"
 for t in aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl; do
     "$T/scripts/package-release.sh" archive "$V" "$t" "$T/bin/clax-v" "$REL/good/v$V" > /dev/null
 done

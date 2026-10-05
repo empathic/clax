@@ -19,24 +19,13 @@ impl Env {
     /// listed in `fail`. Given `plugin list --json`, a fake prints
     /// `grok-list.json`, else `[]`.
     fn new(harnesses: &[&str]) -> Env {
-        use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
         let bin = dir.path().join("fakebin");
-        std::fs::create_dir_all(&bin).unwrap();
         for h in harnesses {
-            let p = bin.join(h);
-            std::fs::write(
-                &p,
-                format!(
-                    "#!/bin/sh\nline=\"{h} $*\"\necho \"$line\" >> '{calls}'\npwd -P >> '{cwds}'\nif grep -qxF \"$line\" '{fail}' 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nif [ \"$*\" = \"plugin list --json\" ]; then cat '{list}' 2>/dev/null || echo '[]'; fi\nexit 0\n",
-                    calls = dir.path().join("calls").display(),
-                    cwds = dir.path().join("cwds").display(),
-                    fail = dir.path().join("fail").display(),
-                    list = dir.path().join("grok-list.json").display(),
-                ),
-            )
-            .unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            clax_fake_exe::install(
+                &bin.join(h),
+                "#!/bin/sh\nd=\"${0%/*}/..\"\nline=\"${0##*/} $*\"\necho \"$line\" >> \"$d/calls\"\npwd -P >> \"$d/cwds\"\nif grep -qxF \"$line\" \"$d/fail\" 2>/dev/null; then echo \"$line failed\" >&2; exit 1; fi\nif [ \"$*\" = \"plugin list --json\" ]; then cat \"$d/grok-list.json\" 2>/dev/null || echo '[]'; fi\nexit 0\n",
+            );
         }
         Env { dir }
     }

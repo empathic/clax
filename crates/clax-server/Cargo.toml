@@ -46,6 +46,7 @@ bytes = "1"
 sha2 = "0.11"
 reqwest = { workspace = true, features = ["stream"] }
 tempfile.workspace = true
+clax-fake-exe = { path = "../clax-fake-exe" }
 chrono.workspace = true
 rusqlite.workspace = true
 tokio = { workspace = true, features = ["full"] }

@@ -2,26 +2,20 @@ mod common;
 use clax_server::push::{CodexPush, CodexSource};
 use common::TestServer;
 use serde_json::{Value, json};
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A fake `codex` that records `CODEX_HOME`, then its arguments (`args.txt`
-/// appears complete, last), sleeps, and exits with `exit`.
+/// A fake `codex` in `dir` that records `CODEX_HOME` (`codex_home.txt`),
+/// then its arguments (`args.txt`, which appears complete, last), both
+/// beside itself, sleeps, and exits with `exit`.
 fn fake_codex(dir: &Path, exit: i32, sleep_s: u32) -> PathBuf {
-    let bin = dir.join("codex");
-    std::fs::write(
-        &bin,
-        format!(
-            "#!/bin/sh\nprintf '%s' \"${{CODEX_HOME:-}}\" > '{home}'\nprintf '%s\\n' \"$@\" > '{args}.tmp'\nmv '{args}.tmp' '{args}'\nsleep {sleep_s}\nexit {exit}\n",
-            args = dir.join("args.txt").display(),
-            home = dir.join("codex_home.txt").display()
+    clax_fake_exe::install(
+        &dir.join("codex"),
+        &format!(
+            "#!/bin/sh\nd=\"$(dirname \"$0\")\"\nprintf '%s' \"${{CODEX_HOME:-}}\" > \"$d/codex_home.txt\"\nprintf '%s\\n' \"$@\" > \"$d/args.txt.tmp\"\nmv \"$d/args.txt.tmp\" \"$d/args.txt\"\nsleep {sleep_s}\nexit {exit}\n"
         ),
     )
-    .unwrap();
-    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-    bin
 }
 
 async fn server(bin: Option<PathBuf>, timeout: Duration) -> TestServer {

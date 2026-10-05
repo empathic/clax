@@ -85,10 +85,7 @@ const FAKE: &str = "#!/bin/bash\n\"$CLAX_TEST_BIN\" --port 0 mcp --agent claude\
 impl FakeClaude {
     fn launch(flags: &[&str]) -> FakeClaude {
         let dir = tempfile::tempdir().unwrap();
-        let script = dir.path().join("claude");
-        std::fs::write(&script, FAKE).unwrap();
-        std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-            .unwrap();
+        let script = clax_fake_exe::install(&dir.path().join("claude"), FAKE);
         let mut cmd = Command::new(&script);
         cmd.args(flags).env("CLAX_TEST_BIN", clax_bin());
         FakeClaude::spawn(dir, cmd)

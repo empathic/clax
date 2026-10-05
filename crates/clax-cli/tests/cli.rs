@@ -741,7 +741,6 @@ fn publish_takes_a_new_artifacts_title_from_the_page_or_refuses() {
 
 #[test]
 fn open_fails_when_the_opener_fails() {
-    use std::os::unix::fs::PermissionsExt;
     let e = Env::new();
     let page = write(e.dir.path(), "p.html", "<title>Open</title>");
     let out = e
@@ -766,9 +765,7 @@ fn open_fails_when_the_opener_fails() {
     );
     let fake = |code: u8| {
         for name in ["open", "xdg-open"] {
-            let p = bin.join(name);
-            std::fs::write(&p, format!("#!/bin/sh\nexit {code}\n")).unwrap();
-            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+            clax_fake_exe::install(&bin.join(name), &format!("#!/bin/sh\nexit {code}\n"));
         }
     };
     // The fakes exit at once; a debug build waits for them however slowly
@@ -947,10 +944,7 @@ fn doctor_reports_codex_push_from_the_daemons_path() {
     let e = Env::new();
     let bin_dir = e.dir.path().join("bin");
     std::fs::create_dir_all(&bin_dir).unwrap();
-    let codex = bin_dir.join("codex");
-    std::fs::write(&codex, "#!/bin/sh\nexit 0\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(&codex, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let codex = clax_fake_exe::install(&bin_dir.join("codex"), "#!/bin/sh\nexit 0\n");
     let path = format!(
         "{}:{}",
         bin_dir.display(),

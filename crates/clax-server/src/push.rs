@@ -279,13 +279,9 @@ pub fn dispatch(ctx: &FeedbackCtx, st: &Store, targets: &BTreeSet<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::PermissionsExt;
 
     fn script(dir: &Path, name: &str, body: &str) -> PathBuf {
-        let p = dir.join(name);
-        std::fs::write(&p, format!("#!/bin/sh\n{body}\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p
+        clax_fake_exe::install(&dir.join(name), &format!("#!/bin/sh\n{body}\n"))
     }
 
     #[test]
@@ -352,7 +348,7 @@ mod tests {
         let ok = script(
             d.path(),
             "ok",
-            &format!("printf '%s|' \"$@\" \"$CODEX_HOME\" > '{}'", out.display()),
+            "printf '%s|' \"$@\" \"$CODEX_HOME\" > \"$(dirname \"$0\")/out.txt\"",
         );
         assert_eq!(
             run_queue(&ok, QUEUE_TIMEOUT, "th-1", "hi\nthere", Some("/cx")).await,

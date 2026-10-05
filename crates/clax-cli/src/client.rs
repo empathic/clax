@@ -960,9 +960,7 @@ srv.serve_forever()
             listen = listen.map_or("None".to_string(), |p| p.to_string()),
             hang = if hang { "True" } else { "False" },
         );
-        std::fs::write(&path, script).unwrap();
-        make_executable(&path);
-        path
+        clax_fake_exe::install(&path, &script)
     }
 
     /// A test's scratch directory. Every fake daemon started under it
@@ -1007,16 +1005,8 @@ srv.serve_forever()
         }
     }
 
-    fn make_executable(path: &std::path::Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-
     fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
-        let path = dir.join(name);
-        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
-        make_executable(&path);
-        path
+        clax_fake_exe::install(&dir.join(name), &format!("#!/bin/sh\n{body}\n"))
     }
 
     /// A scratch home under `dir` with a fake daemon from `exe` running on
@@ -1072,7 +1062,7 @@ srv.serve_forever()
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         // The old executable now fails too, as the new one does.
-        std::fs::write(&old_exe, "#!/bin/sh\nexit 1\n").unwrap();
+        clax_fake_exe::install(&old_exe, "#!/bin/sh\nexit 1\n");
         let bad = script(dir.path(), "bad", "exit 1");
         let e = format!(
             "{:#}",
@@ -1111,11 +1101,7 @@ srv.serve_forever()
         let slow = script(
             dir.path(),
             "slow",
-            &format!(
-                "echo $$ > {}\ntouch {}/$$\nexec sleep 60",
-                pid_file.display(),
-                dir.path().join("pids").display()
-            ),
+            "d=\"$(dirname \"$0\")\"\necho $$ > \"$d/slow.pid\"\ntouch \"$d/pids/$$\"\nexec sleep 60",
         );
         let e = format!(
             "{:#}",
@@ -1225,11 +1211,10 @@ srv.serve_forever()
         // An in-place reinstall writes a build that fails over the old path,
         // and this client runs it through a symlink.
         let starts = dir.path().join("starts");
-        std::fs::write(
+        clax_fake_exe::install(
             &old_exe,
-            format!("#!/bin/sh\necho start >> {}\nexit 1\n", starts.display()),
-        )
-        .unwrap();
+            "#!/bin/sh\necho start >> \"$(dirname \"$0\")/starts\"\nexit 1\n",
+        );
         let link = dir.path().join("link");
         std::os::unix::fs::symlink(&old_exe, &link).unwrap();
         let e = format!(
@@ -1291,7 +1276,7 @@ srv.serve_forever()
 
         // A rebuilt executable is tried at once.
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n").unwrap();
+        clax_fake_exe::install(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
         assert_eq!(
             replacements(&home),
@@ -1351,7 +1336,7 @@ srv.serve_forever()
         write_hold(&home, "0.0.2", &exe, "why");
         assert_eq!(upgrade_hold(&home).unwrap().reason, "why");
         std::thread::sleep(Duration::from_millis(20));
-        std::fs::write(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n").unwrap();
+        clax_fake_exe::install(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(
             upgrade_hold(&home).is_none(),
             "a rebuilt executable lifts it"

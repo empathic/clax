@@ -15,8 +15,22 @@ cleanup() {
     return 0
 }
 trap cleanup EXIT
-mkdir -p "$ROOT/wrapper"
-cp "$HERE/ensure-clax.sh" "$ROOT/wrapper/ensure-clax.sh"
+# with_limits SRC DEST PROBE WAIT: a copy of the wrapper SRC at DEST whose
+# --version and preflight limit (PROBE_SECS, 5 s) is PROBE seconds and whose
+# first-run download wait (MCP_INSTALL_WAIT_SECS, 8 s) is WAIT seconds. The
+# copies under test get long limits, so no case that is not about a limit
+# races one: a managed install runs a freshly extracted binary, whose first
+# run macOS assesses, which can take seconds on a loaded machine. The cases
+# about the limits get short ones.
+with_limits() {
+    mkdir -p "${2%/*}"
+    sed -e "s/^PROBE_SECS=[0-9]*$/PROBE_SECS=$3/" -e "s/^MCP_INSTALL_WAIT_SECS=[0-9]*$/MCP_INSTALL_WAIT_SECS=$4/" "$1" > "$2"
+    if ! grep -qx "PROBE_SECS=$3" "$2" || ! grep -qx "MCP_INSTALL_WAIT_SECS=$4" "$2"; then
+        echo "FAIL: $1 sets no PROBE_SECS or MCP_INSTALL_WAIT_SECS line; update with_limits" >&2
+        exit 1
+    fi
+}
+with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/ensure-clax.sh" 120 120
 SCRIPT="$ROOT/wrapper/ensure-clax.sh"
 V="$(sed -n 's/^CLAX_VERSION="\(.*\)"$/\1/p' "$SCRIPT")"
 # The interpreter itself, not a version-manager shim that needs the real PATH.
@@ -24,6 +38,8 @@ PY="$(python3 -c 'import sys; print(sys.executable)')"
 ORIG_PATH="$PATH"
 ORIG_HOME="$HOME"
 FAILED=0
+# shellcheck source=scripts/fake-exe.sh
+. "$HERE/fake-exe.sh"
 pass() { echo "PASS: $1"; }
 fail() { echo "FAIL: $1"; FAILED=1; }
 
@@ -39,9 +55,7 @@ done
 # A fake clax at $1/clax whose --version prints $2; any other run prints its
 # arguments.
 fake_clax() {
-    mkdir -p "$1"
-    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "%s"; exit 0; fi\necho "args: $*"\n' "$2" > "$1/clax"
-    chmod +x "$1/clax"
+    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "%s"; exit 0; fi\necho "args: $*"\n' "$2" | fake_exe "$1/clax"
 }
 
 # Writes the `bin` setting, as `clax bin set` does, naming $1.
@@ -214,25 +228,23 @@ else fail "the fallback's status tool notices a clax installed since (out=$OUT)"
 
 # The MCP server reads the client's stdin and writes its stdout.
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nwhile IFS= read -r l; do echo "got: $l"; done\n' "$V" > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nwhile IFS= read -r l; do echo "got: $l"; done\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 OUT="$(printf 'one\ntwo\n' | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>"$SANDBOX/stderr")"; RC=$?
 if [ "$RC" = 0 ] && [ "$OUT" = "$(printf 'got: one\ngot: two')" ] && ! hooks_log | grep -q launcher; then
     pass "the MCP server gets the client's stdin and stdout"
 else fail "the MCP server gets the client's stdin and stdout (rc=$RC out=$OUT log=$(hooks_log))"; fi
 
-# A fake clax whose `mcp --preflight` fails with $2 on stderr while the file
-# $3 exists, and which otherwise prints its arguments.
+# A fake clax in $1 whose `mcp --preflight` fails with $2 on stderr while the
+# file `broken` beside $1 exists, and which otherwise prints its arguments.
 preflight_clax() {
-    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ] && [ -e "%s" ]; then echo "%s" >&2; exit 1; fi; done\necho "args: $*"\n' "$V" "$3" "$2" > "$1/clax"
-    chmod +x "$1/clax"
+    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ] && [ -e "${0%%/*}/../broken" ]; then echo "%s" >&2; exit 1; fi; done\necho "args: $*"\n' "$V" "$2" | fake_exe "$1/clax"
 }
 
 # The preflight fails: the client gets its reason from the fallback server,
 # and clax mcp itself never runs.
 new_env
-preflight_clax "$FAKEBIN" "error: /x/config.toml: bad port" "$SANDBOX/broken"
+preflight_clax "$FAKEBIN" "error: /x/config.toml: bad port"
 set_bin "$FAKEBIN/clax"
 : > "$SANDBOX/broken"
 mcp
@@ -245,7 +257,7 @@ else fail "a failing preflight (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 # Once the cause is fixed, the status tool says so.
 new_env
-preflight_clax "$FAKEBIN" "error: broken" "$SANDBOX/broken"
+preflight_clax "$FAKEBIN" "error: broken"
 set_bin "$FAKEBIN/clax"
 : > "$SANDBOX/broken"
 OUT="$({
@@ -261,8 +273,7 @@ else fail "the fallback's status tool notices a preflight that passes since (out
 
 # A clax that predates --preflight runs as before.
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ]; then echo "error: unexpected argument '"'"'--preflight'"'"' found" >&2; exit 2; fi; done\necho "args: $*"\n' "$V" > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ]; then echo "error: unexpected argument '"'"'--preflight'"'"' found" >&2; exit 2; fi; done\necho "args: $*"\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 mcp
 if [ "$OUT" = "args: mcp --agent codex" ] && ! hooks_log | grep -q launcher; then
@@ -274,8 +285,7 @@ else fail "a clax without --preflight still runs (out=$OUT log=$(hooks_log))"; f
 # the system directories on PATH as a harness has them (they hold no clax).
 SYS_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\ncase "$*" in *--preflight*) exit 0 ;; esac\necho "ppid=$PPID"\n' "$V" > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\ncase "$*" in *--preflight*) exit 0 ;; esac\necho "ppid=$PPID"\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 mkdir -p "$SANDBOX/plugin"
 OUT="$(PATH="$PATH:$SYS_PATH" "$PY" - "$TOOLS/bash" "$SCRIPT" "$SANDBOX/plugin" <<'PYEOF'
@@ -289,24 +299,23 @@ case "$OUT" in True*) pass "clax mcp's parent is the harness, not the wrapper" ;
 
 # An unusable clax named by the bin setting is named in the reason.
 new_env
-printf '#!/bin/sh\necho "dyld: Library not loaded: libfoo.dylib" >&2\nexit 134\n' > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\necho "dyld: Library not loaded: libfoo.dylib" >&2\nexit 134\n' | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 run exec hook --agent codex stop
 if [ "$RC" = 0 ] && echo "$ERR" | grep -qF "sets bin = \"$FAKEBIN/clax\", which is not a usable clax binary (\`--version\` exited 134: dyld: Library not loaded: libfoo.dylib)"; then
     pass "an unusable clax is named with its --version failure"
 else fail "an unusable clax is named (rc=$RC err=$ERR)"; fi
 
-# A --version that hangs is cut off.
+# A --version that hangs is cut off, here after 1 s.
 new_env
-printf '#!/bin/sh\nexec sleep 30\n' > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\nexec sleep 30\n' | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
+with_limits "$HERE/ensure-clax.sh" "$ROOT/wrapper/short/ensure-clax.sh" 1 1
 START="$(date +%s)"
-run exec hook --agent codex stop
+run_at "$ROOT/wrapper/short/ensure-clax.sh" exec hook --agent codex stop
 ELAPSED=$(( $(date +%s) - START ))
-if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 10 ] && echo "$ERR" | grep -qF "\`--version\` did not finish within 5 s"; then
-    pass "a --version that hangs is cut off after 5 s"
+if [ "$RC" = 0 ] && [ "$ELAPSED" -lt 20 ] && echo "$ERR" | grep -qF "\`--version\` did not finish within 1 s"; then
+    pass "a --version that hangs is cut off at the limit"
 else fail "a --version that hangs is cut off (rc=$RC elapsed=$ELAPSED err=$ERR)"; fi
 
 # Nested "id" and "method" keys, as in a tool call's arguments, are not
@@ -447,8 +456,7 @@ if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1
 else fail "hook mode with an unusable CLAX_BIN (rc=$RC err=$ERR)"; fi
 
 new_env
-printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "partial output"\necho "boom: daemon exploded" >&2\nexit 3\n' "$V" > "$FAKEBIN/clax"
-chmod +x "$FAKEBIN/clax"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "partial output"\necho "boom: daemon exploded" >&2\nexit 3\n' "$V" | fake_exe "$FAKEBIN/clax"
 set_bin "$FAKEBIN/clax"
 run exec hook --agent claude prompt
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "boom: daemon exploded" \
@@ -482,11 +490,10 @@ if [ "$RC" = 0 ] && [ -z "$OUT" ]; then pass "an unwritable log does not fail a 
 
 # --- Grok guard: the Claude Code copy stands down in a Grok session -----------
 
-# A fake clax that records each run, so a case can tell that none happened.
+# A fake clax in $1 that records each run in `ran` beside $1, so a case can
+# tell that none happened.
 recording_clax() {
-    mkdir -p "$1"
-    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "$*" >> "%s/ran"\necho "args: $*"\n' "$V" "$SANDBOX" > "$1/clax"
-    chmod +x "$1/clax"
+    printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "$*" >> "${0%%/*}/../ran"\necho "args: $*"\n' "$V" | fake_exe "$1/clax"
 }
 # Runs the wrapper as a child of a shell whose PID is exported as CLAUDE_PID,
 # as Claude Code does for the MCP servers it starts.
@@ -592,8 +599,7 @@ OLD="arti""fax"
 OLD_UPPER="ARTI""FAX"
 new_env
 fake_clax "$SANDBOX/elsewhere" "clax $V"
-printf '#!/bin/sh\necho "%s %s"\n' "$OLD" "$V" > "$FAKEBIN/$OLD"
-chmod +x "$FAKEBIN/$OLD"
+printf '#!/bin/sh\necho "%s %s"\n' "$OLD" "$V" | fake_exe "$FAKEBIN/$OLD"
 mkdir -p "$HOME/.$OLD/bin"
 cp "$SANDBOX/elsewhere/clax" "$HOME/.$OLD/bin/clax"
 export "${OLD_UPPER}_BIN=$SANDBOX/elsewhere/clax" "${OLD_UPPER}_HOME=$HOME/.$OLD"
@@ -641,6 +647,9 @@ sed -i.bak -e "s/^PINNED_VERSION=\"\"$/PINNED_VERSION=\"$P\"/" \
     -e "s/^SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"$(sum_of x86_64-unknown-linux-musl)\"/" \
     -e "s/^SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"$(sum_of aarch64-unknown-linux-musl)\"/" "$PINNED"
 rm -f "$PINNED.bak"
+# The pinned wrapper with a 1 s first-run download wait, for the case about it.
+PINNED_SHORT="$ROOT/wrapper/pinned-short/ensure-clax.sh"
+with_limits "$PINNED" "$PINNED_SHORT" 120 1
 if [ "$("$TOOLS/bash" "$PINNED" pinned-version)" = "$P" ] && [ -z "$("$TOOLS/bash" "$SCRIPT" pinned-version)" ] \
     && ! grep -q '^SHA256_[A-Z0-9_]*=""$' "$PINNED"; then
     pass "pinned-version prints the pin (empty in the checkout's wrapper until a release is pinned)"
@@ -780,7 +789,7 @@ OUT="$({
     : > "$REL/gate-open"
     i=0; while ! hooks_log | grep -q "install mode=mcp agent=claude version=$P exit=0" && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
-} | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED" exec mcp --agent claude 2>/dev/null)"
+} | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED_SHORT" exec mcp --agent claude 2>/dev/null)"
 if echo "$OUT" | head -1 | grep -q "is still downloading" && echo "$OUT" | sed -n 2p | grep -q "is still downloading" \
     && echo "$OUT" | tail -1 | grep -q "clax is now available at $(MANAGED)/clax. Reconnect"; then
     pass "a download slower than the MCP wait: the fallback says so, and status reports it done"

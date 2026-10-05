@@ -283,11 +283,22 @@ lanes with web e2e beside the rest (about 55 s), then the perf gates alone
   notarization lookup, about 0.15 s for a small script and 1.35 s for the
   80 MB debug `clax`. The verdict is kept per process tree, and cargo and
   nextest each start a new one, so every Rust test that runs `clax` pays the
-  1.35 s once (about 150 tests: most of the 260 s the Rust tests add up to),
-  and the script tests pay for each fake binary and copied script they
-  make. syspolicyd handles these one at a time, so the lanes wait on each
-  other through it while the CPU stays mostly idle (2 to 3 of 12 cores in
-  use). Terminals listed under System Settings, Privacy & Security,
+  1.35 s once (about 150 tests: most of the 260 s the Rust tests add up to).
+  syspolicyd handles these one at a time, so the lanes wait on each other
+  through it while the CPU stays mostly idle (2 to 3 of 12 cores in use),
+  and on a loaded machine a first run takes far longer: 1.5 to 14 s for a
+  two-line script during a gates run, against 10 ms for its second run.
+  That is longer than the limits the code under test puts on the programs
+  it starts (2 to 5 s), so the tests' stand-in executables are never on a
+  first run when it counts: `crates/clax-fake-exe`, `scripts/fake-exe.sh`
+  and `plugins/pi/test/fake-exe.ts` keep one read-only copy of each script
+  text, run it once outside any limit and hard-link it where a test wants
+  it (the verdict belongs to the file: a new file with the same text is
+  scanned again, a hard link to a scanned one is not); the gates run each
+  `clax` they copy or build once, as soon as it exists; and the plugin
+  wrapper test, whose managed installs run freshly extracted binaries, runs
+  copies of the wrapper with long limits, and short ones only in the cases
+  about the limits. Terminals listed under System Settings, Privacy & Security,
   Developer Tools are not assessed; that is a setting of the machine, not
   of the repository. A smaller debug binary would shorten each scan
   (`opt-level = 1` gives 32 MB and 0.76 s, at twice the cold build time).
@@ -299,8 +310,6 @@ lanes with web e2e beside the rest (about 55 s), then the perf gates alone
 - **The Pi `ensure` test holds the start lock for 12 s** to show `ensure`
   outwaits the old 10 s limit; it runs in a file of its own, beside the
   extension's tests, which take about as long.
-- **The plugin wrapper test waits out the 5 s `--version` limit** once,
-  with a binary that hangs.
 - **A bare `cargo nextest run` races on `target/debug/clax`.** The tests that
   cannot name the binary (`clax-hooks` golden, `clax-mcp` shim and channel)
   build it when `CLAX_TEST_BIN` is unset, once per process under nextest, and

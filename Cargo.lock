@@ -404,6 +404,7 @@ dependencies = [
  "chrono",
  "clap",
  "clax-core",
+ "clax-fake-exe",
  "clax-hooks",
  "clax-mcp",
  "clax-server",
@@ -445,6 +446,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "clax-fake-exe"
+version = "0.3.0"
+dependencies = [
+ "tempfile",
+]
+
+[[package]]
 name = "clax-hooks"
 version = "0.3.0"
 dependencies = [
@@ -464,6 +472,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "clax-core",
+ "clax-fake-exe",
  "clax-server",
  "reqwest",
  "rmcp",
@@ -485,6 +494,7 @@ dependencies = [
  "bytes",
  "chrono",
  "clax-core",
+ "clax-fake-exe",
  "clax-mcp",
  "clax-server",
  "futures",

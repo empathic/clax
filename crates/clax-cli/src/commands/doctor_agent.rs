@@ -1360,12 +1360,9 @@ mod tests {
 
     /// A script named clax in `dir` whose --version prints `line`.
     fn fake_clax(dir: &Path, line: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::create_dir_all(dir).unwrap();
-        let p = dir.join("clax");
-        std::fs::write(&p, format!("#!/bin/sh\necho '{line}'\n")).unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        p.canonicalize().unwrap()
+        clax_fake_exe::install(&dir.join("clax"), &format!("#!/bin/sh\necho '{line}'\n"))
+            .canonicalize()
+            .unwrap()
     }
 
     #[test]
