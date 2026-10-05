@@ -497,8 +497,13 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     await expect(threads).toHaveText("Threads 1");
     if ((await threads.getAttribute("aria-pressed")) !== "true") await threads.click();
     await page.locator(".sidebar .card-head").first().click();
+    // Step back until the shell's focus is on the artifact frame. The shell
+    // knows that as soon as the key is handled; the page's own #focused
+    // follows later, from another process, so reading it after each key
+    // could step past the page's button under load.
+    const inFrame = () => page.evaluate(() => document.activeElement?.tagName === "IFRAME");
     await page.keyboard.press("Shift+Tab");
-    for (let i = 0; i < 10 && (await f.locator("#focused").textContent()) !== "yes"; i++) await page.keyboard.press("Shift+Tab");
+    for (let i = 0; i < 10 && !(await inFrame()); i++) await page.keyboard.press("Shift+Tab");
     await expect(f.locator("#focused")).toHaveText("yes");
     await page.keyboard.press("Enter");
     await expect(f.locator("#clicked")).toHaveText(JSON.stringify({ opened: true }));

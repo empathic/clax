@@ -191,6 +191,9 @@ fn roll_back(
         None => return none_running("its executable was not recorded".into()),
         Some(p) => std::path::Path::new(p),
     };
+    // The plugins' wrapper keeps the newest managed install older than the
+    // one it pins (`<home>/bin/<version>/`), so a daemon started by the
+    // previous plugin still has its executable here.
     if !previous.exists() {
         return none_running(format!(
             "its executable {} no longer exists",
