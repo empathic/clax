@@ -23,6 +23,13 @@ export class NameSaver {
     });
   }
 
+  /** The name changed elsewhere (another view of this viewer, or the CLI):
+   * `show` gets it unless the viewer is typing a name of their own. */
+  adopt(name: string, show: (name: string) => void): void {
+    this.saved = name;
+    if (!this.edited) show(name);
+  }
+
   /** The viewer typed in the field. */
   edit(): void {
     this.edited = true;
@@ -34,7 +41,7 @@ export class NameSaver {
     void this.loaded.then(() => {
       if (next === this.saved) return;
       void report(setViewerName(next), NAME_FAILED, scopedNotice(this.setNotice, NAME_FAILED, NAME_LOAD_FAILED)).then(v => {
-        if (v) { this.onViewer?.(v); this.saved = v.display_name ?? ""; }
+        if (v) { this.onViewer?.(v); this.saved = v.display_name ?? ""; this.edited = false; }
       });
     });
   }

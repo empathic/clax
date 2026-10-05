@@ -59,7 +59,7 @@
   // Grouped without a query once the grouping has loaded; until then, and
   // with a query, one list.
   const g = $derived(shown && gw && !query.trim() ? gw.groups(shown, att) : null);
-  onMount(() => { void refresh(true); void fetch("/api/viewers/me").then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); void getToken().then(t => { token = t; }); });
+  onMount(() => { void refresh(true); void getToken().then(t => { token = t; return fetch("/api/viewers/me"); }).then(r => r.json()).then(b => { me = b?.viewer?.display_name ?? null; meId = b?.viewer?.public_id ?? null; }, () => {}); });
   onDestroy(() => { destroyed = true; life.dispose(); cancelStart?.(); sync?.stop(); });
 </script>
 

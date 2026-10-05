@@ -345,7 +345,9 @@ describe("ArtifactController", () => {
     const { ctl, frame } = await started({ threads: [quoted], routes: url => (url === "/api/viewers/me/presence" ? { people: [] } : undefined) });
     const reports = () => (fetch as unknown as ReturnType<typeof vi.fn>).mock.calls
       .filter(([u, i]) => String(u) === "/api/viewers/me/presence" && (i as RequestInit | undefined)?.method === "PUT")
-      .map(([, i]) => JSON.parse((i as RequestInit).body as string));
+      .map(([, i]) => JSON.parse((i as RequestInit).body as string))
+      // Every report names this page's tab; the rest is checked below.
+      .map(({ tab, ...rest }: { tab: unknown }) => { expect(typeof tab).toBe("string"); return rest; });
     await vi.waitFor(() => expect(reports()[0]).toEqual({ artifact_id: ID, state: "here" }));
     await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
     ctl.selectThread(ctl.state.get().threads[0]);

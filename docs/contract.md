@@ -1046,6 +1046,49 @@ live session (400 `unknown_session` otherwise); on a thread that was not sent
 to the agent it gets 200 `{guidance}` and nothing changes. A thread of
 another or a deleted artifact is 404.
 
+### The owner and other viewers
+
+Comments, resolves, sends, seen and looked-at marks, presence and names
+belong to viewers. The person who owns the install is one viewer, the
+**owner**, whatever they use: every browser of theirs on this machine
+(Chrome and Safari alike), the CLI, and any other owner credential act as
+it, so their comments carry one author, one public ID and one name. A
+request is the owner's when it carries an owner credential:
+
+- the bearer token (the CLI, scripts, and the owner's shell);
+- the events cookie (only the event streams receive it);
+- the owner cookie, `clax_owner_<port>` (`HttpOnly`, host-only, `Path=/`,
+  `SameSite=Lax`): a hash of the token, never the token, set beside the
+  events cookie when the shell on this machine fetches the token (`GET
+  /api/token` from a loopback peer with a literal local `Host`, marked
+  `Sec-Fetch-Site: same-origin`). It counts only on requests the browser
+  does not mark as made from another origin, and a new token voids it.
+
+Everyone else (a LAN viewer, or a local browser that never fetched the
+token) is the viewer its `clax_viewer` cookie names, as before. An owner
+credential decides who a request speaks for, not what it may do: the owner
+cookie alone has a viewer's level (`interact` once the owner has a name),
+and only the token raises it (see "Security model").
+
+The owner's public ID is stable across browsers and the CLI; its display
+name is the one `PUT /api/viewers/me` sets from any of them (the shell's
+"Your name" field, or `clax comments name`). A name change, the owner's or
+any viewer's, is announced at once in the `presence` of every artifact that
+lists the viewer, so every open view shows the new name.
+
+Existing data: nothing stored before this identity existed tells which
+viewers were the owner's browsers, so none is converted when the daemon
+upgrades. Instead, when a browser's token request carries a `clax_viewer`
+cookie, that viewer is claimed for the owner and the cookie removed: the
+first one claimed becomes the owner (keeping its public ID, name and
+history); a later one is folded into the owner (its comments' author, its
+mentions, the threads it resolved, its seen marks (the higher) and looked-at
+marks (the later), and its name when the owner has none) and removed, so its
+old public ID names no one from then on. Page data that stored that old ID
+(a `data/users/<id>/` document, say) is not rewritten. A viewer the CLI
+kept for itself in `<home>/cli_viewer` is no longer used; the file is
+ignored, and that viewer's past comments keep their author.
+
 ### Versions, seen marks and attention
 
 Every thread view carries `addressed_in`: the versions linked to the thread
@@ -1145,8 +1188,13 @@ malformed ID is 400. The `/a/<id>` bootstrap carries `participants` in its artif
 for the cookie's existing viewer, `attention` at the top level.
 
 `PUT /api/viewers/me/presence` with `{"artifact_id", "state": "here" |
-"away", "where"?}` (a viewer route; 400 `no_viewer` without a viewer
-cookie) reports this viewer on the artifact and answers `{"people":
+"away", "where"?, "tab"?}` (a viewer route; 400 `no_viewer` without a
+viewer) reports this viewer on the artifact. `tab` (any string; the shell
+sends one per page) names the view reporting: one viewer, the owner above
+all, may have the artifact open in several tabs or browsers, and is listed
+once, `here` while any of its views reported `here` within the last 90 s
+(with that view's `where`), else `away` while any report is that recent,
+else `gone`. The route and answers `{"people":
 [{public_id, display_name, state, where, since}]}`, as `GET
 /api/artifacts/<aid>/presence` does without a cookie; `presence` events
 carry the same list. An artifact lists at most 64 people: a newcomer takes
@@ -1790,7 +1838,10 @@ capability first and light features up when it resolves.
 - `downloads`: `save({filename, data})` saves once the viewer accepts.
 - `user`: `isOwner()`, `canEdit()`, `can(name)`, and `me()` need no
   declaration; `id()` and `profiles(ids)` need `{"user": {}}`; names and
-  `search(q)` need `{"user": {"scopes": ["profile"]}}`. IDs are opaque.
+  `search(q)` need `{"user": {"scopes": ["profile"]}}`. IDs are opaque. The
+  person is one user in all their browsers on this machine: `id()` is the
+  same in Chrome and Safari (and is who the CLI acts as), and `isOwner()` is
+  true in each.
 - `comments`: `openComposer({element})` opens the viewer's composer; with
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;
@@ -1927,9 +1978,11 @@ upgrades to a WebSocket. `<label>` is 16 characters of `[0-9a-z]`, picked by
 the shell once per open document and reused on reconnect. A WebSocket cannot
 send an `Authorization` header, so the shell appends `token` when it holds
 the token; the query string is never logged. The level is fixed when the
-socket opens: a valid token with a viewer cookie is `admin`, a valid token
-without one is `owner`, a cookie alone is `interact` for a named viewer and
-`view` otherwise, and anything else is `view`. The shell reconnects under the
+socket opens, as for the `db` routes: a valid token from a browser (the
+owner or events cookie, or a viewer cookie) is `admin`, as the owner; a
+valid token from no browser is `owner`; without the token, the viewer the
+request speaks for is `interact` when named and `view` otherwise, and
+anything else is `view`. The shell reconnects under the
 same label when the viewer's name changes.
 
 Refused before the upgrade: 403 `forbidden_origin` (a foreign `Origin`), 403
@@ -2007,7 +2060,7 @@ reaches the next document.
 ## Sample protocol
 
 `sample` spends the API key configured on the person's machine, so only the
-person's own browser (the token and a viewer cookie) can call it. The shell
+person's own browser (the token and the owner cookie) can call it. The shell
 offers `sample` only when it holds the token, so `use("sample")` resolves
 `null` for a viewer on another machine, and every call waits on the consent
 given in that view. The frame never reaches these routes itself.
@@ -2015,8 +2068,8 @@ given in that view. The frame never reaches these routes itself.
 | Route | Caller | Body | Answer |
 |---|---|---|---|
 | `GET /api/artifacts/<aid>/sample` | SameOrigin; the token decides | — | `{available, provider, limits, calls_today, daily_call_cap}`; without the token `available: false`, `provider: null` |
-| `POST /api/artifacts/<aid>/sample` | SameOrigin, token, viewer cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
-| `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, viewer cookie | `{id, content, is_error}` | 204 |
+| `POST /api/artifacts/<aid>/sample` | SameOrigin, token, owner cookie | `{input, verb, model_tier, tools, images, cache}` | `text/event-stream` |
+| `POST /api/artifacts/<aid>/sample/<call_id>/tool_result` | SameOrigin, token, owner cookie | `{id, content, is_error}` | 204 |
 | `GET /api/sample` | token | — | `{available, provider, reason, detail, key_env, daily_call_cap}` (`clax doctor`) |
 
 `input` is a string or `[{role, content}]`; `verb` is `text` or `json`;
@@ -2029,7 +2082,8 @@ given in that view. The frame never reaches these routes itself.
 "image/png", "image/webp", "image/gif"]}` only when the provider takes images.
 
 **Refusals** come before the stream, as the JSON error shape: 401
-`unauthorized` (no token), 403 `forbidden` (no viewer cookie), 403
+`unauthorized` (no token), 403 `forbidden` (no browser: neither the owner
+cookie nor a viewer cookie), 403
 `forbidden_origin`, 404 `not_found`, 403 `not_declared`, 403
 `sampling_disabled` (no provider), 400 `invalid_request`, 400
 `prompt_too_large`, 400 `images_unavailable`, 400 `image_rejected`, and 429
@@ -2065,11 +2119,12 @@ any number of topics; the client subscribes and unsubscribes while it stays
 open, and a dropped connection resumes where it left off. `GET /api/events`
 is still served, unchanged, beside it.
 
-**Opening.** `GET /api/stream` with the viewer cookie and, for the owner,
-`Authorization: Bearer <token>` or the events cookie (see "The event
+**Opening.** `GET /api/stream` with the viewer's cookies and, for the
+owner, `Authorization: Bearer <token>` or the events cookie (see "The event
 stream"); this route never takes the token in the URL. The caller's level is worked out once, when the
-stream opens, as for the `db` routes: the token without a viewer is `owner`,
-with one `admin`, a named viewer alone `interact`, anything else `view`. The
+stream opens, as for the `db` routes: the token from no browser is `owner`,
+from a browser `admin` (as the owner), a named viewer without the token
+`interact`, anything else `view`. The
 response is `text/event-stream`, never compressed. Its first event has no
 `id`:
 
@@ -2512,13 +2567,13 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
 - `clax comments reply <thread> <text>` (`-` reads the text from stdin),
   `resolve <thread>`, `reopen <thread>` and `send <thread> [--to <agent
   handle>]` act as the owner does in the browser: they call the routes the
-  shell calls, with what the owner's shell sends, the token and a viewer
-  cookie. The CLI's viewer is its own, its cookie kept in
-  `<home>/cli_viewer` (mode 0600) and its viewer row created on first use;
-  replies are viewer comments authored with its display name (`Viewer` while
-  it has none, with a hint on stderr), and resolves record
-  `viewer:<its public ID>`. `clax comments name [<name>]` shows or sets that
-  name (empty clears it). A reply on a sent thread, or one mentioning
+  shell calls, with the token, which makes the CLI the owner (see "The owner
+  and other viewers"), the same viewer as the owner's browsers. Replies are
+  viewer comments authored with the owner's display name (`Viewer` while it
+  has none, with a hint on stderr), and resolves record
+  `viewer:<the owner's public ID>`. `clax comments name [<name>]` shows or
+  sets the owner's name (empty clears it), the one the browsers' "Your
+  name" field shows. A reply on a sent thread, or one mentioning
   `@agent`, goes on to the agent as in the browser. `send` without `--to`
   sends to the agent the page would pick when nothing was picked before: the
   most recently active live agent on the artifact; with none live it sends
@@ -2714,7 +2769,10 @@ abandoned and retried the same way, with a notice.
   of the `Host` rule above, it answers only when the connection comes from a
   loopback address and the `Host` header is literally `localhost`,
   `127.0.0.1` or `[::1]` (with an optional port); otherwise (for example a LAN
-  peer, or the LAN IP as `Host`) it returns 403 `not_loopback`.
+  peer, or the LAN IP as `Host`) it returns 403 `not_loopback`. Answering
+  the shell (`Sec-Fetch-Site: same-origin`), it also sets the events cookie
+  and the owner cookie, which make that browser the owner (see "The owner
+  and other viewers").
 - `/mcp` requires the bearer token on every request and accepts only a `Host`
   of `localhost`, `127.0.0.1`, `::1`, or the daemon's own address and port.
 - Each artifact has its own origin, `http://<id>.localhost:<port>`. On that
@@ -2751,9 +2809,11 @@ abandoned and retried the same way, with a notice.
   the viewer's consent; requests without an `Origin` header (scripts) are
   allowed, unless their `Sec-Fetch-Site` is `same-site` or `cross-site` (a
   page's `<img>` or other no-cors GET, which browsers send without
-  `Origin`), which are refused with 403 `forbidden_origin` too. The daemon serves plain HTTP only. A viewer is identified by the
+  `Origin`), which are refused with 403 `forbidden_origin` too. The daemon serves plain HTTP only. The owner is identified by an
+  owner credential (the token, the events cookie, or the owner cookie; see
+  "The owner and other viewers"); any other viewer by the
   `clax_viewer` cookie (`HttpOnly`, host-only, `SameSite=Lax`), whose value
-  the daemon accepts only when it is a ULID. The cookie never leaves the
+  the daemon accepts only when it is a ULID. Neither cookie leaves the
   daemon: no response body, event, thread view, comment, or log carries it.
   Outside the cookie a viewer is named by its public ID (`u_` and 22
   lowercase hex digits, assigned once and never changed): `GET`/`PUT
@@ -2776,14 +2836,17 @@ abandoned and retried the same way, with a notice.
   payload quotes it as a JSON string.
 - The `db` routes (`/api/artifacts/<id>/docs...`) refuse requests whose
   `Origin` is not the viewer's own, like the comment routes. The caller level
-  is `owner` with the bearer token and no viewer cookie (agents, the CLI),
-  `admin` with the token and a viewer cookie (the owner's browser),
-  `interact` for a viewer cookie whose viewer has a display name, and `view`
-  otherwise; `?as_level=` only lowers it. A document the caller may not read
+  is `owner` with the bearer token from no browser (agents, the CLI, whose
+  caller has no viewer), `admin` with the token from a browser (the owner
+  or events cookie, or a viewer cookie naming a viewer: the owner's
+  browser, whose viewer is the owner), `interact` without the token for a
+  viewer with a display name (the owner cookie's caller is the owner), and
+  `view` otherwise; `?as_level=` only lowers it. A document the caller may not read
   answers 404, and so does a write the rules refuse.
 - `GET /api/events` carries `doc` events with a path and a version, never a
   body. An event for a path inside a viewer's private subtree goes only to
-  that viewer's stream (never to the owner's browser or an agent); any other
+  that viewer's stream (never to an agent, nor to the owner's browser unless
+  the subtree is the owner's own); any other
   goes only to subscribers whose level meets the path's read rule, with the
   level worked out as for the `db` routes when the stream opens. An
   `EventSource` cannot send headers, so the stream also takes the token as

@@ -13,7 +13,8 @@ for (const mode of ["sandbox"] as const) {
     const alex = await (await browser.newContext()).newPage();
     const mia = await (await browser.newContext()).newPage();
     await openArtifact(alex, d.base, artifact.id, 1, mode);
-    await openArtifact(mia, d.base, artifact.id, 1, mode);
+    // Mia is on another machine: the owner's browsers are all one viewer.
+    await openArtifact(mia, d.base, artifact.id, 1, mode, { lan: true });
     await setName(alex, "alex");
     await setName(mia, "Mia");
     if (!(await mia.locator("aside.sidebar").isVisible())) await mia.getByRole("button", { name: /Threads/ }).first().click();

@@ -22,7 +22,7 @@ use std::convert::Infallible;
 /// (`<stream>:<seq>`) names when it is still held for the same caller.
 ///
 /// The caller (the token in `Authorization` or the events cookie, and the
-/// viewer cookie) is resolved once, here, with the levels of the `db`
+/// owner or viewer cookie; see [`crate::identity`]) is resolved once, here, with the levels of the `db`
 /// routes; subscriptions made on the
 /// stream must come from the same caller. The body opens with `event: ready`
 /// (`{stream, seq, resumed, topics}`), then carries each subscribed topic's
@@ -32,9 +32,9 @@ use std::convert::Infallible;
 /// or a newer connection resumes the same stream.
 pub async fn open(State(s): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let token = token_or_cookie(&headers, &s.token);
-    let cookie = crate::viewer::read(&headers);
+    let who = crate::identity::Identity::of(&headers, &s.token);
     let caller = s
-        .store_call(move |st| crate::db_caller::caller_of(st, token, cookie.as_deref()))
+        .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
         .await?;
     let resume = headers
         .get("last-event-id")
@@ -138,7 +138,7 @@ pub async fn update(
     let add = topics(&b.subscribe)?;
     let remove = topics(&b.unsubscribe)?;
     let token = token_or_cookie(&headers, &s.token);
-    let cookie = crate::viewer::read(&headers);
+    let who = crate::identity::Identity::of(&headers, &s.token);
     let check = add.clone();
     let caller = s
         .store_call(move |st| {
@@ -150,7 +150,7 @@ pub async fn update(
                     return Err(CoreError::NotDeclared { capability: "db" });
                 }
             }
-            crate::db_caller::caller_of(st, token, cookie.as_deref())
+            crate::db_caller::caller_of(st, token, &who)
         })
         .await?;
     match s.stream.update(&id, &caller, &add, &remove) {

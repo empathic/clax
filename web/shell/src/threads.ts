@@ -1,5 +1,5 @@
 import type { Anchor } from "../../bridge/src/protocol";
-import { ApiError } from "./api";
+import { ApiError, getToken } from "./api";
 
 export type Tier = "piggyback" | "stop_hook" | "prompt_hook" | "wait" | "queue" | "inject";
 export type FeedbackState = { thread_id: string; state: "sent" | "delivered" | "acknowledged" | "agent_ended"; tier: Tier | null; since: string; resends: number; exhausted: boolean };
@@ -95,11 +95,16 @@ export function onViewer(fn: (v: Viewer) => void): () => void {
 const announceViewer = (v: Viewer) => { for (const fn of [...viewerListeners]) fn(v); };
 
 async function fetchViewer(): Promise<Viewer> {
+  // The token request comes first: on this machine it makes the browser the
+  // owner (the owner cookie), so no viewer cookie of its own is minted.
+  await getToken();
   return (await ok<{ viewer: Viewer }>(await fetch("/api/viewers/me"))).viewer;
 }
 
-/** The viewer behind the cookie, fetched once per page: the first request sets
- * the cookie, so every caller shares it. A failed lookup is retried next call. */
+/** The viewer this browser speaks as (the owner's one identity on this
+ * machine, else the viewer behind the cookie), fetched once per page: the
+ * first request sets any cookie, so every caller shares it. A failed lookup
+ * is retried next call. */
 export function getViewer(): Promise<Viewer> {
   if (!viewerMemo) {
     const p = fetchViewer();
@@ -122,6 +127,12 @@ export async function setViewerName(name: string): Promise<Viewer> {
   viewerMemo = Promise.resolve(v);
   announceViewer(v);
   return v;
+}
+
+/** Takes `v` as the looked-up viewer, renamed in another view of it. */
+export function renamedViewer(v: Viewer): void {
+  viewerMemo = Promise.resolve(v);
+  announceViewer(v);
 }
 
 /** The viewer as capabilities see it: public ID and current name. */

@@ -74,11 +74,11 @@ export async function putSeen(aid: string, n: number): Promise<void> {
   } catch { /* the next load writes again */ }
 }
 
-/** Reports this viewer here or away on `aid`, with where they look; answers
+/** Reports this viewer here or away on `aid` from tab `tab`, with where they look; answers
  * the artifact's presence, or null on failure (the next report writes again). */
-export async function putPresence(aid: string, state: "here" | "away", where: string | null, keepalive = false): Promise<PresenceView[] | null> {
+export async function putPresence(aid: string, state: "here" | "away", where: string | null, tab: string, keepalive = false): Promise<PresenceView[] | null> {
   try {
-    const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify(where ? { artifact_id: aid, state, where } : { artifact_id: aid, state }) });
+    const r = await fetch("/api/viewers/me/presence", { method: "PUT", keepalive, headers: { "content-type": "application/json" }, body: JSON.stringify({ artifact_id: aid, state, tab, ...where && { where } }) });
     const people = r.ok ? (await r.json()).people : null;
     return Array.isArray(people) ? people : null;
   } catch { return null; }

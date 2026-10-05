@@ -110,7 +110,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const [ca, cb] = [await browser.newContext(), await browser.newContext()];
     const [pa, pb] = [await ca.newPage(), await cb.newPage()];
     const fa = await openArtifact(pa, d.base, artifact.id, 1, mode);
-    const fb = await openArtifact(pb, d.base, artifact.id, 1, mode);
+    // B is on another machine: every browser of the owner's here is one viewer.
+    const fb = await openArtifact(pb, d.base, artifact.id, 1, mode, { lan: true });
+    // Named, so B may write its own private documents.
+    await pb.evaluate(() => fetch("/api/viewers/me", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ display_name: "B" }) }));
     const [ida, idb] = [await publicId(pa), await publicId(pb)];
     expect(ida).not.toBe(idb);
     await withDb(fa, `await db.doc("data/users/" + arg + "/profile").set({ pick: 3 });`, ida);

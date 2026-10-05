@@ -10,7 +10,8 @@ describe("ViewerName", () => {
   it("sends a name save only after the initial lookup answered, so both use one viewer cookie", async () => {
     const calls: string[] = [];
     let answerGet!: () => void;
-    vi.stubGlobal("fetch", vi.fn((_url: string, init?: RequestInit) => {
+    vi.stubGlobal("fetch", vi.fn((url: string, init?: RequestInit) => {
+      if (url === "/api/token") return Promise.resolve(new Response("{}", { status: 403 }));
       const method = init?.method ?? "GET";
       calls.push(method);
       const res = (name: string | null) => new Response(JSON.stringify({ viewer: { public_id: "u_00000000000000000000aa", display_name: name, created_at: "x" } }));

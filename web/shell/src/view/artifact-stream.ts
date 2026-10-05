@@ -7,7 +7,7 @@ import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
 import { type StreamEvent, pageStream } from "../stream";
-import { type Thread, upsert } from "../threads";
+import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
@@ -123,7 +123,9 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
   if (e.type === "version" && e.n > c.latestKnown) { c.latestKnown = e.n; c.set({ newer: e.n }); }
   if (e.type === "artifact_deleted") c.set({ deleted: true });
   if (e.type === "working") { c.workingAt = ++c.clock; c.set({ working: e.working }); }
-  if (e.type === "presence") c.set({ presence: e.people });
+  // A name set in another view of this viewer (the owner's other browser,
+  // the CLI) arrives in presence.
+  if (e.type === "presence") { c.set({ presence: e.people }); adoptName(e.people); }
   // An agent may have started or ended: the Send target and the roster follow.
   if (e.type === "working" || e.type === "version") c.refreshAgents();
   if (e.type === "thread") c.changeThreads(ts => upsert(ts, e.thread));
@@ -144,4 +146,14 @@ export function onArtifactEvent(c: ArtifactController, e: ArtifactEvent): void {
       if (n > c.latestKnown) { c.latestKnown = n; c.set({ newer: n }); }
     }, err => { if (err instanceof ApiError && err.status === 404) c.set({ deleted: true }); });
   }
+}
+
+/** This viewer's name as `people` (a presence list) gives it, taken when it
+ * differs: it was set in another view of this viewer (the owner's other
+ * browser, or the CLI). */
+function adoptName(people: PresenceView[]): void {
+  void getViewer().then(v => {
+    const mine = people.find(p => p.public_id === v.public_id);
+    if (mine && mine.display_name !== v.display_name) renamedViewer({ ...v, display_name: mine.display_name });
+  }, () => {});
 }

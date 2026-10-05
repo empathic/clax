@@ -82,7 +82,10 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     await expect(page.locator(".composer")).toHaveCount(0);
   });
 
-  test(`${mode}: create asks once, then posts as the viewer`, async ({ page }) => {
+  test(`${mode}: create asks once, then posts as the viewer`, async ({ page, freshDaemon }) => {
+    // A daemon of its own: the owner is one viewer per daemon, and this test
+    // needs it unnamed.
+    d = freshDaemon;
     const { artifact } = await publishWith(d.base, d.token, `Notes ${mode}`, BOARD, { comments: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     // The page's script has set up its buttons.
@@ -131,7 +134,7 @@ setInterval(async () => { const r = await c.openComposer({ element: document.get
     expect(new Set(codes)).toEqual(new Set(["not_found"]));
     expect(await storeIds()).toHaveLength(3);
 
-    // A second view of the same viewer, without the token (a LAN view): it
+    // A second view of the same (unnamed) viewer, without the token: it
     // follows changes through the event stream and, unnamed, may not delete
     // even a thread its own page wrote.
     const other = await page.context().newPage();

@@ -384,7 +384,10 @@ capability first and light features up when it resolves.
 - `downloads`: `save({filename, data})` saves once the viewer accepts.
 - `user`: `isOwner()`, `canEdit()`, `can(name)`, and `me()` need no
   declaration; `id()` and `profiles(ids)` need `{"user": {}}`; names and
-  `search(q)` need `{"user": {"scopes": ["profile"]}}`. IDs are opaque.
+  `search(q)` need `{"user": {"scopes": ["profile"]}}`. IDs are opaque. The
+  person is one user in all their browsers on this machine: `id()` is the
+  same in Chrome and Safari (and is who the CLI acts as), and `isOwner()` is
+  true in each.
 - `comments`: `openComposer({element})` opens the viewer's composer; with
   `{}` (not `{"composer_only": true}`) the page may also `create`, `reply`,
   `resolve`, `delete`, and `sendToClaude` as the viewer after one consent;

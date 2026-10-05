@@ -17,7 +17,10 @@ const facts = async (f: import("@playwright/test").Frame) => {
 };
 
 for (const mode of ["subdomain", "sandbox"] as const) {
-  test(`${mode}: user in the owner shell`, async ({ page }) => {
+  test(`${mode}: user in the owner shell`, async ({ page, freshDaemon }) => {
+    // A daemon of its own: the owner is one viewer per daemon, and this test
+    // starts with it unnamed.
+    d = freshDaemon;
     const { artifact } = await publishWith(d.base, d.token, `Who ${mode}`, html("who.html"), { user: { scopes: ["profile"] }, db: {} });
     const f = await openArtifact(page, d.base, artifact.id, 1, mode);
     expect(await facts(f)).toMatchObject({ isOwner: true, canEdit: true, dataWrite: true, filesWrite: true, idShape: true, name: "", isMe: true, stranger: "", other: null, search: 0 });

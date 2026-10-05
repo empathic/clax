@@ -11,6 +11,9 @@ import { type PresenceView, stateFor, whereLabel } from "./presence-model";
 const INPUTS = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"] as const;
 
 export class PresenceReporter {
+  /** This page's name in its reports: one viewer (the owner's browsers are
+   * one) may have the artifact open in several tabs, which the daemon combines. */
+  private readonly tab = Math.random().toString(36).slice(2, 12);
   /** When the viewer last pressed, typed, moved the pointer or scrolled in the shell. */
   private lastInput = wall();
   /** The last report sent: its state, location and time. */
@@ -26,7 +29,7 @@ export class PresenceReporter {
   readonly leave = () => {
     if (this.done || !this.may(this.state())) return;
     this.reported = { state: "away", where: null, at: wall() };
-    void putPresence(this.id, "away", null, true);
+    void putPresence(this.id, "away", null, this.tab, true);
   };
   private done = false;
 
@@ -61,7 +64,7 @@ export class PresenceReporter {
     this.timer?.();
     this.timer = undefined;
     this.reported = { state, where, at: wall() };
-    void putPresence(this.id, state, where).then(people => { if (people && !this.done) this.take(people); });
+    void putPresence(this.id, state, where, this.tab).then(people => { if (people && !this.done) this.take(people); });
   }
 
   /** Lets the next report go out at once (the share switch changed). */

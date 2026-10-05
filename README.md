@@ -113,7 +113,7 @@ clax comments                        # open comment threads on every artifact, n
 clax comments <ID>                   # one artifact's threads
 clax comments <ID>#2                 # show thread #2 in full (also: a thread ID)
 clax comments reply <ID>#2 "Thanks"  # reply as you (- reads stdin); also resolve, reopen, send
-clax comments name "Alex"            # the name your replies carry
+clax comments name "Alex"            # your name, in the CLI and every browser of yours
 clax versions <ID>                   # versions: label, publisher, time, threads addressed
 clax db get <ID> tasks t1            # the page database: get, list, query, set, update, delete, str-replace, batch
 clax status                          # show whether the daemon is running and which agents are working on what

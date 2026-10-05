@@ -91,6 +91,134 @@ impl Store {
     }
 }
 
+/// What [`Store::claim_for_owner`] did with a browser's viewer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Claim {
+    /// The cookie names no viewer, or the owner's own.
+    Nothing,
+    /// There was no owner yet: this viewer became the owner, keeping its
+    /// public ID, name and history.
+    Adopted,
+    /// The viewer was folded into the existing owner and removed; its public
+    /// ID (given here) names no one from now on.
+    Merged(String),
+}
+
+fn owner_row(tx: &rusqlite::Connection) -> rusqlite::Result<Option<Viewer>> {
+    tx.query_row(
+        &format!("{VIEWER_SELECT} WHERE owner = 1"),
+        [],
+        row_to_viewer,
+    )
+    .optional()
+}
+
+impl Store {
+    /// The owner identity: the one viewer that every owner credential (the
+    /// bearer token, the owner and events cookies of the owner's browsers)
+    /// acts as. Made on first use, with a new public ID and no name; its
+    /// `id` is never handed to anyone as a cookie.
+    pub fn owner_viewer(&self) -> Result<Viewer> {
+        if let Some(v) = self.with_read(|c| Ok(owner_row(c)?))? {
+            return Ok(v);
+        }
+        self.with_tx(|tx| {
+            tx.execute(
+                "INSERT INTO viewers (id, public_id, display_name, created_at, owner)
+                 SELECT ?1, ?2, NULL, ?3, 1 WHERE NOT EXISTS (SELECT 1 FROM viewers WHERE owner = 1)",
+                params![crate::new_ulid(), new_public_id(), Store::now()],
+            )?;
+            Ok(owner_row(tx)?.expect("the owner row was just made"))
+        })
+    }
+
+    /// Whether `id` (a cookie value) names the owner's viewer row.
+    pub fn is_owner_viewer(&self, id: &str) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT owner FROM viewers WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, bool>(0),
+            )
+            .optional()?
+            .unwrap_or(false))
+        })
+    }
+
+    /// Claims the viewer behind `cookie` for the owner, on a request that
+    /// carries both that cookie and an owner credential (so the cookie's
+    /// browser is the owner's). With no owner yet the viewer becomes it
+    /// ([`Claim::Adopted`]). Otherwise its history moves to the owner and the
+    /// row goes ([`Claim::Merged`]): its comments' author, its mentions, the
+    /// threads it resolved, its seen marks (the higher of the two, pruned to
+    /// [`crate::changelog::MAX_SEEN_PER_VIEWER`]) and its looked-at marks
+    /// (the later), and its name when the owner has none. Page data that
+    /// holds the old public ID is not rewritten.
+    pub fn claim_for_owner(&self, cookie: &str) -> Result<Claim> {
+        self.with_tx(|tx| {
+            let Some((legacy, is_owner)) = tx
+                .query_row(
+                    "SELECT id, public_id, display_name, created_at, owner FROM viewers WHERE id = ?1",
+                    params![cookie],
+                    |r| Ok((row_to_viewer(r)?, r.get::<_, bool>(4)?)),
+                )
+                .optional()?
+            else {
+                return Ok(Claim::Nothing);
+            };
+            if is_owner {
+                return Ok(Claim::Nothing);
+            }
+            let Some(owner) = owner_row(tx)? else {
+                tx.execute("UPDATE viewers SET owner = 1 WHERE id = ?1", params![legacy.id])?;
+                return Ok(Claim::Adopted);
+            };
+            let (old, new) = (legacy.public_id.as_str(), owner.public_id.as_str());
+            tx.execute(
+                "UPDATE comments SET author_public_id = ?2 WHERE author_public_id = ?1",
+                params![old, new],
+            )?;
+            tx.execute(
+                "UPDATE OR IGNORE mentions SET public_id = ?2 WHERE public_id = ?1",
+                params![old, new],
+            )?;
+            tx.execute("DELETE FROM mentions WHERE public_id = ?1", params![old])?;
+            tx.execute(
+                "UPDATE threads SET resolved_by = 'viewer:' || ?2 WHERE resolved_by = 'viewer:' || ?1",
+                params![old, new],
+            )?;
+            tx.execute(
+                "INSERT INTO viewer_seen (viewer_id, artifact_id, seen_n, updated_at)
+                 SELECT ?2, artifact_id, seen_n, updated_at FROM viewer_seen WHERE viewer_id = ?1 AND true
+                 ON CONFLICT (viewer_id, artifact_id) DO UPDATE SET
+                   seen_n = MAX(seen_n, excluded.seen_n), updated_at = MAX(updated_at, excluded.updated_at)",
+                params![legacy.id, owner.id],
+            )?;
+            tx.execute("DELETE FROM viewer_seen WHERE viewer_id = ?1", params![legacy.id])?;
+            tx.execute(
+                "DELETE FROM viewer_seen WHERE viewer_id = ?1 AND artifact_id NOT IN
+                   (SELECT artifact_id FROM viewer_seen WHERE viewer_id = ?1 ORDER BY updated_at DESC, rowid DESC LIMIT ?2)",
+                params![owner.id, crate::changelog::MAX_SEEN_PER_VIEWER as i64],
+            )?;
+            tx.execute(
+                "INSERT INTO viewer_threads (viewer_id, thread_id, looked_at)
+                 SELECT ?2, thread_id, looked_at FROM viewer_threads WHERE viewer_id = ?1 AND true
+                 ON CONFLICT (viewer_id, thread_id) DO UPDATE SET looked_at = MAX(looked_at, excluded.looked_at)",
+                params![legacy.id, owner.id],
+            )?;
+            tx.execute("DELETE FROM viewer_threads WHERE viewer_id = ?1", params![legacy.id])?;
+            if owner.display_name.is_none() && legacy.display_name.is_some() {
+                tx.execute(
+                    "UPDATE viewers SET display_name = ?2 WHERE id = ?1",
+                    params![owner.id, legacy.display_name],
+                )?;
+            }
+            tx.execute("DELETE FROM viewers WHERE id = ?1", params![legacy.id])?;
+            Ok(Claim::Merged(legacy.public_id))
+        })
+    }
+}
+
 impl Store {
     /// The viewers with these public IDs, in the order given; unknown IDs,
     /// and anything that is not a public ID, are skipped.
@@ -141,9 +269,113 @@ impl Store {
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_NAME_CHARS, MAX_SEARCH_SCAN};
+    use super::{Claim, MAX_NAME_CHARS, MAX_SEARCH_SCAN};
     use crate::store::test_util::store;
     use crate::{CoreError, new_ulid};
+
+    #[test]
+    fn the_owner_is_one_viewer_made_on_first_use() {
+        let (_d, st) = store();
+        let a = st.owner_viewer().unwrap();
+        let b = st.owner_viewer().unwrap();
+        assert_eq!(a, b);
+        assert!(st.is_owner_viewer(&a.id).unwrap());
+        let other = st.upsert_viewer(&new_ulid(), Some("Sam")).unwrap();
+        assert!(!st.is_owner_viewer(&other.id).unwrap());
+        assert!(!st.is_owner_viewer("nope").unwrap());
+        st.upsert_viewer(&a.id, Some("Alex")).unwrap();
+        assert_eq!(
+            st.owner_viewer().unwrap().display_name.as_deref(),
+            Some("Alex")
+        );
+    }
+
+    #[test]
+    fn the_first_claimed_viewer_becomes_the_owner() {
+        let (_d, st) = store();
+        let chrome = st.upsert_viewer(&new_ulid(), Some("Alex")).unwrap();
+        assert_eq!(st.claim_for_owner(&chrome.id).unwrap(), Claim::Adopted);
+        let owner = st.owner_viewer().unwrap();
+        assert_eq!(
+            (owner.public_id.as_str(), owner.display_name.as_deref()),
+            (chrome.public_id.as_str(), Some("Alex")),
+            "the adopted viewer keeps its public ID and name"
+        );
+        assert_eq!(st.claim_for_owner(&chrome.id).unwrap(), Claim::Nothing);
+        assert_eq!(st.claim_for_owner(&new_ulid()).unwrap(), Claim::Nothing);
+    }
+
+    #[test]
+    fn a_later_claimed_viewer_merges_into_the_owner() {
+        use crate::store::test_util::{anchor, artifact};
+        use crate::store::threads::NewThread;
+        let (_d, st) = store();
+        let aid = artifact(&st, None);
+        let owner = st.owner_viewer().unwrap();
+        let safari = st.upsert_viewer(&new_ulid(), Some("Alex S")).unwrap();
+        let t = st
+            .create_thread(
+                &aid,
+                NewThread {
+                    author_public_id: Some(safari.public_id.clone()),
+                    version_n: 1,
+                    anchor: anchor(),
+                    author_name: "Alex S".into(),
+                    body: "hi".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        st.resolve_thread(&t.id, &format!("viewer:{}", safari.public_id))
+            .unwrap();
+        st.mark_seen(&safari.id, &aid, 1).unwrap();
+        st.mark_looked(&safari.id, &aid, std::slice::from_ref(&t.id))
+            .unwrap();
+        st.with_write(|c| {
+            c.execute(
+                "INSERT INTO mentions (comment_id, public_id) SELECT id, ?1 FROM comments",
+                rusqlite::params![safari.public_id],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            st.claim_for_owner(&safari.id).unwrap(),
+            Claim::Merged(safari.public_id.clone())
+        );
+        assert_eq!(st.get_viewer(&safari.id).unwrap(), None, "the row is gone");
+        let now = st.owner_viewer().unwrap();
+        assert_eq!(now.public_id, owner.public_id);
+        assert_eq!(
+            now.display_name.as_deref(),
+            Some("Alex S"),
+            "an unnamed owner takes the name"
+        );
+        assert_eq!(st.seen(&owner.id, &aid).unwrap(), Some(1));
+        let (author, resolved_by, mention, looked): (String, String, String, i64) = st
+            .with_read(|c| {
+                Ok(c.query_row(
+                    "SELECT (SELECT author_public_id FROM comments), (SELECT resolved_by FROM threads),
+                            (SELECT public_id FROM mentions),
+                            (SELECT COUNT(*) FROM viewer_threads WHERE viewer_id = ?1)",
+                    rusqlite::params![owner.id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )?)
+            })
+            .unwrap();
+        assert_eq!(author, owner.public_id);
+        assert_eq!(resolved_by, format!("viewer:{}", owner.public_id));
+        assert_eq!(mention, owner.public_id);
+        assert_eq!(looked, 1);
+        // A named owner keeps its name.
+        let laptop = st.upsert_viewer(&new_ulid(), Some("Other")).unwrap();
+        st.claim_for_owner(&laptop.id).unwrap();
+        assert_eq!(
+            st.owner_viewer().unwrap().display_name.as_deref(),
+            Some("Alex S")
+        );
+    }
 
     #[test]
     fn upsert_creates_renames_and_clears() {
