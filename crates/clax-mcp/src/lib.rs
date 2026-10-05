@@ -4,6 +4,7 @@
 pub mod channel;
 pub mod client;
 pub mod plugin;
+pub mod probe;
 pub mod render;
 pub mod shim;
 pub mod standdown;

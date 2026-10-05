@@ -10,7 +10,6 @@ use crate::tools::{ClaxTools, UpgradeHoldProbe};
 use anyhow::Context;
 use clax_core::{Home, RegisterSession};
 use rmcp::ServiceExt;
-use rmcp::transport::stdio;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -305,7 +304,8 @@ async fn forward_notices(client: DaemonClient, peer: rmcp::Peer<rmcp::RoleServer
 /// events meanwhile.
 async fn serve(tools: ClaxTools, client: DaemonClient, forward: bool) -> anyhow::Result<()> {
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    let service = tools.serve(stdio()).await.context("MCP initialization")?;
+    let transport = crate::probe::stdio(&tools);
+    let service = tools.serve(transport).await.context("MCP initialization")?;
     let forward = forward.then(|| tokio::spawn(forward_notices(client, service.peer().clone())));
     let cancel = service.cancellation_token();
     let signalled = tokio::spawn(async move {

@@ -550,3 +550,90 @@ fn the_shim_logs_its_channel_state() {
     );
     assert!(line.contains("entry=\"plugin:clax@clax\""), "{line}");
 }
+
+/// `server/discover` params declaring `version` in the request `_meta`, as a
+/// 2026-07-28 client sends its opening probe.
+fn discover_params(version: &str) -> Value {
+    json!({"_meta": {
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "fake-claude", "version": "0"},
+    }})
+}
+
+/// A refused discover probe, then `initialize`: the session runs on the
+/// legacy lifecycle, so requests without `_meta` work.
+fn falls_back_after_a_refused_discover(mut c: FakeClaude, probe: &str, supported: Value) {
+    let r = c.request("server/discover", discover_params(probe));
+    assert_eq!(r["error"]["code"], -32022, "{r}");
+    assert_eq!(r["error"]["message"], "Unsupported protocol version", "{r}");
+    assert_eq!(
+        r["error"]["data"],
+        json!({"requested": probe, "supported": supported}),
+        "{r}"
+    );
+    let r = c.initialize("2025-11-25");
+    assert_eq!(r["result"]["protocolVersion"], "2025-11-25", "{r}");
+    let r = c.request("tools/list", json!({}));
+    let tools = r["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(tools.iter().any(|t| t["name"] == "status"), "{r}");
+    let s = c.call("status", json!({}));
+    assert!(s.is_object(), "{s}");
+}
+
+#[test]
+fn a_refused_discover_probe_falls_back_to_initialize_with_the_channel() {
+    falls_back_after_a_refused_discover(
+        FakeClaude::launch(FLAG),
+        "2026-07-28",
+        json!(["2024-11-05", "2025-03-26", "2025-06-18", "2025-11-25"]),
+    );
+}
+
+#[test]
+fn a_refused_discover_probe_falls_back_to_initialize_without_the_channel() {
+    falls_back_after_a_refused_discover(
+        FakeClaude::direct("codex"),
+        "2099-01-01",
+        json!([
+            "2024-11-05",
+            "2025-03-26",
+            "2025-06-18",
+            "2025-11-25",
+            "2026-07-28"
+        ]),
+    );
+}
+
+#[test]
+fn channel_events_flow_after_a_discover_fallback() {
+    let mut c = FakeClaude::launch(FLAG);
+    let r = c.request("server/discover", discover_params("2026-07-28"));
+    assert_eq!(r["error"]["code"], -32022, "{r}");
+    c.initialize("2025-11-25");
+    let aid = c.publish();
+    let tid = send_comment(&c, &aid, "please make it blue");
+    let events = c.channel_events(Duration::from_secs(5));
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert_eq!(events[0]["meta"]["thread_id"], tid.as_str(), "{events:?}");
+}
+
+#[test]
+fn a_supported_discover_probe_opens_an_inline_session() {
+    let mut c = FakeClaude::direct("codex");
+    let r = c.request("server/discover", discover_params("2026-07-28"));
+    let v = r["result"]["supportedVersions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(v.iter().any(|x| x == "2026-07-28"), "{r}");
+    // The inline lifecycle needs `_meta` on every request.
+    let r = c.request("tools/list", json!({}));
+    assert!(r.get("error").is_some(), "{r}");
+    let r = c.request("tools/list", discover_params("2026-07-28"));
+    let tools = r["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{r}"));
+    assert!(tools.iter().any(|t| t["name"] == "status"), "{r}");
+}

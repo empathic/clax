@@ -322,3 +322,49 @@ async fn mcp_reply_and_resolve_without_a_session_are_unknown_session() {
     assert_eq!(after["thread"]["status"], "open");
     assert_eq!(after["thread"]["comments"].as_array().unwrap().len(), 1);
 }
+
+/// A `server/discover` probe for `version`, with its `MCP-Protocol-Version`
+/// header and no session.
+async fn mcp_discover(ts: &TestServer, version: &str) -> Value {
+    let body = json!({"jsonrpc": "2.0", "id": "probe", "method": "server/discover", "params": {"_meta": {
+        "io.modelcontextprotocol/protocolVersion": version,
+        "io.modelcontextprotocol/clientCapabilities": {},
+        "io.modelcontextprotocol/clientInfo": {"name": "api-mcp-test", "version": "0"},
+    }}});
+    let res = mcp_post(ts, &body)
+        .bearer_auth(&ts.token)
+        .header("mcp-protocol-version", version)
+        .header("mcp-method", "server/discover")
+        .send()
+        .await
+        .unwrap();
+    assert!(res.headers().get("mcp-session-id").is_none());
+    rpc_message(res).await
+}
+
+/// A discover probe opens no session, so `initialize` after it starts a
+/// legacy session whose requests need no `_meta`.
+#[tokio::test]
+async fn mcp_serves_a_legacy_session_after_a_discover_probe() {
+    let ts = TestServer::spawn().await;
+    let v = mcp_discover(&ts, "2099-01-01").await;
+    assert_eq!(v["error"]["code"], -32022, "{v}");
+    let v = mcp_discover(&ts, "2026-07-28").await;
+    let versions = v["result"]["supportedVersions"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{v}"));
+    assert!(versions.iter().any(|x| x == "2026-07-28"), "{v}");
+    let session = mcp_session(&ts).await;
+    let mut req = mcp_post(
+        &ts,
+        &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}}),
+    )
+    .bearer_auth(&ts.token);
+    if let Some(s) = &session {
+        req = req.header("mcp-session-id", s);
+    }
+    let list = rpc_message(req.send().await.unwrap()).await;
+    assert!(list["result"]["tools"].as_array().is_some(), "{list}");
+    let v = mcp_call(&ts, &session, 3, "status", json!({})).await;
+    assert!(v["result"]["isError"] != true, "{v}");
+}

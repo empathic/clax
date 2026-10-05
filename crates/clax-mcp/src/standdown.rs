@@ -6,7 +6,6 @@ use crate::tools::StatusArgs;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
-use rmcp::transport::stdio;
 use rmcp::{ErrorData as McpError, ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 
 /// What the Claude Code plugin's copy says when Grok Build runs it. The
@@ -58,7 +57,12 @@ impl ServerHandler for StandDown {
 /// Serves [`StandDown`] with `text` on stdin/stdout until the client
 /// closes the connection.
 pub async fn serve(text: &'static str) -> anyhow::Result<()> {
-    let service = StandDown::new(text).serve(stdio()).await?;
+    let service = {
+        let server = StandDown::new(text);
+        let transport = crate::probe::stdio(&server);
+        server.serve(transport)
+    }
+    .await?;
     service.waiting().await?;
     Ok(())
 }
