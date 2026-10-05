@@ -142,13 +142,10 @@ and its open questions (`.superpowers/sdd/2026-10-01-grok/open-questions.md`).
   3 s for `--version` and ignore its exit status; the wrapper allows 5 s and
   needs exit 0. A `clax` whose first run takes 3 to 5 s is run by the wrapper
   but called "not clax" by doctor. Fix: use the wrapper's rule.
-- **"(not clax)" covers four causes** (Task 5 review, Low 2): a foreign
-  program, a file that is not executable, a timeout, and a crash. Say which,
-  as the wrapper does.
-- **The `binary` advice ignores `CLAX_BIN`** (Task 5 review, Low 3). With
-  `CLAX_BIN` set, doctor does not check that binary and still advises
-  `just install`. It should report whether `CLAX_BIN` is a usable clax and
-  advise unsetting it or pointing it at this binary.
+- **"not a usable clax binary" covers four causes** (Task 5 review, Low
+  2): a foreign program, a file that is not executable, a timeout, and a
+  crash. `clax doctor --agent` and `clax bin` should say which, as the
+  wrapper does.
 - **doctor's `version_line` can block** (Task 5 review, Low 4). It reads
   stdout after the child exits, so a `--version` that leaves a background
   process holding stdout waits past the timeout, and on timeout only the

@@ -57,7 +57,10 @@ for (const mode of ["subdomain", "sandbox"] as const) {
     const card = page.locator(`.thread-card[data-thread="${ids[0]}"]`);
     await card.getByRole("button", { name: "Choose the agent" }).click();
     await card.getByRole("menuitemradio", { name: "codex" }).click();
+    // The click only starts the send; the rows exist once it is answered.
+    const sent = page.waitForResponse(r => r.url().endsWith(`/threads/${ids[0]}/send`));
     await card.getByRole("button", { name: "Send to codex" }).click();
+    expect((await sent).ok()).toBe(true);
     expect((await api(d.base, d.token, `/api/sessions/${other.id}/feedback?tier=piggyback`)).feedback).toHaveLength(1);
     expect((await api(d.base, d.token, `/api/sessions/${sid}/feedback?tier=piggyback`)).feedback).toHaveLength(0);
     await page.reload();

@@ -4,6 +4,7 @@ mod client;
 mod commands;
 mod hooklog;
 mod host;
+mod plugin_bin;
 mod plugins;
 
 use clap::error::ErrorKind;
@@ -62,7 +63,8 @@ pub enum Cmd {
     #[command(subcommand)]
     Feedback(commands::feedback::Cmd),
     /// Register the Clax plugins built into this binary with each harness
-    /// whose CLI is on PATH, replacing stale registrations.
+    /// whose CLI is on PATH, replacing stale registrations, and point the
+    /// plugins at this binary (the `bin` setting, see `clax bin`).
     ///
     /// Re-running reinstalls the plugin, which enables it again where it was
     /// disabled. A Pi package is removed only when `init` recorded it or its
@@ -74,11 +76,21 @@ pub enum Cmd {
     /// written that way is taken relative to HOME.
     Init(commands::init::Args),
     /// Remove the Clax plugin registrations from each harness whose CLI is
-    /// on PATH, and the plugins' copy once no harness refers to it.
+    /// on PATH, the plugins' copy once no harness refers to it, and the
+    /// `bin` setting when it names this binary.
     ///
     /// The copy is kept while any harness's registry still names it or
     /// cannot be read. The same known miss as `init` applies.
     Uninit(commands::init::Args),
+    /// Show or set which clax binary the plugins run.
+    ///
+    /// The plugins run, in order: $CLAX_BIN; the `bin` setting in the
+    /// home's config.toml (`clax bin set`); else the Clax release they pin,
+    /// which they download into <home>/bin/<version> on first use.
+    Bin {
+        #[command(subcommand)]
+        cmd: Option<commands::bin::Cmd>,
+    },
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
 }
@@ -179,6 +191,7 @@ fn main() {
         Cmd::Feedback(c) => commands::feedback::run(&cli, &home, c),
         Cmd::Init(a) => commands::init::init(&cli, &home, a),
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
+        Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Haiku => commands::haiku::run(&cli),
     };
     if let Err(e) = result {

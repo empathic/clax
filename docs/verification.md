@@ -537,7 +537,7 @@ Open defects and limits recorded in `docs/follow-ups.md:110-198` and
 - The daemon's own `/mcp` `status` does not report `upgrade_held`; one
   canonicalization in daemon replacement has no test; `clax doctor --agent`'s
   `binary` check probes differently from the wrapper, conflates four causes
-  under "(not clax)", ignores `CLAX_BIN`, can block in `version_line`, and
+  under "not a usable clax binary", can block in `version_line`, and
   shows a stale held-upgrade reason; wrapper probes plus daemon start can
   exceed Codex's MCP startup timeout; seven usability items in
   `scripts/verify-harnesses.sh` (`docs/follow-ups.md:133-180`).

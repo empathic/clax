@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Hermetic tests for ensure-clax.sh: a scratch HOME, and a PATH holding only
-# the tools the wrapper needs plus fake `clax` binaries. No network, no real
-# ~/.clax, no harness.
+# Hermetic tests for ensure-clax.sh: a scratch HOME, a PATH holding only the
+# tools the wrapper needs, fake `clax` binaries named by CLAX_BIN or the
+# `bin` setting, and fake releases served by scripts/fake-release-server.py
+# on 127.0.0.1. No network, no real ~/.clax, no harness.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$(mktemp -d)" && pwd -P)"
-trap 'rm -rf "$ROOT"' EXIT
+SERVER_PID=""
+# shellcheck disable=SC2329 # run by the EXIT trap
+cleanup() {
+    if [ -n "$SERVER_PID" ]; then kill "$SERVER_PID" 2>/dev/null; wait "$SERVER_PID" 2>/dev/null; fi
+    rm -rf "$ROOT"
+    return 0
+}
+trap cleanup EXIT
 mkdir -p "$ROOT/wrapper"
 cp "$HERE/ensure-clax.sh" "$ROOT/wrapper/ensure-clax.sh"
 SCRIPT="$ROOT/wrapper/ensure-clax.sh"
@@ -23,7 +31,8 @@ fail() { echo "FAIL: $1"; FAILED=1; }
 # (never a clax).
 TOOLS="$ROOT/tools"
 mkdir -p "$TOOLS"
-for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls; do
+for t in bash sh env awk head tail grep sed tr cat mktemp mv mkdir rm chmod date wc cp sleep ls \
+    curl tar gzip shasum sha256sum perl find uname sysctl; do
     if p="$(command -v "$t" 2>/dev/null)" && [ -x "$p" ]; then ln -sf "$p" "$TOOLS/$t"; fi
 done
 
@@ -33,6 +42,13 @@ fake_clax() {
     mkdir -p "$1"
     printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "%s"; exit 0; fi\necho "args: $*"\n' "$2" > "$1/clax"
     chmod +x "$1/clax"
+}
+
+# Writes the `bin` setting, as `clax bin set` does, naming $1.
+set_bin() {
+    local home="${CLAX_HOME:-$HOME/.clax}"
+    mkdir -p "$home"
+    printf 'bin = "%s"\n' "$1" > "$home/config.toml"
 }
 
 new_env() {
@@ -83,35 +99,79 @@ hooks_log() { cat "${CLAX_HOME:-$HOME/.clax}/logs/hooks.log" 2>/dev/null; }
 
 new_env
 fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
 run
-if [ "$RC" = 0 ] && [ "$OUT" = "$FAKEBIN/clax" ]; then pass "the clax on PATH is found"
-else fail "the clax on PATH is found (rc=$RC out=$OUT err=$ERR)"; fi
-
-new_env
-fake_clax "$FAKEBIN" "somethingelse 1.0"
-fake_clax "$SANDBOX/second" "clax $V"
-PATH="$FAKEBIN:$SANDBOX/second:$TOOLS" run
-if [ "$RC" = 0 ] && [ "$OUT" = "$SANDBOX/second/clax" ]; then pass "a foreign clax on PATH is skipped"
-else fail "a foreign clax on PATH is skipped (rc=$RC out=$OUT)"; fi
+if [ "$RC" = 0 ] && [ "$OUT" = "$FAKEBIN/clax" ]; then pass "the bin setting in config.toml names the clax"
+else fail "the bin setting in config.toml names the clax (rc=$RC out=$OUT err=$ERR)"; fi
 
 new_env
 fake_clax "$FAKEBIN" "clax $V"
+run exec status
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "pins no Clax release yet"; then pass "a clax on PATH is never run"
+else fail "a clax on PATH is never run (rc=$RC out=$OUT err=$ERR)"; fi
+
+new_env
+fake_clax "$FAKEBIN" "clax $V"
+mkdir -p "$HOME/.clax"
+printf '[serve]\nbin = "%s"\n' "$FAKEBIN/clax" > "$HOME/.clax/config.toml"
+run
+if [ "$RC" = 1 ] && echo "$ERR" | grep -q "pins no Clax release yet"; then pass "a bin key inside a table is not the bin setting"
+else fail "a bin key inside a table is not the bin setting (rc=$RC out=$OUT err=$ERR)"; fi
+
+for line in "bin = '/abs/clax'" 'bin="/abs/clax"' 'bin = "relative/clax"' 'bin = "/a\\b/clax"' '"bin" = "/abs/clax"' 'bin = "/abs/clax" # note'; do
+    new_env
+    mkdir -p "$HOME/.clax"
+    printf '# settings\n%s\n\n[serve]\nport = 7481\n' "$line" > "$HOME/.clax/config.toml"
+    run exec status
+    if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "sets bin in a form the plugins do not read" && echo "$ERR" | grep -qF "clax bin set"; then
+        pass "a bin line not in the form clax writes is an error: $line"
+    else fail "a bin line not in the form clax writes is an error: $line (rc=$RC err=$ERR)"; fi
+done
+
+new_env
+fake_clax "$FAKEBIN" "clax $V"
+mkdir -p "$HOME/.clax"
+printf 'bin = "%s"\nbin = "%s"\n' "$FAKEBIN/clax" "$FAKEBIN/clax" > "$HOME/.clax/config.toml"
+run
+if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "(and 1 more)"; then pass "two bin lines are an error"
+else fail "two bin lines are an error (rc=$RC err=$ERR)"; fi
+
+new_env
+set_bin "$SANDBOX/gone/clax"
+run exec status
+if [ "$RC" = 1 ] && echo "$ERR" | grep -qF "sets bin = \"$SANDBOX/gone/clax\", which is not a usable clax binary (not an executable file)"; then
+    pass "a bin setting naming no usable clax is an error, not a fall-through"
+else fail "a bin setting naming no usable clax is an error (rc=$RC err=$ERR)"; fi
+
+new_env
+export CLAX_HOME="$SANDBOX/ch"
+fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
+run
+if [ "$RC" = 0 ] && [ "$OUT" = "$FAKEBIN/clax" ]; then pass "the bin setting is read from \$CLAX_HOME/config.toml"
+else fail "the bin setting is read from \$CLAX_HOME/config.toml (rc=$RC out=$OUT err=$ERR)"; fi
+
+new_env
+fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
 fake_clax "$SANDBOX/x" "clax $V"
 CLAX_BIN="$SANDBOX/x/clax" run exec status
 if [ "$RC" = 0 ] && [ "$OUT" = "args: status" ]; then
     CLAX_BIN="$SANDBOX/x/clax" run
-    if [ "$OUT" = "$SANDBOX/x/clax" ]; then pass "CLAX_BIN wins over PATH"; else fail "CLAX_BIN wins over PATH (out=$OUT)"; fi
-else fail "CLAX_BIN wins over PATH (rc=$RC out=$OUT err=$ERR)"; fi
+    if [ "$OUT" = "$SANDBOX/x/clax" ]; then pass "CLAX_BIN wins over the bin setting"; else fail "CLAX_BIN wins over the bin setting (out=$OUT)"; fi
+else fail "CLAX_BIN wins over the bin setting (rc=$RC out=$OUT err=$ERR)"; fi
 
 new_env
 fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
 CLAX_BIN="$SANDBOX/missing" run exec status
 if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "CLAX_BIN is set to '$SANDBOX/missing', which is not a usable clax binary"; then
-    pass "an unusable CLAX_BIN fails instead of falling back to PATH"
+    pass "an unusable CLAX_BIN fails instead of falling back to the bin setting"
 else fail "an unusable CLAX_BIN fails (rc=$RC out=$OUT err=$ERR)"; fi
 
 new_env
 fake_clax "$FAKEBIN" "clax 0.0.1"
+set_bin "$FAKEBIN/clax"
 mcp
 if [ "$OUT" = "args: mcp --agent codex" ] && echo "$ERR" | grep -q "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V" \
     && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax 0.0.1\" warning=\"$FAKEBIN/clax is clax 0.0.1"; then
@@ -120,6 +180,7 @@ else fail "a clax of another version runs with a logged warning (out=$OUT err=$E
 
 new_env
 fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
 mcp
 if [ "$OUT" = "args: mcp --agent codex" ] && [ -z "$ERR" ] && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$FAKEBIN/clax\" version=\"clax $V\" warning=\"\""; then
     pass "every MCP start is logged"
@@ -127,9 +188,10 @@ else fail "every MCP start is logged (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env
 mcp
-if text="$(fallback_text)" && echo "$text" | grep -q "no clax binary is on PATH" && echo "$text" | grep -q "just install" \
-    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"no clax binary is on PATH.*tried=\"PATH has no clax: $FAKEBIN:$TOOLS\""; then
-    pass "no clax: the MCP client gets the reason from the fallback server"
+if text="$(fallback_text)" && echo "$text" | grep -q "pins no Clax release yet" && echo "$text" | grep -q "just install" \
+    && echo "$text" | grep -q "clax bin set" && echo "$text" | grep -q "CLAX_BIN" \
+    && hooks_log | grep -q "launcher mode=mcp agent=codex exit=fallback reason=\"this plugin pins no Clax release yet.*tried=\"no CLAX_BIN; no bin setting in $HOME/.clax/config.toml; no pinned release\""; then
+    pass "no pin and no binary named: the MCP client gets the reason from the fallback server"
 else fail "no clax: the MCP client gets the reason (out=$OUT err=$ERR log=$(hooks_log))"; fi
 
 new_env
@@ -143,6 +205,7 @@ OUT="$({
     printf '%s\n' "$(echo "$REQS" | head -1)"
     i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 200 ]; do sleep 0.05; i=$((i + 1)); done
     fake_clax "$FAKEBIN" "clax $V"
+    set_bin "$FAKEBIN/clax"
     printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
 } | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>/dev/null)"
 if echo "$OUT" | tail -1 | grep -q "clax is now available at $FAKEBIN/clax. Reconnect"; then
@@ -153,6 +216,7 @@ else fail "the fallback's status tool notices a clax installed since (out=$OUT)"
 new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nwhile IFS= read -r l; do echo "got: $l"; done\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 OUT="$(printf 'one\ntwo\n' | "$TOOLS/bash" "$SCRIPT" exec mcp --agent claude 2>"$SANDBOX/stderr")"; RC=$?
 if [ "$RC" = 0 ] && [ "$OUT" = "$(printf 'got: one\ngot: two')" ] && ! hooks_log | grep -q launcher; then
     pass "the MCP server gets the client's stdin and stdout"
@@ -169,6 +233,7 @@ preflight_clax() {
 # and clax mcp itself never runs.
 new_env
 preflight_clax "$FAKEBIN" "error: /x/config.toml: bad port" "$SANDBOX/broken"
+set_bin "$FAKEBIN/clax"
 : > "$SANDBOX/broken"
 mcp
 if text="$(fallback_text)" \
@@ -181,6 +246,7 @@ else fail "a failing preflight (out=$OUT err=$ERR log=$(hooks_log))"; fi
 # Once the cause is fixed, the status tool says so.
 new_env
 preflight_clax "$FAKEBIN" "error: broken" "$SANDBOX/broken"
+set_bin "$FAKEBIN/clax"
 : > "$SANDBOX/broken"
 OUT="$({
     printf '%s\n' "$(echo "$REQS" | head -1)"
@@ -197,6 +263,7 @@ else fail "the fallback's status tool notices a preflight that passes since (out
 new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\nfor a in "$@"; do if [ "$a" = --preflight ]; then echo "error: unexpected argument '"'"'--preflight'"'"' found" >&2; exit 2; fi; done\necho "args: $*"\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 mcp
 if [ "$OUT" = "args: mcp --agent codex" ] && ! hooks_log | grep -q launcher; then
     pass "a clax without --preflight still runs"
@@ -209,6 +276,7 @@ SYS_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\ncase "$*" in *--preflight*) exit 0 ;; esac\necho "ppid=$PPID"\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 mkdir -p "$SANDBOX/plugin"
 OUT="$(PATH="$PATH:$SYS_PATH" "$PY" - "$TOOLS/bash" "$SCRIPT" "$SANDBOX/plugin" <<'PYEOF'
 import os, subprocess, sys
@@ -219,19 +287,21 @@ PYEOF
 )"
 case "$OUT" in True*) pass "clax mcp's parent is the harness, not the wrapper" ;; *) fail "clax mcp's parent is the harness ($OUT)" ;; esac
 
-# An unusable clax on PATH is named in the reason.
+# An unusable clax named by the bin setting is named in the reason.
 new_env
 printf '#!/bin/sh\necho "dyld: Library not loaded: libfoo.dylib" >&2\nexit 134\n' > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 run exec hook --agent codex stop
-if [ "$RC" = 0 ] && echo "$ERR" | grep -qF "no usable clax binary is on PATH ($FAKEBIN/clax: \`--version\` exited 134: dyld: Library not loaded: libfoo.dylib). Reinstall it with"; then
-    pass "an unusable clax on PATH is named with its --version failure"
-else fail "an unusable clax on PATH is named (rc=$RC err=$ERR)"; fi
+if [ "$RC" = 0 ] && echo "$ERR" | grep -qF "sets bin = \"$FAKEBIN/clax\", which is not a usable clax binary (\`--version\` exited 134: dyld: Library not loaded: libfoo.dylib)"; then
+    pass "an unusable clax is named with its --version failure"
+else fail "an unusable clax is named (rc=$RC err=$ERR)"; fi
 
 # A --version that hangs is cut off.
 new_env
 printf '#!/bin/sh\nexec sleep 30\n' > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 START="$(date +%s)"
 run exec hook --agent codex stop
 ELAPSED=$(( $(date +%s) - START ))
@@ -336,7 +406,7 @@ PYEOF
     unset CLAX_NO_OPEN
 fi
 
-# Neither a checkout, ~/.cargo/bin off PATH, ~/.local/bin, nor a harness's
+# Neither PATH, a checkout, ~/.cargo/bin, ~/.local/bin, nor a harness's
 # configuration is searched.
 new_env
 mkdir -p "$SANDBOX/repo/plugins/clax/scripts" "$HOME/.codex"
@@ -346,12 +416,13 @@ fake_clax "$SANDBOX/repo/target/debug" "clax $V"
 fake_clax "$HOME/.cargo/bin" "clax $V"
 fake_clax "$HOME/.local/bin" "clax $V"
 printf '[marketplaces.clax]\nsource_type = "local"\nsource = "%s"\n' "$SANDBOX/repo" > "$HOME/.codex/config.toml"
-CLAX_SOURCE_DIR="$SANDBOX/repo" CLAX_INSTALL_DIR="$HOME/.local/bin" run_at "$SANDBOX/repo/plugins/clax/scripts/ensure-clax.sh"
-if [ "$RC" = 1 ] && [ -z "$OUT" ]; then pass "only PATH is searched: not a checkout, ~/.cargo/bin, ~/.local/bin or Codex's config"
-else fail "only PATH is searched (rc=$RC out=$OUT)"; fi
+PATH="$HOME/.cargo/bin:$HOME/.local/bin:$TOOLS" CLAX_SOURCE_DIR="$SANDBOX/repo" CLAX_INSTALL_DIR="$HOME/.local/bin" run_at "$SANDBOX/repo/plugins/clax/scripts/ensure-clax.sh"
+if [ "$RC" = 1 ] && [ -z "$OUT" ]; then pass "nothing is searched: not PATH, a checkout, ~/.cargo/bin, ~/.local/bin or Codex's config"
+else fail "nothing is searched (rc=$RC out=$OUT)"; fi
 
 new_env
 fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
 run exec one "two words"
 if [ "$RC" = 0 ] && [ "$OUT" = "args: one two words" ]; then pass "exec passes arguments through"
 else fail "exec passes arguments through (rc=$RC out=$OUT)"; fi
@@ -364,8 +435,8 @@ if [ "$RC" = 2 ] && echo "$ERR" | grep -q usage; then pass "an unknown mode prin
 
 new_env
 run exec hook --agent codex session-start
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep -q "no clax binary is on PATH" \
-    && hooks_log | grep -q "launcher mode=hook agent=codex exit=0 reason=\"no clax binary is on PATH.*argv=\"exec hook --agent codex session-start\""; then
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ "$(printf '%s\n' "$ERR" | grep -c .)" = 1 ] && echo "$ERR" | grep -q "pins no Clax release yet" \
+    && hooks_log | grep -q "launcher mode=hook agent=codex exit=0 reason=\"this plugin pins no Clax release yet.*argv=\"exec hook --agent codex session-start\""; then
     pass "hook mode with no clax prints one line, logs it and exits 0"
 else fail "hook mode with no clax (rc=$RC out=$OUT err=$ERR log=$(hooks_log))"; fi
 
@@ -378,6 +449,7 @@ else fail "hook mode with an unusable CLAX_BIN (rc=$RC err=$ERR)"; fi
 new_env
 printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "partial output"\necho "boom: daemon exploded" >&2\nexit 3\n' "$V" > "$FAKEBIN/clax"
 chmod +x "$FAKEBIN/clax"
+set_bin "$FAKEBIN/clax"
 run exec hook --agent claude prompt
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "boom: daemon exploded" \
     && hooks_log | grep -q "launcher mode=hook agent=claude exit=3 reason=\"clax exited 3: boom: daemon exploded\""; then
@@ -386,6 +458,7 @@ else fail "a failing hook binary (rc=$RC out=$OUT err=$ERR log=$(hooks_log))"; f
 
 new_env
 fake_clax "$FAKEBIN" "clax 0.0.1"
+set_bin "$FAKEBIN/clax"
 run exec hook --agent codex stop
 if [ "$RC" = 0 ] && [ "$OUT" = "args: hook --agent codex stop" ] && [ -z "$ERR" ] && [ -z "$(hooks_log)" ]; then
     pass "a succeeding hook passes its stdout through and logs nothing, whatever its version"
@@ -440,6 +513,7 @@ mcp_as() { local agent="$1"; shift; OUT="$(printf '%s\n' "$REQS" | env "$@" "$TO
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 mcp_as claude GROK_SESSION_ID=019a-g
 if [ "$RC" = 0 ] && text="$(standdown_text)" && echo "$text" | grep -qF 'clax_grok__publish' \
     && [ ! -e "$SANDBOX/ran" ] && hooks_log | grep -q ' standdown mode=mcp agent=claude host=grok$'; then
@@ -454,6 +528,7 @@ else fail "grok guard: standing down without clax (out=$OUT log=$(hooks_log))"; 
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 mcp_as claude GROK_SESSION_ID=019a-g CLAUDE_PID=1
 if standdown_text >/dev/null && [ ! -e "$SANDBOX/ran" ]; then
     pass "grok guard: Grok started from a Claude Code shell (inherited CLAUDE_PID) stands the copy down"
@@ -461,6 +536,7 @@ else fail "grok guard: inherited CLAUDE_PID (out=$OUT)"; fi
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 GROK_SESSION_ID=019a-g run_under_claude exec mcp --agent claude
 if [ "$RC" = 0 ] && grep -q -- '--agent claude' "$SANDBOX/ran" 2>/dev/null; then
     pass "grok guard: Claude Code as the parent (CLAUDE_PID) runs clax even with GROK_SESSION_ID"
@@ -469,6 +545,7 @@ else fail "grok guard: CLAUDE_PID parent (rc=$RC out=$OUT err=$ERR)"; fi
 for agent in grok codex; do
     new_env
     recording_clax "$FAKEBIN"
+    set_bin "$FAKEBIN/clax"
     mcp_as "$agent" GROK_SESSION_ID=019a-g
     if grep -q -- "mcp --agent $agent" "$SANDBOX/ran" 2>/dev/null && ! hooks_log | grep -q standdown; then
         pass "grok guard: --agent $agent is never stood down"
@@ -477,6 +554,7 @@ done
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 OUT="$(printf '{"sessionId":"g","hookEventName":"Stop"}' | GROK_HOOK_EVENT=Stop "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"
 if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ ! -e "$SANDBOX/ran" ] \
     && hooks_log | grep -q ' standdown mode=hook agent=claude host=grok$'; then
@@ -485,6 +563,7 @@ else fail "grok guard: Claude copy hook under Grok (rc=$RC out=$OUT err=$ERR)"; 
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 OUT="$(printf '{"session_id":"s"}' | GROK_SESSION_ID=g "$TOOLS/bash" "$SCRIPT" exec hook --agent claude stop 2>"$SANDBOX/stderr")"; RC=$?
 if [ "$RC" = 0 ] && grep -q -- 'hook --agent claude stop' "$SANDBOX/ran" 2>/dev/null; then
     pass "grok guard: a Claude Code hook with only GROK_SESSION_ID (Claude Code started from a Grok shell) acts"
@@ -492,6 +571,7 @@ else fail "grok guard: hook without GROK_HOOK_EVENT (rc=$RC)"; fi
 
 new_env
 recording_clax "$FAKEBIN"
+set_bin "$FAKEBIN/clax"
 GROK_HOOK_EVENT=Stop GROK_SESSION_ID=g run exec status
 if [ "$RC" = 0 ] && [ "$OUT" = "args: status" ]; then
     pass "grok guard: CLI mode is never stood down"
@@ -519,11 +599,201 @@ cp "$SANDBOX/elsewhere/clax" "$HOME/.$OLD/bin/clax"
 export "${OLD_UPPER}_BIN=$SANDBOX/elsewhere/clax" "${OLD_UPPER}_HOME=$HOME/.$OLD"
 run exec hook --agent codex stop
 unset "${OLD_UPPER}_BIN" "${OLD_UPPER}_HOME"
-if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "no clax binary is on PATH" \
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "pins no Clax release yet" \
     && [ ! -e "$HOME/.$OLD/logs" ] && [ -s "$HOME/.clax/logs/hooks.log" ] \
     && [ "$(PATH="$ORIG_PATH" ls -A "$HOME/.$OLD")" = bin ]; then
     pass "the previous name's variables, binary and home are ignored and left untouched"
 else fail "the previous name's variables, binary and home are ignored (rc=$RC out=$OUT err=$ERR)"; fi
+
+# --- The managed install of the pinned release ----------------------------------
+# Fake releases of clax $P for every target, served by fake-release-server.py:
+# /ok (the release), /none (404), /wrong (archives whose checksums differ from
+# the pinned ones) and /gate (held until $REL/gate-open exists). A copy of the
+# wrapper pins $P with the good archives' checksums.
+P=9.1.0
+REL="$ROOT/release"
+TARGETS="aarch64-apple-darwin x86_64-apple-darwin x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
+mkdir -p "$ROOT/payload" "$REL/good/v$P" "$REL/wrong/v$P" "$ROOT/wstage"
+printf '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "clax %s"; exit 0; fi\necho "managed: $*"\n' "$P" > "$ROOT/payload/clax"
+chmod +x "$ROOT/payload/clax"
+for t in $TARGETS; do
+    "$HERE/package-release.sh" archive "$P" "$t" "$ROOT/payload/clax" "$REL/good/v$P" > /dev/null
+    mkdir -p "$ROOT/wstage/clax-$P-$t"
+    printf '#!/bin/sh\necho "clax %s"\n# tampered\n' "$P" > "$ROOT/wstage/clax-$P-$t/clax"
+    chmod +x "$ROOT/wstage/clax-$P-$t/clax"
+    (cd "$ROOT/wstage" && tar -czf "$REL/wrong/v$P/clax-$P-$t.tar.gz" "clax-$P-$t")
+done
+"$HERE/package-release.sh" sums "$REL/good/v$P" > /dev/null
+REQLOG="$ROOT/requests.log"
+: > "$REQLOG"
+"$PY" "$HERE/fake-release-server.py" "$REL" "$REQLOG" "$ROOT/port" &
+SERVER_PID=$!
+i=0
+while [ ! -s "$ROOT/port" ] && [ "$i" -lt 100 ]; do sleep 0.05; i=$((i + 1)); done
+BASE="http://127.0.0.1:$(cat "$ROOT/port" 2>/dev/null)"
+PINNED="$ROOT/wrapper/pinned/ensure-clax.sh"
+mkdir -p "${PINNED%/*}"
+cp "$SCRIPT" "$PINNED"
+sum_of() { awk -v f="clax-$P-$1.tar.gz" '$2 == f { print $1 }' "$REL/good/v$P/SHA256SUMS"; }
+sed -i.bak -e "s/^PINNED_VERSION=\"\"$/PINNED_VERSION=\"$P\"/" \
+    -e "s/^SHA256_AARCH64_APPLE_DARWIN=\"\"$/SHA256_AARCH64_APPLE_DARWIN=\"$(sum_of aarch64-apple-darwin)\"/" \
+    -e "s/^SHA256_X86_64_APPLE_DARWIN=\"\"$/SHA256_X86_64_APPLE_DARWIN=\"$(sum_of x86_64-apple-darwin)\"/" \
+    -e "s/^SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_X86_64_UNKNOWN_LINUX_MUSL=\"$(sum_of x86_64-unknown-linux-musl)\"/" \
+    -e "s/^SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"\"$/SHA256_AARCH64_UNKNOWN_LINUX_MUSL=\"$(sum_of aarch64-unknown-linux-musl)\"/" "$PINNED"
+rm -f "$PINNED.bak"
+if [ "$("$TOOLS/bash" "$PINNED" pinned-version)" = "$P" ] && [ -z "$("$TOOLS/bash" "$SCRIPT" pinned-version)" ] \
+    && ! grep -q '^SHA256_[A-Z0-9_]*=""$' "$PINNED"; then
+    pass "pinned-version prints the pin (empty in the checkout's wrapper until a release is pinned)"
+else fail "pinned-version prints the pin"; fi
+
+# Runs the pinned wrapper against server mode $1.
+prun() { local mode="$1"; shift; OUT="$(CLAX_RELEASE_BASE_URL="$BASE/$mode" "$TOOLS/bash" "$PINNED" "$@" 2>"$SANDBOX/stderr" < /dev/null)"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
+pmcp() { local mode="$1"; shift; OUT="$(printf '%s\n' "$REQS" | CLAX_RELEASE_BASE_URL="$BASE/$mode" "$TOOLS/bash" "$PINNED" exec mcp --agent codex 2>"$SANDBOX/stderr")"; RC=$?; ERR="$(cat "$SANDBOX/stderr")"; }
+MANAGED() { echo "${CLAX_HOME:-$HOME/.clax}/bin/$P"; }
+requests() { grep -c . "$REQLOG" | tr -d ' '; }
+listing() { PATH="$ORIG_PATH" ls -A "$1" 2>/dev/null | tr '\n' ' '; }
+leftovers() { PATH="$ORIG_PATH" ls -A "$HOME/.clax/bin" 2>/dev/null | grep '^\.' || true; }
+sha_of() { shasum -a 256 "$1" | awk '{ print $1 }'; }
+
+new_env; : > "$REQLOG"
+prun ok
+if [ "$RC" = 0 ] && [ "$OUT" = "$(MANAGED)/clax" ] && [ -f "$(MANAGED)/clax.sha256" ] \
+    && [ "$(cat "$(MANAGED)/clax.sha256")" = "$(sha_of "$ROOT/payload/clax")" ] \
+    && grep -q "^/ok/v$P/clax-$P-.*\.tar\.gz$" "$REQLOG" && [ -z "$(leftovers)" ] \
+    && echo "$ERR" | grep -q "installed clax $P at $(MANAGED)/clax" \
+    && hooks_log | grep -q "install mode=print agent=- version=$P exit=0"; then
+    pass "the pinned release is downloaded, checked and installed under \$CLAX_HOME/bin/<version>"
+else fail "the pinned release is installed (rc=$RC out=$OUT err=$ERR reqs=$(cat "$REQLOG"))"; fi
+: > "$REQLOG"
+prun none exec status
+if [ "$RC" = 0 ] && [ "$OUT" = "managed: status" ] && [ "$(requests)" = 0 ] && [ -z "$ERR" ]; then
+    pass "a valid managed install runs without a download"
+else fail "a valid managed install runs without a download (rc=$RC out=$OUT err=$ERR reqs=$(requests))"; fi
+
+new_env
+export CLAX_HOME="$SANDBOX/ch"
+prun ok
+if [ "$RC" = 0 ] && [ "$OUT" = "$CLAX_HOME/bin/$P/clax" ]; then pass "the managed install lives under \$CLAX_HOME/bin"
+else fail "the managed install lives under \$CLAX_HOME/bin (rc=$RC out=$OUT err=$ERR)"; fi
+
+new_env; : > "$REQLOG"
+fake_clax "$FAKEBIN" "clax $V"
+set_bin "$FAKEBIN/clax"
+prun ok
+if [ "$RC" = 0 ] && [ "$OUT" = "$FAKEBIN/clax" ] && [ "$(requests)" = 0 ] && [ ! -e "$HOME/.clax/bin" ]; then
+    pass "the bin setting wins over the pinned release, which is not downloaded"
+else fail "the bin setting wins over the pinned release (rc=$RC out=$OUT reqs=$(requests))"; fi
+CLAX_BIN="$FAKEBIN/clax" prun ok
+if [ "$RC" = 0 ] && [ "$OUT" = "$FAKEBIN/clax" ] && [ "$(requests)" = 0 ]; then pass "CLAX_BIN wins over the pinned release"
+else fail "CLAX_BIN wins over the pinned release (rc=$RC out=$OUT)"; fi
+
+new_env; : > "$REQLOG"
+prun wrong exec status
+if [ "$RC" = 1 ] && [ -z "$OUT" ] && echo "$ERR" | grep -q "does not match the checksum this plugin pins" \
+    && [ ! -e "$(MANAGED)" ] && [ -z "$(leftovers)" ]; then
+    pass "a download whose checksum differs from the pinned one installs nothing"
+else fail "a checksum mismatch installs nothing (rc=$RC out=$OUT err=$ERR bin=$(listing "$HOME/.clax/bin"))"; fi
+
+new_env
+prun none exec status
+if [ "$RC" = 1 ] && echo "$ERR" | grep -q "answered HTTP 404" && [ ! -e "$(MANAGED)" ] && [ -z "$(leftovers)" ]; then
+    pass "a release that is not there installs nothing and says so"
+else fail "a missing release (rc=$RC err=$ERR)"; fi
+
+new_env
+prun ok
+printf 'damage\n' >> "$(MANAGED)/clax"
+: > "$REQLOG"
+prun ok exec status
+if [ "$RC" = 0 ] && [ "$OUT" = "managed: status" ] && [ "$(requests)" = 1 ] \
+    && [ "$(sha_of "$(MANAGED)/clax")" = "$(cat "$(MANAGED)/clax.sha256")" ] && [ -z "$(leftovers)" ]; then
+    pass "a damaged managed binary is never run and is replaced"
+else fail "a damaged managed binary is replaced (rc=$RC out=$OUT err=$ERR reqs=$(requests))"; fi
+rm -f "$(MANAGED)/clax.sha256"
+: > "$REQLOG"
+prun ok
+if [ "$RC" = 0 ] && [ "$(requests)" = 1 ] && [ -f "$(MANAGED)/clax.sha256" ]; then pass "a managed install without its sha256 record is replaced"
+else fail "a managed install without its sha256 record is replaced (rc=$RC reqs=$(requests))"; fi
+
+new_env
+pids=""
+for n in 1 2 3 4 5; do
+    (CLAX_RELEASE_BASE_URL="$BASE/ok" "$TOOLS/bash" "$PINNED" > "$SANDBOX/out.$n" 2> "$SANDBOX/err.$n" < /dev/null; echo $? > "$SANDBOX/rc.$n") &
+    pids="$pids $!"
+done
+for p in $pids; do wait "$p"; done
+ok=1
+for n in 1 2 3 4 5; do
+    { [ "$(cat "$SANDBOX/rc.$n")" = 0 ] && [ "$(cat "$SANDBOX/out.$n")" = "$(MANAGED)/clax" ]; } || ok=0
+done
+if [ "$ok" = 1 ] && [ "$(listing "$HOME/.clax/bin")" = "$P " ] && [ "$(listing "$(MANAGED)")" = "clax clax.sha256 " ]; then
+    pass "five concurrent first runs all get one valid install and leave nothing behind"
+else fail "concurrent installs ($(for n in 1 2 3 4 5; do echo "[$(cat "$SANDBOX/rc.$n") $(cat "$SANDBOX/out.$n") $(cat "$SANDBOX/err.$n")]"; done); bin=$(listing "$HOME/.clax/bin"))"; fi
+
+new_env
+for d in 8.0.0 9.0.0 9.0.10 10.0.0 9.2.0 notaversion .staging.old; do mkdir -p "$HOME/.clax/bin/$d"; echo x > "$HOME/.clax/bin/$d/clax"; done
+PATH="$ORIG_PATH" touch -t 202001010000 "$HOME/.clax/bin/.staging.old"
+prun wrong
+before="$(listing "$HOME/.clax/bin")"
+prun ok
+after="$(listing "$HOME/.clax/bin")"
+if [ "$before" = ".staging.old 10.0.0 8.0.0 9.0.0 9.0.10 9.2.0 notaversion " ] && [ "$after" = "10.0.0 9.0.10 $P 9.2.0 notaversion " ]; then
+    pass "after an install, older versions go except the newest of them; newer versions and other names stay; a failed install removes nothing"
+else fail "old-version cleanup (before=$before after=$after)"; fi
+
+new_env; : > "$REQLOG"
+START="$(date +%s)"
+prun ok exec hook --agent claude session-start
+ELAPSED=$(( $(date +%s) - START ))
+if [ "$RC" = 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(requests)" = 0 ] && [ ! -e "$(MANAGED)" ] && [ "$ELAPSED" -lt 3 ] \
+    && hooks_log | grep -q "install-pending mode=hook agent=claude version=$P reason=\"not installed\"" && ! hooks_log | grep -q launcher; then
+    pass "a hook never downloads: with the release not installed yet it exits 0 at once, silently"
+else fail "a hook never downloads (rc=$RC out=$OUT err=$ERR reqs=$(requests) elapsed=$ELAPSED log=$(hooks_log))"; fi
+prun ok
+prun ok exec hook --agent claude stop
+if [ "$RC" = 0 ] && [ "$OUT" = "managed: hook --agent claude stop" ]; then pass "once installed, hooks run the managed clax"
+else fail "once installed, hooks run the managed clax (rc=$RC out=$OUT)"; fi
+
+new_env; : > "$REQLOG"
+pmcp ok
+if [ "$OUT" = "managed: mcp --agent codex" ] && [ -x "$(MANAGED)/clax" ] && [ -z "$(leftovers)" ] \
+    && hooks_log | grep -q "install mode=mcp agent=codex version=$P exit=0" \
+    && hooks_log | grep -q "launch mode=mcp agent=codex bin=\"$(MANAGED)/clax\" version=\"clax $P\" warning=\"\""; then
+    pass "a first MCP start downloads the pinned release and runs it, without a version warning"
+else fail "a first MCP start downloads and runs (out=$OUT err=$ERR log=$(hooks_log))"; fi
+
+new_env; : > "$REQLOG"
+pmcp wrong
+if text="$(fallback_text)" && echo "$text" | grep -q "could not install clax $P: the download of .* does not match the checksum" && [ ! -e "$(MANAGED)" ]; then
+    pass "a failed first-run install: the MCP client gets the reason"
+else fail "a failed first-run install (out=$OUT err=$ERR)"; fi
+
+# A download slower than the MCP server's wait: the fallback answers, the
+# download goes on in the background, and status says once it is done.
+new_env
+rm -f "$REL/gate-open"
+OUT="$({
+    printf '%s\n' "$(echo "$REQS" | head -1)"
+    i=0; while ! hooks_log | grep -q "exit=fallback" && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    printf '%s\n' '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"status","arguments":{}}}'
+    sleep 0.3
+    : > "$REL/gate-open"
+    i=0; while ! hooks_log | grep -q "install mode=mcp agent=claude version=$P exit=0" && [ "$i" -lt 400 ]; do sleep 0.05; i=$((i + 1)); done
+    printf '%s\n' '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"status","arguments":{}}}'
+} | CLAX_RELEASE_BASE_URL="$BASE/gate" "$TOOLS/bash" "$PINNED" exec mcp --agent claude 2>/dev/null)"
+if echo "$OUT" | head -1 | grep -q "is still downloading" && echo "$OUT" | sed -n 2p | grep -q "is still downloading" \
+    && echo "$OUT" | tail -1 | grep -q "clax is now available at $(MANAGED)/clax. Reconnect"; then
+    pass "a download slower than the MCP wait: the fallback says so, and status reports it done"
+else fail "a slow first-run download (out=$OUT log=$(hooks_log))"; fi
+rm -f "$REL/gate-open"
+
+new_env
+fake_clax "$FAKEBIN" "clax 0.0.1"
+set_bin "$FAKEBIN/clax"
+prun ok exec status
+if [ "$RC" = 0 ] && echo "$ERR" | grep -q "warning: $FAKEBIN/clax is clax 0.0.1, but this plugin is clax $V"; then
+    pass "a bin setting of another version warns"
+else fail "a bin setting of another version warns (err=$ERR)"; fi
 
 [ "$FAILED" = 0 ] && echo "all wrapper tests passed" || echo "wrapper tests FAILED"
 exit "$FAILED"

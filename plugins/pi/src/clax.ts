@@ -557,8 +557,8 @@ function openInBrowser(url: string, env: NodeJS.ProcessEnv, waitMs: number): Pro
 export interface ClaxOptions {
   /** The Clax home; `$CLAX_HOME`, else `~/.clax`, when absent. */
   home?: string;
-  /** Environment for locating the `clax` binary (`CLAX_BIN`, `PATH`)
-   * and for `CLAX_NO_OPEN`; this process's when absent. */
+  /** Environment for locating the `clax` binary (`CLAX_BIN`) and for
+   * `CLAX_NO_OPEN`; this process's when absent. */
   env?: NodeJS.ProcessEnv;
   /** Port for a daemon the extension starts; the CLI's default when absent. */
   port?: number;
@@ -833,10 +833,11 @@ class Tools {
     };
     // Version skew between these tools and the daemon they call.
     if (h.version !== VERSION) out.daemon_version = h.version ?? null;
-    // Which binary the extension runs: CLAX_BIN, else the clax on PATH.
+    // Which binary the extension runs: CLAX_BIN, else the bin setting, else
+    // the pinned release (see findBinary).
     let path: string | null = null;
     try {
-      path = findBinary(this.env);
+      path = await findBinary(this.home, this.env);
     } catch (e) {
       out.binary = { path: null, version: null, error: (e as Error).message };
     }

@@ -5,7 +5,10 @@ jobs:
   ci:
     runs-on: ubuntu-latest
     steps:
+      # The full history and its tags: scripts/test-plugins.sh checks the
+      # plugins' pinned release against the newest v* tag.
       - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
       - uses: dtolnay/rust-toolchain@stable
         with: { toolchain: 1.94.0, components: "rustfmt, clippy" }
       - uses: Swatinem/rust-cache@v2

@@ -19,7 +19,8 @@
   },
   "files": [
     "src/",
-    "skills/"
+    "skills/",
+    "scripts/"
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",

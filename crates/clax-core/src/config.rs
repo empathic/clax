@@ -4,7 +4,10 @@
 //! listens on (7480 when absent); `just dev` and `just watch` write
 //! `port = 7481` into `~/.clax-dev/config.toml`. `[sample]` configures the
 //! `sample` capability ([`HomeConfig::sample`]); a daemon whose `[sample]` is
-//! invalid starts with sample off. Other tables are reserved (spec §5) and
+//! invalid starts with sample off. The top-level `bin` key names the clax the
+//! plugins run ([`HomeConfig::bin`]); `clax bin set` writes it as one line,
+//! [`bin_line`], which the plugins' wrapper reads without a TOML parser, and
+//! nothing else here reads it. Other tables are reserved (spec §5) and
 //! ignored.
 
 use crate::{CoreError, Result};
@@ -105,6 +108,28 @@ impl HomeConfig {
         Ok(HomeConfig { path, table })
     }
 
+    /// The top-level `bin` setting, the clax the plugins run (spec §13):
+    /// `None` when absent.
+    ///
+    /// # Errors
+    /// `Invalid { code: "bad_config" }` naming the file and the key when it
+    /// is not a string that [`bin_path_ok`] accepts.
+    pub fn bin(&self) -> Result<Option<std::path::PathBuf>> {
+        let Some(v) = self.table.get("bin") else {
+            return Ok(None);
+        };
+        match v.as_str() {
+            Some(s) if bin_path_ok(s) => Ok(Some(s.into())),
+            _ => Err(CoreError::invalid(
+                "bad_config",
+                format!(
+                    "{}: bin must be an absolute path with no quote, backslash or control character, not {v}",
+                    self.path.display()
+                ),
+            )),
+        }
+    }
+
     /// `[serve] port`: `None` when absent.
     ///
     /// # Errors
@@ -188,6 +213,23 @@ impl HomeConfig {
         }
         Ok(s)
     }
+}
+
+/// Whether `path` can be the `bin` setting: absolute, and free of `"`, `\`
+/// and control characters, so that `bin = "<path>"` is valid TOML whose
+/// value is `path` verbatim, and the plugins' wrapper can read it without
+/// a TOML parser.
+pub fn bin_path_ok(path: &str) -> bool {
+    path.starts_with('/')
+        && !path
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_control())
+}
+
+/// The line `clax bin set` writes for `path`, which must pass
+/// [`bin_path_ok`]: `bin = "<path>"`.
+pub fn bin_line(path: &str) -> String {
+    format!("bin = \"{path}\"")
 }
 
 /// Whether `url` may receive the API key: `https://` with a host, or
@@ -369,6 +411,40 @@ mod tests {
                 "{t}: {m}"
             );
             assert_eq!(c.serve_port().unwrap(), Some(7481), "{t}");
+        }
+    }
+
+    #[test]
+    fn bin_is_read_beside_the_tables_and_checked() {
+        let c = with("bin = \"/opt/clax/bin/clax\"\n\n[serve]\nport = 7481\n");
+        assert_eq!(c.bin().unwrap(), Some("/opt/clax/bin/clax".into()));
+        assert_eq!(c.serve_port().unwrap(), Some(7481));
+        assert_eq!(with("[serve]\nport = 7481\n").bin().unwrap(), None);
+        for t in [
+            "bin = \"relative/clax\"\n",
+            "bin = 3\n",
+            "bin = \"/a\\\\b\"\n",
+            "bin = \"/a\\\"b\"\n",
+            "bin = \"/a\\tb\"\n",
+        ] {
+            let e = with(t).bin().unwrap_err().to_string();
+            assert!(e.contains("config.toml") && e.contains("bin"), "{t}: {e}");
+        }
+    }
+
+    #[test]
+    fn a_bin_line_is_toml_whose_value_is_the_path() {
+        for p in [
+            "/usr/local/bin/clax",
+            "/Users/a b/é/clax",
+            "/x/'quoted'/clax",
+        ] {
+            assert!(bin_path_ok(p), "{p}");
+            let t: toml::Table = bin_line(p).parse().unwrap();
+            assert_eq!(t["bin"].as_str(), Some(p));
+        }
+        for p in ["clax", "", "/a\"b", "/a\\b", "/a\nb", "/a\tb"] {
+            assert!(!bin_path_ok(p), "{p:?}");
         }
     }
 

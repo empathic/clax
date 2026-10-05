@@ -130,7 +130,7 @@ for h in claude codex grok pi; do
     cat > "$FAKE/$h" <<SH
 #!/bin/sh
 c="\$(command -v clax)"
-echo "$h \$* | clax=\$c (\$(clax --version)) home=\${CLAX_HOME:-} codex_home=\${CODEX_HOME:-} grok_home=\${GROK_HOME:-} argc=\$#" >> "$T/calls"
+echo "$h \$* | clax=\$c (\$(clax --version)) home=\${CLAX_HOME:-} codex_home=\${CODEX_HOME:-} grok_home=\${GROK_HOME:-} clax_bin=\${CLAX_BIN:-} argc=\$#" >> "$T/calls"
 SH
     chmod +x "$FAKE/$h"
 done
@@ -148,6 +148,7 @@ devrun claude --resume
 line="$(cat "$T/calls")"
 tmpdir="$(printf '%s' "$line" | sed -n 's#.*clax=\(.*\)/clax (.*#\1#p')"
 if echo "$line" | grep -qF "claude --plugin-dir $ROOT/plugins/claude-code --settings {\"enabledPlugins\":{\"clax@clax\":false}} --resume | clax=$tmpdir/clax (clax 9.9.9-dev) home=$HOME/.clax-dev codex_home=$CODEX_HOME" \
+    && echo "$line" | grep -qF "clax_bin=$tmpdir/clax " \
     && [ -n "$tmpdir" ] && [ ! -e "$tmpdir" ] && grep -qx 'port = 7481' "$HOME/.clax-dev/config.toml"; then
     pass "just dev claude runs the build from a removed-afterwards tmpdir, the checkout's plugin, and ~/.clax-dev on 7481"
 else fail "just dev claude ($line; tmpdir=$tmpdir; $(cat "$T/err"))"; fi
