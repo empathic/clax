@@ -22,7 +22,8 @@ export HOME="$T/fakehome" CLAX_HOME="$T/home" CALLS="$T/calls"
 STAMPS="$CLAX_HOME/run/tool-hook"
 calls() { if [ -f "$CALLS" ]; then wc -l < "$CALLS" | tr -d ' '; else echo 0; fi; }
 gate() { printf '%s' "$2" | "$T/bin/tool-hook.sh" "$1" 2>"$T/err"; }
-age() { python3 -c 'import os, sys, time; t = time.time() + float(sys.argv[2]); os.utime(sys.argv[1], (t, t))' "$1" "$2"; }
+# Sets a file's mtime $2 seconds from now (perl: no interpreter shim to start).
+age() { perl -e '$t = time + $ARGV[1]; utime $t, $t, $ARGV[0] or die' "$1" "$2"; }
 IN='{"session_id":"cc-1","hook_event_name":"PostToolUse","tool_name":"Edit"}'
 
 out="$(gate claude "$IN")"; code=$?
@@ -35,9 +36,10 @@ if [ -z "$(ls -A "$HOME")" ]; then pass "nothing is written under HOME (no ~/.cl
 
 gate claude "$IN" >/dev/null
 if [ "$(calls)" = 1 ]; then pass "a call within 60 s starts no clax"; else fail "throttle: $(calls) runs"; fi
-age "$STAMPS/claude-cc-1" -59
+# 55 s, not 59: the gate reads the clock later, in whole seconds.
+age "$STAMPS/claude-cc-1" -55
 gate claude "$IN" >/dev/null
-if [ "$(calls)" = 1 ]; then pass "a stamp 59 s old still skips"; else fail "59 s: $(calls) runs"; fi
+if [ "$(calls)" = 1 ]; then pass "a stamp 55 s old still skips"; else fail "55 s: $(calls) runs"; fi
 age "$STAMPS/claude-cc-1" -61
 gate claude "$IN" >/dev/null
 if [ "$(calls)" = 2 ]; then pass "a stamp 61 s old renews again"; else fail "61 s: $(calls) runs"; fi
