@@ -33,6 +33,10 @@ pub struct EnsuredPage {
     pub scoped_sessions: Vec<String>,
 }
 
+/// How many times [`Store::store_snapshot`] tries to write a version while
+/// other snapshots of the page take the version number it read.
+pub const SNAPSHOT_ATTEMPTS: u32 = 32;
+
 fn row_to_page(r: &Row<'_>) -> rusqlite::Result<LivePage> {
     Ok(LivePage {
         artifact_id: r.get(0)?,
@@ -140,11 +144,14 @@ impl Store {
     /// Stores `html` as the next version of the live page `id`, titled
     /// `title`, unless it is byte-identical to the current version's
     /// `index.html` and `force` is false; then the current version is
-    /// returned. The flag says whether a version was written.
+    /// returned. The flag says whether a version was written. When another
+    /// snapshot of the page lands first, this one is compared with it and
+    /// written after it, so concurrent snapshots each get a version.
     ///
     /// # Errors
     /// `NotFound` for a missing or deleted artifact; `not_live` for an
-    /// artifact that is not a live page.
+    /// artifact that is not a live page; `Conflict` only when other
+    /// snapshots keep landing first [`SNAPSHOT_ATTEMPTS`] times in a row.
     pub fn store_snapshot(
         &self,
         id: &ArtifactId,
@@ -152,28 +159,33 @@ impl Store {
         html: &[u8],
         force: bool,
     ) -> Result<(Version, bool)> {
-        let a = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
-        if a.kind != KIND_LIVE {
-            return Err(CoreError::invalid(
-                "not_live",
-                format!("{id} is not a live page"),
-            ));
-        }
-        if !force {
-            let current =
-                std::fs::read(self.home.version_dir(id, a.current_version).join(INDEX)).ok();
-            if current.as_deref() == Some(html) {
-                return Ok((
-                    self.get_version(id, a.current_version)?
-                        .ok_or(CoreError::NotFound)?,
-                    false,
+        let mut attempt = 1;
+        loop {
+            let a = self.get_artifact(id)?.ok_or(CoreError::NotFound)?;
+            if a.kind != KIND_LIVE {
+                return Err(CoreError::invalid(
+                    "not_live",
+                    format!("{id} is not a live page"),
                 ));
             }
+            if !force {
+                let current =
+                    std::fs::read(self.home.version_dir(id, a.current_version).join(INDEX)).ok();
+                if current.as_deref() == Some(html) {
+                    return Ok((
+                        self.get_version(id, a.current_version)?
+                            .ok_or(CoreError::NotFound)?,
+                        false,
+                    ));
+                }
+            }
+            match self.write_snapshot(id, a.current_version, title, html) {
+                Ok(v) => return Ok((v, true)),
+                // Another snapshot took this version number: build on it.
+                Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
+                Err(e) => return Err(e),
+            }
         }
-        Ok((
-            self.write_snapshot(id, a.current_version, title, html)?,
-            true,
-        ))
     }
 
     /// Writes `html` as version `expected + 1` (its only file), noted `snapshot`.
@@ -274,6 +286,33 @@ mod tests {
             "force makes a version even when identical"
         );
         assert_eq!(index(&st, &id, 3), "<!doctype html><p>b");
+    }
+
+    #[test]
+    fn concurrent_snapshots_of_one_page_each_get_a_version() {
+        let (_d, st) = store();
+        let e = st.ensure_live_page(&key("/"), "x", None).unwrap();
+        let id = ArtifactId::parse(&e.artifact.id).unwrap();
+        const N: usize = 8;
+        let start = std::sync::Barrier::new(N);
+        let mut got: Vec<u32> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..N)
+                .map(|i| {
+                    let (st, id, start) = (&st, &id, &start);
+                    s.spawn(move || {
+                        start.wait();
+                        let html = format!("<!doctype html><p>{i}");
+                        let (v, new) = st.store_snapshot(id, "x", html.as_bytes(), false).unwrap();
+                        assert!(new);
+                        assert_eq!(index(st, id, v.n), html);
+                        v.n
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        got.sort_unstable();
+        assert_eq!(got, (2..2 + N as u32).collect::<Vec<_>>());
     }
 
     #[test]

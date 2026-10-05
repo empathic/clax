@@ -173,10 +173,21 @@ mod tests {
 
     #[test]
     fn routes_are_cut_at_a_character_boundary() {
+        // `é` is two bytes, so byte 511 falls inside one; the cut backs off to 510.
+        let s = "é".repeat(400);
+        assert!(!s.is_char_boundary(511));
+        let r = cut(s.clone(), 511);
+        assert_eq!(r.len(), 510);
+        assert!(s.starts_with(&r));
+        assert_eq!(cut("abc".into(), 511), "abc");
+    }
+
+    #[test]
+    fn long_routes_are_cut_to_the_limit() {
+        // The parser percent-encodes non-ASCII, so a parsed route is ASCII.
         let long = format!("http://localhost/?q={}", "é".repeat(400));
         let r = parse_page_url(&long).unwrap().route.unwrap();
-        assert!(r.len() <= MAX_ROUTE);
-        assert!(r.is_char_boundary(r.len()));
+        assert_eq!(r.len(), MAX_ROUTE);
     }
 
     #[test]
