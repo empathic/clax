@@ -18,8 +18,8 @@
 - UI is Svelte 5 in runes mode; no other UI framework and no CSS framework.
 - The whole `scripts/quality_gates.sh` stays within about 2 minutes on a warm cache: tests run in parallel, use fake or injected clocks, and never sleep a fixed time; browser tests wait on events. A new slow test is a defect.
 - Extension: Manifest V3, `minimum_chrome_version` `"116"`. The release manifest declares no `host_permissions` and no static `content_scripts`; it declares `"optional_host_permissions": ["http://*/*", "https://*/*"]` and `"externally_connectable": {"ids": []}`.
-- Native host name: `dev.empathic.clax`. Extension ID: `clax_core::extension::EXTENSION_ID`, derived from the manifest's `key` (a test checks they agree).
-- Extension key (spec L15): the owner generates and keeps the private key; Clax's only input is the **public** key, which the owner supplies as the manifest `key` value (one line of base64 DER, from `openssl rsa -in <their.pem> -pubout -outform DER | base64 | tr -d '\n'`) and which is committed (it is public). Never ask for, read, store or generate a production private key or its path. Until the owner has supplied the public key, Task 5 stops and asks for that value only. The test build carries the same public key; loading an unpacked extension needs no private key. The Web Store upload, which needs the private key, is the owner's manual step.
+- Native host name: `dev.empathic.clax`. Extension ID: **the ID in effect** for the Clax home (spec L15): derived from `web/extension/key.pub.b64` when that file is committed, else from the canonicalized absolute path `<home>/extension` (Chromium's unpacked-extension rule: the first 128 bits of SHA-256, each nibble written `a`–`p`; for a path, the SHA-256 is of the path bytes). It is computed once per home and carried as `AppState.extension_id`; there is no compile-time `EXTENSION_ID` constant. Wherever a code block in Tasks 5–16 writes `EXTENSION_ID`, read it as the ID in effect: `state.extension_id` in server code, `ts.extension_id()` in server tests, `clax_core::extension::extension_id_in_effect(home)` in the CLI and the native host, `chrome.runtime.id` in extension code, and a fixed test ID in pure unit tests.
+- Keys and signing (spec L15, §6.7): no key is needed to build, install, test or use the extension, and nothing in Tasks 1–16 waits on the owner. The manifest carries `key` only when `web/extension/key.pub.b64` is committed (Task 8's build adds it). Never ask for, read, store or generate a production private key or its path; it lives only in the owner's 1Password, referenced by `CLAX_EXTENSION_KEY_REF`, and is read only by Task 17's owner-run scripts. Tests that need a key generate a throwaway one in the test.
 - Owner identity (spec L6, §2.1): the extension acts as the owner identity, never as a viewer of its own. There is no extension viewer, no `extension_viewers` table, and no viewer ID on a credential. Consumes, from the owner identity on main (placeholder names; use main's): **`owner_viewer(&Store) -> Result<Viewer>`** (the owner's `viewers` row, created on first use if that work does so), **the owner hook** (the one place that maps an authenticated credential kind to the owner identity, for example a `Principal::Owner` resolved by one extractor or middleware), and test access to the owner viewer (**`TestServer::owner_viewer() -> Viewer`**; Task 5 adds it over `owner_viewer` if main has none). If main also changed what `TestServer::viewer` returns (for example, because every loopback browser is now the owner), keep Tasks 1–4's tests meaning what they say: two named people stay two distinct viewers.
 - Credential format: `cxe_` followed by 43 base64url characters (32 random bytes). Stored only as SHA-256 (lowercase hex). Never logged, never in a URL, never sent to a content script, composer or page.
 - The daemon token never reaches the extension, a content script or a web page.
@@ -2445,25 +2445,21 @@ git -c commit.gpgsign=false commit -m "Watch a page by its URL: scope watches, p
 
 **Interfaces:**
 - Consumes:
-  - From the owner: the extension's **public** key, one line of base64 SubjectPublicKeyInfo DER (spec L15). Not a private key, not a path.
+  - Optionally, the committed public key `web/extension/key.pub.b64` (one line of base64 SubjectPublicKeyInfo DER, spec L15). Absent until the owner runs Task 17's `scripts/extension-pubkey.sh`; nothing here waits for it.
   - From the owner identity on main (Global Constraints, "Owner identity"; placeholder names): `owner_viewer(&Store) -> Result<Viewer>`; `TestServer::owner_viewer()` (added here over `owner_viewer` if main has none).
 - Produces:
-  - `clax_core::extension::{MANIFEST: &str, EXTENSION_ID: &str, HOST_NAME: &str = "dev.empathic.clax", CREDENTIAL_PREFIX: &str = "cxe_", CREDENTIAL_TTL_DAYS: i64 = 30, MAX_CREDENTIALS: usize = 8, extension_origin() -> String, extension_id_from_key(&str) -> Option<String>, new_credential() -> String, credential_hash(&str) -> String, is_credential(&str) -> bool}`
+  - `clax_core::extension::{MANIFEST: &str, PUBLIC_KEY: Option<&str> (include_str of `web/extension/key.pub.b64` via build.rs when present), extension_id_from_key(&str) -> Option<String>, extension_id_from_path(&Path) -> String, extension_id_in_effect(home: &Path) -> String, extension_origin(id: &str) -> String, HOST_NAME: &str = "dev.empathic.clax", CREDENTIAL_PREFIX: &str = "cxe_", CREDENTIAL_TTL_DAYS: i64 = 30, MAX_CREDENTIALS: usize = 8, new_credential() -> String, credential_hash(&str) -> String, is_credential(&str) -> bool}`
   - `clax_core::store::extension::{MintedCredential {credential, hash}, LiveCredential {hash, extension_id, last_used_at}}`
   - `Store::{mint_extension_credential(&str) -> Result<MintedCredential>, live_extension_credentials() -> Result<Vec<LiveCredential>>, touch_extension_credential(hash: &str) -> Result<()>, revoke_extension_credentials() -> Result<usize>}`
   - `clax_server::extension::{Credentials, Cred {extension_id}}` with `Credentials::{load(&Store) -> Result<Credentials>, get(&self, hash) -> Option<Cred>, insert(&self, hash, Cred), replace_with(&self, Credentials), due_for_touch(&self, hash) -> bool}`
-  - `AppState.ext_creds: Arc<Credentials>`
+  - `AppState.ext_creds: Arc<Credentials>`, `AppState.extension_id: String` (the ID in effect for the daemon's home); `TestServer::extension_id() -> String`
   - `POST /api/extension/credentials` (W) `{extension_id}` → `{credential, viewer, expires_in_s}`; `GET /api/extension` (W) → `{extension_id, live_credentials, last_used_at, viewer}`; in both, `viewer` is the owner viewer (`owner_viewer`), serialized as `Viewer` is (never its cookie value). `DELETE /api/extension/credentials` (W) → `{revoked}`.
 
-- [ ] **Step 1: The manifest, with the owner's public key**
+> **Amendment (owner decision 2026-10-05, spec L15).** There is no production key in this task and nothing waits on the owner. Replace the `EXTENSION_ID` constant everywhere in this task's code with the per-home ID in effect (Global Constraints): `extension_id_from_path` implements Chromium's unpacked rule, `extension_id_from_key` the key rule, and `extension_id_in_effect(home)` picks the key's ID when `PUBLIC_KEY` is `Some`, else the path's. Pin both derivations with tests: path `/Users/alex/.clax/extension` → `bhhldgpcjhfhmcfjjnelbbdcefnocaln`; key bytes `000000` (base64 `AAAA`) → `hajoiamiieihkcebbobooenpljpcckig`. Canonicalize the path (resolve symlinks, e.g. macOS `/var` → `/private/var`) before hashing, and say in a doc comment that Chromium hashes the path it loaded. `POST /api/extension/credentials` refuses any ID but `state.extension_id`; the native host and `clax extension install` use `extension_id_in_effect(home)`.
 
-The public key is the owner's input (spec L15). If the task's brief does not carry it, **stop and ask the owner for the public key value** (produced by `openssl rsa -in <their private key> -pubout -outform DER | base64 | tr -d '\n'`). Ask for nothing else: never for the private key or its path, and never generate a key pair for the manifest yourself. Then derive the extension ID from it:
+- [ ] **Step 1: The manifest, without a key**
 
-```bash
-printf '%s' "$KEY" | base64 -d | shasum -a 256 | cut -c1-32 | tr '0-9a-f' 'a-p'
-```
-
-(the first 32 hex digits of the key's SHA-256, `0`–`f` written as `a`–`p`; `the_id_is_the_manifest_keys` in Step 2 checks the same derivation in Rust). Create `web/extension/manifest.json` with the key:
+Create `web/extension/manifest.json` (no `key`; Task 8's build adds `"key"` from `web/extension/key.pub.b64` only when that file exists):
 
 ```json
 {
@@ -2471,7 +2467,6 @@ printf '%s' "$KEY" | base64 -d | shasum -a 256 | cut -c1-32 | tr '0-9a-f' 'a-p'
   "name": "Clax",
   "version": "0.0.0",
   "description": "Comment on any page and send your comments to your coding agent.",
-  "key": "THE OWNER'S PUBLIC KEY (one line of base64)",
   "minimum_chrome_version": "116",
   "action": {"default_title": "Comment with Clax", "default_icon": {"16": "icons/16.png", "32": "icons/32.png"}},
   "icons": {"16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png"},
@@ -2486,7 +2481,7 @@ printf '%s' "$KEY" | base64 -d | shasum -a 256 | cut -c1-32 | tr '0-9a-f' 'a-p'
 }
 ```
 
-(The `key` value is the owner's one line of base64; `version` is replaced by Task 8's build. The test build (Task 8) copies this manifest, so it carries the same public key and the same ID.)
+(`version` is replaced by Task 8's build. Unpacked, this manifest's ID is the one Chromium derives from the install path, which `extension_id_in_effect` computes.)
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -2625,8 +2620,9 @@ use sha2::{Digest, Sha256};
 
 /// The extension's manifest, as the repository holds it.
 pub const MANIFEST: &str = include_str!("../../../web/extension/manifest.json");
-/// The extension's ID: Chrome's ID for the manifest's `key` (a test checks they agree).
-pub const EXTENSION_ID: &str = "THE ID STEP 1 DERIVED FROM THE OWNER'S PUBLIC KEY";
+/// The committed public key (`web/extension/key.pub.b64`), when there is one;
+/// `build.rs` sets `CLAX_EXTENSION_PUBLIC_KEY` from it.
+pub const PUBLIC_KEY: Option<&str> = option_env!("CLAX_EXTENSION_PUBLIC_KEY");
 /// The native messaging host's name.
 pub const HOST_NAME: &str = "dev.empathic.clax";
 /// Every credential starts with this.
@@ -2636,9 +2632,26 @@ pub const CREDENTIAL_TTL_DAYS: i64 = 30;
 /// Live credentials kept per extension ID; minting past it revokes the oldest.
 pub const MAX_CREDENTIALS: usize = 8;
 
-/// `chrome-extension://<EXTENSION_ID>`, the `Origin` the extension's requests carry.
-pub fn extension_origin() -> String {
-    format!("chrome-extension://{EXTENSION_ID}")
+/// `chrome-extension://<id>`, the `Origin` the extension's requests carry.
+pub fn extension_origin(id: &str) -> String {
+    format!("chrome-extension://{id}")
+}
+
+/// Chromium's ID for an unpacked extension loaded from `dir` with no `key`:
+/// the first 128 bits of the SHA-256 of the canonicalized path's bytes, each
+/// nibble written `a`–`p`. Chromium hashes the path it loaded, so `dir` is
+/// canonicalized first (symlinks resolved).
+pub fn extension_id_from_path(dir: &std::path::Path) -> String {
+    let dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+    nibbles_a_to_p(&Sha256::digest(dir.as_os_str().as_encoded_bytes()))
+}
+
+/// The ID in effect for the Clax home `home`: the committed public key's,
+/// else the one Chromium gives `<home>/extension` unpacked.
+pub fn extension_id_in_effect(home: &std::path::Path) -> String {
+    PUBLIC_KEY
+        .and_then(extension_id_from_key)
+        .unwrap_or_else(|| extension_id_from_path(&home.join("extension")))
 }
 
 /// Chrome's extension ID for a manifest `key` (base64 SubjectPublicKeyInfo):
@@ -2669,7 +2682,7 @@ pub fn is_credential(c: &str) -> bool {
 }
 ```
 
-`EXTENSION_ID` is the ID Step 1 derived from the owner's public key (the plan cannot carry it before the owner supplies the key); the test `the_id_is_the_manifest_keys` fails until the manifest's `key` and this constant agree, and its failure prints the derived ID. Use the `rand` API of the version the crate depends on (`rand::rng()` is 0.9; `rand::thread_rng()` is 0.8).
+`nibbles_a_to_p` is the helper `extension_id_from_key` already uses (factor it out). Replace the test `the_id_is_the_manifest_keys` with the two pinned vectors from this task's amendment (path and `AAAA` key), plus a test that `extension_id_in_effect` uses the path rule when `PUBLIC_KEY` is `None`. Use the `rand` API of the version the crate depends on (`rand::rng()` is 0.9; `rand::thread_rng()` is 0.8).
 
 `crates/clax-core/src/store/extension.rs`, above the tests:
 
@@ -6972,6 +6985,8 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
 });
 ```
 
+In the same spec, load the extension from `<home>/extension` as `clax extension install` writes it (no key) and assert that the worker's `chrome.runtime.id` equals `clax_core::extension::extension_id_in_effect(home)` (exposed to the test through `clax extension status --json`), so the path derivation is checked against Chromium itself.
+
 - [ ] **Step 4: Run it**
 
 Run: `cd web && npm run build && npx playwright test e2e/chrome-overlay.spec.ts`
@@ -6984,11 +6999,37 @@ Expected: `all gates passed`, with the new spec inside the web e2e lane and the 
 
 - [ ] **Step 6: The verification record and the main spec**
 
-Append to `docs/verification.md` a "Clax in Chrome" section: the exact commands (`clax init`; Load unpacked of `~/.clax/extension`; `scripts/quality_gates.sh`), what `chrome-overlay.spec.ts` exercised on this machine (the real extension, native host, daemon and Vite dev server: pick, screenshot, sanitized snapshot, side panel, send, agent feedback with the live payload, hot update, detach, addressed snapshot, gallery and snapshot view, re-pairing after a restart), and, plainly, what was not exercised and only a person can check: the toolbar icon and its permission prompt, the side panel opened by the icon, Alt+Shift+C and the context menu, `activeTab` lapsing on navigation, Chrome stable, Brave and Edge host registration on macOS and Linux, an agent in a real Claude Code or Codex session watching a dev server through the MCP tool, the self-reload after `clax init` installs a newer extension, and the shell and side panel sharing the owner's marks by hand (read a thread in one; it is not new in the other). Also list, as the owner's manual step outside Clax, the Web Store upload: it needs the private key the owner keeps (spec L15, §6.7), and nothing in the repository or the build has it. In the main spec, add row D19 to §2 ("Chrome overlay: comment on any page; see `2026-10-05-chrome-overlay-design.md`"), the new paths to §4, and the new tests to §16.
+Append to `docs/verification.md` a "Clax in Chrome" section: the exact commands (`clax init`; Load unpacked of `~/.clax/extension`; `scripts/quality_gates.sh`), what `chrome-overlay.spec.ts` exercised on this machine (the real extension, native host, daemon and Vite dev server: pick, screenshot, sanitized snapshot, side panel, send, agent feedback with the live payload, hot update, detach, addressed snapshot, gallery and snapshot view, re-pairing after a restart), and, plainly, what was not exercised and only a person can check: the toolbar icon and its permission prompt, the side panel opened by the icon, Alt+Shift+C and the context menu, `activeTab` lapsing on navigation, Chrome stable, Brave and Edge host registration on macOS and Linux, an agent in a real Claude Code or Codex session watching a dev server through the MCP tool, the self-reload after `clax init` installs a newer extension, and the shell and side panel sharing the owner's marks by hand (read a thread in one; it is not new in the other). Also list, as the owner's steps outside Clax: creating the key in 1Password, running `scripts/extension-pubkey.sh` and committing `web/extension/key.pub.b64` (which changes the ID once), and the Web Store upload through `scripts/pack-extension.sh --first-upload` (spec L15, §6.7). CI never signs. In the main spec, add row D19 to §2 ("Chrome overlay: comment on any page; see `2026-10-05-chrome-overlay-design.md`"), the new paths to §4, and the new tests to §16.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add web/e2e web/playwright.config.ts docs/verification.md docs/superpowers/specs/2026-09-28-clax-design.md
 git -c commit.gpgsign=false commit -m "Test the Chrome overlay end to end against a Vite dev server, and record what was verified"
+```
+
+---
+
+### Task 17: Signing through 1Password (owner-run)
+
+Runs after Task 16; nothing earlier depends on it. Spec L15, §6.7.
+
+**Files:**
+- Create: `scripts/extension-pubkey.sh`, `scripts/pack-extension.sh`, `scripts/test-extension-signing.sh`
+- Modify: `scripts/quality_gates.sh` (run `test-extension-signing.sh` in the scripts lane), `docs/verification.md`, the Claude Code plugin README's extension section
+
+**Interfaces:**
+- Consumes: `CLAX_EXTENSION_KEY_REF` (a full `op://…` reference; required by both scripts, which exit 2 naming it when unset); the release extension build from Task 8 (`web/dist-extension`); `op` (1Password CLI) and `openssl` on `PATH`.
+- Produces: `web/extension/key.pub.b64` (one line, committed by the owner); `dist/clax-extension-<version>.zip` (Web Store upload) and, with `--crx`, `dist/clax-extension-<version>.crx`.
+
+- [ ] **Step 1: Write the failing tests** — `scripts/test-extension-signing.sh` puts a fake `op` first on `PATH` that prints a throwaway RSA key generated in the test (`openssl genrsa 2048`) only when called as `op read "$CLAX_EXTENSION_KEY_REF"`, and records each call. Cases: `extension-pubkey.sh` writes the one-line public key that `openssl rsa -pubout -outform DER | base64` of the throwaway key gives, and the ID it prints equals `extension_id_from_key` of it (via `clax extension status --json` on a scratch build or a small Rust test helper); with `CLAX_EXTENSION_KEY_REF` unset both scripts exit 2 and call no `op`; `pack-extension.sh` produces a zip without `key.pem` by default, with it under `--first-upload`, and a `.crx` under `--crx` (skip the `.crx` case with a printed reason when no Chromium binary is found); after every run, no file containing the private key remains anywhere under the repository or `$TMPDIR` (the scripts' temp file is gone, including when the script is killed with SIGINT mid-run); the private key never appears in either script's stdout or stderr.
+- [ ] **Step 2: Run them; they fail** (scripts missing).
+- [ ] **Step 3: Implement** — `extension-pubkey.sh`: `op read "$CLAX_EXTENSION_KEY_REF" | openssl rsa -pubout -outform DER | base64 | tr -d '\n'` into `web/extension/key.pub.b64`, then print the resulting ID and remind the owner to commit the file and run `clax init` (the ID changes once). `pack-extension.sh`: build the release extension, `umask 077`, read the key into `mktemp` under a `trap 'rm -f "$key"' EXIT INT TERM`, zip `web/dist-extension` (adding the key as `key.pem` only with `--first-upload`), and with `--crx` run Chromium's `--pack-extension=<dir> --pack-extension-key="$key"`; never echo the key; refuse to run when `CI` is set ("signing is local and owner-run").
+- [ ] **Step 4: Run the tests and `scripts/quality_gates.sh`**; expected: pass, with no `op` call outside the fake.
+- [ ] **Step 5: Document** in `docs/verification.md` and the plugin README: create the key directly in 1Password (`openssl genrsa 2048 | op document create - --title "Clax extension key"` or an equivalent that leaves nothing on disk), set `CLAX_EXTENSION_KEY_REF`, run `scripts/extension-pubkey.sh`, commit the public key, and use `scripts/pack-extension.sh --first-upload` for the listing's first upload only.
+- [ ] **Step 6: Commit**
+
+```bash
+git add scripts/extension-pubkey.sh scripts/pack-extension.sh scripts/test-extension-signing.sh scripts/quality_gates.sh docs/verification.md plugins/claude-code/README.md
+git -c commit.gpgsign=false commit -m "Sign the extension from 1Password with owner-run scripts"
 ```

@@ -53,7 +53,7 @@ L15 (2026-10-05); their rows say so.
 
 | # | Decision | Reason |
 |---|---|---|
-| O1 | Pairing is Chrome native messaging. `clax init` (and `clax extension install`, §6.6) writes the extension to `~/.clax/extension` (unpacked, with a fixed `key` in `manifest.json`, so its ID is stable) and registers a native-messaging host manifest for Chrome, Chromium, Brave and Edge on macOS and Linux whose `allowed_origins` is exactly that extension's origin. The host is the `clax` binary (`clax native-host`), which returns the daemon URL and an extension-scoped credential, starting the daemon if needed. The daemon token never enters a web page's context; only the extension's service worker holds credentials. A later Web Store listing uses the same ID. `clax uninit` removes it; `clax doctor` reports it. | Owner decision: lowest-friction pairing. |
+| O1 | Pairing is Chrome native messaging. `clax init` (and `clax extension install`, §6.6) writes the extension to `~/.clax/extension` (unpacked; its ID is the one in effect, L15) and registers a native-messaging host manifest for Chrome, Chromium, Brave and Edge on macOS and Linux whose `allowed_origins` is exactly that extension's origin. The host is the `clax` binary (`clax native-host`), which returns the daemon URL and an extension-scoped credential, starting the daemon if needed. The daemon token never enters a web page's context; only the extension's service worker holds credentials. A later Web Store listing uses the same ID. `clax uninit` removes it; `clax doctor` reports it. | Owner decision: lowest-friction pairing. |
 | O2 | Each comment on a live page saves a viewport screenshot (`chrome.tabs.captureVisibleTab`), stored as the thread's clip, and a sanitized DOM snapshot of the page, stored as a version of the page's artifact. | Owner decision: threads can always be shown in context after the code changes. |
 | O3 | A live page is an artifact of a new kind, `live`, keyed by origin and path. The MCP `watch` tool accepts a page URL as well as an artifact ID or URL, creating the live page if needed; threads sent there reach the agent through the existing channels. No session picker. The plugin skills tell agents to watch their dev server's URL. | Owner decision: the agent link works exactly as now. |
 | O4 | Any site, Chrome only, Manifest V3. Off by default; turned on per origin when the person clicks the toolbar icon (optional host permissions and `activeTab`), remembered per origin. Threads list in Chrome's side panel, reusing the shell's sidebar components; pins, highlights and the composer sit over the page inside a closed shadow root. The overlay reuses the bridge's comment-mode and anchoring code. Hot reloads and DOM changes re-resolve anchors (detached when gone). Firefox later. | Owner decision. |
@@ -72,7 +72,7 @@ L15 (2026-10-05); their rows say so.
 | L12 | `publish` refuses a live page (400 `live_page`). `read`, `list`, `delete`, `comments_*`, `working`, `watch` and `wait_for_feedback` work on it. | Snapshots come from the browser; an agent publishing a page under a live page's ID would break the timeline. |
 | L13 | The extension's files are embedded in the `clax` binary and written by `clax extension install`, which `clax init` runs. The extension compares its manifest version with the daemon's on pairing and calls `chrome.runtime.reload()` once per new version, which reloads an unpacked extension from disk. | After an upgrade the person never visits `chrome://extensions` again. |
 | L14 | The native host is launched through a script in `~/.clax/extension/host/` that execs a copy of the plugins' wrapper (`ensure-clax.sh exec native-host`), with `CLAX_HOME` fixed to the home that installed it. | A host manifest names one absolute path with no arguments. The wrapper already finds the right binary (`CLAX_BIN`, the `bin` setting, the pinned release) and survives upgrades that remove old version directories. |
-| L15 | The owner generates the extension's private key and keeps it; neither Clax nor its implementers ever see it or its path. Clax's only input is the **public** key, which the owner supplies as the manifest's `key` value (base64 SubjectPublicKeyInfo DER: `openssl rsa -in <their.pem> -pubout -outform DER \| base64`) and which is committed with the manifest, since it is public. `EXTENSION_ID` is derived from it and pinned by a test. Nothing in the build, the tests or the plan generates the production key; until the owner supplies the public key, the work that needs it stops and asks for that value only. The test build carries the same public key (loading an unpacked extension needs no private key). The Web Store upload is the owner's manual step (§6.7). | Owner decision (2026-10-05). The fixed ID comes from the public key; keeping the same ID on the Web Store needs the matching private key at the listing's first upload. If it is lost before the listing, the listing gets a new ID and Clax ships a release with the new `key` and `EXTENSION_ID`, which costs every person one more Load unpacked. |
+| L15 | No key is needed to build, install, test or use the extension locally. Without a `key` in `manifest.json`, Chromium derives an unpacked extension's ID from its canonicalized absolute install path (the first 128 bits of the path's SHA-256, each nibble written as a letter `a`–`p`). The **ID in effect** for a Clax home is therefore: the ID derived from the committed public key when `web/extension/key.pub.b64` exists, else the ID derived from `<home>/extension`. `clax extension install`, the native host's origin check, the credential routes and the gateway all use the ID in effect, computed once per home (`AppState`), and a test pins both derivations (path `/Users/alex/.clax/extension` → `bhhldgpcjhfhmcfjjnelbbdcefnocaln`; the e2e checks Chromium's own ID for the loaded extension against the derivation). The committed public key is optional and only fixes the ID ahead of a Web Store listing. The private key never enters Clax, the repository, the build or CI: it lives only in the owner's 1Password, referenced by `CLAX_EXTENSION_KEY_REF` (an `op://` reference), and is read only by the owner-run, approval-gated signing scripts (§6.7). | Owner decision (2026-10-05): test locally with no key, and sign through 1Password. Nothing in Tasks 1–16 waits on the owner. Adding the public key later changes the ID once (one more Load unpacked for each person, and a fresh native-host registration, which `clax extension install` writes). |
 
 ### 2.1 Depends on: the owner identity
 
@@ -320,7 +320,7 @@ unusual installs.
   "description": "Clax: pairs the Clax extension with the local Clax daemon",
   "path": "/Users/alex/.clax/extension/host/launch.sh",
   "type": "stdio",
-  "allowed_origins": ["chrome-extension://<EXTENSION_ID>/"]
+  "allowed_origins": ["chrome-extension://<the ID in effect, L15>/"]
 }
 ```
 
@@ -367,7 +367,7 @@ unusual installs.
 
 | File | Role | Size target (gzip) |
 |---|---|---|
-| `manifest.json` | MV3 manifest with the fixed `key` | — |
+| `manifest.json` | MV3 manifest; `key` only when a public key is committed (L15) | — |
 | `sw.js` | Service worker (ES module): pairing, credential, API client, stream hub, origin enablement, screenshot, pick state | 20 KiB |
 | `loader.js` | Content script registered per enabled origin: asks the worker whether the page has threads or a pending action, and asks for the overlay | 2 KiB |
 | `overlay.js` | Injected on demand into the isolated world: CommentMode, anchors, pins, re-resolution, snapshot serializer, composer frame host | 30 KiB |
@@ -381,7 +381,7 @@ Manifest essentials:
   "manifest_version": 3,
   "name": "Clax",
   "version": "<clax version, numeric part>",
-  "key": "<base64 SPKI public key>",
+  "key": "<base64 SPKI public key, only when web/extension/key.pub.b64 is committed (L15)>",
   "minimum_chrome_version": "116",
   "action": {"default_title": "Comment with Clax"},
   "background": {"service_worker": "sw.js", "type": "module"},
@@ -432,16 +432,34 @@ is this home's `launch.sh`, then the directory. `status` reports, per
 browser, `missing`, `installed`, or `stale` (another path or origin), and
 whether the files match this binary.
 
-### 6.7 Distribution
+### 6.7 Distribution and signing
 
 Until a Web Store listing exists, the extension is distributed only as the
-unpacked files `clax extension install` writes (§6.6); its ID is fixed by
-the public key in the committed manifest (L15). The listing's first upload
-is the owner's manual step, outside Clax and its build: it needs the
-private key the owner keeps, so that the listed extension has the same ID
-as the unpacked one. Nothing in the repository, the build or the release
-flow holds or asks for that key. `docs/verification.md` lists the upload
-among what only the owner does.
+unpacked files `clax extension install` writes (§6.6), under the ID in
+effect (L15). No key is involved.
+
+Signing is local, owner-run and approval-gated; CI never signs. The private
+key lives only in the owner's 1Password; `CLAX_EXTENSION_KEY_REF` holds its
+full `op://` reference, so no vault or item name is written anywhere in the
+repository.
+
+- `scripts/extension-pubkey.sh` runs
+  `op read "$CLAX_EXTENSION_KEY_REF" | openssl rsa -pubout -outform DER | base64`
+  and writes `web/extension/key.pub.b64` (one line), which is committed. The
+  private key passes only through the pipe; 1Password asks the owner to
+  approve each read.
+- `scripts/pack-extension.sh` builds the Web Store upload zip from the
+  release build and, with `--crx`, a signed `.crx` (Chromium's
+  `--pack-extension-key`). It reads the private key from 1Password into a
+  mode-0600 temporary file removed on exit (trap), never into the
+  repository. The key goes into the zip only for the listing's first upload
+  (`--first-upload`), which is what keeps the listed ID equal to the
+  committed public key's; the Web Store re-signs every later release itself.
+
+The scripts' tests use a fake `op` on `PATH` and a throwaway key generated in
+the test; no gate or CI job calls 1Password. The upload itself is the
+owner's manual step, and `docs/verification.md` lists it among what only the
+owner does. Clax, its agents and its builds never read the private key.
 
 ## 7. Live-page identity
 
@@ -557,7 +575,7 @@ with the caller's origin as the first argument, and frames each message as a
 The host:
 
 1. Refuses to run unless its first argument is exactly
-   `chrome-extension://<EXTENSION_ID>/` (exit 1 with an `error` reply,
+   `chrome-extension://<the ID in effect>/` (exit 1 with an `error` reply,
    `wrong_origin`).
 2. Reads one message of at most 64 KiB (`bad_request` otherwise).
 3. Answers it, writes one reply of at most 64 KiB, and exits 0. Nothing but
@@ -615,7 +633,7 @@ Token routes:
 
 - `POST /api/extension/credentials` `{extension_id}` → `{credential,
   viewer, expires_in_s}`, where `viewer` is the owner viewer (`{public_id,
-  display_name}`); 400 `unknown_extension` for any ID but `EXTENSION_ID`.
+  display_name}`); 400 `unknown_extension` for any ID but the ID in effect (L15).
 - `GET /api/extension` → `{extension_id, live_credentials, last_used_at,
   viewer}` (`viewer` as above).
 - `DELETE /api/extension/credentials` → revokes all; `{revoked: n}`.
@@ -856,8 +874,8 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
   later), Safari, Windows (registry-based host registration).
 - Snap and Flatpak Chromium on Linux (confined; the host path is not
   reachable). The Claude Code plugin's README says so.
-- The Web Store listing itself (this design keeps the ID ready for it; the
-  upload is the owner's manual step, §6.7).
+- The Web Store listing itself (the signing scripts prepare it; the upload
+  is the owner's manual step, §6.7).
 - Commenting on snapshots in the shell (L9).
 - Pages inside iframes (the overlay runs in the top frame only), `file://`,
   `chrome://` and the Web Store.
@@ -865,5 +883,5 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
 
 ## 17. Open questions
 
-None. The extension's private key, the composer and how comment mode starts
-were decided by the owner (L15, L7, L8), as was the owner identity (L6).
+None. Keys and signing (L15, §6.7), the composer and how comment mode starts
+were decided by the owner (L7, L8), as was the owner identity (L6).
