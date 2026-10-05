@@ -100,6 +100,22 @@ binary differ.
   `/clax:comments [ID]` (read an artifact's threads and act on those sent
   to the agent), `/clax:watch [ID] [off]` (follow an artifact, or stop),
   `/clax:wait [ID]` (wait for comments and act on each as it arrives).
+  `/clax:extension` sets up the Clax Chrome extension (see below).
+
+## The Chrome extension
+
+The Clax Chrome extension puts the comment overlay on any web page, such as
+your dev server, so you can comment there and the agent can `watch` that
+page's URL. `clax init` installs it; a plugin-only install sets it up with
+`/clax:extension`, which runs `clax extension install` through the wrapper.
+That writes the extension to `~/.clax/extension/` and registers its native
+messaging host (`dev.empathic.clax`, which pairs the extension with the
+local daemon) with each installed Chrome, Chromium, Brave and Edge on macOS
+and Linux. Then, once, open chrome://extensions, turn on Developer mode,
+choose Load unpacked, and pick `~/.clax/extension`. `clax extension status`
+and `/clax:doctor` report the setup; `clax uninit` (or `clax extension
+uninstall`) removes it. Snap and Flatpak Chromium on Linux cannot run the
+native host, so the extension cannot pair there.
 
 ## The comment loop
 

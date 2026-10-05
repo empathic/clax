@@ -28,6 +28,11 @@
 //! the home directory, so a project's own harness settings in the caller's
 //! working directory are never edited.
 //!
+//! `init` also installs the Chrome extension and its native messaging host
+//! ([`super::extension::install`]); `uninit` revokes the extension's
+//! credentials and removes the extension ([`super::extension::uninstall`]). A failed
+//! extension step is reported under `extension` and never fails the command.
+//!
 //! Each harness is one entry in [`HARNESSES`].
 
 use super::doctor_agent::Dirs;
@@ -548,10 +553,10 @@ fn update_bin_setting(home: &Home, install: bool) -> Value {
 
 /// Exclusive advisory lock on `<home>/init.lock`, held until dropped, so
 /// concurrent `init` and `uninit` runs take turns.
-struct InitLock(#[allow(dead_code)] std::fs::File);
+pub(crate) struct InitLock(#[allow(dead_code)] std::fs::File);
 
 impl InitLock {
-    fn acquire(home: &Home) -> std::io::Result<InitLock> {
+    pub(crate) fn acquire(home: &Home) -> std::io::Result<InitLock> {
         std::fs::create_dir_all(home.root())?;
         let f = std::fs::File::create(home.root().join("init.lock"))?;
         clax_server::daemon::retry_interrupted(|| f.lock())?;
@@ -699,7 +704,17 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
     } else {
         json!({"status": "kept", "detail": "there is no Clax home"})
     };
-    let out = json!({"marketplace": root, "marketplace_detail": marketplace_detail, "agents": results, "bin": bin});
+    let extension = if install {
+        super::extension::install(home)
+            .unwrap_or_else(|e| json!({"status": "failed", "detail": format!("{e:#}")}))
+    } else {
+        let revoked = revoke_extension_credentials(home);
+        let mut v = super::extension::uninstall(home)
+            .unwrap_or_else(|e| json!({"status": "failed", "detail": format!("{e:#}")}));
+        v["credentials_revoked"] = revoked;
+        v
+    };
+    let out = json!({"marketplace": root, "marketplace_detail": marketplace_detail, "agents": results, "bin": bin, "extension": extension});
     super::print(cli, out, |j| {
         let mut m = format!(
             "marketplace: {}",
@@ -725,6 +740,19 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             j["bin"]["status"].as_str().unwrap_or_default(),
             j["bin"]["detail"].as_str().unwrap_or_default()
         ));
+        let ext = &j["extension"];
+        let mut l = format!("extension: {}", ext["status"].as_str().unwrap_or_default());
+        if let Some(d) = ext["detail"].as_str() {
+            l.push_str(&format!(" ({d})"));
+        }
+        lines.push(l);
+        lines.extend(super::extension::host_lines(ext));
+        if let Some(t) = ext["load_unpacked"].as_str() {
+            lines.push(t.to_string());
+        }
+        if let Some(t) = ext["note"].as_str().filter(|_| ext["status"] == "removed") {
+            lines.push(t.to_string());
+        }
         if install {
             lines.push("Start a new session in each harness to load the plugin.".into());
         }
@@ -741,6 +769,25 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         );
     }
     Ok(())
+}
+
+/// Revokes every extension credential: through the daemon when one runs,
+/// so its cache forgets them, else in the store directly. The count of live
+/// credentials revoked, `"revoked"` through the daemon, or the failure.
+fn revoke_extension_credentials(home: &Home) -> Value {
+    if let Some(c) = crate::client::Client::discover(home) {
+        return match c.delete("/api/extension/credentials") {
+            Ok(()) => json!("revoked"),
+            Err(e) => json!(format!("failed: {e:#}")),
+        };
+    }
+    if !home.db_path().exists() {
+        return json!(0);
+    }
+    match clax_core::Store::open(home).and_then(|st| st.revoke_extension_credentials()) {
+        Ok(n) => json!(n),
+        Err(e) => json!(format!("failed: {e}")),
+    }
 }
 
 pub fn init(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {

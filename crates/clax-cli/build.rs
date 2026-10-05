@@ -1,6 +1,6 @@
-//! Rebuilds the binary when the plugin tree it embeds (`src/plugins.rs`)
-//! changes, including when a file is added. rust-embed's `include_bytes!`
-//! makes cargo track the files that existed at the last build, but not new
+//! Rebuilds the binary when the plugin tree (`src/plugins.rs`) or the
+//! Chrome extension (`src/extension_files.rs`) it embeds changes, including
+//! when a file is added. rust-embed's `include_bytes!` makes cargo track the files that existed at the last build, but not new
 //! ones, so this script names every embedded directory as well. The list is
 //! also written to `$OUT_DIR/plugin-dirs.txt` for a test to check.
 
@@ -14,6 +14,7 @@ const DIRS: &[&str] = &[
     "plugins/pi/src",
     "plugins/pi/skills",
     "plugins/pi/scripts",
+    "web/dist-extension",
 ];
 const FILES: &[&str] = &[
     "plugins/pi/package.json",

@@ -5,6 +5,7 @@ pub mod db;
 pub mod delete;
 pub mod doctor;
 pub mod doctor_agent;
+pub mod extension;
 pub mod feedback;
 pub mod haiku;
 pub mod hook;

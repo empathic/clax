@@ -27,6 +27,11 @@ impl Env {
             .env("PI_CODING_AGENT_DIR", self.p("pi"))
             .env("GROK_HOME", self.p("grok"))
             .env("PATH", "/usr/bin:/bin")
+            .env_remove("XDG_CONFIG_HOME")
+            .env(
+                "CLAX_NATIVE_HOST_DIRS",
+                format!("chrome={}", self.p("browsers/chrome").display()),
+            )
             .env_remove("CLAX_BIN");
         c
     }

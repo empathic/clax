@@ -2,6 +2,7 @@
 
 mod client;
 mod commands;
+mod extension_files;
 mod hooklog;
 mod host;
 mod plugin_bin;
@@ -86,7 +87,9 @@ pub enum Cmd {
     Feedback(commands::feedback::Cmd),
     /// Register the Clax plugins built into this binary with each harness
     /// whose CLI is on PATH, replacing stale registrations, and point the
-    /// plugins at this binary (the `bin` setting, see `clax bin`).
+    /// plugins at this binary (the `bin` setting, see `clax bin`). Also
+    /// installs the Chrome extension and its native host (`clax extension
+    /// install`); a failure there is reported, never fatal.
     ///
     /// Re-running reinstalls the plugin, which enables it again where it was
     /// disabled. A Pi package is removed only when `init` recorded it or its
@@ -99,7 +102,8 @@ pub enum Cmd {
     Init(commands::init::Args),
     /// Remove the Clax plugin registrations from each harness whose CLI is
     /// on PATH, the plugins' copy once no harness refers to it, and the
-    /// `bin` setting when it names this binary.
+    /// `bin` setting when it names this binary. Also revokes the Chrome
+    /// extension's credentials and removes it (`clax extension uninstall`).
     ///
     /// The copy is kept while any harness's registry still names it or
     /// cannot be read. The same known miss as `init` applies.
@@ -113,6 +117,15 @@ pub enum Cmd {
         #[command(subcommand)]
         cmd: Option<commands::bin::Cmd>,
     },
+    /// Install, remove or check the Clax Chrome extension and its native
+    /// messaging host.
+    ///
+    /// `install` writes the extension to <home>/extension (load it once at
+    /// chrome://extensions with Load unpacked) and registers the host with
+    /// each installed Chrome, Chromium, Brave and Edge; `clax init` runs it.
+    /// `uninstall` removes what install wrote; `clax uninit` runs it.
+    #[command(subcommand)]
+    Extension(commands::extension::Cmd),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
     /// The Chrome native messaging host for the Clax extension (Chrome runs it).
@@ -230,6 +243,7 @@ fn main() {
         Cmd::Init(a) => commands::init::init(&cli, &home, a),
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
+        Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
         Cmd::Haiku => commands::haiku::run(&cli),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
     };

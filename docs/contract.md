@@ -2570,6 +2570,94 @@ the plugins it registers, which match that binary, run it; it reports
 the setting when it names its own executable (`"cleared"`), and otherwise
 leaves it (`"kept"`).
 
+`clax init` also runs `clax extension install` and reports its result as
+`"extension"` (below); `clax uninit` revokes every extension credential
+(through the running daemon's `DELETE /api/extension/credentials`, else in
+the store), runs `clax extension uninstall`, and reports both as
+`"extension"`, with `credentials_revoked` the number of live credentials
+revoked, `"revoked"` when the daemon did it, or the failure. A failed
+extension step is reported with `"status": "failed"` and a `detail`, and
+never fails `init` or `uninit`.
+
+### `clax extension`
+
+`clax extension install` writes the Chrome extension built into the binary
+(the release build, `web/dist-extension`) to `~/.clax/extension/`, replacing
+what is there, so files an older build had and this one lacks are removed.
+It adds `host/ensure-clax.sh`, a copy of the plugins' wrapper, and
+`host/launch.sh`, the native host Chrome runs:
+
+```sh
+#!/bin/sh
+# Launches the Clax native messaging host for the Clax Chrome extension.
+CLAX_HOME='/Users/alex/.clax'
+export CLAX_HOME
+exec '/Users/alex/.clax/extension/host/ensure-clax.sh' exec native-host "$@"
+```
+
+`CLAX_HOME` is fixed to the home that installed it, since Chrome starts the
+host with a minimal environment, and the wrapper finds the binary as it
+does for the plugins (normally the `bin` setting `clax init` wrote). Then,
+for each browser whose profile directory exists, it writes the host manifest
+`dev.empathic.clax.json` into the browser's `NativeMessagingHosts`
+directory:
+
+| Browser | macOS (`~/Library/Application Support/…`) | Linux (`$XDG_CONFIG_HOME`, else `~/.config/…`) |
+|---|---|---|
+| `chrome` | `Google/Chrome` | `google-chrome` |
+| `chrome-beta` | `Google/Chrome Beta` | `google-chrome-beta` |
+| `chrome-dev` | `Google/Chrome Dev` | `google-chrome-unstable` |
+| `chrome-canary` | `Google/Chrome Canary` | — |
+| `chromium` | `Chromium` | `chromium` |
+| `brave` | `BraveSoftware/Brave-Browser` | `BraveSoftware/Brave-Browser` |
+| `edge` | `Microsoft Edge` | `microsoft-edge` |
+
+```json
+{
+  "name": "dev.empathic.clax",
+  "description": "Clax: pairs the Clax extension with the local Clax daemon",
+  "path": "/Users/alex/.clax/extension/host/launch.sh",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://<the ID in effect>/"]
+}
+```
+
+A browser directory that does not exist is never touched.
+`CLAX_NATIVE_HOST_DIRS` (`<browser>=<dir>:<browser>=<dir>…`) replaces the
+table, for tests and unusual installs; each listed directory must then
+exist. Snap and Flatpak Chromium on Linux keep their profiles in a sandbox
+and cannot run the host; they are not supported. The manifests written are
+recorded in `~/.clax/extension/installed.json` (`{version, hosts}`).
+`--json` answers `{status: "installed", dir, extension_id, hosts:
+[{browser, status: "installed" | "skipped" | "failed", path, detail}],
+load_unpacked}`, where `load_unpacked` is the one-time step in Chrome
+(chrome://extensions, Developer mode, Load unpacked, then
+`~/.clax/extension`). A binary built without the extension fails with a
+message that says so.
+
+The extension's ID is the ID in effect for the home: the committed public
+key's when the build has one, else the ID Chromium derives from the
+canonical path of `~/.clax/extension`. The host's origin check, the
+credential routes and the gateway use the same ID.
+
+`clax extension uninstall` removes exactly the manifests `installed.json`
+lists whose `path` is this home's `launch.sh`, then `~/.clax/extension/`;
+`--json` answers `{status: "removed" | "absent", hosts_removed, note}`. The
+unpacked extension itself is removed in Chrome, at chrome://extensions.
+`install` and `uninstall` hold `~/.clax/init.lock`.
+
+`clax extension status` reports `{dir, extension_id, files: "current" |
+"stale" | "missing", hosts: [{browser, status: "installed" | "missing" |
+"stale", path}]}`: `files` is `current` when every file of the binary's
+build is on disk as built, and `hosts` lists each installed browser, with
+`stale` for a manifest that names another path or origin. `clax doctor`
+includes it as the `extension` check, which warns until the files are
+current and every installed browser is registered.
+
+The Claude Code plugin's `/clax:extension` runs `clax extension install`
+through the wrapper and relays the result, for people who installed only
+the plugin (plugins never run `clax init`).
+
 ### `clax bin`
 
 `clax bin` (or `clax bin show`) prints which `clax` the plugins would run

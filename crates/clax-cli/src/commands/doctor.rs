@@ -118,6 +118,62 @@ fn codex_push_check(push: Option<&serde_json::Value>, daemon_version: &str) -> s
     }
 }
 
+/// `extension`: ok when the extension's files match this binary and every
+/// installed browser has this home's host registration; otherwise a warning
+/// naming what is off and how to set it up.
+fn extension_check(ext: &serde_json::Value) -> serde_json::Value {
+    let hosts = ext["hosts"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    let bad: Vec<String> = hosts
+        .iter()
+        .filter(|h| h["status"] != "installed")
+        .map(|h| {
+            format!(
+                "{} host {}",
+                h["browser"].as_str().unwrap_or_default(),
+                h["status"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    let dir = ext["dir"].as_str().unwrap_or_default();
+    let fix = "run `clax extension install` (or /clax:extension in Claude Code)";
+    if ext["files"] == "missing" {
+        return warn(
+            "extension",
+            format!("the Chrome extension is not installed: {fix}"),
+        );
+    }
+    if hosts.is_empty() {
+        return warn(
+            "extension",
+            format!("{dir}: no supported browser (Chrome, Chromium, Brave, Edge) is installed"),
+        );
+    }
+    let mut problems = bad;
+    if ext["files"] != "current" {
+        problems.insert(0, "files differ from this clax's build".into());
+    }
+    if problems.is_empty() {
+        check(
+            "extension",
+            true,
+            format!(
+                "{dir}, ID {}, host registered with {}",
+                ext["extension_id"].as_str().unwrap_or_default(),
+                hosts
+                    .iter()
+                    .filter_map(|h| h["browser"].as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        )
+    } else {
+        warn("extension", format!("{}: {fix}", problems.join("; ")))
+    }
+}
+
 fn codex_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
     let Some(c) = client else {
         return vec![check(
@@ -475,6 +531,7 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
             .as_ref(),
         Some(local),
     ));
+    checks.push(extension_check(&super::extension::status(home)));
     if let Some(agent) = args.agent {
         checks.extend(doctor_agent::checks(agent, home, client.as_ref()));
     }
@@ -518,8 +575,38 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::codex_push_check;
+    use super::{codex_push_check, extension_check};
     use serde_json::{Value, json};
+    #[test]
+    fn the_extension_check_warns_until_every_browser_is_registered() {
+        let ok = extension_check(&serde_json::json!({
+            "dir": "/h/extension", "extension_id": "abc", "files": "current",
+            "hosts": [{"browser": "chrome", "status": "installed"}]
+        }));
+        assert_eq!(ok["ok"], true);
+        assert!(ok["warn"].is_null(), "{ok}");
+        let missing = extension_check(
+            &serde_json::json!({"dir": "/h/extension", "files": "missing", "hosts": []}),
+        );
+        assert_eq!(missing["warn"], true);
+        assert!(
+            missing["detail"]
+                .as_str()
+                .unwrap()
+                .contains("clax extension install")
+        );
+        let stale = extension_check(&serde_json::json!({
+            "dir": "/h/extension", "files": "stale",
+            "hosts": [{"browser": "chrome", "status": "installed"}, {"browser": "brave", "status": "stale"}]
+        }));
+        assert_eq!(stale["warn"], true);
+        let d = stale["detail"].as_str().unwrap();
+        assert!(
+            d.contains("files differ") && d.contains("brave host stale"),
+            "{d}"
+        );
+    }
+
     #[test]
     fn the_sample_line_reports_the_daemon_or_the_file_and_warns_on_a_bad_table() {
         use super::sample_check;

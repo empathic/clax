@@ -159,7 +159,7 @@ sys.exit(0 if ok else 1)
 PY
 then pass "Stop, prompt and PostToolUse hooks are wired"; else fail "the Claude Stop/UserPromptSubmit/PostToolUse or Codex Stop/PostToolUse hooks are missing or misconfigured"; fi
 
-for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md; do
+for f in plugins/claude-code/commands/comments.md plugins/claude-code/commands/watch.md plugins/claude-code/commands/wait.md plugins/claude-code/commands/extension.md; do
     [ -f "$f" ] || fail "$f is missing"
 done
 

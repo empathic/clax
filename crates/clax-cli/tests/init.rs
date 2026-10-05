@@ -46,6 +46,11 @@ impl Env {
             .env_remove("GROK_SESSION_ID")
             .env_remove("GROK_HOOK_EVENT")
             .env_remove("CLAUDE_PID")
+            .env_remove("XDG_CONFIG_HOME")
+            .env(
+                "CLAX_NATIVE_HOST_DIRS",
+                format!("chrome={}", self.p("browsers/chrome").display()),
+            )
             .env(
                 "PATH",
                 format!("{}:/usr/bin:/bin", self.p("fakebin").display()),
@@ -691,6 +696,63 @@ fn uninit_keeps_the_marketplace_while_grok_still_lists_a_plugin_from_it() {
             .as_str()
             .unwrap()
             .contains("grok still registers it"),
+        "{v}"
+    );
+}
+
+#[test]
+fn init_installs_the_extension_and_uninit_removes_it() {
+    let e = Env::new(&[]);
+    let dist = e.p("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    std::fs::write(dist.join("manifest.json"), clax_core::extension::MANIFEST).unwrap();
+    std::fs::write(dist.join("sw.js"), "export {}").unwrap();
+    std::fs::create_dir_all(e.p("browsers/chrome")).unwrap();
+    let out = e
+        .cmd()
+        .env("CLAX_EXTENSION_DIST", &dist)
+        .args(["init", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["extension"]["status"], "installed", "{v}");
+    assert!(e.p("ax/extension/manifest.json").exists());
+    assert!(e.p("browsers/chrome/dev.empathic.clax.json").exists());
+    let (ok, v) = e.json(&["uninit"]);
+    assert!(ok, "{v}");
+    assert_eq!(v["extension"]["status"], "removed", "{v}");
+    assert_eq!(v["extension"]["credentials_revoked"], 0, "{v}");
+    assert!(!e.p("ax/extension").exists());
+    assert!(!e.p("browsers/chrome/dev.empathic.clax.json").exists());
+}
+
+#[test]
+fn a_failed_extension_install_is_reported_and_does_not_fail_init() {
+    let e = Env::new(&[]);
+    std::fs::create_dir_all(e.p("empty-dist")).unwrap();
+    let out = e
+        .cmd()
+        .env("CLAX_EXTENSION_DIST", e.p("empty-dist"))
+        .args(["init", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["extension"]["status"], "failed", "{v}");
+    assert!(
+        v["extension"]["detail"]
+            .as_str()
+            .unwrap()
+            .contains("without the extension"),
         "{v}"
     );
 }
