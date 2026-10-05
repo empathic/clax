@@ -18,3 +18,7 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - run: scripts/quality_gates.sh
+      # A failed browser test's error context, screenshot and trace.
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with: { name: playwright-results, path: web/test-results/, if-no-files-found: ignore, retention-days: 14 }
