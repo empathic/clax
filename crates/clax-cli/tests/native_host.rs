@@ -108,7 +108,8 @@ fn pairing_starts_a_daemon_and_returns_a_credential() {
 #[test]
 fn a_wrong_origin_gets_one_error_and_exit_1() {
     let dir = tempfile::tempdir().unwrap();
-    let out = clax(dir.path())
+    let home = dir.path().join("ax");
+    let out = clax(&home)
         .args([
             "native-host",
             "chrome-extension://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/",
@@ -120,10 +121,7 @@ fn a_wrong_origin_gets_one_error_and_exit_1() {
     let v = only_message(&out.stdout);
     assert_eq!(v["type"], "error");
     assert_eq!(v["code"], "wrong_origin");
-    assert!(
-        !dir.path().join("daemon.json").exists(),
-        "no daemon was started"
-    );
+    assert!(!home.exists(), "nothing was made in the home");
 }
 
 #[test]
@@ -147,6 +145,7 @@ fn bad_messages_get_an_error_reply_and_start_no_daemon() {
             "unsupported_version",
         ),
         (frame(&json!({"type": "hello", "v": 1})), "bad_request"),
+        (frame(&json!({"type": "pair"})), "bad_request"),
         (b"\x05\x00".to_vec(), "bad_request"),
     ] {
         let out = clax(dir.path())
@@ -176,4 +175,64 @@ fn no_home_is_one_error_reply() {
     let v = only_message(&out.stdout);
     assert_eq!(v["type"], "error");
     assert_eq!(v["code"], "daemon_unavailable", "{v}");
+}
+
+#[test]
+fn a_command_line_clap_refuses_is_one_bad_request() {
+    let dir = tempfile::tempdir().unwrap();
+    let out = clax(dir.path())
+        .args(["native-host", "--bogus"])
+        .write_stdin(frame(&json!({"type": "pair", "v": 1})))
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    assert_eq!(only_message(&out.stdout)["code"], "bad_request");
+    let help = clax(dir.path())
+        .args(["native-host", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8_lossy(&help.stdout).contains("Chrome"),
+        "--help still prints help"
+    );
+}
+
+fn daemon_info(home: &Path) -> Value {
+    serde_json::from_str(&std::fs::read_to_string(home.join("daemon.json")).unwrap()).unwrap()
+}
+
+#[test]
+fn pairing_replaces_an_older_daemon() {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("ax");
+    let _stop = StopDaemon(&home);
+    let serve = clax(&home).args(["--port", "0", "serve"]).output().unwrap();
+    assert!(
+        serve.status.success(),
+        "{}",
+        String::from_utf8_lossy(&serve.stderr)
+    );
+    // The running daemon now reports a version older than this binary.
+    let mut info = daemon_info(&home);
+    let old_pid = info["pid"].clone();
+    info["version"] = json!("0.0.1");
+    std::fs::write(home.join("daemon.json"), info.to_string()).unwrap();
+
+    let out = clax(&home)
+        .args(["--port", "0", "native-host", &our_origin(&home)])
+        .write_stdin(frame(&json!({"type": "pair", "v": 1})))
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v = only_message(&out.stdout);
+    assert_eq!(v["type"], "paired", "{v}");
+    let now = daemon_info(&home);
+    assert_ne!(now["pid"], old_pid, "a new daemon was started");
+    assert_eq!(now["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(v["daemon"], format!("http://localhost:{}", now["port"]));
 }

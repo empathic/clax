@@ -138,21 +138,20 @@ impl Cli {
     }
 }
 
-/// True when the command line names the `hook` subcommand: a hook must never
-/// fail its harness, so its startup failures exit 0.
-fn is_hook_invocation() -> bool {
+/// The subcommand the command line names: its first argument that is
+/// neither a flag nor `--port`'s value.
+fn invoked_subcommand() -> Option<String> {
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
-            "hook" => return true,
             "--port" => {
                 args.next();
             }
             s if s.starts_with('-') => {}
-            _ => return false,
+            _ => return Some(a),
         }
     }
-    false
+    None
 }
 
 /// The value after `--agent` on the command line, or `-`.
@@ -174,13 +173,21 @@ fn home_from_env() -> Result<clax_core::Home, String> {
 
 fn main() {
     let started = std::time::Instant::now();
-    let hook = is_hook_invocation();
+    let invoked = invoked_subcommand();
+    // A hook must never fail its harness, so its startup failures exit 0.
+    let hook = invoked.as_deref() == Some("hook");
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
             if hook && let Ok(home) = home_from_env() {
                 let text = e.to_string();
                 commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()));
+            }
+            let shown = matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
+            if invoked.as_deref() == Some("native-host") && !shown {
+                // Chrome reads only framed replies; the text goes to stderr.
+                let _ = e.print();
+                commands::native_host::run_unparsed(&e.to_string());
             }
             let code = match e.kind() {
                 _ if hook => 0,
