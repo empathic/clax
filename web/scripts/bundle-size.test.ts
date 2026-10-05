@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -20,6 +20,8 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   mkdirSync(join(web, "dist/_clax/shell"), { recursive: true });
   mkdirSync(join(web, "dist/_clax/bridge/.vite"), { recursive: true });
   copyFileSync(join(__dirname, "bundle-size.mjs"), join(web, "scripts/bundle-size.mjs"));
+  // The script imports its deflate (pako) from web/node_modules.
+  symlinkSync(join(__dirname, "../node_modules"), join(web, "node_modules"), "dir");
   const dist = (p: string, s: string) => writeFileSync(join(web, "dist", p), s);
   dist("index.html", index);
   for (const f of fonts) { mkdirSync(join(web, "dist", f, ".."), { recursive: true }); dist(f, "wOF2"); }

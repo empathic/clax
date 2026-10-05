@@ -6,13 +6,20 @@
 // so the build may carry no font file and no entry may load one. --record
 // lowers the budgets to the measured sizes plus 10%, never raising one, and
 // adds a budget that is missing.
+//
+// Sizes are deflated by pako (a pinned JavaScript port of reference zlib), not
+// node:zlib: Node links whichever zlib its build chose (the official builds
+// carry Chromium's fork, Homebrew's the system zlib), and those give different
+// bytes for the same input at the same level, so a budget measured on one
+// machine failed on another by a hundred bytes. pako gives reference zlib's
+// output on every platform and Node version.
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { gzipSync } from "node:zlib";
+import pako from "pako";
 
 const dist = new URL("../dist/", import.meta.url);
 const budgetFile = new URL("../perf/bundle-budget.json", import.meta.url);
 const read = p => readFileSync(new URL(p, dist));
-const gz = p => gzipSync(read(p), { level: 9 }).length;
+const gz = p => pako.gzip(read(p), { level: 9 }).length;
 const manifest = JSON.parse(read(".vite/manifest.json"));
 
 function closure(key, seen = new Set()) {
