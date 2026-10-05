@@ -46,6 +46,7 @@ pub mod batches;
 pub mod changelog;
 pub mod docs;
 pub mod exec;
+pub mod extension;
 pub mod feedback;
 pub mod live;
 pub mod migrations;

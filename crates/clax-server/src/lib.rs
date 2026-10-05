@@ -6,6 +6,7 @@ pub mod boot;
 pub mod daemon;
 pub mod db_caller;
 pub mod error;
+pub mod extension;
 pub mod feedback;
 pub mod host;
 pub mod http_cache;

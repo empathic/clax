@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Clax",
+  "version": "0.0.0",
+  "description": "Comment on any page and send your comments to your coding agent.",
+  "minimum_chrome_version": "116",
+  "action": {"default_title": "Comment with Clax", "default_icon": {"16": "icons/16.png", "32": "icons/32.png"}},
+  "icons": {"16": "icons/16.png", "32": "icons/32.png", "48": "icons/48.png", "128": "icons/128.png"},
+  "background": {"service_worker": "sw.js", "type": "module"},
+  "side_panel": {"default_path": "sidepanel.html"},
+  "permissions": ["activeTab", "scripting", "sidePanel", "storage", "nativeMessaging", "contextMenus"],
+  "optional_host_permissions": ["http://*/*", "https://*/*"],
+  "commands": {"comment": {"suggested_key": {"default": "Alt+Shift+C"}, "description": "Comment on this page"}},
+  "web_accessible_resources": [{"resources": ["composer.html"], "matches": ["http://*/*", "https://*/*"], "use_dynamic_url": true}],
+  "externally_connectable": {"ids": []},
+  "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' blob: data: http://localhost:* http://127.0.0.1:*"}
+}

@@ -267,6 +267,19 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL,
         PRIMARY KEY (artifact_id, thread_id)
     );",
+    // 17: the Clax Chrome extension's credentials (spec
+    // 2026-10-05-chrome-overlay-design §5.3), as their SHA-256 only. A
+    // credential names no viewer: the extension acts as the owner identity.
+    "CREATE TABLE extension_credentials (
+        id TEXT PRIMARY KEY,
+        extension_id TEXT NOT NULL,
+        secret_sha256 TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL,
+        revoked_at TEXT
+    );
+    CREATE INDEX extension_credentials_by_extension
+        ON extension_credentials(extension_id, created_at);",
 ];
 
 #[cfg(test)]

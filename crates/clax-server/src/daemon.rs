@@ -274,6 +274,7 @@ pub async fn serve(
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let events_shutdown = shutdown_tx.subscribe();
     let live_ids = Arc::new(crate::live::LiveIds::load(&store)?);
+    let ext_creds = Arc::new(crate::extension::Credentials::load(&store)?);
     let state = AppState {
         store,
         home: cfg.home.clone(),
@@ -303,6 +304,8 @@ pub async fn serve(
         sample: cfg.sample.clone(),
         stream: crate::stream::Hub::new(live_ids.clone()),
         live_ids,
+        ext_creds,
+        extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
     };
     state.stream.listen(&state.events);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");

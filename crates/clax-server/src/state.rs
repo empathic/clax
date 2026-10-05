@@ -46,4 +46,10 @@ pub struct AppState {
     /// Every live page's artifact ID (spec 2026-10-05-chrome-overlay-design
     /// L10), for hiding them from the LAN and serving their snapshots.
     pub live_ids: Arc<crate::live::LiveIds>,
+    /// The Clax extension's live credentials, by hash (spec
+    /// 2026-10-05-chrome-overlay-design §5.3).
+    pub ext_creds: Arc<crate::extension::Credentials>,
+    /// The extension ID in effect for this daemon's home (spec L15): the only
+    /// extension that may pair.
+    pub extension_id: String,
 }

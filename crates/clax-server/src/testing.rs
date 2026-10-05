@@ -23,6 +23,7 @@ pub struct TestServer {
     pub presence: Arc<clax_core::presence::Presence>,
     /// The address the listener is bound to (may be unspecified, e.g. `0.0.0.0`).
     pub addr: SocketAddr,
+    extension_id: String,
     _dir: tempfile::TempDir,
 }
 
@@ -48,6 +49,7 @@ impl TestServer {
         let addr = listener.local_addr().unwrap();
         let port = addr.port();
         let live_ids = Arc::new(crate::live::LiveIds::load(&store).unwrap());
+        let ext_creds = Arc::new(crate::extension::Credentials::load(&store).unwrap());
         let mut state = AppState {
             store,
             home: home.clone(),
@@ -77,12 +79,15 @@ impl TestServer {
             sample: Arc::new(crate::sample::Sampler::disabled()),
             stream: crate::stream::Hub::new(live_ids.clone()),
             live_ids,
+            ext_creds,
+            extension_id: clax_core::extension::extension_id_in_effect(home.root()),
         };
         f(&mut state);
         state.stream.listen(&state.events);
         let events = state.events.clone();
         let working = state.working.clone();
         let presence = state.presence.clone();
+        let extension_id = state.extension_id.clone();
         let app = build_router(state);
         tokio::spawn(async move {
             axum::serve(
@@ -101,6 +106,7 @@ impl TestServer {
             working,
             presence,
             addr,
+            extension_id,
             _dir: dir,
         }
     }
@@ -387,6 +393,28 @@ impl TestServer {
             .await
             .unwrap();
         v["viewer"]["public_id"].as_str().unwrap().to_string()
+    }
+
+    /// The owner viewer, as a browser of the owner's sees it (made as a
+    /// browser's when there is none yet).
+    pub async fn owner_viewer(&self) -> clax_core::model::Viewer {
+        let v: serde_json::Value = self
+            .client
+            .get(format!("{}/api/viewers/me", self.base))
+            .header("cookie", self.owner_cookie())
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        serde_json::from_value(v["viewer"].clone()).unwrap()
+    }
+
+    /// The extension ID in effect for this server's home (spec
+    /// 2026-10-05-chrome-overlay-design L15).
+    pub fn extension_id(&self) -> String {
+        self.extension_id.clone()
     }
 
     /// The owner cookie a browser of the owner's holds (`name=value`), as the

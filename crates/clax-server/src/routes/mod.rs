@@ -3,6 +3,7 @@ pub mod assets;
 pub mod content;
 pub mod docs;
 pub mod events;
+pub mod extension;
 pub mod feedback;
 pub mod health;
 pub mod live;
@@ -132,6 +133,11 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/viewers", get(viewers::lookup))
         .route("/api/live/pages", get(live::page))
+        .route("/api/extension", get(extension::status))
+        .route(
+            "/api/extension/credentials",
+            post(extension::mint).delete(extension::revoke),
+        )
         .route("/api/stream/{id}", post(stream::update))
         .route(
             "/api/viewers/me/seen",
