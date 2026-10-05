@@ -865,6 +865,20 @@ pub(crate) mod tests {
         assert!(!needs_replacing(&info("test"), "0.2.0"));
     }
 
+    /// The Python interpreter itself, for the fakes' `#!` line: a version
+    /// manager's `python3` shim adds a shell start-up to every fake's start,
+    /// which under load can exceed the 5 s a daemon gets to become ready.
+    fn python3() -> &'static str {
+        static PYTHON: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        PYTHON.get_or_init(|| {
+            let out = std::process::Command::new("python3")
+                .args(["-c", "import sys; print(sys.executable)"])
+                .output()
+                .expect("python3 runs");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        })
+    }
+
     /// A stand-in daemon executable: `serve --foreground --port P --bind B`
     /// listens on 127.0.0.1 (on `listen` instead of P when given), records
     /// B, `version` and its own path in daemon.json, answers `/healthz`, and
@@ -878,7 +892,7 @@ pub(crate) mod tests {
     ) -> std::path::PathBuf {
         let path = dir.join(name);
         let script = format!(
-            r#"#!/usr/bin/env python3
+            r#"#!{python}
 import json, os, sys, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 a = sys.argv
@@ -924,6 +938,7 @@ with open(tmp, "w") as f: json.dump(info, f)
 os.rename(tmp, os.path.join(home, "daemon.json"))
 srv.serve_forever()
 "#,
+            python = python3(),
             listen = listen.map_or("None".to_string(), |p| p.to_string()),
             hang = if hang { "True" } else { "False" },
         );
