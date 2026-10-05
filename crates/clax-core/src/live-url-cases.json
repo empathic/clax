@@ -1,0 +1,16 @@
+[
+  {"url": "http://LOCALHOST:5173/settings?tab=billing&utm_source=x#top", "origin": "http://localhost:5173", "path": "/settings", "route": "?tab=billing"},
+  {"url": "http://localhost:3000/#/users/7", "origin": "http://localhost:3000", "path": "/", "route": "#/users/7"},
+  {"url": "http://localhost:3000", "origin": "http://localhost:3000", "path": "/", "route": null},
+  {"url": "https://example.com:443/a/./b/../c", "origin": "https://example.com", "path": "/a/c", "route": null},
+  {"url": "http://user:pw@127.0.0.1:8080/x/?q=1#!/r", "origin": "http://127.0.0.1:8080", "path": "/x/", "route": "?q=1#!/r"},
+  {"url": "http://[::1]:5173/", "origin": "http://[::1]:5173", "path": "/", "route": null},
+  {"url": "http://localhost:5173/?fbclid=1&gclid=2&utm_medium=m", "origin": "http://localhost:5173", "path": "/", "route": null},
+  {"url": "http://localhost:5173/docs?t=1700000000", "origin": "http://localhost:5173", "path": "/docs", "route": "?t=1700000000"},
+  {"url": "http://bücher.example/", "origin": "http://xn--bcher-kva.example", "path": "/", "route": null},
+  {"url": "  http://localhost:5173/p  ", "origin": "http://localhost:5173", "path": "/p", "route": null},
+  {"url": "file:///etc/passwd", "error": "unsupported_url"},
+  {"url": "chrome://extensions", "error": "unsupported_url"},
+  {"url": "javascript:alert(1)", "error": "unsupported_url"},
+  {"url": "not a url", "error": "invalid_url"}
+]

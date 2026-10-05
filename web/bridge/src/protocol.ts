@@ -26,6 +26,8 @@ export interface Anchor {
   area?: AnchorArea;
   /** The published path of the page the anchor is on (`index.html` for the index). */
   file: string;
+  /** A live page's route (`?query#/hash-route`), set by the daemon; absent on artifacts. */
+  route?: string;
 }
 /** A rectangle in the content frame's viewport pixels. */
 export interface Box { x: number; y: number; w: number; h: number }

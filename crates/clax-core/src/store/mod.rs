@@ -47,6 +47,7 @@ pub mod changelog;
 pub mod docs;
 pub mod exec;
 pub mod feedback;
+pub mod live;
 pub mod migrations;
 #[cfg(test)]
 mod plans;
@@ -250,6 +251,7 @@ pub(crate) mod test_util {
             custom_name: None,
             area: None,
             file: "index.html".into(),
+            route: None,
         }
     }
 }

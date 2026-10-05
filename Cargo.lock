@@ -443,6 +443,7 @@ dependencies = [
  "toml",
  "tracing",
  "ulid",
+ "url",
 ]
 
 [[package]]

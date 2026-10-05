@@ -10,6 +10,7 @@ pub mod events;
 pub mod feedback;
 pub mod home;
 pub mod ids;
+pub mod live;
 pub mod mentions;
 pub mod model;
 pub mod presence;

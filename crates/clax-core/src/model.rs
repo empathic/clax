@@ -16,6 +16,13 @@ pub struct Artifact {
     pub capabilities: serde_json::Value,
     pub contract_version: String,
     pub owner_session_id: Option<String>,
+    /// `html` (published by an agent) or `live` (a live page, spec 2026-10-05 §5.1).
+    #[serde(default = "html_kind")]
+    pub kind: String,
+}
+
+fn html_kind() -> String {
+    crate::live::KIND_HTML.to_string()
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

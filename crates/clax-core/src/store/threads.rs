@@ -329,6 +329,19 @@ impl Store {
             if !artifact_live(tx, id.as_str())? {
                 return Err(CoreError::NotFound);
             }
+            if t.anchor.route.is_some() {
+                let kind: String = tx.query_row(
+                    "SELECT kind FROM artifacts WHERE id = ?1",
+                    params![id.as_str()],
+                    |r| r.get(0),
+                )?;
+                if kind != crate::live::KIND_LIVE {
+                    return Err(CoreError::invalid(
+                        "invalid_anchor",
+                        "route is only for live pages",
+                    ));
+                }
+            }
             let files: Option<String> = tx
                 .query_row(
                     "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = ?2",

@@ -128,6 +128,10 @@ pub struct Anchor {
     pub area: Option<AnchorArea>,
     #[serde(default = "index_file")]
     pub file: String,
+    /// The route a live page's thread was made at (spec 2026-10-05 §5.2):
+    /// the query and hash route, set by the daemon; absent elsewhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub route: Option<String>,
 }
 
 fn bad(message: impl Into<String>) -> CoreError {
@@ -236,11 +240,22 @@ impl Anchor {
         check_len("quote", &self.quote, MAX_QUOTE)?;
         check_len("prefix", &self.prefix, MAX_AFFIX)?;
         check_len("suffix", &self.suffix, MAX_AFFIX)?;
+        if let Some(r) = &self.route
+            && (r.len() > crate::live::MAX_ROUTE
+                || !(r.starts_with('?') || r.starts_with('#'))
+                || r.chars()
+                    .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}')))
+        {
+            return Err(bad(format!(
+                "route must start with ? or #, be at most {} bytes, and hold no control characters",
+                crate::live::MAX_ROUTE
+            )));
+        }
         Ok(())
     }
 
-    /// One line naming the anchor: the file and ` › ` when it is not
-    /// `index.html`, the selector (or `custom:<name>`, or for an area
+    /// One line naming the anchor: the route and ` › ` when there is one,
+    /// the file and ` › ` when it is not `index.html`, the selector (or `custom:<name>`, or for an area
     /// `area in <selector> (<w>% × <h>%)`, its share of the element's width
     /// and height rounded to whole percent, `<1%` for a share under half a
     /// percent), then two
@@ -262,6 +277,10 @@ impl Anchor {
             target
         } else {
             format!("{} › {target}", self.file)
+        };
+        let target = match &self.route {
+            Some(r) => format!("{r} › {target}"),
+            None => target,
         };
         match self
             .quote
@@ -416,6 +435,15 @@ mod tests {
                 "{bad:?}"
             );
         }
+    }
+
+    #[test]
+    fn a_route_leads_the_summary() {
+        let a: Anchor = serde_json::from_value(json!({
+            "kind": "element", "selector": "main > button", "quote": "Save", "route": "?tab=billing"
+        }))
+        .unwrap();
+        assert!(a.summary().starts_with("?tab=billing › main > button"));
     }
 
     #[test]

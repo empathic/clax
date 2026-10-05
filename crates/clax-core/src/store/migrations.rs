@@ -237,6 +237,36 @@ pub const MIGRATIONS: &[&str] = &[
     ALTER TABLE viewers ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE viewers ADD COLUMN minted_local INTEGER;
     CREATE UNIQUE INDEX viewers_one_owner ON viewers(owner) WHERE owner = 1;",
+    // 16: live pages (spec 2026-10-05-chrome-overlay-design §5.1): the
+    // artifact kind, each live page's key, scope watches (and the watches
+    // they made), and addresses waiting for a live page's next snapshot.
+    "ALTER TABLE artifacts ADD COLUMN kind TEXT NOT NULL DEFAULT 'html'
+        CHECK (kind IN ('html', 'live'));
+    CREATE TABLE live_pages (
+        artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
+        origin TEXT NOT NULL,
+        path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (origin, path)
+    );
+    CREATE TABLE live_watches (
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        origin TEXT NOT NULL,
+        path TEXT NOT NULL,
+        replies_armed INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (session_id, origin, path)
+    );
+    ALTER TABLE watches ADD COLUMN source TEXT NOT NULL DEFAULT 'direct'
+        CHECK (source IN ('direct', 'scope'));
+    CREATE TABLE live_pending (
+        artifact_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        source TEXT NOT NULL CHECK (source IN ('explicit', 'resolve')),
+        harness TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, thread_id)
+    );",
 ];
 
 #[cfg(test)]
@@ -356,6 +386,33 @@ mod tests {
             )?)
         });
         assert!(second.is_err());
+    }
+
+    #[test]
+    fn migration_16_marks_existing_artifacts_html() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let mut c = Connection::open(home.db_path()).unwrap();
+            let tx = c.transaction().unwrap();
+            for sql in &MIGRATIONS[..15] {
+                tx.execute_batch(sql).unwrap();
+            }
+            tx.pragma_update(None, "user_version", 15).unwrap();
+            tx.execute(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                 VALUES ('7q3k9mzx2b4t', 'T', 'x', 'x', 1, '0.2.61')",
+                [],
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let kind: String = st
+            .with_read(|c| Ok(c.query_row("SELECT kind FROM artifacts", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(kind, "html");
     }
 
     #[test]

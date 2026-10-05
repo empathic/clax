@@ -45,6 +45,7 @@ tower-http = { version = "0.6", features = ["cors", "trace", "compression-gzip",
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ulid = "1"
+url = "2"
 tempfile = "3"
 toml = "0.9"
 assert_cmd = "2"

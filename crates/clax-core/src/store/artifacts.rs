@@ -63,6 +63,7 @@ fn row_to_artifact(r: &Row<'_>) -> rusqlite::Result<Result<Artifact>> {
         capabilities,
         contract_version: r.get("contract_version")?,
         owner_session_id: r.get("owner_session_id")?,
+        kind: r.get("kind")?,
     }))
 }
 
@@ -86,7 +87,7 @@ fn skip_corrupt<T>(rows: Vec<Result<T>>) -> Result<Vec<T>> {
 }
 
 const SELECT: &str = "SELECT id, title, description, icon, created_at, updated_at, current_version,
-    owner_session_id, pinned, capabilities_json, contract_version FROM artifacts";
+    owner_session_id, pinned, capabilities_json, contract_version, kind FROM artifacts";
 
 impl Store {
     /// The live artifact `id` (not deleted, at least one version), or `None`.
@@ -212,6 +213,14 @@ impl Store {
             )?;
             tx.execute(
                 "DELETE FROM send_batches WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM live_pages WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            tx.execute(
+                "DELETE FROM live_pending WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
             Ok(())
@@ -345,6 +354,10 @@ impl Store {
                         params![id],
                     )?;
                 }
+                tx.execute(
+                    &format!("DELETE FROM live_pages WHERE artifact_id IN ({zero})"),
+                    params![id],
+                )?;
                 Ok(tx.execute(
                     "DELETE FROM artifacts WHERE id = ?1 AND current_version = 0 AND deleted_at IS NULL",
                     params![id],
@@ -591,7 +604,7 @@ impl Store {
     /// transaction, re-checks that the artifact is still at `expected`
     /// (`Conflict` otherwise), records the version, bumps the artifact and
     /// renames the staging directory into place before committing.
-    fn write_version(
+    pub(super) fn write_version(
         &self,
         id: &ArtifactId,
         expected: u32,
