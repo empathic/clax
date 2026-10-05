@@ -187,6 +187,38 @@ impl Rooms {
         )
     }
 
+    /// Closes every socket of viewer `public_id` (a viewer that no longer
+    /// exists: it was folded into the owner): its entries leave their rooms
+    /// at once, the rooms are told, and each socket is woken to end, so the
+    /// page reconnects as the viewer it is now. Returns how many entries left.
+    pub fn evict_viewer(&self, public_id: &str) -> usize {
+        let mut g = lock(&self.inner);
+        let mut left = Vec::new();
+        for ((aid, _), r) in g.rooms.iter_mut() {
+            let gone: Vec<u64> = r
+                .members
+                .iter()
+                .filter(|(_, (w, _))| w.viewer.as_deref() == Some(public_id))
+                .map(|(s, _)| *s)
+                .collect();
+            for s in gone {
+                if let Some((who, _)) = r.members.remove(&s) {
+                    let _ = r.tx.send(Arc::new(Frame::Left {
+                        peer: who.peer.clone(),
+                    }));
+                    left.push((aid.clone(), who.peer));
+                }
+            }
+        }
+        g.rooms.retain(|_, r| !r.members.is_empty());
+        for key in &left {
+            if let Some(n) = g.claims.get(key) {
+                n.notify_one();
+            }
+        }
+        left.len()
+    }
+
     /// The number of live rooms (for tests).
     pub fn len(&self) -> usize {
         lock(&self.inner).rooms.len()
@@ -285,6 +317,25 @@ mod tests {
             by: None,
             viewer: viewer.map(Into::into),
         }
+    }
+
+    #[tokio::test]
+    async fn evicting_a_viewer_closes_its_sockets_and_tells_the_room() {
+        let rooms = Rooms::default();
+        let claim = rooms.claim("a1", "aaaaaaaaaaaaaaaa");
+        let (_gone, _) = rooms.enter("a1", None, who("aaaaaaaaaaaaaaaa", Some("u_old")));
+        let (stay, mut rx) = rooms.enter("a1", None, who("bbbbbbbbbbbbbbbb", Some("u_other")));
+        assert_eq!(rooms.evict_viewer("u_old"), 1);
+        match &*rx.recv().await.unwrap() {
+            Frame::Left { peer } => assert_eq!(peer, "aaaaaaaaaaaaaaaa"),
+            f => panic!("{f:?}"),
+        }
+        assert_eq!(stay.snapshot().len(), 1);
+        // The evicted socket is woken to end.
+        tokio::time::timeout(std::time::Duration::from_secs(1), claim.replaced.notified())
+            .await
+            .unwrap();
+        assert_eq!(rooms.evict_viewer("u_old"), 0);
     }
 
     #[test]

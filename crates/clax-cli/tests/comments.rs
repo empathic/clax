@@ -515,16 +515,12 @@ fn acting_on_threads_is_acting_as_the_owner_in_the_browser() {
     assert!(v["to"].is_null());
     let text = d.ok(&["comments", "send", &format!("{}#1", w.roadmap)]);
     assert!(text.contains("no agent is live"), "{text}");
-    // The CLI keeps no viewer of its own.
-    assert!(!d.home().join("cli_viewer").exists());
 }
 
 #[test]
-fn the_cli_is_the_owner_the_browsers_are_and_ignores_an_old_cli_viewer() {
+fn the_cli_is_the_owner_the_browsers_are() {
     let w = world();
     let d = &w.d;
-    // A file an earlier CLI kept its own viewer in is ignored.
-    std::fs::write(d.home().join("cli_viewer"), "01J9Z3K4M5N6P7Q8R9S0T1V2W3").unwrap();
     let name = d.json(&["comments", "name", "Alex"]);
     // The owner's browser (the owner cookie, as the shell's token request
     // sets it) is the same viewer, with the same name.

@@ -328,11 +328,13 @@ pub async fn create(
 /// private to the cookie.
 pub async fn get(
     State(s): State<AppState>,
+    extensions: axum::http::Extensions,
     headers: HeaderMap,
     aid: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let id = parse_id(&path(aid)?)?;
-    let who = crate::identity::Identity::of(&headers, &s.token);
+    let who =
+        crate::identity::Identity::of(&headers, &s.token, crate::identity::peer_of(&extensions));
     let working = s.working.for_artifact(id.as_str());
     let has_viewer = who.owner_browser() || who.cookie.is_some();
     let mut v = s

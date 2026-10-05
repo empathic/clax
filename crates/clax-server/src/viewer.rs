@@ -10,10 +10,13 @@ use clax_core::{Store, is_ulid};
 
 pub const COOKIE: &str = "clax_viewer";
 
-/// The first `clax_viewer` cookie whose value is a ULID; malformed ones
-/// (including earlier duplicates) are skipped.
-pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
-    headers
+/// Every distinct ULID value of the `clax_viewer` cookies in `headers`, in
+/// the order sent; malformed values are skipped. More than one means another
+/// page set a cookie of that name (cookies ignore ports, and one scoped to a
+/// longer path is sent first).
+pub(crate) fn read_all(headers: &HeaderMap) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for v in headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
@@ -21,8 +24,21 @@ pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
         .filter_map(|kv| kv.trim().split_once('='))
         .filter(|(k, _)| *k == COOKIE)
         .map(|(_, v)| v)
-        .find(|v| is_ulid(v))
-        .map(str::to_string)
+        .filter(|v| is_ulid(v))
+    {
+        if !out.iter().any(|o| o == v) {
+            out.push(v.to_string());
+        }
+    }
+    out
+}
+
+/// The viewer the `clax_viewer` cookies name: their one ULID value; `None`
+/// when there is none, or when they disagree (a shadowing cookie never
+/// wins).
+pub(crate) fn read(headers: &HeaderMap) -> Option<String> {
+    let mut all = read_all(headers);
+    (all.len() == 1).then(|| all.remove(0))
 }
 
 /// Admits a viewer request only when it carries no `Origin` header (scripts,
@@ -94,7 +110,13 @@ pub fn author(
     st: &Store,
     who: &crate::identity::Identity,
 ) -> clax_core::Result<(String, Option<String>)> {
-    let v = who.viewer(st)?;
+    // The owner always has a row to author with (made for the CLI acting
+    // before any browser); a cookie with no row stays anonymous.
+    let v = if who.is_owner() {
+        who.ensure_viewer(st)?
+    } else {
+        who.viewer(st)?
+    };
     let name = display_name(
         v.as_ref()
             .and_then(|v| v.display_name.as_deref())
@@ -124,5 +146,26 @@ mod tests {
             HeaderValue::from_str(&format!("{OLD}_viewer={id}; clax_viewer={id}")).unwrap(),
         );
         assert_eq!(read(&h).as_deref(), Some(id));
+    }
+
+    #[test]
+    fn a_shadowing_viewer_cookie_never_wins() {
+        let (a, b) = ("01J9Z3K4M5N6P7Q8R9S0T1V2W3", "01J9Z3K4M5N6P7Q8R9S0T1V2W4");
+        let mut h = HeaderMap::new();
+        // A planted cookie with a longer path is sent first.
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!(
+                "clax_viewer={b}; clax_viewer={a}; clax_viewer=junk"
+            ))
+            .unwrap(),
+        );
+        assert_eq!(read(&h), None);
+        assert_eq!(read_all(&h), [b, a]);
+        h.insert(
+            header::COOKIE,
+            HeaderValue::from_str(&format!("clax_viewer={a}; clax_viewer={a}")).unwrap(),
+        );
+        assert_eq!(read(&h).as_deref(), Some(a));
     }
 }

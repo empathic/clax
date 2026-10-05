@@ -7,6 +7,7 @@ use axum::{
     http::{HeaderMap, header},
     response::{IntoResponse, Response},
 };
+use clax_core::store::viewers::Claim;
 /// The bearer token, for the shell on this machine. Beyond the `/api` host
 /// check ([`crate::auth::require_api_host`]), the peer must be a loopback
 /// address and the `Host` a literal local name (not the LAN bind address),
@@ -16,10 +17,12 @@ use axum::{
 /// set twice: scoped to `/api/events` and to `/api/stream` (which covers its
 /// subscription route), so the shell's event stream holds the token's level
 /// without the token in its URL; and the owner cookie
-/// ([`crate::identity::owner_cookie_name`]), so the browser is the owner on
-/// every route. Such a request is the owner's browser: the viewer its
-/// `clax_viewer` cookie names is claimed for the owner
-/// ([`clax_core::Store::claim_for_owner`]) and the cookie removed.
+/// ([`crate::identity::owner_cookie_name`]) for the API and the artifact
+/// pages, so the browser is the owner there. Such a request is the owner's
+/// browser: when it carries exactly one `clax_viewer` cookie, the viewer that
+/// names is claimed for the owner ([`clax_core::Store::claim_for_owner`]:
+/// only a viewer minted on this machine), the cookie removed, and a viewer
+/// the claim retired leaves every presence list and room at once.
 pub async fn token(
     State(s): State<AppState>,
     ConnectInfo(Conn { peer: addr, .. }): ConnectInfo<Conn>,
@@ -44,14 +47,33 @@ pub async fn token(
         .get("sec-fetch-site")
         .is_some_and(|v| v.as_bytes() == b"same-origin");
     if same_origin {
-        if let Some(v) = crate::identity::set_owner_cookie(host, &s.token) {
-            res.headers_mut().append(header::SET_COOKIE, v);
+        for path in crate::identity::OWNER_COOKIE_PATHS {
+            if let Some(v) = crate::identity::set_owner_cookie(host, &s.token, path) {
+                res.headers_mut().append(header::SET_COOKIE, v);
+            }
         }
-        if let Some(cookie) = crate::viewer::read(&headers) {
+        // Exactly one viewer cookie: with several, another page planted one
+        // and none can be trusted to be this browser's.
+        if let [cookie] = crate::viewer::read_all(&headers).as_slice() {
+            let cookie = cookie.clone();
             let claimed = s.store_call(move |st| st.claim_for_owner(&cookie)).await?;
-            tracing::debug!(?claimed, "claimed a browser viewer for the owner");
-            res.headers_mut()
-                .append(header::SET_COOKIE, crate::identity::clear_viewer_cookie());
+            tracing::debug!(?claimed, "claiming a browser viewer for the owner");
+            let claimed_something = claimed != Claim::Nothing;
+            let retired = match claimed {
+                Claim::Nothing => None,
+                Claim::Adopted { retired } => retired,
+                Claim::Merged(old) => Some(old),
+            };
+            if claimed_something {
+                res.headers_mut()
+                    .append(header::SET_COOKIE, crate::identity::clear_viewer_cookie());
+            }
+            if let Some(old) = retired {
+                for aid in s.presence.forget(&old) {
+                    crate::presence::announce(&s.events, &s.presence, &aid);
+                }
+                s.rooms.evict_viewer(&old);
+            }
         }
         for path in ["/api/events", "/api/stream"] {
             let cookie = format!(

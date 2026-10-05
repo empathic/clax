@@ -74,7 +74,7 @@ fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Cal
         return Ok(if who.owner_browser() || cookie_viewer.is_some() {
             Caller {
                 level: Level::Admin,
-                viewer: Some(st.owner_viewer()?.public_id),
+                viewer: Some(st.owner_viewer(true)?.public_id),
             }
         } else {
             Caller {
@@ -84,7 +84,7 @@ fn base_caller(st: &Store, token: bool, who: &Identity) -> clax_core::Result<Cal
         });
     }
     let viewer = if who.is_owner() {
-        Some(st.owner_viewer()?)
+        who.viewer(st)?
     } else {
         cookie_viewer
     };
@@ -144,7 +144,11 @@ impl FromRequestParts<AppState> for CallerParts {
         };
         Ok(CallerParts {
             token: has_token(&parts.headers, &state.token),
-            who: Identity::of(&parts.headers, &state.token),
+            who: Identity::of(
+                &parts.headers,
+                &state.token,
+                crate::identity::peer_of(&parts.extensions),
+            ),
             as_level,
         })
     }
@@ -199,17 +203,21 @@ impl FromRequestParts<AppState> for Subscriber {
             .is_some_and(|v| crate::auth::token_matches(&v, &state.token));
         Ok(Subscriber {
             token: query_token || has_token(&parts.headers, &state.token),
-            who: Identity::of(&parts.headers, &state.token),
+            who: Identity::of(
+                &parts.headers,
+                &state.token,
+                crate::identity::peer_of(&parts.extensions),
+            ),
         })
     }
 }
 
 impl Subscriber {
-    /// This subscriber, holding the token also when `headers` carry the
-    /// events cookie for `token` ([`crate::auth::has_events_cookie`]).
-    pub fn or_events_cookie(self, headers: &axum::http::HeaderMap, token: &str) -> Self {
+    /// This subscriber, holding the token also when it carries the events
+    /// cookie from this machine ([`Identity::events_cookie`]).
+    pub fn or_events_cookie(self) -> Self {
         Subscriber {
-            token: self.token || crate::auth::has_events_cookie(headers, token),
+            token: self.token || self.who.events_cookie,
             who: self.who,
         }
     }

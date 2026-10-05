@@ -371,11 +371,16 @@ impl TestServer {
         }
     }
 
-    /// The owner identity's public ID (`GET /api/viewers/me` with the token).
+    /// The owner identity's public ID, made as a browser of the owner's
+    /// makes it when there is none yet.
     pub async fn owner_public_id(&self) -> String {
         let v: serde_json::Value = self
-            .get_authed("/api/viewers/me")
+            .client
+            .get(format!("{}/api/viewers/me", self.base))
+            .header("cookie", self.owner_cookie())
+            .send()
             .await
+            .unwrap()
             .json()
             .await
             .unwrap();

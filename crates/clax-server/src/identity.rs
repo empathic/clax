@@ -15,6 +15,11 @@
 //!   every browser of the owner's is the owner on every route without the
 //!   token.
 //!
+//! The two cookies count only on a request from this machine (a loopback
+//! peer naming a literal local host, the rule `GET /api/token` serves by)
+//! that the browser does not mark as made from another origin: cookies
+//! ignore ports, so another local server's page may send them too.
+//!
 //! Anyone else is the viewer the `clax_viewer` cookie names (a LAN viewer),
 //! or no one. An owner credential confers identity; what a request may do
 //! still depends on the token (see [`crate::db_caller`]): the owner cookie
@@ -45,16 +50,39 @@ pub fn owner_cookie_value(token: &str) -> String {
     digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// `Set-Cookie` for the owner cookie on `host`: host-only, `Path=/` (the
-/// shell's pages read it too), `HttpOnly`, `SameSite=Lax`, five years. A new
-/// token makes it worthless; the shell's next token request sets it again.
-pub fn set_owner_cookie(host: &str, token: &str) -> Option<HeaderValue> {
+/// The paths the owner cookie is set for: the API, and the artifact pages
+/// (`/a/...`), whose bootstrap names the viewer.
+pub const OWNER_COOKIE_PATHS: [&str; 2] = ["/api", "/a"];
+
+/// `Set-Cookie` for the owner cookie on `host` and `path` (one of
+/// [`OWNER_COOKIE_PATHS`]): host-only, `HttpOnly`, `SameSite=Lax`, five years.
+/// A new token makes it worthless; the shell's next token request sets it
+/// again.
+pub fn set_owner_cookie(host: &str, token: &str, path: &str) -> Option<HeaderValue> {
     HeaderValue::from_str(&format!(
-        "{}={}; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax",
+        "{}={}; Path={path}; Max-Age=157680000; HttpOnly; SameSite=Lax",
         owner_cookie_name(host),
         owner_cookie_value(token)
     ))
     .ok()
+}
+
+/// The peer a request came from, from the connection info the daemon serves
+/// with; `None` when it is missing (no connection: never local).
+pub fn peer_of(extensions: &axum::http::Extensions) -> Option<std::net::SocketAddr> {
+    extensions
+        .get::<axum::extract::ConnectInfo<crate::auth::Conn>>()
+        .map(|c| c.0.peer)
+}
+
+/// Whether a request comes from this machine: a loopback `peer` and a `Host`
+/// that names this machine literally ([`crate::auth::is_local_host`]).
+pub fn is_local(headers: &HeaderMap, peer: Option<std::net::SocketAddr>) -> bool {
+    let host = headers
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    peer.is_some_and(crate::auth::is_loopback) && crate::auth::is_local_host(host)
 }
 
 /// `Set-Cookie` that removes the `clax_viewer` cookie, once the viewer it
@@ -75,13 +103,9 @@ fn has_cookie(headers: &HeaderMap, name: &str, want: &str) -> bool {
         .any(|(_, v)| crate::auth::token_matches(v, want))
 }
 
-/// Whether `headers` carry this port's owner cookie for `token`. Cookies
-/// ignore ports, so it counts only on a request the browser does not mark as
-/// made from another origin (`Sec-Fetch-Site`).
+/// Whether `headers` carry this port's owner cookie for `token` (whatever
+/// the request's origin; [`Identity::of`] decides whether it counts).
 pub fn has_owner_cookie(headers: &HeaderMap, token: &str) -> bool {
-    if crate::viewer::fetched_from_elsewhere(headers) {
-        return false;
-    }
     let host = headers
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
@@ -98,23 +122,29 @@ pub fn has_owner_cookie(headers: &HeaderMap, token: &str) -> bool {
 pub struct Identity {
     /// The bearer token in `Authorization`.
     pub token: bool,
-    /// The events cookie (only the event streams receive it).
+    /// The events cookie (only the event streams receive it), on a request
+    /// from this machine.
     pub events_cookie: bool,
-    /// The owner cookie.
+    /// The owner cookie, on a request from this machine.
     pub owner_cookie: bool,
-    /// The `clax_viewer` cookie, when it is a ULID.
+    /// The `clax_viewer` cookie, when it is a ULID ([`crate::viewer::read`]).
     pub cookie: Option<String>,
+    /// The request comes from this machine ([`is_local`]).
+    pub local: bool,
 }
 
 impl Identity {
-    /// The credentials in `headers`, for a daemon whose token is `token`.
-    pub fn of(headers: &HeaderMap, token: &str) -> Identity {
+    /// The credentials in `headers`, for a daemon whose token is `token`, on
+    /// a request from `peer`.
+    pub fn of(headers: &HeaderMap, token: &str, peer: Option<std::net::SocketAddr>) -> Identity {
+        let local = is_local(headers, peer);
+        let cookies_count = local && !crate::viewer::fetched_from_elsewhere(headers);
         Identity {
             token: crate::auth::has_token(headers, token),
-            events_cookie: !crate::viewer::fetched_from_elsewhere(headers)
-                && crate::auth::has_events_cookie(headers, token),
-            owner_cookie: has_owner_cookie(headers, token),
+            events_cookie: cookies_count && crate::auth::has_events_cookie(headers, token),
+            owner_cookie: cookies_count && has_owner_cookie(headers, token),
             cookie: crate::viewer::read(headers),
+            local,
         }
     }
 
@@ -129,11 +159,15 @@ impl Identity {
         self.owner_cookie || self.events_cookie
     }
 
-    /// The viewer the request speaks for: the owner's row for the owner,
-    /// else the cookie's viewer when it has a row.
+    /// The viewer the request speaks for: the owner's row for the owner
+    /// (made for a browser of the owner's when missing, never for the token
+    /// alone), else the cookie's viewer when it has a row.
     pub fn viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
+        if self.owner_browser() {
+            return st.owner_viewer(true).map(Some);
+        }
         if self.is_owner() {
-            return st.owner_viewer().map(Some);
+            return st.owner();
         }
         match &self.cookie {
             Some(c) => st.get_viewer(c),
@@ -152,11 +186,14 @@ impl Identity {
         }
     }
 
-    /// Like [`Identity::viewer`], creating the cookie's viewer row when it has
-    /// none yet; `None` only without any credential or cookie.
+    /// Like [`Identity::viewer`] for a request that acts (a comment, a
+    /// resolve, a seen mark): the owner's row is made when missing, for the
+    /// token alone too (the CLI acting before any browser; see
+    /// [`Store::owner_viewer`]), and the cookie's viewer row when it has none
+    /// yet. `None` only without any credential or cookie.
     pub fn ensure_viewer(&self, st: &Store) -> clax_core::Result<Option<Viewer>> {
         if self.is_owner() {
-            return st.owner_viewer().map(Some);
+            return st.owner_viewer(self.owner_browser()).map(Some);
         }
         match &self.cookie {
             Some(c) => st.upsert_viewer(c, None).map(Some),
@@ -168,7 +205,11 @@ impl Identity {
 impl FromRequestParts<AppState> for Identity {
     type Rejection = Infallible;
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Infallible> {
-        Ok(Identity::of(&parts.headers, &state.token))
+        Ok(Identity::of(
+            &parts.headers,
+            &state.token,
+            peer_of(&parts.extensions),
+        ))
     }
 }
 
@@ -187,6 +228,11 @@ mod tests {
         h
     }
 
+    const LOOPBACK: Option<std::net::SocketAddr> = Some(std::net::SocketAddr::new(
+        std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
+        50000,
+    ));
+
     #[test]
     fn the_owner_cookie_is_named_for_the_port_and_never_holds_the_token() {
         assert_eq!(owner_cookie_name("localhost:7480"), "clax_owner_7480");
@@ -198,20 +244,23 @@ mod tests {
         let id = Identity::of(
             &headers(&[("host", "localhost:7480"), ("cookie", &ok)]),
             "tok",
+            LOOPBACK,
         );
         assert!(id.is_owner() && id.owner_browser() && !id.token);
         // Another token, another port, or a request from another origin is no owner.
         assert!(
             !Identity::of(
                 &headers(&[("host", "localhost:7480"), ("cookie", &ok)]),
-                "x"
+                "x",
+                LOOPBACK
             )
             .is_owner()
         );
         assert!(
             !Identity::of(
                 &headers(&[("host", "localhost:7481"), ("cookie", &ok)]),
-                "tok"
+                "tok",
+                LOOPBACK
             )
             .is_owner()
         );
@@ -222,19 +271,52 @@ mod tests {
                     ("cookie", &ok),
                     ("sec-fetch-site", "same-site")
                 ]),
-                "tok"
+                "tok",
+                LOOPBACK
             )
             .is_owner()
         );
     }
 
     #[test]
-    fn the_token_is_the_owner_and_a_viewer_cookie_alone_is_not() {
-        let id = Identity::of(&headers(&[("authorization", "Bearer tok")]), "tok");
+    fn the_owner_and_events_cookies_count_only_from_this_machine() {
+        let owner = format!("clax_owner_7480={}", owner_cookie_value("tok"));
+        let events = format!(
+            "clax_events_7480={}",
+            crate::auth::events_cookie_value("tok")
+        );
+        let lan: Option<std::net::SocketAddr> = Some("192.168.1.20:50000".parse().unwrap());
+        for cookie in [&owner, &events] {
+            // A LAN peer replaying the cookie, with or without Sec-Fetch-Site.
+            for extra in [None, Some(("sec-fetch-site", "same-origin"))] {
+                let mut h = headers(&[("host", "localhost:7480"), ("cookie", cookie)]);
+                if let Some((k, v)) = extra {
+                    h.insert(k, v.parse().unwrap());
+                }
+                assert!(
+                    !Identity::of(&h, "tok", lan).is_owner(),
+                    "{cookie} {extra:?}"
+                );
+            }
+            // A loopback peer naming the LAN address as its Host.
+            let h = headers(&[("host", "192.168.1.20:7480"), ("cookie", cookie)]);
+            assert!(!Identity::of(&h, "tok", LOOPBACK).is_owner(), "{cookie}");
+            // No connection info at all.
+            let h = headers(&[("host", "localhost:7480"), ("cookie", cookie)]);
+            assert!(!Identity::of(&h, "tok", None).is_owner(), "{cookie}");
+            assert!(Identity::of(&h, "tok", LOOPBACK).is_owner(), "{cookie}");
+        }
+    }
+
+    #[test]
+    fn the_token_is_the_owner_from_anywhere_and_a_viewer_cookie_alone_is_not() {
+        let lan: Option<std::net::SocketAddr> = Some("192.168.1.20:50000".parse().unwrap());
+        let id = Identity::of(&headers(&[("authorization", "Bearer tok")]), "tok", lan);
         assert!(id.is_owner() && !id.owner_browser());
         let id = Identity::of(
             &headers(&[("cookie", "clax_viewer=01J9Z3K4M5N6P7Q8R9S0T1V2W3")]),
             "tok",
+            LOOPBACK,
         );
         assert!(!id.is_owner());
         assert_eq!(id.cookie.as_deref(), Some("01J9Z3K4M5N6P7Q8R9S0T1V2W3"));

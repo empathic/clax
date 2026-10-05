@@ -35,21 +35,30 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
     let minted = fresh.clone();
     let (before, viewer) = s
         .store_call(move |st| {
-            // Not the owner: the cookie's viewer, or the one just minted.
-            let id = if who.is_owner() {
-                st.owner_viewer()?.id
-            } else {
-                who.cookie.clone().or(minted).unwrap_or_default()
+            if who.is_owner() {
+                // The token alone reads the owner without making one.
+                let before = who.viewer(st)?;
+                let after = match &name {
+                    Some(n) => Some(st.set_owner_name(n, who.owner_browser())?),
+                    None => before.clone(),
+                };
+                return Ok((before.and_then(|v| v.display_name), after));
+            }
+            let id = match minted {
+                Some(m) => {
+                    st.mint_viewer(&m, who.local)?;
+                    m
+                }
+                None => who.cookie.clone().unwrap_or_default(),
             };
             let before = st.get_viewer(&id)?.and_then(|v| v.display_name);
-            Ok((before, st.upsert_viewer(&id, name.as_deref())?))
+            Ok((before, Some(st.upsert_viewer(&id, name.as_deref())?)))
         })
         .await?;
-    if before != viewer.display_name {
-        for aid in s
-            .presence
-            .rename(&viewer.public_id, viewer.display_name.as_deref())
-        {
+    if let Some(v) = &viewer
+        && before != v.display_name
+    {
+        for aid in s.presence.rename(&v.public_id, v.display_name.as_deref()) {
             crate::presence::announce(&s.events, &s.presence, &aid);
         }
     }
@@ -61,8 +70,10 @@ async fn respond(s: AppState, who: Identity, name: Option<String>) -> Result<Res
 }
 
 /// The viewer the request speaks for ([`Identity`]): the owner for an owner
-/// credential (the token, or the owner cookie of the owner's browsers), else
-/// the cookie's viewer, created (and its cookie set) on first contact.
+/// credential (the token, or the owner cookie of the owner's browsers; `null`
+/// for the token alone before the owner exists), else the cookie's viewer,
+/// created (and its cookie set, noting whether it was minted on this
+/// machine) on first contact.
 pub async fn me(
     State(s): State<AppState>,
     _o: SameOrigin,

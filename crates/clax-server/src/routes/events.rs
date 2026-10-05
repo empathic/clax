@@ -107,7 +107,7 @@ pub async fn events(
     headers: HeaderMap,
     who: crate::db_caller::Subscriber,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    let who = who.or_events_cookie(&headers, &s.token);
+    let who = who.or_events_cookie();
     // Resolved when the stream opens: a name set later takes effect on reconnect.
     let me = s
         .store_call(move |st| who.resolve(st))

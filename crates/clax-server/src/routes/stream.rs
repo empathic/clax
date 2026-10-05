@@ -30,9 +30,12 @@ use std::convert::Infallible;
 /// topic the client must refetch, and a `: keep-alive` comment every
 /// `AppState::sse_keep_alive` while idle. It ends when the daemon shuts down
 /// or a newer connection resumes the same stream.
-pub async fn open(State(s): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
-    let token = token_or_cookie(&headers, &s.token);
-    let who = crate::identity::Identity::of(&headers, &s.token);
+pub async fn open(
+    State(s): State<AppState>,
+    who: crate::identity::Identity,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let token = token_or_cookie(&headers, &s.token, &who);
     let caller = s
         .store_call(move |st| crate::db_caller::caller_of(st, token, &who))
         .await?;
@@ -65,12 +68,12 @@ pub async fn open(State(s): State<AppState>, headers: HeaderMap) -> Result<Respo
 /// cookie the shell's token request sets (scoped to `/api/events` and
 /// `/api/stream`), so the browser's stream never carries the token in a URL.
 /// Cookies ignore ports, so a page on another port of this host sends the
-/// cookie too: it counts only on a request the browser does not mark as
-/// made from another origin (`Sec-Fetch-Site`).
-fn token_or_cookie(headers: &HeaderMap, token: &str) -> bool {
-    has_token(headers, token)
-        || (!crate::viewer::fetched_from_elsewhere(headers)
-            && crate::auth::has_events_cookie(headers, token))
+/// cookie too: it counts only on a request from this machine that the
+/// browser does not mark as made from another origin ([`Identity::of`]).
+///
+/// [`Identity::of`]: crate::identity::Identity::of
+fn token_or_cookie(headers: &HeaderMap, token: &str, who: &crate::identity::Identity) -> bool {
+    has_token(headers, token) || who.events_cookie
 }
 
 /// Debug builds only: how many `/api/stream` streams the hub holds
@@ -123,6 +126,7 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 pub async fn update(
     State(s): State<AppState>,
     _o: SameOrigin,
+    who: crate::identity::Identity,
     p: Result<Path<String>, PathRejection>,
     headers: HeaderMap,
     req: Result<Json<UpdateBody>, JsonRejection>,
@@ -137,8 +141,7 @@ pub async fn update(
     }
     let add = topics(&b.subscribe)?;
     let remove = topics(&b.unsubscribe)?;
-    let token = token_or_cookie(&headers, &s.token);
-    let who = crate::identity::Identity::of(&headers, &s.token);
+    let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();
     let caller = s
         .store_call(move |st| {
