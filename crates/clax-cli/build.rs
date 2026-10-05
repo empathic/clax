@@ -13,6 +13,7 @@ const DIRS: &[&str] = &[
     "plugins/clax-grok",
     "plugins/pi/src",
     "plugins/pi/skills",
+    "plugins/pi/scripts",
 ];
 const FILES: &[&str] = &[
     "plugins/pi/package.json",

@@ -1,8 +1,9 @@
 //! `clax doctor --agent <harness>`: one check per layer between a harness
 //! and the daemon, so a partly working plugin says which layer failed.
 //!
-//! - `binary`: this `clax`, the one the plugins run (`$CLAX_BIN`, else the
-//!   first on `PATH`), and every `clax` on `PATH`.
+//! - `binary`: this `clax`, and the one the plugins run and why: `$CLAX_BIN`,
+//!   else the `bin` setting in config.toml, else the managed install of the
+//!   release the installed plugin pins ([`crate::plugin_bin::resolve`]).
 //! - `upgrade`: a failed upgrade that keeps the daemon at an older version.
 //! - `plugin`: the harness's installed copy of the plugin, and whether its
 //!   manifest version and launcher match this binary.
@@ -36,8 +37,7 @@ pub enum DoctorAgent {
 const HOOK_LINES: usize = 5;
 /// The Pi package's name, which identifies it among Pi's installed packages.
 const PI_PACKAGE: &str = "@empathic/clax-pi";
-/// The launcher this binary was built with; the plugins carry copies.
-const LAUNCHER: &str = include_str!("../../../../scripts/ensure-clax.sh");
+use crate::plugin_bin::{LAUNCHER, Resolution, version_line};
 
 impl DoctorAgent {
     /// The session `harness` name.
@@ -272,99 +272,31 @@ fn where_installed(agent: DoctorAgent, dirs: &Dirs) -> String {
     }
 }
 
-/// How long a `clax --version` on `PATH` may take.
-const VERSION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
-
-/// Every file named `clax` in the `PATH` value `path`, in order, with the
-/// first line of its `--version` when that names clax (and it answers
-/// within [`VERSION_TIMEOUT`]).
-pub fn clax_on_path(path: &std::ffi::OsStr) -> Vec<(PathBuf, Option<String>)> {
-    std::env::split_paths(path)
-        .map(|d| d.join("clax"))
-        .filter(|p| p.is_file())
-        .map(|p| {
-            let v = version_line(&p).filter(|l| l.starts_with("clax "));
-            (p, v)
-        })
-        .collect()
-}
-
-/// The first line `exe --version` prints, or None when it cannot run or
-/// takes longer than [`VERSION_TIMEOUT`] (it is then killed).
-fn version_line(exe: &Path) -> Option<String> {
-    use std::io::Read;
-    use std::process::{Command, Stdio};
-    let mut child = Command::new(exe)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
-    let deadline = std::time::Instant::now() + VERSION_TIMEOUT;
-    loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            Ok(None) if std::time::Instant::now() < deadline => {
-                std::thread::sleep(std::time::Duration::from_millis(10))
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    }
-    let mut out = String::new();
-    child.stdout.take()?.read_to_string(&mut out).ok()?;
-    out.lines().next().map(str::to_string)
-}
-
-/// `binary`: this executable and its version, the binary the plugins'
-/// wrapper runs (`$CLAX_BIN`, else the first clax on `PATH`), and every
-/// clax on `PATH`; failed when the wrapper runs none, or another one.
-pub fn binary_check(
-    exe: &Path,
-    version: &str,
-    clax_bin: Option<&str>,
-    on_path: &[(PathBuf, Option<String>)],
-) -> Value {
+/// `binary`: this executable and its version, and what the plugins'
+/// wrapper runs (`r`, resolved with the release `pin` names) and why;
+/// failed when the wrapper would run nothing.
+pub fn binary_check(exe: &Path, version: &str, r: &Resolution, pin: Option<&str>) -> Value {
     let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let runs: Option<(PathBuf, String)> = match clax_bin.filter(|b| !b.is_empty()) {
-        Some(b) => Some((PathBuf::from(b), "from CLAX_BIN".into())),
-        None => on_path
-            .iter()
-            .find_map(|(p, v)| v.as_ref().map(|v| (p.clone(), v.clone()))),
-    };
-    let mut lines = vec![format!("this clax: {} (clax {version})", exe.display())];
-    let ok = match &runs {
-        Some((p, v)) => {
-            lines.push(format!("the plugins run: {} ({v})", p.display()));
-            canon(p) == canon(exe)
-        }
-        None => {
-            lines.push("the plugins run: nothing (no clax on PATH)".into());
-            false
-        }
-    };
-    let listed: Vec<String> = on_path
-        .iter()
-        .map(|(p, v)| format!("{} ({})", p.display(), v.as_deref().unwrap_or("not clax")))
-        .collect();
-    lines.push(format!(
-        "on PATH, in order: {}",
-        if listed.is_empty() {
-            "none".to_string()
-        } else {
-            listed.join("; ")
-        }
-    ));
-    if !ok {
-        lines.push(
-            "the plugins run another clax than this one, or none: run `just install` in your Clax checkout (or install.sh), and put its directory first on the PATH your harness starts with".into(),
-        );
+    let mut lines = vec![
+        format!("this clax: {} (clax {version})", exe.display()),
+        format!("the plugins run: {}", r.line()),
+        format!(
+            "the release the plugin pins: {}",
+            pin.unwrap_or("none")
+        ),
+    ];
+    if r.ok
+        && let Some(p) = &r.path
+        && !r.pending
+        && canon(p) != canon(exe)
+        && r.version.as_deref() != Some(&format!("clax {version}"))
+    {
+        lines.push(format!(
+            "note: the plugins run {}, not this clax {version}; `clax bin set --this` makes them run this one",
+            r.version.as_deref().unwrap_or("another version")
+        ));
     }
-    check("binary", ok, lines.join("\n"))
+    check("binary", r.ok, lines.join("\n"))
 }
 
 /// `upgrade`: no failed upgrade keeps the running daemon (of version
@@ -779,24 +711,26 @@ pub fn channel_check(root: Option<&Path>, home: &Home) -> Value {
 pub fn checks(agent: DoctorAgent, home: &Home, client: Option<&Client>) -> Vec<Value> {
     let version = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe().unwrap_or_default();
-    let on_path = clax_on_path(&std::env::var_os("PATH").unwrap_or_default());
+    let dirs = Dirs::from_env(|k| std::env::var(k).ok());
+    let (plugin, plugin_root) = match &dirs {
+        Some(dirs) => plugin_check(agent, dirs, version),
+        None => (check("plugin", false, "HOME is not set"), None),
+    };
+    // The pin of the installed plugin's wrapper, else of the one built in.
+    let launcher = plugin_root
+        .as_ref()
+        .and_then(|r| std::fs::read_to_string(r.join("scripts/ensure-clax.sh")).ok())
+        .unwrap_or_else(|| LAUNCHER.to_string());
+    let pin = crate::plugin_bin::pinned_version(&launcher);
     let clax_bin = std::env::var("CLAX_BIN").ok();
-    let mut out = vec![binary_check(&exe, version, clax_bin.as_deref(), &on_path)];
+    let r = crate::plugin_bin::resolve(home, clax_bin.as_deref(), pin.as_deref());
+    let mut out = vec![binary_check(&exe, version, &r, pin.as_deref())];
     out.push(upgrade_check(home, client.map(|c| c.info.version.as_str())));
-    // The installed plugin's root; `None` when HOME is unset.
-    let mut plugin_root: Option<PathBuf> = None;
-    match Dirs::from_env(|k| std::env::var(k).ok()) {
-        Some(dirs) => {
-            let (plugin, root) = plugin_check(agent, &dirs, version);
-            out.push(plugin);
-            out.push(skill_check(agent, root.as_deref(), ClaxTools::tool_count()));
-            plugin_root = root;
-        }
-        None => {
-            out.push(check("plugin", false, "HOME is not set"));
-            out.push(check("skill", false, "HOME is not set"));
-        }
-    }
+    out.push(plugin);
+    out.push(match &dirs {
+        Some(_) => skill_check(agent, plugin_root.as_deref(), ClaxTools::tool_count()),
+        None => check("skill", false, "HOME is not set"),
+    });
     let sessions = live_sessions(client, agent);
     out.push(mcp_check(agent, &sessions));
     out.push(hooks_check(agent, home));
@@ -1438,100 +1372,45 @@ mod tests {
     }
 
     #[test]
-    fn clax_on_path_lists_every_clax_in_order() {
+    fn binary_reports_what_the_plugins_run_and_fails_only_when_nothing() {
         let t = tempfile::tempdir().unwrap();
-        let a = fake_clax(&t.path().join("a"), "other 1.0");
-        let b = fake_clax(&t.path().join("b"), "clax 0.3.0");
-        let path = std::env::join_paths([
-            t.path().join("a"),
-            t.path().join("none"),
-            t.path().join("b"),
-        ])
-        .unwrap();
-        let found = clax_on_path(&path);
-        assert_eq!(found.len(), 2);
-        assert_eq!(
-            (found[0].0.canonicalize().unwrap(), found[0].1.clone()),
-            (a, None)
-        );
-        assert_eq!(
-            (found[1].0.canonicalize().unwrap(), found[1].1.clone()),
-            (b, Some("clax 0.3.0".into()))
-        );
-    }
-
-    #[test]
-    fn a_clax_on_path_that_hangs_is_listed_without_a_version() {
-        use std::os::unix::fs::PermissionsExt;
-        let t = tempfile::tempdir().unwrap();
-        let p = t.path().join("clax");
-        std::fs::write(&p, "#!/bin/sh\nexec sleep 30\n").unwrap();
-        std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let started = std::time::Instant::now();
-        let found = clax_on_path(t.path().as_os_str());
-        assert!(started.elapsed() < VERSION_TIMEOUT + std::time::Duration::from_secs(2));
-        assert_eq!(found, vec![(p, None)]);
-    }
-
-    #[test]
-    fn binary_passes_when_the_plugins_run_this_clax() {
-        let t = tempfile::tempdir().unwrap();
+        let home = Home::at(t.path().join("ch"));
         let me = fake_clax(&t.path().join("me"), "clax 0.3.0");
         let other = fake_clax(&t.path().join("other"), "clax 0.2.0");
-        let v = binary_check(
-            &me,
-            "0.3.0",
-            None,
-            &[
-                (me.clone(), Some("clax 0.3.0".into())),
-                (other.clone(), Some("clax 0.2.0".into())),
-            ],
-        );
+
+        let r = crate::plugin_bin::resolve(&home, None, None);
+        let v = binary_check(&me, "0.3.0", &r, None);
+        assert_eq!(v["ok"], false, "{v}");
+        let d = v["detail"].as_str().unwrap();
+        assert!(d.contains("the plugins run: nothing: the plugin pins no Clax release"), "{d}");
+        assert!(d.contains("`clax bin set --this`"), "{d}");
+
+        let r = crate::plugin_bin::resolve(&home, None, Some("0.3.0"));
+        let v = binary_check(&me, "0.3.0", &r, Some("0.3.0"));
+        assert_eq!(v["ok"], true, "{v}");
+        let d = v["detail"].as_str().unwrap();
+        assert!(d.contains("not installed yet") && d.contains("downloads and installs it"), "{d}");
+        assert!(d.contains("the release the plugin pins: 0.3.0"), "{d}");
+
+        crate::plugin_bin::set(&home, &other).unwrap();
+        let r = crate::plugin_bin::resolve(&home, None, Some("0.3.0"));
+        let v = binary_check(&me, "0.3.0", &r, Some("0.3.0"));
         assert_eq!(v["ok"], true, "{v}");
         let d = v["detail"].as_str().unwrap();
         assert!(
-            d.contains(&format!("the plugins run: {} (clax 0.3.0)", me.display())),
+            d.contains(&format!("the plugins run: {} (clax 0.2.0), from the bin setting", other.display())),
             "{d}"
         );
-        assert!(
-            d.contains(&format!("{} (clax 0.2.0)", other.display())),
-            "{d}"
-        );
-    }
+        assert!(d.contains("note: the plugins run clax 0.2.0, not this clax 0.3.0"), "{d}");
 
-    #[test]
-    fn binary_fails_when_another_clax_comes_first_or_none_is_on_path() {
-        let t = tempfile::tempdir().unwrap();
-        let me = fake_clax(&t.path().join("me"), "clax 0.3.0");
-        let first = fake_clax(&t.path().join("first"), "clax 0.2.0");
-        let v = binary_check(
-            &me,
-            "0.3.0",
-            None,
-            &[
-                (first.clone(), Some("clax 0.2.0".into())),
-                (me.clone(), Some("clax 0.3.0".into())),
-            ],
-        );
-        assert_eq!(v["ok"], false);
-        assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("the plugins run another clax than this one"),
-            "{v}"
-        );
-        let v = binary_check(&me, "0.3.0", None, &[]);
-        assert_eq!(v["ok"], false);
-        assert!(
-            v["detail"]
-                .as_str()
-                .unwrap()
-                .contains("the plugins run: nothing (no clax on PATH)"),
-            "{v}"
-        );
-        let v = binary_check(&me, "0.3.0", Some(me.to_str().unwrap()), &[]);
-        assert_eq!(v["ok"], true, "CLAX_BIN names this binary: {v}");
+        let r = crate::plugin_bin::resolve(&home, Some(me.to_str().unwrap()), None);
+        let v = binary_check(&me, "0.3.0", &r, None);
+        assert_eq!(v["ok"], true, "{v}");
+        assert!(v["detail"].as_str().unwrap().contains("from CLAX_BIN"), "{v}");
+        assert!(!v["detail"].as_str().unwrap().contains("note:"), "{v}");
+
+        let r = crate::plugin_bin::resolve(&home, Some("/no/such/clax"), None);
+        assert_eq!(binary_check(&me, "0.3.0", &r, None)["ok"], false);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 pub mod asset;
+pub mod bin;
 pub mod delete;
 pub mod doctor;
 pub mod doctor_agent;

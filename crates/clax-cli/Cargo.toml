@@ -31,6 +31,7 @@ semver.workspace = true
 tracing.workspace = true
 rust-embed.workspace = true
 toml.workspace = true
+sha2 = "0.11"
 
 [dev-dependencies]
 assert_cmd.workspace = true

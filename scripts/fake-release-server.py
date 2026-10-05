@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""A stand-in for GitHub release downloads, for scripts/test-install.sh.
+"""A stand-in for GitHub release downloads, for scripts/test-install.sh,
+scripts/test-ensure-clax.sh and scripts/test-release.sh.
 
 Usage: fake-release-server.py <root> <request log> <port file>
 
@@ -10,6 +11,8 @@ Serves <root>/good/<path> at /<mode>/<path> and <root>/wrong/<path> at
   badsum   SHA256SUMS with every checksum zeroed
   partial  archives: the full Content-Length, half the body, then a close
   slow     waits 60 s before answering
+  gate     waits until the file <root>/gate-open exists (at most 60 s), then
+           answers as ok does
   wrong    the files under <root>/wrong
 Binds 127.0.0.1 on a port the kernel picks and writes it to <port file>.
 """
@@ -52,6 +55,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = os.path.join(ROOT, tree, rest)
         if mode == "slow":
             time.sleep(60)
+        if mode == "gate":
+            deadline = time.time() + 60
+            while not os.path.exists(os.path.join(ROOT, "gate-open")) and time.time() < deadline:
+                time.sleep(0.05)
         if ".." in rest or not os.path.isfile(path):
             self.send_error(404)
             return

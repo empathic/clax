@@ -1198,12 +1198,12 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
     assert!(detail.contains(env!("CARGO_PKG_VERSION")), "{detail}");
     assert!(
         detail.contains(&format!(
-            "the plugins run: {} (from CLAX_BIN)",
-            env!("CARGO_BIN_EXE_clax")
+            "the plugins run: {} (clax {}), from CLAX_BIN",
+            env!("CARGO_BIN_EXE_clax"),
+            env!("CARGO_PKG_VERSION")
         )),
         "{detail}"
     );
-    assert!(detail.contains("on PATH, in order: none"), "{detail}");
     assert_eq!(by_name("upgrade")["ok"], true);
     let plugin = by_name("plugin");
     assert_eq!(plugin["ok"], true, "{plugin}");
@@ -1247,8 +1247,12 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
         assert!(checks.iter().all(|c| c.get(n).is_some()), "{n}");
     }
 
-    // Every harness is accepted; the text form names each layer.
-    // Without CLAX_BIN or a clax on PATH, the plugins run nothing.
+    // Every harness is accepted; the text form names each layer. Without
+    // CLAX_BIN or the bin setting, the plugins run the release they pin, or
+    // nothing while none is pinned; a clax on PATH is never theirs.
+    let pinned = include_str!("../../../scripts/ensure-clax.sh")
+        .lines()
+        .any(|l| l.starts_with("PINNED_VERSION=\"") && l != "PINNED_VERSION=\"\"");
     for agent in ["claude", "pi"] {
         let out = e
             .cmd()
@@ -1258,11 +1262,18 @@ fn doctor_agent_checks_each_layer_of_the_integration() {
             .output()
             .unwrap();
         let text = String::from_utf8(out.stdout).unwrap();
-        assert!(
-            text.contains("FAIL binary")
-                && text.contains("the plugins run: nothing (no clax on PATH)"),
-            "{text}"
-        );
+        if pinned {
+            assert!(
+                text.contains("ok   binary") && text.contains("the managed install of clax"),
+                "{text}"
+            );
+        } else {
+            assert!(
+                text.contains("FAIL binary")
+                    && text.contains("the plugins run: nothing: the plugin pins no Clax release"),
+                "{text}"
+            );
+        }
         for n in [
             "binary", "upgrade", "plugin", "skill", "mcp", "hooks", "feedback",
         ] {

@@ -4,6 +4,7 @@ mod client;
 mod commands;
 mod hooklog;
 mod host;
+mod plugin_bin;
 mod plugins;
 
 use clap::error::ErrorKind;
@@ -79,6 +80,15 @@ pub enum Cmd {
     /// The copy is kept while any harness's registry still names it or
     /// cannot be read. The same known miss as `init` applies.
     Uninit(commands::init::Args),
+    /// Show or set which clax binary the plugins run.
+    ///
+    /// The plugins run, in order: $CLAX_BIN; the `bin` setting in the
+    /// home's config.toml (`clax bin set`); else the Clax release they pin,
+    /// which they download into <home>/bin/<version> on first use.
+    Bin {
+        #[command(subcommand)]
+        cmd: Option<commands::bin::Cmd>,
+    },
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
 }
@@ -179,6 +189,7 @@ fn main() {
         Cmd::Feedback(c) => commands::feedback::run(&cli, &home, c),
         Cmd::Init(a) => commands::init::init(&cli, &home, a),
         Cmd::Uninit(a) => commands::init::uninit(&cli, &home, a),
+        Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Haiku => commands::haiku::run(&cli),
     };
     if let Err(e) = result {

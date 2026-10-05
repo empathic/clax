@@ -27,6 +27,7 @@ plugin_dir!(Codex, "../../plugins/clax/", "clax/");
 plugin_dir!(Grok, "../../plugins/clax-grok/", "clax-grok/");
 plugin_dir!(PiSrc, "../../plugins/pi/src/", "pi/src/");
 plugin_dir!(PiSkills, "../../plugins/pi/skills/", "pi/skills/");
+plugin_dir!(PiScripts, "../../plugins/pi/scripts/", "pi/scripts/");
 
 const CLAUDE_MARKETPLACE: &str = include_str!("../../../.claude-plugin/marketplace.json");
 const CODEX_MARKETPLACE: &str = include_str!("../../../.agents/plugins/marketplace.json");
@@ -65,6 +66,7 @@ pub fn files() -> Vec<(String, Vec<u8>)> {
     out.extend(embedded::<Grok>());
     out.extend(embedded::<PiSrc>());
     out.extend(embedded::<PiSkills>());
+    out.extend(embedded::<PiScripts>());
     out.sort();
     out
 }

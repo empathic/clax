@@ -18,6 +18,11 @@
 //! missing or unreadable is left registered and named in the output, with
 //! the command that removes it.
 //!
+//! `init` also sets the home's `bin` setting to this executable
+//! ([`crate::plugin_bin::set`]), so the plugins it registers, which match
+//! this binary, run it rather than the release they pin; `uninit` removes
+//! the setting when it names this executable.
+//!
 //! Clax's data is never touched, nor the previous name's home. Both
 //! commands hold `<home>/init.lock` throughout, and run each harness CLI in
 //! the home directory, so a project's own harness settings in the caller's
@@ -514,24 +519,28 @@ fn run_steps(h: &Harness, ctx: &Ctx, actions: Actions, done: &str) -> Value {
     json!({"agent": h.name, "status": status, "detail": notes.join("\n"), "commands": commands})
 }
 
-/// Warns on stderr when the first `clax` on `PATH`, which the plugins run,
-/// is not this executable.
-fn warn_unless_first_on_path() {
-    let first = super::doctor_agent::clax_on_path(&std::env::var_os("PATH").unwrap_or_default())
-        .into_iter()
-        .find(|(_, v)| v.is_some())
-        .map(|(p, _)| p);
-    let me = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.canonicalize().ok());
-    if first.as_ref().and_then(|p| p.canonicalize().ok()) != me {
-        eprintln!(
-            "warning: the plugins run the first clax on PATH, which is {}, not this one ({}); put this one's directory first on PATH",
-            first
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|| "none".into()),
-            me.map(|p| p.display().to_string()).unwrap_or_default()
-        );
+/// `init`: sets the `bin` setting to this executable. `uninit`: removes it
+/// when it names this executable. The outcome as JSON; a failure is
+/// reported there, never fatal.
+fn update_bin_setting(home: &Home, install: bool) -> Value {
+    let me = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            return json!({"status": "failed", "detail": format!("finding this executable: {e}")});
+        }
+    };
+    if install {
+        return match crate::plugin_bin::set(home, &me) {
+            Ok(_) => json!({"status": "set", "detail": me}),
+            Err(e) => json!({"status": "failed", "detail": format!("{e:#}; the plugins run the release they pin unless CLAX_BIN names a binary")}),
+        };
+    }
+    if crate::plugin_bin::current(home).as_deref() != me.to_str() {
+        return json!({"status": "kept", "detail": "it does not name this executable"});
+    }
+    match crate::plugin_bin::clear(home) {
+        Ok(_) => json!({"status": "cleared", "detail": me}),
+        Err(e) => json!({"status": "failed", "detail": format!("{e:#}")}),
     }
 }
 
@@ -683,8 +692,12 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         remove_marketplace_unless_used(&ctx, &root)?
     };
     let failed = results.iter().any(|r| r["status"] == "failed");
-    let out =
-        json!({"marketplace": root, "marketplace_detail": marketplace_detail, "agents": results});
+    let bin = if has_home {
+        update_bin_setting(home, install)
+    } else {
+        json!({"status": "kept", "detail": "there is no Clax home"})
+    };
+    let out = json!({"marketplace": root, "marketplace_detail": marketplace_detail, "agents": results, "bin": bin});
     super::print(cli, out, |j| {
         let mut m = format!(
             "marketplace: {}",
@@ -705,14 +718,16 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
             }
             lines.push(l);
         }
+        lines.push(format!(
+            "bin setting: {} ({})",
+            j["bin"]["status"].as_str().unwrap_or_default(),
+            j["bin"]["detail"].as_str().unwrap_or_default()
+        ));
         if install {
             lines.push("Start a new session in each harness to load the plugin.".into());
         }
         lines.join("\n")
     });
-    if install {
-        warn_unless_first_on_path();
-    }
     if failed {
         anyhow::bail!(
             "a harness could not be {}",
