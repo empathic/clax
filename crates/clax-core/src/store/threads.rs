@@ -93,6 +93,10 @@ pub(crate) const THREAD_STATUSES: &str = "SELECT t.id, t.status FROM json_each(?
 pub(crate) const ADDRESSED_IN_MANY: &str = "SELECT vt.thread_id, vt.version_n FROM json_each(?1) j
     CROSS JOIN version_threads vt ON vt.thread_id = j.value
     ORDER BY vt.thread_id, vt.version_n";
+/// The pending address of each thread of `?1` (a JSON array): harness and time.
+pub(crate) const PENDING_OF_MANY: &str =
+    "SELECT lp.thread_id, lp.harness, lp.created_at FROM json_each(?1) j
+    CROSS JOIN live_pending lp ON lp.thread_id = j.value";
 /// The batches that sent each thread of `?1` (a JSON array), oldest first.
 pub(crate) const SENDS_OF_MANY: &str =
     "SELECT bt.thread_id, b.id, b.size, b.note, b.sent_by, b.created_at
@@ -121,6 +125,9 @@ pub struct ThreadExtras {
     pub addressed_in: Vec<u32>,
     pub sends: Vec<ThreadSend>,
     pub resolved_by_name: Option<String>,
+    /// A live page's address waiting for its next snapshot: the addressing
+    /// agent's harness and when ([`Store::mark_pending`]).
+    pub addressed_pending: Option<(String, String)>,
 }
 
 struct ThreadRow {
@@ -592,6 +599,13 @@ impl Store {
                 });
             }
             drop(rows);
+            let mut pending: HashMap<String, (String, String)> = HashMap::new();
+            let mut stmt = c.prepare_cached(PENDING_OF_MANY)?;
+            let mut rows = stmt.query(params![arr])?;
+            while let Some(r) = rows.next()? {
+                pending.insert(r.get(0)?, (r.get(1)?, r.get(2)?));
+            }
+            drop(rows);
             let mut names: HashMap<String, Option<String>> = HashMap::new();
             if !resolvers.is_empty() {
                 let mut stmt = c.prepare_cached(NAMES_OF_MANY)?;
@@ -611,6 +625,7 @@ impl Store {
                         .as_deref()
                         .and_then(|by| by.strip_prefix("viewer:"))
                         .and_then(|p| names.get(p).cloned().flatten()),
+                    addressed_pending: pending.remove(&t.id),
                 })
                 .collect())
         })
@@ -710,6 +725,7 @@ impl Store {
                     .collect::<rusqlite::Result<std::collections::BTreeSet<_>>>()?
             };
             tx.execute("DELETE FROM version_threads WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM live_pending WHERE thread_id = ?1", params![thread_id])?;
             tx.execute(
                 "DELETE FROM mentions WHERE comment_id IN (SELECT id FROM comments WHERE thread_id = ?1)",
                 params![thread_id],

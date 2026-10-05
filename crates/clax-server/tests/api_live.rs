@@ -802,3 +802,339 @@ async fn loopback_and_unspecified_addresses_on_the_daemons_port_are_its_own() {
         201
     );
 }
+
+/// A live page with one thread, sent to a `claude` session watching it.
+async fn sent_live_thread(ts: &TestServer) -> (String, String, String) {
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(
+        ts,
+        &v.cookie,
+        "http://localhost:5173/",
+        "<!doctype html><p>v1</p>",
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap().to_string();
+    let tid = body["thread"]["id"].as_str().unwrap().to_string();
+    let s = ts.register_session("claude", "live-1").await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/watches/{aid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    ts.send_thread(&aid, &tid).await;
+    (aid, tid, sid)
+}
+
+async fn agent_reply(
+    ts: &TestServer,
+    aid: &str,
+    tid: &str,
+    sid: &str,
+    addressed: bool,
+) -> reqwest::Response {
+    ts.authed(ts.client.post(format!(
+        "{}/api/artifacts/{aid}/threads/{tid}/comments",
+        ts.base
+    )))
+    .header("x-clax-session", sid)
+    .json(&json!({"body": "Fixed", "author_kind": "agent", "addressed": addressed}))
+    .send()
+    .await
+    .unwrap()
+}
+
+async fn post_snapshot(ts: &TestServer, cookie: &str, html: &str) -> reqwest::Response {
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("title", "Home")
+        .text("snapshot", html.to_string());
+    ts.client
+        .post(format!("{}/api/live/snapshots", ts.base))
+        .header("cookie", format!("clax_viewer={cookie}"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn an_addressed_reply_waits_for_the_next_snapshot_and_links_to_it() {
+    let ts = TestServer::spawn().await;
+    let (aid, tid, sid) = sent_live_thread(&ts).await;
+    let v = ts.viewer(Some("Mia")).await;
+    assert_eq!(
+        post_snapshot(&ts, &v.cookie, "<p>x").await.status(),
+        409,
+        "nothing pending yet"
+    );
+    let res = agent_reply(&ts, &aid, &tid, &sid, true).await;
+    assert_eq!(res.status(), 201);
+    let body: Value = res.json().await.unwrap();
+    assert_eq!(body["addressed"], "pending");
+    assert_eq!(body["thread"]["addressed_pending"]["harness"], "claude");
+    let snap: Value = post_snapshot(&ts, &v.cookie, "<!doctype html><p>v1</p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        snap["version"], 2,
+        "a snapshot after an address is a version even when identical"
+    );
+    assert_eq!(snap["linked"], json!([tid]));
+    let t: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["thread"]["addressed_in"], json!([2]));
+    assert!(t["thread"]["addressed_pending"].is_null());
+    assert_eq!(
+        post_snapshot(&ts, &v.cookie, "<p>y").await.status(),
+        409,
+        "the address was used up"
+    );
+}
+
+#[tokio::test]
+async fn a_comment_snapshot_also_links_pending_addresses() {
+    let ts = TestServer::spawn().await;
+    let (aid, tid, sid) = sent_live_thread(&ts).await;
+    agent_reply(&ts, &aid, &tid, &sid, true).await;
+    let v = ts.viewer(Some("Mia")).await;
+    let body: Value = post_thread(
+        &ts,
+        &v.cookie,
+        "http://localhost:5173/",
+        "<!doctype html><p>v2</p>",
+    )
+    .await
+    .json()
+    .await
+    .unwrap();
+    assert_eq!(body["version"], 2);
+    let t: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(t["thread"]["addressed_in"], json!([2]));
+}
+
+#[tokio::test]
+async fn an_agent_resolve_on_a_live_page_is_pending_too() {
+    let ts = TestServer::spawn().await;
+    let (aid, tid, sid) = sent_live_thread(&ts).await;
+    let res = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/resolve",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .json(&json!({"as": "agent"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    let t: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        t["thread"]["addressed_in"],
+        json!([]),
+        "not linked to the current version"
+    );
+    assert_eq!(t["thread"]["addressed_pending"]["harness"], "claude");
+}
+
+#[tokio::test]
+async fn addressed_is_refused_on_html_artifacts_and_for_viewers() {
+    let ts = TestServer::spawn().await;
+    let s = ts.register_session("claude", "h-1").await;
+    let sid = s["id"].as_str().unwrap();
+    let a = ts.publish_as(sid, "T", "<p>").await;
+    let aid = a["artifact"]["id"].as_str().unwrap();
+    let t = ts.thread(aid, 1, "x").await;
+    let tid = t["id"].as_str().unwrap();
+    ts.send_thread(aid, tid).await;
+    let res = agent_reply(&ts, aid, tid, sid, true).await;
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "invalid_args"
+    );
+    let v = ts.viewer(Some("Alex")).await;
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}/comments",
+            ts.base
+        ))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .json(&json!({"body": "x", "addressed": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let got: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        got["thread"]["comments"].as_array().unwrap().len(),
+        1,
+        "nothing was written"
+    );
+    assert!(got["thread"]["addressed_pending"].is_null());
+}
+
+#[tokio::test]
+async fn deleting_an_addressed_thread_drops_its_pending_address() {
+    let ts = TestServer::spawn().await;
+    let (aid, tid, sid) = sent_live_thread(&ts).await;
+    assert_eq!(agent_reply(&ts, &aid, &tid, &sid, true).await.status(), 201);
+    let res = ts
+        .authed(ts.client.delete(format!(
+            "{}/api/artifacts/{aid}/threads/{tid}?as=agent",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(
+        ts.get(&format!("/api/artifacts/{aid}/threads/{tid}"))
+            .await
+            .status(),
+        404
+    );
+    let v = ts.viewer(Some("Mia")).await;
+    assert_eq!(
+        post_snapshot(&ts, &v.cookie, "<p>x").await.status(),
+        409,
+        "no address is left waiting"
+    );
+}
+
+#[tokio::test]
+async fn a_live_page_takes_no_asset_uploads() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    let form = reqwest::multipart::Form::new().part(
+        "file",
+        reqwest::multipart::Part::bytes(FAKE_PNG.to_vec())
+            .file_name("a.png")
+            .mime_str("image/png")
+            .unwrap(),
+    );
+    let res = ts
+        .authed(
+            ts.client
+                .post(format!("{}/api/artifacts/{aid}/assets", ts.base)),
+        )
+        .multipart(form)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "live_page"
+    );
+    let list: Value = ts
+        .get(&format!("/api/artifacts/{aid}/assets"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(list["assets"], json!([]));
+}
+
+#[tokio::test]
+async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
+    let mut store = None;
+    let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |s| {
+        store = Some(s.store.clone());
+    })
+    .await;
+    let store = store.unwrap();
+    let Some(lan) = lan_base(&ts) else {
+        eprintln!("no LAN address; skipped");
+        return;
+    };
+    let v = ts.viewer(Some("Alex")).await;
+    let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = body["page"]["artifact_id"].as_str().unwrap();
+    // The upload route refuses live pages; an asset written some other way
+    // (an older daemon, a hand-edited store) stays hidden all the same.
+    let asset = store
+        .add_asset(
+            &clax_core::ArtifactId::parse(aid).unwrap(),
+            "image/png",
+            FAKE_PNG,
+        )
+        .unwrap();
+    let blob = format!("/_blob/{}", asset.id);
+    let lan_get = |path: String| ts.client.get(format!("{lan}{path}")).send();
+    assert_eq!(lan_get(blob.clone()).await.unwrap().status(), 404);
+    assert_eq!(ts.get(&blob).await.status(), 200, "loopback sees it");
+    let st = ts
+        .authed(ts.client.get(format!("{lan}{blob}")))
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 200, "the token from the LAN sees it");
+    let form = reqwest::multipart::Form::new()
+        .text("url", "http://localhost:5173/")
+        .text("snapshot", "<p>");
+    let st = ts
+        .client
+        .post(format!("{lan}/api/live/snapshots"))
+        .multipart(form)
+        .send()
+        .await
+        .unwrap()
+        .status();
+    assert_eq!(st, 404);
+    // An HTML artifact's blob stays visible from the LAN.
+    let html = ts.publish("T", &[("index.html", "<p>")]).await;
+    let hid = html["artifact"]["id"].as_str().unwrap();
+    let a = store
+        .add_asset(
+            &clax_core::ArtifactId::parse(hid).unwrap(),
+            "image/png",
+            FAKE_PNG,
+        )
+        .unwrap();
+    assert_eq!(
+        lan_get(format!("/_blob/{}", a.id)).await.unwrap().status(),
+        200
+    );
+}

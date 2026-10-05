@@ -95,6 +95,7 @@ const CommentsReplyArgs = Type.Object({
   url_or_id: urlOrId,
   thread_id: threadId("The thread to reply to."),
   text: str("The reply, shown to the person under its harness's name, such as `claude`."),
+  addressed: opt(Type.Boolean({ description: "On a live page: the page now shows the fix, so the thread is listed as addressed in the page's next snapshot. Not for artifacts (publish with `addresses` instead)." })),
 }, strict);
 
 const CommentsResolveArgs = Type.Object({ url_or_id: urlOrId, thread_id: threadId("The thread to resolve.") }, strict);
@@ -884,10 +885,11 @@ class Tools {
     checkThreadId(a.thread_id);
     if (!a.text.trim()) throw invalid("text must not be empty");
     const c = this.clientFor(ctx);
-    const r = await this.call(() => c.reply(id, a.thread_id, a.text));
-    return typeof r.guidance === "string"
-      ? { thread_id: a.thread_id, replied: false, guidance: r.guidance }
-      : { thread_id: a.thread_id, replied: true, comment_id: r.comment?.id ?? null };
+    const r = await this.call(() => c.reply(id, a.thread_id, a.text, a.addressed ?? false));
+    if (typeof r.guidance === "string") return { thread_id: a.thread_id, replied: false, guidance: r.guidance };
+    const out: Json = { thread_id: a.thread_id, replied: true, comment_id: r.comment?.id ?? null };
+    if (r.addressed !== undefined) out.addressed = r.addressed;
+    return out;
   }
 
   async commentsResolve(ctx: ExtensionContext, a: Static<typeof CommentsResolveArgs>): Promise<Json> {
@@ -1224,7 +1226,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Read the comment threads on a Clax artifact, with anchors and screenshot clips",
       CommentsReadArgs, (ctx, a) => tools.commentsRead(ctx, a));
     define("comments_reply", "Clax comments reply",
-      "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written.",
+      "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix.",
       "Reply to a Clax comment thread that was sent to you",
       CommentsReplyArgs, (ctx, a) => tools.commentsReply(ctx, a));
     define("comments_resolve", "Clax comments resolve",

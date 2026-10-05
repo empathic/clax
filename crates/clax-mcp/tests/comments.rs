@@ -240,6 +240,7 @@ async fn reply_and_resolve_follow_the_sent_rule() {
             url_or_id: aid.clone(),
             thread_id: plain.clone(),
             text: "ok".into(),
+            addressed: None,
         }))
         .await
         .unwrap(),
@@ -260,6 +261,7 @@ async fn reply_and_resolve_follow_the_sent_rule() {
             url_or_id: aid.clone(),
             thread_id: sent.clone(),
             text: "Fixed.".into(),
+            addressed: None,
         }))
         .await
         .unwrap(),
@@ -302,6 +304,7 @@ async fn reply_and_resolve_follow_the_sent_rule() {
             url_or_id: aid,
             thread_id: "../../x".into(),
             text: "x".into(),
+            addressed: None,
         }))
         .await
         .unwrap();
@@ -538,6 +541,7 @@ async fn pending_feedback_does_not_attach_to_an_error_result() {
             url_or_id: aid,
             thread_id: "nope".into(),
             text: "x".into(),
+            addressed: None,
         }))
         .await
         .unwrap();
@@ -780,4 +784,38 @@ async fn a_batch_piggybacks_as_one_group_on_the_next_tool_result() {
     assert_eq!(v["feedback"][0]["batch"]["size"], 2);
     let text = trailing.unwrap();
     assert!(text.starts_with("---\n[clax] 2 comments sent to you:\n[clax] 2 comments on \"Batch\", sent together by Viewer.\n"), "{text}");
+}
+
+#[tokio::test]
+async fn addressed_is_refused_on_an_html_artifact() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    let aid = publish(&t).await;
+    let sent = ts.thread(&aid, 1, "@agent fix it").await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = t
+        .comments_reply(Parameters(CommentsReplyArgs {
+            url_or_id: aid.clone(),
+            thread_id: sent.clone(),
+            text: "Fixed.".into(),
+            addressed: Some(true),
+        }))
+        .await
+        .unwrap();
+    assert_eq!(res.is_error, Some(true));
+    let e: Value = serde_json::from_str(&res.content[0].as_text().unwrap().text).unwrap();
+    assert_eq!(e["error"]["code"], "invalid_args");
+    let got: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads/{sent}"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(
+        got["thread"]["comments"].as_array().unwrap().len(),
+        1,
+        "nothing was written"
+    );
 }

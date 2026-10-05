@@ -213,6 +213,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/live/threads",
             post(live::thread.layer(DefaultBodyLimit::max(live::LIVE_THREAD_LIMIT))),
+        )
+        .route(
+            "/api/live/snapshots",
+            post(live::snapshot.layer(DefaultBodyLimit::max(live::LIVE_THREAD_LIMIT))),
         );
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));

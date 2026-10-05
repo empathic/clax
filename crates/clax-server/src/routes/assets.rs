@@ -2,6 +2,7 @@
 
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::live::SeesLive;
 use crate::routes::artifacts::{parse_id, path};
 use crate::state::AppState;
 use axum::Json;
@@ -26,6 +27,9 @@ pub(crate) fn multipart_error(status: StatusCode, message: String) -> ApiError {
     }
 }
 
+/// Stores the multipart field `file` as an asset of the artifact. A live
+/// page keeps no files besides its snapshots (spec 2026-10-05 §8.3): 400
+/// `live_page`.
 pub async fn upload(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -34,6 +38,12 @@ pub async fn upload(
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     let aid = path(aid)?;
     let id = parse_id(&aid)?;
+    if s.live_ids.contains(id.as_str()) {
+        return Err(ApiError::bad_request(
+            "live_page",
+            "a live page keeps only its snapshots; it takes no assets",
+        ));
+    }
     let mut mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
     while let Some(field) = mp
         .next_field()
@@ -97,14 +107,18 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// The asset's bytes. An asset of a live page answers 404 to a caller that
+/// may not see live pages ([`SeesLive`]), as a missing one does.
 pub async fn blob(
     State(s): State<AppState>,
+    sees: SeesLive,
     asset_id: Result<Path<String>, PathRejection>,
 ) -> Result<Response, ApiError> {
     let asset_id = path(asset_id)?;
     let (asset, path) = s
         .store_call(move |st| st.get_asset(&asset_id)?.ok_or(CoreError::NotFound))
         .await?;
+    sees.check(&s.live_ids, &asset.artifact_id)?;
     let file = tokio::fs::File::open(&path)
         .await
         .map_err(|_| ApiError::not_found())?;

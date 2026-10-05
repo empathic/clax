@@ -394,7 +394,7 @@ describe("clax Pi extension", () => {
       clax_asset_upload: [{ url_or_id: id, file_path: "a.png" }, { url_or_id: id, file_paths: ["a.png", "b.mp4"] }],
       clax_status: [{}],
       clax_comments_read: [{ url_or_id: id }, { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", cursor: "01K6AB3Q9X7N2M4P5R6S8T0V1W", include_resolved: true }],
-      clax_comments_reply: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", text: "done" }],
+      clax_comments_reply: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", text: "done" }, { url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", text: "done", addressed: true }],
       clax_comments_resolve: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_watch: [{ url_or_id: id }, { url_or_id: id, on: false, replies: false }],
       clax_wait_for_feedback: [{}, { url_or_id: id, timeout_s: 50 }],
@@ -593,6 +593,17 @@ describe("comments", () => {
     const foreign = { type: "tool_result", toolName: "clax_foreign", toolCallId: "call-2", input: {}, content: [{ type: "text", text: "{}" }], isError: false, details: undefined };
     for (const h of pi.handlers.get("tool_result") ?? []) expect(await h(foreign, ctx)).toBeUndefined();
     expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.feedback).toHaveLength(1);
+  });
+
+  it("sends addressed with a reply, which the daemon refuses on an artifact", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-addressed");
+    const aid = parts(await pi.callToolAsPi("clax_publish", { html: "<h2>Goals</h2>", title: "Pi addressed" }, ctx)).json.artifact_id;
+    const sent = await browserThread(aid, "@agent fix it");
+    const res = await pi.callTool("clax_comments_reply", { url_or_id: aid, thread_id: sent, text: "Fixed.", addressed: true }, ctx);
+    expect(res.isError).toBe(true);
+    expect(json(res).error).toMatchObject({ code: "invalid_args", message: "addressed is for live pages; publish with addresses instead" });
+    const t = await api(daemon, `/api/artifacts/${aid}/threads/${sent}`);
+    expect(t.thread.comments).toHaveLength(1);
   });
 
   it("refuses a thread ID that is not a canonical ULID", async () => {

@@ -211,6 +211,105 @@ impl Store {
         }
     }
 
+    /// Records that the agent of `harness` addressed thread `tid` of the
+    /// live page `id`, to be linked to the page's next snapshot (spec L11).
+    /// `source` is `explicit` (a reply with `addressed`) or `resolve` (an
+    /// agent resolve). A `resolve` is recorded only when the thread has no
+    /// version link and no pending address yet; an `explicit` one replaces a
+    /// pending `resolve`. Returns whether a row was written.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn mark_pending(
+        &self,
+        id: &ArtifactId,
+        tid: &str,
+        source: &str,
+        harness: &str,
+    ) -> Result<bool> {
+        self.with_tx(|tx| {
+            if source == "resolve" {
+                let linked: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM version_threads WHERE thread_id = ?1)
+                        OR EXISTS(SELECT 1 FROM live_pending WHERE thread_id = ?1)",
+                    params![tid],
+                    |r| r.get(0),
+                )?;
+                if linked {
+                    return Ok(false);
+                }
+            }
+            tx.execute(
+                "INSERT INTO live_pending (artifact_id, thread_id, source, harness, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(artifact_id, thread_id) DO UPDATE SET source = excluded.source,
+                    harness = excluded.harness, created_at = excluded.created_at",
+                params![id.as_str(), tid, source, harness, Store::now()],
+            )?;
+            Ok(true)
+        })
+    }
+
+    /// Links every pending address of the live page `id` to its version `n`
+    /// (each with its `source`) and clears them; returns the linked thread
+    /// IDs, oldest address first.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn link_pending(&self, id: &ArtifactId, n: u32) -> Result<Vec<String>> {
+        self.with_tx(|tx| {
+            let ids: Vec<String> = {
+                let mut st = tx.prepare(
+                    "SELECT thread_id FROM live_pending WHERE artifact_id = ?1
+                     ORDER BY created_at, thread_id",
+                )?;
+                st.query_map(params![id.as_str()], |r| r.get(0))?
+                    .collect::<rusqlite::Result<_>>()?
+            };
+            tx.execute(
+                "INSERT OR IGNORE INTO version_threads (artifact_id, version_n, thread_id, source, created_at)
+                 SELECT artifact_id, ?2, thread_id, source, ?3 FROM live_pending WHERE artifact_id = ?1
+                 ORDER BY created_at, thread_id",
+                params![id.as_str(), n, Store::now()],
+            )?;
+            tx.execute(
+                "DELETE FROM live_pending WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
+            Ok(ids)
+        })
+    }
+
+    /// The pending address of thread `tid`: the addressing agent's harness
+    /// and when it addressed the thread.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn pending_address(&self, tid: &str) -> Result<Option<(String, String)>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1",
+                params![tid],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+        })
+    }
+
+    /// Whether the live page `id` has addresses waiting for a snapshot.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn has_pending(&self, id: &ArtifactId) -> Result<bool> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM live_pending WHERE artifact_id = ?1)",
+                params![id.as_str()],
+                |r| r.get(0),
+            )?)
+        })
+    }
+
     /// Writes `html` as version `expected + 1` (its only file), noted `snapshot`.
     fn write_snapshot(
         &self,
@@ -399,5 +498,100 @@ mod tests {
             )
             .unwrap_err();
         assert!(matches!(err, crate::CoreError::Invalid { code, .. } if code == "invalid_anchor"));
+    }
+    /// A thread on version 1 of a new live page `/p`.
+    fn live_thread(st: &Store) -> (ArtifactId, String) {
+        let e = st.ensure_live_page(&key("/p"), "p", None).unwrap();
+        let id = ArtifactId::parse(&e.artifact.id).unwrap();
+        let anchor: crate::Anchor = serde_json::from_value(serde_json::json!({
+            "kind": "element", "selector": "body", "file": "index.html"
+        }))
+        .unwrap();
+        let t = st
+            .create_thread(
+                &id,
+                crate::store::threads::NewThread {
+                    author_public_id: None,
+                    version_n: 1,
+                    anchor,
+                    author_name: "A".into(),
+                    body: "x".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        (id, t.id)
+    }
+
+    fn link_source(st: &Store, tid: &str) -> Option<String> {
+        use rusqlite::OptionalExtension as _;
+        st.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT source FROM version_threads WHERE thread_id = ?1",
+                rusqlite::params![tid],
+                |r| r.get(0),
+            )
+            .optional()?)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn a_pending_address_links_to_the_next_snapshot_with_its_source() {
+        let (_d, st) = store();
+        let (id, tid) = live_thread(&st);
+        assert!(!st.has_pending(&id).unwrap());
+        assert!(st.mark_pending(&id, &tid, "explicit", "claude").unwrap());
+        assert!(st.has_pending(&id).unwrap());
+        let (harness, at) = st.pending_address(&tid).unwrap().unwrap();
+        assert_eq!(harness, "claude");
+        assert!(!at.is_empty());
+        assert!(
+            !st.mark_pending(&id, &tid, "resolve", "codex").unwrap(),
+            "a resolve leaves an explicit address alone"
+        );
+        assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
+        let (v, _) = st.store_snapshot(&id, "p", b"<p>2", true).unwrap();
+        assert_eq!(st.link_pending(&id, v.n).unwrap(), vec![tid.clone()]);
+        assert_eq!(st.addressed_in(&tid).unwrap(), vec![v.n]);
+        assert_eq!(link_source(&st, &tid).as_deref(), Some("explicit"));
+        assert!(st.pending_address(&tid).unwrap().is_none());
+        assert!(!st.has_pending(&id).unwrap());
+        assert!(st.link_pending(&id, v.n).unwrap().is_empty());
+        assert!(
+            !st.mark_pending(&id, &tid, "resolve", "claude").unwrap(),
+            "a resolve of a linked thread records nothing"
+        );
+    }
+
+    #[test]
+    fn an_explicit_address_replaces_a_pending_resolve() {
+        let (_d, st) = store();
+        let (id, tid) = live_thread(&st);
+        assert!(st.mark_pending(&id, &tid, "resolve", "codex").unwrap());
+        assert!(st.mark_pending(&id, &tid, "explicit", "claude").unwrap());
+        assert_eq!(st.pending_address(&tid).unwrap().unwrap().0, "claude");
+        st.link_pending(&id, 1).unwrap();
+        assert_eq!(link_source(&st, &tid).as_deref(), Some("explicit"));
+    }
+
+    #[test]
+    fn a_resolve_alone_links_as_a_resolve() {
+        let (_d, st) = store();
+        let (id, tid) = live_thread(&st);
+        assert!(st.mark_pending(&id, &tid, "resolve", "codex").unwrap());
+        st.link_pending(&id, 1).unwrap();
+        assert_eq!(link_source(&st, &tid).as_deref(), Some("resolve"));
+    }
+
+    #[test]
+    fn deleting_a_thread_deletes_its_pending_address() {
+        let (_d, st) = store();
+        let (id, tid) = live_thread(&st);
+        st.mark_pending(&id, &tid, "explicit", "claude").unwrap();
+        st.delete_thread(&tid).unwrap();
+        assert!(st.pending_address(&tid).unwrap().is_none());
+        assert!(!st.has_pending(&id).unwrap());
     }
 }

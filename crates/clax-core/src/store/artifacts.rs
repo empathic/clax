@@ -412,6 +412,8 @@ impl Store {
                         for sql in [
                             "DELETE FROM version_threads WHERE artifact_id = ?1",
                             "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM live_pending WHERE artifact_id = ?1
+                                OR thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM viewer_seen WHERE artifact_id = ?1",
                             "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",

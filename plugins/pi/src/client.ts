@@ -464,9 +464,14 @@ export class DaemonClient {
     return this.json(`/api/artifacts/${id}/threads/${tid}`, { method: "GET" });
   }
 
-  /** An agent reply: `{comment, thread}`, or `{guidance}` on a thread not sent to the agent. */
-  reply(id: string, tid: string, text: string): Promise<any> {
-    return this.json(`/api/artifacts/${id}/threads/${tid}/comments`, this.jsonBody("POST", { body: text, author_kind: "agent" }));
+  /**
+   * An agent reply: `{comment, thread}` (with `addressed: "pending"` when `addressed` marked a live page's
+   * thread), or `{guidance}` on a thread not sent to the agent. `addressed` is sent only when true.
+   */
+  reply(id: string, tid: string, text: string, addressed = false): Promise<any> {
+    const body: Record<string, unknown> = { body: text, author_kind: "agent" };
+    if (addressed) body.addressed = true;
+    return this.json(`/api/artifacts/${id}/threads/${tid}/comments`, this.jsonBody("POST", body));
   }
 
   /** Resolves a thread as the agent: `{thread}`, or `{guidance}` on a thread not sent to the agent. */

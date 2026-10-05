@@ -225,7 +225,8 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 /// token), `feedback_state`, and `resolved_by_name`: the current display name
 /// of the viewer named by `resolved_by` (not the name at the resolve), or
 /// `null` when that viewer has none or the thread was not resolved by a
-/// viewer.
+/// viewer; and `addressed_pending`, `{harness, at}` while an agent's address
+/// of a live page's thread waits for the page's next snapshot, else `null`.
 pub fn thread_view(
     st: &Store,
     t: &Thread,
@@ -270,6 +271,10 @@ pub fn thread_views(
             v["addressed_in"] = json!(x.addressed_in);
             v["sends"] = json!(x.sends);
             v["resolved_by_name"] = json!(x.resolved_by_name);
+            v["addressed_pending"] = match x.addressed_pending {
+                Some((harness, at)) => json!({"harness": harness, "at": at}),
+                None => Value::Null,
+            };
             Ok(v)
         })
         .collect()

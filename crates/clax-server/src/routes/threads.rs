@@ -374,6 +374,10 @@ pub struct CommentBody {
     /// The page wrote the comment through the `comments` capability.
     #[serde(default)]
     via_page: bool,
+    /// An agent reply on a live page says the page now shows the fix: the
+    /// thread is linked to the page's next snapshot (spec 2026-10-05 L11).
+    #[serde(default)]
+    addressed: bool,
 }
 
 enum Outcome {
@@ -394,8 +398,11 @@ fn respond(o: Outcome, created: StatusCode) -> Response {
 /// comment on a sent thread, or one mentioning `@agent`, is forwarded to the
 /// agent; `via_page: true` marks a viewer comment the page wrote through the
 /// `comments` capability, whose `@agent` mention sends nothing (400
-/// `invalid_via_page` on an agent reply). A request with a foreign `Origin` is
-/// refused ([`SameOrigin`]).
+/// `invalid_via_page` on an agent reply). `addressed: true` on an agent reply
+/// to a live page's thread records a pending address, linked to the page's
+/// next snapshot, and the answer carries `addressed: "pending"`; on a viewer
+/// comment or another artifact it is 400 `invalid_args`, before anything is
+/// written. A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn comment(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -423,6 +430,19 @@ pub async fn comment(
             "via_page marks viewer comments only",
         ));
     }
+    let addressed = b.addressed;
+    if addressed && !agent {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "addressed is only for agent replies",
+        ));
+    }
+    if addressed && !s.live_ids.contains(id.as_str()) {
+        return Err(ApiError::bad_request(
+            "invalid_args",
+            "addressed is for live pages; publish with addresses instead",
+        ));
+    }
     let authed = has_token(&headers, &s.token);
     if agent && !authed {
         return Err(ApiError::unauthorized());
@@ -443,12 +463,15 @@ pub async fn comment(
                     NewComment {
                         author_public_id: None,
                         author_kind: AUTHOR_AGENT,
-                        author_name: sess.harness,
+                        author_name: sess.harness.clone(),
                         via_session_id: Some(sess.id.clone()),
                         body: b.body,
                         via_page: false,
                     },
                 )?;
+                if addressed {
+                    st.mark_pending(&id, &tid, "explicit", &sess.harness)?;
+                }
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
                 let changed = ctx.working.thread_done(&sess.id, id.as_str(), &tid);
                 crate::working::announce(&ctx.events, &ctx.working, &changed);
@@ -480,7 +503,11 @@ pub async fn comment(
             let t = thread_of(st, &id, &tid)?;
             publish_thread(&ctx, st, &t)?;
             let view = thread_view(st, &t, ctx.codex_push(), authed)?;
-            Ok(Outcome::Done(json!({"comment": c, "thread": view})))
+            let mut out = json!({"comment": c, "thread": view});
+            if addressed {
+                out["addressed"] = json!("pending");
+            }
+            Ok(Outcome::Done(out))
         })
         .await?;
     Ok(respond(o, StatusCode::CREATED))
@@ -624,8 +651,10 @@ struct ResolveBody {
 /// for a cookie seen for the first time), `viewer:anonymous` without either,
 /// or `agent:<harness>`: never the cookie or a session ID. Undelivered feedback on the thread is withdrawn; a
 /// `feedback_state` event follows when delivered rows remain, and when none
-/// remain the `thread` event carries `feedback_state: null`. A request with a
-/// foreign `Origin` is refused ([`SameOrigin`]).
+/// remain the `thread` event carries `feedback_state: null`. An agent resolve
+/// lists a thread no version lists yet as addressed: in the artifact's current
+/// version, or, on a live page, in the page's next snapshot (a pending
+/// address). A request with a foreign `Origin` is refused ([`SameOrigin`]).
 pub async fn resolve(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -643,19 +672,21 @@ pub async fn resolve(
     }
     let session = session_header(&headers)?;
     let ctx = s.feedback_ctx();
+    let live = s.live_ids.contains(id.as_str());
     let o = s
         .store_call(move |st| {
             let t = thread_of(st, &id, &tid)?;
             let mut touched = Touched::default();
-            let mut resolver = None;
+            let mut resolver: Option<Session> = None;
             let by = if agent {
                 let sess = agent_session(st, &session)?;
                 if !t.sent_to_agent {
                     return Ok(Outcome::Guidance(GUIDANCE_RESOLVE));
                 }
                 touched.merge(st.acknowledge(&sess.id, std::slice::from_ref(&tid))?);
-                resolver = Some(sess.id);
-                format!("agent:{}", sess.harness)
+                let by = format!("agent:{}", sess.harness);
+                resolver = Some(sess);
+                by
             } else {
                 match who.ensure_viewer(st)? {
                     Some(v) => format!("viewer:{}", v.public_id),
@@ -664,11 +695,15 @@ pub async fn resolve(
             };
             let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
             touched.merge(withdrawn);
-            if resolver.is_some() {
-                st.link_on_resolve(&tid)?;
+            if let Some(sess) = &resolver {
+                if live {
+                    st.mark_pending(&id, &tid, "resolve", &sess.harness)?;
+                } else {
+                    st.link_on_resolve(&tid)?;
+                }
             }
             let changed = match &resolver {
-                Some(sid) => ctx.working.thread_done(sid, id.as_str(), &tid),
+                Some(sess) => ctx.working.thread_done(&sess.id, id.as_str(), &tid),
                 None => ctx.working.thread_gone(id.as_str(), &tid),
             };
             crate::working::announce(&ctx.events, &ctx.working, &changed);

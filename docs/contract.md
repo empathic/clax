@@ -1115,6 +1115,9 @@ Every thread view carries `addressed_in`: the versions linked to the thread
 (named in a publish's `addresses`, linked because the publishing session was
 working on the thread, or linked when an agent resolved it), ascending, `[]`
 for none.
+It also carries `addressed_pending`: on a live page, `{harness, at}` while
+an agent's address waits for the page's next snapshot (see "Live pages"),
+else `null`.
 
 A viewer's seen mark is the highest version of an artifact it has viewed at
 the artifact's latest URL (not at a pinned version). `GET
@@ -1487,7 +1490,7 @@ entry of the shell's own; copy link includes it.
 | Tool | Arguments | Result |
 |---|---|---|
 | `comments_read` | `url_or_id`; optional `thread_id`, `cursor`, `include_resolved` | `{artifact_id, url, threads: [{thread_id, status, sent_to_agent, version, anchor: {kind, selector, quote, custom_name, file, area, summary}, clip_path, comments: [{id, author_kind, author_name, via_page, body, created_at}], feedback_state}], next_cursor, note}` |
-| `comments_reply` | `url_or_id`, `thread_id`, `text` | `{thread_id, replied: true, comment_id}` or `{thread_id, replied: false, guidance}` |
+| `comments_reply` | `url_or_id`, `thread_id`, `text`, `addressed?` (live pages only) | `{thread_id, replied: true, comment_id, addressed?}` or `{thread_id, replied: false, guidance}` |
 | `comments_resolve` | `url_or_id`, `thread_id` | `{thread_id, resolved: true, status}` or `{thread_id, resolved: false, guidance}`; a thread no version lists yet is listed as addressed in the current version |
 | `watch` | `url_or_id`; optional `on` (default true), `replies` (default true) | `{artifact_id, url, watching, replies_armed}` |
 | `wait_for_feedback` | optional `url_or_id`; optional `timeout_s` (default 50) | `{feedback: [...], waited_s, call_again}` |
@@ -1820,7 +1823,35 @@ versions is a snapshot of the page, taken when a comment is posted.
   `GET /api/artifacts/<id>`, the shell's bootstrap) carries `kind` (`html` or
   `live`); a live page's also carries `live: {origin, path, page_url}`.
 - **No publishing.** `POST /api/artifacts/<id>/versions` on a live page
-  answers 400 `live_page`: its versions come only from snapshots.
+  answers 400 `live_page`: its versions come only from snapshots. So does
+  `POST /api/artifacts/<id>/assets`: a live page keeps no files besides its
+  snapshots.
+- **Pending addresses.** There is no publish to list a live page's thread
+  as addressed. Instead an agent reply with `addressed: true`
+  (`POST .../threads/<tid>/comments` with `author_kind: "agent"`; the
+  `comments_reply` tool's `addressed`) on a sent thread of a live page
+  records a **pending address** (`explicit`) and answers `{comment, thread,
+  addressed: "pending"}`. `addressed: true` on a viewer comment, or on any
+  other artifact, is 400 `invalid_args` ("addressed is for live pages;
+  publish with addresses instead") and writes nothing. An agent resolve on a
+  live page records a pending address (`resolve`) when the thread has no
+  version link and no pending address yet, instead of linking the current
+  version; an `explicit` address replaces a pending `resolve`. Every thread
+  view carries `addressed_pending`: `{harness, at}` (the addressing agent's
+  harness and when) while an address waits, else `null`. The page's next
+  snapshot links every pending address to its version (with its source), so
+  the thread's `addressed_in` names the snapshot that shows the fix, and
+  clears them: a comment's snapshot that makes a new version does so, and so
+  does `POST /api/live/snapshots`. Deleting the thread deletes its pending
+  address.
+- **`POST /api/live/snapshots`** (multipart, at most 24 MiB): `url`,
+  `title`, `snapshot` (at most 8 MiB, else 400 `snapshot_too_large`). The
+  extension's snapshot of a page with pending addresses: always stored as a
+  new version, even when byte-identical to the current one, which every
+  pending address is linked to. It answers `{page, version, linked}` (the
+  linked thread IDs); 409 `nothing_pending` when the page has no pending
+  address or does not exist (it never creates a page). A viewer route, as
+  `POST /api/live/threads` is.
 - **Serving a snapshot.** Every content response of a live page
   (`/c/<id>/v/<n>/...` and `<id>.localhost`) carries, besides its usual
   policy, a second `Content-Security-Policy`: `script-src
@@ -1837,7 +1868,8 @@ versions is a snapshot of the page, taken when a comment is posted.
   artifact; so do `/api/live/...` and the viewer routes that name an
   artifact in a query or body (`/api/viewers/me/seen`, `.../looked`,
   `.../presence`, `.../attention?artifact=`), and
-  `/api/viewers/me/attention` leaves live pages out. On `/api/stream`, a stream opened
+  `/api/viewers/me/attention` leaves live pages out, and `/_blob/<asset>` of a
+  live page's asset. On `/api/stream`, a stream opened
   by such a request receives no `gallery` event of a live page, and
   subscribing it to a live page's `artifact:`, `working:`, `presence:` or
   `docs:` topic answers 404 `not_found`.

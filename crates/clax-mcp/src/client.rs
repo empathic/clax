@@ -603,10 +603,15 @@ impl DaemonClient {
         .await
     }
 
-    /// An agent reply: `{comment, thread}`, or `{guidance}` on a thread not
-    /// sent to the agent.
-    pub async fn reply(&self, id: &str, tid: &str, text: &str) -> Result<Value> {
-        let body = json!({"body": text, "author_kind": "agent"});
+    /// An agent reply: `{comment, thread}` (with `addressed: "pending"` when
+    /// `addressed` marked a live page's thread), or `{guidance}` on a thread
+    /// not sent to the agent. `addressed` is sent only when true, so a reply
+    /// without it reads the same to a daemon that predates it.
+    pub async fn reply(&self, id: &str, tid: &str, text: &str, addressed: bool) -> Result<Value> {
+        let mut body = json!({"body": text, "author_kind": "agent"});
+        if addressed {
+            body["addressed"] = json!(true);
+        }
         self.json(|c| {
             c.request(
                 reqwest::Method::POST,

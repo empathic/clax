@@ -4,7 +4,7 @@
 //! shell's origin or a script ([`SameOrigin`]).
 
 use super::assets::multipart_error;
-use super::threads::create_thread_now;
+use super::threads::{create_thread_now, publish_thread};
 use crate::auth::has_token;
 use crate::error::ApiError;
 use crate::identity::Identity;
@@ -201,9 +201,10 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
 /// `POST /api/live/threads` (multipart `url`, `title`, `anchor`, `body`,
 /// optional `clip`, `snapshot`): finds or creates the live page `url` names,
 /// stores `snapshot` as its next version when it differs from the current
-/// one, and creates the thread on that version as the request's viewer,
-/// with the anchor's `route` from `url` and `clip` as its screenshot; an
-/// `@agent` mention sends it. Answers `201 {thread, page, version,
+/// one (linking the page's pending addresses to that version), and creates
+/// the thread on that version as the request's viewer, with the anchor's
+/// `route` from `url` and `clip` as its screenshot; an `@agent` mention
+/// sends it. Answers `201 {thread, page, version,
 /// clip_error?}`; a clip failing `clip_problem` is dropped and reported.
 pub async fn thread(
     State(s): State<AppState>,
@@ -250,6 +251,7 @@ pub async fn thread(
                     title: Some(e.artifact.title.clone()),
                     at: Some(e.version.created_at.clone()),
                 });
+                link_pending(st, &ctx, &id, e.version.n)?;
             }
             let (author_name, author_public_id) = author(st, &who)?;
             let view = create_thread_now(
@@ -280,6 +282,85 @@ pub async fn thread(
         out["clip_error"] = json!(e);
     }
     Ok((StatusCode::CREATED, Json(out)))
+}
+
+/// Links the pending addresses of the live page `id` to its new version `n`
+/// and publishes each linked thread; returns their IDs.
+fn link_pending(
+    st: &clax_core::Store,
+    ctx: &crate::feedback::FeedbackCtx,
+    id: &ArtifactId,
+    n: u32,
+) -> clax_core::Result<Vec<String>> {
+    let linked = st.link_pending(id, n)?;
+    for tid in &linked {
+        if let Some(t) = st.get_thread(tid)? {
+            publish_thread(ctx, st, &t)?;
+        }
+    }
+    Ok(linked)
+}
+
+/// `POST /api/live/snapshots` (multipart `url`, `title`, `snapshot`): the
+/// extension's snapshot of a page with pending addresses (spec L11). Always
+/// a new version, even when identical to the current one, linking every
+/// pending address to it; answers `{page, version, linked}` (the linked
+/// thread IDs). 409 `nothing_pending` when the page has no pending address
+/// or does not exist; this route never creates a page.
+pub async fn snapshot(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    mp: Result<Multipart, MultipartRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let mp = mp.map_err(|e| multipart_error(e.status(), e.body_text()))?;
+    let f = read_fields(mp).await?;
+    let pu = page_url(
+        &s,
+        f.url
+            .as_deref()
+            .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'url' is required"))?,
+    )?;
+    let html = f
+        .snapshot
+        .ok_or_else(|| ApiError::bad_request("invalid_args", "field 'snapshot' is required"))?;
+    let title = clean_title(f.title.as_deref().unwrap_or(""), &pu.key.page_url());
+    let ctx = s.feedback_ctx();
+    let events = s.events.clone();
+    let key = pu.key;
+    let done = s
+        .store_call(move |st| {
+            let Some(p) = st.find_live_page(&key)? else {
+                return Ok(None);
+            };
+            let id = ArtifactId::parse(&p.artifact_id)?;
+            if !st.has_pending(&id)? {
+                return Ok(None);
+            }
+            let (v, _) = st.store_snapshot(&id, &title, &html, true)?;
+            let a = st.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
+            events.publish(Event::Version {
+                artifact_id: a.id.clone(),
+                n: v.n,
+                by_page: false,
+                title: Some(a.title.clone()),
+                at: Some(v.created_at.clone()),
+            });
+            let linked = link_pending(st, &ctx, &id, v.n)?;
+            Ok(Some((p, a, v.n, linked)))
+        })
+        .await?;
+    let Some((page, artifact, n, linked)) = done else {
+        return Err(ApiError::new(
+            StatusCode::CONFLICT,
+            "nothing_pending",
+            "the page has no address waiting for a snapshot",
+        ));
+    };
+    Ok(Json(json!({
+        "page": page_view(&s, &page, &artifact),
+        "version": n,
+        "linked": linked,
+    })))
 }
 
 #[cfg(test)]

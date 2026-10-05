@@ -181,6 +181,10 @@ pub struct CommentsReplyArgs {
     pub thread_id: String,
     /// The reply, shown to the person under its harness's name, such as `claude`.
     pub text: String,
+    /// On a live page: the page now shows the fix, so the thread is listed as
+    /// addressed in the page's next snapshot. Not for artifacts (publish with
+    /// `addresses` instead).
+    pub addressed: Option<bool>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -1273,13 +1277,17 @@ impl ClaxTools {
         }
         let res = self
             .client
-            .reply(&id, &a.thread_id, &a.text)
+            .reply(&id, &a.thread_id, &a.text, a.addressed.unwrap_or(false))
             .await
             .map_err(|e| self.fail(e))?;
         Ok(match res["guidance"].as_str() {
             Some(g) => json!({"thread_id": a.thread_id, "replied": false, "guidance": g}),
             None => {
-                json!({"thread_id": a.thread_id, "replied": true, "comment_id": res["comment"]["id"]})
+                let mut out = json!({"thread_id": a.thread_id, "replied": true, "comment_id": res["comment"]["id"]});
+                if let Some(addr) = res.get("addressed") {
+                    out["addressed"] = addr.clone();
+                }
+                out
             }
         })
     }
@@ -1742,7 +1750,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written."
+        description = "Reply to a comment thread as the agent; the person sees it under its harness's name, such as `claude`. Only threads the person sent to the agent accept agent replies: on other threads the result has `replied: false` and `guidance`, and nothing is written. On a live page, pass `addressed: true` once the page shows your fix."
     )]
     pub async fn comments_reply(
         &self,
