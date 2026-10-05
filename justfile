@@ -90,13 +90,13 @@ perf: web
     CLAX_PERF_BIN="$PWD/target/release/clax" ./scripts/perf-clients.sh
     cd web && npx playwright install chromium >/dev/null && npm run perf
 
-# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), and register the plugins with each harness found
+# Install clax from this checkout into $CARGO_HOME/bin (~/.cargo/bin), stop the agents' daemon if it runs that binary (the next agent call starts the new build), register the plugins with each harness found, and point the plugins at that binary (clax init sets the bin setting)
 install: web
     cargo install --locked --root "${CARGO_HOME:-$HOME/.cargo}" --path crates/clax-cli
     . scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"
     "${CARGO_HOME:-$HOME/.cargo}/bin/clax" init
 
-# Remove the plugin registrations, stop the agents' daemon if it runs the installed clax, and remove that clax
+# Remove the plugin registrations and the bin setting naming the installed clax (clax uninit), stop the agents' daemon if it runs that clax, and remove it
 uninstall:
     -"${CARGO_HOME:-$HOME/.cargo}/bin/clax" uninit
     -. scripts/dev-home.sh && stop_installed_daemon "${CLAX_HOME:-$HOME/.clax}" "${CARGO_HOME:-$HOME/.cargo}/bin/clax"

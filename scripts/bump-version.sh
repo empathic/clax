@@ -30,7 +30,7 @@ for f in ("plugins/claude-code/.claude-plugin/plugin.json", "plugins/clax/.codex
 sub(".claude-plugin/marketplace.json", r'("version": ")([^"]+)(")', count=2)
 sub("plugins/pi/package-lock.json", r'(^  "version": ")([^"]+)(")')
 sub("plugins/pi/package-lock.json", r'("": \{\n      "name": "@empathic/clax-pi",\n      "version": ")([^"]+)(")')
-for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh"):
+for f in ("scripts/ensure-clax.sh", "plugins/claude-code/scripts/ensure-clax.sh", "plugins/clax/scripts/ensure-clax.sh", "plugins/clax-grok/scripts/ensure-clax.sh", "plugins/pi/scripts/ensure-clax.sh"):
     sub(f, r'(^CLAX_VERSION=")([^"]+)(")')
 for path, text in pending.items():
     pathlib.Path(path).write_text(text)

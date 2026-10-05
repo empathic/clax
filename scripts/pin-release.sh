@@ -25,6 +25,12 @@ cd "$(dirname "$0")/.."
 tag="$1"
 [[ $tag =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "pin-release: '$tag' is not a release tag (vX.Y.Z)" >&2; exit 2; }
 version="${tag#v}"
+checkout="$(scripts/check-version.sh --print)"
+newest="$(printf '%s\n%s\n' "$version" "${checkout%%-*}" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+if [ "$version" != "${checkout%%-*}" ] && [ "$newest" = "$version" ]; then
+    echo "pin-release: $tag is newer than this checkout ($checkout); pin it from a checkout at $version or later" >&2
+    exit 1
+fi
 base="${CLAX_RELEASE_BASE_URL:-https://github.com/empathic/clax/releases/download}"
 url="$base/$tag/SHA256SUMS"
 sums="$(mktemp)"
@@ -32,15 +38,9 @@ trap 'rm -f "$sums"' EXIT
 code="$(curl -sSL --connect-timeout 10 --max-time 60 -o "$sums" -w '%{http_code}' "$url" 2>/dev/null)" \
     || { echo "pin-release: cannot download $url" >&2; exit 1; }
 [ "$code" = 200 ] || { echo "pin-release: $url answered HTTP $code (is the release published?)" >&2; exit 1; }
-checkout="$(scripts/check-version.sh --print)"
-python3 - "$version" "$checkout" "$sums" <<'PY'
+python3 - "$version" "$sums" <<'PY'
 import pathlib, re, sys
-version, checkout, sums = sys.argv[1:4]
-
-def key(v):
-    return tuple(int(x) for x in re.match(r'(\d+)\.(\d+)\.(\d+)', v).groups())
-if key(version) > key(checkout):
-    sys.exit(f"pin-release: v{version} is newer than this checkout ({checkout}); pin it from a checkout at {version} or later")
+version, sums = sys.argv[1:3]
 
 listed = {}
 for line in pathlib.Path(sums).read_text().splitlines():

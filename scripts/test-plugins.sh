@@ -240,7 +240,7 @@ else
     pass "no permission relay"
 fi
 
-for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh; do
+for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/ensure-clax.sh plugins/clax-grok/scripts/ensure-clax.sh plugins/pi/scripts/ensure-clax.sh; do
     if cmp -s scripts/ensure-clax.sh "$wrapper"; then
         pass "$wrapper matches scripts/ensure-clax.sh"
     else
@@ -248,6 +248,35 @@ for wrapper in plugins/claude-code/scripts/ensure-clax.sh plugins/clax/scripts/e
     fi
     [ -x "$wrapper" ] || fail "$wrapper is not executable"
 done
+
+# The plugins run the newest release: the pin (PINNED_VERSION in the wrapper,
+# which scripts/pin-release.sh writes) is the newest v* tag, with a checksum
+# for every target. With no tag yet, nothing may be pinned. The tags come
+# from git, so a shallow clone (CI must fetch them) cannot be judged.
+pin="$(sed -n 's/^PINNED_VERSION="\(.*\)"$/\1/p' scripts/ensure-clax.sh)"
+if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = true ]; then
+    fail "the pin cannot be checked against the release tags in a shallow clone; fetch the history and tags (actions/checkout with fetch-depth: 0)"
+else
+    newest="$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)"
+    if [ -z "$newest" ] && [ -z "$pin" ]; then
+        pass "no release is tagged yet, and none is pinned"
+    elif [ -z "$newest" ]; then
+        fail "the wrapper pins clax $pin, but no v* tag exists; pin a published release with scripts/pin-release.sh"
+    elif [ "$pin" = "$newest" ]; then
+        if grep -q '^SHA256_[A-Z0-9_]*=""$' scripts/ensure-clax.sh; then
+            fail "the wrapper pins clax $pin but lacks a target's SHA256; run scripts/pin-release.sh v$pin"
+        else pass "the plugins pin the newest release, v$pin"; fi
+    else
+        fail "the plugins pin '${pin:-nothing}', but the newest release tag is v$newest; run scripts/pin-release.sh v$newest"
+    fi
+fi
+
+# Pi runs the same wrapper, which its package must ship.
+if python3 - plugins/pi/package.json 2>/dev/null <<'PY'
+import json, sys
+sys.exit(0 if "scripts/" in json.load(open(sys.argv[1])).get("files", []) else 1)
+PY
+then pass "plugins/pi/package.json ships scripts/ (the wrapper)"; else fail "plugins/pi/package.json must list scripts/ in files"; fi
 
 for gate in plugins/claude-code/scripts/tool-hook.sh plugins/clax/scripts/tool-hook.sh; do
     if cmp -s scripts/tool-hook.sh "$gate"; then

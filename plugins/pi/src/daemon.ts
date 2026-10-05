@@ -4,12 +4,17 @@ import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isIP, isIPv6 } from "node:net";
 import { homedir } from "node:os";
 import { delimiter, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { probe, type Endpoint } from "./client.ts";
 
-/** How to get a binary when none is found. Pi never downloads. */
-export const INSTALL_HINT =
-  "install clax with `just install` in a Clax checkout (it puts clax in ~/.cargo/bin), or with the release installer " +
-  "(~/.local/bin), and start Pi from a shell whose PATH includes that directory; or set CLAX_BIN to a clax binary";
+/** The plugins' wrapper, shipped in this package (a copy of the repository's
+ * `scripts/ensure-clax.sh`). It decides which clax runs, and holds the
+ * release this package pins with its checksums. */
+export const WRAPPER = fileURLToPath(new URL("../scripts/ensure-clax.sh", import.meta.url));
+
+/** How long resolving the binary may take: a first run downloads the
+ * pinned release (the wrapper allows the download 300 s), then checks it. */
+export const RESOLVE_TIMEOUT_MS = 330_000;
 
 /** The longest one daemon replacement can hold the start lock, as
  * `crates/clax-cli/src/client.rs` bounds it: stopping the old daemon (a 2 s
@@ -38,7 +43,7 @@ export interface DaemonInfo {
 }
 
 export interface DaemonOptions {
-  /** Environment for locating (`CLAX_BIN`, `PATH`) and running the binary;
+  /** Environment for locating (`CLAX_BIN`) and running the binary;
    * defaults to this process's. */
   env?: NodeJS.ProcessEnv;
   /** Port for a daemon this call starts (0 = any free port); the CLI's default
@@ -119,20 +124,31 @@ function executable(path: string): boolean {
   }
 }
 
-/** The `clax` binary: `CLAX_BIN` when set (which must then be
- * executable), else the first `clax` on `PATH`. Throws naming the install
- * command when there is none. */
-export function findBinary(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.CLAX_BIN) {
-    if (executable(env.CLAX_BIN)) return env.CLAX_BIN;
-    throw new Error(`CLAX_BIN is set to '${env.CLAX_BIN}', which is not an executable file; ${INSTALL_HINT}`);
-  }
+/** The first `bash` on `env`'s `PATH`, else `/bin/bash`. */
+function bash(env: NodeJS.ProcessEnv): string {
   for (const dir of (env.PATH ?? "").split(delimiter)) {
-    if (!dir) continue;
-    const candidate = join(dir, "clax");
-    if (executable(candidate)) return candidate;
+    if (dir && executable(join(dir, "bash"))) return join(dir, "bash");
   }
-  throw new Error(`the clax CLI was not found on PATH; ${INSTALL_HINT}`);
+  return "/bin/bash";
+}
+
+/** The `clax` binary for `home`, as the other plugins resolve it, by
+ * running the bundled [`WRAPPER`]: `CLAX_BIN` when set (it must then be a
+ * clax), else the `bin` setting in `<home>/config.toml`, else the release
+ * this package pins, installed in `<home>/bin/<version>` and downloaded
+ * there on first use. `PATH` is not searched. Rejects with the wrapper's
+ * reason, which names the fix. */
+export function findBinary(home: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(bash(env), [WRAPPER], { env: { ...env, CLAX_HOME: home }, timeout: RESOLVE_TIMEOUT_MS }, (err, stdout, stderr) => {
+      const path = String(stdout).trim();
+      if (!err && path) return resolve(path);
+      const lines = String(stderr).split("\n").map(l => l.trim()).filter(Boolean);
+      const reason = lines.reverse().find(l => l.startsWith("clax: "))?.slice("clax: ".length);
+      const late = err?.killed ? `it did not finish within ${RESOLVE_TIMEOUT_MS / 1000} s` : "";
+      reject(new Error(reason || late || `${WRAPPER} failed: ${err?.message ?? "no binary"}`));
+    });
+  });
 }
 
 /** The version `bin --version` reports (`clax 0.3.0` gives `0.3.0`), or
@@ -170,7 +186,7 @@ export async function ensure(home: string, opts: DaemonOptions = {}): Promise<Da
   const found = await discover(home);
   if (found) return found;
   const env = opts.env ?? process.env;
-  const bin = findBinary(env);
+  const bin = await findBinary(home, env);
   const args = ["serve", "--json", ...(opts.port === undefined ? [] : ["--port", String(opts.port)])];
   await new Promise<void>((resolve, reject) => {
     execFile(bin, args, { env: { ...env, CLAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {

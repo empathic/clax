@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Installs a released clax into ~/.local/bin, for people without a checkout
-# (with a checkout, run `just install` instead).
+# Installs a released clax into ~/.local/bin, for people who want the `clax`
+# command on PATH without a checkout (with a checkout, run `just install`
+# instead). The agent plugins do not need it: they download the release they
+# pin into ~/.clax/bin themselves.
 #
 # Usage: install.sh [version]      (default: the latest release)
 #   curl -fsSL https://github.com/empathic/clax/releases/latest/download/install.sh | bash
@@ -122,7 +124,7 @@ main() {
         *":$INSTALL_DIR:"*) ;;
         *) echo "clax install: $INSTALL_DIR is not on PATH; add it: export PATH=\"$INSTALL_DIR:\$PATH\"" ;;
     esac
-    echo "clax install: now run \`clax init\` to register the plugins with Claude Code, Codex and Pi"
+    echo "clax install: to register this clax's plugins with Claude Code, Codex, Grok and Pi and have them run this binary, run \`clax init\`"
 }
 
 main "$@"

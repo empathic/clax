@@ -14,6 +14,8 @@ on:
       - "scripts/check-version.sh"
       - "scripts/smoke-release-binary.sh"
       - "install.sh"
+      - "scripts/ensure-clax.sh"
+      - "scripts/pin-release.sh"
       - "rust-toolchain.toml"
 
 permissions:
@@ -94,7 +96,7 @@ jobs:
           if-no-files-found: error
 
   assemble:
-    name: Assemble and install through install.sh
+    name: Assemble, and install through install.sh and the plugins' wrapper
     needs: [version, build]
     runs-on: ubuntu-24.04
     env:
@@ -125,6 +127,15 @@ jobs:
           export HOME="$RUNNER_TEMP/home" CLAX_RELEASE_BASE_URL="http://127.0.0.1:$port"
           bash dist/install.sh "$VERSION"
           test "$("$HOME/.local/bin/clax" --version)" = "clax $VERSION"
+          # The plugins' route: pin this release (as scripts/pin-release.sh
+          # does after publishing) and let the wrapper download, check and
+          # install it into a fresh Clax home.
+          scripts/pin-release.sh "v$VERSION"
+          export CLAX_HOME="$RUNNER_TEMP/clax-home"
+          unset CLAX_BIN
+          bin="$(plugins/claude-code/scripts/ensure-clax.sh)"
+          test "$bin" = "$CLAX_HOME/bin/$VERSION/clax"
+          test "$(plugins/clax/scripts/ensure-clax.sh exec --version)" = "clax $VERSION"
       - uses: actions/upload-artifact@v4
         with: { name: release-dist, path: dist/, if-no-files-found: error }
 

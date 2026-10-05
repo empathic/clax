@@ -5,7 +5,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { binaryVersion, ensure, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
+import { binaryVersion, ensure, findBinary, SERVE_TIMEOUT_MS } from "../src/daemon.ts";
 import { buildClax, claxBin } from "./daemon-fixture.ts";
 
 let scratch: string;
@@ -61,10 +61,35 @@ describe("ensure", () => {
     }
   }, 60_000);
 
-  it("names the install command when no clax binary is found", async () => {
-    const e = ensure(join(scratch, "nobin"), { env: { PATH: "" } });
-    await expect(e).rejects.toThrow(/`just install` in a Clax checkout/);
-    await expect(e).rejects.toThrow(/release installer/);
+  it("runs the binary the home's bin setting names, never a clax on PATH", async () => {
+    const home = join(scratch, "setting");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "config.toml"), `bin = "${claxBin}"\n`);
+    const onPath = join(scratch, "path-bin");
+    mkdirSync(onPath, { recursive: true });
+    writeFileSync(join(onPath, "clax"), "#!/bin/sh\necho 'clax 0.0.1'\n");
+    chmodSync(join(onPath, "clax"), 0o755);
+    const env: NodeJS.ProcessEnv = { ...process.env, PATH: `${onPath}:${process.env.PATH}` };
+    delete env.CLAX_BIN;
+    expect(await findBinary(home, env)).toBe(claxBin);
+    expect(await findBinary(home, withBin(claxBin))).toBe(claxBin);
+  });
+
+  it("rejects with the wrapper's reason when the binary named is unusable", async () => {
+    const home = join(scratch, "bad-setting");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "config.toml"), 'bin = "/no/such/clax"\n');
+    const env = { ...process.env };
+    delete env.CLAX_BIN;
+    await expect(findBinary(home, env)).rejects.toThrow(/sets bin = "\/no\/such\/clax", which is not a usable clax binary/);
+    await expect(ensure(home, { env })).rejects.toThrow(/clax bin set/);
+    await expect(findBinary(home, withBin("/no/such/clax"))).rejects.toThrow(/CLAX_BIN is set to '\/no\/such\/clax'/);
+  });
+
+  it("with no binary named, says how to get one (or that the pinned release could not be installed)", async () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: join(scratch, "nohome"), CLAX_RELEASE_BASE_URL: "http://127.0.0.1:9" };
+    delete env.CLAX_BIN;
+    await expect(ensure(join(scratch, "nobin"), { env })).rejects.toThrow(/pins no Clax release yet.*clax bin set|could not install clax/);
   });
 
   it("reads a binary's version only when it reports itself as clax", async () => {

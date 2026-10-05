@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax, puts the
-# build first on PATH from a temporary directory (removed on exit), and starts
+# `just dev [claude|codex|grok|pi] [harness arguments...]`: builds clax, copies
+# it to a temporary directory (removed on exit) that it names in CLAX_BIN, which
+# the plugins run ahead of anything else, and puts first on PATH; it starts
 # the harness on the dev home ($CLAX_HOME, else ~/.clax-dev, whose daemon
 # listens on $CLAX_DEV_PORT, else 7481). The agents' own home, daemon and
 # installed binary are untouched.
@@ -51,6 +52,8 @@ fi
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 cp "$bin" "$tmp/clax"
+# The plugins run CLAX_BIN ahead of anything else; PATH serves the shell.
+export CLAX_BIN="$tmp/clax"
 export PATH="$tmp:$PATH"
 export CLAX_HOME="${CLAX_HOME:-$HOME/.clax-dev}"
 ensure_dev_home "$CLAX_HOME" "${CLAX_DEV_PORT:-7481}"
