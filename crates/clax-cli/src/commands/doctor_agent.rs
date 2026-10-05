@@ -280,10 +280,7 @@ pub fn binary_check(exe: &Path, version: &str, r: &Resolution, pin: Option<&str>
     let mut lines = vec![
         format!("this clax: {} (clax {version})", exe.display()),
         format!("the plugins run: {}", r.line()),
-        format!(
-            "the release the plugin pins: {}",
-            pin.unwrap_or("none")
-        ),
+        format!("the release the plugin pins: {}", pin.unwrap_or("none")),
     ];
     if r.ok
         && let Some(p) = &r.path
@@ -1382,14 +1379,20 @@ mod tests {
         let v = binary_check(&me, "0.3.0", &r, None);
         assert_eq!(v["ok"], false, "{v}");
         let d = v["detail"].as_str().unwrap();
-        assert!(d.contains("the plugins run: nothing: the plugin pins no Clax release"), "{d}");
+        assert!(
+            d.contains("the plugins run: nothing: the plugin pins no Clax release"),
+            "{d}"
+        );
         assert!(d.contains("`clax bin set --this`"), "{d}");
 
         let r = crate::plugin_bin::resolve(&home, None, Some("0.3.0"));
         let v = binary_check(&me, "0.3.0", &r, Some("0.3.0"));
         assert_eq!(v["ok"], true, "{v}");
         let d = v["detail"].as_str().unwrap();
-        assert!(d.contains("not installed yet") && d.contains("downloads and installs it"), "{d}");
+        assert!(
+            d.contains("not installed yet") && d.contains("downloads and installs it"),
+            "{d}"
+        );
         assert!(d.contains("the release the plugin pins: 0.3.0"), "{d}");
 
         crate::plugin_bin::set(&home, &other).unwrap();
@@ -1398,15 +1401,24 @@ mod tests {
         assert_eq!(v["ok"], true, "{v}");
         let d = v["detail"].as_str().unwrap();
         assert!(
-            d.contains(&format!("the plugins run: {} (clax 0.2.0), from the bin setting", other.display())),
+            d.contains(&format!(
+                "the plugins run: {} (clax 0.2.0), from the bin setting",
+                other.display()
+            )),
             "{d}"
         );
-        assert!(d.contains("note: the plugins run clax 0.2.0, not this clax 0.3.0"), "{d}");
+        assert!(
+            d.contains("note: the plugins run clax 0.2.0, not this clax 0.3.0"),
+            "{d}"
+        );
 
         let r = crate::plugin_bin::resolve(&home, Some(me.to_str().unwrap()), None);
         let v = binary_check(&me, "0.3.0", &r, None);
         assert_eq!(v["ok"], true, "{v}");
-        assert!(v["detail"].as_str().unwrap().contains("from CLAX_BIN"), "{v}");
+        assert!(
+            v["detail"].as_str().unwrap().contains("from CLAX_BIN"),
+            "{v}"
+        );
         assert!(!v["detail"].as_str().unwrap().contains("note:"), "{v}");
 
         let r = crate::plugin_bin::resolve(&home, Some("/no/such/clax"), None);

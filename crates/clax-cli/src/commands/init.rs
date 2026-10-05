@@ -532,7 +532,9 @@ fn update_bin_setting(home: &Home, install: bool) -> Value {
     if install {
         return match crate::plugin_bin::set(home, &me) {
             Ok(_) => json!({"status": "set", "detail": me}),
-            Err(e) => json!({"status": "failed", "detail": format!("{e:#}; the plugins run the release they pin unless CLAX_BIN names a binary")}),
+            Err(e) => {
+                json!({"status": "failed", "detail": format!("{e:#}; the plugins run the release they pin unless CLAX_BIN names a binary")})
+            }
         };
     }
     if crate::plugin_bin::current(home).as_deref() != me.to_str() {

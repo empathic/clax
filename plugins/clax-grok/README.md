@@ -15,10 +15,11 @@ this plugin.
 
 ## Install
 
-From a clone of the Clax repository, run `just install`: it installs `clax`
-into `~/.cargo/bin` and runs `clax init`. Without a clone, install `clax`
-with the release installer (see the top-level README) and run `clax init`.
-`clax init` writes the plugins built into the binary to
+From a clone of the Clax repository (nothing needs building), run
+`grok plugin install <clone>/plugins/clax-grok --trust`. Or run
+`just install` in the clone: it builds and installs `clax` into
+`~/.cargo/bin` and runs `clax init`, which points the plugins at that binary,
+writes the plugins built into it to
 `~/.clax/marketplace/` and, when `grok` is on your `PATH`, runs
 
 ```
@@ -28,10 +29,18 @@ grok plugin install ~/.clax/marketplace/plugins/clax-grok --trust
 Then start a new Grok session. This works when Grok is the only harness
 installed; `clax init --agent grok` registers Grok alone.
 
-The plugin runs `clax` from the `PATH` Grok starts with (or `CLAX_BIN`),
-through a small wrapper, `scripts/ensure-clax.sh`, which never downloads or
-builds anything. Without any `clax`, the MCP server still starts, with a
-single tool, `status`, that says why and how to fix it, and the hooks exit 0.
+The plugin needs no separate install of `clax`. Its wrapper,
+`scripts/ensure-clax.sh`, runs `CLAX_BIN` when set; else the `bin` setting in
+`~/.clax/config.toml` (`clax bin set <path>`, which `clax init` sets to
+itself); else the Clax release the plugin pins, which the MCP server's first
+start downloads into `~/.clax/bin/<version>/`, checks against the checksum
+the plugin carries, and runs. `PATH` is never consulted. Hooks never
+download: until the release is installed they exit 0 and do nothing. A
+binary named by `CLAX_BIN` or the `bin` setting whose version differs from
+the plugin's runs with a warning in `~/.clax/logs/hooks.log`. When no
+`clax` can run, the MCP server still starts, with a single tool, `status`,
+that says why and how to fix it, and the hooks exit 0, so a missing binary
+never fails a turn.
 
 ## What it adds
 
@@ -129,7 +138,7 @@ tiers 1, 2 and 4.
 ## Working from a source checkout
 
 `just dev grok` runs Grok with the installed clax-grok plugin, the fresh
-build first on `PATH`, and `CLAX_HOME=~/.clax-dev`. Grok runs its installed
+build named in `CLAX_BIN`, and `CLAX_HOME=~/.clax-dev`. Grok runs its installed
 copy of the plugin, so to try changes to the skill, the hooks or the wrapper,
 run `just install`, which reinstalls the plugin from the copy built into the
 new binary.

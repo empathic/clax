@@ -127,7 +127,11 @@ pub fn managed_problem(dir: &Path, version: &str) -> Option<String> {
     }
     let recorded = std::fs::read_to_string(dir.join("clax.sha256")).unwrap_or_default();
     let recorded = recorded.trim_end_matches('\n');
-    if recorded.len() != 64 || !recorded.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if recorded.len() != 64
+        || !recorded
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Some("its sha256 record is missing or malformed".into());
     }
     if sha256_hex(&bin).as_deref() != Some(recorded) {
@@ -206,7 +210,9 @@ pub fn resolve(home: &Home, clax_bin: Option<&str>, pin: Option<&str>) -> Resolu
                 None,
                 None,
                 "env",
-                format!("CLAX_BIN is set to '{b}', which is not a usable clax binary; unset it, or point it at a clax binary"),
+                format!(
+                    "CLAX_BIN is set to '{b}', which is not a usable clax binary; unset it, or point it at a clax binary"
+                ),
                 false,
             ),
         };
@@ -288,7 +294,10 @@ pub fn resolve(home: &Home, clax_bin: Option<&str>, pin: Option<&str>) -> Resolu
 fn edited(path: &Path, text: &str, line: Option<(&str, &str)>) -> anyhow::Result<String> {
     let parse = |t: &str| t.parse::<toml::Table>();
     if let Err(e) = parse(text) {
-        anyhow::bail!("{}: {e}; fix it before changing the bin setting", path.display());
+        anyhow::bail!(
+            "{}: {e}; fix it before changing the bin setting",
+            path.display()
+        );
     }
     let mut out = String::new();
     if let Some((l, _)) = line {
@@ -329,7 +338,10 @@ fn write_atomically(path: &Path, text: &str) -> anyhow::Result<()> {
 /// [`bin_line`] ([`bin_path_ok`]) and a usable clax. Returns its version line.
 pub fn set(home: &Home, path: &Path) -> anyhow::Result<String> {
     let Some(s) = path.to_str() else {
-        anyhow::bail!("{} is not valid UTF-8, so it cannot be the bin setting", path.display());
+        anyhow::bail!(
+            "{} is not valid UTF-8, so it cannot be the bin setting",
+            path.display()
+        );
     };
     if !s.starts_with('/') {
         anyhow::bail!("{s} is not an absolute path; give the absolute path of a clax binary");
@@ -441,7 +453,10 @@ mod tests {
         let text = std::fs::read_to_string(&config).unwrap();
         assert_eq!(
             text,
-            format!("bin = \"{}\"\n# mine\n\n[serve]\nport = 7481\n", me.display())
+            format!(
+                "bin = \"{}\"\n# mine\n\n[serve]\nport = 7481\n",
+                me.display()
+            )
         );
         assert_eq!(current(&h), Some(me.display().to_string()));
         let c = clax_core::config::HomeConfig::load(h.root()).unwrap();
@@ -500,17 +515,29 @@ mod tests {
         let env = fake_clax(&t.path().join("env"), "clax 1.0.0");
         let cfg = fake_clax(&t.path().join("cfg"), "clax 2.0.0");
         let r = resolve(&h, None, None);
-        assert!(!r.ok && r.source == "none" && r.why.contains("pins no Clax release"), "{r:?}");
+        assert!(
+            !r.ok && r.source == "none" && r.why.contains("pins no Clax release"),
+            "{r:?}"
+        );
         let r = resolve(&h, None, Some("3.0.0"));
         assert!(r.ok && r.pending && r.source == "managed", "{r:?}");
         assert!(r.why.contains("not installed"), "{r:?}");
         set(&h, &cfg).unwrap();
         let r = resolve(&h, None, Some("3.0.0"));
-        assert_eq!((r.source, r.path.as_deref(), r.ok), ("config", Some(cfg.as_path()), true));
+        assert_eq!(
+            (r.source, r.path.as_deref(), r.ok),
+            ("config", Some(cfg.as_path()), true)
+        );
         let r = resolve(&h, Some(env.to_str().unwrap()), Some("3.0.0"));
-        assert_eq!((r.source, r.version.as_deref()), ("env", Some("clax 1.0.0")));
+        assert_eq!(
+            (r.source, r.version.as_deref()),
+            ("env", Some("clax 1.0.0"))
+        );
         let r = resolve(&h, Some("/no/such/clax"), None);
-        assert!(!r.ok && r.why.contains("CLAX_BIN is set to '/no/such/clax'"), "{r:?}");
+        assert!(
+            !r.ok && r.why.contains("CLAX_BIN is set to '/no/such/clax'"),
+            "{r:?}"
+        );
         std::fs::remove_file(&cfg).unwrap();
         let r = resolve(&h, None, Some("3.0.0"));
         assert!(!r.ok && r.why.contains("not a usable clax binary"), "{r:?}");
@@ -523,12 +550,27 @@ mod tests {
         let dir = managed_dir(&h, "3.0.0");
         let bin = fake_clax(&dir, "clax 3.0.0");
         assert!(managed_problem(&dir, "3.0.0").unwrap().contains("record"));
-        std::fs::write(dir.join("clax.sha256"), format!("{}\n", sha256_hex(&bin).unwrap())).unwrap();
+        std::fs::write(
+            dir.join("clax.sha256"),
+            format!("{}\n", sha256_hex(&bin).unwrap()),
+        )
+        .unwrap();
         assert_eq!(managed_problem(&dir, "3.0.0"), None);
         let r = resolve(&h, None, Some("3.0.0"));
-        assert!(r.ok && !r.pending && r.path.as_deref() == Some(bin.as_path()), "{r:?}");
-        assert!(managed_problem(&dir, "3.0.1").unwrap().contains("not 'clax 3.0.1'"));
+        assert!(
+            r.ok && !r.pending && r.path.as_deref() == Some(bin.as_path()),
+            "{r:?}"
+        );
+        assert!(
+            managed_problem(&dir, "3.0.1")
+                .unwrap()
+                .contains("not 'clax 3.0.1'")
+        );
         std::fs::write(&bin, "#!/bin/sh\necho 'clax 3.0.0'\n# changed\n").unwrap();
-        assert!(managed_problem(&dir, "3.0.0").unwrap().contains("does not match"));
+        assert!(
+            managed_problem(&dir, "3.0.0")
+                .unwrap()
+                .contains("does not match")
+        );
     }
 }

@@ -498,7 +498,7 @@ daemon's `/mcp` and the Pi extension never report them. The shim also logs the
 comparison to stderr when it starts (a warning on skew).
 
 `binary` is the executable answering and its version: the `clax` the plugin
-ran (from `PATH`, or `CLAX_BIN`), the daemon itself for its `/mcp`, or, under
+ran (`CLAX_BIN`, the `bin` setting, or the pinned release), the daemon itself for its `/mcp`, or, under
 Pi, the one the extension runs (`{"path": null, "version": null, "error":
 "<why>"}` when it finds none; `version` is `null` when that binary does not
 answer `--version` as clax within 3 s).
@@ -2191,6 +2191,15 @@ The stream ends when the daemon shuts down.
 
 ## Installation and the wrapper
 
+A person installs a plugin; nothing else. Claude Code installs it from this
+repository's marketplace (`/plugin marketplace add empathic/clax`, then
+`/plugin install clax@clax`); Codex, Grok Build and Pi install it from a
+clone, with nothing built (`codex plugin marketplace add <clone>` and
+`codex plugin add clax@clax`; `grok plugin install
+<clone>/plugins/clax-grok --trust`; `pi install <clone>/plugins/pi`). The
+plugin's wrapper downloads the Clax release the plugin pins on first use
+("The wrapper" below).
+
 ### `clax init` and `clax uninit`
 
 `clax init` writes the plugins built into the binary to
@@ -2235,24 +2244,84 @@ names a path under it, and also when `grok` is not on `PATH` but
 "$CARGO_HOME" --path crates/clax-cli` (into `$CARGO_HOME/bin`, by default
 `~/.cargo/bin`), then stops the agents' daemon (`CLAX_HOME`, else `~/.clax`)
 with `clax stop` when `daemon.json` records that `clax` as its `exe`, then
-runs that binary's `clax init`, which warns when the first `clax` on `PATH`
-is another one. The stop is what puts a same-version rebuild in front of
+runs that binary's `clax init`, which sets the `bin` setting to that
+binary. The stop is what puts a same-version rebuild in front of
 the agents: their next call starts the daemon again from the new build. A
 daemon of another executable is left running, and named. `just uninstall`
 runs `clax uninit`, stops the agents' daemon by the same rule, then runs
 `cargo uninstall clax-cli`; it leaves `~/.local/bin/clax`, which comes from
 `install.sh`. `install.sh [version]`
 installs a release into `~/.local/bin` (or `CLAX_INSTALL_DIR`) after checking
-it against the release's `SHA256SUMS`, and refuses to run as root. It needs
+it against the release's `SHA256SUMS`, and refuses to run as root; it is for
+people who want `clax` on `PATH`, and the plugins do not need it. It needs
 the GitHub repository to be public.
+
+`clax init` also sets the `bin` setting (below) to its own executable, so
+the plugins it registers, which match that binary, run it; it reports
+`"bin": {"status": "set" | "failed", "detail": ...}`. `clax uninit` removes
+the setting when it names its own executable (`"cleared"`), and otherwise
+leaves it (`"kept"`).
+
+### `clax bin`
+
+`clax bin` (or `clax bin show`) prints which `clax` the plugins would run
+and why, without downloading anything; `--json` gives `{"path", "version",
+"source": "env" | "config" | "managed" | "none", "why", "pending_install",
+"ok", "pinned_version", "setting"}`. `clax bin set <path>` writes the `bin`
+setting; `clax bin set --this` writes this executable's path. The path must
+be absolute, hold no `"`, `\` or control character, and be a `clax` (its
+`--version` names clax); anything else is refused and nothing is written.
+`clax bin clear` removes the setting.
+
+The setting is one line of the home's `config.toml`, `bin = "<path>"`,
+before the file's first table: `clax bin set` puts it first and removes any
+other top-level `bin` line, leaving the rest of the file as it was, and
+refuses a file that does not parse. The daemon and CLI accept the key and
+otherwise ignore it.
 
 ### The wrapper
 
-The Claude Code, Codex and Grok plugins start `clax` through
-`scripts/ensure-clax.sh`, which runs `CLAX_BIN`, else the first `clax` on
-`PATH` whose `--version` names clax. It never downloads, builds, or looks
-anywhere else. A `clax` of another version than the plugin's (the wrapper's
-`CLAX_VERSION`) runs; MCP and CLI modes warn on stderr, hooks stay silent.
+Every plugin starts `clax` through `scripts/ensure-clax.sh` (each plugin
+carries a copy; Pi runs its copy to find the binary). It runs, in order:
+
+1. `CLAX_BIN`, when set. It must be an executable whose `--version` names
+   clax; otherwise that is the error, with no fall-through.
+2. The `bin` setting in `$CLAX_HOME/config.toml` (`~/.clax` by default). The
+   wrapper reads exactly the line `clax bin set` writes, `bin = "<absolute
+   path>"`, before the first table; any other top-level `bin` line, or a
+   path that is not a usable clax, is the error.
+3. The managed install of the release the wrapper pins (`PINNED_VERSION`):
+   `$CLAX_HOME/bin/<version>/clax`, valid when its sha256 matches
+   `clax.sha256` beside it and its `--version` is then exactly `clax
+   <version>`; the hash is checked before the binary runs, on every run.
+   Otherwise the wrapper downloads `clax-<version>-<target>.tar.gz` from the
+   GitHub release `v<version>` (`CLAX_RELEASE_BASE_URL` overrides the base,
+   for tests), checks it against the SHA256 the wrapper embeds for that
+   target, unpacks it into a staging directory inside `$CLAX_HOME/bin`,
+   records the binary's sha256 there, and renames it into place; concurrent
+   installs settle on one copy. A failed download or checksum installs and
+   removes nothing. After an install, the version directories older than
+   the pin are removed except the newest of them (a daemon started by the
+   previous plugin may still run from it, and a failed upgrade restarts the
+   previous daemon's executable); newer ones and other names are kept.
+   With no release pinned, this step is the error.
+
+`PATH` is never consulted. Hooks never download: with the managed install
+missing, a hook logs `install-pending mode=hook agent=<harness>
+version=<version>` and exits 0 silently. The MCP server downloads in a
+background process that outlives it, waits up to 8 s, and otherwise answers
+with the fallback server below, whose `status` says the download is running
+and, once it has finished, to reconnect. Other modes download in the
+foreground. Each install adds `install mode=<mode> agent=<harness>
+version=<version> exit=<status> reason="<why>"` to `hooks.log`. A binary named
+by `CLAX_BIN` or the `bin` setting whose version is not the plugin's (the
+wrapper's `CLAX_VERSION`) runs; MCP and CLI modes warn on stderr, hooks stay
+silent. `ensure-clax.sh pinned-version` prints the pin.
+
+`scripts/pin-release.sh vX.Y.Z` writes a published release's version and its
+four archive checksums (from its `SHA256SUMS`) into the wrapper and every
+copy. `scripts/test-plugins.sh` fails while the pin is older than the newest
+`v*` tag or newer than every tag; with no tag, nothing may be pinned.
 
 For the MCP server, the wrapper first runs `clax mcp --agent <harness>
 --preflight`, which resolves the home, its `config.toml` and the port,
@@ -2279,10 +2348,10 @@ agent=<harness> exit=<status> reason="<why>" tried="<candidates>"
 argv="<arguments>"` line (`exit=fallback` when the MCP fallback server
 answers). The log rotates to `hooks.log.1` past 1 MiB.
 
-The Pi extension runs `CLAX_BIN`, else the first `clax` on `PATH`, and never
-downloads. With none, it cannot start a daemon: a tool that needs one fails
-with the reason and how to install `clax`, and `status` reports `binary`
-with the error.
+The Pi extension resolves its binary by running its copy of the wrapper
+(print mode, which may download), against the extension's Clax home. With
+none, it cannot start a daemon: a tool that needs one fails with the
+wrapper's reason, and `status` reports `binary` with the error.
 
 In a Grok session the wrapper stands the Claude Code copy down before it
 looks for `clax`. A run with `--agent claude` counts as started by Grok
@@ -2365,9 +2434,12 @@ which does not fail the run.
 `clax doctor --agent <claude|codex|grok|pi>` runs one check per layer between a
 harness and the daemon, each `ok` or failed with the fix:
 
-- `binary`: this `clax`, the one the plugins run (`CLAX_BIN`, else the first
-  on `PATH`), and every `clax` on `PATH` with its version; failed when the
-  plugins run another one, or none.
+- `binary`: this `clax`, the one the plugins run and why (`CLAX_BIN`, the
+  `bin` setting, or the managed install of the release the installed
+  plugin pins, which may not be downloaded yet), and that pin; failed when
+  the plugins would run none (an unusable `CLAX_BIN` or `bin` setting, or
+  no binary named and no release pinned). A note says when the plugins run
+  another version than this one.
 - `upgrade`: failed while a failed upgrade keeps the daemon at an older
   version, with the build, the reason, when the hold ends, and what to do.
 - `plugin`: the harness's installed copy of the plugin; failed when none is
@@ -2642,11 +2714,13 @@ abandoned and retried the same way, with a notice.
   saying so, and the skill says so.
 - Published pages and uploaded files are untrusted content: Clax never
   executes them outside the browser.
-- No telemetry. The daemon makes no calls off the machine, and the plugins
-  never download anything. `install.sh`, which a person runs by hand,
-  downloads a release and checks it against the release's `SHA256SUMS`,
-  which comes from the same place, so the check protects integrity, not
-  authenticity.
+- No telemetry. The daemon makes no calls off the machine. The plugins'
+  wrapper downloads only the release it pins, from the GitHub release, and
+  only when neither `CLAX_BIN` nor the `bin` setting names a binary; it
+  checks the archive against the SHA256 the plugin itself carries, so a
+  release changed after pinning is refused. `install.sh`, which a person
+  runs by hand, checks against the release's own `SHA256SUMS`, which comes
+  from the same place, so its check protects integrity, not authenticity.
 
 ## Browser caching
 
@@ -2696,15 +2770,17 @@ abandoned and retried the same way, with a notice.
   picked), and its area renders blank in comment clips.
 - CSS counters and list numbering inside a region clip restart, because the
   clip renders a copy of the region.
-- The plugins run the `clax` on the `PATH` their harness starts with. A
-  harness started from a desktop launcher may not have `~/.cargo/bin` on its
-  `PATH`; `status`, the fallback server and `clax doctor --agent` say so.
+- The plugins' first start needs the network to download the pinned
+  release (about 10 MB) and `curl`, `tar` and `sha256sum` or `shasum`. A
+  download slower than the MCP server's 8 s wait finishes in the
+  background; the session's tools appear after a reconnect.
 - Sessions that were running when a daemon was replaced keep their shim's
   binary until they restart.
 - If a replaced daemon's port is taken while it restarts, the new daemon
   binds one of the next 20 ports and open browser tabs must be reloaded.
-- `install.sh` needs the repository to be public: GitHub serves a private
-  repository's release files only to authenticated requests.
+- `install.sh` and the plugins' download need the repository to be public:
+  GitHub serves a private repository's release files only to authenticated
+  requests.
 - Codex cannot load a plugin from a directory, so `just dev codex` runs the
   installed Clax plugin; plugin changes reach Codex through `just install`.
 - Only the MCP shim and `clax serve` replace an older daemon. A machine that

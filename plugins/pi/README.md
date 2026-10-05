@@ -10,16 +10,21 @@ the same arguments and return the same JSON as the Clax MCP tools.
 
 ## Install
 
-From a clone of the Clax repository, run `just install`: it installs `clax`
-into `~/.cargo/bin` and runs `clax init`, which `pi install`s this package
-from the copy built into the binary (`~/.clax/marketplace/plugins/pi`).
-Without a clone, the release installer (`install.sh`, see the top-level
-README) puts `clax` in `~/.local/bin`; then run `clax init`. The extension
-has no runtime dependencies beyond the modules Pi provides to extensions
-(`@mariozechner/pi-coding-agent`, `typebox`), so it needs no `npm install`.
+From a clone of the Clax repository (nothing needs building), run
+`pi install <clone>/plugins/pi`. Or run `just install` in the clone: it
+builds and installs `clax` into `~/.cargo/bin` and runs `clax init`, which
+`pi install`s this package from the copy built into the binary
+(`~/.clax/marketplace/plugins/pi`) and points it at that binary. The
+extension has no runtime dependencies beyond the modules Pi provides to
+extensions (`@mariozechner/pi-coding-agent`, `typebox`), so it needs no
+`npm install`.
 
-The extension runs `CLAX_BIN`, else the `clax` on `PATH`, and never
-downloads. `just dev pi` loads it from the checkout instead, with `-ne` so an
+The extension finds its binary by running the package's copy of the
+plugins' wrapper, `scripts/ensure-clax.sh`, so it runs the same `clax` as
+the other plugins: `CLAX_BIN`, else the `bin` setting in
+`~/.clax/config.toml` (`clax bin set <path>`), else the Clax release the
+package pins, downloaded into `~/.clax/bin/<version>/` the first time the
+extension needs the daemon. `PATH` is never consulted. `just dev pi` loads it from the checkout instead, with `-ne` so an
 installed copy does not load twice (which turns off your other Pi extensions
 for that session too). `status` reports `binary`: the path it runs and that
 binary's version. `clax doctor --agent pi` checks the binary, the installed
@@ -85,7 +90,8 @@ be reached the code is `daemon_unreachable` and `log` names
 ## Environment
 
 - `CLAX_HOME`: the Clax home (default `~/.clax`).
-- `CLAX_BIN`: the `clax` binary to run; when set it must be executable.
+- `CLAX_BIN`: the `clax` binary to run, ahead of the `bin` setting and the
+  pinned release; when set it must be a usable clax.
 - `CLAX_NO_OPEN`: when set, `open` returns the URL without starting a browser.
 
 ## Developing

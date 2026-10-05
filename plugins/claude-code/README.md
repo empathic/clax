@@ -5,18 +5,23 @@ browser, and get the comments people leave on them back into the session.
 
 ## Install
 
-From a clone of the Clax repository, run `just install`: it installs `clax`
-into `~/.cargo/bin` and runs `clax init`, which registers this plugin (the
-copy built into that binary, written to `~/.clax/marketplace/`). Then start a
-new session. Without a clone, the release installer (`install.sh`, see the
-top-level README) puts `clax` in `~/.local/bin`; then run `clax init`.
+`/plugin marketplace add empathic/clax`, then `/plugin install clax@clax`,
+and start a new session. From a clone of the Clax repository, `just install`
+instead builds and installs `clax` into `~/.cargo/bin` and runs `clax init`,
+which registers this plugin (the copy built into that binary, written to
+`~/.clax/marketplace/`) and points it at that binary.
 
-The plugin runs `clax` from the `PATH` the harness starts with (or
-`CLAX_BIN`), through a small wrapper, `scripts/ensure-clax.sh`. The wrapper
-never downloads or builds anything. A `clax` whose version differs from the
-plugin's runs with a warning in `~/.clax/logs/hooks.log`. Without any `clax`,
-the MCP server still starts, with a single tool, `status`, that says why and
-how to fix it. Hooks print one line, log it, and exit 0, so a missing binary
+The plugin needs no separate install of `clax`. Its wrapper,
+`scripts/ensure-clax.sh`, runs `CLAX_BIN` when set; else the `bin` setting in
+`~/.clax/config.toml` (`clax bin set <path>`, which `clax init` sets to
+itself); else the Clax release the plugin pins, which the MCP server's first
+start downloads into `~/.clax/bin/<version>/`, checks against the checksum
+the plugin carries, and runs. `PATH` is never consulted. Hooks never
+download: until the release is installed they exit 0 and do nothing. A
+binary named by `CLAX_BIN` or the `bin` setting whose version differs from
+the plugin's runs with a warning in `~/.clax/logs/hooks.log`. When no
+`clax` can run, the MCP server still starts, with a single tool, `status`,
+that says why and how to fix it, and the hooks exit 0, so a missing binary
 never fails a turn.
 
 ## Working from a source checkout
@@ -38,7 +43,8 @@ clax doctor --agent claude
 ```
 
 It checks each layer and names the fix for each failure: `binary` (this
-`clax`, the one the plugins run, and every `clax` on `PATH`), `upgrade`
+`clax`, and the one the plugins run and why: `CLAX_BIN`, the `bin` setting,
+or the pinned release), `upgrade`
 (whether a failed upgrade keeps the daemon at an older version, until
 when, and why), `plugin` (the installed plugin and whether its version and
 wrapper match the binary), `skill` (whether the installed skill

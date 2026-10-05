@@ -106,7 +106,10 @@ fn a_bin_setting_does_not_disturb_the_rest_of_the_config() {
     std::fs::create_dir_all(e.p("ax")).unwrap();
     std::fs::write(e.p("ax/config.toml"), "[serve]\nport = 7489\n").unwrap();
     e.cmd().args(["bin", "set", ME]).assert().success();
-    assert_eq!(e.config(), format!("bin = \"{ME}\"\n[serve]\nport = 7489\n"));
+    assert_eq!(
+        e.config(),
+        format!("bin = \"{ME}\"\n[serve]\nport = 7489\n")
+    );
     // The CLI still reads the port, and mcp's preflight accepts the file.
     e.cmd()
         .args(["mcp", "--agent", "codex", "--preflight"])
@@ -122,7 +125,10 @@ fn init_points_the_bin_setting_at_this_binary_and_uninit_removes_it() {
     let (ok, v) = e.json(&["init"]);
     assert!(ok, "{v}");
     assert_eq!(v["bin"]["status"], "set", "{v}");
-    assert_eq!(e.config(), format!("bin = \"{ME}\"\n[serve]\nport = 7481\n"));
+    assert_eq!(
+        e.config(),
+        format!("bin = \"{ME}\"\n[serve]\nport = 7481\n")
+    );
     let (ok, v) = e.json(&["uninit"]);
     assert!(ok, "{v}");
     assert_eq!(v["bin"]["status"], "cleared", "{v}");

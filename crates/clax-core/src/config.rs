@@ -220,7 +220,10 @@ impl HomeConfig {
 /// value is `path` verbatim, and the plugins' wrapper can read it without
 /// a TOML parser.
 pub fn bin_path_ok(path: &str) -> bool {
-    path.starts_with('/') && !path.chars().any(|c| c == '"' || c == '\\' || c.is_control())
+    path.starts_with('/')
+        && !path
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_control())
 }
 
 /// The line `clax bin set` writes for `path`, which must pass
@@ -431,7 +434,11 @@ mod tests {
 
     #[test]
     fn a_bin_line_is_toml_whose_value_is_the_path() {
-        for p in ["/usr/local/bin/clax", "/Users/a b/é/clax", "/x/'quoted'/clax"] {
+        for p in [
+            "/usr/local/bin/clax",
+            "/Users/a b/é/clax",
+            "/x/'quoted'/clax",
+        ] {
             assert!(bin_path_ok(p), "{p}");
             let t: toml::Table = bin_line(p).parse().unwrap();
             assert_eq!(t["bin"].as_str(), Some(p));
