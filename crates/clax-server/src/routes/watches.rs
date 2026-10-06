@@ -148,7 +148,7 @@ pub async fn live_put(
             "scope": scope_label(&w.origin, &w.path),
             "replies_armed": w.replies_armed,
         },
-        "page": page_view(&s, &page, &artifact),
+        "page": page_view(&s, &page, &artifact, None),
         "covered": covered,
     })))
 }

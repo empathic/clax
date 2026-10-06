@@ -556,8 +556,11 @@ impl Hub {
         let live = site.is_some();
         let mut all = routes(ev);
         // A live page's `artifact` events also go to its site's channel.
+        // (Not the `thread_deleted` a move sends for older clients: the
+        // site's subscribers have `thread_moved`.)
         if let Some(origin) = site
             && all.iter().any(|(c, _)| matches!(c, Chan::Artifact(_)))
+            && !matches!(ev, Event::ThreadDeleted { moved: true, .. })
         {
             all.push((Chan::Site(origin), Gate::Local));
         }

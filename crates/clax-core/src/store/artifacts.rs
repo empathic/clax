@@ -426,9 +426,11 @@ impl Store {
                             "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
                             "DELETE FROM feedback WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
-                            "DELETE FROM batch_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)
-                                OR batch_id IN (SELECT id FROM send_batches WHERE artifact_id = ?1)",
-                            "DELETE FROM send_batches WHERE artifact_id = ?1",
+                            // A thread moved off the artifact keeps its
+                            // send record, and so does its batch.
+                            "DELETE FROM batch_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM send_batches WHERE artifact_id = ?1
+                                AND NOT EXISTS(SELECT 1 FROM batch_threads WHERE batch_id = send_batches.id)",
                             "DELETE FROM comments WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM thread_moves WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM threads WHERE artifact_id = ?1",

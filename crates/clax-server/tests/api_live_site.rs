@@ -278,7 +278,7 @@ async fn the_site_routes_and_topic_are_hidden_from_the_lan() {
         (
             Method::POST,
             format!("{lan}/api/live/rules"),
-            Some(json!({"origin": ORIGIN, "pattern": "/:p"})),
+            Some(json!({"origin": ORIGIN, "pattern": "/p/:p"})),
         ),
         (Method::DELETE, format!("{lan}/api/live/rules/x"), None),
         (
@@ -320,6 +320,7 @@ async fn moving_a_thread_refiles_it_and_tells_both_pages() {
     let v = ts.viewer(Some("Ana")).await;
     let (a, tid, before) = comment(&ts, &v.cookie, &format!("{ORIGIN}/a?x=1"), "Wrong page").await;
     let mut events = stream(&ts, &format!("site:{ORIGIN}")).await;
+    let mut old_page = stream(&ts, &format!("artifact:{a}")).await;
     let res = move_to(&ts, &tid, &format!("{ORIGIN}/b?tab=1")).await;
     assert_eq!(res.status(), 200);
     let m: Value = res.json().await.unwrap();
@@ -371,8 +372,20 @@ async fn moving_a_thread_refiles_it_and_tells_both_pages() {
     assert!(
         names
             .iter()
-            .all(|n| n == "version" || n.starts_with("thread"))
+            .all(|n| n == "version" || n == "thread_moved" || n == "thread"),
+        "the site gets no thread_deleted: {names:?}"
     );
+    // The old page's own topic also gets thread_deleted, for clients that
+    // know only that.
+    let (name, ev) = old_page.next().await;
+    assert_eq!(
+        (name.as_str(), &ev["thread_id"]),
+        ("thread_moved", &json!(tid))
+    );
+    let (name, ev) = old_page.next().await;
+    assert_eq!(name, "thread_deleted");
+    assert_eq!(ev["artifact_id"], a.as_str());
+    assert_eq!(ev["thread_id"], tid.as_str());
 
     // Again: nothing to do.
     let m: Value = move_to(&ts, &tid, &format!("{ORIGIN}/b?tab=1"))
@@ -455,7 +468,11 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
     assert_eq!(r["rule"]["pattern"], "/users/:id");
     assert_eq!(r["rule"]["page_url"], format!("{ORIGIN}/users/:id"));
     assert_eq!(r["page"]["path"], "/users/:id");
+    assert_eq!(r["page"]["merged"], true);
+    assert_eq!(r["page"]["pattern"], "/users/:id");
+    assert_eq!(r["remaining"], 0);
     let canon = r["page"]["artifact_id"].as_str().unwrap().to_string();
+    let canon_version = r["page"]["current_version"].clone();
     let mut moved: Vec<String> = serde_json::from_value(r["moved"].clone()).unwrap();
     moved.sort();
     let mut want = vec![t1.clone(), t2.clone()];
@@ -464,12 +481,14 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
     assert_eq!(threads_of(&ts, &one).await, Vec::<String>::new());
     assert_eq!(threads_of(&ts, &edit).await, vec![t3.clone()]);
 
-    // The same rule again: 200, nothing more to move.
+    // The same rule again: 200, nothing more to move, no copies.
     let res = add_rule(&ts, "/users/:id").await;
     assert_eq!(res.status(), 200);
     let r: Value = res.json().await.unwrap();
     assert_eq!(r["moved"], json!([]));
+    assert_eq!(r["remaining"], 0);
     assert_eq!(r["page"]["artifact_id"], canon.as_str());
+    assert_eq!(r["page"]["current_version"], canon_version);
 
     // A later URL the rule maps names the canonical page.
     let p: Value = ts
@@ -482,6 +501,7 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
         .await
         .unwrap();
     assert_eq!(p["page"]["artifact_id"], canon.as_str());
+    assert_eq!(p["page"]["merged"], true);
     assert_eq!(p["route"], "?q=1");
     assert_eq!(p["rule"]["id"], rule_id.as_str());
     let (aid, t4, view) = comment(&ts, &v.cookie, &format!("{ORIGIN}/users/3?q=1"), "three").await;
@@ -529,7 +549,19 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
         "a page left with no threads is not listed"
     );
 
-    // Deleting the rule stops the mapping and moves nothing back.
+    assert_eq!(group["page"]["merged"], true);
+
+    // A thread the owner moves onto the merged page stays there.
+    let (_, t5, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/other"), "five").await;
+    let m: Value = move_to(&ts, &t5, &format!("{ORIGIN}/users/:id"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(m["page"]["artifact_id"], canon.as_str());
+
+    // Deleting the rule un-merges: each thread a rule put there goes back
+    // to the page of the path it was made at.
     let res = ts
         .authed(
             ts.client
@@ -539,6 +571,28 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+    let d: Value = res.json().await.unwrap();
+    assert_eq!(d["remaining"], 0);
+    assert_eq!(d["rule"]["deleting"], false);
+    let mut back: Vec<String> = serde_json::from_value(d["moved"].clone()).unwrap();
+    back.sort();
+    let mut want = vec![t1.clone(), t2.clone(), t4.clone()];
+    want.sort();
+    assert_eq!(back, want);
+    assert_eq!(threads_of(&ts, &one).await, vec![t1.clone()]);
+    assert_eq!(threads_of(&ts, &canon).await, vec![t5]);
+    let s = site(&ts).await;
+    let t4_view = s["pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|g| g["threads"].as_array().unwrap())
+        .find(|t| t["id"] == t4.as_str())
+        .unwrap()
+        .clone();
+    assert_eq!(t4_view["page_url"], format!("{ORIGIN}/users/3?q=1"));
+    assert_eq!(t4_view["page_path"], "/users/3");
+    assert_eq!(t4_view["moves"][0]["kind"], "unmerge");
     let res = ts
         .authed(
             ts.client
@@ -558,12 +612,8 @@ async fn a_rule_merges_pages_and_maps_later_comments() {
         .await
         .unwrap();
     assert_eq!(p["page"]["artifact_id"], one.as_str());
+    assert_eq!(p["page"]["merged"], false);
     assert!(p["rule"].is_null());
-    let mut kept = threads_of(&ts, &canon).await;
-    kept.sort();
-    let mut want = vec![t1, t2, t4];
-    want.sort();
-    assert_eq!(kept, want);
 }
 
 #[tokio::test]
@@ -618,6 +668,9 @@ async fn rules_are_checked_and_only_the_owner_changes_them() {
         "/a*/:id",
         "/x//:id",
         "/ä/:id",
+        "/*",
+        "/:p",
+        "/:a/:b",
     ] {
         let res = add_rule(&ts, bad).await;
         assert_eq!(res.status(), 400, "{bad}");
@@ -778,4 +831,161 @@ async fn the_extension_lists_moves_and_merges() {
         .await
         .unwrap();
     assert_eq!(res.status(), 200);
+}
+
+/// A session of an agent watching the live page `aid`.
+async fn watching_agent(ts: &TestServer, hsid: &str, aid: &str) -> String {
+    let s = ts.register_session("claude", hsid).await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/watches/{aid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    sid
+}
+
+async fn feedback(ts: &TestServer, sid: &str) -> Value {
+    ts.get_authed(&format!("/api/sessions/{sid}/feedback?tier=wait&wait=1"))
+        .await
+        .json()
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_moved_threads_agent_still_hears_of_it() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let (a, tid, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/a"), "Fix the header").await;
+    let sid = watching_agent(&ts, "move-1", &a).await;
+    ts.send_thread(&a, &tid).await;
+    let fb = feedback(&ts, &sid).await;
+    assert_eq!(fb["feedback"][0]["thread_id"], tid.as_str(), "{fb}");
+    let m: Value = move_to(&ts, &tid, &format!("{ORIGIN}/b"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let b = m["page"]["artifact_id"].as_str().unwrap().to_string();
+    let res = ts
+        .client
+        .post(format!(
+            "{}/api/artifacts/{b}/threads/{tid}/comments",
+            ts.base
+        ))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .json(&json!({"body": "Also the footer"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let fb = feedback(&ts, &sid).await;
+    let items = fb["feedback"].as_array().unwrap();
+    assert!(
+        items
+            .iter()
+            .any(|f| f["thread_id"] == tid.as_str()
+                && f["live"]["page_url"] == format!("{ORIGIN}/b")),
+        "{fb}"
+    );
+}
+
+#[tokio::test]
+async fn a_snapshot_settles_only_addresses_of_threads_made_at_its_path() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    assert_eq!(add_rule(&ts, "/users/:id").await.status(), 201);
+    let (canon, tid, view) = comment(&ts, &v.cookie, &format!("{ORIGIN}/users/1"), "x").await;
+    assert_eq!(view["page_path"], "/users/1");
+    let sid = watching_agent(&ts, "pending-1", &canon).await;
+    ts.send_thread(&canon, &tid).await;
+    let res = ts
+        .authed(ts.client.post(format!(
+            "{}/api/artifacts/{canon}/threads/{tid}/comments",
+            ts.base
+        )))
+        .header("x-clax-session", &sid)
+        .json(&json!({"body": "Fixed", "author_kind": "agent", "addressed": true}))
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success());
+    let snapshot = |url: String| {
+        let form = reqwest::multipart::Form::new()
+            .text("url", url)
+            .text("title", "User")
+            .text("pending", json!([tid]).to_string())
+            .text("snapshot", "<!doctype html><p>after");
+        ts.client
+            .post(format!("{}/api/live/snapshots", ts.base))
+            .header("cookie", format!("clax_viewer={}", v.cookie))
+            .multipart(form)
+            .send()
+    };
+    let res = snapshot(format!("{ORIGIN}/users/2")).await.unwrap();
+    assert_eq!(res.status(), 409, "another user's page settles nothing");
+    let res = snapshot(format!("{ORIGIN}/users/1")).await.unwrap();
+    assert_eq!(res.status(), 200);
+    let s: Value = res.json().await.unwrap();
+    assert_eq!(s["linked"], json!([tid]));
+    assert_eq!(s["page"]["merged"], true);
+}
+
+#[tokio::test]
+async fn a_scope_watch_on_a_merged_path_still_hears_of_it() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let s = ts.register_session("claude", "scope-1").await;
+    let sid = s["id"].as_str().unwrap().to_string();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/live-watches", ts.base)),
+        )
+        .json(&json!({"url": format!("{ORIGIN}/users/1")}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200);
+    assert_eq!(add_rule(&ts, "/users/:id").await.status(), 201);
+    let (canon, tid, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/users/1"), "x").await;
+    ts.send_thread(&canon, &tid).await;
+    let fb = feedback(&ts, &sid).await;
+    assert_eq!(fb["feedback"][0]["thread_id"], tid.as_str(), "{fb}");
+    assert_eq!(
+        fb["feedback"][0]["live"]["page_url"],
+        format!("{ORIGIN}/users/1")
+    );
+}
+
+#[tokio::test]
+async fn only_the_owner_follows_a_site() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let res = ts
+        .client
+        .get(format!("{}/api/stream", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .send()
+        .await
+        .unwrap();
+    let mut events = EventReader::from_response(res);
+    let sid = events.next_named("ready").await["stream"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let res = ts
+        .client
+        .post(format!("{}/api/stream/{sid}", ts.base))
+        .header("cookie", format!("clax_viewer={}", v.cookie))
+        .json(&json!({"subscribe": [format!("site:{ORIGIN}")]}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 403);
 }

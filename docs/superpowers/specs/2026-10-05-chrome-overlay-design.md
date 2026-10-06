@@ -597,47 +597,74 @@ the panel's search and filters run on the listing in the client.
 2. **Realtime.** The stream topic `site:<origin>` (the normalized origin)
    carries every live page's `artifact:` events for the origin, pages made
    later included; only streams that may see live pages take it (L10), and
-   the extension's live-only stream does.
+   only an owner's (the listing's read rule); the extension's live-only
+   stream does.
 3. **Moving.** `POST /api/live/threads/<tid>/move {page_url}` (the owner:
    the token or the extension's credential) re-files a live page's thread
    under the live page `page_url` names, of the same origin only
    (`cross_origin` otherwise), made through `LiveIds::ensure_page` when
    missing, at `page_url`'s route. The thread keeps its ID, comments, sends,
    feedback and status; its clip, pending address and pick move with it.
-   Its snapshot comes along as versions of the new page: the version it was
-   made on and each version that addressed it are copied there (noted
-   `moved`), and the thread names the copies, so the invariant "a thread's
-   version and its address links are versions of its own page" holds and
-   deleting the page it left loses nothing. When the new page existed, its
-   version current before the move is copied once more on top, keeping its
-   own latest snapshot current. Each move is recorded (`thread_moves`: who,
-   from which URL, to which, by which rule). The stream gets the new page's
-   `version`s, `thread_moved {artifact_id, thread_id, to_artifact_id}` on
-   the page left, then `thread` on the new page. Moving a thread to where it
-   is writes nothing.
+   - **Snapshots.** The version it was made on and each version that
+     addressed it become versions of the new page, so the invariant "a
+     thread's version and its address links are versions of its own page"
+     holds and deleting the page it left loses nothing. A version the page
+     already holds with the same bytes is reused (a thread moved back
+     writes nothing); otherwise a plain copy is written, noted `moved`
+     (owner ruling 2026-10-06: no hard links; a version referring to
+     another page's files was judged too invasive for now). After copies,
+     a page that existed gets its newest version not noted `moved` written
+     once more on top, with its own note, so its current version is still
+     its own latest snapshot; without copies its current version is left
+     alone.
+   - **Agents** (review H1). Watches are per page, so the thread's agents
+     would lose it: every live session watching the page it left, the
+     session it was sent to and every session with feedback of it not yet
+     acknowledged watch the new page too, with their arming, and so does
+     every scope watch covering the path it was made at.
+   - **Atomic.** Plan, copies and re-filing are one transaction; a failure
+     leaves nothing of them (a page made for the move may stay, empty).
+   - Each move is recorded (`thread_moves`: who, from which URL, to which,
+     its kind (`move`, `merge`, `unmerge`) and rule). The stream gets the
+     new page's `version`s, `thread_moved {artifact_id, thread_id,
+     to_artifact_id}` on the page left, then `thread` on the new page.
+     Until the shell and the extension handle `thread_moved`, the page left
+     also gets `thread_deleted` on its own topics (not `site:`), so they
+     drop the thread. Moving a thread to where it is writes nothing.
 4. **Merging.** A merge rule `{origin, pattern}` maps every path of the
    origin that `pattern` matches to one canonical live page whose path is
-   the pattern (`/users/:id`). Patterns are `/`-separated literals,
-   `:name` (one non-empty segment) and a last `*` (one or more segments);
-   no regular expressions; at most 256 bytes, 16 segments, 64 rules per
-   origin; the daemon's own origin is refused. The most literal segments
-   win, then the most `:name` segments, then the oldest rule. Adding a rule
-   re-files, as a move does, every thread of the origin whose path the rule
-   now wins; from then on every lookup and write for a matching URL
-   (`GET /api/live/pages`, `POST /api/live/threads`, `POST
+   the pattern (`/users/:id`), marked in page views (`merged`, `pattern`).
+   Patterns are `/`-separated literals, `:name` (one non-empty segment) and
+   a last `*` (one or more segments), with at least one literal and one
+   `:name` or `*` (owner ruling 2026-10-06: `/*`, `/:x`, `/:a/:b` would
+   merge a whole site and are refused); no regular expressions; at most 256
+   bytes, 16 segments, 64 rules per origin; the daemon's own origin is
+   refused. A rule's own pattern always names its canonical page; otherwise
+   the most literal segments win, then the most `:name` segments, then the
+   oldest rule. Adding a rule re-files, as a move does, every thread of the
+   origin whose path the rule now wins, at most 200 a request (each batch
+   one transaction; the answer's `remaining` tells the client to repeat;
+   a repeat copies nothing twice). From then on every lookup and write for
+   a matching URL (`GET /api/live/pages`, `POST /api/live/threads`, `POST
    /api/live/snapshots`) resolves to the canonical page, and a thread made
-   there keeps its URL's path (`threads.live_path`). Deleting a rule stops
-   the mapping only; it does not un-merge: re-filed threads stay where the
-   rule put them, and the pages they left remain.
-5. **Who.** Reads need an owner credential; moves and rule changes need the
+   there keeps its URL's path (`threads.live_path`), by which scope watches
+   still cover it and by which snapshots settle pending addresses: a
+   snapshot of `/users/2` links only threads made at `/users/2`.
+5. **Un-merging** (owner ruling 2026-10-06). Deleting a rule takes it out
+   of force at once and moves each thread on its canonical page that a
+   rule put there (not one the owner moved there) back to the page of the
+   path it was made at, or to another rule's canonical page when one maps
+   that path, 200 a request; the rule stays `deleting` until none is left.
+6. **Who.** Reads need an owner credential; moves and rule changes need the
    token or the extension's credential. All of it is under `/api/live/`, so
    hidden from the LAN (L10) and admitted by the extension gateway's
    allowlist (§9.2).
 
 Migration 18 adds `threads.live_path`, `live_rules (id, origin, pattern,
-created_at, UNIQUE (origin, pattern))` and `thread_moves (id, thread_id,
-from_artifact_id, from_url, to_artifact_id, to_url, moved_by, rule_id,
-created_at)` with its index by thread.
+created_at, deleted_at, UNIQUE (origin, pattern))`, `thread_moves (id,
+thread_id, from_artifact_id, from_url, to_artifact_id, to_url, moved_by,
+kind, rule_id, created_at)` with its index by thread, and an index of
+`live_picks` by thread.
 
 ## 8. Screenshots and snapshots
 

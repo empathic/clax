@@ -294,16 +294,20 @@ pub const MIGRATIONS: &[&str] = &[
     // 18: site-wide threads (spec 2026-10-05-chrome-overlay-design §7.1):
     // the path a live page's thread was made at when its page's path differs
     // (a rule mapped the URL, or a merge re-filed the thread), the per-origin
-    // rules that map paths to one canonical page, and each thread's moves
-    // between pages.
+    // rules that map paths to one canonical page (`deleted_at` while a
+    // deleted rule's threads are still being moved back), each thread's
+    // moves between pages (`kind`: the owner's move, a rule's merge, or a
+    // deleted rule's un-merge), and picks by thread (a move carries them).
     "ALTER TABLE threads ADD COLUMN live_path TEXT;
     CREATE TABLE live_rules (
         id TEXT PRIMARY KEY,
         origin TEXT NOT NULL,
         pattern TEXT NOT NULL,
         created_at TEXT NOT NULL,
+        deleted_at TEXT,
         UNIQUE (origin, pattern)
     );
+    CREATE INDEX live_picks_by_thread ON live_picks(thread_id);
     CREATE TABLE thread_moves (
         id TEXT PRIMARY KEY,
         thread_id TEXT NOT NULL REFERENCES threads(id),
@@ -312,6 +316,7 @@ pub const MIGRATIONS: &[&str] = &[
         to_artifact_id TEXT NOT NULL,
         to_url TEXT NOT NULL,
         moved_by TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('move', 'merge', 'unmerge')),
         rule_id TEXT,
         created_at TEXT NOT NULL
     );
