@@ -20,7 +20,7 @@ use clax_core::Store;
 use clax_core::extension::{CREDENTIAL_TTL_DAYS, credential_hash, extension_origin, is_credential};
 use clax_core::working::{Clock, SystemClock};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
 /// How often one credential's `last_used_at` is written.
 const TOUCH_EVERY: Duration = Duration::hours(1);
@@ -37,7 +37,9 @@ struct Entry {
     last_used: DateTime<Utc>,
 }
 
-/// The live credentials, by hash.
+/// The live credentials, by hash. A panic while a lock is held does not
+/// poison later requests: every access takes the map as it was left (each
+/// change replaces or edits one entry, or the whole map, at once).
 pub struct Credentials {
     clock: Arc<dyn Clock>,
     map: RwLock<HashMap<String, Entry>>,
@@ -70,7 +72,7 @@ impl Credentials {
     /// The store's.
     pub fn load_with(st: &Store, clock: Arc<dyn Clock>) -> clax_core::Result<Credentials> {
         let c = Credentials::new(clock);
-        *c.map.write().expect("credentials lock") = read_map(st)?;
+        *c.map.write().unwrap_or_else(PoisonError::into_inner) = read_map(st)?;
         Ok(c)
     }
 
@@ -79,14 +81,14 @@ impl Credentials {
     pub fn get(&self, hash: &str) -> Option<Cred> {
         let now = self.clock.now();
         {
-            let map = self.map.read().expect("credentials lock");
+            let map = self.map.read().unwrap_or_else(PoisonError::into_inner);
             match map.get(hash) {
                 None => return None,
                 Some(e) if live(e, now) => return Some(e.cred.clone()),
                 Some(_) => {}
             }
         }
-        let mut map = self.map.write().expect("credentials lock");
+        let mut map = self.map.write().unwrap_or_else(PoisonError::into_inner);
         if map.get(hash).is_some_and(|e| !live(e, now)) {
             map.remove(hash);
         }
@@ -98,14 +100,17 @@ impl Credentials {
         let last_used = self.clock.now();
         self.map
             .write()
-            .expect("credentials lock")
+            .unwrap_or_else(PoisonError::into_inner)
             .insert(hash.to_string(), Entry { cred: c, last_used });
     }
 
     /// Takes `other`'s credentials in place of these.
     pub fn replace_with(&self, other: Credentials) {
-        let map = other.map.into_inner().expect("credentials lock");
-        *self.map.write().expect("credentials lock") = map;
+        let map = other
+            .map
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner);
+        *self.map.write().unwrap_or_else(PoisonError::into_inner) = map;
     }
 
     /// Runs `change` on the store (a mint or a revoke), then reloads these
@@ -119,9 +124,12 @@ impl Credentials {
         st: &Store,
         change: impl FnOnce(&Store) -> clax_core::Result<T>,
     ) -> clax_core::Result<T> {
-        let _one = self.refreshing.lock().expect("refresh lock");
+        let _one = self
+            .refreshing
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
         let out = change(st)?;
-        *self.map.write().expect("credentials lock") = read_map(st)?;
+        *self.map.write().unwrap_or_else(PoisonError::into_inner) = read_map(st)?;
         Ok(out)
     }
 
@@ -130,7 +138,7 @@ impl Credentials {
     /// more. Answering `true` records the use here.
     pub fn due_for_touch(&self, hash: &str) -> bool {
         let now = self.clock.now();
-        let mut map = self.map.write().expect("credentials lock");
+        let mut map = self.map.write().unwrap_or_else(PoisonError::into_inner);
         match map.get_mut(hash) {
             Some(e) if live(e, now) && now - e.last_used >= TOUCH_EVERY => {
                 e.last_used = now;
@@ -464,6 +472,31 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let st = Store::open(&Home::at(dir.path().join("ax"))).unwrap();
         (dir, Arc::new(st))
+    }
+
+    #[test]
+    fn a_panic_while_the_credentials_are_locked_does_not_break_later_requests() {
+        let (_d, st) = store();
+        let c = Credentials::new(Arc::new(SystemClock));
+        let cred = || Cred {
+            extension_id: "x".into(),
+        };
+        c.insert("h1", cred());
+        std::thread::scope(|s| {
+            let poison = s.spawn(|| {
+                let _map = c.map.write().unwrap();
+                let _one = c.refreshing.lock().unwrap();
+                panic!("poison the locks");
+            });
+            assert!(poison.join().is_err());
+        });
+        assert!(c.map.is_poisoned() && c.refreshing.is_poisoned());
+        assert!(c.get("h1").is_some());
+        c.insert("h2", cred());
+        assert!(!c.due_for_touch("h2"));
+        c.refresh(&st, |_| Ok(())).unwrap();
+        assert!(c.get("h1").is_none(), "reloaded from the store");
+        c.replace_with(Credentials::new(Arc::new(SystemClock)));
     }
 
     #[test]
