@@ -57,6 +57,19 @@ impl IntoResponse for QuestionError {
     }
 }
 
+/// Checks that session `sid` exists (404) and is live (400
+/// `unknown_session`), as every session route does (spec §6.1).
+fn live(db: &Store, sid: &str) -> clax_core::Result<()> {
+    match db.get_session(sid)? {
+        None => Err(CoreError::NotFound),
+        Some(s) if s.ended_at.is_some() => Err(CoreError::invalid(
+            "unknown_session",
+            "no live session has this ID",
+        )),
+        Some(_) => Ok(()),
+    }
+}
+
 /// What applying a [`Close`] came to.
 pub(crate) enum Closed {
     /// Applied and announced; the new view.
@@ -152,9 +165,7 @@ pub async fn create(
     let st = s.clone();
     let (row, made, v) = s
         .store_call(move |db| {
-            if db.get_session(&sid)?.is_none() {
-                return Err(CoreError::NotFound);
-            }
+            live(db, &sid)?;
             // A named artifact must be live; a working record's may have
             // gone since, and then the question is about none.
             let live = match artifact_id.as_deref().map(ArtifactId::parse) {
@@ -206,8 +217,10 @@ pub struct WaitQuery {
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
 /// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. An answered
 /// or declined result marks it taken. While the poll runs it holds the
-/// question; when the last poll of a hook question lets go, its grace
-/// starts.
+/// question; when the last poll of an open hook question lets go, its
+/// grace starts. 429 `limit_reached` when
+/// [`MAX_POLLS`](crate::questions::MAX_POLLS) polls hold it already (a
+/// new poll is refused rather than an older one ended).
 pub async fn poll(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -220,10 +233,24 @@ pub async fn poll(
     let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let (sid1, qid1) = (sid.clone(), qid.clone());
     let first = s
-        .store_call(move |db| db.session_question(&sid1, &qid1))
+        .store_call(move |db| {
+            live(db, &sid1)?;
+            db.session_question(&sid1, &qid1)
+        })
         .await?;
-    let grace = (first.source == Source::Hook).then(|| arm_grace(s.clone(), qid.clone()));
-    let (notify, _hold) = s.questions.hold(&qid, grace);
+    // Only an open mirrored question can be withdrawn for want of a poll.
+    let grace = (first.source == Source::Hook && first.status == Status::Open)
+        .then(|| arm_grace(s.clone(), qid.clone()));
+    let Some((notify, _hold)) = s.questions.hold(&qid, grace) else {
+        return Err(ApiError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            "limit_reached",
+            format!(
+                "at most {} polls wait on one question at once",
+                crate::questions::MAX_POLLS
+            ),
+        ));
+    };
     let mut shutdown = s.shutdown.clone();
     // A dropped sender means the state has no shutdown source; never end early then.
     let stopping = async move {
@@ -274,6 +301,7 @@ async fn session_close(
     let st = s.clone();
     let closed = s
         .store_call(move |db| {
+            live(db, &sid)?;
             db.session_question(&sid, &qid)?;
             close(&st, db, &qid, c)
         })
@@ -327,6 +355,7 @@ pub async fn terminal(
     let st = s.clone();
     let closed = s
         .store_call(move |db| {
+            live(db, &sid)?;
             let Some(q) = db.question_by_tool_use(&sid, &b.tool_use_id)? else {
                 return Ok(None);
             };
