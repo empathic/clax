@@ -372,6 +372,17 @@ describe("trusted input", () => {
       strict.set(false);
     }
   });
+
+  it("can keep its drawing in a closed shadow root and hide it", () => {
+    document.querySelectorAll("clax-overlay").forEach(n => n.remove());
+    const m = new CommentMode(document, { hover() {}, pickElement() {}, pickRange() {}, pickArea() {}, cancel() {} }, { trustedOnly: false, shadow: "closed" });
+    const host = document.querySelector("clax-overlay") as HTMLElement;
+    expect(host.shadowRoot).toBeNull();
+    m.setVisible(false);
+    expect(host.style.visibility).toBe("hidden");
+    m.setVisible(true);
+    expect(host.style.visibility).toBe("");
+  });
 });
 
 describe("Option widening", () => {

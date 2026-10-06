@@ -72,11 +72,13 @@ export class CommentMode {
   private readonly trustedOnly: boolean;
 
   /** `opts.trustedOnly` (default true) ignores events the page dispatched
-   * itself; tests that synthesise input turn it off. */
-  constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean } = {}) {
+   * itself; tests that synthesise input turn it off. `opts.shadow`
+   * (default "open") is the drawing's shadow root mode: the Chrome
+   * extension's overlay uses "closed", so page scripts cannot reach it. */
+  constructor(private readonly doc: Document, private readonly hooks: ModeHooks, opts: { trustedOnly?: boolean; shadow?: "open" | "closed" } = {}) {
     this.trustedOnly = opts.trustedOnly ?? true;
     this.host = doc.createElement(OVERLAY_TAG);
-    const root = this.host.attachShadow({ mode: "open" });
+    const root = this.host.attachShadow({ mode: opts.shadow ?? "open" });
     root.innerHTML = `<style>${CSS}</style><div class="f"></div><div class="o"></div><div class="a"></div><div class="pin"></div>`;
     this.outline = root.querySelector(".o")!;
     this.areaBox = root.querySelector(".a")!;
@@ -118,6 +120,12 @@ export class CommentMode {
       this.endDrag();
       this.captured();
     }
+  }
+
+  /** Hides or shows everything comment mode draws (the extension hides it
+   * while the tab's screenshot is taken). */
+  setVisible(on: boolean): void {
+    this.host.style.visibility = on ? "" : "hidden";
   }
 
   /** The pick's clip was taken (the pick was posted): an area's rectangle is
