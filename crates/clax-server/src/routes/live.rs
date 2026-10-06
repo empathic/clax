@@ -238,16 +238,25 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
     Ok(f)
 }
 
+/// What `POST /api/live/threads` answers with.
+struct Answer {
+    /// The request made the thread (`false`: a repeat found it).
+    made: bool,
+    view: Value,
+    page: LivePage,
+    artifact: Artifact,
+    version: u32,
+}
+
 /// A repeat of a comment: the thread pick `pick` made on the live page
-/// `key`, when it did ([`Store::picked_thread`]), as `thread`'s answer
-/// gives it with `false` for "made now".
+/// `key`, when it did ([`Store::picked_thread`]).
 fn replay(
     st: &Store,
     ctx: &crate::feedback::FeedbackCtx,
     key: &PageKey,
     pick: &str,
     with_path: bool,
-) -> clax_core::Result<Option<(bool, Value, LivePage, Artifact, u32)>> {
+) -> clax_core::Result<Option<Answer>> {
     let Some((aid, tid)) = st.picked_thread(key, pick)? else {
         return Ok(None);
     };
@@ -261,7 +270,13 @@ fn replay(
     };
     let version = thread.version_n;
     let view = thread_view(st, &thread, ctx.codex_push(), with_path)?;
-    Ok(Some((false, view, page, artifact, version)))
+    Ok(Some(Answer {
+        made: false,
+        view,
+        page,
+        artifact,
+        version,
+    }))
 }
 
 /// `POST /api/live/threads` (multipart `url`, `title`, `anchor`, `body`,
@@ -317,7 +332,7 @@ pub async fn thread(
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
     let key = pu.key;
-    let (made, view, page, artifact, version) = s
+    let a = s
         .store_call(move |st| {
             if let Some(pick) = &pick
                 && let Some(r) = replay(st, &ctx, &key, pick, with_path)?
@@ -361,22 +376,23 @@ pub async fn thread(
             };
             let view = announce_new_thread(st, &ctx, thread, mention, with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
-            Ok((true, view, page, e.artifact, e.version.n))
+            Ok(Answer {
+                made: true,
+                view,
+                page,
+                artifact: e.artifact,
+                version: e.version.n,
+            })
         })
         .await?;
-    if !made {
-        let out = json!({
-            "thread": view,
-            "page": page_view(&s, &page, &artifact),
-            "version": version,
-        });
+    let mut out = json!({
+        "thread": a.view,
+        "page": page_view(&s, &a.page, &a.artifact),
+        "version": a.version,
+    });
+    if !a.made {
         return Ok((StatusCode::OK, Json(out)));
     }
-    let mut out = json!({
-        "thread": view,
-        "page": page_view(&s, &page, &artifact),
-        "version": version,
-    });
     if let Some(e) = clip_error {
         out["clip_error"] = json!(e);
     }
