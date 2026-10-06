@@ -31,6 +31,9 @@ pub const KIND_MOVE: &str = "move";
 pub const KIND_MERGE: &str = "merge";
 /// A thread's move back to its own path's page when its rule was deleted.
 pub const KIND_UNMERGE: &str = "unmerge";
+/// A thread's move from a joined origin's page onto its site's page of the
+/// same path (spec §7.2).
+pub const KIND_JOIN: &str = "join";
 
 /// A merge rule: the live pages of `origin` whose path `pattern` matches
 /// are one page, the canonical page whose path is `pattern`. `deleting`
@@ -44,17 +47,21 @@ pub struct LiveRule {
     pub deleting: bool,
 }
 
-/// The rules of origin `?1` in force, oldest first.
+/// The rules of the site of origin `?1` in force (its key's: spec §7.2),
+/// oldest first.
 pub(crate) const RULES_OF_ORIGIN: &str =
     "SELECT id, origin, pattern, created_at, deleted_at IS NOT NULL FROM live_rules
-    WHERE origin = ?1 AND deleted_at IS NULL ORDER BY created_at, id";
+    WHERE origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+        AND deleted_at IS NULL ORDER BY created_at, id";
 const RULE_COLUMNS: &str =
     "SELECT id, origin, pattern, created_at, deleted_at IS NOT NULL FROM live_rules";
-/// The live pages of origin `?1` with their title and current version.
+/// The live pages of the site of origin `?1` with their title and current
+/// version.
 pub(crate) const SITE_PAGES: &str =
     "SELECT p.artifact_id, p.origin, p.path, a.title, a.current_version
     FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
-    WHERE p.origin = ?1 AND a.deleted_at IS NULL";
+    WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+        AND a.deleted_at IS NULL";
 /// The threads of the pages of `?1` (a JSON array of artifact IDs), without
 /// comments: ID, page, `live_path` and anchor.
 pub(crate) const REFILE_CANDIDATES: &str = "SELECT t.id, t.artifact_id, t.live_path, t.anchor_json
@@ -299,10 +306,11 @@ fn plan_refile(
                 format!("thread {} is not on a live page", m.thread_id),
             ));
         };
-        if page.origin != to.origin {
+        // Within one site, joined origins included (spec §7.2).
+        if super::joined::site_key(c, &page.origin)? != super::joined::site_key(c, &to.origin)? {
             return Err(CoreError::invalid(
                 "cross_origin",
-                "a thread moves only to a page of its own origin",
+                "a thread moves only to a page of its own site",
             ));
         }
         let anchor: Anchor =
@@ -665,7 +673,7 @@ fn commit_refile(
 /// `live_path` and route.
 type Candidate = (String, String, Option<String>, Option<String>);
 
-fn candidates(c: &Connection, sql: &str, arg: &str) -> Result<Vec<Candidate>> {
+pub(super) fn candidates(c: &Connection, sql: &str, arg: &str) -> Result<Vec<Candidate>> {
     let mut st = c.prepare_cached(sql)?;
     let rows = st
         .query_map(params![arg], |r| {
@@ -713,6 +721,8 @@ impl Store {
     /// `too_many_rules` past [`MAX_RULES`] rules in force for the origin.
     pub fn add_live_rule(&self, origin: &str, pattern: &PathPattern) -> Result<(LiveRule, bool)> {
         self.with_tx(|tx| {
+            // A joined site's rules are its key's (spec §7.2).
+            let origin = &super::joined::site_key(tx, origin)?;
             let old = tx
                 .query_row(
                     &format!("{RULE_COLUMNS} WHERE origin = ?1 AND pattern = ?2"),
@@ -783,13 +793,23 @@ impl Store {
     }
 
     /// Where `key`'s comments go: the canonical page of the rule of its
-    /// origin that maps its path ([`resolve_with`]), or `key` itself.
+    /// origin's site that maps its path ([`resolve_with`]), or `key` itself,
+    /// keyed by its site's key (spec §7.2).
     ///
     /// # Errors
     /// Database errors only.
     pub fn resolve_live_key(&self, key: &PageKey) -> Result<Resolved> {
-        let rules = self.live_rules(&key.origin)?;
-        Ok(resolve_with(&rules, key))
+        let (rules, origin) = self.with_read(|c| {
+            Ok((
+                rules_in(c, &key.origin)?,
+                super::joined::site_key(c, &key.origin)?,
+            ))
+        })?;
+        let key = PageKey {
+            origin,
+            path: key.path.clone(),
+        };
+        Ok(resolve_with(&rules, &key))
     }
 
     /// Of `threads`, those on a live page of `origin` made at `path` (their

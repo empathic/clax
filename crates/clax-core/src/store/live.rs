@@ -24,6 +24,8 @@ pub struct LivePage {
 #[derive(Clone, Debug)]
 pub struct EnsuredPage {
     pub artifact: Artifact,
+    /// The origin the page is kept under: its site's key (spec §7.2).
+    pub origin: String,
     /// The version a thread made now belongs on.
     pub version: Version,
     /// The page did not exist before this call.
@@ -57,10 +59,13 @@ fn row_to_page(r: &Row<'_>) -> rusqlite::Result<LivePage> {
     })
 }
 
+/// The live page `key` names: the page of its path on its origin's site
+/// (spec §7.2: a joined origin's pages are its site's).
 fn page_by_key(c: &Connection, key: &PageKey) -> Result<Option<LivePage>> {
     Ok(c.query_row(
         "SELECT p.artifact_id, p.origin, p.path FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
-         WHERE p.origin = ?1 AND p.path = ?2 AND a.deleted_at IS NULL",
+         WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+            AND p.path = ?2 AND a.deleted_at IS NULL",
         params![key.origin, key.path],
         row_to_page,
     )
@@ -195,12 +200,14 @@ fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<()> {
     Ok(())
 }
 
-/// The live pages of origin `?1` whose artifact is not deleted.
+/// The live pages of the site of origin `?1` whose artifact is not deleted
+/// (the pages its site's key holds: spec §7.2).
 pub(crate) const PAGES_OF_ORIGIN: &str =
     "SELECT p.artifact_id, p.origin, p.path FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
-    WHERE p.origin = ?1 AND a.deleted_at IS NULL";
+    WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+        AND a.deleted_at IS NULL";
 
-/// The live pages of `origin` whose artifact is not deleted.
+/// The live pages of `origin`'s site whose artifact is not deleted.
 pub(super) fn pages_of(tx: &Connection, origin: &str) -> Result<Vec<LivePage>> {
     let mut st = tx.prepare_cached(PAGES_OF_ORIGIN)?;
     let rows = st
@@ -219,13 +226,16 @@ pub(super) fn live_page_of_conn(c: &Connection, aid: &str) -> Result<Option<Live
     .optional()?)
 }
 
-/// The scope watches of live sessions on origin `?1`, oldest first:
-/// session, path and arming. `CROSS JOIN` keeps `live_watches` outer, so
-/// the origin index bounds the work however many sessions have ended.
-pub(crate) const SCOPES_OF_ORIGIN: &str =
-    "SELECT lw.session_id, lw.path, lw.replies_armed FROM live_watches lw
+/// The scope watches of live sessions on any origin of the site whose key
+/// is `?1` (spec §7.2: a watch on one of a joined site's origins covers
+/// them all), oldest first: session, path and arming. `CROSS JOIN` keeps
+/// `live_watches` outer, so the origin index bounds the work however many
+/// sessions have ended.
+pub(crate) const SCOPES_OF_ORIGIN: &str = "SELECT lw.session_id, lw.path, lw.replies_armed
+    FROM (SELECT origin FROM live_sites WHERE site = ?1 UNION SELECT ?1) o
+    CROSS JOIN live_watches lw ON lw.origin = o.origin
     CROSS JOIN sessions s ON s.id = lw.session_id
-    WHERE lw.origin = ?1 AND s.ended_at IS NULL ORDER BY lw.created_at, lw.session_id, lw.path";
+    WHERE s.ended_at IS NULL ORDER BY lw.created_at, lw.session_id, lw.path";
 /// The pending address of thread `?1`: harness and time.
 pub(crate) const PENDING_OF: &str =
     "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1";
@@ -286,14 +296,49 @@ fn page_keys(tx: &Connection, p: &LivePage) -> Result<Vec<PageKey>> {
     Ok(keys)
 }
 
-/// Whether any scope watch of `sid` covering any of `keys` (one origin's)
-/// has replies armed, or `None` when none covers them.
+/// Makes every live session whose scope watch covers the live page `p`
+/// (by its own path or a path of a thread on it) a watcher of it: what a
+/// join does for each page of the site (spec §7.2), as the scopes of every
+/// origin of the site now cover it.
+pub(super) fn rematerialize(tx: &Connection, p: &LivePage) -> Result<()> {
+    let keys = page_keys(tx, p)?;
+    let rows: Vec<(String, String, bool)> = {
+        let mut st = tx.prepare_cached(SCOPES_OF_ORIGIN)?;
+        st.query_map(params![p.origin], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut out: Vec<(String, bool)> = Vec::new();
+    for (sid, path, armed) in rows {
+        let scope = PageKey {
+            origin: p.origin.clone(),
+            path,
+        };
+        if !keys.iter().any(|k| k.covered_by(&scope)) {
+            continue;
+        }
+        match out.iter_mut().find(|(s, _)| *s == sid) {
+            Some((_, a)) => *a |= armed,
+            None => out.push((sid, armed)),
+        }
+    }
+    for (sid, armed) in &out {
+        scope_row(tx, sid, &p.artifact_id, *armed)?;
+    }
+    Ok(())
+}
+
+/// Whether any scope watch of `sid` covering any of `keys` (one page's,
+/// keyed by its site's key) has replies armed, or `None` when none covers
+/// them. A scope on any origin of the site counts.
 fn scope_arming(tx: &Connection, sid: &str, keys: &[PageKey]) -> Result<Option<bool>> {
     let Some(origin) = keys.first().map(|k| k.origin.clone()) else {
         return Ok(None);
     };
     let mut st = tx.prepare(
-        "SELECT path, replies_armed FROM live_watches WHERE session_id = ?1 AND origin = ?2",
+        "SELECT path, replies_armed FROM live_watches WHERE session_id = ?1
+            AND origin IN (SELECT origin FROM live_sites WHERE site = ?2 UNION SELECT ?2)",
     )?;
     let rows: Vec<(String, bool)> = st
         .query_map(params![sid, origin], |r| {
@@ -380,10 +425,15 @@ impl Store {
         snapshot: Option<&[u8]>,
         pending: &[String],
     ) -> Result<EnsuredPage> {
-        let (id, created) = self.with_tx(|tx| {
+        let (id, created, origin) = self.with_tx(|tx| {
             if let Some(p) = page_by_key(tx, key)? {
-                return Ok((ArtifactId::parse(&p.artifact_id)?, false));
+                return Ok((ArtifactId::parse(&p.artifact_id)?, false, p.origin));
             }
+            // A joined origin's new page is its site's (spec §7.2).
+            let key = &PageKey {
+                origin: super::joined::site_key(tx, &key.origin)?,
+                path: key.path.clone(),
+            };
             let id = ArtifactId::generate();
             let now = Store::now();
             tx.execute(
@@ -397,7 +447,7 @@ impl Store {
                 params![id.as_str(), key.origin, key.path, now],
             )?;
             materialize(tx, id.as_str(), key)?;
-            Ok((id, true))
+            Ok((id, true, key.origin.clone()))
         })?;
         let current: u32 = self.with_read(|c| {
             Ok(c.query_row(
@@ -434,6 +484,7 @@ impl Store {
         let artifact = self.get_artifact(&id)?.ok_or(CoreError::NotFound)?;
         Ok(EnsuredPage {
             artifact,
+            origin,
             version,
             created,
             new_version,
@@ -616,7 +667,8 @@ impl Store {
                  JOIN artifacts a ON a.id = p.artifact_id
                  JOIN live_picks k ON k.artifact_id = p.artifact_id
                  JOIN threads t ON t.id = k.thread_id
-                 WHERE p.origin = ?1 AND p.path = ?2 AND a.deleted_at IS NULL
+                 WHERE p.origin = COALESCE((SELECT site FROM live_sites WHERE origin = ?1), ?1)
+                    AND p.path = ?2 AND a.deleted_at IS NULL
                     AND k.pick_id = ?3 AND k.created_at >= ?4",
                 params![key.origin, key.path, pick, pick_cutoff()],
                 |r| Ok((r.get(0)?, r.get(1)?)),
@@ -746,10 +798,15 @@ impl Store {
                  ON CONFLICT(session_id, origin, path) DO UPDATE SET replies_armed = excluded.replies_armed",
                 params![sid, scope.origin, scope.path, replies_armed, Store::now()],
             )?;
+            // The scope covers the pages of its origin's site (spec §7.2).
+            let site_scope = PageKey {
+                origin: super::joined::site_key(tx, &scope.origin)?,
+                path: scope.path.clone(),
+            };
             let mut covered = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
                 let keys = page_keys(tx, &p)?;
-                if keys.iter().any(|k| k.covered_by(scope)) {
+                if keys.iter().any(|k| k.covered_by(&site_scope)) {
                     let armed = scope_arming(tx, sid, &keys)?.unwrap_or(replies_armed);
                     scope_row(tx, sid, &p.artifact_id, armed)?;
                     covered.push(p.artifact_id);
@@ -786,6 +843,10 @@ impl Store {
                 "DELETE FROM live_watches WHERE session_id = ?1 AND origin = ?2 AND path = ?3",
                 params![sid, scope.origin, scope.path],
             )?;
+            let site_scope = PageKey {
+                origin: super::joined::site_key(tx, &scope.origin)?,
+                path: scope.path.clone(),
+            };
             let mut removed = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
                 let keys = page_keys(tx, &p)?;
@@ -797,7 +858,7 @@ impl Store {
                     params![sid, p.artifact_id],
                     |r| r.get(0),
                 )?;
-                if !keys.iter().any(|k| k.covered_by(scope)) && !carried {
+                if !keys.iter().any(|k| k.covered_by(&site_scope)) && !carried {
                     continue;
                 }
                 match scope_arming(tx, sid, &keys)? {
