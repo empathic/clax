@@ -128,6 +128,8 @@ const failure = (e: unknown) => {
   return { code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
 };
 const hubId = (tabId: number) => `tab:${tabId}`;
+/** A URL's origin and path: the page it names, whatever its route. */
+const pageOf = (url: string) => { try { const u = new URL(url); return u.origin + u.pathname; } catch { return null; } };
 const tabOf = (id: string) => (id.startsWith("tab:") ? Number(id.slice(4)) : Number.NaN);
 const presenceList = (v: unknown): PresenceView[] => (Array.isArray(v) ? (v as PresenceView[]) : []);
 
@@ -145,7 +147,7 @@ export class Tabs {
   private refreshing = new Set<number>();
   private panels = new Set<PanelEntry>();
   /** Per tab, a thread the panel selected on another route: scrolled to once the overlay finds it there. */
-  private scrollAfter = new Map<number, string>();
+  private scrollAfter = new Map<number, { id: string; at: string | null }>();
   private panelSeq = 0;
   /** Per tab, what the overlay was last told (`state`): a change to nothing it shows is not sent. */
   private told = new Map<number, string>();
@@ -247,10 +249,10 @@ export class Tabs {
     p.port.postMessage({ t: "site", site: this.d.sites?.view(on) ?? null } satisfies WorkerToPanel);
   }
 
-  /** Where a thread of the tab's site is, which the overlay scrolls to once
-   * it finds it there (the panel opened it): its path and route, and the
+  /** Where a thread of the tab's site is: its path and route, and the
    * site's origins it may be opened on, the most recently used first (spec
-   * §7.2: any of a joined site's); null when the site has no such thread. */
+   * §7.2: any of a joined site's); null when the site has no such thread.
+   * `opening` then names the URL the tab goes to for it. */
   openThread(tabId: number, threadId: string): { path: string; origins: string[] } | null {
     const s = this.tabs.get(tabId);
     const t = this.d.sites?.view(s?.on ?? null)?.pages.flatMap(p => p.threads).find(x => x.id === threadId);
@@ -259,8 +261,14 @@ export class Tabs {
     let u: URL;
     try { u = new URL(t.page_url); } catch { return null; }
     if (!origins.includes(u.origin)) return null;
-    this.scrollAfter.set(tabId, threadId);
     return { path: u.pathname + u.search + u.hash, origins };
+  }
+
+  /** The tab goes to `url` for the thread (the panel opened it): the
+   * overlay scrolls to it once it finds it there, on that page only (the
+   * document the tab leaves may find it first). */
+  opening(tabId: number, threadId: string, url: string): void {
+    this.scrollAfter.set(tabId, { id: threadId, at: pageOf(url) });
   }
 
   /** The tab went to `origin`, another origin of the site Clax is on for
@@ -683,7 +691,7 @@ export class Tabs {
     this.scrollAfter.delete(tabId);
     const t = s.threads.find(x => x.id === threadId);
     // A thread on another route: the panel navigates the tab there first.
-    if (t && (t.anchor.route ?? null) !== s.route) { this.scrollAfter.set(tabId, t.id); return; }
+    if (t && (t.anchor.route ?? null) !== s.route) { this.scrollAfter.set(tabId, { id: t.id, at: null }); return; }
     this.d.toOverlay(tabId, threadId === null ? { t: "focus", threadId: null } : { t: "scroll-to", threadId });
   }
 
@@ -730,7 +738,8 @@ export class Tabs {
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, senderUrl ?? "");
     switch (m.t) {
       case "resolved": {
-        const wanted = this.scrollAfter.get(tabId);
+        const after = this.scrollAfter.get(tabId);
+        const wanted = after && (after.at === null || pageOf(s.url) === after.at) ? after.id : undefined;
         const found = wanted !== undefined && m.results.some(r => r.id === wanted && r.found);
         this.set(tabId, { ...s, resolved: Object.fromEntries(m.results.map(r => [r.id, r])), ...(found ? { selected: wanted } : {}) });
         if (found) { this.scrollAfter.delete(tabId); this.d.toOverlay(tabId, { t: "scroll-to", threadId: wanted }); }

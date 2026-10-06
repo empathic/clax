@@ -12,6 +12,8 @@ if (__CLAX_EXT_TEST__) {
     /** What the icon does in a tab Clax is on. */
     off: (tabId: number) => bg.off(tabId),
     state: (tabId: number) => bg.tabs.state(tabId),
+    /** The site listing the worker holds for an origin (spec §7.1, §7.2). */
+    site: (origin: string) => bg.sites.view(origin),
     pairer: bg.pairer,
   };
 }

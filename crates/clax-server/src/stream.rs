@@ -570,7 +570,7 @@ impl Hub {
             && all.iter().any(|(c, _)| matches!(c, Chan::Artifact(_)))
             && !matches!(ev, Event::ThreadDeleted { moved: true, .. })
         {
-            for origin in self.live.site_origins(&key) {
+            for origin in self.live.site_origins(&self.live.site_key(&key)) {
                 all.push((Chan::Site(origin), Gate::Local));
             }
         }

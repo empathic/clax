@@ -13,7 +13,7 @@ import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
   api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer">;
-  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "openThread">;
+  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "openThread" | "opening">;
   sites: Pick<Sites, "load" | "origins">;
   /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
    * thread opens on the first origin of its site that answers). */
@@ -92,7 +92,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
         // The most recently used address first; one that does not answer, the next (owner decision 2026-10-06).
         for (const o of where.origins) {
           const url = o + where.path;
-          if (await d.probe(url)) { await d.navigate(tabId, url); return; }
+          if (await d.probe(url)) { d.tabs.opening(tabId, m.threadId, url); await d.navigate(tabId, url); return; }
         }
         throw new PanelFailure("site_unreachable", `No address of this site answers (${where.origins.map(host).join(", ")}). Start its server, then try again.`);
       }

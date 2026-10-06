@@ -101,6 +101,18 @@ class SidePanel {
 
   text(): Promise<string> { return this.eval<string>("document.body.innerText"); }
 
+  /** A PNG of the panel, for a person to look at (CLAX_E2E_SHOTS names the directory). */
+  async shot(name: string): Promise<void> {
+    const dir = process.env.CLAX_E2E_SHOTS;
+    if (!dir) return;
+    const id = ++this.seq;
+    const answer = new Promise<unknown>(r => this.waiting.set(id, r));
+    await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method: "Page.captureScreenshot", params: { format: "png" } }) });
+    const r = (await answer) as { data?: string };
+    this.waiting.delete(id);
+    if (r.data) writeFileSync(join(dir, `${name}.png`), Buffer.from(r.data, "base64"));
+  }
+
   /** Clicks the panel's first button whose label or text matches `re`. */
   async click(re: RegExp): Promise<void> {
     const ok = await this.eval<boolean>(`(() => { const re = new RegExp(${JSON.stringify(re.source)}); const b = [...document.querySelectorAll("button")].find(b => re.test((b.getAttribute("aria-label") ?? "") + " " + b.textContent)); b?.click(); return !!b; })()`);
@@ -366,7 +378,9 @@ test("the panel lists the site's other pages, opens and pins their threads, move
   await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".elsewhere summary .path")].map(p => p.textContent)`)).toEqual(["/users/2.html"]);
 });
 
-test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }) => {
+test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }, testInfo) => {
+  // Two dev servers, a join, two navigations and a probe of a stopped server: more than one loop's work.
+  testInfo.setTimeout(testInfo.timeout + 60_000);
   const h = hook(live);
   // The same app on a second port, as a dev server that moved would serve it.
   const port = await freePort();
@@ -400,11 +414,18 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     const tabId = await tabIdOf(live, `${O2}/`);
     await h.comment(tabId, `${O2}/`);
     const panel = await SidePanel.open(live, page, tabId);
+    // The suggestion waits for the site's listing, which waits for the worker's stream.
+    // The first lookup waits for the worker to pair through the native host, which a loaded machine makes slow.
+    await expect.poll(() => live.sw.evaluate(o => !!(globalThis as unknown as { claxTest: { site(o: string): unknown } }).claxTest.site(o), O2), { timeout: 30_000 }).toBe(true);
     await expect.poll(() => panel.text()).toContain(`Looks like localhost:${new URL(O1).port} — same app?`);
+    await panel.shot("panel-suggestion");
     expect((await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(false);
     await panel.click(/^ ?Join$/);
     await expect.poll(async () => (await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(true);
     await expect.poll(() => panel.text()).toContain("one site");
+    await panel.eval(`document.querySelector("details.addresses").open = true`);
+    await expect.poll(() => panel.text()).toContain("Split off");
+    await panel.shot("panel-joined");
 
     // The old port's threads list here: this page's, and the other page's under its path.
     await expect.poll(() => panel.text()).toContain("Home button on the old port");
@@ -412,6 +433,16 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     expect(await panel.text()).toContain("Elsewhere on this site");
     // A pin made on the other port resolves on this one.
     await expect.poll(async () => (await h.state(tabId))?.resolved[home.tid]?.found ?? null).toBe(true);
+
+    // The gallery has one entry for the site, named after the port used last, listing the other.
+    const shell = await live.ctx.newPage();
+    await shell.goto(`${live.daemon.base}/`);
+    const sites = shell.getByRole("region", { name: "Sites" });
+    await expect(sites.locator(".site")).toHaveCount(1);
+    await expect(sites.locator(".site strong")).toHaveText(`localhost:${port}`);
+    await expect(sites.locator(".site")).toContainText(`also localhost:${new URL(O1).port}`);
+    if (process.env.CLAX_E2E_SHOTS) await shell.screenshot({ path: `${process.env.CLAX_E2E_SHOTS}/gallery-sites.png`, fullPage: true });
+    await shell.close();
 
     // The agent watching the new port hears of a comment made on the old one.
     const later = await seed(`${O1}/users/2.html`, "main > h1", "Settings", "Made on the old port after the join");
@@ -424,11 +455,14 @@ test("two ports of one app join into one site: suggested, joined, listed and pin
     await panel.click(/User one on the old port/);
     await page.waitForURL(`${O1}/users/1.html`);
     // Clax stays on in the tab, now for the old port, and highlights the thread there.
-    await expect.poll(async () => { const s = await h.state(tabId); return s?.on === O1 && s.selected === one.tid && s.resolved[one.tid]?.found; }).toBe(true);
+    await expect.poll(async () => { const s = await h.state(tabId); return JSON.stringify({ on: s?.on, selected: s?.selected === one.tid, found: s?.resolved[one.tid]?.found ?? null, overlay: s?.overlay, error: s?.error }); })
+      .toBe(JSON.stringify({ on: O1, selected: true, found: true, overlay: true, error: null }));
     expect(await h.panelEnabled(tabId)).toBe(true);
 
     // The old port goes down: a thread opens on the next address that answers.
     await live.site.close();
+    // The tab's listing is now the old port's, loaded once its topic is followed.
+    await expect.poll(() => panel.text()).toContain("Home button on the old port");
     await panel.click(/Home button on the old port/);
     await page.waitForURL(`${O2}/`);
     await expect.poll(async () => (await h.state(tabId))?.on ?? null).toBe(O2);
