@@ -7,10 +7,11 @@ use super::attention::{
     AGENTS_LIVE, AGENTS_ONE, ATTENTION_LIVE, ATTENTION_ONE, LOOKED_ONE, PEOPLE_LIVE, PEOPLE_ONE,
 };
 use super::feedback::{FEEDBACK_STATES, TAKE_FEEDBACK};
+use super::live::{PENDING_OF, SCOPES_OF_ORIGIN};
 use super::test_util::store;
 use super::threads::{
-    ADDRESSED_IN_MANY, COMMENTS_OF_MANY, NAMES_OF_MANY, SENDS_OF_MANY, THREAD_STATUSES,
-    list_threads_sql,
+    ADDRESSED_IN_MANY, COMMENTS_OF_MANY, NAMES_OF_MANY, PENDING_OF_MANY, SENDS_OF_MANY,
+    THREAD_STATUSES, list_threads_sql,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, params};
@@ -106,6 +107,27 @@ fn seed(c: &Connection) {
                 }
             }
         }
+    }
+    // Live pages on a few origins: scope watches from every session, and a
+    // pending address on the first thread of every other artifact.
+    for s in 0..20 {
+        for o in 0..5 {
+            c.execute(
+                "INSERT INTO live_watches (session_id, origin, path, created_at)
+                 VALUES (?1, ?2, '/', ?3)",
+                params![format!("s{s}"), format!("https://o{o}.test"), ts(s)],
+            )
+            .unwrap();
+        }
+    }
+    for a in (0..ARTIFACTS).step_by(2) {
+        let aid = format!("art{a:04}");
+        c.execute(
+            "INSERT INTO live_pending (artifact_id, thread_id, source, harness, created_at)
+             VALUES (?1, ?2, 'resolve', 'claude', ?3)",
+            params![aid, format!("{aid}t0"), ts(a)],
+        )
+        .unwrap();
     }
     c.execute_batch("COMMIT").unwrap();
 }
@@ -224,6 +246,24 @@ fn hot_queries() -> Vec<Hot> {
             ADDRESSED_IN_MANY.into(),
             vec![tids.clone()],
             &["version_threads_by_thread"],
+        ),
+        (
+            "pending addresses of threads",
+            PENDING_OF_MANY.into(),
+            vec![tids.clone()],
+            &["live_pending_by_thread"],
+        ),
+        (
+            "pending address of a thread",
+            PENDING_OF.into(),
+            vec![t("art0002t0")],
+            &["live_pending_by_thread"],
+        ),
+        (
+            "scope watches of an origin",
+            SCOPES_OF_ORIGIN.into(),
+            vec![t("https://o1.test")],
+            &["live_watches_by_origin"],
         ),
         (
             "thread sends",

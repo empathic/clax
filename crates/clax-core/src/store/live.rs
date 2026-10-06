@@ -199,16 +199,23 @@ pub(super) fn live_page_of_conn(c: &Connection, aid: &str) -> Result<Option<Live
     .optional()?)
 }
 
+/// The scope watches of live sessions on origin `?1`, oldest first:
+/// session, path and arming. `CROSS JOIN` keeps `live_watches` outer, so
+/// the origin index bounds the work however many sessions have ended.
+pub(crate) const SCOPES_OF_ORIGIN: &str =
+    "SELECT lw.session_id, lw.path, lw.replies_armed FROM live_watches lw
+    CROSS JOIN sessions s ON s.id = lw.session_id
+    WHERE lw.origin = ?1 AND s.ended_at IS NULL ORDER BY lw.created_at, lw.session_id, lw.path";
+/// The pending address of thread `?1`: harness and time.
+pub(crate) const PENDING_OF: &str =
+    "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1";
+
 /// Makes every live session whose scope watch covers `key` a watcher of the
 /// new page `aid`, armed when any of its covering scopes is; returns those
 /// sessions, each once.
 pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<Vec<String>> {
     let rows: Vec<(String, String, bool)> = {
-        let mut st = tx.prepare(
-            "SELECT lw.session_id, lw.path, lw.replies_armed FROM live_watches lw
-             JOIN sessions s ON s.id = lw.session_id
-             WHERE lw.origin = ?1 AND s.ended_at IS NULL ORDER BY lw.created_at, lw.session_id, lw.path",
-        )?;
+        let mut st = tx.prepare(SCOPES_OF_ORIGIN)?;
         st.query_map(params![key.origin], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0))
         })?
@@ -543,12 +550,10 @@ impl Store {
     /// Database errors only.
     pub fn pending_address(&self, tid: &str) -> Result<Option<(String, String)>> {
         self.with_read(|c| {
-            Ok(c.query_row(
-                "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1",
-                params![tid],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+            Ok(
+                c.query_row(PENDING_OF, params![tid], |r| Ok((r.get(0)?, r.get(1)?)))
+                    .optional()?,
             )
-            .optional()?)
         })
     }
 

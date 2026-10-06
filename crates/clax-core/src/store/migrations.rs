@@ -266,7 +266,9 @@ pub const MIGRATIONS: &[&str] = &[
         harness TEXT NOT NULL,
         created_at TEXT NOT NULL,
         PRIMARY KEY (artifact_id, thread_id)
-    );",
+    );
+    CREATE INDEX live_pending_by_thread ON live_pending(thread_id);
+    CREATE INDEX live_watches_by_origin ON live_watches(origin, path);",
     // 17: the Clax Chrome extension's credentials (spec
     // 2026-10-05-chrome-overlay-design §5.3), as their SHA-256 only. A
     // credential names no viewer: the extension acts as the owner identity.
