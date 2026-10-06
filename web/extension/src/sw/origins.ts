@@ -3,7 +3,7 @@
 // content script registered for it that survives restarts, and the
 // overlay injected into the tab at once.
 export type OriginsEnv = {
-  permissions: Pick<typeof chrome.permissions, "request" | "remove">;
+  permissions: Pick<typeof chrome.permissions, "request" | "remove" | "contains">;
   scripting: Pick<typeof chrome.scripting, "registerContentScripts" | "unregisterContentScripts" | "getRegisteredContentScripts" | "executeScript">;
   local: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
 };
@@ -45,15 +45,31 @@ export async function enabled(env: OriginsEnv, origin: string): Promise<boolean>
   return (await list(env)).includes(origin);
 }
 
+const loader = (origin: string): chrome.scripting.RegisteredContentScript =>
+  ({ id: scriptId(origin), matches: [patternOf(origin)], js: ["loader.js"], runAt: "document_idle", allFrames: false, persistAcrossSessions: true });
+
 /** Registers the loader for the origin (once) and records it. */
 export async function remember(env: OriginsEnv, origin: string): Promise<void> {
-  const id = scriptId(origin);
-  const have = await env.scripting.getRegisteredContentScripts({ ids: [id] });
-  if (!have.length) {
-    await env.scripting.registerContentScripts([{ id, matches: [patternOf(origin)], js: ["loader.js"], runAt: "document_idle", allFrames: false, persistAcrossSessions: true }]);
-  }
+  const have = await env.scripting.getRegisteredContentScripts({ ids: [scriptId(origin)] });
+  if (!have.length) await env.scripting.registerContentScripts([loader(origin)]);
   const all = await list(env);
   if (!all.includes(origin)) await env.local.set({ origins: [...all, origin] });
+}
+
+/** Registers again the loader of each origin Clax is on whose permission
+ * is still held. Chrome drops registered content scripts when the extension
+ * is updated or reloaded (`clax init` installing a newer one, the worker's
+ * reload for the daemon's version), while the record and the permissions
+ * stay; run at each worker start. */
+export async function restoreLoaders(env: OriginsEnv): Promise<void> {
+  const all = await list(env);
+  if (!all.length) return;
+  const have = new Set((await env.scripting.getRegisteredContentScripts()).map(r => r.id));
+  for (const o of all) {
+    if (have.has(scriptId(o)) || !(await env.permissions.contains({ origins: [patternOf(o)] }).catch(() => false))) continue;
+    // One at a time: a click's `remember` may have registered one meanwhile.
+    await env.scripting.registerContentScripts([loader(o)]).catch(() => {});
+  }
 }
 
 /** "Turn off on this site": the loader, the permission and the record go. */

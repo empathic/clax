@@ -54,6 +54,9 @@ function gesture(tab: chrome.tabs.Tab, panel: boolean): void {
 chrome.action.onClicked.addListener(tab => gesture(tab, true));
 chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
+// An update or reload of the extension dropped the origins' loaders; the browser's start wakes the worker to check.
+void origins.restoreLoaders(originsEnv).catch(() => {});
+chrome.runtime.onStartup.addListener(() => {});
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
 chrome.tabs.onRemoved.addListener(tabId => { picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
 // Possibly a new document: if its overlay is gone, so is comment mode (spec §11).
@@ -110,6 +113,8 @@ if (__CLAX_EXT_TEST__) {
     comment: (tabId: number, url: string) => tabs.toggle(tabId, url),
     /** What a toolbar click records besides activeTab, which the browser tests' build holds through `<all_urls>`. */
     activate: (tabId: number, url: string) => tabs.activate(tabId, url),
+    /** What a granted origin permission records: the loader registered for the origin (across restarts). */
+    enable: (origin: string) => origins.remember(originsEnv, origin),
     state: (tabId: number) => tabs.state(tabId),
     pairer,
   };

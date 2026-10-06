@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, enabled, forget, injectOverlay, originOf, overlayPresent, remember, sameOrigin, scriptId, type OriginsEnv } from "./origins";
+import { ask, enabled, forget, injectOverlay, originOf, overlayPresent, remember, restoreLoaders, sameOrigin, scriptId, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
 const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local }) as unknown as OriginsEnv;
@@ -26,6 +26,18 @@ describe("origins", () => {
     expect(c.granted.has("http://localhost:5173/*")).toBe(false);
     expect(c.storage.local.data.origins).toEqual([]);
     expect(await enabled(env(), "http://localhost:5173")).toBe(false);
+  });
+
+  it("registers again the loader of each origin it is on whose permission is held, as an extension update drops them", async () => {
+    const a = "http://localhost:5173", b = "http://localhost:5174", d = "http://localhost:5175";
+    c.storage.local.data.origins = [a, b, d];
+    c.granted.add(`${a}/*`);
+    c.granted.add(`${d}/*`);
+    c.scripting.getRegisteredContentScripts = (async () => [{ id: scriptId(d) }]) as unknown as typeof c.scripting.getRegisteredContentScripts;
+    await restoreLoaders(env());
+    const reg = c.calls.filter(x => x.api === "scripting.registerContentScripts").flatMap(x => x.args[0] as chrome.scripting.RegisteredContentScript[]);
+    expect(reg.map(r => r.id)).toEqual([scriptId(a)]);
+    expect(reg[0]).toMatchObject({ matches: [`${a}/*`], js: ["loader.js"], persistAcrossSessions: true });
   });
 
   it("answers false when Chrome refuses or fails the request", async () => {
