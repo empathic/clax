@@ -156,14 +156,37 @@ can reach regardless, and the gateway never presents the daemon token.
    the thread reads "claude · addressed in v4". The person looks, then
    resolves (or reopens).
 
-### 3.4 Reviewing later
+### 3.4 The whole site (owner decision 2026-10-06)
+
+The side panel lists "This page" first and, below, "Elsewhere on this site":
+every thread of the origin's other live pages, grouped under each page's
+path (a merged page under its pattern, its threads marked with the path
+they were made at), each group with its open, addressed and resolved
+counts, newest activity first and collapsible. Clicking such a thread
+navigates this tab to its page (`page_url`; a same-origin navigation, so
+Clax stays on), and the overlay scrolls to and highlights it once its
+anchor resolves there. A thread of another page whose anchor resolves on
+the current screen is pinned here too, outlined and marked "from
+/other/path"; one not found stays listed under its own page only.
+
+A status filter (Open, Addressed, Resolved, All) and a search (comment
+text, authors, quote, page path) narrow both lists, on the listing in the
+panel. "Move…" on a card, or "Move the selected thread to another page…"
+for this page's selected thread, re-files it under a page of the site or
+the current page. "Merge pages" takes a pattern (`/users/:id`), says why
+the daemon would refuse it or previews which pages it matches, and merges
+in batches with progress; the rules in force are listed with "Un-merge",
+which un-merges the same way. The listing follows the `site:` topic live: a
+moved thread's card moves to its new group.
+
+### 3.5 Reviewing later
 
 The gallery shows the live page beside artifacts, marked "Live" with its
 page URL. Opening it shows the latest snapshot with its pins, the version
 menu listing snapshots, and every thread as in any artifact, with an "Open
 page" link to the live URL.
 
-### 3.5 Turning it off
+### 3.6 Turning it off
 
 A second click on the icon, or the side panel's "Turn off in this tab",
 turns Clax off in that tab: the overlay stops in place (no reload), and the
@@ -432,6 +455,30 @@ the browser quits), so a restarted worker picks every on tab up again.
   on that tab wherever the tab goes, another window included, and reports
   the owner's presence for the window the tab is in now. `turn-off` names
   the panel's tab, and the worker refuses it for another.
+- **The site's threads** (§7.1, owner decision 2026-10-06). The worker
+  follows `site:<origin>` (one hub client per origin, `site:<origin>`) for
+  every origin Clax is on for in a tab the daemon answered a lookup for,
+  and keeps the origin's listing (`GET /api/live/site`, fetched when the
+  topic goes live or resyncs, when a delta does not add up — a page the
+  listing lacks, comments that do not match their count — and after every
+  rule batch; deltas heard during a fetch are applied to its answer).
+  `thread_moved` moves the thread's card, comments and all, to the page it
+  went to (the listing is fetched again when that page is new); the
+  `thread` that follows completes it. Each panel of a tab of the origin
+  hears `site {site}` when it watches and on every change. The overlay's
+  `state` carries, after the page's own threads, the site's open threads of
+  other pages as `{id, status, anchor, addressed_pending: false, from}`
+  (`from`: the path they were made at); the overlay resolves them on any
+  route and outlines their pins, labelled "from <path>". The panel sends
+  `open-thread {threadId}` (the worker navigates the tab to the thread's
+  `page_url`, of the tab's origin only, and scrolls to it once the overlay
+  finds it), `move {threadId, pageUrl}` (of the tab's origin only), and
+  `rule {req, pattern}` / `unrule {req, ruleId}`, one batch each, answered
+  `step {req, moved, remaining}` or `failed {…, req}`; the panel repeats
+  them while `remaining` is above 0. Grouping, counts, the filter, the
+  search, the pattern check and the merge preview run in the panel; the
+  filter and the collapsed groups are kept per origin in
+  `chrome.storage.local` (`site-prefs:<origin>`; a convenience only).
 - **Gestures.** The icon's handler sets the tab's options and calls
   `chrome.sidePanel.open({tabId})` synchronously, inside the gesture, then
   asks for the origin's permission, before any `await`. The icon in a tab
@@ -924,8 +971,9 @@ dropped and counted.
   from `location`, skip an unchanged URL and send a burst's last URL once,
   at most one every 250 ms.
 - Worker → overlay: `state {page, route, threads, commentMode, pending}`,
-  where each thread is only `{id, status, anchor, addressed_pending}`
-  (`addressed_pending` a boolean; no comment text, replies, names or
+  where each thread is only `{id, status, anchor, addressed_pending}`, and
+  a thread of another page of the site also `from` (the path it was made
+  at; owner decision 2026-10-06) (`addressed_pending` a boolean; no comment text, replies, names or
   feedback state reach a content script, L7), sent only when one of these
   fields changed since the overlay was last told and in full to a new
   overlay; `captured {pickId, ok, error?}` (the answer to `capture`),

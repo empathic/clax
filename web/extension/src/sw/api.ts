@@ -9,7 +9,7 @@ import type { Artifact, Version } from "../../../shell/src/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
-import type { PageView } from "../messages";
+import type { PageView, SiteRule, SiteView } from "../messages";
 import { PairError, type Pairer, type Pairing } from "./pairing";
 
 export class ApiFailure extends Error {
@@ -147,6 +147,14 @@ export class Api {
     if (!Number.isSafeInteger(windowId)) throw new ApiFailure("invalid_id", "not a window ID");
     return this.send<{ people?: PresenceView[] }>("PUT", "/api/viewers/me/presence", { artifact_id: aid, state: "here", tab: `clax-ext:${windowId}` });
   }
+  /** Every live page of the origin that has threads, with its threads and merge rules (spec §7.1). */
+  site(origin: string) { return this.json<SiteView>(`/api/live/site?origin=${encodeURIComponent(origin)}`); }
+  /** Moves a live page's thread to the live page `pageUrl` names. */
+  async move(tid: string, pageUrl: string) { threadIds([tid]); return this.send<{ moved: boolean }>("POST", `/api/live/threads/${tid}/move`, { page_url: pageUrl }); }
+  /** One batch of a new merge rule; `remaining` says how many threads are left to merge. */
+  addRule(origin: string, pattern: string) { return this.send<{ rule: SiteRule; moved: string[]; remaining: number }>("POST", "/api/live/rules", { origin, pattern }); }
+  /** One batch of deleting a merge rule; `remaining` says how many threads are left to un-merge. */
+  async deleteRule(id: string) { threadIds([id]); return this.send<{ moved: string[]; remaining: number }>("DELETE", `/api/live/rules/${id}`); }
   /** Who is on the live page now. */
   async presenceOf(aid: string) { ids(aid); return this.json<{ people?: PresenceView[] }>(`/api/artifacts/${aid}/presence`); }
 }

@@ -34,14 +34,24 @@ export const waitsForSnapshot = (t: { status: string }) => t.status === "open" &
 /** What the overlay hears of a thread (spec L7, §10.4): where it is
  * anchored (the page's own text), whether it is open, and whether it waits
  * for a snapshot; never its comments, replies, authors or agents. */
-export type OverlayThread = { id: string; status: "open" | "resolved"; anchor: Anchor; addressed_pending: boolean };
+export type OverlayThread = { id: string; status: "open" | "resolved"; anchor: Anchor; addressed_pending: boolean;
+  /** A thread of another page of the site (owner decision 2026-10-06): the
+   * path it was left at. The overlay pins it wherever its anchor resolves,
+   * whatever the route. */
+  from?: string };
 /** The overlay's view of `t`. */
 export const overlayThread = (t: Thread): OverlayThread => ({ id: t.id, status: t.status, anchor: t.anchor, addressed_pending: !!t.addressed_pending });
 /** What the person is told when a page's address is over MAX_URL (the daemon's bound; spec §7). */
 export const URL_TOO_LONG = "This page's address is too long for Clax.";
 /** `href` as the overlay sends it: null when it is over MAX_URL. */
 export const pageUrl = (href: string): string | null => (href.length > MAX_URL ? null : href);
-export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string };
+/** `merged`: the page is a merge rule's canonical page, whose path is the rule's `pattern`. */
+export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string; merged?: boolean; pattern?: string | null };
+/** A merge rule of a site (`deleting` while its un-merge is under way). */
+export type SiteRule = { id: string; origin: string; pattern: string; page_url: string; created_at: string; deleting?: boolean };
+/** `GET /api/live/site`: the origin's live pages that have threads, each
+ * with its threads (resolved ones too), and its merge rules. */
+export type SiteView = { origin: string; rules: SiteRule[]; pages: { page: PageView; threads: Thread[] }[] };
 
 /** A `url` the overlay sends is null when the page's address is over
  * MAX_URL: the worker then tells the person, never looks it up. */
@@ -117,9 +127,14 @@ export type PanelState = {
 };
 export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
-  | { t: "failed"; code: string; message: string }
+  /** `req`: the request (`rule`, `unrule`) that failed. */
+  | { t: "failed"; code: string; message: string; req?: number }
   /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
-  | { t: "stream-status"; up: boolean };
+  | { t: "stream-status"; up: boolean }
+  /** Every thread of the tab's site (told on `watch-tab` and on every change); null until it is loaded. */
+  | { t: "site"; site: SiteView | null }
+  /** One batch of a rule's merge or un-merge (`rule`, `unrule`) is done: `remaining` threads are left. */
+  | { t: "step"; req: number; moved: number; remaining: number };
 
 export type PanelToWorker =
   | { t: "watch-tab"; tabId: number }
@@ -136,6 +151,14 @@ export type PanelToWorker =
   | { t: "navigate"; route: string | null; artifactId: string }
   /** Turns Clax off in the panel's tab, `tabId`; the worker refuses it for another. */
   | { t: "turn-off"; tabId: number }
+  /** A thread of another page of the site: the tab goes to its page, where the overlay highlights it once found. */
+  | { t: "open-thread"; threadId: string }
+  /** Moves a thread of the site to the page `pageUrl` names (of the tab's origin). */
+  | { t: "move"; threadId: string; pageUrl: string }
+  /** One batch of a new merge rule; the panel repeats it while `step` says some remain. */
+  | { t: "rule"; req: number; pattern: string }
+  /** One batch of deleting a merge rule (un-merging); repeated as `rule`. */
+  | { t: "unrule"; req: number; ruleId: string }
   | { t: "retry" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
@@ -160,6 +183,8 @@ const url = (v: unknown) => str(v, MAX_URL) && /^https?:\/\//.test(v);
 const ulid = (v: unknown) => typeof v === "string" && ULID.test(v);
 const pickId = (v: unknown) => typeof v === "string" && PICK_ID.test(v);
 const text = (v: unknown, max: number) => str(v, max) && v.trim().length > 0;
+/** The longest merge rule pattern, in bytes (the daemon's bound; ASCII only). */
+export const MAX_PATTERN = 256;
 /** The most pending thread IDs a quiet snapshot names (the threads a state carries). */
 const MAX_PENDING = 1000;
 /** A failure code: lowercase words joined by underscores. */
@@ -195,7 +220,8 @@ const result = (r: unknown) => shape(r, ["id", "found", "method", "rect"]) && ul
 
 const PAGE = ["artifact_id", "origin", "path", "page_url", "title", "current_version", "url"];
 /** A live page as the daemon describes it (`PageView`). */
-const page = (v: unknown): v is PageView => shape(v, PAGE) && typeof v.artifact_id === "string" && ARTIFACT_ID.test(v.artifact_id)
+const page = (v: unknown): v is PageView => shape(v, PAGE, ["merged", "pattern"])
+  && (v.merged === undefined || bool(v.merged)) && (v.pattern === undefined || strOrNull(v.pattern, MAX_PATTERN)) && typeof v.artifact_id === "string" && ARTIFACT_ID.test(v.artifact_id)
   && str(v.origin, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(v.origin) && str(v.path, MAX_URL) && v.path.startsWith("/")
   && url(v.page_url) && str(v.title, MAX_TITLE) && count(v.current_version) && url(v.url);
 
@@ -220,10 +246,11 @@ export function isFromOverlay(m: unknown): m is OverlayToWorker {
 }
 
 const OVERLAY_THREAD = ["id", "status", "anchor", "addressed_pending"];
+const path = (v: unknown) => str(v, MAX_URL) && v.startsWith("/");
 /** An `OverlayThread`, and nothing more: no field of a thread's text reaches
  * the overlay. Its anchor is the daemon's, which the resolver reads
  * defensively, so only its kind is checked here. */
-const thread = (v: unknown) => shape(v, OVERLAY_THREAD) && ulid(v.id) && (v.status === "open" || v.status === "resolved")
+const thread = (v: unknown) => shape(v, OVERLAY_THREAD, ["from"]) && (v.from === undefined || path(v.from)) && ulid(v.id) && (v.status === "open" || v.status === "resolved")
   && obj(v.anchor) && typeof v.anchor.kind === "string" && bool(v.addressed_pending);
 
 export function isFromWorker(m: unknown): m is WorkerToOverlay {
@@ -252,8 +279,10 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
     case "tab": return has("state") && obj(m.state);
-    case "failed": return has("code", "message") && str(m.code, 64) && str(m.message, MAX_BODY);
+    case "failed": return shape(m, ["t", "code", "message"], ["req"]) && str(m.code, 64) && str(m.message, MAX_BODY) && (m.req === undefined || count(m.req));
     case "stream-status": return has("up") && bool(m.up);
+    case "site": return has("site") && (m.site === null || obj(m.site));
+    case "step": return has("req", "moved", "remaining") && count(m.req) && count(m.moved) && count(m.remaining);
     default: return false;
   }
 }
@@ -308,6 +337,10 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "navigate": return has("route", "artifactId") && (m.route === null || str(m.route, MAX_ROUTE))
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
     case "turn-off": return has("tabId") && count(m.tabId);
+    case "open-thread": return has("threadId") && ulid(m.threadId);
+    case "move": return has("threadId", "pageUrl") && ulid(m.threadId) && url(m.pageUrl);
+    case "rule": return has("req", "pattern") && count(m.req) && str(m.pattern, MAX_PATTERN) && m.pattern.startsWith("/");
+    case "unrule": return has("req", "ruleId") && count(m.req) && ulid(m.ruleId);
     case "retry": case "ping": return has();
     default: return false;
   }

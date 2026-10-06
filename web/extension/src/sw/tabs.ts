@@ -17,6 +17,7 @@ import type { Working } from "../../../shell/src/view/working-model";
 import { MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
+import type { Sites } from "./site";
 
 type Owner = { public_id: string; display_name: string | null };
 
@@ -114,6 +115,8 @@ type Deps = {
   store?: Area;
   /** The window the tab is in now (a tab can move to another): where its panel's owner is reported. */
   windowOf?(tabId: number): Promise<number>;
+  /** Every thread of the sites the tabs are on for (spec §7.1). */
+  sites?: Pick<Sites, "view" | "follow" | "fromHub">;
   now?(): number;
 };
 
@@ -161,7 +164,7 @@ export class Tabs {
   isReady = false;
 
   constructor(private readonly d: Deps) {
-    this.loaded = this.restore().finally(() => { this.isReady = true; });
+    this.loaded = this.restore().finally(() => { this.isReady = true; this.followSites(); });
   }
 
   /** Resolves once the tabs kept before a worker restart are back. */
@@ -226,10 +229,39 @@ export class Tabs {
     });
   }
 
+  /** Tabs whose URL the daemon has answered a lookup for: the daemon is there. */
+  private looked = new Set<number>();
+  /** The site topics followed are those of the origins Clax is on for in tabs the daemon answered for. */
+  private followSites(): void {
+    this.d.sites?.follow(this.onTabs().filter(id => this.looked.has(id)).map(id => this.tabs.get(id)!.on!));
+  }
+
+  /** The origin's site changed: the overlays of its tabs pin its threads, and their panels list them. */
+  siteChanged(origin: string): void {
+    for (const s of this.tabs.values()) if (s.on === origin) this.tellOverlay(s.tabId, s);
+    for (const p of this.panels) if (p.tabId !== null && this.tabs.get(p.tabId)?.on === origin) this.tellSite(p);
+  }
+
+  private tellSite(p: PanelEntry): void {
+    const on = p.tabId === null ? null : (this.tabs.get(p.tabId)?.on ?? null);
+    p.port.postMessage({ t: "site", site: this.d.sites?.view(on) ?? null } satisfies WorkerToPanel);
+  }
+
+  /** The URL of a thread of the tab's site, which the overlay scrolls to once
+   * it finds it there (the panel opened it); null when the site has no such thread. */
+  openThread(tabId: number, threadId: string): string | null {
+    const s = this.tabs.get(tabId);
+    const t = this.d.sites?.view(s?.on ?? null)?.pages.flatMap(p => p.threads).find(x => x.id === threadId);
+    if (!s || !t?.page_url || originOf(t.page_url) !== s.on) return null;
+    this.scrollAfter.set(tabId, threadId);
+    return t.page_url;
+  }
+
   private set(tabId: number, next: TabState): void {
     if (this.closed.has(tabId)) return;
     const prev = this.tabs.get(tabId);
     this.tabs.set(tabId, next);
+    if (prev?.on !== next.on) this.followSites();
     if (!prev || prev.url !== next.url || prev.overlay !== next.overlay || prev.commentMode !== next.commentMode || prev.active !== next.active || prev.on !== next.on) this.persist();
     this.tellOverlay(tabId, next);
     this.tellPanels(tabId);
@@ -239,7 +271,12 @@ export class Tabs {
    * thread's anchor and status only (spec L7: thread text stays in extension
    * pages); sent when any of it changed since the overlay was last told. */
   private tellOverlay(tabId: number, s: TabState): void {
-    const m: WorkerToOverlay = { t: "state", page: s.page, route: s.route, threads: s.threads.map(overlayThread), commentMode: s.commentMode, pending: s.pending };
+    // The site's open threads of other pages follow the page's own (so the
+    // pins number those first), each with the path it was left at; their
+    // pending addresses are their own pages' to settle.
+    const far = (this.d.sites?.view(s.on)?.pages ?? []).filter(p => p.page.artifact_id !== s.page?.artifact_id)
+      .flatMap(p => p.threads.filter(t => t.status === "open").map(t => ({ ...overlayThread(t), addressed_pending: false, from: t.page_path ?? p.page.path })));
+    const m: WorkerToOverlay = { t: "state", page: s.page, route: s.route, threads: [...s.threads.map(overlayThread), ...far].slice(0, 1000), commentMode: s.commentMode, pending: s.pending };
     const key = JSON.stringify(m);
     if (this.told.get(tabId) === key) return;
     this.told.set(tabId, key);
@@ -369,6 +406,7 @@ export class Tabs {
       const { page, route } = await this.d.api.lookup(url);
       if (!latest()) return now();
       this.stale.delete(tabId);
+      if (!this.looked.has(tabId)) { this.looked.add(tabId); this.followSites(); }
       const cur = now();
       const topics = page ? [`artifact:${page.artifact_id}`, `working:${page.artifact_id}`] : [];
       if (page && page.artifact_id === cur.page?.artifact_id) {
@@ -539,10 +577,12 @@ export class Tabs {
     this.workingAt.delete(tabId);
     this.scrollAfter.delete(tabId);
     this.stale.delete(tabId);
+    this.looked.delete(tabId);
     this.told.delete(tabId);
     this.gens.delete(tabId);
     this.d.hub.detach(hubId(tabId));
     this.persist();
+    this.followSites();
     this.tellPanels(tabId);
   }
 
@@ -558,6 +598,7 @@ export class Tabs {
     if (msg.t === "status") { this.status(msg.up); return; }
     for (const id of ids) {
       if (id.startsWith("panel:")) { this.fromHubPanel(id, msg); continue; }
+      if (id.startsWith("site:")) { this.d.sites?.fromHub(id, msg); continue; }
       const tabId = tabOf(id);
       const s = this.tabs.get(tabId);
       if (!s) continue;
@@ -711,6 +752,7 @@ export class Tabs {
         entry.tabId = m.tabId;
         this.followPage(entry);
         this.tellPanel(entry);
+        this.tellSite(entry);
         port.postMessage({ t: "stream-status", up: this.streamUp } satisfies WorkerToPanel);
         void this.details(m.tabId);
       } else if (m.t === "visible") {

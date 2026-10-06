@@ -145,6 +145,22 @@ describe("Api", () => {
     expect(JSON.parse(String(s.calls[0].init.body))).toEqual({ artifact_id: AID, state: "here", tab: "clax-ext:12" });
   });
 
+  it("reads a site's threads, moves a thread, and adds and deletes merge rules", async () => {
+    const s = setup([ok({ origin: "http://localhost:5173", rules: [], pages: [] }), ok({ moved: true }), ok({ moved: [], remaining: 0 }), ok({ moved: [], remaining: 0 })]);
+    await s.api.site("http://localhost:5173");
+    expect(s.calls[0].url).toBe(`${A.daemon}/api/live/site?origin=http%3A%2F%2Flocalhost%3A5173`);
+    await s.api.move(TID, "http://localhost:5173/b?x=1");
+    expect(s.calls[1].url).toBe(`${A.daemon}/api/live/threads/${TID}/move`);
+    expect([s.calls[1].init.method, JSON.parse(String(s.calls[1].init.body))]).toEqual(["POST", { page_url: "http://localhost:5173/b?x=1" }]);
+    await s.api.addRule("http://localhost:5173", "/users/:id");
+    expect([s.calls[2].url, JSON.parse(String(s.calls[2].init.body))]).toEqual([`${A.daemon}/api/live/rules`, { origin: "http://localhost:5173", pattern: "/users/:id" }]);
+    await s.api.deleteRule(TID);
+    expect([s.calls[3].url, s.calls[3].init.method]).toEqual([`${A.daemon}/api/live/rules/${TID}`, "DELETE"]);
+    await expect(s.api.move("../x", "http://localhost:5173/")).rejects.toMatchObject({ code: "invalid_id" });
+    await expect(s.api.deleteRule("../x")).rejects.toMatchObject({ code: "invalid_id" });
+    expect(s.calls).toHaveLength(4);
+  });
+
   it("reads who is on a live page", async () => {
     const s = setup([ok({ people: [] })]);
     expect(await s.api.presenceOf(AID)).toEqual({ people: [] });

@@ -18,6 +18,9 @@ export type Thread = {
   sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[];
   /** On a live page: an agent said the page shows its fix; the page's next snapshot will be listed as addressing the thread. */
   addressed_pending?: { harness: string; at: string } | null;
+  /** On a live page: the path the thread was made at, and the URL to open for it (origin, that path and its route). */
+  page_path?: string;
+  page_url?: string;
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
 export type Viewer = { public_id: string; display_name: string | null; created_at: string };

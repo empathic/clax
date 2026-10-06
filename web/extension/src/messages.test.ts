@@ -117,6 +117,44 @@ describe("messages", () => {
     ]) expect(isFromWorker(bad), JSON.stringify(bad).slice(0, 200)).toBe(false);
   });
 
+  it("takes a merged page, and a thread of another page with the path it was left at, and nothing more", () => {
+    const page = { artifact_id: "0123456789ab", origin: "http://localhost:5173", path: "/users/:id", page_url: "http://localhost:5173/users/:id", title: "Users", current_version: 1, url: "http://127.0.0.1:7481/a/0123456789ab", merged: true, pattern: "/users/:id" };
+    const state = { t: "state", page, route: null, threads: [ot(), ot({ from: "/users/7" })], commentMode: false, pending: false };
+    expect(isFromWorker(state)).toBe(true);
+    expect(isFromWorker({ ...state, page: { ...page, merged: false, pattern: null } })).toBe(true);
+    for (const bad of [
+      { ...state, page: { ...page, merged: "yes" } },
+      { ...state, page: { ...page, pattern: 7 } },
+      { ...state, page: { ...page, pattern: "x".repeat(257) } },
+      { ...state, threads: [ot({ from: "users/7" })] },
+      { ...state, threads: [ot({ from: null })] },
+      { ...state, threads: [ot({ from: `/${"x".repeat(MAX_URL)}` })] },
+      { ...state, threads: [ot({ from: "/a", page_url: "http://localhost:5173/a" })] },
+    ]) expect(isFromWorker(bad), JSON.stringify(bad).slice(0, 200)).toBe(false);
+  });
+
+  it("checks the panel's site-wide requests and the worker's answers", () => {
+    expect(isFromPanel({ t: "open-thread", threadId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "open-thread", threadId: "x" })).toBe(false);
+    expect(isFromPanel({ t: "open-thread", threadId: ULID, url: "http://localhost:5173/" })).toBe(false);
+    expect(isFromPanel({ t: "move", threadId: ULID, pageUrl: "http://localhost:5173/users/7" })).toBe(true);
+    for (const pageUrl of ["javascript:alert(1)", "/users/7", `http://x/${"a".repeat(MAX_URL)}`, null]) expect(isFromPanel({ t: "move", threadId: ULID, pageUrl })).toBe(false);
+    expect(isFromPanel({ t: "rule", req: 1, pattern: "/users/:id" })).toBe(true);
+    for (const pattern of ["users/:id", "", `/${"x".repeat(256)}`, 5]) expect(isFromPanel({ t: "rule", req: 1, pattern })).toBe(false);
+    expect(isFromPanel({ t: "rule", req: -1, pattern: "/users/:id" })).toBe(false);
+    expect(isFromPanel({ t: "rule", req: 1, pattern: "/users/:id", origin: "http://evil.test" })).toBe(false);
+    expect(isFromPanel({ t: "unrule", req: 2, ruleId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "unrule", req: 2, ruleId: "../x" })).toBe(false);
+    expect(isToPanel({ t: "site", site: null })).toBe(true);
+    expect(isToPanel({ t: "site", site: { origin: "http://localhost:5173", rules: [], pages: [] } })).toBe(true);
+    expect(isToPanel({ t: "site", site: [] })).toBe(false);
+    expect(isToPanel({ t: "step", req: 1, moved: 200, remaining: 3 })).toBe(true);
+    expect(isToPanel({ t: "step", req: 1, moved: -1, remaining: 3 })).toBe(false);
+    expect(isToPanel({ t: "step", req: 1, moved: 0 })).toBe(false);
+    expect(isToPanel({ t: "failed", code: "invalid_pattern", message: "m", req: 4 })).toBe(true);
+    expect(isToPanel({ t: "failed", code: "x", message: "m", req: "4" })).toBe(false);
+  });
+
   it("checks what the worker sends the overlay", () => {
     expect(isFromWorker({ t: "state", page: null, route: null, threads: [], commentMode: false, pending: false })).toBe(true);
     expect(isFromWorker({ t: "pick-lost", pickId: "a".repeat(32) })).toBe(true);

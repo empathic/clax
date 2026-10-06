@@ -2,7 +2,7 @@
 // §11 "Hot reload replaces the DOM"): after the DOM has been quiet for
 // QUIET_MS, but at most MAX_WAIT_MS after the first change (a page that never
 // goes quiet still re-resolves), in the next animation frame, every open
-// thread of the current route is resolved again; one whose anchor is gone has no box and no number
+// thread of the current route (and of the site's other pages) is resolved again; one whose anchor is gone has no box and no number
 // (Detached). Scrolls and resizes only measure the elements found last time.
 // Mutations of Clax's own overlay hosts (every `clax-overlay` element, by
 // default) never start a resolution.
@@ -17,7 +17,7 @@ export const QUIET_MS = 150;
 export const MAX_WAIT_MS = 1000;
 /** A thread of the current route: its number among the found ones and its
  * box in viewport pixels, both null when its anchor is not in the page. */
-export type Placed = { id: string; n: number | null; box: Box | null; method: ResolveMethod | null };
+export type Placed = { id: string; n: number | null; box: Box | null; method: ResolveMethod | null; from?: string };
 /** `now` (default `performance.now()`) stamps `lastMutation`. */
 export type Timers = { set(fn: () => void, ms: number): unknown; clear(h: unknown): void; frame(fn: () => void): void; now?(): number };
 export const realTimers: Timers = {
@@ -85,8 +85,9 @@ export class Resolver {
     }, ms);
   }
 
+  /** The open threads of the current route, then those of the site's other pages (`from`), on any route. */
   private here(): OverlayThread[] {
-    return this.threads.filter(t => t.status === "open" && (t.anchor.route ?? null) === this.route);
+    return this.threads.filter(t => t.status === "open" && (t.from !== undefined || (t.anchor.route ?? null) === this.route));
   }
 
   /** Whether a resolution is due: the DOM changed, or the threads did, since the last one. */
@@ -111,14 +112,14 @@ export class Resolver {
     let n = 0;
     const placed = this.here().map((t): Placed => {
       const r = this.found.get(t.id);
-      if (!r) return { id: t.id, n: null, box: null, method: null };
+      if (!r) return { id: t.id, n: null, box: null, method: null, from: t.from };
       let box: Box;
       if (t.anchor.kind === "area") box = placeArea(t.anchor, r.element);
       else {
         const b = rectOf(r.range ?? r.element);
         box = { x: b.left, y: b.top, w: b.width, h: b.height };
       }
-      return { id: t.id, n: ++n, box, method: r.method };
+      return { id: t.id, n: ++n, box, method: r.method, from: t.from };
     });
     this.onPlaced(placed);
     return placed;

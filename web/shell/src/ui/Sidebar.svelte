@@ -71,6 +71,8 @@
     onSendUnsent?(): void;
     /** The agent picker chose `handle`. */
     onChoose?(handle: string): void;
+    /** The pins' numbers, when `threads` is a filtered part of the threads they were counted over. */
+    numbers?: Map<string, number>;
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -117,7 +119,7 @@
 
 {#snippet cards(list: Thread[])}
   {#each list as t (t.id)}
-    <ThreadCard {t} n={s.numbers.get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
+    <ThreadCard {t} n={(p.numbers ?? s.numbers).get(t.id)} now={clock.now} me={p.me} selected={p.selected} file={s.file}
       history={historyOf(t, p.versions, names(t), { working: t.status === "open" ? threadAgent(p.working ?? [], t.id, agentsByHandle) : null })}
       marker={t.status === "open" ? threadMarker(p.working ?? [], t.id, agentsByHandle) : null} outdated={isOutdated(t, p.resolved[t.id], p.shown)} agent={p.agent} when={relativeTime(t.created_at, clock.now)}
       versions={p.versions} onSeen={p.onSeen}

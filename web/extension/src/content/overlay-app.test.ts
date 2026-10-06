@@ -139,6 +139,16 @@ describe("the overlay", () => {
     expect(sent.filter(m => m.t === "resolved")).toEqual([{ t: "resolved", results: [{ id: A, found: true, method: "selector", rect: { x: 0, y: 0, w: 0, h: 0 } }] }]);
   });
 
+  it("marks the pin of a thread left on another page with that page's path", () => {
+    const B = "01J9BBBBBBBBBBBBBBBBBBBBBB";
+    tell(state([thread(A, "#save", "Save"), { ...thread(B, "#save", "Save"), from: "/users/7" }]));
+    timers.advance(0);
+    const [own, far] = pins() as HTMLElement[];
+    expect([own.classList.contains("far"), own.getAttribute("aria-label"), own.title]).toEqual([false, "Thread 1", ""]);
+    expect([far.classList.contains("far"), far.getAttribute("aria-label"), far.title, far.textContent]).toEqual([true, "Thread 2, from /users/7", "from /users/7", "2"]);
+    expect(document.documentElement.outerHTML).not.toContain("/users/7");
+  });
+
   it("takes messages only from the worker, and only valid ones", () => {
     tell(state([thread(A, "#save", "Save")]), { id: "test-extension", tab: { id: 1 } } as chrome.runtime.MessageSender);
     tell(state([thread(A, "#save", "Save")]), { id: "another-extension" } as chrome.runtime.MessageSender);

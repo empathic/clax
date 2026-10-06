@@ -96,7 +96,7 @@ const waitingIds = (threads: OverlayThread[]) => threads.filter(waitsForSnapshot
 /** What the overlay shows of a state: a state that changes none of it
  * (`pending` alone, say) resolves nothing again. */
 const shownKey = (threads: OverlayThread[], route: string | null) =>
-  JSON.stringify([route, threads.map(t => [t.id, t.status, t.anchor])]);
+  JSON.stringify([route, threads.map(t => [t.id, t.status, t.anchor, t.from])]);
 
 function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   const { doc, runtime } = env;
