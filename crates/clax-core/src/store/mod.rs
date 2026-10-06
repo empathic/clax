@@ -48,6 +48,7 @@ pub mod docs;
 pub mod exec;
 pub mod extension;
 pub mod feedback;
+pub mod joined;
 pub mod live;
 pub mod migrations;
 #[cfg(test)]

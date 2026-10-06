@@ -321,6 +321,53 @@ pub const MIGRATIONS: &[&str] = &[
         created_at TEXT NOT NULL
     );
     CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
+    // 19 and 20: reserved for agent questions and the inbox (another
+    // branch); 21: reserved for the Toolpath audit (another branch). Empty
+    // here, so joined sites keep the number agreed for them; each branch
+    // that lands replaces its own entry.
+    "",
+    "",
+    "",
+    // 22: joined sites (spec 2026-10-05-chrome-overlay-design §7.2): each
+    // origin the owner joined to a site, with the site's key (the origin
+    // whose live pages and rules hold the site's; it has a row of its own),
+    // when it joined and when Clax last used it; the owner's answers to
+    // suggested joins (`never`, or `later` until a time), per pair of
+    // origins in order; and `join` as a kind of thread move (a thread of a
+    // joined origin's page re-filed onto the site's page of the same path).
+    "CREATE TABLE live_sites (
+        origin TEXT PRIMARY KEY,
+        site TEXT NOT NULL,
+        joined_at TEXT NOT NULL,
+        last_used_at TEXT NOT NULL
+    );
+    CREATE INDEX live_sites_by_site ON live_sites(site, origin);
+    CREATE TABLE live_site_answers (
+        a TEXT NOT NULL,
+        b TEXT NOT NULL,
+        answer TEXT NOT NULL CHECK (answer IN ('never', 'later')),
+        until TEXT,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (a, b),
+        CHECK (a < b)
+    );
+    CREATE TABLE thread_moves_22 (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        from_artifact_id TEXT NOT NULL,
+        from_url TEXT NOT NULL,
+        to_artifact_id TEXT NOT NULL,
+        to_url TEXT NOT NULL,
+        moved_by TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('move', 'merge', 'unmerge', 'join')),
+        rule_id TEXT,
+        created_at TEXT NOT NULL
+    );
+    INSERT INTO thread_moves_22 SELECT id, thread_id, from_artifact_id, from_url,
+        to_artifact_id, to_url, moved_by, kind, rule_id, created_at FROM thread_moves;
+    DROP TABLE thread_moves;
+    ALTER TABLE thread_moves_22 RENAME TO thread_moves;
+    CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
 ];
 
 #[cfg(test)]
@@ -467,6 +514,45 @@ mod tests {
             .with_read(|c| Ok(c.query_row("SELECT kind FROM artifacts", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(kind, "html");
+    }
+
+    #[test]
+    fn migration_22_keeps_thread_moves_and_admits_joins() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        {
+            let mut c = Connection::open(home.db_path()).unwrap();
+            let tx = c.transaction().unwrap();
+            for sql in &MIGRATIONS[..18] {
+                tx.execute_batch(sql).unwrap();
+            }
+            tx.pragma_update(None, "user_version", 18).unwrap();
+            tx.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('7q3k9mzx2b4t', 'T', 'x', 'x', 1, '0.2.61');
+                 INSERT INTO threads (id, artifact_id, version_n, anchor_json, status, created_at)
+                    VALUES ('01ARZ3NDEKTSV4RRFFQ69G5FAV', '7q3k9mzx2b4t', 1, '{}', 'open', 'x');
+                 INSERT INTO thread_moves (id, thread_id, from_artifact_id, from_url, to_artifact_id,
+                    to_url, moved_by, kind, rule_id, created_at)
+                    VALUES ('m1', '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'a', 'u', 'b', 'v', 'viewer:x', 'merge', 'r', 'x');",
+            )
+            .unwrap();
+            tx.commit().unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        st.with_write(|c| {
+            let kept: String = c.query_row("SELECT kind FROM thread_moves WHERE id = 'm1'", [], |r| r.get(0))?;
+            assert_eq!(kept, "merge");
+            c.execute(
+                "INSERT INTO thread_moves (id, thread_id, from_artifact_id, from_url, to_artifact_id,
+                    to_url, moved_by, kind, created_at)
+                 VALUES ('m2', '01ARZ3NDEKTSV4RRFFQ69G5FAV', 'a', 'u', 'b', 'v', 'viewer:x', 'join', 'x')",
+                [],
+            )?;
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]

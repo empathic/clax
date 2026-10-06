@@ -53,6 +53,32 @@ impl PageKey {
     }
 }
 
+/// Whether `origin` (normalized, as [`parse_page_url`] writes it) names
+/// this machine by a loopback name: `localhost` or any `*.localhost`,
+/// `127.0.0.0/8`, or `[::1]`.
+pub fn is_loopback_origin(origin: &str) -> bool {
+    let Ok(u) = url::Url::parse(origin) else {
+        return false;
+    };
+    match u.host() {
+        Some(url::Host::Domain(d)) => d == "localhost" || d.ends_with(".localhost"),
+        Some(url::Host::Ipv4(a)) => a.is_loopback(),
+        Some(url::Host::Ipv6(a)) => a.is_loopback(),
+        None => false,
+    }
+}
+
+/// Whether two origins are of one host family, so a join of them may be
+/// suggested (spec 2026-10-05-chrome-overlay-design §7.2, owner decision
+/// 2026-10-06): different origins of one scheme whose hosts are both
+/// loopback names ([`is_loopback_origin`]), such as one dev server's ports.
+pub fn same_host_family(a: &str, b: &str) -> bool {
+    a != b
+        && a.split_once("://").map(|x| x.0) == b.split_once("://").map(|x| x.0)
+        && is_loopback_origin(a)
+        && is_loopback_origin(b)
+}
+
 /// `s` cut to at most `max` bytes at a character boundary.
 fn cut(mut s: String, max: usize) -> String {
     if s.len() > max {
@@ -412,6 +438,49 @@ mod tests {
                 .covered_by(&k("http://localhost:5173", "/docs//"))
         );
         assert!(!k("http://localhost:5173", "/x").covered_by(&k("http://localhost:5173", "///")));
+    }
+
+    #[test]
+    fn loopback_origins_are_one_host_family() {
+        for o in [
+            "http://localhost:7702",
+            "http://app.localhost:3000",
+            "http://127.0.0.1:7703",
+            "http://127.1.2.3",
+            "http://[::1]:8080",
+            "https://localhost",
+        ] {
+            assert!(is_loopback_origin(o), "{o}");
+        }
+        for o in [
+            "http://example.com",
+            "http://localhost.example.com",
+            "http://10.0.0.1:7702",
+            "http://[::2]",
+            "not a url",
+        ] {
+            assert!(!is_loopback_origin(o), "{o}");
+        }
+        assert!(same_host_family(
+            "http://localhost:7702",
+            "http://localhost:7703"
+        ));
+        assert!(same_host_family(
+            "http://localhost:7702",
+            "http://127.0.0.1:7702"
+        ));
+        assert!(!same_host_family(
+            "http://localhost:7702",
+            "http://localhost:7702"
+        ));
+        assert!(!same_host_family(
+            "http://localhost:7702",
+            "https://localhost:7703"
+        ));
+        assert!(!same_host_family(
+            "http://localhost:7702",
+            "http://example.com:7703"
+        ));
     }
 
     #[test]
