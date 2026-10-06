@@ -13,7 +13,7 @@ import { type ThreadDelta, applyPresence, applyThread } from "../../../shell/src
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sync";
 import type { Working } from "../../../shell/src/view/working-model";
-import { type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, type WorkerToOverlay, type WorkerToPanel, isFromPanel, waitsForSnapshot } from "../messages";
+import { MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 
 type Owner = { public_id: string; display_name: string | null };
@@ -129,6 +129,10 @@ export class Tabs {
   /** Per tab, a thread the panel selected on another route: scrolled to once the overlay finds it there. */
   private scrollAfter = new Map<number, string>();
   private panelSeq = 0;
+  /** Per tab, what the overlay was last told (`state`): a change to nothing it shows is not sent. */
+  private told = new Map<number, string>();
+  /** Per tab, a count of the documents and injections the record has seen: a presence probe answered after either is stale. */
+  private gens = new Map<number, number>();
   private viewer: Owner | null = null;
   private streamUp = true;
   private saving = false;
@@ -183,8 +187,25 @@ export class Tabs {
     const prev = this.tabs.get(tabId);
     this.tabs.set(tabId, next);
     if (!prev || prev.url !== next.url || prev.overlay !== next.overlay || prev.commentMode !== next.commentMode || prev.active !== next.active) this.persist();
-    this.d.toOverlay(tabId, { t: "state", page: next.page, route: next.route, threads: next.threads, commentMode: next.commentMode, pending: next.pending });
+    this.tellOverlay(tabId, next);
     this.tellPanels(tabId);
+  }
+
+  /** The overlay's `state`: the page, the route, comment mode, and each
+   * thread's anchor and status only (spec L7: thread text stays in extension
+   * pages); sent when any of it changed since the overlay was last told. */
+  private tellOverlay(tabId: number, s: TabState): void {
+    const m: WorkerToOverlay = { t: "state", page: s.page, route: s.route, threads: s.threads.map(overlayThread), commentMode: s.commentMode, pending: s.pending };
+    const key = JSON.stringify(m);
+    if (this.told.get(tabId) === key) return;
+    this.told.set(tabId, key);
+    this.d.toOverlay(tabId, m);
+  }
+
+  /** A new overlay (or a new document) hears the whole state again. */
+  private retell(tabId: number): void {
+    this.told.delete(tabId);
+    this.gens.set(tabId, (this.gens.get(tabId) ?? 0) + 1);
   }
 
   private tellPanels(tabId: number): void {
@@ -291,9 +312,10 @@ export class Tabs {
    * list when the page changed or `fresh`, and follow its topics. Stream
    * deltas heard meanwhile are kept: on the same page the lists are not
    * replaced, and a refetch's answer is ordered against them. */
-  async route(tabId: number, url: string, fresh = false): Promise<TabState> {
+  async route(tabId: number, url: string | null, fresh = false): Promise<TabState> {
     const seq = (this.seqs.get(tabId) ?? 0) + 1;
     this.seqs.set(tabId, seq);
+    if (url === null || url.length > MAX_URL) return this.tooLong(tabId);
     const prev = this.tabs.get(tabId) ?? emptyTab(tabId, url);
     const latest = () => this.seqs.get(tabId) === seq;
     const now = () => this.tabs.get(tabId) ?? prev;
@@ -334,6 +356,21 @@ export class Tabs {
     }
   }
 
+  /** The tab shows a page whose address is over MAX_URL, which the daemon
+   * refuses (spec §7): no live page, and the panel says why. The record
+   * keeps no URL, so nothing looks it up again. */
+  private tooLong(tabId: number): TabState {
+    this.stale.delete(tabId);
+    this.syncs.delete(tabId);
+    this.d.hub.receive(hubId(tabId), { t: "topics", topics: [] });
+    const next: TabState = {
+      ...(this.tabs.get(tabId) ?? emptyTab(tabId, "")), url: "", page: null, route: null, threads: [], working: [], pending: false,
+      resolved: {}, versions: [], participants: null, error: { code: "url_too_long", message: URL_TOO_LONG },
+    };
+    this.set(tabId, next);
+    return next;
+  }
+
   /** The page's threads and working list again, ordered against the deltas heard meanwhile. */
   private async refetch(tabId: number, aid: string): Promise<void> {
     const done = this.syncFor(tabId, aid).begin();
@@ -353,29 +390,34 @@ export class Tabs {
   /** The loader greeted from a page load: a new document, so no overlay
    * and comment mode off (spec §11); the overlay comes when the page has
    * open threads. */
-  async hello(tabId: number, url: string): Promise<void> {
-    this.newDocument(tabId, url);
+  async hello(tabId: number, url: string | null): Promise<void> {
+    this.newDocument(tabId, url ?? "");
     const s = await this.route(tabId, url);
     if (s.threads.some(t => t.status === "open") && !s.overlay) await this.ensureOverlay(tabId);
   }
 
-  /** The tab's record for a new document: no overlay, comment mode off.
-   * The click's activeTab grant is kept: after a cross-document load no
-   * Clax script runs where the origin is not on, and the next click grants
-   * it again. */
+  /** The tab's record for a new document: no overlay, comment mode off,
+   * and no activeTab grant, which Chrome revokes at a navigation (spec §11
+   * "Page navigates"): the panel then says how to start, and the next
+   * gesture grants it again. */
   private newDocument(tabId: number, url: string): void {
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, url);
-    this.set(tabId, { ...s, overlay: false, commentMode: false, resolved: {}, selected: null });
+    this.retell(tabId);
+    this.set(tabId, { ...s, overlay: false, commentMode: false, active: false, resolved: {}, selected: null });
   }
 
-  /** Chrome reported the tab loading. Only a new document (its overlay is
-   * gone) resets the record; an in-page navigation, which Chrome may report
-   * the same way, keeps everything, and the overlay reports its route. */
+  /** Chrome reported the tab loading, or done loading. Only a new document
+   * (its overlay is gone) resets the record; an in-page navigation, which
+   * Chrome may report the same way, keeps everything, and the overlay
+   * reports its route. A probe at `loading` can still see the old document:
+   * the one at `complete` sees the new one. A probe answered after a new
+   * document or an injection the record saw meanwhile is stale and dropped. */
   async navigated(tabId: number): Promise<void> {
     const s = this.tabs.get(tabId);
     if (!s?.overlay) return;
+    const gen = this.gens.get(tabId) ?? 0;
     if (this.d.present && (await this.d.present(tabId))) return;
-    if (this.tabs.has(tabId)) this.newDocument(tabId, s.url);
+    if (this.tabs.has(tabId) && (this.gens.get(tabId) ?? 0) === gen) this.newDocument(tabId, s.url);
   }
 
   /** A gesture granted the tab activeTab. */
@@ -393,6 +435,7 @@ export class Tabs {
   /** Makes sure the tab's document has the overlay; true when it was injected now. */
   private async ensureOverlay(tabId: number): Promise<boolean> {
     const fresh = await this.d.inject(tabId);
+    if (fresh) this.retell(tabId);
     this.set(tabId, { ...(this.tabs.get(tabId) ?? emptyTab(tabId, "")), overlay: true });
     return fresh;
   }
@@ -431,6 +474,8 @@ export class Tabs {
     this.workingAt.delete(tabId);
     this.scrollAfter.delete(tabId);
     this.stale.delete(tabId);
+    this.told.delete(tabId);
+    this.gens.delete(tabId);
     this.d.hub.detach(hubId(tabId));
     this.persist();
     this.tellPanels(tabId);
@@ -445,7 +490,7 @@ export class Tabs {
 
   /** One event or notice from the stream hub, for the clients `ids`. */
   fromHub(ids: string[], msg: HubMsg): void {
-    if (msg.t === "status") { this.status(ids, msg.up); return; }
+    if (msg.t === "status") { this.status(msg.up); return; }
     for (const id of ids) {
       if (id.startsWith("panel:")) { this.fromHubPanel(id, msg); continue; }
       const tabId = tabOf(id);
@@ -487,14 +532,11 @@ export class Tabs {
     });
   }
 
-  private status(ids: string[], up: boolean): void {
+  /** The stream went up or down: the side panels say so (the overlay shows nothing of it). */
+  private status(up: boolean): void {
     this.streamUp = up;
     const m = { t: "stream-status", up } as const;
     for (const p of this.panels) p.port.postMessage(m satisfies WorkerToPanel);
-    for (const id of ids) {
-      const tabId = tabOf(id);
-      if (this.tabs.has(tabId)) this.d.toOverlay(tabId, m);
-    }
   }
 
   /** A thread whose comments no longer add up, fetched whole, ordered against the deltas heard meanwhile. */
@@ -532,12 +574,6 @@ export class Tabs {
     if (aid && thread.artifact_id === aid) this.syncFor(tabId, aid).change(ts => upsert(ts, thread));
   }
 
-  /** A thread an action deleted. */
-  removed(tabId: number, threadId: string): void {
-    const aid = this.tabs.get(tabId)?.page?.artifact_id;
-    if (aid) this.syncFor(tabId, aid).change(ts => ts.filter(t => t.id !== threadId));
-  }
-
   /** The owner as the daemon answered (its name set): every panel shows it. */
   setViewer(v: Viewer): void {
     this.viewer = { public_id: v.public_id, display_name: v.display_name };
@@ -562,8 +598,9 @@ export class Tabs {
    * up there again before the message is acted on. */
   async fromOverlay(tabId: number, _windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown> {
     await this.loaded;
-    if (m.t === "hello") return this.hello(tabId, m.url);
-    if (m.t === "route") { await this.route(tabId, m.url, this.stale.has(tabId)); return; }
+    // The loader at a load, or an overlay at its start: it hears the whole state.
+    if (m.t === "hello") { this.told.delete(tabId); return this.hello(tabId, m.url); }
+    if (m.t === "route") { this.told.delete(tabId); await this.route(tabId, m.url, this.stale.has(tabId)); return; }
     const known = this.tabs.get(tabId);
     if ((!known || this.stale.has(tabId)) && (senderUrl ?? known?.url)) await this.route(tabId, (senderUrl ?? known?.url)!, true);
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, senderUrl ?? "");

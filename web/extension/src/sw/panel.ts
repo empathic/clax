@@ -2,7 +2,8 @@
 // took acts on the tab the panel shows. Thread actions go to the daemon for
 // the tab's live page, and the thread the daemon answers with is applied at
 // once (the stream brings it too). A failure is told to the panel as
-// `failed {code, message}`.
+// `failed {code, message}`; one a new pairing can fix is also kept as the
+// tab's error, so the panel's Retry pairs again for it.
 import { type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
@@ -10,8 +11,8 @@ import type { Pairer } from "./pairing";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "remove" | "looked" | "setName">;
-  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "removed" | "setViewer" | "select" | "setCommentMode">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName">;
+  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode">;
   pairer: Pick<Pairer, "pair">;
   /** Whether the extension holds `<all_urls>` (screenshots on any tab without a click). */
   allUrls(): Promise<boolean>;
@@ -35,7 +36,9 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
   try {
     await act(d, tabId, m);
   } catch (e) {
-    reply(failed(e));
+    const f = failed(e);
+    if (f.t === "failed" && tabId !== null && RETRYABLE.has(f.code)) d.tabs.fail(tabId, e);
+    reply(f);
   }
 }
 
@@ -80,7 +83,6 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
     case "reply": d.tabs.applied(tabId, (await d.api.comment(aid, m.threadId, m.body)).thread); return;
     case "resolve": d.tabs.applied(tabId, (await d.api.resolve(aid, m.threadId)).thread); return;
     case "reopen": d.tabs.applied(tabId, (await d.api.reopen(aid, m.threadId)).thread); return;
-    case "delete": await d.api.remove(aid, m.threadId); d.tabs.removed(tabId, m.threadId); return;
     case "looked": await d.api.looked(aid, m.threadIds); return;
     default: return;
   }

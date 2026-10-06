@@ -45,6 +45,36 @@ describe("Api", () => {
     expect(s.pairs()).toBe(1);
   });
 
+  it("never sends a comment or a send twice after a network error, but pairs again for the next request", async () => {
+    const s = setup([new TypeError("Failed to fetch"), new TypeError("Failed to fetch"), ok({ thread: {} })]);
+    await expect(s.api.comment(AID, TID, "hi")).rejects.toMatchObject({ code: "daemon_unreachable" });
+    expect(s.calls).toHaveLength(1);
+    expect(s.pairs()).toBe(1);
+    // A new thread names its pick: it is sent again, and the daemon makes one thread of both.
+    const f = new FormData();
+    f.set("pick_id", "0".repeat(32));
+    await s.api.postThread(f, []);
+    expect(s.calls.slice(1).map(c => (c.init.body as FormData).get("pick_id"))).toEqual(["0".repeat(32), "0".repeat(32)]);
+  });
+
+  it("runs what waits for no request in flight once the last one is answered", async () => {
+    let answer!: (r: Response) => void;
+    const fetchFn = (() => new Promise<Response>(r => { answer = r; })) as unknown as typeof fetch;
+    const api = new Api({ current: async () => A, pair: async () => B }, fetchFn);
+    const ran: string[] = [];
+    api.whenIdle(() => ran.push("idle before"));
+    expect(ran).toEqual(["idle before"]);
+    const req = api.lookup("http://localhost:5173/");
+    await Promise.resolve();
+    await Promise.resolve();
+    api.whenIdle(() => ran.push("idle after"));
+    expect(ran).toEqual(["idle before"]);
+    answer(ok());
+    await req;
+    await new Promise(r => setTimeout(r, 0));
+    expect(ran).toEqual(["idle before", "idle after"]);
+  });
+
   it("tells its listener of a new pairing", async () => {
     const s = setup([new Response("{}", { status: 401 }), ok()]);
     const heard: Pairing[] = [];

@@ -52,13 +52,28 @@ async function launch(profile: string, extDir: string): Promise<{ ctx: BrowserCo
   return { ctx, sw };
 }
 
-export const test = base.extend<{ live: Live; variant: Variant }>({
+/** How long a daemon of these tests may take to start: each test launches a
+ * daemon and a browser of its own, often right after the binary was built,
+ * when its first runs are slow (macOS scans a new binary at its first exec). */
+const DAEMON_START_MS = 60_000;
+
+export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }>({
+  // Once per worker, before any daemon starts: the binary's first run, so
+  // the first-exec scan is not paid inside a daemon's start.
+  // oxlint-disable-next-line no-empty-pattern
+  warm: [async ({}, use) => {
+    const r = spawnSync(process.env.CLAX_E2E_BIN!, ["--version"], { encoding: "utf8", timeout: DAEMON_START_MS });
+    if (r.status !== 0) throw new Error(`clax --version failed (${r.status ?? r.signal}): ${r.stderr}`);
+    await use();
+  }, { scope: "worker", auto: true, timeout: DAEMON_START_MS + 5000 }],
   variant: ["all-urls", { option: true }],
-  live: async ({ variant }, use) => {
+  live: async ({ variant }, use, testInfo) => {
+    // The daemon's start has its own bound, beyond the test's.
+    testInfo.setTimeout(testInfo.timeout + DAEMON_START_MS);
     if (!existsSync(join(EXT_DIR, "manifest.json"))) throw new Error("web/dist-extension-test is missing: run `npm run build` in web/");
     // The native host's wrapper runs the `bin` setting's clax: this run's.
     const config = `bin = ${JSON.stringify(process.env.CLAX_E2E_BIN)}\n${NO_KEY_CONFIG}`;
-    const daemon = await startDaemon({ config });
+    const daemon = await startDaemon({ config, startMs: DAEMON_START_MS });
     // The real path: macOS reports file changes under /private/var, not /var.
     const siteDir = realpathSync(mkdtempSync(join(tmpdir(), "clax-live-site-")));
     cpSync(join(web, "e2e/live-site"), siteDir, { recursive: true });
@@ -92,7 +107,7 @@ export const test = base.extend<{ live: Live; variant: Variant }>({
       daemon, ctx: first.ctx, sw: first.sw, extId: new URL(first.sw.url()).host, site, siteDir, siteUrl, daemonExtId,
       async restartDaemon() {
         await l.daemon.stop({ keepHome: true });
-        l.daemon = await startDaemon({ home: l.daemon.home, config });
+        l.daemon = await startDaemon({ home: l.daemon.home, config, startMs: DAEMON_START_MS });
       },
       async restartBrowser() {
         await l.ctx.close();

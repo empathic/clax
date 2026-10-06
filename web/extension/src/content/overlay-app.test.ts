@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type OverlayEnv, type OverlayRuntime, ROUTE_MS, startOnce } from "./overlay-app";
+import { hasOverlay, setBoot } from "../sw/origins";
 import { MAX_WAIT_MS, QUIET_MS, Resolver, type Timers } from "./resolver";
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
@@ -28,6 +29,7 @@ const flush = () => new Promise(r => setTimeout(r, 0));
 const records = () => new Promise<void>(r => queueMicrotask(r));
 const thread = (id: string, selector: string, quote: string) => ({
   id, status: "open", anchor: { kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
+  addressed_pending: false,
 });
 const state = (threads: unknown[], extra: Record<string, unknown> = {}) =>
   ({ t: "state", page: null, route: null, threads, commentMode: false, pending: false, ...extra });
@@ -120,7 +122,7 @@ describe("the overlay", () => {
   });
 
   it("turns comment mode on and off as the worker says", () => {
-    tell({ t: "comment-mode", on: true });
+    tell(state([], { commentMode: true }));
     expect(document.documentElement.style.cursor).toBe("crosshair");
     tell(state([], { commentMode: false }));
     expect(document.documentElement.style.cursor).toBe("");
@@ -180,7 +182,7 @@ describe("the overlay", () => {
     timers.advance(5000);
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(1);
-    tell({ t: "snapshot-now" });
+    timers.advance(5000);
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(2);
     tell(state([], { pending: false }));
@@ -192,7 +194,7 @@ describe("the overlay", () => {
   it("names in a quiet snapshot the threads its state showed waiting for one", () => {
     const B = "01J9BBBBBBBBBBBBBBBBBBBBBB";
     const C = "01J9CCCCCCCCCCCCCCCCCCCCCC";
-    const waiting = { addressed_pending: { harness: "claude", at: "t" } };
+    const waiting = { addressed_pending: true };
     tell(state([
       { ...thread(A, "#save", "Save"), ...waiting },
       thread(B, "#save", "Save"),
@@ -279,9 +281,42 @@ describe("the overlay", () => {
     tick(20_000);
     expect(hosts()).toHaveLength(0);
     expect(listeners).toHaveLength(0);
-    expect(global).toMatchObject({ claxOverlayStarted: false });
+    expect(global).not.toHaveProperty("claxOverlayStarted");
     stop = startOnce(env(), global);
     expect(stop).toBeTypeOf("function");
+  });
+
+  it("counts as present only while live and of the worker's load of the extension, and a new load's overlay replaces it", () => {
+    stop?.();
+    stop = undefined;
+    const g = globalThis as Record<string, unknown>;
+    const BOOT_A = "a".repeat(32), BOOT_B = "b".repeat(32);
+    try {
+      // The worker's probe and boot run in the isolated world: here, this global.
+      setBoot(BOOT_A);
+      const first = startOnce(env());
+      expect(first).toBeTypeOf("function");
+      expect(hasOverlay(BOOT_A)).toBe(true);
+      const drawn = hosts().length;
+      expect(startOnce(env())).toBeUndefined(); // injected twice, it starts once
+      expect(hosts()).toHaveLength(drawn);
+      // The extension was reloaded: the old overlay's mark stays in the world, but it is not this load's.
+      expect(hasOverlay(BOOT_B)).toBe(false);
+      setBoot(BOOT_B);
+      const second = startOnce(env());
+      expect(second).toBeTypeOf("function");
+      expect(hosts()).toHaveLength(drawn); // the old one stopped and removed its hosts
+      expect(hasOverlay(BOOT_B)).toBe(true);
+      // Its extension context gone, it is no longer present either.
+      rt.id = undefined;
+      expect(hasOverlay(BOOT_B)).toBe(false);
+      second!();
+      first!();
+      expect(hosts()).toHaveLength(0);
+    } finally {
+      delete g.claxOverlayStarted;
+      delete g.claxBoot;
+    }
   });
 
   it("scrolls to a found thread and flashes it", () => {
@@ -309,7 +344,7 @@ describe("the overlay", () => {
   });
 
   it("ignores a close-composer for a pick it does not show", () => {
-    tell({ t: "comment-mode", on: false });
+    tell(state([], { commentMode: false }));
     tell({ t: "close-composer", pickId: "0".repeat(32), posted: true });
     expect(document.documentElement.style.cursor).toBe("");
   });

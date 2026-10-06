@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, enabled, forget, injectOverlay, originOf, overlayPresent, remember, restoreLoaders, sameOrigin, scriptId, type OriginsEnv } from "./origins";
+import { ask, bootNonce, enabled, forget, injectOverlay, originOf, overlayPresent, remember, restoreLoaders, sameOrigin, scriptId, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
-const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local }) as unknown as OriginsEnv;
+const BOOT = "b".repeat(32);
+const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local, boot: async () => BOOT }) as unknown as OriginsEnv;
 beforeEach(() => { c = fakeChrome(); });
 
 describe("origins", () => {
@@ -63,13 +64,18 @@ describe("origins", () => {
     expect(injects.filter(a => a.files)).toEqual([{ target: { tabId: 7, allFrames: false }, files: ["overlay.js"] }]);
   });
 
-  it("does not inject the overlay twice into one document, and marks it only once injected", async () => {
+  it("does not inject the overlay twice into one document, and counts only a started overlay of this load of the extension", async () => {
     let fail = true;
-    // The fake runs each probe in this test's global, as Chrome runs it in the tab's isolated world.
-    c.scripting.executeScript = (async (inj: { files?: string[]; func?: () => unknown }) => {
+    const g = globalThis as { claxOverlayStarted?: unknown; claxBoot?: string };
+    // The fake runs each function in this test's global, as Chrome runs it in
+    // the tab's isolated world; `overlay.js` marks the world as the overlay
+    // does (content/presence.ts), alive for the boot nonce it started under.
+    c.scripting.executeScript = (async (inj: { files?: string[]; func?: (...a: unknown[]) => unknown; args?: unknown[] }) => {
       c.calls.push({ api: "scripting.executeScript", args: [inj] });
-      if (inj.func) return [{ result: inj.func() }];
+      if (inj.func) return [{ result: inj.func(...(inj.args ?? [])) }];
       if (fail) throw new Error("Frame with ID 0 was removed.");
+      const boot = g.claxBoot;
+      g.claxOverlayStarted = { alive: (b: unknown) => b === boot, stop: () => {} };
       return [{ result: undefined }];
     }) as unknown as typeof c.scripting.executeScript;
     const files = () => c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files).length;
@@ -81,9 +87,34 @@ describe("origins", () => {
       expect(await overlayPresent(env(), 7)).toBe(true);
       expect(await injectOverlay(env(), 7)).toBe(false);
       expect(files()).toBe(2);
+      // The extension loaded again (a new boot nonce): the old overlay's mark
+      // stays in the world, but it is not this load's, so it is injected again.
+      const again = { ...env(), boot: async () => "c".repeat(32) } as OriginsEnv;
+      expect(await overlayPresent(again, 7)).toBe(false);
+      expect(await injectOverlay(again, 7)).toBe(true);
+      expect(await overlayPresent(again, 7)).toBe(true);
+      // A mark that is not the overlay's (a stale flag of another shape) is no overlay.
+      g.claxOverlayStarted = true;
+      expect(await overlayPresent(again, 7)).toBe(false);
     } finally {
-      delete (globalThis as { claxOverlayLoaded?: boolean }).claxOverlayLoaded;
+      delete g.claxOverlayStarted;
+      delete g.claxBoot;
     }
+  });
+
+  it("keeps one boot nonce per load of the extension, across the worker's restarts", async () => {
+    let n = 0;
+    const random = () => String(++n).padStart(32, "0");
+    const first = bootNonce(c.storage.session as never, random);
+    const a = await first();
+    expect(await first()).toBe(a);
+    // A restarted worker reads it back.
+    expect(await bootNonce(c.storage.session as never, random)()).toBe(a);
+    // A reload of the extension clears session storage: a new nonce.
+    await c.storage.session.remove("boot");
+    const b = await bootNonce(c.storage.session as never, random)();
+    expect(b).not.toBe(a);
+    expect(b).toMatch(/^[0-9a-f]{32}$/);
   });
 
   it("reads a tab it cannot reach as having no overlay", async () => {

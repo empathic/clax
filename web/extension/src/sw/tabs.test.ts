@@ -113,6 +113,76 @@ describe("Tabs", () => {
     expect(h.overlay.at(-1)).toMatchObject({ tabId: 4, m: { t: "state", page: page(), threads: [expect.objectContaining({ id: T1 })], commentMode: false, pending: false } });
   });
 
+  it("tells the overlay each thread's ID, status, anchor and pending flag, and none of its text", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1, { anchor: { kind: "element", selector: "body", quote: "Hi", file: "index.html" }, addressed_pending: { harness: "claude", at: "t" }, last_comment: { body: "secret" } })]);
+    await h.tabs.route(4, URL1);
+    const m = h.overlay.at(-1)!.m as Extract<WorkerToOverlay, { t: "state" }>;
+    expect(m.threads).toEqual([{ id: T1, status: "open", anchor: { kind: "element", selector: "body", quote: "Hi", file: "index.html" }, addressed_pending: true }]);
+    const text = JSON.stringify(h.overlay);
+    for (const word of ["secret", "comments", "author_name", "harness", "feedback_state", "last_comment"]) expect(text).not.toContain(word);
+    // The panel still gets the whole thread.
+    expect(h.tabs.panelState(4).threads[0]).toMatchObject({ comments: [expect.objectContaining({ body: "b" })] });
+  });
+
+  it("tells the overlay only of changes it shows, and the whole state again to a new overlay", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.route(4, URL1);
+    const states = () => h.overlay.filter(o => o.m.t === "state").length;
+    const before = states();
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `working:${AID}`, name: "working", data: { artifact_id: AID, working: [{ key: "k", harness: "claude", message: null, thread_ids: [], started_at: "t", last_heartbeat: "t" }] } });
+    h.tabs.select(4, null);
+    expect(h.tabs.state(4)?.working).toHaveLength(1);
+    expect(states()).toBe(before);
+    h.tabs.setCommentMode(4, true);
+    expect(states()).toBe(before + 1);
+    // An overlay's start (its first route) hears the state even when nothing changed.
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: URL1 }, URL1);
+    expect(states()).toBe(before + 2);
+  });
+
+  it("looks up no address over MAX_URL, and says why on the tab", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.route(4, URL1);
+    const long = `${URL1}#${"x".repeat(4096)}`;
+    for (const m of [{ t: "route", url: null }, { t: "hello", url: null }] as const) {
+      h.calls.length = 0;
+      await h.tabs.fromOverlay(4, 1, m, long);
+      expect(h.calls).toEqual([]);
+      expect(h.tabs.state(4)).toMatchObject({ url: "", page: null, threads: [], error: { code: "url_too_long", message: "This page's address is too long for Clax." } });
+      expect(h.hubIn.at(-1)).toEqual({ id: "tab:4", msg: { t: "topics", topics: [] } });
+    }
+    h.calls.length = 0;
+    await h.tabs.route(4, long);
+    expect(h.calls).toEqual([]);
+    expect(h.tabs.state(4)?.error?.code).toBe("url_too_long");
+  });
+
+  it("drops a presence probe answered after the overlay was injected again", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.toggle(4, URL1);
+    // A new document whose loader greeted, and whose overlay came, while a slow probe was out.
+    h.reload(4);
+    const probe = hold();
+    const tabs = h.tabs as unknown as { d: { present(tabId: number): Promise<boolean> } };
+    const present = tabs.d.present;
+    tabs.d.present = async tabId => { const was = await present(tabId); await probe.p; return was; };
+    const navigated = h.tabs.navigated(4);
+    await settle();
+    await h.tabs.hello(4, URL1);
+    expect(h.tabs.state(4)?.overlay).toBe(true);
+    probe.release();
+    await navigated;
+    expect(h.tabs.state(4)?.overlay).toBe(true);
+  });
+
   it("follows the live page a thread posted from the tab created, and only then", async () => {
     const h = harness();
     h.pages.set(URL1, { page: null, route: null });
@@ -267,14 +337,16 @@ describe("Tabs", () => {
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, selected: null, resolved: {} });
   });
 
-  it("after a real load, forgets the overlay and comment mode but keeps the click's grant", async () => {
+  it("after a real load, forgets the overlay, comment mode and the click's grant", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     h.tabs.activate(4, URL1);
     await h.tabs.toggle(4, URL1);
     h.reload(4);
     await h.tabs.navigated(4);
-    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: true });
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: false });
+    expect(h.tabs.admits(4)).toBe(false);
+    h.tabs.activate(4, URL1);
     await h.tabs.toggle(4, URL1);
     expect(h.injected).toEqual([4, 4]);
     expect(h.tabs.state(4)?.commentMode).toBe(true);
@@ -366,7 +438,7 @@ describe("Tabs", () => {
     expect(h.calls.filter(c => c.startsWith("lookup"))).toHaveLength(1);
   });
 
-  it("tells the panels and the overlays whether the stream is up", async () => {
+  it("tells the panels whether the stream is up, and the overlays nothing of it", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     await h.tabs.route(4, URL1);
@@ -376,7 +448,7 @@ describe("Tabs", () => {
     expect(p.sent).toContainEqual({ t: "stream-status", up: true });
     h.tabs.fromHub(["tab:4"], { t: "status", up: false });
     expect(p.sent.at(-1)).toEqual({ t: "stream-status", up: false });
-    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "stream-status", up: false } });
+    expect(h.overlay.map(o => o.m.t)).not.toContain("stream-status");
     h.tabs.fromHub(["tab:4"], { t: "status", up: true });
     expect(p.sent.at(-1)).toEqual({ t: "stream-status", up: true });
   });
@@ -539,8 +611,6 @@ describe("Tabs and side panels", () => {
     await settle();
     h.tabs.applied(4, full(T1, { status: "resolved" }) as never);
     expect(h.tabs.state(4)?.threads[0].status).toBe("resolved");
-    h.tabs.removed(4, T1);
-    expect(h.tabs.state(4)?.threads).toEqual([]);
     h.tabs.setViewer({ public_id: "u_owner", display_name: "Mia", created_at: "t" });
     expect(tabMsgs(p).at(-1)?.viewer).toEqual({ public_id: "u_owner", display_name: "Mia" });
   });

@@ -11,13 +11,20 @@
 // composer) and the snapshot (from the overlay) are in, naming the threads
 // that were pending when the overlay was told to serialize the page (spec
 // L11). The composer never sees the credential: posting is the worker's.
+// Every attempt to post a pick names it (`pick_id`), so the daemon makes one
+// thread of a post retried after its answer was lost. A post fails, saying
+// why, rather than wait: for a page whose address is over MAX_URL, or whose
+// snapshot has not come SNAPSHOT_WAIT_MS after the person pressed Post.
 import type { Anchor } from "../../../bridge/src/protocol";
 import { bytesDataUrl } from "../data-url";
-import { type OverlayToWorker, type PageView, type Rect, type SnapshotError, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
+import { type ComposerNote, type OverlayToWorker, type PageView, type Rect, type SnapshotError, URL_TOO_LONG, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
 import type { Api } from "./api";
 
 /** How long a captured pick waits for its composer page to connect. */
 export const COMPOSER_WAIT_MS = 5000;
+/** How long a pressed Post waits for the page's snapshot before it fails. */
+export const SNAPSHOT_WAIT_MS = 30_000;
+export const NO_SNAPSHOT = "The page did not send its snapshot. Post again.";
 
 /** The snapshot posted for a pick that came without one, saying why. */
 export function noSnapshotPage(error: SnapshotError | null): string {
@@ -37,6 +44,10 @@ type PickState = {
   /** The tab's pending threads when the overlay was told to serialize the page. */
   pending: string[];
   url: string | null; title: string; snapshot: string | null;
+  /** The page's address is over MAX_URL: the daemon would refuse the post. */
+  tooLong: boolean;
+  /** Counts the person's presses of Post, so a wait times out only the press it began with. */
+  posts: number;
   body: string | null; port: chrome.runtime.Port | null; connected: boolean; posting: boolean;
 };
 
@@ -59,6 +70,17 @@ export type PicksDeps = {
 const dataUrl = async (b: Blob) => bytesDataUrl(new Uint8Array(await b.arrayBuffer()), "image/png");
 
 const message = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
+/** How the composer words a failed post: the side panel's words for a failure to pair, else the failure's own. */
+const WORDS: Record<string, string> = {
+  host_missing: "Clax is not set up for Chrome yet. Run clax init (or /clax:extension in Claude Code), then post again.",
+  host_failed: "Clax could not reach its helper. Post again; if it fails again, run clax init.",
+  daemon_unavailable: "Clax could not start. See ~/.clax/logs/daemon.log, then post again.",
+  daemon_unreachable: "Clax is not answering. Post again in a moment.",
+};
+export function postFailure(e: unknown): string {
+  const code = (e as { code?: unknown } | null)?.code;
+  return (typeof code === "string" && Object.hasOwn(WORDS, code) ? WORDS[code] : undefined) ?? message(e);
+}
 
 /** Tells the composer `m`; a port Chrome already closed (its frame went) hears nothing. */
 function tell(port: chrome.runtime.Port | null, m: WorkerToComposer): void {
@@ -73,9 +95,28 @@ export class Picks {
   /** Tabs with a quiet snapshot in flight. */
   private quieting = new Set<number>();
   private readonly after: (ms: number, fn: () => void) => void;
+  /** What runs once no pick is open (`whenIdle`). */
+  private idlers: (() => void)[] = [];
 
   constructor(private readonly d: PicksDeps) {
     this.after = d.after ?? ((ms, fn) => { setTimeout(fn, ms); });
+  }
+
+  /** Runs `fn` once no tab has a pick open (at once when none has): the
+   * extension's reload for a new daemon version (spec L13) waits for it, so
+   * a composer and its text are not torn down mid-draft. */
+  whenIdle(fn: () => void): void {
+    this.idlers.push(fn);
+    this.drain();
+  }
+  private drain(): void {
+    if (this.byTab.size) return;
+    for (const fn of this.idlers.splice(0)) fn();
+  }
+  /** The tab's pick goes. */
+  private drop(tabId: number): void {
+    this.byTab.delete(tabId);
+    this.drain();
   }
 
   /** The tab's pick `pickId`, while it is current. */
@@ -94,7 +135,7 @@ export class Picks {
     cut(prev?.port ?? null);
     const p: PickState = {
       pickId: m.pickId, tabId, opened: Number.POSITIVE_INFINITY, anchor: m.anchor, clip: null, clipError: null, pending: [],
-      url: null, title: "", snapshot: null, body: null, port: null, connected: false, posting: false,
+      url: null, title: "", snapshot: null, tooLong: false, posts: 0, body: null, port: null, connected: false, posting: false,
     };
     this.byTab.set(tabId, p);
     const active = this.d.tabActive ? await this.d.tabActive(tabId).catch(() => false) : true;
@@ -113,8 +154,8 @@ export class Picks {
   /** The overlay's snapshot for the tab's pick (taken once). */
   async attach(tabId: number, m: PickMsg): Promise<void> {
     const p = this.current(tabId, m.pickId);
-    if (!p || p.url !== null) return;
-    Object.assign(p, { url: m.url, title: m.title, snapshot: m.snapshot ?? noSnapshotPage(m.snapshotError) });
+    if (!p || p.snapshot !== null) return;
+    Object.assign(p, { url: m.url, tooLong: m.url === null, title: m.title, snapshot: m.snapshot ?? noSnapshotPage(m.snapshotError) });
     await this.maybePost(p);
   }
 
@@ -131,7 +172,13 @@ export class Picks {
       else if (m.t === "post") {
         if (p.posting) return;
         p.body = m.body;
+        const press = ++p.posts;
         void this.maybePost(p);
+        this.after(SNAPSHOT_WAIT_MS, () => {
+          if (this.byTab.get(tabId) !== p || p.posts !== press || p.posting || p.snapshot !== null || p.body === null) return;
+          p.body = null;
+          tell(p.port, { t: "failed", message: NO_SNAPSHOT });
+        });
       } else this.cancel(tabId, pickId);
     });
     port.onDisconnect.addListener(() => {
@@ -148,7 +195,7 @@ export class Picks {
   cancel(tabId: number, pickId: string | null, reason?: "timeout"): void {
     const p = this.byTab.get(tabId);
     if (!p || (pickId !== null && p.pickId !== pickId)) return;
-    this.byTab.delete(tabId);
+    this.drop(tabId);
     const port = p.port;
     p.port = null;
     cut(port);
@@ -158,8 +205,22 @@ export class Picks {
   /** The tab closed: its pick goes. */
   close(tabId: number): void {
     const p = this.byTab.get(tabId);
-    this.byTab.delete(tabId);
+    this.drop(tabId);
     if (p?.port) { const port = p.port; p.port = null; cut(port); }
+  }
+
+  /** A composer frame of the tab whose port is gone (`ComposerNote`). The
+   * worker's own pick has its own flow (its port's end, `close-composer`);
+   * a pick the worker does not hold (it was stopped and started again) is
+   * the overlay's to let go: `lost` gives comment mode back, with the
+   * composer and its text still shown, and `dismiss` closes the frame. */
+  note(tabId: number, m: ComposerNote): void {
+    const p = this.byTab.get(tabId);
+    if (p?.pickId === m.pickId) {
+      if (m.t === "dismiss") this.cancel(tabId, m.pickId);
+      return;
+    }
+    this.d.toOverlay(tabId, m.t === "lost" ? { t: "pick-lost", pickId: m.pickId } : { t: "close-composer", pickId: m.pickId, posted: false });
   }
 
   /** An automatic snapshot (spec L11) for the threads the overlay saw
@@ -192,9 +253,16 @@ export class Picks {
   }
 
   private async maybePost(p: PickState): Promise<void> {
-    if (p.posting || p.body === null || !p.url || p.snapshot === null) return;
+    if (p.posting || p.body === null) return;
+    if (p.tooLong) {
+      p.body = null;
+      tell(p.port, { t: "failed", message: URL_TOO_LONG });
+      return;
+    }
+    if (!p.url || p.snapshot === null) return;
     p.posting = true;
     const f = new FormData();
+    f.set("pick_id", p.pickId);
     f.set("url", p.url);
     f.set("title", p.title);
     f.set("anchor", JSON.stringify(p.anchor));
@@ -207,11 +275,11 @@ export class Picks {
     } catch (e) {
       p.posting = false;
       p.body = null;
-      tell(p.port, { t: "failed", message: message(e) });
+      tell(p.port, { t: "failed", message: postFailure(e) });
       return;
     }
     // The thread exists: the pick is done whether or not its composer hears it.
-    if (this.byTab.get(p.tabId) === p) this.byTab.delete(p.tabId);
+    if (this.byTab.get(p.tabId) === p) this.drop(p.tabId);
     const port = p.port;
     p.port = null;
     tell(port, { t: "posted", threadId: r.thread.id });

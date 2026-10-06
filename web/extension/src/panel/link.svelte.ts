@@ -4,7 +4,9 @@
 // visible (the worker reports the owner here only while it is); and a ping
 // every 20 s that keeps the worker up while the panel is open. Only
 // messages `isToPanel` takes are acted on. When the worker goes away (Chrome
-// stopped it), the link connects again and watches the tab again.
+// stopped it), the link connects again and watches the tab again. An
+// action's failure stays shown through the worker's later pushes until the
+// person acts again or watches another tab.
 import { type PanelState, type PanelToWorker, isToPanel } from "../messages";
 
 type Port = Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">;
@@ -27,6 +29,8 @@ export class PanelLink {
   up = $state(true);
   private port: Port;
   private tabId: number | null = null;
+  /** The last action's failure, shown until the next action. */
+  private failure: { code: string; message: string } | null = null;
   private closed = false;
   /** The port is new: its first watch says whether the panel is visible. */
   private fresh = true;
@@ -59,8 +63,11 @@ export class PanelLink {
     this.fresh = true;
     port.onMessage.addListener((m: unknown) => {
       if (!isToPanel(m)) return;
-      if (m.t === "tab") this.state = m.state;
-      else if (m.t === "failed" && this.state) this.state = { ...this.state, error: { code: m.code, message: m.message } };
+      if (m.t === "tab") this.state = this.failure && !m.state.error ? { ...m.state, error: this.failure } : m.state;
+      else if (m.t === "failed" && this.state) {
+        this.failure = { code: m.code, message: m.message };
+        this.state = { ...this.state, error: this.failure };
+      }
       else if (m.t === "stream-status") this.up = m.up;
     });
     port.onDisconnect.addListener(() => {
@@ -76,6 +83,7 @@ export class PanelLink {
   }
 
   private watch(tabId: number): void {
+    if (tabId !== this.tabId) this.failure = null;
     this.tabId = tabId;
     this.post({ t: "watch-tab", tabId });
     if (this.fresh) { this.fresh = false; this.onVisibility(); }
@@ -89,6 +97,7 @@ export class PanelLink {
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 

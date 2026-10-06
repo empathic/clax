@@ -22,10 +22,13 @@ vi.mock("./snapshot", async orig => {
   return { ...real, serializeSnapshot: (doc: Document) => { if (snap.throws) throw new Error("hostile DOM"); return real.serializeSnapshot(doc); } };
 });
 const { COMPOSER_CONFIRM_MS, NOTICE_MS, startOnce } = await import("./overlay-app");
+const { MAX_URL, URL_TOO_LONG } = await import("../messages");
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
 const WORKER = { id: "test-extension" } as chrome.runtime.MessageSender;
 const PICK = "0123456789abcdef0123456789abcdef";
+const PICK2 = "fedcba9876543210fedcba9876543210";
+let nextId = PICK;
 
 let sent: { t: string; [k: string]: unknown }[];
 let listeners: Listener[];
@@ -69,7 +72,9 @@ beforeEach(() => {
   sent = []; listeners = []; roots = []; pending = [];
   mode.on = false; mode.visible = true; mode.captured = 0;
   snap.throws = false;
-  reply = m => (m.t === "capture" ? { t: "captured", pickId: PICK, ok: true } : null);
+  nextId = PICK;
+  history.replaceState(null, "", "/app");
+  reply = m => (m.t === "capture" ? { t: "captured", pickId: (m as { pickId?: string }).pickId ?? PICK, ok: true } : null);
   const attach = HTMLElement.prototype.attachShadow;
   vi.spyOn(HTMLElement.prototype, "attachShadow").mockImplementation(function (this: HTMLElement, init: ShadowRootInit) {
     const r = attach.call(this, init);
@@ -86,7 +91,7 @@ beforeEach(() => {
     },
     timers,
     every: () => () => {},
-    randomId: () => PICK,
+    randomId: () => nextId,
   }, {});
   tell({ t: "state", page: null, route: null, threads: [], commentMode: true, pending: false });
 });
@@ -199,6 +204,55 @@ describe("a pick", () => {
     expect(notice()).toMatch(/comment box did not open/);
     elapse(NOTICE_MS);
     expect(notice()).toBe("");
+  });
+
+  it("gives comment mode back when the worker lost the pick, keeps the composer until a new pick replaces it", async () => {
+    const f = await opened();
+    tell({ t: "composer-ready", pickId: PICK });
+    await run();
+    const state = { t: "state", page: null, route: null, threads: [], commentMode: true, pending: false };
+    tell(state);
+    expect(mode.on).toBe(false); // the composer holds the page
+    tell({ t: "pick-lost", pickId: "f".repeat(32) }); // another pick's: nothing
+    expect(mode.on).toBe(false);
+    tell({ t: "pick-lost", pickId: PICK });
+    expect(mode.on).toBe(true);
+    expect(frames()).toEqual([f]); // the person's text stays to copy
+    tell(state);
+    expect(mode.on).toBe(true);
+    nextId = PICK2;
+    mode.handlers!.pickElement(save());
+    await run();
+    tell({ t: "open-composer", pickId: PICK2, rect: RECT });
+    expect(frames()).toHaveLength(1);
+    expect(frames()[0].src).toContain(`#${PICK2}`);
+  });
+
+  it("closes a lost pick's composer when the worker relays the person's close, and comment mode stays", async () => {
+    await opened();
+    tell({ t: "composer-ready", pickId: PICK });
+    await run();
+    tell({ t: "pick-lost", pickId: PICK });
+    tell({ t: "close-composer", pickId: PICK, posted: false });
+    expect(frames()).toHaveLength(0);
+    expect(mode.on).toBe(true);
+  });
+
+  it("refuses a pick, saying why, on a page whose address is too long for Clax", async () => {
+    history.replaceState(null, "", `/app#${"x".repeat(MAX_URL)}`);
+    mode.handlers!.pickElement(save());
+    await run();
+    expect(sent.filter(m => m.t === "capture")).toEqual([]);
+    expect(mode.captured).toBe(1);
+    expect(roots.map(r => r.querySelector("[role=status]")?.textContent ?? "").join("")).toBe(URL_TOO_LONG);
+  });
+
+  it("sends the pick with no address when the page's grew too long while the person typed", async () => {
+    await opened();
+    history.replaceState(null, "", `/app#${"x".repeat(MAX_URL)}`);
+    tell({ t: "composer-ready", pickId: PICK });
+    await run();
+    expect(sent.find(m => m.t === "pick")).toMatchObject({ t: "pick", pickId: PICK, url: null });
   });
 
   it("still sends the pick, without a snapshot, when the serializer throws", async () => {

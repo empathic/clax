@@ -50,6 +50,28 @@ describe("PanelLink", () => {
     expect(link.state?.tabId).toBe(5);
   });
 
+  it("keeps an action's failure shown through later pushes until the next action", async () => {
+    const f = fakes();
+    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    await settle();
+    const p = f.ports[0];
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    link.post({ t: "send", threadId: "01J9AAAAAAAAAAAAAAAAAAAAAA", to: null });
+    p.onMessage.fire({ t: "failed", code: "not_found", message: "No such thread." });
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    expect(link.state?.error).toEqual({ code: "not_found", message: "No such thread." });
+    // The tab's own error wins.
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: { code: "daemon_unreachable", message: "down" } } });
+    expect(link.state?.error?.code).toBe("daemon_unreachable");
+    // A ping keeps it; the next action clears it.
+    link.post({ t: "ping" });
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    expect(link.state?.error?.code).toBe("not_found");
+    link.post({ t: "retry" });
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    expect(link.state?.error).toBeNull();
+  });
+
   it("connects again when the worker goes away, and pings while open", async () => {
     vi.useFakeTimers();
     const f = fakes();

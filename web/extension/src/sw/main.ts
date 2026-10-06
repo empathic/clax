@@ -4,14 +4,19 @@
 // the composers and the side panels. Every listener is registered at the
 // top level, so a worker Chrome restarts for an event hears it. Every
 // message passes its receiver's validator before anything acts on it.
-import { type OverlayToWorker, isFromOverlay, isFromPanel } from "../messages";
+import { type OverlayToWorker, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
 import { PairError } from "./pairing";
 import { type PanelDeps, panelAction } from "./panel";
-import { composerTab, createWorker } from "./worker";
+import { composerFrameTab, composerTab, createWorker } from "./worker";
 
-const originsEnv: origins.OriginsEnv = { permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local };
+const originsEnv: origins.OriginsEnv = {
+  permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local, boot: origins.bootNonce(chrome.storage.session),
+};
+/** Each tab's top document whose overlay or loader last wrote: the worker's
+ * messages go to that document, never to a newer one the tab loaded meanwhile. */
+const docs = new Map<number, string>();
 // The pairing (the credential) and the tabs' record stay out of content scripts' reach (spec §10.2).
 void chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
 const { pairer, api, tabs, picks, fromOverlay } = createWorker({
@@ -22,10 +27,15 @@ const { pairer, api, tabs, picks, fromOverlay } = createWorker({
     },
     session: chrome.storage.session, local: chrome.storage.local,
     manifestVersion: chrome.runtime.getManifest().version,
-    reload: () => chrome.runtime.reload(),
+    // Not mid-request, and not while a pick is open: a reload tears down the
+    // composer (an extension page) and the person's text with it.
+    reload: () => picks.whenIdle(() => api.whenIdle(() => chrome.runtime.reload())),
     now: () => Date.now(),
   },
-  toOverlay: (tabId, m) => void chrome.tabs.sendMessage(tabId, m, { frameId: 0 }).catch(() => {}),
+  toOverlay: (tabId, m) => {
+    const documentId = docs.get(tabId);
+    void chrome.tabs.sendMessage(tabId, m, documentId ? { documentId } : { frameId: 0 }).catch(() => {});
+  },
   inject: tabId => origins.injectOverlay(originsEnv, tabId),
   present: tabId => origins.overlayPresent(originsEnv, tabId),
   store: chrome.storage.session,
@@ -44,9 +54,12 @@ function gesture(tab: chrome.tabs.Tab, panel: boolean): void {
   void (async () => {
     await tabs.ready();
     tabs.activate(tabId, url);
+    // The overlay at once (spec §12): injecting needs only activeTab, so the
+    // origin's loader is registered beside it.
     let failed: unknown = null;
-    if (await asked) await origins.remember(originsEnv, origin).catch(e => { failed = e; });
+    const remembered = asked.then(yes => (yes ? origins.remember(originsEnv, origin) : undefined)).catch(e => { failed = e; });
     await tabs.toggle(tabId, url);
+    await remembered;
     if (failed) tabs.fail(tabId, failed);
   })();
 }
@@ -58,9 +71,12 @@ chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "c
 void origins.restoreLoaders(originsEnv).catch(e => console.warn("Clax could not register its sites' loaders again:", e));
 chrome.runtime.onStartup.addListener(() => {});
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
-chrome.tabs.onRemoved.addListener(tabId => { picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
-// Possibly a new document: if its overlay is gone, so is comment mode (spec §11).
-chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") void tabs.ready().then(() => tabs.navigated(tabId)); });
+chrome.tabs.onRemoved.addListener(tabId => { docs.delete(tabId); picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
+// Possibly a new document: if its overlay is gone, so is comment mode (spec
+// §11). At `loading` the old document may still answer; at `complete` the new one does.
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === "loading" || change.status === "complete") void tabs.ready().then(() => tabs.navigated(tabId));
+});
 
 /** An overlay or loader message comes from a tab's top frame whose origin
  * Clax is on, or which a gesture granted activeTab (spec §9.4); a URL it
@@ -69,16 +85,24 @@ async function admitted(sender: chrome.runtime.MessageSender, m: OverlayToWorker
   const tabId = sender.tab?.id;
   const origin = sender.url ? origins.originOf(sender.url) : null;
   if (tabId === undefined || !origin) return false;
-  if ("url" in m && !origins.sameOrigin(m.url, sender.url)) return false;
+  if ("url" in m && m.url !== null && !origins.sameOrigin(m.url, sender.url)) return false;
   await tabs.ready();
   return tabs.admits(tabId) || origins.enabled(originsEnv, origin);
 }
 
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
-  if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId !== 0 || !isFromOverlay(m)) return false;
+  if (sender.id !== chrome.runtime.id) return false;
+  // A composer frame whose port is gone (spec §11 "worker restarted").
+  const composer = composerFrameTab(sender, chrome.runtime.id);
+  if (composer !== null) {
+    if (isComposerNote(m)) picks.note(composer, m);
+    return false;
+  }
+  if (sender.tab?.id === undefined || sender.frameId !== 0 || !isFromOverlay(m)) return false;
   const tab = sender.tab;
   void (async () => {
     if (!(await admitted(sender, m))) return null;
+    if (sender.documentId) docs.set(tab.id!, sender.documentId);
     return fromOverlay(tab.id!, tab.windowId, m, sender.url);
   })().then(r => reply(r ?? null), e => reply({ error: String(e) }));
   return true;

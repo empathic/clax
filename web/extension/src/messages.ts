@@ -31,29 +31,40 @@ export type Rect = { x: number; y: number; w: number; h: number };
 /** Whether a thread is open and waits for a snapshot to link its address
  * to (spec L11): what both the overlay and the worker count as pending. */
 export const waitsForSnapshot = (t: { status: string }) => t.status === "open" && !!(t as { addressed_pending?: unknown }).addressed_pending;
+/** What the overlay hears of a thread (spec L7, §10.4): where it is
+ * anchored (the page's own text), whether it is open, and whether it waits
+ * for a snapshot; never its comments, replies, authors or agents. */
+export type OverlayThread = { id: string; status: "open" | "resolved"; anchor: Anchor; addressed_pending: boolean };
+/** The overlay's view of `t`. */
+export const overlayThread = (t: Thread): OverlayThread => ({ id: t.id, status: t.status, anchor: t.anchor, addressed_pending: !!t.addressed_pending });
+/** What the person is told when a page's address is over MAX_URL (the daemon's bound; spec §7). */
+export const URL_TOO_LONG = "This page's address is too long for Clax.";
+/** `href` as the overlay and the loader send it: null when it is over MAX_URL. */
+export const pageUrl = (href: string): string | null => (href.length > MAX_URL ? null : href);
 export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string };
 
+/** A `url` the overlay or the loader sends is null when the page's address
+ * is over MAX_URL: the worker then tells the person, never looks it up. */
 export type OverlayToWorker =
-  | { t: "hello"; url: string }
-  | { t: "route"; url: string }
+  | { t: "hello"; url: string | null }
+  | { t: "route"; url: string | null }
   /** The overlay names the pick (128 random bits); the worker takes it as
    * the tab's pick. The anchor comes with it, so the composer's draft does
    * not wait for the page's snapshot. */
   | { t: "capture"; pickId: string; anchor: Anchor; rect: Rect; dpr: number }
   /** The page's snapshot for the pick, serialized once its composer is shown. */
-  | { t: "pick"; pickId: string; url: string; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
+  | { t: "pick"; pickId: string; url: string | null; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
   /** `pending`: the threads the overlay's state showed waiting for a snapshot when it serialized the page. */
   | { t: "quiet"; url: string; title: string; snapshot: string; pending: string[] }
   | { t: "resolved"; results: AnchorResult[] }
   | { t: "comment-mode"; on: boolean }
-  | { t: "cancel"; pickId: string | null }
+  | { t: "cancel"; pickId: string }
   | { t: "pin"; threadId: string }
   | { t: "removed" }
   | { t: "ping" };
 
 export type WorkerToOverlay =
-  | { t: "state"; page: PageView | null; route: string | null; threads: Thread[]; commentMode: boolean; pending: boolean }
-  | { t: "comment-mode"; on: boolean }
+  | { t: "state"; page: PageView | null; route: string | null; threads: OverlayThread[]; commentMode: boolean; pending: boolean }
   /** The answer to `capture`: the screenshot was taken (`ok`), or why not. */
   | { t: "captured"; pickId: string; ok: boolean; error?: string }
   /** The worker took the pick: the overlay frames its composer beside `rect`, then serializes the page. */
@@ -64,13 +75,18 @@ export type WorkerToOverlay =
   | { t: "close-composer"; pickId: string; posted: boolean; reason?: "timeout" }
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
-  | { t: "snapshot-now" }
   /** The worker has no results for the threads it shows (it restarted): the overlay sends its current `resolved` again. */
   | { t: "resend" }
-  /** Whether the worker's event stream is up; while it is down, what the overlay shows may be stale. */
-  | { t: "stream-status"; up: boolean };
+  /** The worker no longer holds the pick whose composer is shown (it was
+   * stopped and started again): the composer stays, with its text, until the
+   * person closes it, and comment mode comes back. */
+  | { t: "pick-lost"; pickId: string };
 
 export type ComposerToWorker = { t: "ready" } | { t: "post"; body: string } | { t: "cancel" };
+/** What a composer page sends as a one-off runtime message once its port
+ * is gone: `lost`, when the worker let go of the port unasked; `dismiss`,
+ * when the person closes such a composer. */
+export type ComposerNote = { t: "lost"; pickId: string } | { t: "dismiss"; pickId: string };
 /** `clipUrl` is a `data:image/png` URL (a service worker cannot make object URLs). */
 export type WorkerToComposer =
   | { t: "draft"; anchor: Anchor; clipUrl: string | null; clipError: string | null; capturing: boolean }
@@ -100,8 +116,7 @@ export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
   | { t: "failed"; code: string; message: string }
   /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
-  | { t: "stream-status"; up: boolean }
-  | { t: "ping" };
+  | { t: "stream-status"; up: boolean };
 
 export type PanelToWorker =
   | { t: "watch-tab"; tabId: number }
@@ -110,7 +125,6 @@ export type PanelToWorker =
   | { t: "reply"; threadId: string; body: string }
   | { t: "resolve"; threadId: string }
   | { t: "reopen"; threadId: string }
-  | { t: "delete"; threadId: string }
   | { t: "looked"; threadIds: string[] }
   | { t: "set-name"; name: string }
   | { t: "select"; threadId: string | null }
@@ -186,24 +200,28 @@ export function isFromOverlay(m: unknown): m is OverlayToWorker {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
-    case "hello": case "route": return has("url") && url(m.url);
+    case "hello": case "route": return has("url") && (m.url === null || url(m.url));
     case "capture": return has("pickId", "anchor", "rect", "dpr") && pickId(m.pickId) && isAnchor(m.anchor) && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
-    case "pick": return has("pickId", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && url(m.url)
+    case "pick": return has("pickId", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && (m.url === null || url(m.url))
       && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large" || m.snapshotError === "failed")
       && (m.snapshot !== null || m.snapshotError !== null);
     case "quiet": return has("url", "title", "snapshot", "pending") && url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS)
       && Array.isArray(m.pending) && m.pending.length <= MAX_PENDING && m.pending.every(ulid);
     case "resolved": return has("results") && Array.isArray(m.results) && m.results.length <= 500 && m.results.every(result);
     case "comment-mode": return has("on") && bool(m.on);
-    case "cancel": return has("pickId") && (m.pickId === null || pickId(m.pickId));
+    case "cancel": return has("pickId") && pickId(m.pickId);
     case "pin": return has("threadId") && ulid(m.threadId);
     case "removed": case "ping": return has();
     default: return false;
   }
 }
 
-/** The overlay's view of a thread is the daemon's; the worker relays it, so only its ID is checked here. */
-const thread = (v: unknown) => obj(v) && ulid(v.id);
+const OVERLAY_THREAD = ["id", "status", "anchor", "addressed_pending"];
+/** An `OverlayThread`, and nothing more: no field of a thread's text reaches
+ * the overlay. Its anchor is the daemon's, which the resolver reads
+ * defensively, so only its kind is checked here. */
+const thread = (v: unknown) => shape(v, OVERLAY_THREAD) && ulid(v.id) && (v.status === "open" || v.status === "resolved")
+  && obj(v.anchor) && typeof v.anchor.kind === "string" && bool(v.addressed_pending);
 
 export function isFromWorker(m: unknown): m is WorkerToOverlay {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
@@ -211,7 +229,6 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
   switch (m.t) {
     case "state": return has("page", "route", "threads", "commentMode", "pending") && (m.page === null || page(m.page)) && strOrNull(m.route, MAX_ROUTE)
       && Array.isArray(m.threads) && m.threads.length <= 1000 && m.threads.every(thread) && bool(m.commentMode) && bool(m.pending);
-    case "comment-mode": return has("on") && bool(m.on);
     case "captured": return shape(m, ["t", "pickId", "ok"], ["error"]) && pickId(m.pickId) && bool(m.ok) && (m.error === undefined || code(m.error));
     case "open-composer": return has("pickId", "rect") && pickId(m.pickId) && box(m.rect);
     case "composer-ready": return has("pickId") && pickId(m.pickId);
@@ -219,8 +236,8 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
       && (m.reason === undefined || m.reason === "timeout");
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
-    case "snapshot-now": case "resend": return has();
-    case "stream-status": return has("up") && bool(m.up);
+    case "resend": return has();
+    case "pick-lost": return has("pickId") && pickId(m.pickId);
     default: return false;
   }
 }
@@ -234,9 +251,14 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "tab": return has("state") && obj(m.state);
     case "failed": return has("code", "message") && str(m.code, 64) && str(m.message, MAX_BODY);
     case "stream-status": return has("up") && bool(m.up);
-    case "ping": return has();
     default: return false;
   }
+}
+
+/** A composer page's one-off message (`ComposerNote`); the worker takes it
+ * only from a composer frame of the tab (`composerTab`). */
+export function isComposerNote(m: unknown): m is ComposerNote {
+  return obj(m) && (m.t === "lost" || m.t === "dismiss") && shape(m, ["t", "pickId"]) && pickId(m.pickId);
 }
 
 export function isFromComposer(m: unknown): m is ComposerToWorker {
@@ -275,7 +297,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "send-batch": return has("threadIds", "note", "to") && Array.isArray(m.threadIds) && m.threadIds.length >= 1 && m.threadIds.length <= 20
       && m.threadIds.every(ulid) && strOrNull(m.note, 280) && to(m.to);
     case "reply": return has("threadId", "body") && ulid(m.threadId) && text(m.body, MAX_BODY);
-    case "resolve": case "reopen": case "delete": return has("threadId") && ulid(m.threadId);
+    case "resolve": case "reopen": return has("threadId") && ulid(m.threadId);
     case "looked": return has("threadIds") && Array.isArray(m.threadIds) && m.threadIds.length <= 50 && m.threadIds.every(ulid);
     case "set-name": return has("name") && str(m.name, 64);
     case "select": return has("threadId") && (m.threadId === null || ulid(m.threadId));

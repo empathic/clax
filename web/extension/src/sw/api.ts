@@ -1,6 +1,10 @@
 // The daemon's API as the extension uses it (spec 2026-10-05 §9.2): every
 // request carries the credential and no cookie; a 401 or an unreachable
-// daemon pairs again (at most once per request) and retries once.
+// daemon pairs again (at most once per request) and retries once. A request
+// the daemon may have carried out before its answer was lost (a comment, a
+// send) is not sent again after a network error: the person sees the
+// failure and retries. A new thread is sent again: it names its pick, which
+// the daemon makes one thread of.
 import type { Artifact, Version } from "../../../shell/src/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
@@ -26,14 +30,40 @@ export class Api {
   onRepair: ((p: Pairing) => void) | null = null;
   /** The credential `onRepair` last heard of. */
   private told: string | null = null;
+  /** Requests not yet answered, and what waits for there to be none. */
+  private active = 0;
+  private idlers: (() => void)[] = [];
 
   constructor(private readonly pairer: Pick<Pairer, "current" | "pair">, private readonly fetchFn: typeof fetch = (...a) => fetch(...a)) {}
 
   /** `path` on the daemon, with the credential. After a 401 or a network
    * error the request is retried once: with a pairing another request
    * renewed meanwhile, else with a new one. When pairing again is refused
-   * (`paired_recently`), the 401 is the answer, or `daemon_unreachable`. */
-  async request(path: string, init: RequestInit = {}): Promise<Response> {
+   * (`paired_recently`), the 401 is the answer, or `daemon_unreachable`.
+   * With `once`, a network error pairs again but is the answer
+   * (`daemon_unreachable`): the request is not sent twice. */
+  async request(path: string, init: RequestInit = {}, once = false): Promise<Response> {
+    this.active++;
+    try {
+      return await this.attempt(path, init, once);
+    } finally {
+      this.active--;
+      queueMicrotask(() => this.drain());
+    }
+  }
+
+  /** Runs `fn` once no request waits for its answer (at once when none
+   * does): a stream's request counts until its response starts. */
+  whenIdle(fn: () => void): void {
+    this.idlers.push(fn);
+    this.drain();
+  }
+  private drain(): void {
+    if (this.active) return;
+    for (const fn of this.idlers.splice(0)) fn();
+  }
+
+  private async attempt(path: string, init: RequestInit, once: boolean): Promise<Response> {
     let p = await this.pairer.current();
     for (let attempt = 0; ; attempt++) {
       const headers = new Headers(init.headers);
@@ -63,18 +93,19 @@ export class Api {
           this.onRepair?.(p);
         }
       }
+      if (failed !== null && once) throw new ApiFailure("daemon_unreachable", String(failed));
     }
   }
 
-  async json<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await this.request(path, init);
+  async json<T>(path: string, init?: RequestInit, once = false): Promise<T> {
+    const res = await this.request(path, init, once);
     const body = await res.json().catch(() => null) as { error?: { code?: string; message?: string } } | null;
     if (!res.ok) throw new ApiFailure(body?.error?.code ?? `http_${res.status}`, body?.error?.message ?? res.statusText, res.status);
     return body as T;
   }
 
-  private send<T>(method: string, path: string, body?: unknown): Promise<T> {
-    return this.json<T>(path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) });
+  private send<T>(method: string, path: string, body?: unknown, once = false): Promise<T> {
+    return this.json<T>(path, { method, headers: { "content-type": "application/json" }, body: body === undefined ? undefined : JSON.stringify(body) }, once);
   }
 
   lookup(url: string) { return this.json<{ page: PageView | null; route: string | null }>(`/api/live/pages?url=${encodeURIComponent(url)}`); }
@@ -84,7 +115,8 @@ export class Api {
   async working(aid: string) { ids(aid); return (await this.json<{ working: Working[] }>(`/api/artifacts/${aid}/working`)).working; }
   /** A comment with its page's snapshot. `pending` names the threads the
    * page state showed waiting for a snapshot when it was serialized (`[]`
-   * when none); the daemon links only those. */
+   * when none); the daemon links only those. The form names its pick
+   * (`pick_id`), so a retry makes no second thread. */
   async postThread(form: FormData, pending: string[]) {
     threadIds(pending);
     form.set("pending", JSON.stringify(pending));
@@ -96,12 +128,11 @@ export class Api {
     form.set("pending", JSON.stringify(pending));
     return this.json<{ page: PageView; version: number; linked: string[] }>("/api/live/snapshots", { method: "POST", body: form });
   }
-  async comment(aid: string, tid: string, body: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/comments`, { body }); }
-  async sendThread(aid: string, tid: string, to: string | null) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/send`, to ? { to } : {}); }
-  async sendBatch(aid: string, tids: string[], note: string | null, to: string | null) { ids(aid, tids); return this.send<{ threads: Thread[] }>("POST", `/api/artifacts/${aid}/threads:send`, { thread_ids: tids, note, to }); }
+  async comment(aid: string, tid: string, body: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/comments`, { body }, true); }
+  async sendThread(aid: string, tid: string, to: string | null) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/send`, to ? { to } : {}, true); }
+  async sendBatch(aid: string, tids: string[], note: string | null, to: string | null) { ids(aid, tids); return this.send<{ threads: Thread[] }>("POST", `/api/artifacts/${aid}/threads:send`, { thread_ids: tids, note, to }, true); }
   async resolve(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/resolve`, {}); }
   async reopen(aid: string, tid: string) { ids(aid, [tid]); return this.send<{ thread: Thread }>("POST", `/api/artifacts/${aid}/threads/${tid}/reopen`, {}); }
-  async remove(aid: string, tid: string) { ids(aid, [tid]); return this.send<unknown>("DELETE", `/api/artifacts/${aid}/threads/${tid}`); }
   /** The owner viewer: the extension acts as the owner. */
   me() { return this.json<{ viewer: Viewer }>("/api/viewers/me"); }
   /** Sets the owner's name. */

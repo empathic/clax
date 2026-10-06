@@ -10,20 +10,20 @@ const URL1 = "http://localhost:5173/app";
 const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", page_url: URL1, title: "T", current_version: 1, url: `http://localhost:7480/a/${AID}` };
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
-function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; error?: string } = {}) {
+function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   const pg = over.page === undefined ? page : over.page;
   const api = (name: string, ret: unknown) => async (...a: unknown[]) => {
     calls.push(`${name} ${a.map(x => JSON.stringify(x)).join(" ")}`);
-    if (over.fail === name) throw new ApiFailure("not_found", "No such thread.", 404);
+    if (over.fail === name) throw new ApiFailure(over.failCode ?? "not_found", "No such thread.", 404);
     return ret;
   };
   const d: PanelDeps = {
     api: {
       sendThread: api("sendThread", { thread: thread(T1) }), sendBatch: api("sendBatch", { threads: [thread(T1), thread(T2)] }),
       comment: api("comment", { thread: thread(T1) }), resolve: api("resolve", { thread: thread(T1, "resolved") }),
-      reopen: api("reopen", { thread: thread(T1) }), remove: api("remove", {}), looked: api("looked", {}),
+      reopen: api("reopen", { thread: thread(T1) }), looked: api("looked", {}),
       setName: api("setName", { viewer: { public_id: "u_o", display_name: "Mia", created_at: "t" } }),
     } as never,
     tabs: {
@@ -31,7 +31,7 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
       admits: () => over.admits ?? false,
       route: async (tabId: number, url: string, fresh?: boolean) => { calls.push(`route ${tabId} ${url} ${!!fresh}`); return {} as never; },
       applied: (tabId: number, t: { id: string }) => calls.push(`applied ${tabId} ${t.id}`),
-      removed: (tabId: number, id: string) => calls.push(`removed ${tabId} ${id}`),
+      fail: (tabId: number, e: { code: string }) => calls.push(`fail ${tabId} ${e.code}`),
       setViewer: (v: { display_name: string }) => calls.push(`viewer ${v.display_name}`),
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
@@ -46,14 +46,13 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
 }
 
 describe("panelAction", () => {
-  it("sends, replies, resolves, reopens and deletes on the tab's live page, applying the answer", async () => {
+  it("sends, replies, resolves, and reopens on the tab's live page, applying the answer", async () => {
     const s = setup();
     await s.run({ t: "send", threadId: T1, to: null });
     await s.run({ t: "send-batch", threadIds: [T1, T2], note: "both", to: "a_0123456789abcdef012345" });
     await s.run({ t: "reply", threadId: T1, body: "ok" });
     await s.run({ t: "resolve", threadId: T1 });
     await s.run({ t: "reopen", threadId: T1 });
-    await s.run({ t: "delete", threadId: T1 });
     await s.run({ t: "looked", threadIds: [T1] });
     expect(s.calls).toEqual([
       `sendThread "${AID}" "${T1}" null`, `applied 4 ${T1}`,
@@ -61,7 +60,6 @@ describe("panelAction", () => {
       `comment "${AID}" "${T1}" "ok"`, `applied 4 ${T1}`,
       `resolve "${AID}" "${T1}"`, `applied 4 ${T1}`,
       `reopen "${AID}" "${T1}"`, `applied 4 ${T1}`,
-      `remove "${AID}" "${T1}"`, `removed 4 ${T1}`,
       `looked "${AID}" ["${T1}"]`,
     ]);
     expect(s.out).toEqual([]);
@@ -76,6 +74,15 @@ describe("panelAction", () => {
     expect(none.out).toEqual([{ t: "failed", code: "no_page", message: "This tab shows no live page." }]);
     await none.run({ t: "send", threadId: T1, to: null }, null);
     expect(none.calls).toEqual([]);
+  });
+
+  it("keeps a failure a new pairing can fix as the tab's error, so Retry pairs again", async () => {
+    const s = setup({ fail: "sendThread", failCode: "daemon_unreachable" });
+    await s.run({ t: "send", threadId: T1, to: null });
+    expect(s.calls).toEqual([`sendThread "${AID}" "${T1}" null`, "fail 4 daemon_unreachable"]);
+    const other = setup({ fail: "sendThread" });
+    await other.run({ t: "send", threadId: T1, to: null });
+    expect(other.calls).toEqual([`sendThread "${AID}" "${T1}" null`]);
   });
 
   it("sets the owner's name, shared by every panel", async () => {

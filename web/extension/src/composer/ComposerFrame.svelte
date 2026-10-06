@@ -5,14 +5,24 @@
   // page holds no credential: the worker posts. The draft stays when focus
   // leaves the frame (a page may move focus to itself mid-draft, and then
   // keys go to the page), and a notice says so until focus comes back.
+  // When the worker lets go of the port unasked (Chrome stopped it), the
+  // composer says so and tells the worker (`lost`), which gives comment mode
+  // back on the page; the text stays until the person closes the composer
+  // (`dismiss`). Cancel never throws on a closed port.
   import Composer from "../../../shell/src/ui/Composer.svelte";
   import type { Draft } from "../../../shell/src/view/composer-model";
   import { dataUrlBlob } from "../data-url";
-  import { isToComposer } from "../messages";
+  import { type ComposerNote, isToComposer } from "../messages";
   import { clipMessage } from "./clip-message";
 
   type Port = Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect">;
-  let { port, pickId, win = window }: { port: Port; pickId: string; win?: Window } = $props();
+  /** Sends a one-off message to the worker (`chrome.runtime.sendMessage`). */
+  type Notify = (m: ComposerNote) => Promise<unknown> | void;
+  const runtimeNotify: Notify = m => chrome.runtime.sendMessage(m);
+  let { port, pickId, win = window, notify = runtimeNotify }: { port: Port; pickId: string; win?: Window; notify?: Notify } = $props();
+  const note = (m: ComposerNote) => {
+    try { void Promise.resolve(notify(m)).catch(() => {}); } catch { /* the extension is gone */ }
+  };
 
   let draft = $state<Draft | null>(null);
   let typed = "";
@@ -52,6 +62,7 @@
       gone = true;
       waiting?.fail(new Error("disconnected"));
       waiting = null;
+      note({ t: "lost", pickId: id });
     });
     p.postMessage({ t: "ready" });
   });
@@ -69,13 +80,28 @@
     if (gone) { fail(new Error("disconnected")); return; }
     failure = null;
     waiting = { ok, fail };
-    port.postMessage({ t: "post", body });
+    try {
+      port.postMessage({ t: "post", body });
+    } catch {
+      waiting = null;
+      gone = true;
+      fail(new Error("disconnected"));
+    }
   });
+
+  /** Cancel: over the port while the worker holds it, else as a one-off message. */
+  function cancel(): void {
+    done = true;
+    if (!gone) {
+      try { port.postMessage({ t: "cancel" }); return; } catch { gone = true; }
+    }
+    note({ t: "dismiss", pickId });
+  }
 </script>
 
 {#if notice}<p class="notice" role="alert">{notice}</p>{/if}
 {#if draft}
-  <Composer {draft} onCancel={() => { done = true; port.postMessage({ t: "cancel" }); }} onSubmit={submit} onText={t => { typed = t; }} />
+  <Composer {draft} onCancel={cancel} onSubmit={submit} onText={t => { typed = t; }} />
 {:else}
   <p class="wait">Preparing the comment…</p>
 {/if}

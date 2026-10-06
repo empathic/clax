@@ -10,7 +10,7 @@ import { OVERLAY_TAG, type Resolved, resolveAnchor, textIndex, type TextIndex } 
 import { placeArea } from "../../../bridge/src/area";
 import { type Box, INDEX_FILE, type ResolveMethod } from "../../../bridge/src/protocol";
 import { rectOf } from "../../../bridge/src/target";
-import type { Thread } from "../../../shell/src/threads";
+import type { OverlayThread } from "../messages";
 
 export const QUIET_MS = 150;
 /** The longest a change waits for its resolution on a page that keeps changing. */
@@ -31,7 +31,7 @@ export const inOverlay = (n: Node): boolean =>
   !!(n.nodeType === Node.ELEMENT_NODE ? (n as Element) : n.parentElement)?.closest(OVERLAY_TAG);
 
 export class Resolver {
-  threads: Thread[] = [];
+  threads: OverlayThread[] = [];
   /** When the last mutation that counts was observed (on `timers.now`). */
   lastMutation = 0;
   private route: string | null = null;
@@ -69,7 +69,7 @@ export class Resolver {
   }
 
   /** The tab's threads or route changed: resolve on the next frame. */
-  set(threads: Thread[], route: string | null): void {
+  set(threads: OverlayThread[], route: string | null): void {
     this.threads = threads;
     this.route = route;
     this.schedule(0);
@@ -85,7 +85,7 @@ export class Resolver {
     }, ms);
   }
 
-  private here(): Thread[] {
+  private here(): OverlayThread[] {
     return this.threads.filter(t => t.status === "open" && (t.anchor.route ?? null) === this.route);
   }
 

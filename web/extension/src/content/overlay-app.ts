@@ -13,11 +13,14 @@ import { type AreaRect, buildAreaAnchor } from "../../../bridge/src/area";
 import { CommentMode } from "../../../bridge/src/comment-mode";
 import type { Anchor, AnchorResult } from "../../../bridge/src/protocol";
 import { rectOf } from "../../../bridge/src/target";
-import type { Thread } from "../../../shell/src/threads";
-import { isFromWorker, MAX_TITLE, type OverlayToWorker, PICK_ID, type Rect, type SnapshotError, type WorkerToOverlay, waitsForSnapshot } from "../messages";
+import { isFromWorker, MAX_TITLE, type OverlayThread, type OverlayToWorker, PICK_ID, pageUrl, type Rect, type SnapshotError, URL_TOO_LONG, type WorkerToOverlay, waitsForSnapshot } from "../messages";
 import { PIN_CSS, Pins } from "./pins";
+import { BOOT, RUNNING, liveOverlay, stopStale } from "./presence";
 import { type Placed, realTimers, Resolver, type Timers } from "./resolver";
+import { ROUTE_MS, watchRoutes } from "./routes";
 import { serializeSnapshot } from "./snapshot";
+
+export { ROUTE_MS };
 
 /** How often the overlay checks whether the automatic snapshot is due (spec L11). */
 export const SNAPSHOT_CHECK_MS = 1000;
@@ -25,9 +28,6 @@ export const SNAPSHOT_CHECK_MS = 1000;
 export const SNAPSHOT_EVERY_MS = 10_000;
 /** The keep-alive ping to the worker (spec §9.5). */
 export const PING_MS = 20_000;
-/** The least time between two `route` messages: a burst of navigations
- * sends the last URL once, on the trailing edge. */
-export const ROUTE_MS = 250;
 /** The composer frame's size in CSS pixels: room for the quote, the clip's
  * thumbnail, three lines of text, the buttons and a notice. */
 const FRAME_W = 360;
@@ -39,10 +39,6 @@ export const COMPOSER_CONFIRM_MS = 10_000;
 export const NOTICE_MS = 6000;
 /** The most results one `resolved` carries (`isFromOverlay`'s bound). */
 const MAX_RESULTS = 500;
-/** The global, in the isolated world only, that marks a started overlay.
- * It is the overlay's own; the worker's `claxOverlayLoaded` flag is set and
- * read by the worker alone. */
-const STARTED = "claxOverlayStarted";
 
 export type OverlayRuntime = {
   readonly id: string | undefined;
@@ -64,15 +60,27 @@ export type OverlayEnv = {
   randomId?(): string;
 };
 
-/** Starts the overlay unless this world already has one; returns what
- * stops it (after which it may start again), or undefined when it was
- * running already. */
+/** Starts the overlay unless this world already has a live one; returns
+ * what stops it (after which it may start again), or undefined when one was
+ * running already. One left over from an earlier load of the extension
+ * (`presence.ts`) is stopped first. The world's mark (`RUNNING`) carries
+ * the overlay's liveness: its extension context is there, and the boot
+ * nonce it started under is the worker's. */
 export function startOnce(env: OverlayEnv, g: object = globalThis): (() => void) | undefined {
   const G = g as Record<string, unknown>;
-  if (G[STARTED]) return undefined;
-  G[STARTED] = true;
-  let stopped = false;
-  const stop = startOverlay(env, () => { if (!stopped) { stopped = true; G[STARTED] = false; } });
+  if (liveOverlay(g)) return undefined;
+  stopStale(g);
+  const boot = G[BOOT];
+  let live = true;
+  const alive = (b: unknown) => {
+    try { return live && b === boot && !!env.runtime.id; } catch { return false; }
+  };
+  const mark = { alive, stop: () => stop() };
+  G[RUNNING] = mark;
+  const stop = startOverlay(env, () => {
+    live = false;
+    if (G[RUNNING] === mark) delete G[RUNNING];
+  });
   return () => { stop(); };
 }
 
@@ -80,11 +88,11 @@ export function startOnce(env: OverlayEnv, g: object = globalThis): (() => void)
 const randomPickId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 
 /** The open threads a state shows waiting for a snapshot (spec L11). */
-const waitingIds = (threads: Thread[]) => threads.filter(waitsForSnapshot).map(t => t.id);
+const waitingIds = (threads: OverlayThread[]) => threads.filter(waitsForSnapshot).map(t => t.id);
 
 /** What the overlay shows of a state: a state that changes none of it
  * (`pending` alone, say) resolves nothing again. */
-const shownKey = (threads: Thread[], route: string | null) =>
+const shownKey = (threads: OverlayThread[], route: string | null) =>
   JSON.stringify([route, threads.map(t => [t.id, t.status, t.anchor])]);
 
 function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
@@ -217,8 +225,12 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   }, { shadow: "closed" });
   stops.push(() => mode.destroy());
 
-  /** The composer's frame; `shown` once the worker confirmed the pick's composer page connected. */
-  let composer: { pickId: string; frame: HTMLIFrameElement; shown: boolean; wait: unknown } | null = null;
+  /** The composer's frame; `shown` once the worker confirmed the pick's
+   * composer page connected; `lost` once the worker said it no longer holds
+   * the pick (comment mode is then back, and a new pick replaces the frame). */
+  let composer: { pickId: string; frame: HTMLIFrameElement; shown: boolean; lost: boolean; wait: unknown } | null = null;
+  /** Comment mode as the worker's state has it, unless a composer holds the page. */
+  const syncMode = () => mode.set(!!state?.commentMode && (composer === null || composer.lost));
   const closeComposer = () => {
     if (composer) timers.clear(composer.wait);
     composer?.frame.remove();
@@ -240,6 +252,13 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
    * overlay to open the pick's composer (`open-composer`), and the anchor and
    * the page's snapshot follow. */
   async function pick(anchor: Anchor, rect: Rect): Promise<void> {
+    // The daemon takes no address over MAX_URL: the person is told at once,
+    // and nothing is captured.
+    if (pageUrl(win.location.href) === null) {
+      mode.captured();
+      notify(URL_TOO_LONG);
+      return;
+    }
     const pickId = newPickId();
     picking = { pickId, anchor };
     mode.setVisible(false);
@@ -287,7 +306,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         // A DOM the serializer cannot take: the thread is posted with no snapshot of it.
         error = "failed";
       }
-      void send({ t: "pick", pickId, url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: html, snapshotError: error });
+      void send({ t: "pick", pickId, url: pageUrl(win.location.href), title: doc.title.slice(0, MAX_TITLE), snapshot: html, snapshotError: error });
     }, 0);
   }
 
@@ -328,7 +347,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     f.style.left = `${Math.max(8, left)}px`;
     f.style.top = `${Math.max(8, top)}px`;
     root.appendChild(f);
-    composer = { pickId, frame: f, shown: false, wait: timers.set(abandon, COMPOSER_CONFIRM_MS) };
+    composer = { pickId, frame: f, shown: false, lost: false, wait: timers.set(abandon, COMPOSER_CONFIRM_MS) };
   }
 
   // The automatic snapshot after an agent addressed a thread (spec L11):
@@ -343,54 +362,31 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     if (t - lastQuiet < SNAPSHOT_EVERY_MS) return;
     lastQuiet = t;
     // Read before serializing: the snapshot covers the addresses made before it.
+    const url = pageUrl(win.location.href);
+    if (url === null) return;
     const pending = waitingIds(state.threads);
     const s = serializeSnapshot(doc);
-    if (!s.error) void send({ t: "quiet", url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, pending });
+    if (!s.error) void send({ t: "quiet", url, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, pending });
   }
   stops.push(every(maybeSnapshot, SNAPSHOT_CHECK_MS));
   stops.push(every(() => void send({ t: "ping" }), PING_MS));
 
   // Same-document navigations: the worker looks the new URL up (spec §11
-  // "SPA route change"). A tab that holds only activeTab has no loader.
-  // Only the browser's own events count (a page can dispatch these), the
-  // URL is read from `location`, an unchanged one is not sent, and a burst
-  // sends its last URL once, at most one every ROUTE_MS.
-  let lastRoute = win.location.href;
-  let lastRouteAt = now();
-  let routeTimer: unknown = null;
-  const sendRoute = () => {
-    const href = win.location.href;
-    if (href === lastRoute) return;
-    lastRoute = href;
-    lastRouteAt = now();
-    void send({ t: "route", url: href });
-  };
-  const onNav = (e: Event) => {
-    if (!e.isTrusted || routeTimer !== null) return;
-    routeTimer = timers.set(() => { routeTimer = null; if (live) sendRoute(); }, Math.max(0, lastRouteAt + ROUTE_MS - now()));
-  };
-  const nav = (win as { navigation?: EventTarget }).navigation;
-  const navTarget: EventTarget = nav ?? win;
-  const navEvent = nav ? "navigatesuccess" : "popstate";
-  navTarget.addEventListener(navEvent, onNav);
-  win.addEventListener("hashchange", onNav);
-  stops.push(() => {
-    navTarget.removeEventListener(navEvent, onNav);
-    win.removeEventListener("hashchange", onNav);
-    if (routeTimer !== null) timers.clear(routeTimer);
-  });
+  // "SPA route change"), as `watchRoutes` filters and throttles them. A tab
+  // that holds only activeTab has no loader; where there is one, it is quiet
+  // while the overlay runs.
+  stops.push(watchRoutes(win, href => void send({ t: "route", url: pageUrl(href) }), timers, now));
 
   const onMessage = (m: unknown, sender: chrome.runtime.MessageSender) => {
     if (!live || sender.id !== runtime.id || sender.tab || !isFromWorker(m)) return;
     switch (m.t) {
       case "state": {
         state = m;
-        mode.set(m.commentMode && composer === null);
+        syncMode();
         const key = shownKey(m.threads, m.route);
         if (key !== shown) { shown = key; resolver.set(m.threads, m.route); }
         break;
       }
-      case "comment-mode": mode.set(m.on && composer === null); break;
       case "captured": break; // the answer to `capture`
       case "open-composer": composerFor(m.pickId, m.rect); break;
       case "composer-ready": composerReady(m.pickId); break;
@@ -411,18 +407,21 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         }
         break;
       }
-      case "snapshot-now": lastQuiet = -Infinity; break;
       case "resend":
         // Sent now, or by the resolution already due.
         told = "";
         if (!resolver.busy) tellResolved(placed);
         break;
-      case "stream-status": break;
+      case "pick-lost":
+        if (composer?.pickId !== m.pickId) break;
+        composer.lost = true;
+        syncMode();
+        break;
     }
   };
   runtime.onMessage.addListener(onMessage);
   stops.push(() => runtime.onMessage.removeListener(onMessage));
 
-  void send({ t: "route", url: lastRoute });
+  void send({ t: "route", url: pageUrl(win.location.href) });
   return stop;
 }

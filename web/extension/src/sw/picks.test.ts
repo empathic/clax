@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerToOverlay } from "../messages";
 import { ApiFailure } from "./api";
-import { COMPOSER_WAIT_MS, Picks } from "./picks";
+import { URL_TOO_LONG } from "../messages";
+import { COMPOSER_WAIT_MS, NO_SNAPSHOT, Picks, SNAPSHOT_WAIT_MS } from "./picks";
 
 // jsdom's Blob has no `arrayBuffer` or `text` (a worker's has both): read through FileReader.
 const read = (b: Blob, as: "text" | "buffer") => new Promise<unknown>((ok, fail) => {
@@ -246,10 +247,101 @@ describe("Picks", () => {
     await picks.attach(5, pick(ID(1)));
     p.fire({ t: "post", body: "Too wide" });
     await flush();
-    expect(p.sent.at(-1)).toEqual({ t: "failed", message: "The daemon is not reachable." });
+    // Worded as the side panel words a failure to reach Clax, not as the raw error.
+    expect(p.sent.at(-1)).toEqual({ t: "failed", message: "Clax is not answering. Post again in a moment." });
     p.fire({ t: "post", body: "Too wide" });
     await flush();
     expect(posted).toHaveLength(1);
+  });
+
+  it("words a missing native host as how to set Clax up, and keeps any other failure's own message", async () => {
+    for (const [fail, message] of [
+      [new ApiFailure("host_missing", "Error: Specified native messaging host not found."), /Run clax init/],
+      [new ApiFailure("invalid_anchor", "The anchor is not valid."), /^The anchor is not valid\.$/],
+    ] as const) {
+      const { picks } = setup({ fail });
+      await picks.capture(5, 9, capture(ID(1)));
+      const p = port(`composer:${ID(1)}`, 5);
+      picks.attachComposer(p as never, 5);
+      await picks.attach(5, pick(ID(1)));
+      p.fire({ t: "post", body: "Too wide" });
+      await flush();
+      expect((p.sent.at(-1) as { message: string }).message).toMatch(message);
+    }
+  });
+
+  it("names its pick in every attempt to post it, so the daemon makes one thread of a retry", async () => {
+    const { picks, posted } = setup({ fail: new ApiFailure("daemon_unreachable", "x") });
+    await picks.capture(5, 9, capture(ID(7)));
+    const p = port(`composer:${ID(7)}`, 5);
+    picks.attachComposer(p as never, 5);
+    await picks.attach(5, pick(ID(7)));
+    p.fire({ t: "post", body: "Too wide" });
+    await flush();
+    p.fire({ t: "post", body: "Too wide" });
+    await flush();
+    expect(posted.map(x => x.form.get("pick_id"))).toEqual([ID(7)]);
+  });
+
+  it("fails a post at once, saying why, on a page whose address is too long for Clax", async () => {
+    const { picks, posted } = setup();
+    await picks.capture(5, 9, capture(ID(1)));
+    const p = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(p as never, 5);
+    p.fire({ t: "post", body: "Too wide" });
+    await picks.attach(5, pick(ID(1), { url: null }));
+    await flush();
+    expect(p.sent.at(-1)).toEqual({ t: "failed", message: URL_TOO_LONG });
+    p.fire({ t: "post", body: "Again" });
+    await flush();
+    expect(p.sent.at(-1)).toEqual({ t: "failed", message: URL_TOO_LONG });
+    expect(posted).toHaveLength(0);
+  });
+
+  it("fails a post whose snapshot has not come in time, and posts once it has", async () => {
+    const { picks, posted, advance } = setup();
+    await picks.capture(5, 9, capture(ID(1)));
+    const p = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(p as never, 5);
+    p.fire({ t: "post", body: "Too wide" });
+    await flush();
+    advance(SNAPSHOT_WAIT_MS - 1);
+    expect(p.sent.filter(m => (m as { t: string }).t === "failed")).toHaveLength(0);
+    advance(1);
+    expect(p.sent.at(-1)).toEqual({ t: "failed", message: NO_SNAPSHOT });
+    await picks.attach(5, pick(ID(1)));
+    await flush();
+    expect(posted).toHaveLength(0); // the person presses Post again
+    p.fire({ t: "post", body: "Too wide" });
+    await flush();
+    expect(posted).toHaveLength(1);
+  });
+
+  it("gives comment mode back for a pick it no longer holds, and closes its composer when the person does", async () => {
+    const { picks, overlay } = setup();
+    // A worker started again holds no pick: the composer's notes go to the overlay.
+    picks.note(5, { t: "lost", pickId: ID(3) });
+    picks.note(5, { t: "dismiss", pickId: ID(3) });
+    expect(overlay.map(o => o.m)).toEqual([{ t: "pick-lost", pickId: ID(3) }, { t: "close-composer", pickId: ID(3), posted: false }]);
+    // For the pick it holds, `lost` changes nothing and `dismiss` cancels it.
+    await picks.capture(5, 9, capture(ID(4)));
+    overlay.length = 0;
+    picks.note(5, { t: "lost", pickId: ID(4) });
+    expect(overlay).toEqual([]);
+    picks.note(5, { t: "dismiss", pickId: ID(4) });
+    expect(overlay.map(o => o.m)).toEqual([{ t: "close-composer", pickId: ID(4), posted: false }]);
+  });
+
+  it("runs what waits for no open pick once the last one closes", async () => {
+    const { picks } = setup();
+    const ran: string[] = [];
+    picks.whenIdle(() => ran.push("now"));
+    expect(ran).toEqual(["now"]);
+    await picks.capture(5, 9, capture(ID(1)));
+    picks.whenIdle(() => ran.push("later"));
+    expect(ran).toEqual(["now"]);
+    picks.cancel(5, ID(1));
+    expect(ran).toEqual(["now", "later"]);
   });
 
   it("refuses a composer for another tab, an unknown pick, a second port or a stale pick", async () => {

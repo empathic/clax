@@ -13,27 +13,33 @@ function fakePort() {
   const sent: unknown[] = [];
   const listeners: ((m: unknown) => void)[] = [];
   const gone: (() => void)[] = [];
+  // Chrome throws on a disconnected port's postMessage.
+  let closed = false;
   return {
     name: `composer:${PICK}`, sent,
-    postMessage: (m: unknown) => sent.push(m),
+    postMessage: (m: unknown) => { if (closed) throw new Error("Attempting to use a disconnected port object"); sent.push(m); },
     onMessage: { addListener: (l: (m: unknown) => void) => listeners.push(l) },
     onDisconnect: { addListener: (l: () => void) => gone.push(l) },
     disconnect: () => {},
     tell: (m: unknown) => { listeners.forEach(l => l(m)); flushSync(); },
-    drop: () => { gone.forEach(l => l()); flushSync(); },
+    drop: () => { closed = true; gone.forEach(l => l()); flushSync(); },
+    /** Closed without its disconnect heard yet. */
+    close: () => { closed = true; },
   };
 }
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0)); flushSync(); };
 
 let port: ReturnType<typeof fakePort>;
 let view: Mounted<Record<string, unknown>>;
+let notes: unknown[];
 const urls = URL as unknown as { createObjectURL?: unknown; revokeObjectURL?: unknown };
 const had = { create: urls.createObjectURL, revoke: urls.revokeObjectURL };
 beforeEach(() => {
   urls.createObjectURL = () => "blob:clip";
   urls.revokeObjectURL = () => {};
   port = fakePort();
-  view = mount(ComposerFrame as never, { port, pickId: PICK });
+  notes = [];
+  view = mount(ComposerFrame as never, { port, pickId: PICK, notify: (m: unknown) => { notes.push(m); } });
 });
 afterEach(() => {
   view.unmount();
@@ -138,6 +144,31 @@ describe("the composer page", () => {
     port.drop();
     expect(notice()).toMatch(/Copy your comment/);
     expect(textarea().value).toBe("Too wide");
+    // The worker hears of it, so the page gets comment mode back.
+    expect(notes).toEqual([{ t: "lost", pickId: PICK }]);
+    // Cancel then closes the composer through a one-off message, without throwing.
+    (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
+    expect(notes.at(-1)).toEqual({ t: "dismiss", pickId: PICK });
+  });
+
+  it("cancels through a one-off message when the port closed unheard, and a post fails visibly", async () => {
+    port.tell(draft());
+    await settle();
+    type("Too wide");
+    port.close();
+    post();
+    await settle();
+    expect(notice()).toMatch(/Copy your comment/);
+    (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
+    expect(notes).toEqual([{ t: "dismiss", pickId: PICK }]);
+  });
+
+  it("tells the worker nothing when it lets go after a cancel or a post", async () => {
+    port.tell(draft());
+    await settle();
+    (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
+    port.drop();
+    expect(notes).toEqual([]);
   });
 });
 

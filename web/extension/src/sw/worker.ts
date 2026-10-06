@@ -36,8 +36,13 @@ export type Worker = {
  * or its dynamic one, so the path is what is checked), framed in a tab.
  * `Picks.attachComposer` then checks the pick. */
 export function composerTab(port: chrome.runtime.Port, extensionId: string): number | null {
-  const s = port.sender;
-  if (s?.id !== extensionId || !port.name.startsWith("composer:")) return null;
+  return port.name.startsWith("composer:") ? composerFrameTab(port.sender, extensionId) : null;
+}
+
+/** The tab whose composer frame `s` is: this extension's `composer.html`,
+ * framed in a tab (`frameId > 0`); null for any other sender. */
+export function composerFrameTab(s: chrome.runtime.MessageSender | undefined, extensionId: string): number | null {
+  if (s?.id !== extensionId) return null;
   let u: URL;
   try { u = new URL(s.url ?? ""); } catch { return null; }
   if (u.protocol !== "chrome-extension:" || u.pathname !== "/composer.html") return null;

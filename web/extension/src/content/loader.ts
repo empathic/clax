@@ -2,9 +2,6 @@
 // under 2 KiB. It tells the worker the page's URL on load and on every
 // same-document navigation; the worker injects the overlay when the page
 // has threads or the person turned Clax on in this tab.
-const tell = (t: "hello" | "route") => chrome.runtime.sendMessage({ t, url: location.href }).catch(() => {});
-void tell("hello");
-const nav = (globalThis as { navigation?: EventTarget }).navigation;
-if (nav) nav.addEventListener("navigatesuccess", () => void tell("route"));
-else addEventListener("popstate", () => void tell("route"));
-addEventListener("hashchange", () => void tell("route"));
+import { startLoader } from "./loader-app";
+
+startLoader({ win: window, runtime: chrome.runtime as never });

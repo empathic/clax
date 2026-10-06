@@ -54,8 +54,10 @@ const tick = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 
 /** Starts a daemon on a fresh home whose config.toml is `opts.config` (`NO_KEY_CONFIG` by default);
  * with `opts.home` and `opts.port`, on that home and port (a restart). `stop({ keepHome: true })` leaves the home.
- * It runs the binary daemon-setup.ts built, on a port the system picks. */
-export async function startDaemon(opts: { config?: string; home?: string; port?: number } = {}) {
+ * It runs the binary daemon-setup.ts built, on a port the system picks, and
+ * waits up to `opts.startMs` (20 s by default) for its daemon.json and its
+ * health check; a start that fails says so with the end of the daemon's stderr. */
+export async function startDaemon(opts: { config?: string; home?: string; port?: number; startMs?: number } = {}) {
   const bin = process.env.CLAX_E2E_BIN;
   if (!bin) throw new Error("CLAX_E2E_BIN is unset: run the tests through a Playwright config whose global setup builds the daemon (e2e/daemon-setup.ts)");
   // The browser tests' build of the web UI, when the global setup made one;
@@ -65,7 +67,11 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
   writeFileSync(join(home, "config.toml"), opts.config ?? NO_KEY_CONFIG);
   rmSync(join(home, "daemon.json"), { force: true });
   const child: ChildProcess = spawn(bin, ["serve", "--foreground", "--bind", "127.0.0.1", "--port", String(opts.port ?? 0), ...(dist ? ["--web-dist", dist] : [])],
-    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "inherit"] });
+    { cwd: repoRoot, env: { ...process.env, CLAX_HOME: home, CLAX_CODEX_BIN: "", CLAX_E2E_UNSET_KEY: "" }, stdio: ["ignore", "inherit", "pipe"] });
+  // The daemon's stderr goes on to the test's, and its end is kept for a failed start.
+  let stderr = "";
+  child.stderr?.on("data", (b: Buffer) => { process.stderr.write(b); stderr = (stderr + b.toString()).slice(-4000); });
+  const failed = (why: string) => new Error(`${why}${stderr ? `; the daemon's stderr ends:\n${stderr}` : " (no stderr)"}`);
   const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
   const infoPath = join(home, "daemon.json");
   let base = "";
@@ -82,25 +88,25 @@ export async function startDaemon(opts: { config?: string; home?: string; port?:
     if (!o.keepHome) rmSync(home, { recursive: true, force: true });
   };
   try {
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + (opts.startMs ?? 20_000);
     let gone = false;
     void exited.then(() => { gone = true; });
     while (!existsSync(infoPath)) {
-      if (gone) throw new Error(`the daemon exited (${child.exitCode ?? child.signalCode}) before it started`);
-      if (Date.now() > deadline) throw new Error("daemon did not start");
+      if (gone) throw failed(`the daemon exited (${child.exitCode ?? child.signalCode}) before it started`);
+      if (Date.now() > deadline) throw failed("daemon did not start");
       await tick(10);
     }
     // The daemon may be writing the file still: read it until it parses.
     let info: { token: string; port: number } | null = null;
     while (!info) {
-      try { info = JSON.parse(readFileSync(infoPath, "utf8")); } catch { if (Date.now() > deadline) throw new Error("daemon.json never parsed"); await tick(10); }
+      try { info = JSON.parse(readFileSync(infoPath, "utf8")); } catch { if (Date.now() > deadline) throw failed("daemon.json never parsed"); await tick(10); }
     }
     token = info.token as string;
     port = info.port as number;
     base = `http://localhost:${info.port}`;
     for (;;) {
       try { if ((await fetch(`${base}/healthz`)).ok) break; } catch { /* retry */ }
-      if (Date.now() > deadline) throw new Error("daemon did not become healthy");
+      if (Date.now() > deadline) throw failed("daemon did not become healthy");
       await tick(10);
     }
   } catch (e) { await stop({ keepHome: !!opts.home }); throw e; }

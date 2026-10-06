@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToComposer, isToPanel } from "./messages";
+import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isComposerNote, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToComposer, isToPanel } from "./messages";
 
 const anchor = { kind: "element", selector: "main > button", quote: "Save", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
+const ot = (extra: Record<string, unknown> = {}) => ({ id: ULID, status: "open", anchor, addressed_pending: false, ...extra });
 
 describe("messages", () => {
   it("takes the overlay's well-formed messages", () => {
@@ -11,7 +12,13 @@ describe("messages", () => {
     expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
     expect(isFromOverlay({ t: "quiet", url: "https://x/", title: "", snapshot: "<p>", pending: [ULID] })).toBe(true);
     expect(isFromOverlay({ t: "resolved", results: [{ id: ULID, found: true, method: null, rect: null }] })).toBe(true);
-    expect(isFromOverlay({ t: "cancel", pickId: null })).toBe(true);
+    expect(isFromOverlay({ t: "cancel", pickId: "c".repeat(32) })).toBe(true);
+    expect(isFromOverlay({ t: "cancel", pickId: null })).toBe(false);
+    // An address over MAX_URL goes as null, which the worker tells the person of.
+    expect(isFromOverlay({ t: "hello", url: null })).toBe(true);
+    expect(isFromOverlay({ t: "route", url: null })).toBe(true);
+    expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: null, title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
+    expect(isFromOverlay({ t: "quiet", url: null, title: "", snapshot: "<p>", pending: [] })).toBe(false);
     expect(isFromOverlay({ t: "pin", threadId: ULID })).toBe(true);
     expect(isFromOverlay({ t: "ping" })).toBe(true);
   });
@@ -81,7 +88,7 @@ describe("messages", () => {
 
   it("checks the page and route of the worker's state", () => {
     const page = { artifact_id: "0123456789ab", origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings", title: "Settings", current_version: 3, url: "http://127.0.0.1:7481/a/0123456789ab" };
-    const state = { t: "state", page, route: "?tab=2", threads: [{ id: ULID }], commentMode: true, pending: false };
+    const state = { t: "state", page, route: "?tab=2", threads: [ot(), ot({ status: "resolved", addressed_pending: true })], commentMode: true, pending: false };
     expect(isFromWorker(state)).toBe(true);
     expect(isFromWorker({ ...state, page: null, route: null })).toBe(true);
     for (const bad of [
@@ -97,15 +104,26 @@ describe("messages", () => {
       { ...state, page: { ...page, title: "x".repeat(1001) } },
       { ...state, page: { ...page, extra: 1 } },
       { ...state, page: { ...page, url: undefined } },
-      { ...state, threads: [{ id: "x" }] },
+      { ...state, threads: [ot({ id: "x" })] },
       { ...state, threads: [null] },
-      { ...state, threads: new Array(1001).fill({ id: ULID }) },
+      { ...state, threads: new Array(1001).fill(ot()) },
+      // The overlay hears no thread text: a thread with any other field is refused.
+      { ...state, threads: [{ id: ULID }] },
+      { ...state, threads: [ot({ comments: [{ body: "secret" }] })] },
+      { ...state, threads: [ot({ author: "Mia" })] },
+      { ...state, threads: [ot({ addressed_pending: { harness: "claude", at: "t" } })] },
+      { ...state, threads: [ot({ status: "deleted" })] },
+      { ...state, threads: [ot({ anchor: null })] },
     ]) expect(isFromWorker(bad), JSON.stringify(bad).slice(0, 200)).toBe(false);
   });
 
   it("checks what the worker sends the overlay", () => {
     expect(isFromWorker({ t: "state", page: null, route: null, threads: [], commentMode: false, pending: false })).toBe(true);
-    expect(isFromWorker({ t: "snapshot-now" })).toBe(true);
+    expect(isFromWorker({ t: "pick-lost", pickId: "a".repeat(32) })).toBe(true);
+    expect(isFromWorker({ t: "pick-lost", pickId: "x" })).toBe(false);
+    // Types no part sends.
+    for (const t of ["snapshot-now", "comment-mode", "stream-status"]) expect(isFromWorker({ t, on: true, up: true })).toBe(false);
+    expect(isFromWorker({ t: "snapshot-now" })).toBe(false);
     expect(isFromWorker({ t: "resend" })).toBe(true);
     expect(isFromWorker({ t: "focus", threadId: null })).toBe(true);
     expect(isFromWorker({ t: "state", threads: "none", commentMode: false, pending: false })).toBe(false);
@@ -113,16 +131,14 @@ describe("messages", () => {
     expect(isFromWorker({ t: "post", body: "hi" })).toBe(false);
   });
 
-  it("checks the stream's status as the worker tells the overlay and the panels", () => {
-    expect(isFromWorker({ t: "stream-status", up: false })).toBe(true);
-    expect(isFromWorker({ t: "stream-status", up: "no" })).toBe(false);
-    expect(isFromWorker({ t: "stream-status", up: true, extra: 1 })).toBe(false);
+  it("checks the stream's status as the worker tells the panels", () => {
+    expect(isFromWorker({ t: "stream-status", up: false })).toBe(false);
     expect(isToPanel({ t: "stream-status", up: true })).toBe(true);
     expect(isToPanel({ t: "stream-status" })).toBe(false);
     expect(isToPanel({ t: "failed", code: "x", message: "y" })).toBe(true);
     expect(isToPanel({ t: "tab", state: { tabId: 1 } })).toBe(true);
     expect(isToPanel({ t: "tab", state: null })).toBe(false);
-    expect(isToPanel({ t: "ping" })).toBe(true);
+    expect(isToPanel({ t: "ping" })).toBe(false);
     expect(isToPanel({ t: "state" })).toBe(false);
   });
 
@@ -150,6 +166,15 @@ describe("messages", () => {
     expect(isFromPanel({ t: "turn-off" })).toBe(false);
     expect(isFromPanel({ t: "visible", on: false })).toBe(true);
     expect(isFromPanel({ t: "visible", on: "yes" })).toBe(false);
+    expect(isFromPanel({ t: "delete", threadId: ULID })).toBe(false);
+  });
+
+  it("checks a composer page's one-off messages", () => {
+    expect(isComposerNote({ t: "lost", pickId: "a".repeat(32) })).toBe(true);
+    expect(isComposerNote({ t: "dismiss", pickId: "a".repeat(32) })).toBe(true);
+    expect(isComposerNote({ t: "dismiss", pickId: "a".repeat(32), extra: 1 })).toBe(false);
+    expect(isComposerNote({ t: "lost" })).toBe(false);
+    expect(isComposerNote({ t: "cancel", pickId: "a".repeat(32) })).toBe(false);
   });
 
   it("refuses an unknown field on every message", () => {
@@ -161,15 +186,15 @@ describe("messages", () => {
       { t: "cancel", pickId }, { t: "pin", threadId: ULID }, { t: "removed" }, { t: "ping" },
     ];
     const worker = [
-      { t: "state", page: null, route: null, threads: [], commentMode: false, pending: false }, { t: "comment-mode", on: false },
-      { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null }, { t: "snapshot-now" },
+      { t: "state", page: null, route: null, threads: [ot()], commentMode: false, pending: false }, { t: "pick-lost", pickId },
+      { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null },
       { t: "resend" }, { t: "captured", pickId, ok: true }, { t: "captured", pickId, ok: false, error: "no_capture_permission" },
       { t: "open-composer", pickId, rect: { x: 0, y: 0, w: 1, h: 1 } }, { t: "composer-ready", pickId },
     ];
     const composer = [{ t: "ready" }, { t: "post", body: "hi" }, { t: "cancel" }];
     const panel = [
       { t: "watch-tab", tabId: 1 }, { t: "send", threadId: ULID, to: null }, { t: "send-batch", threadIds: [ULID], note: null, to: null },
-      { t: "reply", threadId: ULID, body: "ok" }, { t: "resolve", threadId: ULID }, { t: "reopen", threadId: ULID }, { t: "delete", threadId: ULID },
+      { t: "reply", threadId: ULID, body: "ok" }, { t: "resolve", threadId: ULID }, { t: "reopen", threadId: ULID },
       { t: "looked", threadIds: [ULID] }, { t: "set-name", name: "Ana" }, { t: "select", threadId: null }, { t: "comment-mode", on: true },
       { t: "navigate", route: null, artifactId: "7q3k9mzx2b4t" }, { t: "turn-off", origin: "http://localhost:5173" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
     ];
