@@ -1,7 +1,8 @@
 <script lang="ts">
   // One gallery card: the version numeral first, the title (starred when
   // pinned and no Pin button shows it), who published it (a live page: its
-  // URL) and when, the
+  // URL, its scheme stripped here as `publisherText` does, so the gallery's
+  // entry does not load the artifact view's module) and when, the
   // markers and the rally chip, and a footer slot; Pin and Delete, once the
   // token is known, sit in the footer's right end. Props are read off `p`
   // rather than destructured, so the gallery's eager bundle needs no prop

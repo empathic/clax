@@ -11,6 +11,6 @@ describe("publisherText", () => {
     expect(publisherText(a("x", null))).toBe("published from the command line");
   });
   it("names a live page by its URL", () => {
-    expect(publisherText(a("x", null, { kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } }))).toBe("live page · localhost:5173/settings");
+    expect(publisherText(a("x", null, { kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } }))).toBe("Live page · localhost:5173/settings");
   });
 });

@@ -39,7 +39,7 @@
   <Roster people={roster(parts.people, p.s.presence)} agents={parts.agents} working={p.s.working} me={p.s.me?.public_id ?? null} max={p.s.narrow ? 1 : 5} presence={presenceMap(p.s.presence)} />
   <WorkingSummary s={sum} />
 </button>
-{#if p.s.data.artifact.live}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
+{#if p.s.data.artifact.live && /^https?:\/\//.test(p.s.data.artifact.live.page_url)}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
 {#if p.s.menu === "people" && Panel}<Panel ctl={p.ctl} s={p.s} onClose={() => p.ctl.closeMenu()} />{/if}
 
 <style>

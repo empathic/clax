@@ -61,7 +61,7 @@
   {#if open}
     <div class="more-menu" role="menu" bind:this={menu}>
       {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
-      {#if phone && pageHref}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
+      {#if phone && pageHref && /^https?:\/\//.test(pageHref)}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
       {#if rawHref}
         <a role="menuitem" tabindex="-1" href={rawHref} target="_blank" rel="noopener" onclick={close}>Open raw</a>
       {:else}

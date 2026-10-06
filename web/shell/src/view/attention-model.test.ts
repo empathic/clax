@@ -21,7 +21,7 @@ describe("attention-model", () => {
       { kind: "ag", text: "claude working on 2" }, { kind: "oth", text: "2 open" },
     ]);
     expect(markers(A("a"), S({ new_replies: ["t"] }), [])).toEqual([{ kind: "rep", text: "1 new reply" }]);
-    expect(markers({ ...A("a"), kind: "live" }, undefined, [])).toEqual([{ kind: "live", text: "Live" }]);
+    expect(markers({ ...A("a"), kind: "live", live: { origin: "http://localhost:5173", path: "/", page_url: "http://localhost:5173/" } }, undefined, [])).toEqual([{ kind: "live", text: "Live" }]);
   });
 
   it("groups needs first by recency, then the rest pinned first", () => {

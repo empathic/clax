@@ -175,7 +175,6 @@ describe("the top bar on a live page", () => {
     expect(open.getAttribute("target")).toBe("_blank");
     expect(open.getAttribute("rel")).toContain("noopener");
     document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
-    await new Promise(r => setTimeout(r, 20));
     expect(comment.getAttribute("aria-pressed")).toBe("false");
     expect(view.root.querySelector(".topbar.commenting")).toBeNull();
   });

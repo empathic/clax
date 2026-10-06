@@ -14,7 +14,7 @@ export function needsEyes(a: Artifact, att?: AttentionSummary): boolean {
 }
 
 export function markers(a: Artifact, att: AttentionSummary | undefined, working: string[]): Marker[] {
-  const out: Marker[] = a.kind === "live" ? [{ kind: "live", text: "Live" }] : [];
+  const out: Marker[] = a.live ? [{ kind: "live", text: "Live" }] : [];
   if (att?.addressed.length) out.push({ kind: "you", text: `${att.addressed.length} addressed in v${att.addressed_v ?? a.current_version}` });
   if (att && att.seen !== null && a.current_version > att.seen) out.push({ kind: "new", text: `v${a.current_version} new` });
   if (att?.new_replies.length) out.push({ kind: "rep", text: plural(att.new_replies.length, "new reply", "new replies") });
