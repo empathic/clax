@@ -128,14 +128,17 @@ describe("panelAction", () => {
     expect(s.calls).toEqual([`select 4 ${T1}`, `route 4 ${URL1} false`, `route 4 ${URL1} true`, "turn-off 4 http://localhost:5173"]);
   });
 
-  it("pairs again on Retry only after a pairing or credential failure", async () => {
-    for (const code of ["host_missing", "unknown_credential", "http_401"]) {
+  it("pairs again on Retry only after a pairing, credential or reachability failure", async () => {
+    // An unreachable daemon is a pairing that names a daemon that is gone
+    // (restarted on another port within the 10 s a pairing waits, or
+    // stopped): the native host answers the running one, starting it if need be.
+    for (const code of ["host_missing", "unknown_credential", "http_401", "daemon_unreachable"]) {
       const s = setup({ error: code });
       await s.run({ t: "retry" });
       expect(s.calls).toEqual(["pair true", `route 4 ${URL1} true`]);
     }
-    const net = setup({ error: "daemon_unreachable" });
-    await net.run({ t: "retry" });
-    expect(net.calls).toEqual([`route 4 ${URL1} true`]);
+    const other = setup({ error: "http_500" });
+    await other.run({ t: "retry" });
+    expect(other.calls).toEqual([`route 4 ${URL1} true`]);
   });
 });

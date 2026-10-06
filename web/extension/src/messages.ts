@@ -288,7 +288,9 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
   }
 }
 
-/** Failures trying again can fix: the panel offers Retry for these. */
+/** Failures a new pairing can fix: the native host, the credential, or a
+ * pairing whose daemon is gone (restarted on another port, or stopped; the
+ * native host answers the running one, starting it if need be). The panel
+ * offers Retry for these, and Retry pairs again. */
 export const RETRYABLE = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently", "daemon_unreachable"]);
-/** Of those, the ones a new pairing fixes (the native host, or the credential). */
-export const REPAIRS = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently"]);
+export const REPAIRS = RETRYABLE;
