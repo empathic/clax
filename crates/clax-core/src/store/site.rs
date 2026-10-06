@@ -6,8 +6,9 @@ use super::Store;
 use super::live::{LivePage, PAGES_OF_ORIGIN, materialize};
 use super::threads::threads_of_many;
 use crate::anchor::Anchor;
+use crate::audit::{content_manifest_sha256, sha256_hex};
 use crate::live::{PageKey, PathPattern, winning_rule};
-use crate::model::{Thread, Version};
+use crate::model::{FileMeta, Thread, Version};
 use crate::publish::INDEX;
 use crate::{ArtifactId, CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, params};
@@ -354,7 +355,10 @@ fn plan_refile(
 struct StagedCopy {
     src: (String, u32),
     dir: Staging,
+    /// The source's files, each with its hash.
     files_json: String,
+    /// The copy's content hash: the same files, so the source's manifest.
+    content_sha256: Option<String>,
     note: Option<String>,
 }
 
@@ -440,7 +444,9 @@ fn paths_of(json: &str) -> Result<Vec<String>> {
 }
 
 /// Copies the files of version `n` of `src` (whose `files_json` is
-/// `json`) into a staging directory of page `to`.
+/// `json`) into a staging directory of page `to`, with each file's hash
+/// and the content hash (a file recorded without a hash is hashed from its
+/// bytes, and the copy's `files_json` records that hash).
 fn stage_copy(
     st: &Store,
     (src, n): (&str, u32),
@@ -452,17 +458,31 @@ fn stage_copy(
     let dir = Staging(versions.join(format!(".tmp-{}", new_ulid())));
     std::fs::create_dir_all(dir.0.join("files"))?;
     let src_dir = st.home.version_dir(&ArtifactId::parse(src)?, n);
-    for path in paths_of(json)? {
-        let dest = version_file(&dir.0, &path);
+    let mut files: BTreeMap<String, FileMeta> =
+        serde_json::from_str(json).map_err(|_| CoreError::Corrupt {
+            artifact_id: src.to_string(),
+            column: "files_json",
+            version: Some(n),
+        })?;
+    for (path, meta) in &mut files {
+        let dest = version_file(&dir.0, path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(version_file(&src_dir, &path), &dest)?;
+        let from = version_file(&src_dir, path);
+        if meta.sha256.is_some() {
+            std::fs::copy(from, &dest)?;
+        } else {
+            let bytes = std::fs::read(from)?;
+            meta.sha256 = Some(sha256_hex(&bytes));
+            std::fs::write(&dest, bytes)?;
+        }
     }
     Ok(StagedCopy {
         src: (src.to_string(), n),
         dir,
-        files_json: json.to_string(),
+        files_json: serde_json::to_string(&files).expect("serialisable map"),
+        content_sha256: content_manifest_sha256(&files),
         note,
     })
 }
@@ -596,9 +616,10 @@ fn commit_refile(
         for copy in g.copies.drain(..) {
             n += 1;
             tx.execute(
-                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note)
-                 VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5)",
-                params![to.artifact_id, n, now, copy.files_json, copy.note],
+                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
+                    content_sha256)
+                 VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5, ?6)",
+                params![to.artifact_id, n, now, copy.files_json, copy.note, copy.content_sha256],
             )?;
             let vdir = st.home.version_dir(&to_id, n);
             std::fs::rename(&copy.dir.0, &vdir)?;
@@ -1353,6 +1374,19 @@ mod tests {
         assert_eq!(index(&st, &b, 2), "<p>a1");
         assert_eq!(index(&st, &b, 3), "<p>a2");
         assert_eq!(index(&st, &b, 4), "<p>b1");
+        // A copy has its source's files, so its content hash.
+        let hash = |id: &ArtifactId, n: u32| st.get_version(id, n).unwrap().unwrap().content_sha256;
+        for (n, src) in [(2, (&a, 1)), (3, (&a, 2)), (4, (&b, 1))] {
+            assert!(hash(&b, n).is_some());
+            assert_eq!(hash(&b, n), hash(src.0, src.1), "version {n}");
+        }
+        assert_eq!(
+            done.versions
+                .iter()
+                .map(|v| v.content_sha256.clone())
+                .collect::<Vec<_>>(),
+            [hash(&b, 2), hash(&b, 3), hash(&b, 4)]
+        );
         assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 4);
         let moved = st.get_thread(&t.id).unwrap().unwrap();
         assert_eq!(moved.artifact_id, b.as_str());
@@ -1394,6 +1428,52 @@ mod tests {
         assert_eq!((x[0].moves.len(), x[0].addressed_in.clone()), (1, vec![3]));
         assert_eq!(index(&st, &b, 2), "<p>a1");
         st.delete_thread(&t.id).unwrap();
+    }
+
+    #[test]
+    fn a_moved_legacy_version_is_hashed_with_its_files() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a1");
+        let b = page(&st, "/b", "<p>b1");
+        let t = thread(&st, &a, None);
+        // /a's version 1 as written before content hashes.
+        st.with_write(|c| {
+            let json: String = c.query_row(
+                "SELECT files_json FROM versions WHERE artifact_id = ?1 AND n = 1",
+                params![a.as_str()],
+                |r| r.get(0),
+            )?;
+            let mut files: serde_json::Map<String, serde_json::Value> =
+                serde_json::from_str(&json).unwrap();
+            for meta in files.values_mut() {
+                meta.as_object_mut().unwrap().remove("sha256");
+            }
+            c.execute(
+                "UPDATE versions SET files_json = ?2, content_sha256 = NULL
+                 WHERE artifact_id = ?1 AND n = 1",
+                params![a.as_str(), serde_json::Value::Object(files).to_string()],
+            )?;
+            Ok(())
+        })
+        .unwrap();
+        let legacy = st.get_version(&a, 1).unwrap().unwrap();
+        assert!(legacy.content_sha256.is_none());
+        assert!(legacy.files.values().all(|f| f.sha256.is_none()));
+
+        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        // The copy records its files' hashes along with its content hash.
+        let copy = st.get_version(&b, 2).unwrap().unwrap();
+        assert_eq!(copy.note.as_deref(), Some(MOVED_NOTE));
+        assert_eq!(
+            copy.files["index.html"].sha256.as_deref(),
+            Some(crate::audit::sha256_hex(b"<p>a1").as_str())
+        );
+        assert!(copy.content_sha256.is_some());
+        assert_eq!(
+            copy.content_sha256,
+            crate::audit::content_manifest_sha256(&copy.files)
+        );
     }
 
     #[test]

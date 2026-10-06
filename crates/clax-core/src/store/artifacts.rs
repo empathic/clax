@@ -2,6 +2,7 @@
 
 use super::Store;
 use super::changelog::{fill_addresses, link_version};
+use crate::audit::{content_manifest_sha256, sha256_hex};
 use crate::model::{Artifact, CONTRACT_VERSION, FileMeta, Version};
 use crate::publish::{FileChange, INDEX, ValidatedPublish};
 use crate::{ArtifactId, CoreError, Result, new_ulid};
@@ -546,11 +547,12 @@ fn row_to_version(r: &Row<'_>) -> rusqlite::Result<Result<Version>> {
         addresses: Vec::new(),
         agent: r.get("agent")?,
         agent_harness: r.get("agent_harness")?,
+        content_sha256: r.get("content_sha256")?,
     }))
 }
 
 const SELECT_VERSION: &str =
-    "SELECT artifact_id, n, label, created_at, session_id, files_json, note,
+    "SELECT artifact_id, n, label, created_at, session_id, files_json, note, content_sha256,
         (SELECT agent_handle FROM sessions s WHERE s.id = versions.session_id) AS agent,
         (SELECT harness FROM sessions s WHERE s.id = versions.session_id) AS agent_harness
      FROM versions";
@@ -629,6 +631,11 @@ impl Store {
     /// transaction, re-checks that the artifact is still at `expected`
     /// (`Conflict` otherwise), records the version, bumps the artifact and
     /// renames the staging directory into place before committing.
+    ///
+    /// Each written file's SHA-256 is recorded in its metadata; a carried
+    /// file keeps `prev`'s hash (or, when `prev` has none, its stored bytes
+    /// are hashed). The version's `content_sha256` is the hash of that
+    /// manifest ([`content_manifest_sha256`]).
     pub(super) fn write_version(
         &self,
         id: &ArtifactId,
@@ -684,8 +691,16 @@ impl Store {
             if let Some(parent) = dest.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&src, &dest)?;
-            files.insert(path.clone(), prev[path].clone());
+            let mut meta = prev[path].clone();
+            if meta.sha256.is_some() {
+                std::fs::copy(&src, &dest)?;
+            } else {
+                // Written before file hashes: hash the stored bytes.
+                let bytes = std::fs::read(&src)?;
+                meta.sha256 = Some(sha256_hex(&bytes));
+                std::fs::write(&dest, bytes)?;
+            }
+            files.insert(path.clone(), meta);
         }
         for (path, change) in &p.files {
             if let FileChange::Put(f) = change {
@@ -695,12 +710,14 @@ impl Store {
                     FileMeta {
                         content_type: f.content_type.clone(),
                         size: f.bytes.len() as u64,
+                        sha256: Some(sha256_hex(&f.bytes)),
                     },
                 );
             }
         }
         let now = Store::now();
         let files_json = serde_json::to_string(&files).expect("serialisable map");
+        let content_sha256 = content_manifest_sha256(&files);
         let vdir = self.home.version_dir(id, n);
         let renamed = std::sync::atomic::AtomicBool::new(false);
         let result = self.with_tx(|tx| {
@@ -713,9 +730,10 @@ impl Store {
                 return Err(CoreError::Conflict { current });
             }
             tx.execute(
-                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![id.as_str(), n, p.label, now, session_id, files_json, p.note],
+                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note,
+                    content_sha256)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![id.as_str(), n, p.label, now, session_id, files_json, p.note, content_sha256],
             )?;
             link_version(tx, id.as_str(), n, p)?;
             let extra = then(tx, n)?;
@@ -1060,6 +1078,7 @@ mod tests {
     }
 
     use crate::publish::{Encoding, FileInput, PublishRequest, validate};
+    use rusqlite::params;
     use std::collections::BTreeMap;
 
     fn publish(
@@ -1175,6 +1194,86 @@ mod tests {
             [1, 2]
         );
         assert_eq!(store.get_version(&id, 1).unwrap().unwrap().files.len(), 3);
+    }
+
+    const X_SHA256: &str = "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881";
+
+    #[test]
+    fn content_sha256_matches_manifest_rule() {
+        let (_d, store) = store();
+        let (a, v) = store
+            .create_artifact(
+                publish(
+                    &[("index.html", Some("<p>hi</p>")), ("app.js", Some("x"))],
+                    None,
+                ),
+                None,
+            )
+            .unwrap();
+        // "app.js\0<sha256(x)>\01\nindex.html\0<sha256(<p>hi</p>)>\09\n"
+        let expected = "sha256:33754657b6a0ce355999e0dc8adbb0d2c6c2780035a2c1d9e43d707782c3ad9a";
+        assert_eq!(v.content_sha256.as_deref(), Some(expected));
+        assert_eq!(v.files["app.js"].sha256.as_deref(), Some(X_SHA256));
+        assert_eq!(
+            v.files["index.html"].sha256.as_deref(),
+            Some("0a4735281db700223af63abc387c351f64ea6961a1ef955631df08d96169e772")
+        );
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        let stored = store.get_version(&id, 1).unwrap().unwrap();
+        assert_eq!(stored.content_sha256.as_deref(), Some(expected));
+        assert_eq!(stored.files, v.files);
+    }
+
+    #[test]
+    fn carried_files_keep_their_hash() {
+        let (_d, store) = store();
+        let (a, _) = store
+            .create_artifact(
+                publish(&[("index.html", Some("v1")), ("app.js", Some("x"))], None),
+                None,
+            )
+            .unwrap();
+        let id = crate::ArtifactId::parse(&a.id).unwrap();
+        // The carried file's hash comes from version 1's record, not from
+        // re-reading its bytes.
+        let v1_app = store.home().version_dir(&id, 1).join("files/app.js");
+        std::fs::write(&v1_app, "changed on disk").unwrap();
+        let (_, v2) = store
+            .publish_version(&id, publish(&[("index.html", Some("v2"))], Some(1)), None)
+            .unwrap();
+        assert_eq!(v2.files["app.js"].sha256.as_deref(), Some(X_SHA256));
+        assert_eq!(
+            v2.content_sha256,
+            crate::audit::content_manifest_sha256(&v2.files)
+        );
+        assert!(v2.content_sha256.is_some());
+
+        // A carried file whose version predates file hashes is hashed from
+        // its stored bytes.
+        store
+            .with_write(|c| {
+                c.execute(
+                    "UPDATE versions SET files_json = ?2, content_sha256 = NULL
+                     WHERE artifact_id = ?1 AND n = 2",
+                    params![
+                        id.as_str(),
+                        r#"{"app.js":{"content_type":"text/javascript","size":15},"index.html":{"content_type":"text/html","size":2}}"#
+                    ],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let (_, v3) = store
+            .publish_version(&id, publish(&[("index.html", Some("v3"))], Some(2)), None)
+            .unwrap();
+        assert_eq!(
+            v3.files["app.js"].sha256.as_deref(),
+            Some(crate::audit::sha256_hex(b"changed on disk").as_str())
+        );
+        assert_eq!(
+            v3.content_sha256,
+            crate::audit::content_manifest_sha256(&v3.files)
+        );
     }
 
     #[test]

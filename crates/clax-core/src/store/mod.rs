@@ -48,6 +48,7 @@
 pub mod artifacts;
 pub mod assets;
 pub mod attention;
+pub mod audit;
 pub mod batches;
 pub mod changelog;
 pub mod docs;
@@ -93,6 +94,8 @@ pub struct Store {
     /// by the write connection's update hook and dropped by its rollback hook.
     inbox_changes: Arc<Mutex<Vec<InboxChange>>>,
     inbox_listener: RwLock<Option<SharedListener>>,
+    /// Audit recording state: the nudge and the install ID.
+    audit: audit::AuditState,
 }
 
 impl Store {
@@ -129,6 +132,7 @@ impl Store {
             shut_down: AtomicBool::new(false),
             inbox_changes,
             inbox_listener: RwLock::new(None),
+            audit: audit::AuditState::default(),
         })
     }
 
@@ -191,13 +195,16 @@ impl Store {
     /// would instead fail at once with `SQLITE_BUSY` on its first write.
     ///
     /// When the committed transaction made or updated inbox items, the inbox
-    /// listener hears of them once the write turn is released.
+    /// listener hears of them once the write turn is released. When `f`
+    /// recorded an audit event ([`Store::record_audit`]), the audit nudge
+    /// ([`Store::set_audit_nudge`]) fires after the commit.
     pub(crate) fn with_tx<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let (out, changes) = self.writer.run(|conn| {
+        let (out, changes, recorded) = self.writer.run(|conn| {
             self.inbox_changes.lock().unwrap().clear();
+            let _job = self.audit.begin();
             let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
             let out = f(&tx)?;
             tx.commit()?;
@@ -205,8 +212,12 @@ impl Store {
             Ok((
                 out,
                 std::mem::take(&mut *self.inbox_changes.lock().unwrap()),
+                self.audit.take_recorded(),
             ))
         })?;
+        if recorded {
+            self.audit.nudge();
+        }
         if !changes.is_empty() {
             // Cloned out, so the listener runs without the lock.
             let listen = self.inbox_listener.read().unwrap().clone();
@@ -224,7 +235,8 @@ impl Store {
     }
 }
 
-/// Applies every migration past the database's `user_version`, each in its
+/// Applies every migration past the database's `user_version`, each (its
+/// SQL, then its [Rust step](migrations::rust_step)) in its
 /// own `IMMEDIATE` transaction that re-reads the version under the write
 /// lock, so two processes opening the database at once apply each migration
 /// once. Refuses a database whose schema is newer than this binary knows
@@ -254,6 +266,7 @@ fn migrate(conn: &mut Connection) -> Result<()> {
             return Ok(());
         }
         tx.execute_batch(migrations::MIGRATIONS[version as usize])?;
+        migrations::rust_step(&tx, version + 1)?;
         tx.pragma_update(None, "user_version", version + 1)?;
         tx.commit()?;
     }

@@ -333,11 +333,68 @@ impl AuditRecord {
     }
 }
 
+/// The lowercase hex SHA-256 of `bytes`.
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// A version's content hash (spec §5.3): `sha256:` and the hex SHA-256 of
+/// its manifest, one `<path>\0<sha256 hex>\0<size>\n` line per file in path
+/// order. `None` when a file has no hash.
+pub fn content_manifest_sha256(files: &BTreeMap<String, crate::model::FileMeta>) -> Option<String> {
+    let mut manifest = Vec::new();
+    for (path, meta) in files {
+        let sha = meta.sha256.as_deref()?;
+        manifest.extend_from_slice(path.as_bytes());
+        manifest.push(0);
+        manifest.extend_from_slice(sha.as_bytes());
+        manifest.push(0);
+        manifest.extend_from_slice(meta.size.to_string().as_bytes());
+        manifest.push(b'\n');
+    }
+    Some(format!("sha256:{}", sha256_hex(&manifest)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::gitctx::MAX_HEADER_BYTES;
     use serde_json::json;
+
+    #[test]
+    fn content_manifest_sha256_hashes_the_path_ordered_manifest() {
+        let meta = |bytes: &[u8]| crate::model::FileMeta {
+            content_type: "text/plain".into(),
+            size: bytes.len() as u64,
+            sha256: Some(sha256_hex(bytes)),
+        };
+        let files = BTreeMap::from([
+            ("index.html".to_string(), meta(b"<p>hi</p>")),
+            ("app.js".to_string(), meta(b"x")),
+        ]);
+        let manifest = format!(
+            "app.js\0{}\01\nindex.html\0{}\09\n",
+            sha256_hex(b"x"),
+            sha256_hex(b"<p>hi</p>")
+        );
+        let expected = "sha256:33754657b6a0ce355999e0dc8adbb0d2c6c2780035a2c1d9e43d707782c3ad9a";
+        assert_eq!(
+            format!("sha256:{}", sha256_hex(manifest.as_bytes())),
+            expected
+        );
+        assert_eq!(content_manifest_sha256(&files).as_deref(), Some(expected));
+        assert_eq!(
+            content_manifest_sha256(&BTreeMap::new()).as_deref(),
+            Some(format!("sha256:{}", sha256_hex(b""))).as_deref()
+        );
+        let mut unhashed = files.clone();
+        unhashed.get_mut("app.js").unwrap().sha256 = None;
+        assert_eq!(content_manifest_sha256(&unhashed), None);
+    }
 
     #[test]
     fn kind_names_match_spec() {
