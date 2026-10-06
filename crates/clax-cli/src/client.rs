@@ -901,6 +901,8 @@ pub(crate) mod tests {
     /// listens on 127.0.0.1 (on `listen` instead of P when given), records
     /// B, `version` and its own path in daemon.json, answers `/healthz`, and
     /// on `POST /api/admin/shutdown` exits, or with `hang` never answers.
+    /// A file of its own: a rollback restarts the daemon from the canonical
+    /// path it recorded.
     fn fake_exe(
         dir: &std::path::Path,
         name: &str,
@@ -960,7 +962,7 @@ srv.serve_forever()
             listen = listen.map_or("None".to_string(), |p| p.to_string()),
             hang = if hang { "True" } else { "False" },
         );
-        clax_fake_exe::install(&path, &script)
+        clax_fake_exe::install_own(&path, &script)
     }
 
     /// A test's scratch directory. Every fake daemon started under it
@@ -1007,6 +1009,13 @@ srv.serve_forever()
 
     fn script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
         clax_fake_exe::install(&dir.join(name), &format!("#!/bin/sh\n{body}\n"))
+    }
+
+    /// [`script`] as a file of its own, for a build the code under test
+    /// identifies by its file: it runs the canonical path, and an upgrade
+    /// hold records that path and its modification time.
+    fn script_own(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+        clax_fake_exe::install_own(&dir.join(name), &format!("#!/bin/sh\n{body}\n"))
     }
 
     /// A scratch home under `dir` with a fake daemon from `exe` running on
@@ -1062,7 +1071,7 @@ srv.serve_forever()
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         // The old executable now fails too, as the new one does.
-        clax_fake_exe::install(&old_exe, "#!/bin/sh\nexit 1\n");
+        clax_fake_exe::install_own(&old_exe, "#!/bin/sh\nexit 1\n");
         let bad = script(dir.path(), "bad", "exit 1");
         let e = format!(
             "{:#}",
@@ -1098,7 +1107,7 @@ srv.serve_forever()
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, old) = running(dir.path(), &old_exe, "127.0.0.1");
         let pid_file = dir.path().join("slow.pid");
-        let slow = script(
+        let slow = script_own(
             dir.path(),
             "slow",
             "d=\"$(dirname \"$0\")\"\necho $$ > \"$d/slow.pid\"\ntouch \"$d/pids/$$\"\nexec sleep 60",
@@ -1211,7 +1220,7 @@ srv.serve_forever()
         // An in-place reinstall writes a build that fails over the old path,
         // and this client runs it through a symlink.
         let starts = dir.path().join("starts");
-        clax_fake_exe::install(
+        clax_fake_exe::install_own(
             &old_exe,
             "#!/bin/sh\necho start >> \"$(dirname \"$0\")/starts\"\nexit 1\n",
         );
@@ -1244,7 +1253,7 @@ srv.serve_forever()
         let dir = Scratch::new();
         let old_exe = fake_exe(dir.path(), "old", "0.0.1", false, None);
         let (home, _old) = running(dir.path(), &old_exe, "127.0.0.1");
-        let bad = script(dir.path(), "bad", "exit 1");
+        let bad = script_own(dir.path(), "bad", "exit 1");
         let lo = IpAddr::V4(Ipv4Addr::LOCALHOST);
         let e = format!(
             "{:#}",
@@ -1276,7 +1285,7 @@ srv.serve_forever()
 
         // A rebuilt executable is tried at once.
         std::thread::sleep(Duration::from_millis(20));
-        clax_fake_exe::install(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n");
+        clax_fake_exe::install_own(&bad, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(Client::connect_matching(&home, 0, lo, "0.0.2", &bad).is_err());
         assert_eq!(
             replacements(&home),
@@ -1332,11 +1341,11 @@ srv.serve_forever()
         let home = Home::at(dir.path().join("ax"));
         home.ensure_dirs().unwrap();
         assert!(upgrade_hold(&home).is_none());
-        let exe = script(dir.path(), "new", "exit 1");
+        let exe = script_own(dir.path(), "new", "exit 1");
         write_hold(&home, "0.0.2", &exe, "why");
         assert_eq!(upgrade_hold(&home).unwrap().reason, "why");
         std::thread::sleep(Duration::from_millis(20));
-        clax_fake_exe::install(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n");
+        clax_fake_exe::install_own(&exe, "#!/bin/sh\n# rebuilt\nexit 1\n");
         assert!(
             upgrade_hold(&home).is_none(),
             "a rebuilt executable lifts it"

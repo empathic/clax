@@ -87,7 +87,7 @@ else fail "stop_orphan_daemon stopped the daemon of ~/.clax"; fi
 # stop_installed_daemon stops a home's daemon through `<clax> stop` only when
 # the daemon runs that clax; the fake clax records the call and ends the PID.
 mkdir -p "$T/cargo/bin" "$T/inst"
-fake_exe "$T/cargo/bin/clax" <<'SH'
+fake_exe_own "$T/cargo/bin/clax" <<'SH'
 #!/bin/sh
 echo "clax $* home=${CLAX_HOME:-}" >> "${0%/*}/../../inst/calls"
 if [ "$1" = stop ]; then

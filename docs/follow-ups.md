@@ -292,9 +292,12 @@ lanes with web e2e beside the rest (about 55 s), then the perf gates alone
   it starts (2 to 5 s), so the tests' stand-in executables are never on a
   first run when it counts: `crates/clax-fake-exe`, `scripts/fake-exe.sh`
   and `plugins/pi/test/fake-exe.ts` keep one read-only copy of each script
-  text, run it once outside any limit and hard-link it where a test wants
-  it (the verdict belongs to the file: a new file with the same text is
-  scanned again, a hard link to a scanned one is not); the gates run each
+  text, run it once outside any limit and put a symbolic link to it where a
+  test wants it (the verdict belongs to the file: a new file with the same
+  text is scanned again, a run through a symbolic link to a scanned one is
+  not), or, for a fake the code under test identifies by its file (an
+  installed `clax`, a daemon's executable), write a file of its own and run
+  it once before renaming it into place; the gates run each
   `clax` they copy or build once, as soon as it exists; and the plugin
   wrapper test, whose managed installs run freshly extracted binaries, runs
   copies of the wrapper with long limits, and short ones only in the cases

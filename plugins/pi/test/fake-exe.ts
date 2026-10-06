@@ -7,13 +7,14 @@
 // seconds, longer than the limit the code under test puts on a program it
 // starts, while later runs of the same file take milliseconds. The
 // assessment belongs to the file: a new file with the same text is assessed
-// again, a hard link to an assessed file is not. So each text is stored
-// once, read-only, in the temporary directory under a hash of the text, run
-// once with CLAX_FAKE_EXE_WARMUP set (a line added after the #! line makes
-// that run exit at once), and the path asked for is a hard link to it.
+// again, running an assessed file through a symbolic link to it is not a
+// first run. So each text is stored once, read-only, in the temporary
+// directory under a hash of the text, run once with CLAX_FAKE_EXE_WARMUP set
+// (a line added after the #! line makes that run exit at once), and the path
+// asked for is a symbolic link to it.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, linkSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
@@ -24,8 +25,9 @@ function warm(path: string): void {
 }
 
 /** Puts an executable script with `text` (a #! line naming a shell, then
- * its body) at `at`, replacing whatever is there, and returns `at`. The file
- * is read-only: to change a script, install another text at the same path. */
+ * its body) at `at`, replacing whatever is there, and returns `at`. `at` is
+ * a symbolic link to a shared, read-only copy: to change a script, install
+ * another text at the same path. */
 export function fakeExe(at: string, text: string): string {
   const nl = text.indexOf("\n");
   const first = nl < 0 ? text : text.slice(0, nl);
@@ -52,12 +54,6 @@ export function fakeExe(at: string, text: string): string {
   }
   mkdirSync(dirname(at), { recursive: true });
   rmSync(at, { force: true });
-  try {
-    linkSync(shared, at);
-  } catch {
-    // Another file system: a copy of its own, warmed here.
-    copyFileSync(shared, at);
-    warm(at);
-  }
+  symlinkSync(shared, at);
   return at;
 }

@@ -177,10 +177,12 @@ impl Run {
     fn wrapper(&self) -> PathBuf {
         self.p("claxbin/clax")
     }
-    /// The wrapper's physical path, as the script names the build under test.
+    /// The wrapper's path with its directory resolved (`pwd -P`), as the
+    /// script names the build under test.
     fn wrapper_phys(&self) -> String {
-        std::fs::canonicalize(self.wrapper())
+        std::fs::canonicalize(self.p("claxbin"))
             .unwrap()
+            .join("clax")
             .display()
             .to_string()
     }
