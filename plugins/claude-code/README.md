@@ -117,6 +117,17 @@ and `/clax:doctor` report the setup; `clax uninit` (or `clax extension
 uninstall`) removes it. Snap and Flatpak Chromium on Linux cannot run the
 native host, so the extension cannot pair there.
 
+Until a Chrome Web Store listing exists, the extension's ID comes from where
+it is installed, or from the public key in `web/extension/key/key.pub.b64`
+once the owner commits one. Signing is the owner's alone and never runs in
+CI: the private key lives only in the owner's 1Password, created there
+directly (nothing on disk), and `CLAX_EXTENSION_KEY_REF` holds its `op://`
+reference. `scripts/extension-pubkey.sh` writes the public key and prints
+the ID (commit the file, then run `clax init`; the ID changes once), and
+`scripts/pack-extension.sh` builds the Web Store zip, with
+`--first-upload` (key included) for the listing's first upload only. The
+steps are in `docs/verification.md` §8.4.
+
 ## The comment loop
 
 People comment on a page in the browser and send a thread to the agent with

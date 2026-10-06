@@ -12,3 +12,4 @@ web/test-results/
 .superpowers/
 web/perf/results.json
 web/perf/test-results/
+/dist/

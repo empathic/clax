@@ -723,14 +723,51 @@ Found by this test and fixed, each with a regression test:
 
 ### 8.4 The owner's steps outside Clax
 
-Both scripts are specified in spec §6.7 and are not in the repository yet.
+Signing is local, owner-run and approval-gated (spec L15, §6.7). The private
+key lives only in the owner's 1Password; Clax, its agents, its builds and CI
+never read it, and both scripts refuse to run when `CI` is set. Only the
+owner does these steps.
 
-- Create the extension's key in 1Password, run `scripts/extension-pubkey.sh`
-  and commit `web/extension/key/key.pub.b64`. The extension's ID then becomes
-  the key's, once: each person loads it unpacked again, and `clax init`
-  writes the new host registration (spec L15).
-- Upload to the Chrome Web Store with `scripts/pack-extension.sh
-  --first-upload` (spec L15, §6.7). CI never signs.
+1. Create the key in 1Password without writing it to disk, for example
+   `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 | op document create - --title "Clax extension key" --file-name key.pem`
+   (or generate it in the 1Password app).
+2. Set `CLAX_EXTENSION_KEY_REF` to its full secret reference (1Password's
+   Copy Secret Reference on the key gives it, for example
+   `op://<vault>/<item>/key.pem`), in the owner's shell only; no vault or
+   item name goes into the repository. `op read "$CLAX_EXTENSION_KEY_REF"`
+   must print the PEM key.
+3. Run `scripts/extension-pubkey.sh`. It reads the key once (1Password asks
+   for approval), writes its public half to `web/extension/key/key.pub.b64`
+   and prints the extension ID. Commit that file. The extension's ID then
+   becomes the key's, once: run `clax init`, which writes the new native-host
+   registration, and each person loads `~/.clax/extension` unpacked again.
+4. For the Chrome Web Store listing's first upload only, run
+   `scripts/pack-extension.sh --first-upload`. It builds the release
+   extension and writes a zip holding the build and the key as `key.pem`,
+   which fixes the listed ID to the committed key's. That zip goes to a new
+   owner-only directory under `$TMPDIR`, outside the repository; delete it
+   once uploaded. Every later release is `scripts/pack-extension.sh`, which
+   writes `dist/clax-extension-<version>.zip` without the key (the Web Store
+   re-signs each release itself). `--crx` also writes a signed
+   `dist/clax-extension-<version>.crx` with Chromium (`CLAX_CHROMIUM` names
+   the binary).
+5. Upload the zip by hand in the Chrome Web Store developer dashboard.
+
+`scripts/pack-extension.sh` refuses a build whose manifest `key` is not the
+1Password key's public half, so a zip never carries a key other than the
+committed one. The key passes through a pipe (`extension-pubkey.sh`) or a
+mode-0600 temporary file removed on exit, interrupt or termination
+(`pack-extension.sh`).
+
+`scripts/test-extension-signing.sh` (scripts lane of
+`scripts/quality_gates.sh`) tests both scripts with a fake `op` serving a
+throwaway key: the public key and the ID it prints (checked against the rule
+`crates/clax-core/src/extension.rs` pins), exit 2 without
+`CLAX_EXTENSION_KEY_REF` or under `CI` with no `op` call, the zip without
+and with `key.pem`, a mismatched manifest key, no copy of the key left in
+the repository or `$TMPDIR` (also after SIGINT mid-run) and none printed,
+and a `.crx` signed with the key when a Chromium is found (skipped under
+`CI`). No gate calls 1Password.
 
 ## Appendix A: the browser-and-shim loop script
 
