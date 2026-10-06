@@ -738,10 +738,20 @@ The rules:
   its own root.
 - **`remote`:** the current branch's upstream remote; otherwise `origin`;
   otherwise the first remote; otherwise absent.
-- **`remote_url`:** `git remote get-url <remote>`, sanitized by stripping
-  userinfo that has a password (`user:token@`), the query and the fragment.
-  The scp form `git@host:owner/repo.git` is kept. Normalizing to
-  `github:owner/repo` happens at render time, for the `at-revision` ref.
+- **`remote_url`:** `git remote get-url <remote>`, sanitized by dropping
+  the query and the fragment, and by stripping userinfo:
+  - for non-SSH schemes (`https`, `http`, `git`, …), all userinfo is
+    stripped, because hosts accept a bare token as the user
+    (`https://<token>@host/…`, `x-access-token:<token>@`);
+  - for SSH-family schemes (`ssh`, `git+ssh`, `ssh+git`), a bare user
+    (`ssh://git@host/x`) is kept and userinfo with a password (`user:pass@`)
+    is stripped.
+
+  Userinfo ends at the last `@` before the first `/` that follows any `@`,
+  so a password holding an unencoded `@`, `/`, `?` or `#` is still stripped.
+  The scp form `git@host:owner/repo.git` and local paths are kept.
+  Normalizing to `github:owner/repo` happens at render time, for the
+  `at-revision` ref.
 - **`branch`:** `git symbolic-ref -q --short HEAD`. Absent when HEAD is
   detached.
 - **`head`:** `git rev-parse HEAD`. Absent on an unborn branch.
@@ -756,6 +766,16 @@ The rules:
 - **`untracked`:** the count of untracked, unignored paths. Their contents
   are not hashed, because doing so could cost seconds; `dirty` covers them.
 
+The daemon checks the context's shape before recording it:
+
+- `repo_root` is absolute;
+- no field holds a control character or a Unicode format character (bidi
+  controls, zero-width characters);
+- `branch` passes git's refname rules;
+- `head` is 40 (or 64) lowercase hex digits;
+- `remote_url` is already sanitized;
+- the diff fields and a non-zero `untracked` appear only when `dirty`.
+
 Only the hash leaves the agent side. Contents, the paths in the diff, and
 file names never do.
 
@@ -768,6 +788,19 @@ Each git command runs with `-C <cwd>` and the environment
 2. The rest run as concurrent children under a 300 ms deadline (L10). If the
    deadline passes, every child is killed and the outcome is `timeout`.
 3. If git is missing, the outcome is `unavailable`.
+
+**The `x-clax-git` header.** Its value is base64url JSON of at most 2 KiB,
+in one of two forms:
+
+- a captured context, as in §9.1;
+- `{"git_capture":"<outcome>"}`, with no other field, when there is none.
+  The outcome is `not-a-repo`, `timeout`, `unavailable` or `no-cwd`.
+
+The agent side validates a context before sending it. A context that fails
+the §9.1 checks, or would exceed 2 KiB, is sent as
+`{"git_capture":"invalid"}`. The daemon records a header that fails
+decoding or the checks as `git_capture: "invalid"`, and never fails the
+request over it. With no header, `git` and `git_capture` are both absent.
 
 ### 9.3 Who captures, and when
 

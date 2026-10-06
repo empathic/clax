@@ -1,6 +1,7 @@
 //! Core types and storage for Clax.
 
 pub mod anchor;
+pub mod audit;
 pub mod capabilities;
 pub mod changelog;
 pub mod config;
@@ -9,6 +10,7 @@ pub mod error;
 pub mod events;
 pub mod extension;
 pub mod feedback;
+pub mod gitctx;
 pub mod home;
 pub mod ids;
 pub mod live;
