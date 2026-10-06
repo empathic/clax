@@ -3816,6 +3816,13 @@ ID>`. An artifact URL whose `#` fragment is neither is the artifact.
 
 - `clax haiku` prints one of ten haiku about Clax, chosen at random
   (`--json`: `{"haiku": "<text>"}`).
+- `clax --version` and `clax version` print exactly `clax <version>`.
+  `clax version --verbose` adds a second line, `commit <hex>`: the commit
+  the binary was built from, or `unknown` for a build outside a git checkout
+  without `CLAX_BUILD_COMMIT` set (`--json`: `{"version", "commit"}`). `clax
+  status` names the running daemon's commit (`--json`: `commit`, absent for
+  a daemon older than the field), and `clax doctor`'s `build` check names
+  the commit of the `clax` it runs.
 - `scripts/verify-harnesses.sh` checks `clax init` and `clax uninit`
   against the real `claude`, `codex` and `pi` CLIs inside a scratch root it
   deletes on exit, and prints a PASS/FAIL table (exit 0, 1 when a check

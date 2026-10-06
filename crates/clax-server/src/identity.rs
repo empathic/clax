@@ -35,6 +35,7 @@ use axum::extract::FromRequestParts;
 use axum::http::request::Parts;
 use axum::http::{HeaderMap, HeaderValue, header};
 use clax_core::Store;
+use clax_core::audit::{Actor, AgentActor, Via};
 use clax_core::model::Viewer;
 use std::convert::Infallible;
 
@@ -236,6 +237,48 @@ impl Identity {
             Some(c) => st.upsert_viewer(c, None).map(Some),
             None => Ok(None),
         }
+    }
+}
+
+impl Identity {
+    /// Who a request that acts is, as the audit journal records it (audit
+    /// spec §5.2). Only a token holder can be an agent: the session that
+    /// `session` names, when it exists (ended or not), else, on the `mcp`
+    /// channel, an agent with no session (the sessionless `/mcp` route). A
+    /// `hook` or `pi` request without a known session is the owner's.
+    /// Otherwise the owner or the viewer
+    /// [`Identity::viewer`] names, by public ID, its row made when missing as
+    /// [`Identity::ensure_viewer`] makes it; else anonymous.
+    pub fn audit_actor(
+        &self,
+        st: &Store,
+        session: Option<&str>,
+        channel: Option<Via>,
+    ) -> clax_core::Result<Actor> {
+        if self.token {
+            if let Some(sid) = session.filter(|s| clax_core::is_ulid(s))
+                && let Some(agent) = st.session_actor(sid)?
+            {
+                return Ok(Actor::Agent(agent));
+            }
+            if channel == Some(Via::Mcp) {
+                return Ok(Actor::Agent(AgentActor::default()));
+            }
+        }
+        let viewer = match self.viewer(st)? {
+            Some(v) => Some(v),
+            None => self.ensure_viewer(st)?,
+        };
+        Ok(match viewer {
+            Some(v) if self.is_owner() => Actor::Owner {
+                public_id: v.public_id,
+            },
+            Some(v) => Actor::Viewer {
+                public_id: v.public_id,
+                display_name: v.display_name,
+            },
+            None => Actor::Anonymous,
+        })
     }
 }
 

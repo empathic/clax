@@ -26,10 +26,13 @@ pub fn run(cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
             out["working"] = json!(working(&c));
             super::print(cli, out, |j| {
                 let mut text = format!(
-                    "running at {} (pid {}, v{})",
+                    "running at {} (pid {}, v{}, commit {})",
                     j["url"].as_str().unwrap(),
                     j["pid"],
-                    j["version"].as_str().unwrap()
+                    j["version"].as_str().unwrap(),
+                    j["commit"]
+                        .as_str()
+                        .map_or("unknown", |c| c.get(..7).unwrap_or(c))
                 );
                 if let Some(h) = &hold {
                     text.push_str(&format!(

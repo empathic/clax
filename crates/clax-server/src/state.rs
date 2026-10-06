@@ -69,4 +69,7 @@ pub struct AppState {
     /// The latency gate's calibration database, built on first use
     /// ([`crate::routes::perf`]).
     pub calibration: crate::routes::perf::Slot,
+    /// The journal appender's wake-up, which `store` nudges after each
+    /// commit that recorded an audit event.
+    pub audit_wake: Arc<crate::audit::AuditWake>,
 }

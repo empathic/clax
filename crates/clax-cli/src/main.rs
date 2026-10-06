@@ -138,6 +138,8 @@ pub enum Cmd {
     Extension(commands::extension::Cmd),
     /// Print a haiku about Clax, one of ten, chosen at random.
     Haiku,
+    /// Print the version; with --verbose, also the commit it was built from.
+    Version(commands::version::Args),
     /// The Chrome native messaging host for the Clax extension (Chrome runs it).
     #[command(hide = true)]
     NativeHost(commands::native_host::Args),
@@ -231,6 +233,7 @@ fn home_from_env() -> Result<clax_core::Home, String> {
 }
 
 fn main() {
+    clax_core::set_build_commit(env!("CLAX_BUILD_COMMIT"));
     let started = std::time::Instant::now();
     let invoked = invoked_subcommand();
     // A hook must never fail its harness, so its startup failures exit 0.
@@ -292,6 +295,7 @@ fn main() {
         Cmd::Bin { cmd } => commands::bin::run(&cli, &home, cmd.as_ref()),
         Cmd::Extension(c) => commands::extension::run(&cli, &home, c),
         Cmd::Haiku => commands::haiku::run(&cli),
+        Cmd::Version(a) => commands::version::run(&cli, a),
         Cmd::NativeHost(a) => commands::native_host::run(&cli, &home, a),
     };
     if let Err(e) = result {

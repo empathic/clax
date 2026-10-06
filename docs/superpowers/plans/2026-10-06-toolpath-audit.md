@@ -70,7 +70,7 @@ crates/clax-core/src/toolpath/project.rs artifact / install / journal projection
 crates/clax-core/src/toolpath/segment.rs segment writer, rotation, recovery (std::fs only)
 crates/clax-core/src/store/audit.rs      queries, backfill
 crates/clax-core/src/store/migrations.rs migration 21
-crates/clax-core/build.rs                CLAX_BUILD_COMMIT
+crates/clax-cli/build.rs                 CLAX_BUILD_COMMIT (handed to clax-core at startup)
 crates/clax-core/tests/toolpath/         golden histories, segments, exports, args-hash-vectors.json,
                                          schema/toolpath.schema.json + SOURCE (vendored, read-only)
 crates/clax-server/src/audit.rs          AuditCtx extractor, appender thread, export/status/tool-call routes
@@ -154,12 +154,12 @@ docs/contract.md                         journal and export contract
 ### Task 3: Embed the build commit
 
 **Files:**
-- Modify: `crates/clax-core/build.rs`, `crates/clax-core/src/lib.rs` (`BUILD_COMMIT`), `crates/clax-cli/src/main.rs` (`--version`), and the release build script, which sets `CLAX_BUILD_COMMIT`
+- Modify: `crates/clax-cli/build.rs` (`CLAX_BUILD_COMMIT`), `crates/clax-core/src/lib.rs` (`build_commit()`, set at startup), `crates/clax-cli/src/main.rs` and `commands/{version,status,doctor}.rs`, `crates/clax-server/src/daemon.rs` (`DaemonInfo.commit`), and the release workflow, which sets `CLAX_BUILD_COMMIT`
 
-- [ ] **Step 1: Failing test.** `crates/clax-cli/tests/version.rs::version_names_commit`.
-- [ ] **Step 2: Implement** as in spec §5.5. `rerun-if-changed` covers the resolved `--git-path HEAD` and the ref file it names.
+- [ ] **Step 1: Failing tests.** `crates/clax-cli/tests/version.rs`: `version_is_exactly_clax_and_the_version` (`clax --version` stays exactly `clax <version>`, which the wrappers and installers compare) and `version_verbose_names_commit`; `doctor_runs_all_checks` checks the `build` check and `clax status`'s `commit`.
+- [ ] **Step 2: Implement** as in spec §5.5. Embedded by the leaf crate, so a commit or branch switch relinks `clax-cli` only. `rerun-if-changed` covers the resolved `--git-path HEAD`, the nearest existing directory on the path of the ref file it names, and `packed-refs`.
 - [ ] **Step 3: Run.** Expected: PASS.
-- [ ] **Step 4: Commit** `"Embed the build commit and show it in clax --version"`.
+- [ ] **Step 4: Commit** `"Embed the build commit; show it in clax version --verbose, status and doctor"`.
 
 ---
 
@@ -389,7 +389,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
   - `crates/clax-mcp/src/git.rs` and `crates/clax-mcp/src/calls.rs`.
 - Modify:
   - `crates/clax-core/src/gitctx.rs`: `capture(cwd, deadline, git)`.
-  - `crates/clax-mcp/src/client.rs`: send `x-clax-call` on every request for a call, and `x-clax-git` on mutating ones.
+  - `crates/clax-mcp/src/client.rs`: send `x-clax-via: mcp` on every request (the stdio shim, and the daemon's own `/mcp` `DaemonClient`, which has no session and so records the sessionless agent of spec §5.2); send `x-clax-call` on every request for a call, and `x-clax-git` on mutating ones.
   - `crates/clax-mcp/src/tools.rs`: mint a `call_id` at each tool call and hash the arguments as received. After the result is returned, post `POST /api/sessions/<sid>/tool-calls` in the background.
   - `crates/clax-mcp/src/shim.rs`: capture at registration.
   - `crates/clax-server/src/audit.rs`: the tool-calls route records `tool.call` with `produced`.
@@ -414,6 +414,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
     - `capture_times_out_at_deadline`: a blocking fake `git` from `clax-fake-exe`, with no sleeping.
   - `header_has_no_paths_or_contents`
   - `read_only_tools_send_no_git_header`
+  - `shim_and_daemon_mcp_send_via_mcp`: the `AuditCtx` of a shim request is the session's agent on `mcp`, and of a daemon `/mcp` request the sessionless agent on `mcp`.
 - [ ] **Step 2: Implement.**
 - [ ] **Step 3: Measure** `capture` 50 times on this repo and record p50 and p95 in the commit message. If p95 exceeds 100 ms, report it to the owner; do not raise the deadline.
 - [ ] **Step 4: Run** `just test`. Expected: PASS.
@@ -426,7 +427,7 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
 **Files:**
 - Modify: `crates/clax-hooks/src/events.rs` (git on join), `crates/clax-cli/src/commands/hook.rs`
 - Create: `plugins/pi/src/git.ts`, `plugins/pi/src/calls.ts`, `plugins/pi/test/{git,calls}.test.ts`
-- Modify: `plugins/pi/src/client.ts`. Send the call header on every request. The Pi extension passes its `toolCallId` as `harness_call_id` and its registered tool name as `harness_tool`.
+- Modify: `plugins/pi/src/client.ts`. Send `x-clax-via: pi` and the call header on every request. `clax hook` sends `x-clax-via: hook` on every request it makes. The Pi extension passes its `toolCallId` as `harness_call_id` and its registered tool name as `harness_tool`.
 - Create: `crates/clax-server/tests/fixtures/harness-ids/`:
   - a Claude hook stdin and the transcript's first line;
   - a Codex hook stdin and a rollout `session_meta` line;
@@ -438,7 +439,8 @@ Every backfilled event gets `backfilled = 1` and `via: daemon`, and has no git c
   - `codex_hook_session_id_is_rollout_session_meta_id`. If they differ, stop and report, because spec §9.4 is wrong in that case.
   - `claude_hook_session_id_matches_transcript_session_id`
   - `grok_hook_records_same_refs_as_others`
-  - Pi: `args hash vectors` (reading the same vectors JSON file), `capture matches the Rust fixture cases`, and `tool call carries toolCallId`.
+  - Pi: `args hash vectors` (reading the same vectors JSON file), `capture matches the Rust fixture cases`, `tool call carries toolCallId`, and `requests send via pi`.
+  - `hook_requests_send_via_hook`: the `AuditCtx` of a `clax hook` request is the session's agent on `hook`.
 - [ ] **Step 2: Implement.** In TypeScript, hash with a JCS canonicalizer (for example the `canonicalize` package, or about 40 lines inline) and `node:crypto`.
 - [ ] **Step 3: Run** `just test` and `cd plugins/pi && npm test`. Expected: PASS.
 - [ ] **Step 4: Commit** `"Capture git state, tool calls and exact call IDs from hooks and the Pi extension"`.

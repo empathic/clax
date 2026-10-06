@@ -352,6 +352,29 @@ impl Store {
         })
     }
 
+    /// Session `id` as the agent actor of the events it makes (audit spec
+    /// §5.2): its harness, harness session ID, agent handle and transcript
+    /// path. Ended sessions count: the agent still acted. `None` when no
+    /// session has that ID.
+    pub fn session_actor(&self, id: &str) -> Result<Option<crate::audit::AgentActor>> {
+        self.with_read(|c| {
+            Ok(c.prepare_cached(
+                "SELECT harness, harness_session_id, agent_handle, transcript_path
+                 FROM sessions WHERE id = ?1",
+            )?
+            .query_row(params![id], |r| {
+                Ok(crate::audit::AgentActor {
+                    session_id: Some(id.to_string()),
+                    harness: Some(r.get(0)?),
+                    harness_session_id: r.get(1)?,
+                    agent_handle: Some(r.get(2)?),
+                    transcript_path: r.get(3)?,
+                })
+            })
+            .optional()?)
+        })
+    }
+
     /// Sessions, newest first; only those not ended when `live_only`.
     pub fn list_sessions(&self, live_only: bool) -> Result<Vec<Session>> {
         self.with_read(|c| {
@@ -452,6 +475,33 @@ mod tests {
             pid,
             parent_pid: parent,
         }
+    }
+
+    #[test]
+    fn session_actor_names_the_harness_session_and_transcript() {
+        let (_d, st) = store();
+        let s = st.register_session(reg(Some("hs-1"), None, None)).unwrap();
+        st.writer
+            .run(|c| {
+                c.execute(
+                    "UPDATE sessions SET transcript_path = '/t/hs-1.jsonl' WHERE id = ?1",
+                    params![s.id],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        st.end_session(&s.id).unwrap();
+        assert_eq!(
+            st.session_actor(&s.id).unwrap(),
+            Some(crate::audit::AgentActor {
+                session_id: Some(s.id.clone()),
+                harness: Some("claude".into()),
+                harness_session_id: Some("hs-1".into()),
+                agent_handle: Some(s.agent_handle.clone()),
+                transcript_path: Some("/t/hs-1.jsonl".into()),
+            })
+        );
+        assert_eq!(st.session_actor(&crate::new_ulid()).unwrap(), None);
     }
 
     #[test]

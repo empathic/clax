@@ -18,6 +18,7 @@ fn daemon_info_roundtrips_with_0600() {
         bind: "127.0.0.1".into(),
         version: "v".into(),
         exe: None,
+        commit: None,
     };
     write_daemon_info(&home, &info).unwrap();
     assert_eq!(read_daemon_info(&home), Some(info));

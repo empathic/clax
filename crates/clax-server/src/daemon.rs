@@ -38,6 +38,10 @@ pub struct DaemonInfo {
     /// version). Absent in records written before it existed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exe: Option<String>,
+    /// The commit the daemon's binary was built from (full hex, or
+    /// `unknown`). Absent in records written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 /// Reads `daemon.json`; `None` when it is missing, unreadable, or not valid JSON.
@@ -330,6 +334,7 @@ pub async fn serve(
             .and_then(|p| p.canonicalize())
             .ok()
             .map(|p| p.display().to_string()),
+        commit: Some(clax_core::build_commit().to_string()),
     };
     write_daemon_info(&cfg.home, &info)?;
 
@@ -374,7 +379,9 @@ pub async fn serve(
         question_clock: Arc::new(clax_core::working::SystemClock),
         terminal_after_s,
         calibration: Arc::default(),
+        audit_wake: crate::audit::AuditWake::new(),
     };
+    state.audit_wake.install(&state.store);
     state.stream.listen(&state.events);
     crate::inbox::listen(&state);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");

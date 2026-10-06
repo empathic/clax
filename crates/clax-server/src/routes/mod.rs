@@ -235,7 +235,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast
         .route("/api/_test/sleep/{ms}", get(test_sleep))
-        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish));
+        .route("/api/_test/slow_publish/{ms}", post(test_slow_publish))
+        .route("/api/_test/audit/ctx", get(test_audit_ctx));
     #[cfg(debug_assertions)]
     let api_fast = api_fast
         .route("/api/_test/working/skew", post(working::skew))
@@ -384,6 +385,19 @@ async fn test_delay(
     next.run(req).await
 }
 
+/// The audit context the request resolves, as JSON: `actor`, `via`, and
+/// `git`, `git_capture` and `call` (null when absent).
+#[cfg(feature = "test-routes")]
+async fn test_audit_ctx(ctx: clax_core::audit::AuditCtx) -> axum::Json<serde_json::Value> {
+    axum::Json(serde_json::json!({
+        "actor": ctx.actor,
+        "via": ctx.via,
+        "git": ctx.git.context(),
+        "git_capture": ctx.git.capture(),
+        "call": ctx.call,
+    }))
+}
+
 #[cfg(feature = "test-routes")]
 async fn test_sleep(axum::extract::Path(ms): axum::extract::Path<u64>) -> StatusCode {
     tokio::time::sleep(Duration::from_millis(ms)).await;
@@ -529,6 +543,10 @@ mod l10 {
             "/api/_test/slow_publish/{ms}",
             "test-routes only; makes an HTML artifact",
         ),
+        (
+            "/api/_test/audit/ctx",
+            "test-routes only; names no artifact",
+        ),
         ("/api/admin/shutdown", "RequireToken"),
     ];
 
@@ -550,6 +568,7 @@ mod l10 {
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),
             "shell" => include_str!("shell.rs"),
+            "sites" => include_str!("sites.rs"),
             "stream" => include_str!("stream.rs"),
             "threads" => include_str!("threads.rs"),
             "token" => include_str!("token.rs"),
@@ -627,6 +646,40 @@ mod l10 {
         let rest = &src[start..];
         let end = rest.find("\n}\n").map_or(rest.len(), |e| e + 3);
         &rest[..end]
+    }
+
+    /// Resolving an [`AuditCtx`](clax_core::audit::AuditCtx) makes the
+    /// owner's or a first-time viewer's row when it is missing, so only
+    /// handlers that record events take it, and no `GET` handler does.
+    #[test]
+    fn no_get_route_resolves_the_audit_context() {
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        let ident = |c: char| c.is_ascii_lowercase() || c == '_' || c == ':';
+        let mut checked = 0;
+        for (path, text) in routes(src) {
+            let mut rest = text.as_str();
+            while let Some(i) = rest.find("get(") {
+                let before = rest[..i].chars().next_back();
+                let after = &rest[i + "get(".len()..];
+                rest = after;
+                if before.is_some_and(|c| c.is_ascii_alphanumeric() || c == '_') {
+                    continue;
+                }
+                let name: String = after.chars().take_while(|c| ident(*c)).collect();
+                let Some((m, f)) = name.split_once("::") else {
+                    continue;
+                };
+                let sig = function(module_source(m), f);
+                let sig = &sig[..sig.find('{').unwrap()];
+                assert!(
+                    !sig.contains("AuditCtx"),
+                    "GET {path} ({name}) takes AuditCtx"
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 20, "found only {checked} GET handlers");
     }
 
     #[test]

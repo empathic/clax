@@ -82,6 +82,8 @@ jobs:
         # install; on the arm64 runner the native musl-gcc targets it.
         env:
           CC_aarch64_unknown_linux_musl: musl-gcc
+          # The commit `clax --version` names (crates/clax-core/build.rs).
+          CLAX_BUILD_COMMIT: ${{ github.sha }}
         run: cargo build --release --locked --target ${{ matrix.target }} -p clax-cli --bin clax
       - name: Smoke-test the binary
         shell: bash

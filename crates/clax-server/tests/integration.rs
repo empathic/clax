@@ -34,6 +34,7 @@ mod api_sessions;
 mod api_stream;
 mod api_threads;
 mod api_timeout;
+mod api_toolpath;
 mod api_viewers;
 mod api_watches;
 mod api_working;

@@ -121,8 +121,10 @@ impl TestServer {
             question_clock: Arc::new(clax_core::working::SystemClock),
             terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
             calibration: Arc::default(),
+            audit_wake: crate::audit::AuditWake::new(),
         };
         f(&mut state);
+        state.audit_wake.install(&state.store);
         state.stream.listen(&state.events);
         crate::inbox::listen(&state);
         let events = state.events.clone();
