@@ -405,14 +405,16 @@ Manifest essentials:
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "commands": {"comment": {"suggested_key": {"default": "Alt+Shift+C"}, "description": "Comment on this page"}},
   "web_accessible_resources": [{"resources": ["composer.html"], "matches": ["http://*/*", "https://*/*"], "use_dynamic_url": true}],
-  "externally_connectable": {"ids": []},
   "content_security_policy": {"extension_pages": "script-src 'self'; object-src 'none'; connect-src 'self' http://localhost:* http://127.0.0.1:*; img-src 'self' blob: data: http://localhost:* http://127.0.0.1:*"}
 }
 ```
 
 No `host_permissions` and no `content_scripts` are declared: nothing runs on
-any page until the person turns the origin on. `externally_connectable` with
-no IDs and no `matches` lets no other extension and no web page message it.
+any page until the person turns the origin on. No `externally_connectable` is
+declared (an empty one only draws a load warning), so no web page can message
+the extension; and no part of it listens for other extensions' messages
+(`onMessageExternal`, `onConnectExternal`), so theirs are dropped. A test
+holds both.
 
 ### 6.5 Shell
 
@@ -840,7 +842,7 @@ What is protected, from whom:
    non-live artifact. A stolen credential therefore acts as the owner on
    live pages (comments, sends, resolves, the owner's name and marks) until
    revoked; that is the cost of one identity, bounded by the allowlist.
-3. **The page cannot drive Clax.** No `externally_connectable` web origin; the
+3. **The page cannot drive Clax.** No `externally_connectable` and no external-message listener; the
    isolated world's messages are validated; CommentMode acts only on trusted
    events (`isTrusted`), so page scripts cannot pick; posting a comment takes
    a click or key inside the composer frame, which the page cannot script;
