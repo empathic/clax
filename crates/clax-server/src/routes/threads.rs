@@ -704,15 +704,11 @@ pub async fn resolve(
                     None => "viewer:anonymous".to_string(),
                 }
             };
-            let (t, withdrawn) = st.resolve_thread_touched(&tid, &by)?;
+            let (t, withdrawn) = match &resolver {
+                Some(sess) => st.resolve_thread_addressed(&id, &tid, &by, &sess.harness, live)?,
+                None => st.resolve_thread_touched(&tid, &by)?,
+            };
             touched.merge(withdrawn);
-            if let Some(sess) = &resolver {
-                if live {
-                    st.mark_pending(&id, &tid, "resolve", &sess.harness)?;
-                } else {
-                    st.link_on_resolve(&tid)?;
-                }
-            }
             let changed = match &resolver {
                 Some(sess) => ctx.working.thread_done(&sess.id, id.as_str(), &tid),
                 None => ctx.working.thread_gone(id.as_str(), &tid),

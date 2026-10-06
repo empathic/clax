@@ -928,6 +928,52 @@ mod tests {
     }
 
     #[test]
+    fn an_agent_resolve_and_its_pending_address_are_written_together() {
+        let (_d, st) = store();
+        let e = st
+            .ensure_live_page(&key("/"), "x", Some(b"<!doctype html><p>a"))
+            .unwrap();
+        let id = ArtifactId::parse(&e.artifact.id).unwrap();
+        let mut anchor = crate::store::test_util::anchor();
+        anchor.route = Some("#/".into());
+        let t = st
+            .create_thread(
+                &id,
+                super::NewThread {
+                    version_n: 1,
+                    anchor,
+                    author_name: "Ana".into(),
+                    author_public_id: None,
+                    body: "x".into(),
+                    clip: None,
+                    via_page: false,
+                },
+            )
+            .unwrap();
+        // The address cannot be written (the thread is not one of `other`):
+        // the resolve is not written either.
+        let other = crate::store::test_util::artifact(&st, None);
+        let err = st
+            .resolve_thread_addressed(&other, &t.id, "agent:claude", "claude", true)
+            .unwrap_err();
+        assert!(matches!(err, crate::CoreError::NotFound), "{err:?}");
+        assert_eq!(st.get_thread(&t.id).unwrap().unwrap().status, "open");
+        assert_eq!(st.pending_address(&t.id).unwrap(), None);
+
+        let (r, _) = st
+            .resolve_thread_addressed(&id, &t.id, "agent:claude", "claude", true)
+            .unwrap();
+        assert_eq!(r.status, "resolved");
+        assert_eq!(
+            st.pending_address(&t.id)
+                .unwrap()
+                .map(|(h, _)| h)
+                .as_deref(),
+            Some("claude")
+        );
+    }
+
+    #[test]
     fn deleting_a_live_page_frees_its_key() {
         let (_d, st) = store();
         let e = st.ensure_live_page(&key("/"), "x", None).unwrap();

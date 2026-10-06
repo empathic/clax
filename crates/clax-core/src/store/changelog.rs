@@ -36,6 +36,31 @@ fn thread_on(tx: &Transaction<'_>, aid: &str, tid: &str) -> Result<bool> {
 /// Links version `n` to `p.addresses` (each must be a thread of `aid`, else
 /// `unknown_thread`) and then to `p.working_threads` (skipping any that no
 /// longer exist). Runs inside the version's transaction.
+/// [`Store::link_on_resolve`] inside a transaction.
+pub(crate) fn link_on_resolve_in(tx: &Transaction<'_>, thread_id: &str) -> Result<Option<u32>> {
+    let linked: bool = tx
+        .query_row(
+            "SELECT 1 FROM version_threads WHERE thread_id = ?1 LIMIT 1",
+            params![thread_id],
+            |_| Ok(()),
+        )
+        .optional()?
+        .is_some();
+    if linked {
+        return Ok(None);
+    }
+    let (aid, n): (String, u32) = tx
+        .query_row(
+            "SELECT a.id, a.current_version FROM threads t JOIN artifacts a ON a.id = t.artifact_id WHERE t.id = ?1",
+            params![thread_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .optional()?
+        .ok_or(CoreError::NotFound)?;
+    insert_link(tx, &aid, n, thread_id, LinkSource::Resolve)?;
+    Ok(Some(n))
+}
+
 pub(crate) fn link_version(
     tx: &Transaction<'_>,
     aid: &str,
@@ -96,22 +121,7 @@ impl Store {
     /// An agent resolved `thread_id`: links it to its artifact's current
     /// version when it has no link yet. The version linked, or `None`.
     pub fn link_on_resolve(&self, thread_id: &str) -> Result<Option<u32>> {
-        self.with_tx(|tx| {
-            let linked: bool = tx
-                .query_row("SELECT 1 FROM version_threads WHERE thread_id = ?1 LIMIT 1", params![thread_id], |_| Ok(()))
-                .optional()?
-                .is_some();
-            if linked {
-                return Ok(None);
-            }
-            let (aid, n): (String, u32) = tx.query_row(
-                "SELECT a.id, a.current_version FROM threads t JOIN artifacts a ON a.id = t.artifact_id WHERE t.id = ?1",
-                params![thread_id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            ).optional()?.ok_or(CoreError::NotFound)?;
-            insert_link(tx, &aid, n, thread_id, LinkSource::Resolve)?;
-            Ok(Some(n))
-        })
+        self.with_tx(|tx| link_on_resolve_in(tx, thread_id))
     }
 
     /// The viewer's seen mark on `aid`.

@@ -700,6 +700,48 @@ impl Store {
         thread_id: &str,
         by: &str,
     ) -> Result<(Thread, crate::feedback::Touched)> {
+        self.resolve_thread_then(thread_id, by, |_, _| Ok(()))
+    }
+
+    /// An agent's resolve of thread `tid` of artifact `id`, by `by`, that
+    /// also records that the agent of `harness` addressed it, in one
+    /// transaction: on a live page (`live`) as a pending `resolve` address
+    /// ([`Store::mark_pending`]), otherwise linked to the current version
+    /// ([`Store::link_on_resolve`]). Both are written, or neither. Returns
+    /// what [`Store::resolve_thread_touched`] does.
+    ///
+    /// # Errors
+    /// As [`Store::resolve_thread`]; `NotFound` also when `tid` is not a
+    /// thread of `id`.
+    pub fn resolve_thread_addressed(
+        &self,
+        id: &ArtifactId,
+        tid: &str,
+        by: &str,
+        harness: &str,
+        live: bool,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
+        self.resolve_thread_then(tid, by, |tx, t| {
+            if t.artifact_id != id.as_str() {
+                return Err(CoreError::NotFound);
+            }
+            if live {
+                super::live::mark_pending_in(tx, id, tid, "resolve", harness)?;
+            } else {
+                super::changelog::link_on_resolve_in(tx, tid)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// [`Store::resolve_thread_touched`], running `then` with the thread in
+    /// the resolve's transaction; an error from `then` writes nothing.
+    fn resolve_thread_then(
+        &self,
+        thread_id: &str,
+        by: &str,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &Thread) -> Result<()>,
+    ) -> Result<(Thread, crate::feedback::Touched)> {
         let touched = self.with_tx(|tx| {
             let t = thread_in(tx, thread_id)?.ok_or(CoreError::NotFound)?;
             tx.execute(
@@ -711,6 +753,7 @@ impl Store {
                 "DELETE FROM feedback WHERE thread_id = ?1 AND delivered_at IS NULL",
                 params![thread_id],
             )?;
+            then(tx, &t)?;
             let mut touched = crate::feedback::Touched::default();
             if deleted > 0 {
                 touched
