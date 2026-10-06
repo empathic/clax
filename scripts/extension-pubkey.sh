@@ -6,8 +6,8 @@
 #
 # CLAX_EXTENSION_KEY_REF is the private key's full `op://` reference. The key
 # passes only through a pipe from `op read` to `openssl`; nothing else reads
-# it and nothing writes it to disk. 1Password asks the owner to approve the
-# read. Signing is local and owner-run: the script refuses to run when CI is
+# it and nothing writes it to disk. With the 1Password app's CLI
+# integration, the app asks the owner to approve the read. Signing is local and owner-run: the script refuses to run when CI is
 # set.
 #
 # Usage: CLAX_EXTENSION_KEY_REF=op://… scripts/extension-pubkey.sh
@@ -53,6 +53,7 @@ echo "Extension ID: $id"
 if [ "$before" = "$pub" ]; then
     echo "The public key is unchanged."
 else
-    echo "Commit web/extension/key/key.pub.b64, then run \`clax init\`: the extension's ID"
+    echo "Commit web/extension/key/key.pub.b64, rebuild and reinstall clax (\`just install\`;"
+    echo "the key is built into the binary), then run \`clax init\`: the extension's ID"
     echo "changes once, so each person loads ~/.clax/extension unpacked again."
 fi

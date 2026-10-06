@@ -45,9 +45,14 @@ fi
 echo "fake op: unexpected call: $*" >&2
 exit 1
 FAKE
-# A zip that tells the test it started, then waits to be interrupted.
+# A zip that does its work with the real zip, then, on a call whose
+# arguments hold $FAKE_ZIP_HANG_ON (any call when it is empty), tells the
+# test it started and waits to be interrupted.
+REAL_ZIP="$(command -v zip)"
 fake_exe "$ROOT/hang/zip" <<'FAKE'
 #!/bin/sh
+"$FAKE_REAL_ZIP" "$@" || exit
+case "$*" in *"$FAKE_ZIP_HANG_ON"*) ;; *) exit 0 ;; esac
 echo started > "$FAKE_ZIP_FIFO"
 exec sleep 600
 FAKE
@@ -93,6 +98,10 @@ run() {
         "$REPO/scripts/$script" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err"
     STATUS=$?
 }
+# mode_of FILE: its permission bits in octal. GNU stat first: BSD stat has no
+# -c and fails before printing, while GNU's -f is --file-system and would
+# print a block before failing on %Lp.
+mode_of() { stat -c %a "$1" 2> /dev/null || stat -f %Lp "$1"; }
 op_calls() { if [ -f "$LOG" ]; then wc -l < "$LOG" | tr -d ' '; else echo 0; fi; }
 # no_key_left CASE: no file under the scratch repository or the scripts'
 # TMPDIR holds the private key, and no script output does.
@@ -167,8 +176,9 @@ if grep -qx "Extension ID: $want_id" "$OUT/pubkey.out"; then
 else
     fail "extension-pubkey.sh printed: $(cat "$OUT/pubkey.out"), want ID $want_id"
 fi
-if grep -q "Commit web/extension/key/key.pub.b64" "$OUT/pubkey.out" && grep -q "clax init" "$OUT/pubkey.out"; then
-    pass "extension-pubkey.sh reminds the owner to commit the key and run clax init"
+if grep -q "Commit web/extension/key/key.pub.b64" "$OUT/pubkey.out" && grep -q "just install" "$OUT/pubkey.out" \
+    && grep -q "clax init" "$OUT/pubkey.out"; then
+    pass "extension-pubkey.sh reminds the owner to commit the key, reinstall clax and run clax init"
 else
     fail "extension-pubkey.sh gave no reminder: $(cat "$OUT/pubkey.out")"
 fi
@@ -200,6 +210,20 @@ if [ "$(cat "$LOG")" = "read $REF" ]; then
 else
     fail "pack-extension.sh called op as: $(cat "$LOG")"
 fi
+# store_manifest ZIP: prints the zipped manifest's version and whether it
+# has `key`, or nothing when it is not JSON.
+store_manifest() {
+    unzip -p "$1" manifest.json 2> /dev/null | node -e 'let s = "";
+process.stdin.on("data", (d) => (s += d)).on("end", () => {
+  try { const m = JSON.parse(s); console.log(m.version + " " + ("key" in m)); } catch {}
+});'
+}
+if [ "$(store_manifest "$ZIP")" = "1.2.3 false" ] \
+    && grep -q '"key"' "$REPO/web/dist-extension/manifest.json"; then
+    pass "the zip's manifest.json is the build's without key, which the Web Store refuses"
+else
+    fail "the zip's manifest is '$(store_manifest "$ZIP")' (want '1.2.3 false'), build's: $(cat "$REPO/web/dist-extension/manifest.json")"
+fi
 no_key_left "pack-extension.sh"
 
 rm -f "$LOG"
@@ -211,13 +235,17 @@ case "$upload" in
     *) outside=0 ;;
 esac
 if [ "$STATUS" = 0 ] && [ "$entries" = "key.pem manifest.json sw.js " ] && [ "$outside" = 1 ]; then
-    pass "--first-upload writes a zip with key.pem outside the repository"
+    pass "--first-upload writes a zip with key.pem at its root, outside the repository"
 else
     fail "--first-upload: exit $STATUS, wrote '$upload' holding: $entries; stderr: $(cat "$OUT/first.err")"
 fi
+if [ "$(store_manifest "$upload")" = "1.2.3 false" ]; then
+    pass "the --first-upload zip's manifest.json has no key"
+else
+    fail "the --first-upload zip's manifest is '$(store_manifest "$upload")'"
+fi
 if [ "$(unzip -p "$upload" key.pem 2> /dev/null | openssl rsa -pubout -outform DER 2> /dev/null | base64 | tr -d '\n')" = "$PUB" ] \
-    && [ "$(stat -f %Lp "${upload%/*}" 2> /dev/null || stat -c %a "${upload%/*}")" = 700 ] \
-    && [ "$(stat -f %Lp "$upload" 2> /dev/null || stat -c %a "$upload")" = 600 ]; then
+    && [ "$(mode_of "${upload%/*}")" = 700 ] && [ "$(mode_of "$upload")" = 600 ]; then
     pass "its key.pem is the 1Password key, and only the owner can read the zip"
 else
     fail "the --first-upload zip's key.pem or modes are wrong"
@@ -237,28 +265,55 @@ fi
 printf '%s\n' "$PUB" > "$REPO/web/extension/key/key.pub.b64"
 no_key_left "a refused pack"
 
-# Interrupted while zipping: the key's temporary file goes too.
+# interrupt NAME HANG_ON ARGS...: runs pack-extension.sh with the hanging zip
+# in the background, waits until the zip call holding HANG_ON has done its
+# work, counts in $HELD the key copies it holds (key files, and zips under
+# construction holding key.pem), sends SIGINT and sets $STATUS and $STARTED.
 FIFO="$ROOT/zip.fifo"
 mkfifo "$FIFO"
-set -m
-env -u CI PATH="$ROOT/hang:$BIN:$PATH" TMPDIR="$SCRIPT_TMP" CLAX_EXTENSION_KEY_REF="$REF" \
-    FAKE_OP_LOG="$LOG" FAKE_OP_REF="$REF" FAKE_OP_KEY="$VAULT/key.pem" FAKE_ZIP_FIFO="$FIFO" \
-    "$REPO/scripts/pack-extension.sh" > "$OUT/int.out" 2> "$OUT/int.err" &
-BGPID=$!
-set +m
-started=""
-read -r -t 60 started < "$FIFO"
-held="$(find "$SCRIPT_TMP" -name key.pem | wc -l | tr -d ' ')"
-kill -INT -- "-$BGPID"
-wait "$BGPID"
-status=$?
-BGPID=""
-if [ "$started" = started ] && [ "$held" = 1 ] && [ "$status" = 130 ]; then
+interrupt() {
+    local name="$1" hang_on="$2"
+    shift 2
+    set -m
+    env -u CI PATH="$ROOT/hang:$BIN:$PATH" TMPDIR="$SCRIPT_TMP" CLAX_EXTENSION_KEY_REF="$REF" \
+        FAKE_OP_LOG="$LOG" FAKE_OP_REF="$REF" FAKE_OP_KEY="$VAULT/key.pem" FAKE_ZIP_FIFO="$FIFO" \
+        FAKE_REAL_ZIP="$REAL_ZIP" FAKE_ZIP_HANG_ON="$hang_on" \
+        "$REPO/scripts/pack-extension.sh" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err" &
+    BGPID=$!
+    set +m
+    STARTED=""
+    read -r -t 60 STARTED < "$FIFO"
+    HELD="$(find "$SCRIPT_TMP" -name key.pem | wc -l | tr -d ' ')"
+    local z
+    for z in "$SCRIPT_TMP"/clax-extension-upload.*/*.zip.tmp; do
+        if [ -f "$z" ] && unzip -Z1 "$z" 2> /dev/null | grep -qx key.pem; then HELD=$((HELD + 1)); fi
+    done
+    kill -INT -- "-$BGPID"
+    wait "$BGPID"
+    STATUS=$?
+    BGPID=""
+}
+
+# Interrupted while zipping: the key's temporary file goes too.
+interrupt int ""
+if [ "$STARTED" = started ] && [ "$HELD" = 1 ] && [ "$STATUS" = 130 ]; then
     pass "SIGINT mid-run stops pack-extension.sh (exit 130) while it holds the key"
 else
-    fail "SIGINT mid-run: started '$started', $held key files held, exit $status"
+    fail "SIGINT mid-run: started '$STARTED', $HELD key copies held, exit $STATUS"
 fi
 no_key_left "pack-extension.sh after SIGINT"
+
+# Interrupted with key.pem already in the unfinished --first-upload zip: the
+# upload directory goes with it (the zip is compressed, so the key-line scan
+# alone would miss it).
+interrupt int-first key.pem --first-upload
+left="$(find "$SCRIPT_TMP" -mindepth 1 2> /dev/null)"
+if [ "$STARTED" = started ] && [ "$HELD" = 2 ] && [ "$STATUS" = 130 ] && [ -z "$left" ]; then
+    pass "SIGINT during --first-upload leaves no zip with key.pem and no upload directory"
+else
+    fail "SIGINT during --first-upload: started '$STARTED', $HELD key copies held, exit $STATUS, left: $left"
+fi
+no_key_left "pack-extension.sh --first-upload after SIGINT"
 
 # --crx with a real Chromium, when there is one: CLAX_CHROMIUM, else
 # Playwright's, else an installed Chrome or Chromium.

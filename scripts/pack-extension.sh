@@ -6,18 +6,25 @@
 # --pack-extension-key.
 #
 # The private key comes from the owner's 1Password (CLAX_EXTENSION_KEY_REF,
-# its full `op://` reference; 1Password asks the owner to approve the read)
-# into an owner-only temporary file that is removed on exit, interrupt or
-# termination. It is never written into the repository and never printed.
-# The build's manifest `key` must be the private key's public half (run
-# scripts/extension-pubkey.sh and commit its output first), so the listed ID
-# is the one Clax derives.
+# its full `op://` reference; with the 1Password app's CLI integration, the
+# app asks the owner to approve the read) into an owner-only temporary file
+# that is removed on exit, interrupt or termination. It is never written
+# into the repository and never printed. The build's manifest `key` must be
+# the private key's public half (run scripts/extension-pubkey.sh, commit its
+# output and rebuild first), so the listed ID is the one Clax derives.
 #
-# --first-upload adds the key to the zip as key.pem, which the Web Store
-# reads only on a listing's first upload to fix its ID; it re-signs every
-# later release itself. That zip holds the private key, so it is written to
-# a new owner-only directory outside the repository, to delete once
-# uploaded.
+# The zip's manifest.json is the build's without `key`: the Web Store
+# refuses an upload whose manifest has one ("key field is not allowed in
+# manifest"; chromium-extensions group, 2021-09-18, x_NBS6_-NKs;
+# testomatio/browser-extension#391). The .crx keeps it.
+#
+# --first-upload adds the private key at the zip's root as key.pem, which
+# the Web Store reads only on a listing's first upload to fix its ID to the
+# key's (Chrome's packaging doc, "Upload a previously packaged extension");
+# it re-signs every later release itself. That zip holds the private key, so
+# it is written to a new owner-only directory outside the repository, to
+# delete once uploaded; until the zip is complete, an exit, interrupt or
+# termination removes that directory too.
 #
 # Signing is local and owner-run: the script refuses to run when CI is set.
 # CLAX_CHROMIUM names the Chromium binary for --crx; otherwise Google Chrome
@@ -46,7 +53,7 @@ if [ -z "${CLAX_EXTENSION_KEY_REF:-}" ]; then
     echo "pack-extension.sh: set CLAX_EXTENSION_KEY_REF to the op:// reference of the extension's private key" >&2
     exit 2
 fi
-for tool in op openssl zip; do
+for tool in op openssl zip node; do
     command -v "$tool" > /dev/null || { echo "pack-extension.sh: $tool is not on PATH" >&2; exit 1; }
 done
 
@@ -80,7 +87,12 @@ manifest_key="$(sed -n 's/^ *"key": *"\([^"]*\)",\{0,1\}$/\1/p' "$BUILD/manifest
 umask 077
 SECRET="$(mktemp -d "${TMPDIR:-/tmp}/clax-extension-key.XXXXXX")"
 key="$SECRET/key.pem"
-cleanup() { rm -rf "$SECRET"; }
+upload=""
+written=0
+cleanup() {
+    rm -rf "$SECRET"
+    if [ -n "$upload" ] && [ "$written" = 0 ]; then rm -rf "$upload"; fi
+}
 trap cleanup EXIT
 trap 'cleanup; exit 130' INT
 trap 'cleanup; exit 143' TERM
@@ -101,6 +113,13 @@ if [ "$manifest_key" != "$pub" ]; then
 fi
 
 name="clax-extension-$version"
+# The store's copy of the build: the manifest without `key`.
+STORE="$SECRET/store"
+cp -R "$BUILD" "$STORE"
+rm -f "$STORE/.gitkeep"
+node -e 'const fs = require("fs"); const f = process.argv[1];
+const m = JSON.parse(fs.readFileSync(f, "utf8")); delete m.key;
+fs.writeFileSync(f, JSON.stringify(m, null, 2) + "\n");' "$STORE/manifest.json"
 if [ "$FIRST_UPLOAD" = 1 ]; then
     upload="$(mktemp -d "${TMPDIR:-/tmp}/clax-extension-upload.XXXXXX")"
     zipfile="$upload/$name.zip"
@@ -109,11 +128,12 @@ else
     zipfile="$OUT/$name.zip"
 fi
 rm -f "$zipfile.tmp"
-(cd "$BUILD" && zip -qrX "$zipfile.tmp" . -x '.gitkeep')
+(cd "$STORE" && zip -qrX "$zipfile.tmp" .)
 if [ "$FIRST_UPLOAD" = 1 ]; then
     zip -qjX "$zipfile.tmp" "$key"
 fi
 mv -f "$zipfile.tmp" "$zipfile"
+written=1
 echo "Wrote $zipfile"
 if [ "$FIRST_UPLOAD" = 1 ]; then
     echo "It holds the private key as key.pem: upload it as the listing's first version,"
