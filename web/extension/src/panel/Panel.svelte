@@ -101,6 +101,9 @@
           oninput={e => (name = e.currentTarget.value)} onkeydown={e => { if (e.key === "Enter") saveName(); }} onblur={saveName} />
       </label>
     {/if}
+    {#if s.enabled && s.declined}
+      <p class="hint" role="status">Clax will turn off in this tab when the page reloads, as Chrome was not allowed access to this site.</p>
+    {/if}
     {#if !s.enabled}
       <p class="hint">Click the Clax button or press ⌥⇧C on a page to comment on it.</p>
     {:else if s.page}
@@ -123,7 +126,10 @@
     {#if s.enabled}
       <footer class="foot">
         {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
-        <button type="button" class="ghost" onclick={() => link.post({ t: "turn-off" })}>Turn off in this tab</button>
+        {#if s.tabId !== null}
+          {@const tabId = s.tabId}
+          <button type="button" class="ghost" onclick={() => link.post({ t: "turn-off", tabId })}>Turn off in this tab</button>
+        {/if}
       </footer>
     {/if}
   {/if}

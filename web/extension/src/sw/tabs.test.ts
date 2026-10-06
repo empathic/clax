@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import type { PageView, WorkerToOverlay, WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
-import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi } from "./tabs";
+import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS } from "./tabs";
 
 const AID = "7q3k9mzx2b4t";
 const AID2 = "8r4m0nzy3c5v";
@@ -250,6 +250,31 @@ describe("Tabs", () => {
     await h.tabs.navigated(4, true);
     expect(h.injected).toEqual([4, 4]);
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, on: "http://localhost:5173" });
+  });
+
+  it("forgets a closed tab's ID after a while, and a turned-off tab's only when it is turned on again", async () => {
+    let now = 0;
+    const h = harness();
+    (h.tabs as unknown as { d: { now(): number } }).d.now = () => now;
+    const closed = () => [...(h.tabs as unknown as { closed: Map<number, number | null> }).closed.keys()].sort();
+    h.tabs.close(4, true);
+    h.tabs.close(5);
+    expect(closed()).toEqual([4, 5]);
+    now = CLOSED_MS + 1;
+    h.tabs.close(6, true);
+    expect(closed()).toEqual([5, 6]);
+    h.tabs.turnOn(5, URL1, "http://localhost:5173");
+    expect(closed()).toEqual([6]);
+  });
+
+  it("marks nothing injected, and leaves comment mode, when the tab's document is of another origin", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    (h.tabs as unknown as { d: { inject(): Promise<null> } }).d.inject = async () => null;
+    await h.tabs.toggle(4, URL1);
+    await h.tabs.navigated(4, true);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false });
   });
 
   it("writes no record for a tab turned off while an answer for it was in flight, until it is turned on again", async () => {
@@ -574,6 +599,20 @@ describe("Tabs and side panels", () => {
     expect(h.hubIn.at(-1)).toEqual({ id: client.id, msg: { t: "ping" } });
     p.onDisconnect.fire();
     expect(h.detached).toContain(client.id);
+  });
+
+  it("reports the owner here in the window the panel's tab is in now, after the tab moved to another", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    (h.tabs as unknown as { d: { windowOf(tabId: number): Promise<number> } }).d.windowOf = async tabId => (tabId === 4 ? 9 : 1);
+    const p = port("panel:2");
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    p.onMessage.fire({ t: "visible", on: true });
+    await settle();
+    expect(h.calls.filter(c => c.startsWith("presence "))).toEqual([`presence ${AID} 9`]);
+    p.onDisconnect.fire();
   });
 
   it("reports the owner here every 30 s while a visible panel shows a live page, and never away", async () => {

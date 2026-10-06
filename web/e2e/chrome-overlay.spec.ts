@@ -81,7 +81,7 @@ class SidePanel {
     await opener.close();
     await site.bringToFront();
     const cdp = await live.ctx.newCDPSession(site);
-    const target = await until(async () => (await cdp.send("Target.getTargets")).targetInfos.find(t => t.url.endsWith("/sidepanel.html")));
+    const target = await until(async () => (await cdp.send("Target.getTargets")).targetInfos.find(t => t.url.includes("/sidepanel.html")));
     const { sessionId } = await cdp.send("Target.attachToTarget", { targetId: target.targetId, flatten: false });
     return new SidePanel(cdp, sessionId);
   }
@@ -266,15 +266,22 @@ test("Clax is on only in the tab it was turned on in, stays on through a reload,
   expect(await overlays(second)).toBe(0);
 
   // Another origin (the same server under 127.0.0.1): Clax turns off in the tab, its panel with it.
+  await expect.poll(() => overlays(first)).toBe(1);
   await first.goto(siteUrl.replace("localhost", "127.0.0.1"));
   await expect.poll(async () => await h.state(tabId)).toBeNull();
   expect(await h.panelEnabled(tabId)).toBe(false);
   expect(await overlays(first)).toBe(0);
-  // Back on the first origin, it stays off until the person turns it on again.
-  await first.goto(siteUrl);
+  // Back to the first origin: the page comes back without Clax, which stays
+  // off until the person turns it on again. Playwright runs Chromium with
+  // its back/forward cache off (with it on, Back closed the page under
+  // Playwright), so the page loads again here; a restored page's overlay
+  // stopping at the worker's refusal is held by the unit tests and checked
+  // by hand (docs/verification.md).
+  await first.goBack();
   await expect(first.locator("#save")).toHaveText("Save");
+  await expect.poll(() => overlays(first)).toBe(0);
   expect(await h.state(tabId)).toBeNull();
-  expect(await overlays(first)).toBe(0);
+  expect(await h.panelEnabled(tabId)).toBe(false);
 });
 
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {

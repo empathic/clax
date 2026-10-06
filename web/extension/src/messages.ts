@@ -108,6 +108,8 @@ export type PanelState = {
   viewer: { public_id: string; display_name: string | null } | null;
   commentMode: boolean;
   enabled: boolean;
+  /** The person refused the site's permission when turning Clax on: a reload of the page will turn it off. */
+  declined: boolean;
   selected: string | null;
   error: { code: string; message: string } | null;
   /** Who is on the page now (its `presence:<aid>` topic, which the worker follows for this panel). */
@@ -132,8 +134,8 @@ export type PanelToWorker =
   | { t: "comment-mode"; on: boolean }
   /** `artifactId`: the live page the panel showed; the worker refuses it for another. */
   | { t: "navigate"; route: string | null; artifactId: string }
-  /** Turns Clax off in the panel's tab. */
-  | { t: "turn-off" }
+  /** Turns Clax off in the panel's tab, `tabId`; the worker refuses it for another. */
+  | { t: "turn-off"; tabId: number }
   | { t: "retry" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
@@ -305,7 +307,8 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "comment-mode": case "visible": return has("on") && bool(m.on);
     case "navigate": return has("route", "artifactId") && (m.route === null || str(m.route, MAX_ROUTE))
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
-    case "turn-off": case "retry": case "ping": return has();
+    case "turn-off": return has("tabId") && count(m.tabId);
+    case "retry": case "ping": return has();
     default: return false;
   }
 }

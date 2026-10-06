@@ -651,7 +651,11 @@ turning Clax on in its tab, and the side panel is opened for that tab):
    first tab opens its composer. A reload of the first tab brings the
    overlay back (comment mode off, panel still enabled); a navigation to the
    same server under `127.0.0.1` (another origin) turns Clax off there, its
-   panel disabled, and back on `localhost` it stays off.
+   panel disabled; Back to `localhost` shows no overlay, and Clax stays off.
+   Playwright runs Chromium with its back/forward cache off (turned on,
+   Back closed the page under Playwright), so the page loads again; a page
+   restored from the cache, whose overlay the worker's refusal stops, is
+   held by the unit tests and checked by hand (below).
 4. With only the dev server's origin held (the release build's state once a
    person allows a site; the test build with `host_permissions` narrowed):
    a `history.pushState` route change keeps the overlay and comment mode
@@ -717,9 +721,29 @@ Found by this test and fixed, each with a regression test:
   turns Clax on in that tab alone. Switch between the tabs: the panel hides
   on a tab Clax is off in and shows again on the way back. A reload of the
   on tab keeps the pins (comment mode off); a link to another site turns it
-  off. Decline the permission prompt, then reload: Clax turns off in the tab
-  (Chrome no longer lets the worker read it). Quit and start Chrome: no tab
+  off, and Back shows the page without pins (Chrome restores it from the
+  back/forward cache: its overlay must stop at once). Quit and start Chrome: no tab
   has Clax on.
+- The first click on a new origin: the panel opens **and** Chrome's
+  permission prompt appears, from the one gesture (the unit test asserts
+  only the order of the calls: `sidePanel.setOptions`, `sidePanel.open`,
+  `permissions.request`, all before any `await`).
+- Declining the permission: the panel says Clax will turn off in this tab
+  when the page reloads. Then reload, and check by hand whether same-origin
+  reloads keep `activeTab`: if Chrome keeps it, the worker may still read
+  the tab and Clax stays on; if not, Clax turns off. Record which.
+- An on tab dragged into another window: its panel goes with it, shows
+  that tab's threads, and "Turn off in this tab" turns off that tab (the
+  panel is pinned to its tab, `?tab=`; unit tests hold the pinning and the
+  presence window).
+- Prerender activation and same-origin back/forward restore in an on tab:
+  a link Chrome prerendered (for example from the omnibox), and Back/Forward
+  between two pages of the dev server. The pins should be there after
+  each; the worker injects again on a URL change whose document lacks the
+  overlay, in case Chrome reports no load for it.
+- An icon click right after Chrome stopped the worker, in a tab Clax is on
+  in: the panel may show for a moment, then close as Clax turns off (the
+  worker cannot read its tabs back before the click's gesture ends).
 - Alt+Shift+C and the page's context menu entry (each turns Clax on in its
   tab, the panel enabled but not opened; where Clax is on, each flips
   comment mode).

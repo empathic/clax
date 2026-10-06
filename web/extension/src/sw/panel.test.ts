@@ -118,9 +118,14 @@ describe("panelAction", () => {
     await s.run({ t: "navigate", route: "?tab=billing", artifactId: "8r4m0nzy3c5v" });
     expect(s.out).toEqual([{ t: "failed", code: "page_changed", message: "The tab shows another page now." }]);
     const off = setup({ page: null });
-    await off.run({ t: "turn-off" });
+    await off.run({ t: "turn-off", tabId: 4 });
     expect(off.calls).toEqual([]);
     expect(off.out).toEqual([]);
+    // A panel that names another tab than the one it watches turns nothing off.
+    const other = setup();
+    await other.run({ t: "turn-off", tabId: 5 });
+    expect(other.calls).toEqual([]);
+    expect(other.out).toEqual([{ t: "failed", code: "page_changed", message: "The tab shows another page now." }]);
   });
 
   it("selects, refreshes on watch, retries with a new pairing, and turns Clax off in the tab", async () => {
@@ -128,7 +133,7 @@ describe("panelAction", () => {
     await s.run({ t: "select", threadId: T1 });
     await s.run({ t: "watch-tab", tabId: 4 });
     await s.run({ t: "retry" });
-    await s.run({ t: "turn-off" });
+    await s.run({ t: "turn-off", tabId: 4 });
     await s.run({ t: "ping" });
     await s.run({ t: "visible", on: true });
     expect(s.calls).toEqual([`select 4 ${T1}`, `route 4 ${URL1} false`, `route 4 ${URL1} true`, "turn-off 4"]);

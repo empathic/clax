@@ -406,25 +406,42 @@ describe("serializeSnapshot", () => {
       expect(serializeSnapshot(d, { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
     });
 
+    // Linear time, counted rather than timed: every loop of the serializer
+    // runs through its step counter, which reads the clock once per 256
+    // steps, so the reads of a counting clock grow with the work done. Four
+    // times the input may take at most about four times the reads; a
+    // quadratic loop would take about sixteen. (The CSS rewrite's own
+    // `replace` with CSS_URL is linear by construction and counts no steps.)
+    const reads = (d: Document) => {
+      let n = 0;
+      serializeSnapshot(d, { deadlineMs: Infinity, now: () => { n++; return 0; } });
+      return n;
+    };
+
     it("rewrites pathological CSS and srcset in linear time", () => {
-      const d = doc(`<img>`, `<style></style>`);
-      d.querySelector("style")!.textContent = `p::before { content: "${"url(".repeat(80_000)}" }`;
-      d.querySelector("img")!.setAttribute("srcset", Array.from({ length: 40_000 }, (_, i) => `i${i}.png ${i + 1}w`).join(", "));
-      const started = performance.now();
-      serializeSnapshot(d, { deadlineMs: 60_000 });
-      expect(performance.now() - started).toBeLessThan(1500);
+      const at = (n: number) => {
+        const d = doc(`<img>`, `<style></style>`);
+        d.querySelector("style")!.textContent = `p::before { content: "${"url(".repeat(2 * n)}" }`;
+        d.querySelector("img")!.setAttribute("srcset", Array.from({ length: n }, (_, i) => `i${String(i).padStart(5, "0")}.png 1w`).join(", "));
+        return reads(d);
+      };
+      const small = at(10_000), large = at(40_000);
+      expect(small).toBeGreaterThan(10);
+      expect(large).toBeLessThanOrEqual(4 * small + 8);
     });
 
     it("trims long comma runs in a srcset in linear time, reading the clock within one candidate", () => {
-      const srcset = `a${",".repeat(120_000)}b, c.png 2x`;
-      const d = doc(`<img>`);
-      d.querySelector("img")!.setAttribute("srcset", srcset);
+      const img = (n: number) => {
+        const d = doc(`<img>`);
+        d.querySelector("img")!.setAttribute("srcset", `a${",".repeat(n)}b, c.png 2x`);
+        return d;
+      };
       let t = 0;
-      expect(serializeSnapshot(d, { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
-      const started = performance.now();
-      const r = serializeSnapshot(d, { deadlineMs: 60_000 });
-      expect(performance.now() - started).toBeLessThan(500);
-      expect(r.html).toContain("http://localhost:5173/app/c.png 2x");
+      expect(serializeSnapshot(img(120_000), { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
+      const small = reads(img(30_000)), large = reads(img(120_000));
+      expect(small).toBeGreaterThan(10);
+      expect(large).toBeLessThanOrEqual(4 * small + 8);
+      expect(serializeSnapshot(img(120_000), { deadlineMs: Infinity, now: () => 0 }).html).toContain("http://localhost:5173/app/c.png 2x");
     });
 
     it("keeps the placeholder page's title short and escaped", () => {

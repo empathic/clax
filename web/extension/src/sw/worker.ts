@@ -15,7 +15,8 @@ export type WorkerDeps = {
   pair: PairEnv;
   fetch?: typeof fetch;
   toOverlay(tabId: number, m: WorkerToOverlay): void;
-  inject(tabId: number): Promise<boolean>;
+  /** Injects the overlay into the tab's document if it is of `origin` (`injectOverlay`). */
+  inject(tabId: number, origin: string): Promise<boolean | null>;
   present?(tabId: number): Promise<boolean>;
   /** Where the tabs are kept across worker restarts (chrome.storage.session). */
   store?: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
@@ -23,6 +24,8 @@ export type WorkerDeps = {
   capture(windowId: number, rect: Rect, dpr: number): Promise<{ png: Blob } | { error: string }>;
   /** Whether the tab is its window's active tab. */
   tabActive?(tabId: number): Promise<boolean>;
+  /** The window the tab is in now. */
+  windowOf?(tabId: number): Promise<number>;
   now?(): number;
 };
 export type Worker = {
@@ -61,7 +64,7 @@ export function createWorker(d: WorkerDeps): Worker {
     fetch: (input, init) => (String(input) === "/api/token" ? Promise.resolve(new Response(null, { status: 204 })) : api.request(String(input), init)),
     base: "",
   });
-  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store });
+  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf });
   const t = tabs;
   api.onRepair = () => t.repaired();
   const picks = new Picks({

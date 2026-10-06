@@ -72,6 +72,17 @@ describe("PanelLink", () => {
     expect(link.state?.error).toBeNull();
   });
 
+  it("stays on its own tab (`?tab=`) when other tabs come to the front, in its window or another it moved to", async () => {
+    const f = fakes(5);
+    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "?tab=7", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    await settle();
+    f.tabs.onActivated.fire({ tabId: 5, windowId: 2 });
+    f.tabs.onActivated.fire({ tabId: 8, windowId: 3 });
+    f.tabs.onUpdated.fire(5, { url: "http://localhost:5173/x" }, { active: true, windowId: 2 });
+    await settle();
+    expect(f.ports[0].sent.filter(m => (m as { t: string }).t === "watch-tab")).toEqual([{ t: "watch-tab", tabId: 7 }]);
+  });
+
   it("connects again when the worker goes away, and pings while open", async () => {
     vi.useFakeTimers();
     const f = fakes();

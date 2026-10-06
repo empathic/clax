@@ -15,7 +15,7 @@ function state(over: Partial<PanelState> = {}): PanelState {
     page: { artifact_id: "7q3k9mzx2b4t", origin: "http://localhost:5173", path: "/", page_url: "http://localhost:5173/", title: "Home", current_version: 1, url: "http://localhost:7480/a/7q3k9mzx2b4t" },
     threads: [thread as never], versions: [{ artifact_id: "7q3k9mzx2b4t", n: 1, label: null, created_at: "2026-10-05T10:00:00.000Z", files: {} }],
     working: [], participants: { people: [], agents: [{ handle: `a_${"1".repeat(22)}`, harness: "claude", live: true }] },
-    viewer: { public_id: "u_x", display_name: "Alex" }, commentMode: false, enabled: true, selected: null, error: null, ...over,
+    viewer: { public_id: "u_x", display_name: "Alex" }, commentMode: false, enabled: true, declined: false, selected: null, error: null, ...over,
   };
 }
 function link(s: PanelState, up?: boolean) {
@@ -123,11 +123,18 @@ describe("Panel", () => {
     expect(l.sent.filter(m => m.t === "set-name")).toHaveLength(2);
   });
 
+  it("says a reload will turn Clax off when the person refused the site's permission", async () => {
+    const view = render(Panel, { props: { link: link(state()) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.queryByText(/turn off in this tab when the page reloads/)).toBeNull();
+    await view.rerender({ link: link(state({ declined: true })) as never });
+    expect(screen.getByText(/turn off in this tab when the page reloads/)).toBeTruthy();
+  });
+
   it("turns Clax off in its tab, with or without a live page, and offers it only where Clax is on", async () => {
     const l = link(state());
     const view = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
     await fireEvent.click(screen.getByRole("button", { name: "Turn off in this tab" }));
-    expect(l.sent).toContainEqual({ t: "turn-off" });
+    expect(l.sent).toContainEqual({ t: "turn-off", tabId: 3 });
     await view.rerender({ link: link(state({ page: null, threads: [] })) as never });
     expect(screen.getByRole("button", { name: "Turn off in this tab" })).toBeTruthy();
     await view.rerender({ link: link(state({ enabled: false, page: null, threads: [] })) as never });

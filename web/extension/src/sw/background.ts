@@ -12,7 +12,10 @@
 // stays on through reloads and navigations within its origin, the overlay
 // injected again into each new document; it turns off when the tab leaves
 // the origin, when the person turns it off, or when the tab closes. Holding
-// an origin's permission turns Clax on nowhere by itself.
+// an origin's permission turns Clax on nowhere by itself. An overlay message
+// the worker does not admit is answered `{off: true}`, and the overlay
+// stops: one in a page restored from the back/forward cache after Clax
+// turned off, or one in a document Clax was never on for.
 import { type OverlayToWorker, type WorkerToOverlay, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
@@ -22,6 +25,10 @@ import { composerFrameTab, composerTab, createWorker } from "./worker";
 
 /** The side panel's page, set as each on tab's own panel. */
 export const PANEL_PATH = "sidepanel.html";
+/** Each on tab's panel: the page pinned to its tab (`?tab=`), so it acts on that tab wherever the tab goes. */
+export const panelPath = (tabId: number) => `${PANEL_PATH}?tab=${tabId}`;
+/** The worker's answer to an overlay message it does not admit: the overlay stops. */
+export const REFUSED = { off: true } as const;
 
 export type Background = ReturnType<typeof startBackground>;
 
@@ -57,19 +64,23 @@ export function startBackground(c: typeof chrome) {
       now: () => Date.now(),
     },
     toOverlay,
-    inject: tabId => origins.injectOverlay(originsEnv, tabId),
+    inject: (tabId, origin) => origins.injectOverlay(originsEnv, tabId, origin),
     present: tabId => origins.overlayPresent(originsEnv, tabId),
     store: c.storage.session,
     capture: (windowId, rect, dpr) => captureClip(chromeCapture, windowId, rect, dpr),
     tabActive: async tabId => (await c.tabs.get(tabId)).active,
+    windowOf: async tabId => (await c.tabs.get(tabId)).windowId,
   });
 
-  const showPanel = (tabId: number) => quietly(() => c.sidePanel.setOptions({ tabId, path: PANEL_PATH, enabled: true }));
+  const showPanel = (tabId: number) => quietly(() => c.sidePanel.setOptions({ tabId, path: panelPath(tabId), enabled: true }));
 
   /** Turns Clax off in the tab: its panel hidden, its overlay stopped, its pick and record gone. */
   function off(tabId: number): void {
     quietly(() => c.sidePanel.setOptions({ tabId, enabled: false }));
+    // To the document whose overlay last wrote, and to the tab's top frame
+    // now, which may hold an overlay that has not written yet.
     toOverlay(tabId, { t: "off" });
+    if (docs.has(tabId)) quietly(() => c.tabs.sendMessage(tabId, { t: "off" } satisfies WorkerToOverlay, { frameId: 0 }));
     docs.delete(tabId);
     picks.close(tabId);
     tabs.close(tabId);
@@ -87,7 +98,10 @@ export function startBackground(c: typeof chrome) {
 
   /** A gesture that grants activeTab (spec L8). The side panel (icon only)
    * and the origin's permission are asked for before any await: the
-   * gesture holds only until then. The icon in a tab Clax is on turns it off. */
+   * gesture holds only until then. The icon in a tab Clax is on turns it
+   * off. A worker that has not read its tabs back yet cannot tell, and the
+   * panel must be opened before any await: it opens it, and closes it again
+   * once it finds the tab was on. */
   function gesture(tab: chrome.tabs.Tab, icon: boolean): void {
     const origin = tab.url ? origins.originOf(tab.url) : null;
     if (tab.id === undefined || !origin || !tab.url) return;
@@ -99,12 +113,13 @@ export function startBackground(c: typeof chrome) {
       quietly(() => c.sidePanel.open({ tabId }));
     }
     // The permission lets the overlay be injected again after a reload; held, Chrome asks nothing.
-    void origins.ask(originsEnv, origin);
+    const asked = origins.ask(originsEnv, origin);
     void (async () => {
       await tabs.ready();
       // A worker that had not read its tabs back at the click: the tab was on, so the icon turns it off.
       if (icon && !known && tabs.onOrigin(tabId) === origin) { off(tabId); return; }
       await comment(tabId, url, origin);
+      if (!(await asked)) tabs.declined(tabId);
     })();
   }
 
@@ -113,24 +128,30 @@ export function startBackground(c: typeof chrome) {
   c.runtime.onInstalled.addListener(() => c.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
   c.runtime.onStartup.addListener(() => {});
   c.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
-  c.tabs.onRemoved.addListener(tabId => { docs.delete(tabId); picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
+  const gone = (tabId: number) => { docs.delete(tabId); picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId, true)); };
+  c.tabs.onRemoved.addListener(tabId => gone(tabId));
+  // A prerendered or discarded tab swapped in under a new ID: the new tab starts off.
+  c.tabs.onReplaced.addListener((_added, removed) => gone(removed));
   // A tab Clax is on that comes to the front gets its panel (its options
   // outlive the worker; this mends any a restart missed).
   c.tabs.onActivated.addListener(({ tabId }) => { void tabs.ready().then(() => { if (tabs.onOrigin(tabId) !== null) showPanel(tabId); }); });
   void tabs.ready().then(() => { for (const tabId of tabs.onTabs()) showPanel(tabId); });
   // A navigation of a tab Clax is on. Another origin turns it off: the URL
   // says so where the extension may read it, and a tab whose URL it can no
-  // longer read once loaded has left every origin it holds. Within the
-  // origin, a new document gets the overlay again once loaded (spec §11);
-  // at `loading` the old document may still answer the probe.
+  // longer read has left every origin it holds. Within the origin, a new
+  // document gets the overlay again once loaded (spec §11); at `loading`
+  // the old document may still answer the probe. A URL change with no load
+  // (an activated prerender, a page restored from the back/forward cache,
+  // or an in-page navigation, whose overlay is still there) is checked too.
   c.tabs.onUpdated.addListener((tabId, change, tab) => {
     if (change.url === undefined && change.status === undefined) return;
     void tabs.ready().then(() => {
       const on = tabs.onOrigin(tabId);
       if (on === null) return;
       const url = change.url ?? tab.url;
-      if (url !== undefined ? origins.originOf(url) !== on : change.status === "complete") { off(tabId); return; }
-      if (change.status === "loading" || change.status === "complete") void tabs.navigated(tabId, change.status === "complete");
+      if (url === undefined || origins.originOf(url) !== on) { off(tabId); return; }
+      if (change.status === undefined) void tabs.navigated(tabId, true);
+      else if (change.status === "loading" || change.status === "complete") void tabs.navigated(tabId, change.status === "complete");
     });
   });
 
@@ -156,7 +177,8 @@ export function startBackground(c: typeof chrome) {
     if (sender.tab?.id === undefined || sender.frameId !== 0 || !isFromOverlay(m)) return false;
     const tab = sender.tab;
     void (async () => {
-      if (!(await admitted(sender, m))) return null;
+      // Not on in this tab, or not for this origin: the overlay stops.
+      if (!(await admitted(sender, m))) return REFUSED;
       if (sender.documentId) docs.set(tab.id!, sender.documentId);
       return fromOverlay(tab.id!, tab.windowId, m, sender.url);
     })().then(r => reply(r ?? null), e => reply({ error: String(e) }));

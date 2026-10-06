@@ -16,6 +16,7 @@ import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sy
 import type { Working } from "../../../shell/src/view/working-model";
 import { MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
+import { originOf } from "./origins";
 
 type Owner = { public_id: string; display_name: string | null };
 
@@ -27,12 +28,14 @@ export type TabState = {
   active: boolean;
   /** The origin Clax is on for in the tab; null when it is off there. */
   on: string | null;
+  /** The person refused the origin's permission when turning Clax on: a reload will turn it off. */
+  declined: boolean;
   error: { code: string; message: string } | null;
 };
 
 export const emptyTab = (tabId: number, url: string): TabState => ({
   tabId, url, page: null, route: null, threads: [], working: [], resolved: {}, commentMode: false, overlay: false, pending: false, selected: null,
-  versions: [], participants: null, active: false, on: null, error: null,
+  versions: [], participants: null, active: false, on: null, declined: false, error: null,
 });
 
 /** A thread of a live page has `addressed_pending` while an agent's address waits for the page's next snapshot. */
@@ -101,13 +104,21 @@ type Deps = {
   api: TabsApi;
   hub: { receive(id: string, msg: TabMsg): void; detach(id: string): void };
   toOverlay(tabId: number, m: WorkerToOverlay): void;
-  /** Injects the overlay unless the tab's document has it; true when it injected it now. */
-  inject(tabId: number): Promise<boolean>;
+  /** Injects the overlay into the tab's document, if it is of `origin`,
+   * unless it has it: true when it injected it now, false when the
+   * document has it, null when the document is of another origin. */
+  inject(tabId: number, origin: string): Promise<boolean | null>;
   /** Whether the tab's current document has the overlay (false when the worker cannot reach it). */
   present?(tabId: number): Promise<boolean>;
   /** Where the tabs are kept across worker restarts (chrome.storage.session). */
   store?: Area;
+  /** The window the tab is in now (a tab can move to another): where its panel's owner is reported. */
+  windowOf?(tabId: number): Promise<number>;
+  now?(): number;
 };
+
+/** How long a closed tab's ID is kept, so an answer still in flight for it writes no record. */
+export const CLOSED_MS = 5 * 60_000;
 
 const failure = (e: unknown) => {
   const err = e as { code?: unknown; message?: unknown };
@@ -137,8 +148,11 @@ export class Tabs {
   private told = new Map<number, string>();
   /** Per tab, a count of the documents and injections the record has seen: a presence probe answered after either is stale. */
   private gens = new Map<number, number>();
-  /** Tabs turned off or closed: an answer still in flight for one writes no record. */
-  private closed = new Set<number>();
+  /** Tabs turned off (null) or closed (when): an answer still in flight
+   * for one writes no record. A closed tab's ID is dropped after CLOSED_MS
+   * (Chrome does not reuse it); a tab turned off keeps it until it is
+   * turned on again or closes. */
+  private closed = new Map<number, number | null>();
   private viewer: Owner | null = null;
   private streamUp = true;
   private saving = false;
@@ -165,7 +179,13 @@ export class Tabs {
     const s = this.tabs.get(tabId);
     if (s && s.on !== origin) this.close(tabId);
     this.closed.delete(tabId);
-    this.set(tabId, { ...(s && s.on === origin ? s : emptyTab(tabId, url)), on: origin, active: true });
+    this.set(tabId, { ...(s && s.on === origin ? s : emptyTab(tabId, url)), on: origin, active: true, declined: false });
+  }
+
+  /** The person refused the origin's permission while turning Clax on in the tab. */
+  declined(tabId: number): void {
+    const s = this.tabs.get(tabId);
+    if (s?.on) this.set(tabId, { ...s, declined: true });
   }
 
   state(tabId: number): TabState | undefined { return this.tabs.get(tabId); }
@@ -263,7 +283,9 @@ export class Tabs {
     const aid = p.aid;
     if (!aid || !p.visible || !this.panels.has(p)) return;
     const once = () => {
-      void this.d.api.presence(aid, p.windowId).then(r => {
+      const tabId = p.tabId;
+      const where = tabId !== null && this.d.windowOf ? this.d.windowOf(tabId).catch(() => p.windowId) : Promise.resolve(p.windowId);
+      void where.then(w => this.d.api.presence(aid, w)).then(r => {
         if (p.aid === aid && r?.people) this.takePresence(p, presenceList(r.people));
       }, () => {});
     };
@@ -436,7 +458,7 @@ export class Tabs {
     if (s.overlay) {
       const gen = this.gens.get(tabId) ?? 0;
       if (this.d.present && (await this.d.present(tabId))) return;
-      if (this.tabs.get(tabId)?.on !== s.on) return;
+      if (this.onOrigin(tabId) !== s.on) return;
       // A probe answered after a new document or an injection is stale: the record already follows the document.
       if ((this.gens.get(tabId) ?? 0) === gen) this.newDocument(tabId, s.url);
     }
@@ -460,12 +482,20 @@ export class Tabs {
     if (s) this.set(tabId, { ...s, error: failure(e) });
   }
 
-  /** Makes sure the tab's document has the overlay; true when it was injected now. */
-  private async ensureOverlay(tabId: number): Promise<boolean> {
-    if (this.closed.has(tabId)) return false;
-    const fresh = await this.d.inject(tabId);
+  /** Makes sure the tab's document has the overlay, if it is of the
+   * origin Clax is on for there: true when it was injected now, false when
+   * it had it, null when nothing was (the document is of another origin, or
+   * the tab was turned off or closed meanwhile; an overlay that landed in
+   * such a tab hears `off` at its first message). */
+  private async ensureOverlay(tabId: number): Promise<boolean | null> {
+    const s = this.tabs.get(tabId);
+    const origin = s ? (s.on ?? originOf(s.url)) : null;
+    if (!s || !origin || this.closed.has(tabId)) return null;
+    const fresh = await this.d.inject(tabId, origin);
+    const now = this.tabs.get(tabId);
+    if (fresh === null || !now || now.on !== s.on || this.closed.has(tabId)) return null;
     if (fresh) this.retell(tabId);
-    this.set(tabId, { ...(this.tabs.get(tabId) ?? emptyTab(tabId, "")), overlay: true });
+    this.set(tabId, { ...now, overlay: true });
     return fresh;
   }
 
@@ -476,14 +506,15 @@ export class Tabs {
     await this.loaded;
     if (this.closed.has(tabId)) return;
     if (!this.tabs.has(tabId)) this.tabs.set(tabId, emptyTab(tabId, url));
-    let fresh: boolean;
+    let fresh: boolean | null;
     try {
       fresh = await this.ensureOverlay(tabId);
     } catch (e) {
       this.fail(tabId, e);
       return;
     }
-    const s = this.tabs.get(tabId)!;
+    const s = this.tabs.get(tabId);
+    if (fresh === null || !s) return;
     this.set(tabId, { ...s, commentMode: fresh || !s.commentMode });
     void this.route(tabId, url, this.stale.has(tabId));
   }
@@ -496,10 +527,12 @@ export class Tabs {
     if (s && s.page?.artifact_id !== page.artifact_id) void this.route(tabId, s.url);
   }
 
-  /** The tab closed, or Clax turned off in it: its state and its topics
-   * go, and nothing still in flight for it writes a record again. */
-  close(tabId: number): void {
-    this.closed.add(tabId);
+  /** The tab closed (`removed`), or Clax turned off in it: its state and
+   * its topics go, and nothing still in flight for it writes a record again. */
+  close(tabId: number, removed = false): void {
+    const now = (this.d.now ?? Date.now)();
+    for (const [id, at] of this.closed) if (at !== null && now - at > CLOSED_MS) this.closed.delete(id);
+    this.closed.set(tabId, removed ? now : null);
     this.tabs.delete(tabId);
     this.seqs.delete(tabId);
     this.syncs.delete(tabId);
@@ -655,7 +688,7 @@ export class Tabs {
     return {
       tabId, url: s?.url ?? null, page: s?.page ?? null, route: s?.route ?? null, threads: s?.threads ?? [], resolved: s?.resolved ?? {},
       versions: s?.versions ?? [], working: s?.working ?? [], participants: s?.participants ?? null, viewer: this.viewer,
-      commentMode: s?.commentMode ?? false, enabled: !!s?.on, selected: s?.selected ?? null, error: s?.error ?? null,
+      commentMode: s?.commentMode ?? false, enabled: !!s?.on, declined: !!s?.declined, selected: s?.selected ?? null, error: s?.error ?? null,
     };
   }
 

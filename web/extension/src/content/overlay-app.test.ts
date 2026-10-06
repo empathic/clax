@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type OverlayEnv, type OverlayRuntime, ROUTE_MS, startOnce } from "./overlay-app";
-import { hasOverlay, setBoot } from "../sw/origins";
+import { probeDocument, setBoot } from "../sw/origins";
+
+const hasOverlay = (boot: string) => probeDocument(boot).present;
 import { MAX_WAIT_MS, QUIET_MS, Resolver, type Timers } from "./resolver";
+import { dispatchTrusted } from "../../../bridge/test/trusted";
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
 const WORKER = { id: "test-extension" } as chrome.runtime.MessageSender;
@@ -96,6 +99,31 @@ describe("the overlay", () => {
     expect(hosts()).toHaveLength(0);
     expect(listeners).toHaveLength(0);
     expect(global.claxOverlayStarted).toBeUndefined();
+  });
+
+  it("stops when the worker refuses its message: Clax is not on in this tab, or not for this origin", async () => {
+    rt.sendMessage = async m => { sent.push(m as never); return { off: true }; };
+    tick(20_000);
+    await flush();
+    expect(hosts()).toHaveLength(0);
+    expect(listeners).toHaveLength(0);
+  });
+
+  it("asks the worker again when the page is restored from the back/forward cache, and stops if Clax is off", async () => {
+    const show = (persisted: boolean, own = false) => {
+      const e = Object.assign(new Event("pageshow"), { persisted });
+      return own ? window.dispatchEvent(e) : dispatchTrusted(window, e);
+    };
+    sent = [];
+    show(false);
+    // A page's own `pageshow` is not the browser's.
+    show(true, true);
+    expect(sent).toEqual([]);
+    rt.sendMessage = async m => { sent.push(m as never); return { off: true }; };
+    show(true);
+    expect(sent).toEqual([{ t: "route", url: location.href }]);
+    await flush();
+    expect(hosts()).toHaveLength(0);
   });
 
   it("does not use the worker's per-document flag", () => {

@@ -84,6 +84,9 @@ export function startOnce(env: OverlayEnv, g: object = globalThis): (() => void)
   return () => { stop(); };
 }
 
+/** The worker's answer to a message it does not admit. */
+const isRefusal = (r: unknown) => typeof r === "object" && r !== null && (r as { off?: unknown }).off === true;
+
 /** 128 random bits in hex, from the isolated world's own `crypto`. */
 const randomPickId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 
@@ -111,12 +114,16 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     onStop();
   };
   /** Sends `m` to the worker; a context the extension left (it was
-   * reloaded or removed) stops the overlay. */
+   * reloaded or removed) stops the overlay, as does the worker's refusal
+   * (`{off: true}`: Clax is not on in this tab, or not for this origin). */
   const send = (m: OverlayToWorker): Promise<unknown> => {
     if (!live) return Promise.resolve(null);
     try {
       if (!runtime.id) throw new Error("extension context invalidated");
-      return runtime.sendMessage(m).catch(() => null);
+      return runtime.sendMessage(m).then(r => {
+        if (isRefusal(r)) { stop(); return null; }
+        return r;
+      }, () => null);
     } catch {
       stop();
       return Promise.resolve(null);
@@ -374,6 +381,11 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   // Same-document navigations: the worker looks the new URL up (spec §11
   // "SPA route change"), as `watchRoutes` filters and throttles them.
   stops.push(watchRoutes(win, href => void send({ t: "route", url: pageUrl(href) }), timers, now));
+  // A page restored from the back/forward cache asks the worker again: Clax
+  // may have turned off in the tab meanwhile, and the `off` went unheard.
+  const onShow = (e: PageTransitionEvent) => { if (e.isTrusted && e.persisted) void send({ t: "route", url: pageUrl(win.location.href) }); };
+  win.addEventListener("pageshow", onShow);
+  stops.push(() => win.removeEventListener("pageshow", onShow));
 
   const onMessage = (m: unknown, sender: chrome.runtime.MessageSender) => {
     if (!live || sender.id !== runtime.id || sender.tab || !isFromWorker(m)) return;

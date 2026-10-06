@@ -65,43 +65,57 @@ export async function dropLoaders(scripting: Pick<typeof chrome.scripting, "getR
   await local.remove("origins");
 }
 
-/** Whether this document has a live overlay of this load of the extension
- * (content/presence.ts: the overlay's own check of its context and its boot
- * nonce). Runs in the tab's isolated world, out of the page's reach; it is
+/** What the worker reads of a tab's top document before it injects: whether
+ * it has a live overlay of this load of the extension (content/presence.ts:
+ * the overlay's own check of its context and its boot nonce), and its
+ * origin. Runs in the tab's isolated world, out of the page's reach; it is
  * serialized, so it names the globals rather than importing them. */
-export function hasOverlay(boot: string): boolean {
+export function probeDocument(boot: string): { present: boolean; origin: string } {
+  let present = false;
   try {
     const r = (globalThis as { claxOverlayStarted?: { alive?: unknown } }).claxOverlayStarted;
-    return !!r && typeof r.alive === "function" && r.alive(boot) === true;
+    present = !!r && typeof r.alive === "function" && r.alive(boot) === true;
   } catch {
-    return false;
+    // No overlay of this load.
   }
+  return { present, origin: location.origin };
 }
 /** Names this load's boot nonce to the overlay about to start. */
 export function setBoot(boot: string): void {
   (globalThis as { claxBoot?: string }).claxBoot = boot;
 }
 
+type Probe = { present: boolean; origin: string; documentId: string };
+
+/** The tab's top document, probed; throws when the worker cannot reach it. */
+async function probe(env: OriginsEnv, tabId: number): Promise<Probe | null> {
+  const [r] = await env.scripting.executeScript({ target: { tabId, frameIds: [0] }, func: probeDocument, args: [await env.boot()] });
+  const v = r?.result as Partial<Probe> | undefined;
+  return v && typeof v.present === "boolean" && typeof v.origin === "string" && typeof r.documentId === "string"
+    ? { present: v.present, origin: v.origin, documentId: r.documentId } : null;
+}
+
 /** Whether the tab's current document has a live overlay; false when the
  * worker cannot reach the tab (no permission left after a navigation). */
 export async function overlayPresent(env: OriginsEnv, tabId: number): Promise<boolean> {
-  try {
-    const [probe] = await env.scripting.executeScript({ target: { tabId, allFrames: false }, func: hasOverlay, args: [await env.boot()] });
-    return probe?.result === true;
-  } catch {
-    return false;
-  }
+  return (await probe(env, tabId).catch(() => null))?.present === true;
 }
 
-/** Injects the overlay into the tab's top frame, once per document (the
- * worker's record of a tab can lag a reload, or be lost with a restart);
- * true when it injected it now. An overlay left over from an earlier load
- * of the extension is not present, so it is injected again; the new one
- * stops the old. Presence is the overlay's own mark, set once it started,
- * so a failed injection is tried again. */
-export async function injectOverlay(env: OriginsEnv, tabId: number): Promise<boolean> {
-  if (await overlayPresent(env, tabId)) return false;
-  const target = { tabId, allFrames: false };
+/** Injects the overlay into the tab's top document, once per document (the
+ * worker's record of a tab can lag a reload, or be lost with a restart),
+ * and only into a document of `origin`, the one Clax is on for in the tab:
+ * the document probed is the one injected (`documentIds`), so a navigation
+ * meanwhile gets nothing. True when it injected it now; false when the
+ * document has it; null when the tab's document is not of `origin`. An
+ * overlay left over from an earlier load of the extension is not present,
+ * so it is injected again; the new one stops the old. Presence is the
+ * overlay's own mark, set once it started, so a failed injection is tried
+ * again. */
+export async function injectOverlay(env: OriginsEnv, tabId: number, origin: string): Promise<boolean | null> {
+  const p = await probe(env, tabId);
+  if (!p || p.origin !== origin) return null;
+  if (p.present) return false;
+  const target = { tabId, documentIds: [p.documentId] };
   await env.scripting.executeScript({ target, func: setBoot, args: [await env.boot()] });
   await env.scripting.executeScript({ target, files: ["overlay.js"] });
   return true;

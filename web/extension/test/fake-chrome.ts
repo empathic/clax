@@ -35,7 +35,7 @@ export function fakeChrome() {
     scripting: { registerContentScripts: rec("scripting.registerContentScripts"), unregisterContentScripts: rec("scripting.unregisterContentScripts"),
       getRegisteredContentScripts: rec("scripting.getRegisteredContentScripts", []), executeScript: rec("scripting.executeScript", [{ result: undefined }]) },
     tabs: { captureVisibleTab: rec("tabs.captureVisibleTab", "data:image/png;base64,"), sendMessage: rec("tabs.sendMessage"), update: rec("tabs.update"), get: rec("tabs.get"),
-      onUpdated: new FakeEvent<[number, chrome.tabs.TabChangeInfo, chrome.tabs.Tab]>(), onRemoved: new FakeEvent<[number]>(), onActivated: new FakeEvent<[{ tabId: number; windowId: number }]>() },
+      onUpdated: new FakeEvent<[number, chrome.tabs.TabChangeInfo, chrome.tabs.Tab]>(), onRemoved: new FakeEvent<[number]>(), onReplaced: new FakeEvent<[number, number]>(), onActivated: new FakeEvent<[{ tabId: number; windowId: number }]>() },
     sidePanel: { open: rec("sidePanel.open"), setOptions: rec("sidePanel.setOptions") },
     action: { onClicked: new FakeEvent<[chrome.tabs.Tab]>() },
     commands: { onCommand: new FakeEvent<[string, chrome.tabs.Tab]>() },

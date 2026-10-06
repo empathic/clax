@@ -41,10 +41,27 @@ describe("origins", () => {
     expect(sameOrigin("chrome://x", "chrome://x")).toBe(false);
   });
 
-  it("injects the overlay into the top frame only", async () => {
-    await injectOverlay(env(), 7);
-    const injects = c.calls.filter(x => x.api === "scripting.executeScript").map(x => x.args[0] as { files?: string[] });
-    expect(injects.filter(a => a.files)).toEqual([{ target: { tabId: 7, allFrames: false }, files: ["overlay.js"] }]);
+  /** The fake's top document of each tab: its origin and its ID, as Chrome's probe answers them. */
+  const top = (origin: string, documentId = "doc-1") => {
+    c.scripting.executeScript = (async (inj: { files?: string[]; func?: (...a: unknown[]) => unknown; args?: unknown[] }) => {
+      c.calls.push({ api: "scripting.executeScript", args: [inj] });
+      return [{ documentId, result: inj.func?.name === "probeDocument" ? { present: false, origin } : undefined }];
+    }) as unknown as typeof c.scripting.executeScript;
+  };
+
+  it("probes the top frame, then injects the overlay into that one document only", async () => {
+    top("http://localhost:5173", "doc-7");
+    expect(await injectOverlay(env(), 7, "http://localhost:5173")).toBe(true);
+    const injects = c.calls.filter(x => x.api === "scripting.executeScript").map(x => x.args[0] as { target: unknown; files?: string[] });
+    expect(injects[0].target).toEqual({ tabId: 7, frameIds: [0] });
+    expect(injects.slice(1).map(a => a.target)).toEqual([{ tabId: 7, documentIds: ["doc-7"] }, { tabId: 7, documentIds: ["doc-7"] }]);
+    expect(injects.filter(a => a.files)).toEqual([{ target: { tabId: 7, documentIds: ["doc-7"] }, files: ["overlay.js"] }]);
+  });
+
+  it("injects nothing into a document of another origin than the one Clax is on for", async () => {
+    top("https://elsewhere.example");
+    expect(await injectOverlay(env(), 7, "http://localhost:5173")).toBeNull();
+    expect(c.calls.filter(x => x.api === "scripting.executeScript")).toHaveLength(1);
   });
 
   it("does not inject the overlay twice into one document, and counts only a started overlay of this load of the extension", async () => {
@@ -55,7 +72,7 @@ describe("origins", () => {
     // does (content/presence.ts), alive for the boot nonce it started under.
     c.scripting.executeScript = (async (inj: { files?: string[]; func?: (...a: unknown[]) => unknown; args?: unknown[] }) => {
       c.calls.push({ api: "scripting.executeScript", args: [inj] });
-      if (inj.func) return [{ result: inj.func(...(inj.args ?? [])) }];
+      if (inj.func) return [{ documentId: "doc-1", result: inj.func(...(inj.args ?? [])) }];
       if (fail) throw new Error("Frame with ID 0 was removed.");
       const boot = g.claxBoot;
       g.claxOverlayStarted = { alive: (b: unknown) => b === boot, stop: () => {} };
@@ -63,18 +80,18 @@ describe("origins", () => {
     }) as unknown as typeof c.scripting.executeScript;
     const files = () => c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files).length;
     try {
-      await expect(injectOverlay(env(), 7)).rejects.toThrow("removed");
+      await expect(injectOverlay(env(), 7, location.origin)).rejects.toThrow("removed");
       expect(await overlayPresent(env(), 7)).toBe(false);
       fail = false;
-      expect(await injectOverlay(env(), 7)).toBe(true);
+      expect(await injectOverlay(env(), 7, location.origin)).toBe(true);
       expect(await overlayPresent(env(), 7)).toBe(true);
-      expect(await injectOverlay(env(), 7)).toBe(false);
+      expect(await injectOverlay(env(), 7, location.origin)).toBe(false);
       expect(files()).toBe(2);
       // The extension loaded again (a new boot nonce): the old overlay's mark
       // stays in the world, but it is not this load's, so it is injected again.
       const again = { ...env(), boot: async () => "c".repeat(32) } as OriginsEnv;
       expect(await overlayPresent(again, 7)).toBe(false);
-      expect(await injectOverlay(again, 7)).toBe(true);
+      expect(await injectOverlay(again, 7, location.origin)).toBe(true);
       expect(await overlayPresent(again, 7)).toBe(true);
       // A mark that is not the overlay's (a stale flag of another shape) is no overlay.
       g.claxOverlayStarted = true;

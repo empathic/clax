@@ -24,7 +24,7 @@ export type PanelDeps = {
 class PanelFailure extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
-/** The panel acted on a page the tab no longer shows. */
+/** The panel acted on a page the tab no longer shows, or on another tab. */
 const changed = () => new PanelFailure("page_changed", "The tab shows another page now.");
 const failed = (e: unknown): WorkerToPanel => {
   const err = e as { code?: unknown; message?: unknown };
@@ -60,7 +60,10 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
       }
       d.tabs.setCommentMode(tabId, m.on);
       return;
-    case "turn-off": if (s?.on) await d.turnOff(tabId); return;
+    case "turn-off":
+      if (m.tabId !== tabId) throw changed();
+      if (s?.on) await d.turnOff(tabId);
+      return;
     default: break;
   }
   const page = s?.page;
