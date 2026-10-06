@@ -16,20 +16,29 @@
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
   import { sidebarSections } from "../../../shell/src/view/sidebar-model";
-  import { type PanelState, type PanelToWorker, RETRYABLE, type SiteView } from "../messages";
+  import { type PanelState, type PanelToWorker, RETRYABLE, type SiteChoice, type SiteView, type Suggestion } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
   import Elsewhere from "./Elsewhere.svelte";
   import Merge from "./Merge.svelte";
+  import SiteTools from "./SiteTools.svelte";
   import MoveTo from "./MoveTo.svelte";
   import { DEFAULT_PREFS, type Prefs, loadPrefs, savePrefs } from "./prefs";
   import { FILTERS, type Filter, groups, matches, pageLabel } from "./site-model";
 
   type Step = { moved: number; remaining: number };
-  type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string };
-  type Link = { state: PanelState | null; up?: boolean; site?: SiteView | null; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step> };
+  type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
+    | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
+  type Link = {
+    state: PanelState | null; up?: boolean; site?: SiteView | null; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step>;
+    suggestion?: { origin: string; suggestion: Suggestion | null } | null; sites?: SiteChoice[] | null;
+  };
   type Area = Parameters<typeof loadPrefs>[0];
   const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
-  let { link, now, store = local() }: { link: Link; now?: Date; store?: Area } = $props();
+  /** Asks Chrome for the origins' permission, as the panel's click allows (none to ask for in tests). */
+  const chromePermit = (origins: string[]): Promise<boolean> => {
+    try { return chrome.permissions.request({ origins: origins.map(o => `${o}/*`) }).catch(() => false); } catch { return Promise.resolve(true); }
+  };
+  let { link, now, store = local(), permit = chromePermit }: { link: Link; now?: Date; store?: Area; permit?(origins: string[]): Promise<boolean> } = $props();
   const s = $derived(link.state);
   const site = $derived(link.site ?? null);
   let name = $state("");
@@ -80,6 +89,17 @@
   let movingPicked = $state(false);
   $effect(() => { if (!picked) movingPicked = false; });
   const ask = (m: Ask): Promise<Step> => link.request?.(m) ?? Promise.reject(new Error("Clax cannot do that here."));
+  /** The origin Clax is on for in the tab, which the site's tools act for. */
+  const tabOrigin = $derived(s?.enabled && s.url ? new URL(s.url).origin : null);
+  /** Asked once per origin whose site is loaded and joins nothing: whether it may be the same app as another (spec §7.2). */
+  let askedFor: string | null = null;
+  $effect(() => {
+    const o = tabOrigin;
+    if (!o || !site || site.origin !== o || site.site?.joined || askedFor === o) return;
+    askedFor = o;
+    link.post({ t: "suggest" });
+  });
+  const suggestion = $derived(link.suggestion && link.suggestion.origin === tabOrigin ? link.suggestion.suggestion : null);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
   /** The batch send's bound (spec §8). */
@@ -158,6 +178,12 @@
     {#if s.enabled && s.declined}
       <p class="hint" role="status">Clax will turn off in this tab when the page reloads, as Chrome was not allowed access to this site.</p>
     {/if}
+    {#if tabOrigin && site && suggestion}
+      {#key tabOrigin}
+        <SiteTools {site} origin={tabOrigin} {suggestion} sites={null} request={ask} {permit} banner
+          answer={(w, a) => link.post({ t: "answer", with: w, answer: a })} list={() => {}} />
+      {/key}
+    {/if}
     {#if !s.enabled}
       <p class="hint">Click the Clax button or press ⌥⇧C on a page to comment on it.</p>
     {:else}
@@ -210,6 +236,12 @@
     {#if s.enabled && site}
       <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->
       {#key site.origin}<Merge {site} request={ask} />{/key}
+    {/if}
+    {#if tabOrigin && site}
+      {#key tabOrigin}
+        <SiteTools {site} origin={tabOrigin} suggestion={null} sites={link.sites ?? null} request={ask} {permit}
+          answer={(w, a) => link.post({ t: "answer", with: w, answer: a })} list={() => link.post({ t: "list-sites" })} />
+      {/key}
     {/if}
     {#if s.enabled}
       <footer class="foot">

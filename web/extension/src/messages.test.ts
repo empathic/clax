@@ -159,6 +159,34 @@ describe("messages", () => {
     expect(isToPanel({ t: "failed", code: "x", message: "m", req: "4" })).toBe(false);
   });
 
+  it("checks the panel's joined-site requests and the worker's answers, refusing anything else", () => {
+    const O = "http://localhost:5173", A = "http://localhost:7702";
+    expect(isFromPanel({ t: "join", req: 1, origin: O, with: A })).toBe(true);
+    expect(isFromPanel({ t: "join", req: 1, origin: O, with: O })).toBe(false);
+    expect(isFromPanel({ t: "join", req: 1, origin: O, with: `${A}/x` })).toBe(false);
+    expect(isFromPanel({ t: "join", origin: O, with: A })).toBe(false);
+    expect(isFromPanel({ t: "join", req: 1, origin: O, with: A, extra: 1 })).toBe(false);
+    expect(isFromPanel({ t: "split", req: 2, origin: A })).toBe(true);
+    expect(isFromPanel({ t: "split", req: 2, origin: "javascript:x" })).toBe(false);
+    expect(isFromPanel({ t: "suggest" })).toBe(true);
+    expect(isFromPanel({ t: "suggest", url: O })).toBe(false);
+    expect(isFromPanel({ t: "list-sites" })).toBe(true);
+    expect(isFromPanel({ t: "answer", with: A, answer: "never" })).toBe(true);
+    expect(isFromPanel({ t: "answer", with: A, answer: "later" })).toBe(true);
+    expect(isFromPanel({ t: "answer", with: A, answer: "always" })).toBe(false);
+    expect(isFromPanel({ t: "answer", with: "localhost", answer: "never" })).toBe(false);
+    const sug = { origin: A, origins: [A], reason: "path", path: "/settings" };
+    expect(isToPanel({ t: "suggestion", origin: O, suggestion: sug })).toBe(true);
+    expect(isToPanel({ t: "suggestion", origin: O, suggestion: null })).toBe(true);
+    for (const bad of [{ ...sug, reason: "port" }, { ...sug, origins: [] }, { ...sug, path: "settings" }, { ...sug, extra: 1 }, { ...sug, origins: Array(17).fill(A) }]) {
+      expect(isToPanel({ t: "suggestion", origin: O, suggestion: bad }), JSON.stringify(bad)).toBe(false);
+    }
+    expect(isToPanel({ t: "sites", sites: [{ key: A, name: O, origins: [O, A] }] })).toBe(true);
+    expect(isToPanel({ t: "sites", sites: [{ key: A, name: O, origins: [O, A], pages: 2 }] })).toBe(false);
+    expect(isToPanel({ t: "sites", sites: [{ key: "x", name: O, origins: [O] }] })).toBe(false);
+    expect(isToPanel({ t: "sites", sites: {} })).toBe(false);
+  });
+
   it("checks what the worker sends the overlay", () => {
     expect(isFromWorker({ t: "state", page: null, route: null, threads: [], commentMode: false, pending: false })).toBe(true);
     expect(isFromWorker({ t: "pick-lost", pickId: "a".repeat(32) })).toBe(true);
