@@ -58,6 +58,9 @@ pub struct AppState {
     /// How long a mirrored (hook) question stays open with no poll waiting
     /// on it before it is withdrawn (5 s in the daemon).
     pub question_grace: Duration,
+    /// The timers of question polls and graces ([`crate::questions::TokioSleeper`]
+    /// in the daemon).
+    pub question_sleeper: Arc<dyn crate::questions::Sleeper>,
     /// `[questions] terminal_after_s`, read when the daemon starts.
     pub terminal_after_s: u64,
 }
