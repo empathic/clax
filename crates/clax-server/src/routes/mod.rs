@@ -356,3 +356,251 @@ async fn test_slow_publish(
     .await?;
     Ok(StatusCode::CREATED)
 }
+
+/// Every route keeps live pages from callers that may not see them (spec
+/// 2026-10-05-chrome-overlay-design L10). The routes are read from this
+/// module's source, so a new one fails here until it is path-covered (an
+/// artifact ID in the path that `hide_live_pages` reads, or `/api/live/…`)
+/// or its handler is listed in [`l10::GUARDS`] with the guard its source
+/// shows.
+#[cfg(test)]
+mod l10 {
+    /// How a handler of a route outside the path rule keeps live pages hidden.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Guard {
+        /// It takes `RequireToken`: the token sees live pages.
+        Token,
+        /// It takes `SeesLive` and checks the artifact its query or body names.
+        SeesLive,
+        /// A listing or stream that leaves live pages out unless
+        /// `sees_live_pages`.
+        Filtered,
+        /// It names no artifact.
+        NoArtifact,
+    }
+    use Guard::*;
+
+    /// The handlers of the routes the path rule does not cover.
+    const GUARDS: &[(&str, Guard)] = &[
+        ("token::token", NoArtifact),
+        ("artifacts::list", Filtered),
+        ("artifacts::create", Token),
+        ("sessions::list", Token),
+        ("sessions::register", Token),
+        ("sessions::join", Token),
+        ("sessions::get", Token),
+        ("sessions::patch", Token),
+        ("sessions::push_status", NoArtifact),
+        ("sample::daemon", Token),
+        ("threads::list_all", Token),
+        ("working::roster", Token),
+        ("working::for_session", Token),
+        ("working::renew", Token),
+        ("working::end", Token),
+        ("working::put", Token),
+        ("working::delete", Token),
+        ("working::skew", Token),
+        ("viewers::lookup", NoArtifact),
+        ("viewers::me", NoArtifact),
+        ("viewers::set_me", NoArtifact),
+        ("viewers::seen", SeesLive),
+        ("viewers::set_seen", SeesLive),
+        ("viewers::attention", SeesLive),
+        ("viewers::set_looked", SeesLive),
+        ("viewers::set_presence", SeesLive),
+        ("extension::status", Token),
+        ("extension::mint", Token),
+        ("extension::revoke", Token),
+        ("stream::open", Filtered),
+        ("stream::update", SeesLive),
+        ("stream::open_streams", Token),
+        ("events::events", Filtered),
+        ("events::open_streams", Token),
+        ("watches::list", Token),
+        ("watches::put", Token),
+        ("watches::delete", Token),
+        ("watches::live_put", Token),
+        ("watches::live_delete", Token),
+        ("feedback::ack", Token),
+        ("feedback::poll", Token),
+        ("feedback::notices", Token),
+        ("shell::gallery_page", NoArtifact),
+        ("shell::static_file", NoArtifact),
+        ("health::healthz", NoArtifact),
+        ("assets::blob", SeesLive),
+    ];
+
+    /// Routes whose handler is not a module function, and why they are safe.
+    const INLINE: &[(&str, &str)] = &[
+        (
+            "/api/_test/sleep/{ms}",
+            "test-routes only; names no artifact",
+        ),
+        (
+            "/api/_test/slow_publish/{ms}",
+            "test-routes only; makes an HTML artifact",
+        ),
+        ("/api/admin/shutdown", "RequireToken"),
+    ];
+
+    fn module_source(m: &str) -> &'static str {
+        match m {
+            "artifacts" => include_str!("artifacts.rs"),
+            "assets" => include_str!("assets.rs"),
+            "content" => include_str!("content.rs"),
+            "docs" => include_str!("docs.rs"),
+            "events" => include_str!("events.rs"),
+            "extension" => include_str!("extension.rs"),
+            "feedback" => include_str!("feedback.rs"),
+            "health" => include_str!("health.rs"),
+            "live" => include_str!("live.rs"),
+            "room" => include_str!("room.rs"),
+            "sample" => include_str!("sample.rs"),
+            "sessions" => include_str!("sessions.rs"),
+            "shell" => include_str!("shell.rs"),
+            "stream" => include_str!("stream.rs"),
+            "threads" => include_str!("threads.rs"),
+            "token" => include_str!("token.rs"),
+            "viewers" => include_str!("viewers.rs"),
+            "watches" => include_str!("watches.rs"),
+            "working" => include_str!("working.rs"),
+            _ => panic!("no route module {m}"),
+        }
+    }
+
+    /// Each `.route("<path>", <handlers>)` of `src`: the path and the
+    /// handlers' text.
+    fn routes(src: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(i) = rest.find(".route(") {
+            let after = &rest[i + ".route(".len()..];
+            let mut depth = 1;
+            let mut end = 0;
+            for (j, c) in after.char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = j;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let call = &after[..end];
+            let open = call.find('"').expect("a path literal");
+            let close = open + 1 + call[open + 1..].find('"').unwrap();
+            out.push((
+                call[open + 1..close].to_string(),
+                call[close + 1..].to_string(),
+            ));
+            rest = &after[end..];
+        }
+        out
+    }
+
+    /// The `module::function` handlers named in `text`.
+    fn handlers(text: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        let b = text.as_bytes();
+        let ident = |c: u8| c.is_ascii_lowercase() || c == b'_';
+        let mut i = 0;
+        while let Some(k) = text[i..].find("::") {
+            let at = i + k;
+            let mut s = at;
+            while s > 0 && ident(b[s - 1]) {
+                s -= 1;
+            }
+            let mut e = at + 2;
+            while e < b.len() && ident(b[e]) {
+                e += 1;
+            }
+            let (m, f) = (&text[s..at], &text[at + 2..e]);
+            if !m.is_empty() && !f.is_empty() && m != "axum" && m != "routing" {
+                out.push((m.to_string(), f.to_string()));
+            }
+            i = at + 2;
+        }
+        out
+    }
+
+    /// The text of `pub async fn name` in `src`: its signature and body.
+    fn function<'a>(src: &'a str, name: &str) -> &'a str {
+        let start = src
+            .find(&format!("pub async fn {name}("))
+            .unwrap_or_else(|| panic!("no handler {name}"));
+        let rest = &src[start..];
+        let end = rest.find("\n}\n").map_or(rest.len(), |e| e + 3);
+        &rest[..end]
+    }
+
+    #[test]
+    fn every_route_keeps_live_pages_hidden() {
+        let aid = "7q3k9mzx2b4t";
+        let mut used = std::collections::HashSet::new();
+        let mut inline_used = std::collections::HashSet::new();
+        let src = include_str!("mod.rs");
+        let src = &src[..src.find("mod l10 {").unwrap()];
+        for (path, text) in routes(src) {
+            let concrete = path.replace("{aid}", aid);
+            if crate::live::live_route(&concrete)
+                || crate::live::artifact_in(&concrete).as_deref() == Some(aid)
+            {
+                continue;
+            }
+            let hs = handlers(&text);
+            if hs.is_empty() {
+                assert!(
+                    INLINE.iter().any(|(p, _)| *p == path),
+                    "{path}: an inline handler outside the path rule; list it in INLINE"
+                );
+                inline_used.insert(path.clone());
+                continue;
+            }
+            for (m, f) in hs {
+                let name = format!("{m}::{f}");
+                let guard = GUARDS
+                    .iter()
+                    .find(|(h, _)| *h == name)
+                    .map(|(_, g)| *g)
+                    .unwrap_or_else(|| {
+                        panic!("{path} ({name}) is outside the path rule: list its guard in GUARDS")
+                    });
+                let src = function(module_source(&m), &f);
+                let sig = &src[..src.find('{').unwrap()];
+                match guard {
+                    Token => assert!(sig.contains("RequireToken"), "{name} takes no RequireToken"),
+                    SeesLive => assert!(
+                        sig.contains("SeesLive") && src.contains(".check("),
+                        "{name} does not check SeesLive"
+                    ),
+                    Filtered => assert!(
+                        src.contains("sees_live_pages"),
+                        "{name} does not filter by sees_live_pages"
+                    ),
+                    NoArtifact => assert!(
+                        !src.contains("ArtifactId") && !src.contains("parse_id"),
+                        "{name} names an artifact"
+                    ),
+                }
+                used.insert(name);
+            }
+        }
+        for (h, _) in GUARDS {
+            assert!(used.contains(*h), "GUARDS lists {h}, which no route uses");
+        }
+        for (p, _) in INLINE {
+            assert!(
+                inline_used.contains(*p),
+                "INLINE lists {p}, which is not a route"
+            );
+        }
+        // `/mcp` is a `route_service` behind the token.
+        let mcp = include_str!("mcp.rs");
+        assert!(mcp.contains(".route_service(\"/mcp\"") && mcp.contains("require_token"));
+        assert_eq!(routes(mcp).len(), 0, "a new MCP route: check it here");
+    }
+}

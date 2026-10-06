@@ -87,7 +87,7 @@ pub fn sees_live_pages(headers: &HeaderMap, ext: &Extensions, token: &str) -> bo
 
 /// Whether `path` is one of the live-page routes (`/api/live/…`), which
 /// only a caller that may see live pages reaches.
-fn live_route(path: &str) -> bool {
+pub(crate) fn live_route(path: &str) -> bool {
     path.starts_with("/api/live/")
 }
 
@@ -167,7 +167,7 @@ pub(crate) fn percent_decoded(seg: &str) -> Option<String> {
 /// The artifact a path names: `/api/artifacts/<aid>…`, `/c/<aid>/…`,
 /// `/a/<aid>…`, decoded as the handlers decode it (so `%37…` names the
 /// same artifact as `7…`).
-fn artifact_in(path: &str) -> Option<String> {
+pub(crate) fn artifact_in(path: &str) -> Option<String> {
     let rest = path
         .strip_prefix("/api/artifacts/")
         .or_else(|| path.strip_prefix("/c/"))
