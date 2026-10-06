@@ -18,8 +18,15 @@ import { extensionManifest } from "./extension-manifest.mjs";
 const web = fileURLToPath(new URL("..", import.meta.url));
 /** Vite minifies an ES library's identifiers and syntax but keeps its
  * whitespace and comments (for the pure annotations a library's consumer
- * might use): the worker is no one's library, so it is minified whole. */
-const minifyWhole = { name: "minify-whole", renderChunk: async code => (await transformWithEsbuild(code, "sw.js", { minify: true, format: "esm" })).code };
+ * might use): the worker is no one's library, so it is minified whole once
+ * its chunk is final (`generateBundle`, after every chunk transform; Vite's
+ * own pass would print it again). bundle-size.mjs checks it. */
+const minifyWhole = {
+  name: "minify-whole",
+  async generateBundle(_, bundle) {
+    for (const c of Object.values(bundle)) if (c.type === "chunk") c.code = (await transformWithEsbuild(c.code, c.fileName, { minify: true, format: "esm" })).code;
+  },
+};
 const root = `${web}extension/`;
 
 async function variant(out, test) {

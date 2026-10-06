@@ -18,7 +18,11 @@ export function applySite(v: SiteView, name: string, d: Record<string, unknown>)
   const at = v.pages.findIndex(p => p.page.artifact_id === d.artifact_id);
   const on = (i: number, f: (ts: Thread[]) => Thread[], w = v) => ({ ...w, pages: w.pages.map((p, k) => (k === i ? { ...p, threads: f(p.threads) } : p)) });
   const drop = (ts: Thread[]) => ts.filter(t => t.id !== d.thread_id);
-  if (at < 0) return name === "thread" || name === "thread_moved" ? null : v;
+  if (at < 0) {
+    // A move from a page the listing no longer holds is applied already when its thread is on the page it went to.
+    const there = name === "thread_moved" && v.pages.some(p => p.page.artifact_id === d.to_artifact_id && p.threads.some(t => t.id === d.thread_id));
+    return name === "thread" || (name === "thread_moved" && !there) ? null : v;
+  }
   switch (name) {
     case "thread": {
       const r = applyThread(v.pages[at].threads, d.thread as ThreadDelta);
@@ -29,7 +33,9 @@ export function applySite(v: SiteView, name: string, d: Record<string, unknown>)
       // The card goes with the thread, comments and all; its `thread` on the new page follows.
       const to = v.pages.findIndex(p => p.page.artifact_id === d.to_artifact_id);
       const t = v.pages[at].threads.find(x => x.id === d.thread_id);
-      if (to < 0 || !t) return null;
+      if (to < 0) return null;
+      // Applied already (a replay), or a thread the listing never had: its `thread` there follows.
+      if (!t) return v;
       return on(to, ts => [...drop(ts), { ...t, artifact_id: d.to_artifact_id as string }], on(at, drop));
     }
     case "artifact_deleted": return null;
@@ -37,13 +43,21 @@ export function applySite(v: SiteView, name: string, d: Record<string, unknown>)
   }
 }
 
-type Entry = { view: SiteView | null; heard: Ev[] | null; seq: number };
+/** An origin's listing; `heard`: the deltas heard while a fetch is in
+ * flight; `again`: fetch once more when it answers; `wait`: the backoff
+ * after a failed fetch. */
+type Entry = { view: SiteView | null; heard: Ev[] | null; busy: Promise<void> | null; again: boolean; wait: number; timer: unknown };
 export type SitesDeps = {
   api: { site(origin: string): Promise<SiteView> };
   hub: { receive(id: string, msg: TabMsg): void; detach(id: string): void };
   /** The origin's listing changed. */
   changed(origin: string): void;
+  /** Runs `fn` in `ms` (a failed fetch's retry); returns what `cancel` takes. */
+  after?(fn: () => void, ms: number): unknown;
+  cancel?(h: unknown): void;
 };
+/** The longest wait before a failed listing is fetched again. */
+export const RETRY_MAX_MS = 30_000;
 
 export class Sites {
   private m = new Map<string, Entry>();
@@ -54,27 +68,54 @@ export class Sites {
   /** Follows the site topics of `origins`, and only those. */
   follow(origins: Iterable<string>): void {
     const want = new Set(origins);
-    for (const o of this.m.keys()) if (!want.has(o)) { this.m.delete(o); this.d.hub.detach(`site:${o}`); }
+    for (const [o, e] of this.m) {
+      if (want.has(o)) continue;
+      this.m.delete(o);
+      if (e.timer !== null) (this.d.cancel ?? clearTimeout)(e.timer as never);
+      this.d.hub.detach(`site:${o}`);
+    }
     for (const o of want) {
       if (this.m.has(o)) continue;
-      this.m.set(o, { view: null, heard: null, seq: 0 });
+      this.m.set(o, { view: null, heard: null, busy: null, again: false, wait: 0, timer: null });
       this.d.hub.receive(`site:${o}`, { t: "topics", topics: [`site:${o}`] });
     }
   }
 
-  /** Fetches the origin's listing again (its topic went live, a delta did not add up, or a rule changed it). */
-  async load(origin: string): Promise<void> {
+  /** Fetches the origin's listing again (its topic went live, a delta did
+   * not add up, or a rule changed it): at most one fetch in flight per
+   * origin, and one more after it however often it is asked meanwhile. */
+  load(origin: string): Promise<void> {
     const e = this.m.get(origin);
-    if (!e) return;
-    const seq = ++e.seq;
+    if (!e) return Promise.resolve();
+    if (e.busy) { e.again = true; return e.busy; }
+    if (e.timer !== null) { (this.d.cancel ?? clearTimeout)(e.timer as never); e.timer = null; }
+    e.again = false;
+    e.busy = this.fetch(origin, e).finally(() => {
+      e.busy = null;
+      if (e.again && this.m.get(origin) === e) void this.load(origin);
+    });
+    return e.busy;
+  }
+
+  private async fetch(origin: string, e: Entry): Promise<void> {
     e.heard = [];
     let v: SiteView | null;
-    try { v = await this.d.api.site(origin); } catch { return; }
-    if (this.m.get(origin) !== e || e.seq !== seq) return;
+    try {
+      v = await this.d.api.site(origin);
+    } catch {
+      // Tried again after a backoff (1 s, doubling, at most RETRY_MAX_MS), not at the next delta.
+      e.heard = null;
+      e.again = false;
+      e.wait = Math.min(RETRY_MAX_MS, e.wait ? e.wait * 2 : 1000);
+      e.timer = (this.d.after ?? setTimeout)(() => { e.timer = null; if (this.m.get(origin) === e) void this.load(origin); }, e.wait);
+      return;
+    }
+    e.wait = 0;
     for (const [n, data] of e.heard) if (v) v = applySite(v, n, data);
     e.heard = null;
+    if (this.m.get(origin) !== e) return;
     // A delta heard meanwhile is newer than the listing: ask again.
-    if (!v) { void this.load(origin); return; }
+    if (!v) { e.again = true; return; }
     e.view = v;
     this.d.changed(origin);
   }

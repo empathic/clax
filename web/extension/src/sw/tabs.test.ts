@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import type { PageView, SiteView, WorkerToOverlay, WorkerToPanel } from "../messages";
+import { MAX_FAR, type PageView, type SiteView, type WorkerToOverlay, type WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
 import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS } from "./tabs";
 
@@ -776,6 +776,21 @@ describe("Tabs and the site's threads", () => {
     expect(m.threads[1]).toEqual({ id: T2, status: "open", anchor: { kind: "element", selector: "h1", file: "index.html", route: "?x" }, addressed_pending: false, from: "/users/7" });
     expect(m.pending).toBe(false);
     expect(JSON.stringify(m.threads)).not.toMatch(/page_url|comments|body/);
+  });
+
+  it("pins at most MAX_FAR of the other pages' threads, the newest", async () => {
+    const f = sites();
+    const h = harness(memory(), documents(), f);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, O);
+    await h.tabs.route(4, URL1);
+    const many = Array.from({ length: 250 }, (_, i) => other(`01J9F${String(i).padStart(21, "0")}`, { created_at: `2026-10-05T10:${String(i % 60).padStart(2, "0")}:${String(Math.floor(i / 60)).padStart(2, "0")}Z` }));
+    f.set({ origin: O, rules: [], pages: [{ page: page(AID2, "/users/7"), threads: many as never }] });
+    h.tabs.siteChanged(O);
+    const m = h.overlay.at(-1)!.m as Extract<WorkerToOverlay, { t: "state" }>;
+    expect(m.threads).toHaveLength(MAX_FAR);
+    const newest = [...many as unknown as { id: string; created_at: string }[]].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)).slice(0, MAX_FAR).map(t => t.id);
+    expect(m.threads.map(t => t.id)).toEqual(newest);
   });
 
   it("tells each panel of the tab's site when it watches, and again when the site changes", async () => {

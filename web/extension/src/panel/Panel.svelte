@@ -25,7 +25,7 @@
   import { FILTERS, type Filter, groups, matches, pageLabel } from "./site-model";
 
   type Step = { moved: number; remaining: number };
-  type Ask = { t: "rule"; pattern: string } | { t: "unrule"; ruleId: string };
+  type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string };
   type Link = { state: PanelState | null; up?: boolean; site?: SiteView | null; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step> };
   type Area = Parameters<typeof loadPrefs>[0];
   const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
@@ -122,7 +122,7 @@
     <header class="head">
       <div class="title">
         <h1>{s.page?.title || "Clax"}</h1>
-        {#if s.page}<p class="url">{s.page.page_url}{s.route ?? ""}</p>{/if}
+        {#if s.page}{@const address = s.page.page_url + (s.route ?? "")}<p class="url" title={address}>{address}</p>{/if}
       </div>
       {#if s.enabled}
         <button type="button" class="comment" class:on={s.commentMode} aria-pressed={s.commentMode}
@@ -208,7 +208,8 @@
         onToggle={toggleGroup} onOpen={t => link.post({ t: "open-thread", threadId: t.id })} onMove={move} />
     {/if}
     {#if s.enabled && site}
-      <Merge {site} request={ask} />
+      <!-- A run belongs to its site: another site's panel starts afresh, and the run stops. -->
+      {#key site.origin}<Merge {site} request={ask} />{/key}
     {/if}
     {#if s.enabled}
       <footer class="foot">
@@ -228,7 +229,7 @@
   .head { display: flex; gap: 10px; align-items: flex-start; padding: 12px var(--gutter); border-bottom: 1px solid var(--border); background: var(--card); }
   .title { flex: 1; min-width: 0; }
   h1 { margin: 0; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
-  .url { margin: 2px 0 0; color: var(--muted); font: 12px/1.4 var(--mono); overflow-wrap: anywhere; }
+  .url { margin: 2px 0 0; color: var(--muted); font: 12px/1.4 var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .comment.on { background: var(--you); border-color: var(--you); color: var(--on-you); }
   .who { padding: 8px var(--gutter); border-bottom: 1px solid var(--border); }
   .notice, .hint, .name { margin: 12px var(--gutter) 0; }

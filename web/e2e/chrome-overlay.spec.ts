@@ -346,6 +346,8 @@ test("the panel lists the site's other pages, opens and pins their threads, move
   await panel.eval(`(() => { const i = document.querySelector("input[aria-label='Pattern']"); i.value = "/users/:id"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
   await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".paths li")].map(l => l.textContent)`)).toEqual(["/users/1.html", "/users/2.html"]);
   await panel.click(/^ ?Merge pages$/);
+  await expect.poll(() => panel.text()).toContain("Merge 2 pages (3 threads) into");
+  await panel.click(/^ ?Yes, merge$/);
   await expect.poll(async () => (await site()).rules.map(r => r.pattern)).toEqual(["/users/:id"]);
   await expect.poll(async () => [await pageOf(a), await pageOf(b), await pageOf(c)]).toEqual(["/users/:id", "/users/:id", "/users/:id"]);
   await expect.poll(() => panel.text()).toContain("Merged: 3 threads moved to /users/:id.");
@@ -354,6 +356,7 @@ test("the panel lists the site's other pages, opens and pins their threads, move
 
   // Un-merge: the rule goes, and each thread goes back to the page of the path it was made at.
   await panel.click(/Un-merge \/users\/:id/);
+  await panel.click(/^ ?Yes, un-merge$/);
   await expect.poll(async () => (await site()).rules).toEqual([]);
   await expect.poll(async () => [await pageOf(a), await pageOf(b), await pageOf(c)]).toEqual(["/users/1.html", "/users/1.html", "/users/2.html"]);
   await expect.poll(() => panel.text()).toContain("Un-merged /users/:id");

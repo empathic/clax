@@ -39,6 +39,9 @@ export type OverlayThread = { id: string; status: "open" | "resolved"; anchor: A
    * path it was left at. The overlay pins it wherever its anchor resolves,
    * whatever the route. */
   from?: string };
+/** The most threads of the site's other pages the overlay hears of (the
+ * newest) and resolves, after the page's own. */
+export const MAX_FAR = 200;
 /** The overlay's view of `t`. */
 export const overlayThread = (t: Thread): OverlayThread => ({ id: t.id, status: t.status, anchor: t.anchor, addressed_pending: !!t.addressed_pending });
 /** What the person is told when a page's address is over MAX_URL (the daemon's bound; spec §7). */
@@ -155,10 +158,12 @@ export type PanelToWorker =
   | { t: "open-thread"; threadId: string }
   /** Moves a thread of the site to the page `pageUrl` names (of the tab's origin). */
   | { t: "move"; threadId: string; pageUrl: string }
-  /** One batch of a new merge rule; the panel repeats it while `step` says some remain. */
-  | { t: "rule"; req: number; pattern: string }
-  /** One batch of deleting a merge rule (un-merging); repeated as `rule`. */
-  | { t: "unrule"; req: number; ruleId: string }
+  /** One batch of a new merge rule for `origin`, which must be the origin
+   * Clax is on for in the panel's tab; the panel repeats it while `step`
+   * says some remain. */
+  | { t: "rule"; req: number; origin: string; pattern: string }
+  /** One batch of deleting a merge rule of `origin` (un-merging); repeated as `rule`. */
+  | { t: "unrule"; req: number; origin: string; ruleId: string }
   | { t: "retry" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
@@ -179,11 +184,13 @@ const strOrNull = (v: unknown, max: number) => v === null || str(v, max);
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
 const count = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const bool = (v: unknown): v is boolean => typeof v === "boolean";
+/** An origin as the daemon writes it: a scheme and a host, nothing after. */
+const origin = (v: unknown) => str(v, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(v);
 const url = (v: unknown) => str(v, MAX_URL) && /^https?:\/\//.test(v);
 const ulid = (v: unknown) => typeof v === "string" && ULID.test(v);
 const pickId = (v: unknown) => typeof v === "string" && PICK_ID.test(v);
 const text = (v: unknown, max: number) => str(v, max) && v.trim().length > 0;
-/** The longest merge rule pattern, in bytes (the daemon's bound; ASCII only). */
+/** The longest merge rule pattern, in bytes (the daemon's bound); a pattern is printable ASCII, so in characters too. */
 export const MAX_PATTERN = 256;
 /** The most pending thread IDs a quiet snapshot names (the threads a state carries). */
 const MAX_PENDING = 1000;
@@ -339,8 +346,9 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "turn-off": return has("tabId") && count(m.tabId);
     case "open-thread": return has("threadId") && ulid(m.threadId);
     case "move": return has("threadId", "pageUrl") && ulid(m.threadId) && url(m.pageUrl);
-    case "rule": return has("req", "pattern") && count(m.req) && str(m.pattern, MAX_PATTERN) && m.pattern.startsWith("/");
-    case "unrule": return has("req", "ruleId") && count(m.req) && ulid(m.ruleId);
+    case "rule": return has("req", "origin", "pattern") && count(m.req) && origin(m.origin)
+      && typeof m.pattern === "string" && m.pattern.length <= MAX_PATTERN && /^\/[\x21-\x7e]*$/.test(m.pattern);
+    case "unrule": return has("req", "origin", "ruleId") && count(m.req) && origin(m.origin) && ulid(m.ruleId);
     case "retry": case "ping": return has();
     default: return false;
   }

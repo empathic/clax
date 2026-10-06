@@ -139,12 +139,16 @@ describe("messages", () => {
     expect(isFromPanel({ t: "open-thread", threadId: ULID, url: "http://localhost:5173/" })).toBe(false);
     expect(isFromPanel({ t: "move", threadId: ULID, pageUrl: "http://localhost:5173/users/7" })).toBe(true);
     for (const pageUrl of ["javascript:alert(1)", "/users/7", `http://x/${"a".repeat(MAX_URL)}`, null]) expect(isFromPanel({ t: "move", threadId: ULID, pageUrl })).toBe(false);
-    expect(isFromPanel({ t: "rule", req: 1, pattern: "/users/:id" })).toBe(true);
-    for (const pattern of ["users/:id", "", `/${"x".repeat(256)}`, 5]) expect(isFromPanel({ t: "rule", req: 1, pattern })).toBe(false);
-    expect(isFromPanel({ t: "rule", req: -1, pattern: "/users/:id" })).toBe(false);
-    expect(isFromPanel({ t: "rule", req: 1, pattern: "/users/:id", origin: "http://evil.test" })).toBe(false);
-    expect(isFromPanel({ t: "unrule", req: 2, ruleId: ULID })).toBe(true);
-    expect(isFromPanel({ t: "unrule", req: 2, ruleId: "../x" })).toBe(false);
+    const O = "http://localhost:5173";
+    expect(isFromPanel({ t: "rule", req: 1, origin: O, pattern: "/users/:id" })).toBe(true);
+    // 256 bytes at most: printable ASCII only, so no character counts for more than one.
+    for (const pattern of ["users/:id", "", `/${"x".repeat(256)}`, 5, "/ü/:id", "/a b/:id", `/${"é".repeat(200)}`]) expect(isFromPanel({ t: "rule", req: 1, origin: O, pattern }), String(pattern)).toBe(false);
+    expect(isFromPanel({ t: "rule", req: -1, origin: O, pattern: "/users/:id" })).toBe(false);
+    expect(isFromPanel({ t: "rule", req: 1, pattern: "/users/:id" })).toBe(false);
+    for (const origin of ["http://localhost:5173/", "javascript:x", "localhost"]) expect(isFromPanel({ t: "rule", req: 1, origin, pattern: "/users/:id" })).toBe(false);
+    expect(isFromPanel({ t: "unrule", req: 2, origin: O, ruleId: ULID })).toBe(true);
+    expect(isFromPanel({ t: "unrule", req: 2, origin: O, ruleId: "../x" })).toBe(false);
+    expect(isFromPanel({ t: "unrule", req: 2, ruleId: ULID })).toBe(false);
     expect(isToPanel({ t: "site", site: null })).toBe(true);
     expect(isToPanel({ t: "site", site: { origin: "http://localhost:5173", rules: [], pages: [] } })).toBe(true);
     expect(isToPanel({ t: "site", site: [] })).toBe(false);

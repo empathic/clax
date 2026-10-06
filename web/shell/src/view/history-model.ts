@@ -37,9 +37,13 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
     const verb = "sent it" + (others > 0 ? ` with ${others} other${others === 1 ? "" : "s"}` : "") + (b.note ? ` · “${b.note}”` : "");
     out.push({ at: b.sent_at, e: { v: versionAt(versions, b.sent_at), who: b.sent_by, agent: false, verb } });
   }
+  // A version no agent published (a live page's snapshot) is named by the
+  // agent whose reply addressed the thread: the last one before it, else the first.
+  const agentReplies = t.comments.filter(c => c.author_kind === "agent" && c.via_harness);
+  const replier = (at: string) => (agentReplies.filter(c => c.created_at <= at).at(-1) ?? agentReplies[0])?.via_harness;
   for (const n of t.addressed_in ?? []) {
     const v = versions.find(x => x.n === n);
-    out.push({ at: v?.created_at ?? "", e: { v: n, who: agentName(v?.agent_harness), agent: true, verb: "addressed it" } });
+    out.push({ at: v?.created_at ?? "", e: { v: n, who: agentName(v?.agent_harness ?? replier(v?.created_at ?? "~")), agent: true, verb: "addressed it" } });
   }
   // A live page's address waits for the page's next snapshot to name a version.
   if (t.addressed_pending && t.status === "open") {

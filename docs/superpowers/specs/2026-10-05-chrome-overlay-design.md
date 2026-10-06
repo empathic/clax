@@ -65,7 +65,7 @@ to per tab (2026-10-06); its row says so.
 | L4 | A snapshot becomes a new version only when its `index.html` differs from the current version's (byte-identical snapshots reuse the current version). The screenshot is the thread's clip, never a version file. | Versions stay a timeline of what the page looked like, not one per comment; the clip already has a home per thread (§9 "Clips"). |
 | L5 | The extension calls the daemon's existing viewer routes through an **extension gateway**: a middleware that admits a request carrying the extension's origin and a valid extension credential, checks it against an allowlist of routes and live-page artifacts, and hands it to the existing handler as the owner identity (L6). | One code path for comments, sends, resolves and the stream, whether they come from the shell or the extension; the extension can reach nothing else. |
 | L6 | The extension acts as the **owner identity**: the one viewer identity Clax gives its owner, shared by the person's browsers on this machine, the CLI with the token, and the extension (§2.1). A live extension credential maps to the owner identity through the owner identity's server-side hook, in the one place that maps credential kinds to it; the extension has no `viewers` row of its own. Its looked-at and seen marks, its name, its presence and the comments, sends and resolves it makes are the owner's. The side panel asks for a name only while the owner has none. | Owner decision (2026-10-05): one person, one identity, whichever client they use. The side panel and the shell then share looked-at and seen marks, and a thread the person read in one is not new in the other. The extension needs no cookie: the gateway, not a browser cookie, says who it is. |
-| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number. | Owner decision (2026-10-05), as proposed. Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. The frame is shown and focused only once the worker confirms the composer page connected (§9.4), so a page that navigates the frame never gets it shown. |
+| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number (and, for a thread of another page of the site, that page's path). Anchors do reach the overlay, and since 2026-10-06 (site-wide pins) those of the site's other pages too: their quote, prefix and suffix are text of *other* pages of the origin, which the overlay of this page holds in its isolated world and closed shadow root (owner decision 2026-10-06: pins for any thread of the site whose anchor resolves here); comments, authors and agents still never reach it. | Owner decision (2026-10-05), as proposed. Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. The frame is shown and focused only once the worker confirms the composer page connected (§9.4), so a page that navigates the frame never gets it shown. |
 | L8 | Comment mode is entered only by a gesture that grants `activeTab`: the toolbar icon, the keyboard command (Alt+Shift+C) or the page's context menu entry. The side panel's Comment button works while the tab already holds `activeTab` and otherwise says how to start. A plain key (such as C) is never taken from the page. | Owner decision (2026-10-05), as proposed. `captureVisibleTab` needs `activeTab` or `<all_urls>`; per-origin host permissions are not enough. `<all_urls>` would ask for every site at install. |
 | L9 | Snapshots are sanitized in the extension (§8.2) and served by the daemon with a second Content-Security-Policy that lets only the daemon's own `/_clax/` scripts run. Comment mode is off in the shell for live pages. | Page content is hostile. The client sanitizer removes secrets and scripts; the policy guarantees nothing the page wrote can run even if the sanitizer misses something, without a server-side HTML parser. |
 | L10 | Live pages are visible only to loopback peers and requests with the token. A daemon bound to the LAN serves LAN viewers its artifacts as today, and never its live pages. | Agents publish artifacts for people to see; live-page snapshots are of whatever the person browses. They must not reach the LAN. |
@@ -468,14 +468,26 @@ the browser quits), so a restarted worker picks every on tab up again.
   hears `site {site}` when it watches and on every change. The overlay's
   `state` carries, after the page's own threads, the site's open threads of
   other pages as `{id, status, anchor, addressed_pending: false, from}`
-  (`from`: the path they were made at); the overlay resolves them on any
-  route and outlines their pins, labelled "from <path>". The panel sends
+  (`from`: the path they were made at), at most 200 (`MAX_FAR`), the
+  newest; the overlay resolves the page's own threads first, then those on
+  any route, and outlines their pins, labelled "from <path>". The listing is
+  fetched at most once at a time per origin, with one more queued however
+  many deltas fail to apply meanwhile; a failed fetch is retried after 1 s,
+  doubling to 30 s. A replayed `thread_moved` already applied changes
+  nothing. The panel sends
   `open-thread {threadId}` (the worker navigates the tab to the thread's
   `page_url`, of the tab's origin only, and scrolls to it once the overlay
   finds it), `move {threadId, pageUrl}` (of the tab's origin only), and
-  `rule {req, pattern}` / `unrule {req, ruleId}`, one batch each, answered
-  `step {req, moved, remaining}` or `failed {…, req}`; the panel repeats
-  them while `remaining` is above 0. Grouping, counts, the filter, the
+  `rule {req, origin, pattern}` / `unrule {req, origin, ruleId}`, one batch
+  each, answered `step {req, moved, remaining}` or `failed {…, req}` (every
+  request is answered: `no_tab`, or `page_changed` when `origin` is not the
+  one Clax is on for in the panel's tab, so a panel that turned to another
+  tab cannot write to its site). The panel asks the person to confirm a
+  merge or an un-merge (naming the pages and threads), repeats the batch
+  while `remaining` is above 0, and stops, saying how many are left, when a
+  batch moves none, when `remaining` does not fall, after 1000 batches,
+  when the panel shows another site, or when the worker does not answer
+  within 2 minutes. Grouping, counts, the filter, the
   search, the pattern check and the merge preview run in the panel; the
   filter and the collapsed groups are kept per origin in
   `chrome.storage.local` (`site-prefs:<origin>`; a convenience only).

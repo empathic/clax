@@ -70,20 +70,38 @@ describe("panelAction on the tab's site", () => {
 
   it("adds and deletes a rule one batch at a time for the tab's origin, telling the panel what is left", async () => {
     const s = setup({ remaining: 3 });
-    await s.run({ t: "rule", req: 7, pattern: "/users/:id" });
-    await s.run({ t: "unrule", req: 8, ruleId: T2 });
+    await s.run({ t: "rule", req: 7, origin: "http://localhost:5173", pattern: "/users/:id" });
+    await s.run({ t: "unrule", req: 8, origin: "http://localhost:5173", ruleId: T2 });
     expect(s.calls).toEqual([`addRule "http://localhost:5173" "/users/:id"`, "load http://localhost:5173", `deleteRule "${T2}"`, "load http://localhost:5173"]);
     expect(s.out).toEqual([{ t: "step", req: 7, moved: 2, remaining: 3 }, { t: "step", req: 8, moved: 1, remaining: 3 }]);
     // The last batch looks the tab's page up again: a merge may have changed which page its URL names.
     const done = setup();
-    await done.run({ t: "rule", req: 9, pattern: "/users/:id" });
+    await done.run({ t: "rule", req: 9, origin: "http://localhost:5173", pattern: "/users/:id" });
     expect(done.calls).toContain("route 4 http://localhost:5173/app true");
   });
 
   it("names the request a rule's failure answers", async () => {
     const s = setup({ fail: "addRule", failCode: "invalid_pattern" });
-    await s.run({ t: "rule", req: 5, pattern: "/:a/:b" });
+    await s.run({ t: "rule", req: 5, origin: "http://localhost:5173", pattern: "/:a/:b" });
     expect(s.out).toEqual([{ t: "failed", code: "invalid_pattern", message: "No such thread.", req: 5 }]);
+  });
+
+  it("refuses a batch for another site than the tab's (the panel now follows another tab), writing nothing", async () => {
+    const s = setup({ remaining: 3 });
+    await s.run({ t: "rule", req: 3, origin: "http://other.test:8080", pattern: "/users/:id" });
+    await s.run({ t: "unrule", req: 4, origin: "http://other.test:8080", ruleId: T2 });
+    expect(s.calls).toEqual([]);
+    expect(s.out).toEqual([
+      { t: "failed", code: "page_changed", message: "The tab shows another page now.", req: 3 },
+      { t: "failed", code: "page_changed", message: "The tab shows another page now.", req: 4 },
+    ]);
+  });
+
+  it("answers every request, even with no tab or a tab Clax is off in", async () => {
+    const s = setup({ page: null });
+    await s.run({ t: "rule", req: 1, origin: "http://localhost:5173", pattern: "/users/:id" }, null);
+    await s.run({ t: "rule", req: 2, origin: "http://localhost:5173", pattern: "/users/:id" });
+    expect(s.out.map(o => [o.t, (o as { code?: string }).code, (o as { req?: number }).req])).toEqual([["failed", "no_tab", 1], ["failed", "page_changed", 2]]);
   });
 });
 
