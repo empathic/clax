@@ -34,7 +34,7 @@ function allAttrs(d: Document | DocumentFragment): Attr[] {
   return out;
 }
 
-const BANNED = "script, noscript, iframe, frame, frameset, fencedframe, object, embed, applet, portal, base, template:not([shadowrootmode])";
+const BANNED = "script, noscript, iframe, frame, frameset, fencedframe, object, embed, applet, portal, base, xmp, noembed, noframes, plaintext, template:not([shadowrootmode])";
 const URLISH = /^(href|src|srcset|poster|background|action|formaction|xlink:href|style|content)$/i;
 const META_NAMES = new Set(["viewport", "color-scheme", "description"]);
 
@@ -58,6 +58,8 @@ function assertClean(html: string) {
   for (const el of allElements(reparse(html))) {
     const name = el.localName.toLowerCase();
     if (el.matches(BANNED) || name === "script") bad.push(`<${name}>`);
+    if (name === "link" && (el.getAttribute("rel") ?? "").toLowerCase() !== "stylesheet") bad.push(el.outerHTML);
+    if (name === "style" && /(java|vb)script:/i.test(el.textContent ?? "")) bad.push(`<style>${el.textContent}`);
     if (name === "meta" && !el.hasAttribute("charset") && !META_NAMES.has((el.getAttribute("name") ?? "").toLowerCase())) bad.push(el.outerHTML);
     for (const a of el.attributes) {
       if (/^on/i.test(a.localName) || /^(srcdoc|http-equiv)$/i.test(a.localName)) bad.push(`${name}[${a.name}]`);
@@ -411,6 +413,18 @@ describe("serializeSnapshot", () => {
       const started = performance.now();
       serializeSnapshot(d, { deadlineMs: 60_000 });
       expect(performance.now() - started).toBeLessThan(1500);
+    });
+
+    it("trims long comma runs in a srcset in linear time, reading the clock within one candidate", () => {
+      const srcset = `a${",".repeat(120_000)}b, c.png 2x`;
+      const d = doc(`<img>`);
+      d.querySelector("img")!.setAttribute("srcset", srcset);
+      let t = 0;
+      expect(serializeSnapshot(d, { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
+      const started = performance.now();
+      const r = serializeSnapshot(d, { deadlineMs: 60_000 });
+      expect(performance.now() - started).toBeLessThan(500);
+      expect(r.html).toContain("http://localhost:5173/app/c.png 2x");
     });
 
     it("keeps the placeholder page's title short and escaped", () => {

@@ -139,15 +139,23 @@ class Writer {
     const n = value.length;
     let i = 0;
     while (i < n) {
-      while (i < n && /[\s,]/.test(value[i])) i++;
+      while (i < n && /[\s,]/.test(value[i])) {
+        i++;
+        this.step();
+      }
       if (i >= n) break;
       let j = i;
-      while (j < n && !/\s/.test(value[j])) j++;
-      let url = value.slice(i, j);
+      while (j < n && !/\s/.test(value[j])) {
+        j++;
+        this.step();
+      }
+      let e = j;
+      while (e > i && value[e - 1] === ",") e--;
+      const url = value.slice(i, e);
       let desc = "";
       i = j;
-      if (url.endsWith(",")) url = url.replace(/,+$/, "");
-      else {
+      // A URL that ended in commas ends its candidate; otherwise descriptors run to the next comma.
+      if (e === j) {
         const k = value.indexOf(",", i);
         const end = k < 0 ? n : k;
         desc = value.slice(i, end).trim();
