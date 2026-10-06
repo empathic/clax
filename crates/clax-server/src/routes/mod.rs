@@ -133,6 +133,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/viewers", get(viewers::lookup))
         .route("/api/live/pages", get(live::page))
+        .route("/api/live/site", get(live::site))
+        .route("/api/live/rules", get(live::rules))
+        .route("/api/live/rules/{id}", delete(live::delete_rule))
         .route("/api/extension", get(extension::status))
         .route(
             "/api/extension/credentials",
@@ -227,7 +230,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route(
             "/api/live/snapshots",
             post(live::snapshot.layer(DefaultBodyLimit::max(live::LIVE_THREAD_LIMIT))),
-        );
+        )
+        // Moves and merges copy snapshot versions.
+        .route("/api/live/threads/{tid}/move", post(live::move_thread))
+        .route("/api/live/rules", post(live::add_rule));
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
     let api_slow =

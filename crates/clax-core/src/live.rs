@@ -254,7 +254,7 @@ impl PathPattern {
             let part = parts.get(i).copied();
             match seg {
                 Seg::Rest => return part.is_some_and(|p| !p.is_empty()),
-                Seg::Param if !part.is_some_and(|p| !p.is_empty()) => return false,
+                Seg::Param if part.is_none_or(str::is_empty) => return false,
                 Seg::Literal(l) if part != Some(l.as_str()) => return false,
                 _ => {}
             }

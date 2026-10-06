@@ -350,12 +350,21 @@ impl Store {
                         let clip_path = p.has_clip.then(|| {
                             self.home.clip_path(&aid, &p.thread_id).to_string_lossy().into_owned()
                         });
-                        let live = super::live::live_page_of_conn(tx, &p.artifact_id)?.map(|lp| {
+                        let page = super::live::live_page_of_conn(tx, &p.artifact_id)?;
+                        let live_path: Option<String> = match page {
+                            Some(_) => tx.query_row(
+                                "SELECT live_path FROM threads WHERE id = ?1",
+                                params![p.thread_id],
+                                |r| r.get(0),
+                            )?,
+                            None => None,
+                        };
+                        let live = page.map(|lp| {
                             crate::feedback::LiveRef {
                                 page_url: format!(
                                     "{}{}{}",
                                     lp.origin,
-                                    lp.path,
+                                    live_path.as_deref().unwrap_or(&lp.path),
                                     anchor.route.as_deref().unwrap_or("")
                                 ),
                                 snapshot_path: self

@@ -7,7 +7,7 @@ use super::assets::multipart_error;
 use super::threads::{announce_new_thread, mentions_agent, publish_thread};
 use crate::auth::has_token;
 use crate::error::ApiError;
-use crate::feedback::thread_view;
+use crate::feedback::{thread_view, thread_views};
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, author};
@@ -16,9 +16,10 @@ use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use clax_core::live::{PageKey, PageUrl, parse_page_url};
+use clax_core::live::{PageKey, PageUrl, PathPattern, parse_page_url};
 use clax_core::model::Artifact;
 use clax_core::store::live::LivePage;
+use clax_core::store::site::{LiveRule, Refile, Refiled};
 use clax_core::store::threads::{NewThread, clip_problem};
 use clax_core::{Anchor, ArtifactId, CoreError, Event, Store};
 use serde::Deserialize;
@@ -107,14 +108,31 @@ pub(crate) fn clean_title(t: &str, fallback: &str) -> String {
 /// The view of a live page the routes answer with: its key, `page_url`,
 /// the artifact's title and current version, and `url`, its Clax view.
 pub(crate) fn page_view(s: &AppState, p: &LivePage, a: &Artifact) -> Value {
+    page_json(s, p, &a.title, a.current_version)
+}
+
+/// [`page_view`] from the page's title and current version.
+fn page_json(s: &AppState, p: &LivePage, title: &str, current_version: u32) -> Value {
     json!({
         "artifact_id": p.artifact_id,
         "origin": p.origin,
         "path": p.path,
         "page_url": format!("{}{}", p.origin, p.path),
-        "title": a.title,
-        "current_version": a.current_version,
+        "title": title,
+        "current_version": current_version,
         "url": format!("{}/a/{}", s.browser_base.trim_end_matches('/'), p.artifact_id),
+    })
+}
+
+/// A merge rule as the routes answer with it: its fields and `page_url`,
+/// the URL of its canonical page (the origin followed by the pattern).
+fn rule_view(r: &LiveRule) -> Value {
+    json!({
+        "id": r.id,
+        "origin": r.origin,
+        "pattern": r.pattern,
+        "page_url": format!("{}{}", r.origin, r.pattern),
+        "created_at": r.created_at,
     })
 }
 
@@ -123,8 +141,10 @@ pub struct PageQuery {
     url: String,
 }
 
-/// `GET /api/live/pages?url=`: `{page, route}`, the live page the URL names
-/// ([`page_view`], or null) and the URL's route (or null). Never creates a page.
+/// `GET /api/live/pages?url=`: `{page, route, rule}`, the live page the
+/// URL names ([`page_view`], or null; the canonical page when a merge rule
+/// maps the URL's path), the URL's route (or null), and that rule
+/// ([`rule_view`], or null). Never creates a page.
 pub async fn page(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -133,20 +153,22 @@ pub async fn page(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let pu = page_url(&s, &q.url)?;
     let key = pu.key.clone();
-    let found = s
+    let (found, rule) = s
         .store_call(move |st| {
-            let Some(p) = st.find_live_page(&key)? else {
-                return Ok(None);
+            let r = st.resolve_live_key(&key)?;
+            let Some(p) = st.find_live_page(&r.key)? else {
+                return Ok((None, r.rule));
             };
             let Some(a) = st.get_artifact(&ArtifactId::parse(&p.artifact_id)?)? else {
-                return Ok(None);
+                return Ok((None, r.rule));
             };
-            Ok(Some((p, a)))
+            Ok((Some((p, a)), r.rule))
         })
         .await?;
     Ok(Json(json!({
         "page": found.map(|(p, a)| page_view(&s, &p, &a)),
         "route": pu.route,
+        "rule": rule.as_ref().map(rule_view),
     })))
 }
 
@@ -281,7 +303,9 @@ fn replay(
 
 /// `POST /api/live/threads` (multipart `url`, `title`, `anchor`, `body`,
 /// `pending`, optional `clip`, `snapshot`): finds or creates the live page
-/// `url` names, stores `snapshot` as its next version when it differs from
+/// `url` names (a merge rule's canonical page when one maps its path; the
+/// thread then keeps that path as its `live_path`), stores `snapshot` as
+/// its next version when it differs from
 /// the current one (linking to that version, in its transaction, the
 /// threads of `pending` still pending on the page; other addresses stay
 /// pending), and creates the thread on that version as the request's
@@ -334,6 +358,8 @@ pub async fn thread(
     let key = pu.key;
     let a = s
         .store_call(move |st| {
+            let resolved = st.resolve_live_key(&key)?;
+            let key = resolved.key;
             if let Some(pick) = &pick
                 && let Some(r) = replay(st, &ctx, &key, pick, with_path)?
             {
@@ -365,14 +391,14 @@ pub async fn thread(
                 clip,
                 via_page: false,
             };
-            let thread = match &pick {
-                None => st.create_thread(&id, t)?,
-                Some(pick) => match st.create_picked_thread(&id, t, pick)? {
-                    Some(thread) => thread,
-                    None => {
-                        return replay(st, &ctx, &key, pick, with_path)?.ok_or(CoreError::NotFound);
-                    }
-                },
+            let made =
+                st.create_live_thread(&id, t, pick.as_deref(), resolved.live_path.as_deref())?;
+            let thread = match (made, &pick) {
+                (Some(thread), _) => thread,
+                (None, Some(pick)) => {
+                    return replay(st, &ctx, &key, pick, with_path)?.ok_or(CoreError::NotFound);
+                }
+                (None, None) => return Err(CoreError::NotFound),
             };
             let view = announce_new_thread(st, &ctx, thread, mention, with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
@@ -488,6 +514,7 @@ pub async fn snapshot(
     let key = pu.key;
     let done = s
         .store_call(move |st| {
+            let key = st.resolve_live_key(&key)?.key;
             let Some(p) = st.find_live_page(&key)? else {
                 return Ok(None);
             };
@@ -524,6 +551,378 @@ pub async fn snapshot(
         "version": n,
         "linked": linked,
     })))
+}
+
+/// 403 `forbidden` unless the request holds the token or comes through the
+/// extension gateway: who may move threads and change merge rules.
+fn owner_writes(who: &Identity) -> Result<(), ApiError> {
+    if who.token || who.extension {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner (the token or the Clax extension) moves threads and changes rules",
+        ))
+    }
+}
+
+/// 403 `forbidden` unless the request holds an owner credential.
+fn owner_reads(who: &Identity) -> Result<(), ApiError> {
+    if who.is_owner() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner lists a site's threads and rules",
+        ))
+    }
+}
+
+/// The origin a `site` or `rules` request names: the origin of `raw`, a
+/// page URL or an origin, refusing the daemon's own ([`page_url`]).
+fn origin_of(s: &AppState, raw: &str) -> Result<String, ApiError> {
+    Ok(page_url(s, raw)?.key.origin)
+}
+
+#[derive(Deserialize)]
+pub struct SiteQuery {
+    origin: String,
+}
+
+/// A thread view's last activity: its newest comment, creation or resolve.
+fn last_activity(t: &Value) -> String {
+    let mut at = [&t["created_at"], &t["resolved_at"]]
+        .into_iter()
+        .filter_map(Value::as_str)
+        .max()
+        .unwrap_or("")
+        .to_string();
+    for c in t["comments"].as_array().map(Vec::as_slice).unwrap_or(&[]) {
+        if let Some(c) = c["created_at"].as_str()
+            && c > at.as_str()
+        {
+            at = c.to_string();
+        }
+    }
+    at
+}
+
+/// The status a site summary counts a thread view under: `resolved`,
+/// `addressed` (open, and an agent addressed it: a version or a pending
+/// address), or `open`.
+fn summary_status(t: &Value) -> &'static str {
+    if t["status"] == "resolved" {
+        "resolved"
+    } else if t["addressed_in"].as_array().is_some_and(|a| !a.is_empty())
+        || !t["addressed_pending"].is_null()
+    {
+        "addressed"
+    } else {
+        "open"
+    }
+}
+
+/// `GET /api/live/site?origin=<origin or page URL>` (the owner): every live
+/// page of the origin that has threads, newest activity first, as `{origin,
+/// rules, pages: [{page, summary: {open, addressed, resolved,
+/// last_activity}, threads}]}`. `page` is [`page_view`]; `threads` are
+/// thread views (resolved ones too), newest activity first; `rules` the
+/// origin's merge rules ([`rule_view`]), oldest first.
+pub async fn site(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    _o: SameOrigin,
+    who: Identity,
+    q: Result<Query<SiteQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner_reads(&who)?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let origin = origin_of(&s, &q.origin)?;
+    let with_path = has_token(&headers, &s.token);
+    let codex = s.feedback_ctx().codex_push();
+    let o = origin.clone();
+    let (pages, rules) = s
+        .store_call(move |st| {
+            let pages = st.site_pages(&o)?;
+            let all: Vec<_> = pages.iter().flat_map(|p| p.threads.clone()).collect();
+            let mut views = thread_views(st, &all, codex, with_path)?.into_iter();
+            let mut out = Vec::new();
+            for p in pages {
+                let threads: Vec<Value> = views.by_ref().take(p.threads.len()).collect();
+                out.push((p.page, p.title, p.current_version, threads));
+            }
+            Ok((out, st.live_rules(&o)?))
+        })
+        .await?;
+    let mut groups: Vec<(String, Value)> = pages
+        .into_iter()
+        .filter(|(_, _, _, threads)| !threads.is_empty())
+        .map(|(page, title, current, mut threads)| {
+            threads.sort_by_cached_key(|t| std::cmp::Reverse(last_activity(t)));
+            let count = |st: &str| threads.iter().filter(|t| summary_status(t) == st).count();
+            let last = threads.first().map(last_activity).unwrap_or_default();
+            let group = json!({
+                "page": page_json(&s, &page, &title, current),
+                "summary": {
+                    "open": count("open"),
+                    "addressed": count("addressed"),
+                    "resolved": count("resolved"),
+                    "last_activity": last,
+                },
+                "threads": threads,
+            });
+            (last, group)
+        })
+        .collect();
+    groups.sort_by(|a, b| b.0.cmp(&a.0));
+    Ok(Json(json!({
+        "origin": origin,
+        "rules": rules.iter().map(rule_view).collect::<Vec<_>>(),
+        "pages": groups.into_iter().map(|(_, g)| g).collect::<Vec<_>>(),
+    })))
+}
+
+/// Publishes what a re-filing did: each version written on `to`, then for
+/// each moved thread `thread_moved` on the page it left (when it changed
+/// page) and its view on `to`.
+fn announce_refiled(
+    st: &Store,
+    ctx: &crate::feedback::FeedbackCtx,
+    to: &Artifact,
+    done: &Refiled,
+) -> clax_core::Result<()> {
+    for v in &done.versions {
+        ctx.events.publish(Event::Version {
+            artifact_id: to.id.clone(),
+            n: v.n,
+            by_page: false,
+            title: Some(to.title.clone()),
+            at: Some(v.created_at.clone()),
+        });
+    }
+    for (tid, from) in &done.moved {
+        if *from != to.id {
+            ctx.events.publish(Event::ThreadMoved {
+                artifact_id: from.clone(),
+                thread_id: tid.clone(),
+                to_artifact_id: to.id.clone(),
+            });
+        }
+        if let Some(t) = st.get_thread(tid)? {
+            publish_thread(ctx, st, &t)?;
+        }
+    }
+    Ok(())
+}
+
+/// Finds or makes the live page `key` (titled `title` when made), noting
+/// whether it existed, and announces a version it wrote.
+fn target_page(
+    st: &Store,
+    live_ids: &crate::live::LiveIds,
+    events: &clax_core::EventBus,
+    key: &PageKey,
+    title: &str,
+) -> clax_core::Result<(ArtifactId, bool)> {
+    let existed = st.find_live_page(key)?.is_some();
+    let e = live_ids.ensure_page(st, key, title, None, &[])?;
+    if e.new_version {
+        events.publish(Event::Version {
+            artifact_id: e.artifact.id.clone(),
+            n: e.version.n,
+            by_page: false,
+            title: Some(e.artifact.title.clone()),
+            at: Some(e.version.created_at.clone()),
+        });
+    }
+    Ok((ArtifactId::parse(&e.artifact.id)?, existed))
+}
+
+/// `viewer:<public ID>` of the owner, who moves threads.
+fn mover(st: &Store, who: &Identity) -> clax_core::Result<String> {
+    let v = who.ensure_viewer(st)?.ok_or(CoreError::NotFound)?;
+    Ok(format!("viewer:{}", v.public_id))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MoveBody {
+    page_url: String,
+}
+
+/// `POST /api/live/threads/<tid>/move` `{page_url}` (the owner: the token
+/// or the extension): re-files the live page's thread `tid` under the live
+/// page `page_url` names (its merge rule's canonical page when one maps it;
+/// made when missing), at `page_url`'s route, keeping its comments, history,
+/// clip and snapshot links (spec 2026-10-05-chrome-overlay-design §7.1).
+/// Answers `{thread, page, moved}`; `moved` is false, and nothing is
+/// written, when the thread is already there. 400 `cross_origin` for a page
+/// of another origin (nothing written); 404 for a missing thread or one not
+/// on a live page.
+pub async fn move_thread(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<axum::extract::Path<String>, axum::extract::rejection::PathRejection>,
+    body: Result<Json<MoveBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner_writes(&who)?;
+    let tid = super::artifacts::path(p)?;
+    let b = super::artifacts::body(body)?;
+    let pu = page_url(&s, &b.page_url)?;
+    let ctx = s.feedback_ctx();
+    let live_ids = s.live_ids.clone();
+    let with_path = who.token;
+    let (view, page, artifact, moved) = s
+        .store_call(move |st| {
+            let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
+            let Some(origin) = live_ids.origin_of(&t.artifact_id) else {
+                return Err(CoreError::NotFound);
+            };
+            if origin != pu.key.origin {
+                return Err(CoreError::invalid(
+                    "cross_origin",
+                    "a thread moves only to a page of its own origin",
+                ));
+            }
+            let r = st.resolve_live_key(&pu.key)?;
+            let title = clean_title("", &pu.key.page_url());
+            let (to, existed) = target_page(st, &live_ids, &ctx.events, &r.key, &title)?;
+            let refile = Refile {
+                thread_id: tid.clone(),
+                live_path: r.live_path,
+                route: pu.route,
+            };
+            let by = mover(st, &who)?;
+            let done = st.refile_threads(&to, &[refile], &by, None, existed)?;
+            let artifact = st.get_artifact(&to)?.ok_or(CoreError::NotFound)?;
+            announce_refiled(st, &ctx, &artifact, &done)?;
+            let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
+            let page = st.live_page_of(&to)?.ok_or(CoreError::NotFound)?;
+            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
+            Ok((view, page, artifact, !done.moved.is_empty()))
+        })
+        .await?;
+    Ok(Json(json!({
+        "thread": view,
+        "page": page_view(&s, &page, &artifact),
+        "moved": moved,
+    })))
+}
+
+/// `GET /api/live/rules?origin=<origin or page URL>` (the owner):
+/// `{origin, rules}`, the origin's merge rules ([`rule_view`]), oldest first.
+pub async fn rules(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    q: Result<Query<SiteQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner_reads(&who)?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let origin = origin_of(&s, &q.origin)?;
+    let o = origin.clone();
+    let rules = s.store_call(move |st| st.live_rules(&o)).await?;
+    Ok(Json(json!({
+        "origin": origin,
+        "rules": rules.iter().map(rule_view).collect::<Vec<_>>(),
+    })))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleBody {
+    origin: String,
+    pattern: String,
+}
+
+/// `POST /api/live/rules` `{origin, pattern}` (the owner: the token or the
+/// extension): adds a merge rule (spec 2026-10-05-chrome-overlay-design
+/// §7.1): the live pages of `origin` whose path `pattern` matches are one
+/// page from now on, the canonical page whose path is `pattern`. Applying
+/// it re-files under that page (made when missing) every thread of the
+/// origin whose path the rule now wins, as a move would, recording the
+/// rule. Answers `201 {rule, page, moved}` (`page`: the canonical page, or
+/// null when it does not exist; `moved`: the re-filed thread IDs); `200`
+/// for a rule the origin already has, applied again. 400 `invalid_pattern`,
+/// `own_origin`, `too_many_rules`.
+pub async fn add_rule(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    body: Result<Json<RuleBody>, axum::extract::rejection::JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    owner_writes(&who)?;
+    let b = super::artifacts::body(body)?;
+    let pattern = PathPattern::parse(&b.pattern)?;
+    let origin = origin_of(&s, &b.origin)?;
+    let canonical = page_url(&s, &format!("{origin}{}", pattern.as_str()))?;
+    if canonical.key.path != pattern.as_str() || canonical.route.is_some() {
+        return Err(ApiError::bad_request(
+            "invalid_pattern",
+            "the pattern is not a path as the URL parser writes it",
+        ));
+    }
+    let ctx = s.feedback_ctx();
+    let live_ids = s.live_ids.clone();
+    let (rule, created, page, moved) = s
+        .store_call(move |st| {
+            let (rule, created) = st.add_live_rule(&origin, &pattern)?;
+            let (refiles, title) = st.rule_refiles(&rule)?;
+            if refiles.is_empty() {
+                let page = match st.find_live_page(&canonical.key)? {
+                    Some(p) => {
+                        let a = st
+                            .get_artifact(&ArtifactId::parse(&p.artifact_id)?)?
+                            .ok_or(CoreError::NotFound)?;
+                        Some((p, a))
+                    }
+                    None => None,
+                };
+                return Ok((rule, created, page, Vec::new()));
+            }
+            let title = title.unwrap_or_else(|| canonical.key.page_url());
+            let (to, existed) = target_page(st, &live_ids, &ctx.events, &canonical.key, &title)?;
+            let by = mover(st, &who)?;
+            let done = st.refile_threads(&to, &refiles, &by, Some(&rule.id), existed)?;
+            let artifact = st.get_artifact(&to)?.ok_or(CoreError::NotFound)?;
+            announce_refiled(st, &ctx, &artifact, &done)?;
+            let page = st.live_page_of(&to)?.ok_or(CoreError::NotFound)?;
+            let moved = done.moved.into_iter().map(|(t, _)| t).collect();
+            Ok((rule, created, Some((page, artifact)), moved))
+        })
+        .await?;
+    let status = if created {
+        StatusCode::CREATED
+    } else {
+        StatusCode::OK
+    };
+    Ok((
+        status,
+        Json(json!({
+            "rule": rule_view(&rule),
+            "page": page.map(|(p, a)| page_view(&s, &p, &a)),
+            "moved": moved,
+        })),
+    ))
+}
+
+/// `DELETE /api/live/rules/<id>` (the owner: the token or the extension):
+/// removes a merge rule and answers `{rule}`; 404 when there is none. URLs
+/// it mapped name their own pages again; the threads it re-filed stay on
+/// its canonical page.
+pub async fn delete_rule(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<axum::extract::Path<String>, axum::extract::rejection::PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner_writes(&who)?;
+    let id = super::artifacts::path(p)?;
+    let rule = s
+        .store_call(move |st| st.delete_live_rule(&id)?.ok_or(CoreError::NotFound))
+        .await?;
+    Ok(Json(json!({"rule": rule_view(&rule)})))
 }
 
 #[cfg(test)]

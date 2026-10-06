@@ -10,14 +10,14 @@ use axum::http::{Extensions, HeaderMap};
 use clax_core::live::PageKey;
 use clax_core::store::live::EnsuredPage;
 use clax_core::{CoreError, Store};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Every live page's artifact ID, kept in step with the store: loaded at
-/// start, added to by [`LiveIds::ensure_page`] (the one way the server
-/// makes a live page), removed from on delete.
+/// Every live page's artifact ID, with its origin, kept in step with the
+/// store: loaded at start, added to by [`LiveIds::ensure_page`] (the one way
+/// the server makes a live page), removed from on delete.
 #[derive(Default)]
-pub struct LiveIds(RwLock<HashSet<String>>);
+pub struct LiveIds(RwLock<HashMap<String, String>>);
 
 impl LiveIds {
     /// The live pages the store holds now.
@@ -26,7 +26,10 @@ impl LiveIds {
     /// The store's.
     pub fn load(st: &Store) -> clax_core::Result<LiveIds> {
         Ok(LiveIds(RwLock::new(
-            st.live_page_ids()?.into_iter().collect(),
+            st.live_pages()?
+                .into_iter()
+                .map(|p| (p.artifact_id, p.origin))
+                .collect(),
         )))
     }
 
@@ -46,16 +49,25 @@ impl LiveIds {
         pending: &[String],
     ) -> clax_core::Result<EnsuredPage> {
         let e = st.ensure_live_page_linking(key, title, snapshot, pending)?;
-        self.insert(&e.artifact.id);
+        self.insert(&e.artifact.id, &key.origin);
         Ok(e)
     }
 
-    /// Records `id` as a live page.
-    pub fn insert(&self, id: &str) {
+    /// Records `id` as a live page of `origin`.
+    pub fn insert(&self, id: &str, origin: &str) {
         self.0
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(id.to_string());
+            .insert(id.to_string(), origin.to_string());
+    }
+
+    /// The origin of the live page `id`, or `None` for any other artifact.
+    pub fn origin_of(&self, id: &str) -> Option<String> {
+        self.0
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(id)
+            .cloned()
     }
 
     /// Forgets `id` (its artifact was deleted).
@@ -71,7 +83,7 @@ impl LiveIds {
         self.0
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(id)
+            .contains_key(id)
     }
 }
 
@@ -234,8 +246,9 @@ mod tests {
     fn live_ids_follow_inserts_and_removes() {
         let ids = LiveIds::default();
         assert!(!ids.contains("a"));
-        ids.insert("a");
+        ids.insert("a", "http://x");
         assert!(ids.contains("a"));
+        assert_eq!(ids.origin_of("a").as_deref(), Some("http://x"));
         ids.remove("a");
         assert!(!ids.contains("a"));
     }
