@@ -47,7 +47,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? { path: "/users/7?x#/y", origins: over.site ?? ["http://localhost:5173"] } : null; },
     } as never,
     sites: { load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o] },
-    probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(d => url.startsWith(d)); },
+    probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(x => url.startsWith(x)); },
     title: async () => "My App",
     pairer: { pair: async (retry?: boolean) => { calls.push(`pair ${!!retry}`); return {} as never; } },
     allUrls: async () => over.allUrls ?? false,

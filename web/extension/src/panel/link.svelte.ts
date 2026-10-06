@@ -7,10 +7,11 @@
 // stopped it), the link connects again and watches the tab again. An
 // action's failure stays shown through the worker's later pushes until the
 // person acts again or watches another tab.
-import { type PanelState, type PanelToWorker, type SiteView, isToPanel } from "../messages";
+import { type PanelState, type PanelToWorker, type SiteChoice, type SiteView, type Suggestion, isToPanel } from "../messages";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
-export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string };
+export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
+  | { t: "join"; origin: string; with: string } | { t: "split"; origin: string };
 /** How long a request waits for the worker's answer (one batch of at most 200 threads). */
 export const REQUEST_MS = 120_000;
 type Step = { moved: number; remaining: number };
@@ -37,6 +38,10 @@ export class PanelLink {
   up = $state(true);
   /** Every thread of the tab's site, as the worker last told it. */
   site = $state<SiteView | null>(null);
+  /** Whether the tab's origin may be the same app as another site, as the worker last answered (spec §7.2). */
+  suggestion = $state<{ origin: string; suggestion: Suggestion | null } | null>(null);
+  /** Every site Clax has live pages of, once asked for (`list-sites`). */
+  sites = $state<SiteChoice[] | null>(null);
   private reqs = 0;
   private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
   private port: Port;
@@ -84,6 +89,8 @@ export class PanelLink {
       }
       if (m.t === "tab") this.state = this.failure && !m.state.error ? { ...m.state, error: this.failure } : m.state;
       else if (m.t === "site") this.site = m.site;
+      else if (m.t === "suggestion") this.suggestion = { origin: m.origin, suggestion: m.suggestion };
+      else if (m.t === "sites") this.sites = m.sites;
       else if (m.t === "failed" && m.req === undefined && this.state) {
         this.failure = { code: m.code, message: m.message };
         this.state = { ...this.state, error: this.failure };

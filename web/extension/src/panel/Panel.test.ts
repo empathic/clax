@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/svelte";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PanelState, PanelToWorker, SiteView } from "../messages";
 import Panel from "./Panel.svelte";
@@ -310,5 +310,76 @@ describe("Panel: the site's other pages", () => {
     await settle();
     expect(l.asked).toHaveLength(1);
     expect(screen.queryByText(/Merging/)).toBeNull();
+  });
+});
+
+describe("Panel: joined sites", () => {
+  const O = "http://localhost:5173";
+  const A = "http://localhost:7702";
+  const settle = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+  const NOW = new Date("2026-10-05T10:01:00.000Z");
+  const lone = (): SiteView => ({ origin: O, site: { key: O, name: O, joined: false, origins: [{ origin: O, joined_at: null, last_used_at: null }] }, rules: [], pages: [] });
+  const both = (): SiteView => ({ origin: O, site: { key: A, name: O, joined: true, origins: [{ origin: O, joined_at: "t", last_used_at: "t2" }, { origin: A, joined_at: "t", last_used_at: "t1" }] }, rules: [], pages: [] });
+  function siteLink(site: SiteView, steps: { moved: number; remaining: number }[] = []) {
+    const l = { ...link(state()), site, asked: [] as unknown[], suggestion: null as unknown, sites: null as unknown,
+      request: async (m: unknown) => { l.asked.push(m); const r = steps.shift(); if (!r) throw new Error("No such site."); return r; } };
+    return l;
+  }
+
+  it("asks once whether a lone origin is another site's app, and offers Join, Not now and Never", async () => {
+    const l = siteLink(lone(), [{ moved: 200, remaining: 1 }, { moved: 1, remaining: 0 }]);
+    const asked: string[][] = [];
+    const r = render(Panel, { props: { link: l as never, now: NOW, permit: async (o: string[]) => { asked.push(o); return true; } } });
+    expect(l.sent.filter(m => m.t === "suggest")).toHaveLength(1);
+    expect(screen.queryByText(/same app\?/)).toBeNull();
+    l.suggestion = { origin: O, suggestion: { origin: A, origins: [A], reason: "path", path: "/settings" } };
+    await r.rerender({ link: { ...l } as never, now: NOW, permit: async (o: string[]) => { asked.push(o); return true; } });
+    expect(screen.getByText(/Looks like/).textContent).toContain("localhost:7702");
+    await fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Never" }));
+    expect(l.sent.filter(m => m.t === "answer")).toEqual([{ t: "answer", with: A, answer: "later" }, { t: "answer", with: A, answer: "never" }]);
+    await fireEvent.click(within(screen.getByRole("group", { name: "Same app?" })).getByRole("button", { name: "Join" }));
+    await settle();
+    // Chrome is asked for the site's origins under the click, then the join runs in batches.
+    expect(asked).toEqual([[A]]);
+    expect(l.asked).toEqual([{ t: "join", origin: O, with: A }, { t: "join", origin: O, with: A }]);
+    expect(screen.getByText(/Joined localhost:5173 and localhost:7702: one site, 201 threads merged/)).toBeTruthy();
+  });
+
+  it("joins nothing when Chrome is not allowed the other origin", async () => {
+    const l = siteLink(lone());
+    l.suggestion = { origin: O, suggestion: { origin: A, origins: [A], reason: "title", path: null } };
+    render(Panel, { props: { link: l as never, now: NOW, permit: async () => false } });
+    expect(screen.getByText(/page with this title/)).toBeTruthy();
+    await fireEvent.click(within(screen.getByRole("group", { name: "Same app?" })).getByRole("button", { name: "Join" }));
+    await settle();
+    expect(l.asked).toEqual([]);
+    expect(screen.getByText(/Chrome was not allowed access to localhost:7702/)).toBeTruthy();
+  });
+
+  it("lists a joined site's addresses with Split off, and joins the tab's origin to a site picked from the list", async () => {
+    const l = siteLink(both(), [{ moved: 0, remaining: 0 }, { moved: 0, remaining: 0 }]);
+    const r = render(Panel, { props: { link: l as never, now: NOW, permit: async () => true } });
+    // A joined site is offered no suggestion.
+    expect(l.sent.filter(m => m.t === "suggest")).toEqual([]);
+    const tools = document.querySelector("details.addresses") as HTMLDetailsElement;
+    tools.open = true;
+    await fireEvent(tools, new Event("toggle"));
+    expect(l.sent).toContainEqual({ t: "list-sites" });
+    expect([...tools.querySelectorAll(".origins .o")].map(e => e.textContent)).toEqual(["localhost:5173", "localhost:7702"]);
+    await fireEvent.click(screen.getByRole("button", { name: "Split localhost:7702 off" }));
+    await settle();
+    expect(l.asked).toEqual([{ t: "split", origin: A }]);
+    expect(screen.getByText(/localhost:7702 is a site of its own again/)).toBeTruthy();
+    // "Same app as…" offers the other sites only.
+    const C = "http://localhost:3000";
+    l.sites = [{ key: A, name: O, origins: [O, A] }, { key: C, name: C, origins: [C] }];
+    await r.rerender({ link: { ...l } as never, now: NOW, permit: async () => true });
+    const select = screen.getByLabelText("Same app as") as HTMLSelectElement;
+    expect([...select.options].map(o => o.textContent)).toEqual(["Choose an address", "localhost:3000"]);
+    await fireEvent.change(select, { target: { value: C } });
+    await fireEvent.click(within(tools).getByRole("button", { name: "Join" }));
+    await settle();
+    expect(l.asked.at(-1)).toEqual({ t: "join", origin: O, with: C });
   });
 });
