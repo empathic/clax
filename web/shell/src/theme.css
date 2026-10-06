@@ -98,7 +98,7 @@ button:disabled { opacity: .5; cursor: default; }
 .card .cb2 { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 12px; padding: 13px 14px 10px; align-items: baseline; }
 .card .v { font-size: 26px; line-height: 1; grid-row: span 2; color: var(--muted); font-variant-numeric: tabular-nums; }
 .card h3 { margin: 0; font-size: 15px; line-height: 1.3; overflow-wrap: break-word; }
-.card .by { font-size: 12px; color: var(--muted); }
+.card .by { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
 .card .live-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--agent); margin-right: 5px; vertical-align: 1px; }
 .card .mks { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 10px; }
 .card .ft { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 8px 104px 8px 12px; margin-top: auto; min-height: 37px; flex-wrap: wrap; }

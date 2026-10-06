@@ -289,7 +289,8 @@ Tools:
   `include_resolved`): threads with `anchor`, `clip_path`, `comments`,
   `sent_to_agent`, `status`, `feedback_state`, and `addressed_pending`; on a
   live page also `page_url` and `snapshot_path`.
-- `comments_reply` (`url_or_id`, `thread_id`, `text`): `replied: true`, or
+- `comments_reply` (`url_or_id`, `thread_id`, `text`; `addressed` on a live
+  page): `replied: true`, or
   `replied: false` with `guidance` on a thread that was not sent to you.
 - `comments_resolve` (`url_or_id`, `thread_id`): `resolved: true`, or
   `resolved: false` with `guidance` on a thread that was not sent to you.
@@ -312,8 +313,11 @@ screenshot (`Clip:`) and a snapshot of the page's HTML (`Snapshot:`). After
 your change shows in the page (hot reload or restart), reply with
 `comments_reply` and `addressed: true`; the next snapshot of the page is
 recorded as addressing the thread. You cannot `publish` a live page. If the
-person has not set up the extension, tell them to run `/clax:extension`
-(Claude Code) or `clax init`, then load `~/.clax/extension` once in Chrome.
+person has not set up the extension, set it up yourself: `clax` is often not
+on PATH, so run this plugin's wrapper, `scripts/ensure-clax.sh exec extension
+install --json` from the plugin's directory (two levels above this skill's),
+or in Claude Code ask them to run `/clax:extension`. Then relay its
+`load_unpacked` step: load `~/.clax/extension` once in Chrome.
 
 Showing that you are working: when a comment reaches you, the person's page
 already shows you as working on its thread, and it clears when you reply to

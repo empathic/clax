@@ -2674,6 +2674,51 @@ The Claude Code plugin's `/clax:extension` runs `clax extension install`
 through the wrapper and relays the result, for people who installed only
 the plugin (plugins never run `clax init`).
 
+### `clax native-host`
+
+`clax native-host <origin>` is the Chrome native messaging host that pairs
+the extension with the daemon; Chrome runs it through `host/launch.sh`,
+never a person. Chrome passes the caller's origin
+(`chrome-extension://<ID>/`) as the first argument and may append others,
+which are ignored. One run reads one request on stdin, writes one reply on
+stdout and exits; nothing else is written to stdout.
+
+Framing is Chrome's: each message is a 4-byte length in native byte order
+followed by that many bytes of UTF-8 JSON. A message is at most 65536 bytes
+each way; a longer request is `bad_request`, and an error reply that would
+be longer is cut to a 1024-character message.
+
+The request is `{"type": "pair", "v": 1}`. The host checks the origin
+first: anything but the extension origin of the ID in effect for the home
+gets `wrong_origin` without reading stdin. It then finds the daemon on the
+home's port, starting it as any client does (and replacing a running daemon
+older than the binary), mints a credential through
+`POST /api/extension/credentials` with the ID in effect, and replies:
+
+```json
+{"type": "paired", "v": 1, "daemon": "http://localhost:7480",
+ "credential": "cxe_…", "clax_version": "0.3.0",
+ "viewer": {"public_id": "…", "display_name": "…", "created_at": "…"}}
+```
+
+`daemon` is always `http://localhost:<port>`, whatever the daemon's bind
+address. `credential` and `viewer` are the mint's (see the extension
+routes). Every failure is one reply,
+`{"type": "error", "v": 1, "code", "message"}`, with `code`:
+
+| `code` | When |
+|---|---|
+| `wrong_origin` | the origin argument is missing or is not this home's extension |
+| `bad_request` | no message, a short or oversized one, not JSON, no numeric `v`, a `type` other than `pair`, or arguments the command line cannot parse |
+| `unsupported_version` | `v` is not `1` |
+| `daemon_unavailable` | no Clax home, the daemon could not be found or started, the mint failed (a daemon that predates the extension is named, with `clax stop` as the remedy), the daemon answered without a credential, or the host failed while pairing |
+
+The exit status is 0 after a `paired` or ordinary error reply, and 1 after
+`wrong_origin`, an unparsable command line or a missing home. Each run
+appends one line, without the credential, to `<home>/logs/native-host.log`
+when `logs/` exists, rotating it to `native-host.log.1` past 1 MiB. The
+extension treats a reply that is neither shape as its own `bad_reply`.
+
 ### `clax bin`
 
 `clax bin` (or `clax bin show`) prints which `clax` the plugins would run

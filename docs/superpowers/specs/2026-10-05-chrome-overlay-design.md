@@ -1,7 +1,7 @@
 # Clax in Chrome: the comment overlay on any web page
 
 Date: 2026-10-05
-Status: draft for review
+Status: implemented on branch chrome-overlay; one open question (§17)
 
 This document designs a Chrome extension that puts Clax's comment overlay on
 any web page, most often a developer's running dev server, and links the
@@ -207,7 +207,7 @@ reach. Only the service worker holds the credential and talks to the daemon.
 
 ## 5. Data model
 
-### 5.1 Migration 15: live pages
+### 5.1 Migration 16: live pages
 
 ```sql
 ALTER TABLE artifacts ADD COLUMN kind TEXT NOT NULL DEFAULT 'html'
@@ -262,7 +262,7 @@ page URL the thread was posted with (the client's value is ignored) and
 refuses it on other artifacts (`invalid_anchor`). Its summary prefix is
 `<route> › ` when present, as `<file> › ` is today.
 
-### 5.3 Migration 16: extension credentials
+### 5.3 Migration 17: extension credentials
 
 ```sql
 CREATE TABLE extension_credentials (
@@ -446,15 +446,21 @@ repository.
 - `scripts/extension-pubkey.sh` runs
   `op read "$CLAX_EXTENSION_KEY_REF" | openssl rsa -pubout -outform DER | base64`
   and writes `web/extension/key/key.pub.b64` (one line), which is committed. The
-  private key passes only through the pipe; 1Password asks the owner to
-  approve each read.
+  private key passes only through the pipe; with the 1Password app's CLI
+  integration, the app asks the owner to approve each read (a
+  service-account token does not ask). The key is built into the binary,
+  so the owner rebuilds and reinstalls clax before `clax init`.
 - `scripts/pack-extension.sh` builds the Web Store upload zip from the
   release build and, with `--crx`, a signed `.crx` (Chromium's
   `--pack-extension-key`). It reads the private key from 1Password into a
   mode-0600 temporary file removed on exit (trap), never into the
-  repository. The key goes into the zip only for the listing's first upload
-  (`--first-upload`), which is what keeps the listed ID equal to the
-  committed public key's; the Web Store re-signs every later release itself.
+  repository. The zip's `manifest.json` is the build's without `key`, which
+  the Web Store refuses ("key field is not allowed in manifest"); the `.crx`
+  keeps it. The private key goes into the zip, at its root as `key.pem`,
+  only for the listing's first upload (`--first-upload`), which is what
+  keeps the listed ID equal to the committed public key's; the Web Store
+  re-signs every later release itself. Until that zip is complete, an exit
+  or interrupt removes its directory too.
 
 The scripts' tests use a fake `op` on `PATH` and a throwaway key generated in
 the test; no gate or CI job calls 1Password. The upload itself is the
@@ -615,7 +621,8 @@ is 403 `forbidden_origin`. (Provisional, pending the owner's confirmation:
 found by the browser test, 2026-10-05.) New routes (viewer routes: no token):
 
 - `GET /api/live/pages?url=<page URL>` → `{page: {artifact_id, origin,
-  path, route, title, current_version, url} | null, route}`. Never creates.
+  path, page_url, title, current_version, url} | null, route}`. Never
+  creates.
 - `POST /api/live/threads` (multipart, ≤ 24 MiB): `url`, `title`, `anchor`
   (JSON, without `route`), `body`, `pending` (a JSON array of the thread IDs
   the extension saw pending when it serialized the page; a new version links
@@ -881,7 +888,7 @@ What is protected, from whom:
 ## 13. Testing
 
 - **Rust**: URL normalization cases (`crates/clax-core/src/live-url-cases.json`);
-  migrations 15–16 from the previous schema; live-page store (create,
+  migrations 16–17 from the previous schema; live-page store (create,
   placeholder, snapshot dedupe, delete frees the key, pending address
   linking); scope-watch materialization and removal; the routes; the
   gateway (each allowlisted route works, everything else refused, wrong
@@ -941,8 +948,11 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
 > your change shows in the page (hot reload or restart), reply with
 > `comments_reply` and `addressed: true`; the next snapshot of the page is
 > recorded as addressing the thread. You cannot `publish` a live page. If the
-> person has not set up the extension, tell them to run `/clax:extension`
-> (Claude Code) or `clax init`, then load `~/.clax/extension` once in Chrome.
+> person has not set up the extension, set it up yourself: `clax` is often not
+> on PATH, so run this plugin's wrapper, `scripts/ensure-clax.sh exec extension
+> install --json` from the plugin's directory (two levels above this skill's),
+> or in Claude Code ask them to run `/clax:extension`. Then relay its
+> `load_unpacked` step: load `~/.clax/extension` once in Chrome.
 
 ## 16. Out of scope
 
@@ -959,5 +969,13 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
 
 ## 17. Open questions
 
-None. Keys and signing (L15, §6.7), the composer and how comment mode starts
-were decided by the owner (L7, L8), as was the owner identity (L6).
+For the owner:
+
+- **Origin-less GETs (§9.2).** The gateway counts a GET that carries the
+  credential, no `Origin` and `Sec-Fetch-Site: none` as the extension's,
+  because Chrome sends the worker's GETs that way once the extension holds
+  a host permission for the daemon's origin. Writes without `Origin` stay
+  refused. This ruling is provisional until the owner confirms it.
+
+Keys and signing (L15, §6.7), the composer and how comment mode starts were
+decided by the owner (L7, L8), as was the owner identity (L6).

@@ -123,9 +123,11 @@ once the owner commits one. Signing is the owner's alone and never runs in
 CI: the private key lives only in the owner's 1Password, created there
 directly (nothing on disk), and `CLAX_EXTENSION_KEY_REF` holds its `op://`
 reference. `scripts/extension-pubkey.sh` writes the public key and prints
-the ID (commit the file, then run `clax init`; the ID changes once), and
-`scripts/pack-extension.sh` builds the Web Store zip, with
-`--first-upload` (key included) for the listing's first upload only. The
+the ID (commit the file, rebuild and reinstall clax with `just install`
+since the key is built in, then run `clax init`; the ID changes once), and
+`scripts/pack-extension.sh` builds the Web Store zip (its manifest without
+`key`, which the store refuses), with `--first-upload` (the private key as
+`key.pem` at the zip's root) for the listing's first upload only. The
 steps are in `docs/verification.md` §8.4.
 
 ## The comment loop

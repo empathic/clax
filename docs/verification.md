@@ -720,6 +720,10 @@ Found by this test and fixed, each with a regression test:
   after the overlay (only a modal dialog was tried).
 - Two injections racing for certain: test 6 shows one overlay after two
   concurrent toggles, but not that both injections reached the page.
+- Neither signing script has run against a real 1Password: only the
+  test's fake `op` has served a key. No zip has been uploaded to the Chrome
+  Web Store, so neither the first upload with `key.pem` nor the store's
+  handling of a later release has been seen.
 
 ### 8.4 The owner's steps outside Clax
 
@@ -736,21 +740,26 @@ owner does these steps.
    `op://<vault>/<item>/key.pem`), in the owner's shell only; no vault or
    item name goes into the repository. `op read "$CLAX_EXTENSION_KEY_REF"`
    must print the PEM key.
-3. Run `scripts/extension-pubkey.sh`. It reads the key once (1Password asks
-   for approval), writes its public half to `web/extension/key/key.pub.b64`
-   and prints the extension ID. Commit that file. The extension's ID then
-   becomes the key's, once: run `clax init`, which writes the new native-host
-   registration, and each person loads `~/.clax/extension` unpacked again.
+3. Run `scripts/extension-pubkey.sh`. It reads the key once (with the
+   1Password app's CLI integration, the app asks for approval; a
+   service-account token does not ask), writes its public half to
+   `web/extension/key/key.pub.b64` and prints the extension ID. Commit that
+   file. The key is built into the binary, so rebuild and reinstall clax
+   (`just install`). The extension's ID then becomes the key's, once: run
+   `clax init`, which writes the new native-host registration, and each
+   person loads `~/.clax/extension` unpacked again.
 4. For the Chrome Web Store listing's first upload only, run
    `scripts/pack-extension.sh --first-upload`. It builds the release
-   extension and writes a zip holding the build and the key as `key.pem`,
-   which fixes the listed ID to the committed key's. That zip goes to a new
-   owner-only directory under `$TMPDIR`, outside the repository; delete it
-   once uploaded. Every later release is `scripts/pack-extension.sh`, which
-   writes `dist/clax-extension-<version>.zip` without the key (the Web Store
-   re-signs each release itself). `--crx` also writes a signed
-   `dist/clax-extension-<version>.crx` with Chromium (`CLAX_CHROMIUM` names
-   the binary).
+   extension and writes a zip holding the build, with `key` removed from
+   its `manifest.json` (the store refuses a manifest with `key`), and the
+   private key at its root as `key.pem`, which fixes the listed ID to the
+   committed key's. That zip goes to a new owner-only directory under
+   `$TMPDIR`, outside the repository; delete it once uploaded. Every later
+   release is `scripts/pack-extension.sh`, which writes
+   `dist/clax-extension-<version>.zip`, also without `key` in its manifest
+   and without `key.pem` (the Web Store re-signs each release itself).
+   `--crx` also writes a signed `dist/clax-extension-<version>.crx` with
+   Chromium (`CLAX_CHROMIUM` names the binary); its manifest keeps `key`.
 5. Upload the zip by hand in the Chrome Web Store developer dashboard.
 
 `scripts/pack-extension.sh` refuses a build whose manifest `key` is not the
@@ -764,8 +773,10 @@ mode-0600 temporary file removed on exit, interrupt or termination
 throwaway key: the public key and the ID it prints (checked against the rule
 `crates/clax-core/src/extension.rs` pins), exit 2 without
 `CLAX_EXTENSION_KEY_REF` or under `CI` with no `op` call, the zip without
-and with `key.pem`, a mismatched manifest key, no copy of the key left in
-the repository or `$TMPDIR` (also after SIGINT mid-run) and none printed,
+and with `key.pem` and its manifest without `key`, a mismatched manifest
+key, no copy of the key left in the repository or `$TMPDIR` (also after
+SIGINT mid-run, and after SIGINT once `key.pem` is in an unfinished
+`--first-upload` zip) and none printed,
 and a `.crx` signed with the key when a Chromium is found (skipped under
 `CI`). No gate calls 1Password.
 
