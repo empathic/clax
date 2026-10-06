@@ -10,12 +10,16 @@
 import { writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
-import { build } from "vite";
+import { build, transformWithEsbuild } from "vite";
 import { cleanOut } from "./extension-clean.mjs";
 import { drawIcons } from "./extension-icons.mjs";
 import { extensionManifest } from "./extension-manifest.mjs";
 
 const web = fileURLToPath(new URL("..", import.meta.url));
+/** Vite minifies an ES library's identifiers and syntax but keeps its
+ * whitespace and comments (for the pure annotations a library's consumer
+ * might use): the worker is no one's library, so it is minified whole. */
+const minifyWhole = { name: "minify-whole", renderChunk: async code => (await transformWithEsbuild(code, "sw.js", { minify: true, format: "esm" })).code };
 const root = `${web}extension/`;
 
 async function variant(out, test) {
@@ -23,7 +27,7 @@ async function variant(out, test) {
   const shared = { configFile: false, logLevel: "warn", publicDir: false, define: { __CLAX_EXT_TEST__: JSON.stringify(test), __CLAX_TEST_CLOCK__: "false" } };
   const scripts = [["sw", "sw/main.ts", "es"], ["overlay", "content/overlay.ts", "iife"]];
   for (const [name, entry, format] of scripts) {
-    await build({ ...shared, build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false,
+    await build({ ...shared, plugins: format === "es" ? [minifyWhole] : [], build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false,
       lib: { entry: `${root}src/${entry}`, formats: [format], name: `clax_${name}`, fileName: () => `${name}.js` } } });
   }
   await build({ ...shared, root, base: "./", plugins: [svelte({ configFile: `${web}svelte.config.js` })],
