@@ -125,7 +125,11 @@ export function startBackground(c: typeof chrome) {
 
   c.action.onClicked.addListener(tab => gesture(tab, true));
   c.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
-  c.runtime.onInstalled.addListener(() => c.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
+  // Chrome keeps menu items across some updates and refuses a second item
+  // with the same ID, so the menu is cleared before its one item is added.
+  c.runtime.onInstalled.addListener(() => c.contextMenus.removeAll().then(() => {
+    c.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }, () => void c.runtime.lastError);
+  }));
   c.runtime.onStartup.addListener(() => {});
   c.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
   const gone = (tabId: number) => { docs.delete(tabId); picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId, true)); };

@@ -19,12 +19,15 @@ function area() {
 }
 export function fakeChrome() {
   const calls: { api: string; args: unknown[] }[] = [];
+  const menus = new Set<string>();
+  const menuErrors: string[] = [];
+  const lastError: { value: { message: string } | undefined } = { value: undefined };
   const rec = (api: string, ret: unknown = undefined) => async (...args: unknown[]) => { calls.push({ api, args }); return typeof ret === "function" ? (ret as (...a: unknown[]) => unknown)(...args) : ret; };
   const granted = new Set<string>();
   const native: { reply: unknown } = { reply: { type: "error", v: 1, code: "daemon_unavailable", message: "not set" } };
   return {
-    calls, granted, native,
-    runtime: { id: "test-extension", getManifest: () => ({ version: "0.9.0" }), getURL: (p: string) => `chrome-extension://test-extension/${p}`,
+    calls, granted, native, menus, menuErrors, lastError,
+    runtime: { get lastError() { return lastError.value; }, id: "test-extension", getManifest: () => ({ version: "0.9.0" }), getURL: (p: string) => `chrome-extension://test-extension/${p}`,
       reload: rec("runtime.reload"), sendNativeMessage: rec("runtime.sendNativeMessage", () => native.reply),
       onMessage: new FakeEvent<[unknown, chrome.runtime.MessageSender, (r: unknown) => void]>(), onConnect: new FakeEvent<[chrome.runtime.Port]>(),
       onInstalled: new FakeEvent<[]>(), onStartup: new FakeEvent<[]>() },
@@ -39,7 +42,11 @@ export function fakeChrome() {
     sidePanel: { open: rec("sidePanel.open"), setOptions: rec("sidePanel.setOptions") },
     action: { onClicked: new FakeEvent<[chrome.tabs.Tab]>() },
     commands: { onCommand: new FakeEvent<[string, chrome.tabs.Tab]>() },
-    contextMenus: { create: rec("contextMenus.create"), onClicked: new FakeEvent<[chrome.contextMenus.OnClickData, chrome.tabs.Tab]>() },
+    contextMenus: {
+      // Chrome keeps menu items across some updates, and refuses a second item with the same ID.
+      create: (props: { id: string }, done?: () => void) => { calls.push({ api: "contextMenus.create", args: [props] }); if (menus.has(props.id)) menuErrors.push(`Cannot create item with duplicate id ${props.id}`); else menus.add(props.id); done?.(); return props.id; },
+      removeAll: async () => { calls.push({ api: "contextMenus.removeAll", args: [] }); menus.clear(); },
+      onClicked: new FakeEvent<[chrome.contextMenus.OnClickData, chrome.tabs.Tab]>() },
   };
 }
 export type FakeChrome = ReturnType<typeof fakeChrome>;

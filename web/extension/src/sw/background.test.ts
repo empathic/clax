@@ -334,4 +334,13 @@ describe("Clax on per tab", () => {
     expect(panelOf(1)).toBeNull();
     expect(injections(1)).toBe(0);
   });
+
+  it("adds its context menu item once however often install and update fire, with no duplicate-ID error", async () => {
+    start(c);
+    await Promise.all(c.runtime.onInstalled.fire());
+    await Promise.all(c.runtime.onInstalled.fire());
+    expect([...c.menus]).toEqual(["clax-comment"]);
+    expect(c.calls.filter(x => x.api === "contextMenus.create")).toHaveLength(2);
+    expect(c.menuErrors).toEqual([]);
+  });
 });
