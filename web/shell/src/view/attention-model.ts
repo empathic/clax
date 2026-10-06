@@ -1,10 +1,11 @@
 // Needs your eyes (spec §8, "Gallery"): from this viewer's attention, which
 // artifacts float to the top and which markers each card carries. A
-// never-viewed artifact does not need your eyes for its version alone.
+// never-viewed artifact does not need your eyes for its version alone. A
+// live page's card leads with Live.
 import type { Artifact, AttentionSummary } from "../api";
 import { orderArtifacts } from "./gallery-model";
 
-export type Marker = { kind: "you" | "new" | "rep" | "ag" | "oth"; text: string };
+export type Marker = { kind: "live" | "you" | "new" | "rep" | "ag" | "oth"; text: string };
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 export function needsEyes(a: Artifact, att?: AttentionSummary): boolean {
@@ -13,7 +14,7 @@ export function needsEyes(a: Artifact, att?: AttentionSummary): boolean {
 }
 
 export function markers(a: Artifact, att: AttentionSummary | undefined, working: string[]): Marker[] {
-  const out: Marker[] = [];
+  const out: Marker[] = a.kind === "live" ? [{ kind: "live", text: "Live" }] : [];
   if (att?.addressed.length) out.push({ kind: "you", text: `${att.addressed.length} addressed in v${att.addressed_v ?? a.current_version}` });
   if (att && att.seen !== null && a.current_version > att.seen) out.push({ kind: "new", text: `v${a.current_version} new` });
   if (att?.new_replies.length) out.push({ kind: "rep", text: plural(att.new_replies.length, "new reply", "new replies") });

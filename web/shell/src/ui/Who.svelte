@@ -6,7 +6,9 @@
   // its styles carry the sweep under the top bar while anyone works, and the
   // split pins of the threads an agent works on. The block is the button that
   // opens the people panel; it lists everyone present, commenters or not,
-  // with their here or away mark, and never where they look.
+  // with their here or away mark, and never where they look. On a live page,
+  // an Open page link to the page itself follows it (hidden at phone width,
+  // where the more menu lists it).
   // Not needed for the first paint: the artifact entry loads it after (`more-menu.svelte.ts`).
   import type { ArtifactController, Loaded, ViewState } from "../view/artifact-controller";
   import { presenceMap, roster } from "../view/presence-model";
@@ -29,7 +31,7 @@
   const busy = $derived(new Set(p.s.working.map(w => w.agent)));
   const sum = $derived(summary({
     working: p.s.working, names, mine: new Set(p.s.attention?.open_in ?? []), open: p.open, now: tick.now,
-    idle: parts.agents.filter(a => a.live && !busy.has(a.handle)).map(a => names.get(a.handle) ?? a.harness), addressed: p.s.decided?.line ?? null, published: p.s.deleted ? null : p.s.newer, rally: p.s.rally,
+    idle: parts.agents.filter(a => a.live && !busy.has(a.handle)).map(a => names.get(a.handle) ?? a.harness), addressed: p.s.decided?.line ?? null, published: p.s.deleted ? null : p.s.newer, rally: p.s.rally, live: !!p.s.data.artifact.live,
   }));
 </script>
 
@@ -37,10 +39,12 @@
   <Roster people={roster(parts.people, p.s.presence)} agents={parts.agents} working={p.s.working} me={p.s.me?.public_id ?? null} max={p.s.narrow ? 1 : 5} presence={presenceMap(p.s.presence)} />
   <WorkingSummary s={sum} />
 </button>
+{#if p.s.data.artifact.live}<a class="open-page hide-sm" href={p.s.data.artifact.live.page_url} target="_blank" rel="noopener noreferrer">Open page</a>{/if}
 {#if p.s.menu === "people" && Panel}<Panel ctl={p.ctl} s={p.s} onClose={() => p.ctl.closeMenu()} />{/if}
 
 <style>
   :global {
+    .topbar a.open-page { font: 600 14px var(--font); color: var(--accent-ink); padding: 0 6px; white-space: nowrap; }
     button.who { cursor: pointer; font: inherit; color: inherit; text-align: left; }
     .who { display: flex; align-items: center; gap: 10px; height: 36px; padding: 0 12px 0 5px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); flex: none; min-width: 0; }
     .who .sum { display: flex; align-items: center; gap: 8px; min-width: 0; }

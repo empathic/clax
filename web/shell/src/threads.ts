@@ -16,6 +16,8 @@ export type Thread = {
   /** Each time the thread was sent with others as one batch, oldest first:
    * the batch's size (this thread included), its note, and its sender's name. */
   sends?: { batch_id: string; size: number; note: string | null; sent_by: string; sent_at: string }[];
+  /** On a live page: an agent said the page shows its fix; the page's next snapshot will be listed as addressing the thread. */
+  addressed_pending?: { harness: string; at: string } | null;
 };
 /** The daemon's view of this viewer; `public_id` names it in `resolved_by`, the cookie never leaves the daemon. */
 export type Viewer = { public_id: string; display_name: string | null; created_at: string };

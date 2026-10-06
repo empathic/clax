@@ -124,6 +124,21 @@ describe("Gallery", () => {
     expect(cards[2].querySelector(".by")?.textContent).toContain("command line");
   });
 
+  it("marks a live page's card Live and names its page by URL", async () => {
+    const live = { ...ARTIFACTS[1], id: "live00000000", title: "Settings", kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } };
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      if (url.endsWith("/api/artifacts")) return new Response(JSON.stringify({ artifacts: [live, ARTIFACTS[1]] }));
+      return new Response("{}", { status: 404 });
+    }));
+    const root = await mountGallery();
+    const cards = root.querySelectorAll("a.card");
+    // The chip loads after the first paint, with the other markers.
+    expect((await waitFor(() => cards[0].querySelector(".chip.live"), "the Live chip")).textContent).toBe("Live");
+    expect(cards[0].querySelector(".by")?.textContent).toContain("localhost:5173/settings");
+    expect(cards[0].querySelector(".by")?.textContent).not.toContain("command line");
+    expect(cards[1].querySelector(".chip.live")).toBeNull();
+  });
+
   it("shows a working chip on a card an agent works on, none on the others, and the roster in the footer", async () => {
     const working = [{ key: "k", agent: "a_1111aaaa", harness: "claude", message: null, thread_ids: [], started_at: "2026-09-28T11:00:00Z", last_heartbeat: "2026-09-28T11:00:00Z" }];
     const parts = { people: [{ public_id: "v1", display_name: "Ada", seen: null }], agents: [{ handle: "a_1111aaaa", harness: "claude", live: true }] };

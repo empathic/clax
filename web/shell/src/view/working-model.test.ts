@@ -26,6 +26,7 @@ describe("working-model", () => {
     expect(summary({ ...base, working: [], mine: new Set(), rally: true }).line2).toBe("3 open threads · rally of 10");
     expect(summary({ ...base, working: [], mine: new Set(), addressed: "v5 addressed 3", rally: true }).line2).toBe("yours, not looked at yet");
     expect(summary({ ...base, working: [], mine: new Set(), published: 3 })).toEqual({ line1: "v3 published", agent: false, line2: "reload to see it", elapsed: null });
+    expect(summary({ ...base, working: [], mine: new Set(), published: 4, live: true })).toEqual({ line1: "v4 snapshot taken", agent: false, line2: "reload to see it", elapsed: null });
   });
 
   it("lists several agents and counts distinct threads", () => {

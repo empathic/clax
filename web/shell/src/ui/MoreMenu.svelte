@@ -3,7 +3,8 @@
 <script lang="ts">
   // The top bar's ⋯ menu: open raw and copy link, and Versions at phone width,
   // where the version button is hidden; Versions closes the menu and opens
-  // the version menu (`onVersions`). A menu button: opening
+  // the version menu (`onVersions`). On a live page (`pageHref`, the page's
+  // URL) phone width also lists Open page, and Versions reads Snapshots. A menu button: opening
   // focuses the first item; Up, Down, Home and End move between the items;
   // Escape, Open raw and Copy link close it with focus back on the button; a
   // press outside, or Tab or focus leaving it, closes it. The items are out of
@@ -12,7 +13,7 @@
   // handles, and every printable key (so C and ? do nothing there).
   import { tick } from "svelte";
 
-  let { rawHref, canCopy, onCopy, onVersions }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void } = $props();
+  let { rawHref, canCopy, onCopy, onVersions, pageHref = null }: { rawHref: string | null; canCopy: boolean; onCopy(): void; onVersions?(): void; pageHref?: string | null } = $props();
   let open = $state(false);
   // Phone width, as the bar's `hide-sm` rule draws it; read on each open.
   let phone = $state(false);
@@ -59,7 +60,8 @@
   </button>
   {#if open}
     <div class="more-menu" role="menu" bind:this={menu}>
-      {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>Versions</button>{/if}
+      {#if phone && onVersions}<button type="button" role="menuitem" tabindex="-1" class="ghost" onclick={() => { open = false; onVersions(); }}>{pageHref ? "Snapshots" : "Versions"}</button>{/if}
+      {#if phone && pageHref}<a role="menuitem" tabindex="-1" href={pageHref} target="_blank" rel="noopener noreferrer" onclick={close}>Open page</a>{/if}
       {#if rawHref}
         <a role="menuitem" tabindex="-1" href={rawHref} target="_blank" rel="noopener" onclick={close}>Open raw</a>
       {:else}

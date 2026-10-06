@@ -1,4 +1,4 @@
-// The version menu's rows (spec §8): who published each version and when, the threads it addressed, what this viewer did about them, and its note. Loaded with the menu's panel.
+// The version menu's rows (spec §8): who published each version (on a live page, "snapshot") and when, the threads it addressed, what this viewer did about them, and its note. Loaded with the menu's panel.
 import type { Version } from "../api";
 import { relativeTime } from "../format";
 import type { Thread } from "../threads";
@@ -9,7 +9,9 @@ import { agentName } from "./history-model";
 export type Chip = { id: string; n: number | null; open: boolean };
 export type Row = { n: number; current: boolean; latest: boolean; who: string; when: string; chips: Chip[]; did: string | null; note: string | null; label: string | null };
 /** `numbers`: the pin numbering the sidebar uses; `me`: this viewer's public ID. */
-export type RowInput = { versions: Version[]; latest: number; shown: number; now: Date; threads: Thread[]; numbers: Map<string, number>; me: string | null };
+/** `live`: the artifact is a live page, whose versions are snapshots: each
+ * row names its version "snapshot", and only v1 has a note ("First snapshot"). */
+export type RowInput = { versions: Version[]; latest: number; shown: number; now: Date; threads: Thread[]; numbers: Map<string, number>; me: string | null; live?: boolean };
 
 /** The versions newest first. */
 export function versionRows(i: RowInput): Row[] {
@@ -27,9 +29,9 @@ export function versionRows(i: RowInput): Row[] {
       else if (t.status === "open" && mineAfter) did.push(`you replied on ${num ? `#${num}` : "it"}, still open`);
     }
     return {
-      n: v.n, current: v.n === i.shown, latest: v.n === i.latest, who: v.agent_harness ? agentName(v.agent_harness) : "command line",
+      n: v.n, current: v.n === i.shown, latest: v.n === i.latest, who: i.live ? "snapshot" : v.agent_harness ? agentName(v.agent_harness) : "command line",
       when: relativeTime(v.created_at, i.now), chips, did: did.length ? did.join("; ") : null,
-      note: v.note ?? (v.n === 1 ? "First publish" : null), label: v.label,
+      note: i.live ? (v.n === 1 ? "First snapshot" : null) : v.note ?? (v.n === 1 ? "First publish" : null), label: v.label,
     };
   });
 }

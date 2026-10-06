@@ -23,7 +23,7 @@
 <svelte:window onpointerdown={outside} />
 <!-- Escape closes the dialog. -->
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-<div class="vmenu" role="dialog" aria-label="Versions" tabindex="-1" bind:this={panel}
+<div class="vmenu" role="dialog" aria-label={input.live ? "Snapshots" : "Versions"} tabindex="-1" bind:this={panel}
   onkeydown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
   <ol>
     {#each rows as r (r.n)}

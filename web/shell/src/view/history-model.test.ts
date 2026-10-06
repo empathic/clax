@@ -21,6 +21,13 @@ describe("history-model", () => {
     expect(versionAt(vs, "2026-09-30T13:00:00.000Z")).toBe(3);
   });
 
+  it("shows an address waiting for a live page's next snapshot", () => {
+    const t = { ...T({ comments: [C("1", "viewer", "alex", "2026-10-05T10:00:00.000Z")] }), addressed_pending: { harness: "claude", at: "2026-10-05T10:05:00.000Z" } };
+    const h = historyOf(t, [], by => by);
+    expect(h.at(-1)).toEqual({ v: null, who: "claude", agent: true, verb: "addressed it · waiting for a snapshot" });
+    expect(historyOf({ ...t, status: "resolved" }, [], by => by).some(e => e.verb.includes("waiting"))).toBe(false);
+  });
+
   it("reads comments, replies, an agent's reply without a tag, and the resolve", () => {
     const t = T({
       comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:10:00.000Z"), C("3", "agent", "Agent", "2026-09-30T11:20:00.000Z")],

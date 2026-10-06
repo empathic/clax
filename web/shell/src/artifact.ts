@@ -5,7 +5,7 @@ import { type ArtifactProps, ArtifactController, type ViewState } from "./view/a
 import { afterPaint } from "./view/after-paint";
 import type { Boot } from "./view/boot";
 import { FrameHost } from "./view/frame-host";
-import { publisherText } from "./view/gallery-model";
+import { publisherText } from "./view/publisher";
 import { type Skeleton, skeleton } from "./view/skeleton";
 
 export { MOVE_TO_CLICK, MOVE_TO_PICK, pageWait } from "./view/artifact-controller";

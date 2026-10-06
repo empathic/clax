@@ -445,6 +445,18 @@ describe("ArtifactController", () => {
     ctl.dispose();
   });
 
+  it("never enters comment mode on a live page: not by Comment nor C; ? still opens the keys", async () => {
+    const { ctl } = await started({ artifact: { kind: "live", live: { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" } } });
+    await vi.waitFor(() => expect(ctl.state.get().data?.artifact.kind).toBe("live"));
+    ctl.toggleComment();
+    expect(ctl.state.get().commenting).toBe(false);
+    dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true }));
+    expect(ctl.state.get().commenting).toBe(false);
+    dispatchEvent(new KeyboardEvent("keydown", { key: "?", shiftKey: true, bubbles: true }));
+    expect(ctl.state.get().sheet).toBe("keys");
+    ctl.dispose();
+  });
+
   it("closes the sheet with a notice when its code cannot load, so the keys act again", async () => {
     const { ctl } = await started();
     dispatchEvent(new KeyboardEvent("keydown", { key: "?", shiftKey: true, bubbles: true }));

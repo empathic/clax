@@ -7,11 +7,6 @@ export function filterArtifacts(list: Artifact[], query: string): Artifact[] {
   return list.filter(a => a.title.toLowerCase().includes(q) || (a.description ?? "").toLowerCase().includes(q));
 }
 
-/** Who published the artifact: its owner session's harness, else the command line. */
-export function publisherText(a: Artifact): string {
-  return a.owner_harness ? `published by ${a.owner_harness}` : "published from the command line";
-}
-
 /** Pinned first, then the most recently updated. */
 export function orderArtifacts(list: Artifact[]): Artifact[] {
   return [...list].sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated_at.localeCompare(a.updated_at));

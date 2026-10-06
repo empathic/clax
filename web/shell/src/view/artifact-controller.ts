@@ -1325,8 +1325,8 @@ export class ArtifactController {
 
   // ---- intents ----
 
-  /** The Comment button. */
-  toggleComment(): void { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); }
+  /** The Comment button and C; nothing on a live page, whose comments come from Chrome with the Clax extension. */
+  toggleComment(): void { if (!this.s.data?.artifact.live) { this.resumeAfter = null; this.set(s => ({ commenting: !s.commenting })); } }
   togglePanel(): void { this.set(s => ({ panel: !s.panel })); }
 
   closeSheet(): void { this.set({ sheet: null }); }

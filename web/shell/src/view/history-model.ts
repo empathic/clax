@@ -4,7 +4,9 @@
 // person's later event carries the version current when it happened; an
 // agent's carries one only when it came with a version: "v3 claude addressed
 // it", for each version that addressed the thread. A batch send reads "alex
-// sent it with 2 others". Events are in time order.
+// sent it with 2 others". On a live page, an agent's address waiting for the
+// next snapshot reads "claude addressed it · waiting for a snapshot". Events
+// are in time order.
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
@@ -38,6 +40,10 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
   for (const n of t.addressed_in ?? []) {
     const v = versions.find(x => x.n === n);
     out.push({ at: v?.created_at ?? "", e: { v: n, who: agentName(v?.agent_harness), agent: true, verb: "addressed it" } });
+  }
+  // A live page's address waits for the page's next snapshot to name a version.
+  if (t.addressed_pending && t.status === "open") {
+    out.push({ at: t.addressed_pending.at, e: { v: null, who: agentName(t.addressed_pending.harness), agent: true, verb: "addressed it · waiting for a snapshot" } });
   }
   if (t.status === "resolved" && t.resolved_by && t.resolved_at) {
     const agent = t.resolved_by.startsWith("agent:");
