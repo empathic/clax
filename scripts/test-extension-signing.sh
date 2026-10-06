@@ -269,15 +269,21 @@ no_key_left "a refused pack"
 # in the background, waits until the zip call holding HANG_ON has done its
 # work, counts in $HELD the key copies it holds (key files, and zips under
 # construction holding key.pem), sends SIGINT and sets $STATUS and $STARTED.
+# pack-extension.sh starts with SIGINT at its default disposition: run as a
+# background job without job control (a quality-gates lane), this test
+# inherits SIGINT ignored, which bash can neither trap nor reset, and the
+# interrupt would never arrive.
 FIFO="$ROOT/zip.fifo"
 mkfifo "$FIFO"
 interrupt() {
     local name="$1" hang_on="$2"
     shift 2
     set -m
+    # shellcheck disable=SC2016 # perl's own variables
     env -u CI PATH="$ROOT/hang:$BIN:$PATH" TMPDIR="$SCRIPT_TMP" CLAX_EXTENSION_KEY_REF="$REF" \
         FAKE_OP_LOG="$LOG" FAKE_OP_REF="$REF" FAKE_OP_KEY="$VAULT/key.pem" FAKE_ZIP_FIFO="$FIFO" \
         FAKE_REAL_ZIP="$REAL_ZIP" FAKE_ZIP_HANG_ON="$hang_on" \
+        perl -e '$SIG{INT} = "DEFAULT"; exec @ARGV or die "exec: $!\n"' \
         "$REPO/scripts/pack-extension.sh" "$@" > "$OUT/$name.out" 2> "$OUT/$name.err" &
     BGPID=$!
     set +m
