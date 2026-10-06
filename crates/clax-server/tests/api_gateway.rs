@@ -752,7 +752,7 @@ async fn the_extension_and_the_shell_change_only_their_own_streams() {
 async fn a_credential_without_origin_is_the_extensions_only_when_the_browser_says_none() {
     let ts = TestServer::spawn().await;
     let cred = credential(&ts).await;
-    let (aid, _) = live_thread(&ts, &cred).await;
+    let (aid, tid) = live_thread(&ts, &cred).await;
     let url = format!("{}/api/artifacts/{aid}/threads", ts.base);
     let privileged = ts
         .client
@@ -790,6 +790,31 @@ async fn a_credential_without_origin_is_the_extensions_only_when_the_browser_say
             .unwrap();
         assert_eq!(res.status(), 403, "{site}");
         assert_eq!(code(res).await, "forbidden_origin", "{site}");
+    }
+    // Chrome sends `Origin` on every method but GET (and HEAD, which the
+    // extension never uses): without it, a write is not the extension's.
+    for (m, path) in [
+        (
+            Method::POST,
+            format!("/api/artifacts/{aid}/threads/{tid}/comments"),
+        ),
+        (Method::PUT, "/api/viewers/me".to_string()),
+        (
+            Method::DELETE,
+            format!("/api/artifacts/{aid}/threads/{tid}"),
+        ),
+    ] {
+        let res = ts
+            .client
+            .request(m.clone(), format!("{}{path}", ts.base))
+            .header("sec-fetch-site", "none")
+            .header("authorization", format!("Clax-Extension {cred}"))
+            .json(&json!({"body": "x", "display_name": "x"}))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{m} {path}");
+        assert_eq!(code(res).await, "forbidden_origin", "{m} {path}");
     }
     let foreign = ts
         .client

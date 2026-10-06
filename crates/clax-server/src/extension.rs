@@ -263,18 +263,21 @@ fn presented(h: &HeaderMap) -> Option<&str> {
         })
 }
 
-/// Whether `h` is a request of the extension's: its `Origin` is `origin`,
-/// or it has no `Origin`, carries a `Clax-Extension` credential and is
-/// marked `Sec-Fetch-Site: none`. Chrome sends no `Origin` on an
+/// Whether a request is the extension's: its `Origin` is `origin`, or it
+/// is a GET with no `Origin` that carries a `Clax-Extension` credential and
+/// is marked `Sec-Fetch-Site: none`. Chrome sends no `Origin` on an
 /// extension's GET to an origin the extension holds a host permission for
 /// (`<all_urls>`, or "On all sites"), and marks it `none`, which no web
 /// page can send: a page's request carries its `Origin`, or is
-/// `same-origin`, `same-site` or `cross-site`.
-fn from_extension(h: &HeaderMap, origin: &str) -> bool {
+/// `same-origin`, `same-site` or `cross-site`. Chrome sends `Origin` on
+/// every other method, so a write without one is never the extension's.
+/// (Provisional, pending the owner's confirmation.)
+fn from_extension(method: &Method, h: &HeaderMap, origin: &str) -> bool {
     match h.get(header::ORIGIN) {
         Some(v) => v.to_str().ok() == Some(origin),
         None => {
-            h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("none")
+            method == Method::GET
+                && h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("none")
                 && authorizations(h).any(|v| has_scheme(v, SCHEME))
         }
     }
@@ -284,7 +287,7 @@ fn from_extension(h: &HeaderMap, origin: &str) -> bool {
 /// L5, L6, §9.2, §10 item 6).
 ///
 /// A request of the extension's ([`from_extension`]: its `Origin` is
-/// `chrome-extension://<ID in effect>`, or a privileged request without one)
+/// `chrome-extension://<ID in effect>`, or a privileged GET without one)
 /// is admitted only from a loopback peer, only to [`rule`]'s
 /// routes, only with a live credential for that ID, and only for live pages;
 /// otherwise 403 `forbidden` (401 `unknown_credential` for a missing,
@@ -299,12 +302,13 @@ fn from_extension(h: &HeaderMap, origin: &str) -> bool {
 /// 403 otherwise, without `Access-Control-Allow-Credentials` (the extension
 /// sends no cookies).
 ///
-/// A `Clax-Extension` credential with any other `Origin`, or none and a
-/// `Sec-Fetch-Site` other than `none`, is refused 403 `forbidden_origin`.
+/// A `Clax-Extension` credential with any other `Origin`, or none on a
+/// method other than GET or with a `Sec-Fetch-Site` other than `none`, is
+/// refused 403 `forbidden_origin`.
 /// Every other request passes untouched.
 pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     let origin = extension_origin(&s.extension_id);
-    let ours = from_extension(req.headers(), &origin);
+    let ours = from_extension(req.method(), req.headers(), &origin);
     if !ours {
         if authorizations(req.headers()).any(|v| has_scheme(v, SCHEME)) {
             return ApiError::forbidden(

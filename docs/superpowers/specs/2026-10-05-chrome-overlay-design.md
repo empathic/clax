@@ -608,10 +608,11 @@ chrome-extension://<ID>` (added by Chrome), except a GET while the
 extension holds a host permission for the daemon's origin (`<all_urls>`, or
 "On all sites" in chrome://extensions): Chrome sends that one without
 `Origin`, marked `Sec-Fetch-Site: none`, which no web page can send. The
-gateway counts a request with the credential, no `Origin` and
+gateway counts a GET with the credential, no `Origin` and
 `Sec-Fetch-Site: none` as the extension's; any other request with the
-credential and no `Origin` is 403 `forbidden_origin`. (Ruling 2026-10-05,
-from the browser test.) New routes (viewer routes: no token):
+credential and no `Origin` (another method, or another `Sec-Fetch-Site`)
+is 403 `forbidden_origin`. (Provisional, pending the owner's confirmation:
+found by the browser test, 2026-10-05.) New routes (viewer routes: no token):
 
 - `GET /api/live/pages?url=<page URL>` → `{page: {artifact_id, origin,
   path, route, title, current_version, url} | null, route}`. Never creates.
