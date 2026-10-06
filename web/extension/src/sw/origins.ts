@@ -57,10 +57,11 @@ export async function remember(env: OriginsEnv, origin: string): Promise<void> {
 }
 
 /** Registers again the loader of each origin Clax is on whose permission
- * is still held. Chrome drops registered content scripts when the extension
- * is updated or reloaded (`clax init` installing a newer one, the worker's
- * reload for the daemon's version), while the record and the permissions
- * stay; run at each worker start. */
+ * is still held; run at each worker start. Chromium can drop registered
+ * content scripts while the record and the permissions stay: the browser
+ * test saw it across a restart of an extension loaded from the command
+ * line, and an update or reload (`clax init` installing a newer build, the
+ * worker's reload for the daemon's version) is the same kind of load. */
 export async function restoreLoaders(env: OriginsEnv): Promise<void> {
   const all = await list(env);
   if (!all.length) return;

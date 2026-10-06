@@ -846,7 +846,7 @@ What is protected, from whom:
 | Native host not registered (plugin-only install, `clax init` never run) | `sendNativeMessage` fails with "Specified native messaging host not found"; the panel says "Run `clax init` (or /clax:extension in Claude Code), then reload" with a copy button. |
 | Daemon cannot start | The host answers `daemon_unavailable` with the log path; the panel shows it and a Retry button. |
 | Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
-| Extension updated or reloaded | Chrome drops the registered loaders; the worker registers each enabled origin's loader again at its next start, while the origin's permission is held. |
+| Registered loaders gone (seen in Chromium across a restart of a command-line-loaded extension; an update or reload is the same kind of load) | The worker registers each enabled origin's loader again at each start, while the origin's permission is held. |
 | Worker stopped by Chrome mid-stream | Resumed by the next event; stream resumes with `Last-Event-ID` or refetches (§9.5). |
 | Extension files older than the daemon | On pairing, `clax_version` differs from the manifest's version: the worker calls `chrome.runtime.reload()` once for that version (remembered in `storage.local`). |
 | No `activeTab` at a pick | Posted without a clip (§8.1), with the reason in the composer. |

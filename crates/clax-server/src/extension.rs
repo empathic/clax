@@ -300,7 +300,8 @@ fn from_extension(h: &HeaderMap, origin: &str) -> bool {
 /// sends no cookies).
 ///
 /// A `Clax-Extension` credential with any other `Origin`, or none and a
-/// `Sec-Fetch-Site` other than `none`, is refused 403 `forbidden_origin`. Every other request passes untouched.
+/// `Sec-Fetch-Site` other than `none`, is refused 403 `forbidden_origin`.
+/// Every other request passes untouched.
 pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     let origin = extension_origin(&s.extension_id);
     let ours = from_extension(req.headers(), &origin);

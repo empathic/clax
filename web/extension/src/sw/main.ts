@@ -54,7 +54,7 @@ function gesture(tab: chrome.tabs.Tab, panel: boolean): void {
 chrome.action.onClicked.addListener(tab => gesture(tab, true));
 chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
-// An update or reload of the extension dropped the origins' loaders; the browser's start wakes the worker to check.
+// The origins' loaders may be gone after a load of the extension; the browser's start wakes the worker to check.
 void origins.restoreLoaders(originsEnv).catch(() => {});
 chrome.runtime.onStartup.addListener(() => {});
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });

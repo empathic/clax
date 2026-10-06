@@ -672,10 +672,11 @@ Found by this test and fixed, each with a regression test:
   a credential with no `Origin` and `Sec-Fetch-Site: none` as the
   extension's (`crates/clax-server/tests/api_gateway.rs`,
   `a_credential_without_origin_is_the_extensions_only_when_the_browser_says_none`).
-- Registered loaders were gone after the browser restart (Chromium drops
-  registered content scripts when an extension is updated or reloaded, and
-  did so here across a restart with `--load-extension`), while the origin
-  record stayed; the worker now registers them again at each start
+- Registered loaders were gone after the browser restart (Chromium dropped
+  the registered content script across a restart with `--load-extension`;
+  whether Chrome does the same on an update or reload was not checked),
+  while the origin record stayed; the worker now registers them again at
+  each start
   (`web/extension/src/sw/origins.test.ts`, and test 3 above).
 - Retry after `daemon_unreachable` did not pair again, so within 10 s of the
   last pairing a daemon restart could not be recovered from the panel;

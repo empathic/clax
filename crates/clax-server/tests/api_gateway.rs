@@ -800,5 +800,9 @@ async fn a_credential_without_origin_is_the_extensions_only_when_the_browser_say
         .send()
         .await
         .unwrap();
-    assert_eq!(foreign.status(), 403, "an Origin of its own is never overridden");
+    assert_eq!(
+        foreign.status(),
+        403,
+        "an Origin of its own is never overridden"
+    );
 }
