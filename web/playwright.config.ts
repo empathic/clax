@@ -23,10 +23,12 @@ export default defineConfig({
   // Projects schedule the work: the gesture tests take up to five eighths of
   // the workers. Several wait out Chromium's 5 s user activation, which no
   // clock can shorten, so they run beside the busier tests rather than all
-  // at once.
+  // at once. The Chrome overlay's tests launch browsers of their own, each
+  // with the extension in a fresh profile (e2e/extension-fixtures.ts).
   projects: [
     { name: "gesture", testMatch: /gesture\.spec\.ts$/, workers: Math.ceil(workers * 5 / 8) },
-    { name: "rest", testIgnore: /gesture\.spec\.ts$/ },
+    { name: "chrome-overlay", testMatch: /chrome-overlay\.spec\.ts$/ },
+    { name: "rest", testIgnore: /(gesture|chrome-overlay)\.spec\.ts$/ },
   ],
   reporter: "list",
 });
