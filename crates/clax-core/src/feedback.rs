@@ -172,7 +172,7 @@ pub fn display_name(raw: &str) -> String {
 /// `s` as a JSON string literal. Beyond what JSON requires, U+0085, U+2028,
 /// and U+2029 are escaped too, so no character inside it can read as a line
 /// break.
-fn quoted(s: &str) -> String {
+pub(crate) fn quoted(s: &str) -> String {
     serde_json::to_string(s)
         .expect("strings serialise")
         .replace('\u{85}', "\\u0085")
@@ -182,7 +182,7 @@ fn quoted(s: &str) -> String {
 
 /// `s` with control characters, U+2028, and U+2029 written as `\uXXXX`, so
 /// it stays on one line.
-fn one_line(s: &str) -> String {
+pub(crate) fn one_line(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c.is_control() || matches!(c, '\u{2028}' | '\u{2029}') {

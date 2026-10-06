@@ -14,6 +14,7 @@ mime_guess.workspace = true
 rand.workspace = true
 sha2 = "0.11"
 rusqlite.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

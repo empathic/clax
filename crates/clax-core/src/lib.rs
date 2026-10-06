@@ -16,6 +16,7 @@ pub mod mentions;
 pub mod model;
 pub mod presence;
 pub mod publish;
+pub mod questions;
 pub mod room;
 pub mod store;
 pub mod working;
