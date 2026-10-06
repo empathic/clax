@@ -14,11 +14,24 @@ use tokio::sync::Notify;
 /// Runs when the last poll holding a question lets go.
 pub type OnLast = Box<dyn FnOnce() + Send>;
 
-/// The polls waiting on each question: one `Notify` per question that has
-/// a poll, and how many polls hold it.
+/// Most polls that may hold one question at once.
+pub const MAX_POLLS: usize = 4;
+
+/// The polls waiting on each question (one `Notify` per question that has
+/// a poll, and how many polls hold it), and the grace timer of each
+/// question that has one pending.
 #[derive(Default)]
 pub struct QuestionWaiters {
-    inner: Mutex<HashMap<String, (Arc<Notify>, usize)>>,
+    inner: Mutex<Inner>,
+}
+
+#[derive(Default)]
+struct Inner {
+    held: HashMap<String, (Arc<Notify>, usize)>,
+    /// The generation of each question's pending grace timer; a poll
+    /// holding the question, or a later timer, replaces or cancels it.
+    armed: HashMap<String, u64>,
+    next: u64,
 }
 
 /// One poll's hold on a question ([`QuestionWaiters::hold`]).
@@ -29,41 +42,73 @@ pub struct HoldGuard {
 }
 
 impl QuestionWaiters {
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, (Arc<Notify>, usize)>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The notify a poll of `qid` waits on, counting the poll as holding
-    /// `qid` until the guard drops. `on_last` runs when that drop leaves no
-    /// poll holding `qid`.
-    pub fn hold(self: &Arc<Self>, qid: &str, on_last: Option<OnLast>) -> (Arc<Notify>, HoldGuard) {
+    /// `qid` until the guard drops, and cancelling any pending grace of
+    /// `qid`. `on_last` runs when that drop leaves no poll holding `qid`.
+    /// `None` when [`MAX_POLLS`] polls hold `qid` already.
+    pub fn hold(
+        self: &Arc<Self>,
+        qid: &str,
+        on_last: Option<OnLast>,
+    ) -> Option<(Arc<Notify>, HoldGuard)> {
         let mut g = self.lock();
         let e = g
+            .held
             .entry(qid.to_string())
             .or_insert_with(|| (Arc::new(Notify::new()), 0));
+        if e.1 >= MAX_POLLS {
+            return None;
+        }
         e.1 += 1;
         let notify = e.0.clone();
+        g.armed.remove(qid);
         drop(g);
-        (
+        Some((
             notify,
             HoldGuard {
                 waiters: self.clone(),
                 qid: qid.to_string(),
                 on_last,
             },
-        )
+        ))
     }
 
     /// Wakes every poll holding `qid`.
     pub fn wake(&self, qid: &str) {
-        if let Some((n, _)) = self.lock().get(qid) {
+        if let Some((n, _)) = self.lock().held.get(qid) {
             n.notify_waiters();
         }
     }
 
     /// How many polls hold `qid`.
     pub fn count(&self, qid: &str) -> usize {
-        self.lock().get(qid).map_or(0, |e| e.1)
+        self.lock().held.get(qid).map_or(0, |e| e.1)
+    }
+
+    /// Starts a grace timer for `qid`, replacing any pending one; its
+    /// generation, for [`QuestionWaiters::due`].
+    pub fn arm(&self, qid: &str) -> u64 {
+        let mut g = self.lock();
+        g.next += 1;
+        let generation = g.next;
+        g.armed.insert(qid.to_string(), generation);
+        generation
+    }
+
+    /// Whether the grace timer `generation` of `qid` may withdraw it: it is
+    /// still the pending one (no poll held `qid` and no later timer started
+    /// since) and no poll holds `qid`. Ends that timer either way.
+    pub fn due(&self, qid: &str, generation: u64) -> bool {
+        let mut g = self.lock();
+        if g.armed.get(qid) != Some(&generation) {
+            return false;
+        }
+        g.armed.remove(qid);
+        !g.held.contains_key(qid)
     }
 }
 
@@ -71,12 +116,12 @@ impl Drop for HoldGuard {
     fn drop(&mut self) {
         let last = {
             let mut g = self.waiters.lock();
-            let last = g.get_mut(&self.qid).is_some_and(|e| {
+            let last = g.held.get_mut(&self.qid).is_some_and(|e| {
                 e.1 -= 1;
                 e.1 == 0
             });
             if last {
-                g.remove(&self.qid);
+                g.held.remove(&self.qid);
             }
             last
         };
@@ -147,11 +192,14 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 }
 
 /// Starts the grace for hook question `qid`: after `s.question_grace`, if
-/// no poll holds it, an open `qid` is withdrawn and announced.
+/// no poll has held it and no later grace has started meanwhile, an open
+/// `qid` is withdrawn and announced. The grace thus runs from the last
+/// time a poll let go (or from creation, when none has held it).
 pub fn start_grace(s: AppState, qid: String) {
+    let generation = s.questions.arm(&qid);
     tokio::spawn(async move {
         tokio::time::sleep(s.question_grace).await;
-        if s.questions.count(&qid) > 0 {
+        if !s.questions.due(&qid, generation) {
             return;
         }
         let st = s.clone();
@@ -195,21 +243,50 @@ mod tests {
                 r.fetch_add(1, Ordering::SeqCst);
             })
         };
-        let (n1, g1) = w.hold("q", Some(cb(&ran)));
-        let (n2, g2) = w.hold("q", Some(cb(&ran)));
+        let (n1, g1) = w.hold("q", Some(cb(&ran))).unwrap();
+        let (n2, g2) = w.hold("q", Some(cb(&ran))).unwrap();
         assert!(Arc::ptr_eq(&n1, &n2), "one notify per question");
         assert_eq!((w.count("q"), w.count("other")), (2, 0));
         drop(g1);
         assert_eq!((w.count("q"), ran.load(Ordering::SeqCst)), (1, 0));
         drop(g2);
         assert_eq!((w.count("q"), ran.load(Ordering::SeqCst)), (0, 1));
-        assert!(w.lock().is_empty(), "no entry outlives its polls");
+        assert!(w.lock().held.is_empty(), "no entry outlives its polls");
+    }
+
+    #[test]
+    fn at_most_max_polls_hold_a_question() {
+        let w = Arc::new(QuestionWaiters::default());
+        let guards: Vec<_> = (0..MAX_POLLS).map(|_| w.hold("q", None).unwrap()).collect();
+        assert!(w.hold("q", None).is_none());
+        assert!(w.hold("other", None).is_some());
+        drop(guards);
+        assert!(w.hold("q", None).is_some());
+    }
+
+    #[test]
+    fn only_the_latest_grace_with_no_poll_since_is_due() {
+        let w = Arc::new(QuestionWaiters::default());
+        let first = w.arm("q");
+        let second = w.arm("q");
+        assert!(!w.due("q", first), "a later grace replaced it");
+        assert!(w.due("q", second));
+        assert!(!w.due("q", second), "a timer is due once");
+        let third = w.arm("q");
+        let hold = w.hold("q", None).unwrap();
+        drop(hold);
+        assert!(!w.due("q", third), "a poll held it since");
+        let fourth = w.arm("q");
+        let _hold = w.hold("q", None).unwrap();
+        let fifth = w.arm("q");
+        assert!(!w.due("q", fourth));
+        assert!(!w.due("q", fifth), "a poll holds it now");
     }
 
     #[tokio::test]
     async fn wake_reaches_a_poll_that_has_not_started_waiting() {
         let w = Arc::new(QuestionWaiters::default());
-        let (n, _g) = w.hold("q", None);
+        let (n, _g) = w.hold("q", None).unwrap();
         let notified = n.notified();
         w.wake("q");
         w.wake("nobody");

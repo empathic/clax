@@ -437,3 +437,119 @@ async fn questions_never_reach_the_public_event_stream() {
     assert_eq!(name, "version", "the question event was not sent: {data}");
     assert_eq!(data["artifact_id"], a["artifact"]["id"]);
 }
+
+#[tokio::test]
+async fn the_grace_starts_when_the_last_poll_lets_go() {
+    let ts = TestServer::spawn_with(|s| s.question_grace = Duration::from_millis(500)).await;
+    let sid = session(&ts, "h1").await;
+    let mut tap = ts.question_events();
+    let q = ts.ask(&sid, hook("toolu_1")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(tap.next().await["status"], "open");
+    // Held for 1 s, past the grace armed at creation.
+    let res = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=1"))
+        .await;
+    let v: Value = res.json().await.unwrap();
+    assert_eq!(
+        v["question"]["status"], "open",
+        "held past the creation grace"
+    );
+    let ev = tap.next().await;
+    assert_eq!(
+        (ev["id"].as_str(), ev["status"].as_str()),
+        (Some(&*qid), Some("withdrawn"))
+    );
+}
+
+#[tokio::test]
+async fn a_question_takes_at_most_four_polls_at_once() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    let q = ts.ask(&sid, body()).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let mut polls = Vec::new();
+    for _ in 0..4 {
+        let req = ts.authed(ts.client.get(format!(
+            "{}/api/sessions/{sid}/questions/{qid}?wait=60",
+            ts.base
+        )));
+        polls.push(tokio::spawn(
+            async move { req.send().await.unwrap().status() },
+        ));
+    }
+    ts.wait_question_waiters(&qid, 4).await;
+    let res = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=60"))
+        .await;
+    assert_eq!(res.status(), 429);
+    assert_eq!(
+        res.json::<Value>().await.unwrap()["error"]["code"],
+        "limit_reached"
+    );
+    ts.answer_question(&qid, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    for p in polls {
+        assert_eq!(p.await.unwrap(), 200);
+    }
+}
+
+#[tokio::test]
+async fn an_ended_sessions_routes_are_unknown_session() {
+    let ts = TestServer::spawn().await;
+    let sid = session(&ts, "h1").await;
+    let q = ts.ask(&sid, hook("t")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(
+        post(
+            &ts,
+            &format!("/api/sessions/{sid}/questions/{qid}/release"),
+            json!({})
+        )
+        .await
+        .status(),
+        200
+    );
+    ts.end_session(&sid).await;
+    assert_eq!(
+        ts.question_status(&qid).await,
+        "released",
+        "only open ones are withdrawn"
+    );
+    let code = |res: reqwest::Response| async move {
+        (
+            res.status().as_u16(),
+            res.json::<Value>().await.unwrap()["error"]["code"].clone(),
+        )
+    };
+    let want = (400, json!("unknown_session"));
+    assert_eq!(
+        code(
+            ts.get_authed(&format!("/api/sessions/{sid}/questions/{qid}"))
+                .await
+        )
+        .await,
+        want
+    );
+    for action in ["withdraw", "release"] {
+        let res = post(
+            &ts,
+            &format!("/api/sessions/{sid}/questions/{qid}/{action}"),
+            json!({}),
+        )
+        .await;
+        assert_eq!(code(res).await, want, "{action}");
+    }
+    let res = post(
+        &ts,
+        &format!("/api/sessions/{sid}/questions:terminal"),
+        json!({"tool_use_id": "t", "answers": {"Which?": "B"}}),
+    )
+    .await;
+    assert_eq!(code(res).await, want, "terminal");
+    assert_eq!(ts.question_status(&qid).await, "released");
+    let res = ts
+        .get_authed(&format!("/api/sessions/nope/questions/{qid}"))
+        .await;
+    assert_eq!(res.status(), 404);
+}
