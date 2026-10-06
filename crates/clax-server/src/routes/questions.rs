@@ -230,7 +230,7 @@ pub async fn poll(
     let (sid, qid) = path(p)?;
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let started = Instant::now();
-    let deadline = started + Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
+    let wait = Duration::from_secs(q.wait.min(MAX_WAIT_SECS));
     let (sid1, qid1) = (sid.clone(), qid.clone());
     let first = s
         .store_call(move |db| {
@@ -259,13 +259,14 @@ pub async fn poll(
         }
     };
     tokio::pin!(stopping);
-    let mut stop = false;
+    let expiry = s.question_sleeper.sleep(wait);
+    tokio::pin!(expiry);
+    let mut done = wait.is_zero();
     loop {
         let notified = notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
         let (sid1, qid1) = (sid.clone(), qid.clone());
-        let done = stop || Instant::now() >= deadline;
         let out = s
             .store_call(move |db| {
                 let row = db.session_question(&sid1, &qid1)?;
@@ -285,8 +286,8 @@ pub async fn poll(
         }
         tokio::select! {
             () = &mut notified => {}
-            () = tokio::time::sleep_until(deadline) => {}
-            () = &mut stopping => stop = true,
+            () = &mut expiry, if !done => done = true,
+            () = &mut stopping, if !done => done = true,
         }
     }
 }

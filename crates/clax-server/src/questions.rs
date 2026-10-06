@@ -11,6 +11,22 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tokio::sync::Notify;
 
+/// The timers of question polls and graces: real time in the daemon, a
+/// clock the test drives in tests.
+pub trait Sleeper: Send + Sync {
+    /// Completes after `d`.
+    fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()>;
+}
+
+/// [`Sleeper`] on Tokio's clock.
+pub struct TokioSleeper;
+
+impl Sleeper for TokioSleeper {
+    fn sleep(&self, d: std::time::Duration) -> futures::future::BoxFuture<'static, ()> {
+        Box::pin(tokio::time::sleep(d))
+    }
+}
+
 /// Runs when the last poll holding a question lets go.
 pub type OnLast = Box<dyn FnOnce() + Send>;
 
@@ -198,7 +214,7 @@ pub fn announce_ids(s: &AppState, st: &Store, ids: &[String]) {
 pub fn start_grace(s: AppState, qid: String) {
     let generation = s.questions.arm(&qid);
     tokio::spawn(async move {
-        tokio::time::sleep(s.question_grace).await;
+        s.question_sleeper.sleep(s.question_grace).await;
         if !s.questions.due(&qid, generation) {
             return;
         }

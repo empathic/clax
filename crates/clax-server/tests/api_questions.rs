@@ -6,6 +6,9 @@ use common::TestServer;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+/// The daemon's grace for a mirrored question no poll waits on.
+const GRACE: Duration = Duration::from_secs(5);
+
 fn body() -> Value {
     json!({"source": "ask", "questions": [{"question": "Which?", "header": "Pick",
         "options": [{"label": "A"}, {"label": "B"}]}]})
@@ -242,64 +245,6 @@ async fn a_hook_question_takes_the_artifact_of_the_newest_working_record() {
 }
 
 #[tokio::test]
-async fn a_hook_question_without_a_poll_is_withdrawn_after_the_grace() {
-    let ts = TestServer::spawn_with(|s| s.question_grace = Duration::from_millis(20)).await;
-    let sid = session(&ts, "h1").await;
-    let mut tap = ts.question_events();
-    let q = ts.ask(&sid, hook("toolu_1")).await;
-    let qid = q["question"]["id"].as_str().unwrap().to_string();
-    // A poll that gives up at once (wait=0) holds it and lets go.
-    ts.get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=0"))
-        .await;
-    loop {
-        let ev = tap.next().await;
-        if ev["id"] == qid.as_str() && ev["status"] == "withdrawn" {
-            break;
-        }
-    }
-    assert_eq!(ts.question_status(&qid).await, "withdrawn");
-}
-
-#[tokio::test]
-async fn a_hook_question_never_polled_is_withdrawn_after_the_grace() {
-    let ts = TestServer::spawn_with(|s| s.question_grace = Duration::from_millis(20)).await;
-    let sid = session(&ts, "h1").await;
-    let mut tap = ts.question_events();
-    let q = ts.ask(&sid, hook("toolu_1")).await;
-    let qid = q["question"]["id"].as_str().unwrap().to_string();
-    let created = tap.next().await;
-    assert_eq!(
-        (created["id"].as_str(), created["status"].as_str()),
-        (Some(&*qid), Some("open"))
-    );
-    let ev = tap.next().await;
-    assert_eq!(
-        (ev["id"].as_str(), ev["status"].as_str()),
-        (Some(&*qid), Some("withdrawn"))
-    );
-}
-
-#[tokio::test]
-async fn an_ask_question_is_never_withdrawn_for_want_of_a_poll() {
-    let ts = TestServer::spawn_with(|s| s.question_grace = Duration::from_millis(1)).await;
-    let sid = session(&ts, "h1").await;
-    let mut tap = ts.question_events();
-    let q = ts.ask(&sid, body()).await;
-    let qid = q["question"]["id"].as_str().unwrap().to_string();
-    ts.get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=0"))
-        .await;
-    tap.next().await; // created
-    // A later question's event comes next: no withdrawal came between.
-    ts.ask(
-        &sid,
-        json!({"source": "ask", "questions": [{"question": "Next?", "header": "N"}]}),
-    )
-    .await;
-    assert_eq!(tap.next().await["questions"][0]["question"], "Next?");
-    assert_eq!(ts.question_status(&qid).await, "open");
-}
-
-#[tokio::test]
 async fn withdraw_closes_an_open_question_once() {
     let ts = TestServer::spawn().await;
     let sid = session(&ts, "h1").await;
@@ -439,30 +384,6 @@ async fn questions_never_reach_the_public_event_stream() {
 }
 
 #[tokio::test]
-async fn the_grace_starts_when_the_last_poll_lets_go() {
-    let ts = TestServer::spawn_with(|s| s.question_grace = Duration::from_millis(500)).await;
-    let sid = session(&ts, "h1").await;
-    let mut tap = ts.question_events();
-    let q = ts.ask(&sid, hook("toolu_1")).await;
-    let qid = q["question"]["id"].as_str().unwrap().to_string();
-    assert_eq!(tap.next().await["status"], "open");
-    // Held for 1 s, past the grace armed at creation.
-    let res = ts
-        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=1"))
-        .await;
-    let v: Value = res.json().await.unwrap();
-    assert_eq!(
-        v["question"]["status"], "open",
-        "held past the creation grace"
-    );
-    let ev = tap.next().await;
-    assert_eq!(
-        (ev["id"].as_str(), ev["status"].as_str()),
-        (Some(&*qid), Some("withdrawn"))
-    );
-}
-
-#[tokio::test]
 async fn a_question_takes_at_most_four_polls_at_once() {
     let ts = TestServer::spawn().await;
     let sid = session(&ts, "h1").await;
@@ -552,4 +473,142 @@ async fn an_ended_sessions_routes_are_unknown_session() {
         .get_authed(&format!("/api/sessions/nope/questions/{qid}"))
         .await;
     assert_eq!(res.status(), 404);
+}
+
+#[tokio::test]
+async fn a_hook_question_never_polled_is_withdrawn_after_the_grace() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let mut tap = ts.question_events();
+    let q = ts.ask(&sid, hook("toolu_1")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(tap.next().await["status"], "open");
+    clock.wait_for(GRACE, 1).await;
+    assert_eq!(ts.question_status(&qid).await, "open");
+    assert_eq!(clock.fire(GRACE), 1);
+    let ev = tap.next().await;
+    assert_eq!(
+        (ev["id"].as_str(), ev["status"].as_str()),
+        (Some(&*qid), Some("withdrawn"))
+    );
+}
+
+#[tokio::test]
+async fn a_hook_question_whose_poll_gave_up_is_withdrawn_after_the_grace() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let mut tap = ts.question_events();
+    let q = ts.ask(&sid, hook("toolu_1")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    tap.next().await;
+    // A poll that gives up at once (wait=0) holds it and lets go: the
+    // creation's grace is cancelled and a new one started.
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=0"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["question"]["status"], "open");
+    clock.wait_for(GRACE, 2).await;
+    assert_eq!(clock.fire(GRACE), 2);
+    let ev = tap.next().await;
+    assert_eq!(
+        (ev["id"].as_str(), ev["status"].as_str()),
+        (Some(&*qid), Some("withdrawn"))
+    );
+}
+
+#[tokio::test]
+async fn the_grace_starts_when_the_last_poll_lets_go() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let mut tap = ts.question_events();
+    let q = ts.ask(&sid, hook("toolu_1")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    assert_eq!(tap.next().await["status"], "open");
+    clock.wait_for(GRACE, 1).await;
+    let req = ts.authed(ts.client.get(format!(
+        "{}/api/sessions/{sid}/questions/{qid}?wait=1",
+        ts.base
+    )));
+    let poll =
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
+    ts.wait_question_waiters(&qid, 1).await;
+    clock.wait_for(Duration::from_secs(1), 1).await;
+    // The creation's grace ends while the poll holds the question: nothing.
+    assert_eq!(clock.fire(GRACE), 1);
+    // The poll's wait ends; it lets go and a new grace starts.
+    assert_eq!(clock.fire(Duration::from_secs(1)), 1);
+    assert_eq!(
+        poll.await.unwrap()["question"]["status"],
+        "open",
+        "held past the creation grace"
+    );
+    clock.wait_for(GRACE, 1).await;
+    assert_eq!(ts.question_status(&qid).await, "open");
+    assert_eq!(clock.fire(GRACE), 1);
+    let ev = tap.next().await;
+    assert_eq!(
+        (ev["id"].as_str(), ev["status"].as_str()),
+        (Some(&*qid), Some("withdrawn"))
+    );
+}
+
+#[tokio::test]
+async fn an_ask_question_has_no_grace() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let q = ts.ask(&sid, body()).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=0"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["question"]["status"], "open");
+    assert_eq!(clock.waiting(GRACE), 0);
+}
+
+#[tokio::test]
+async fn a_closed_hook_question_gets_no_grace_from_a_poll() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let q = ts.ask(&sid, hook("t")).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    clock.wait_for(GRACE, 1).await;
+    let res = ts
+        .post_json(
+            &format!("/api/sessions/{sid}/questions/{qid}/release"),
+            json!({}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let v: Value = ts
+        .get_authed(&format!("/api/sessions/{sid}/questions/{qid}?wait=0"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(v["question"]["status"], "released");
+    assert_eq!(clock.waiting(GRACE), 1, "only the creation's grace");
+}
+
+#[tokio::test]
+async fn a_poll_answers_open_when_its_wait_ends() {
+    let (ts, clock) = TestServer::spawn_question_clock().await;
+    let sid = session(&ts, "h1").await;
+    let q = ts.ask(&sid, body()).await;
+    let qid = q["question"]["id"].as_str().unwrap().to_string();
+    let req = ts.authed(ts.client.get(format!(
+        "{}/api/sessions/{sid}/questions/{qid}?wait=30",
+        ts.base
+    )));
+    let poll =
+        tokio::spawn(async move { req.send().await.unwrap().json::<Value>().await.unwrap() });
+    clock.wait_for(Duration::from_secs(30), 1).await;
+    assert_eq!(clock.fire(Duration::from_secs(30)), 1);
+    assert_eq!(poll.await.unwrap()["question"]["status"], "open");
+    assert_eq!(ts.question_waiters(&qid).await, 0);
 }

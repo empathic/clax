@@ -321,6 +321,7 @@ pub async fn serve(
         extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
         questions: Arc::new(Default::default()),
         question_grace: Duration::from_secs(5),
+        question_sleeper: Arc::new(crate::questions::TokioSleeper),
         terminal_after_s,
     };
     state.stream.listen(&state.events);
