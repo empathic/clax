@@ -739,6 +739,84 @@ thread_id, from_artifact_id, from_url, to_artifact_id, to_url, moved_by,
 kind, rule_id, created_at)` with its index by thread, and an index of
 `live_picks` by thread.
 
+### 7.2 Joined sites
+
+Problem: a dev server that moves from `localhost:7702` to `:7703` is two
+origins to Clax, so its threads do not list together, an agent watching one
+port does not hear the other, and an agent had to be told to look for the
+old comments.
+
+Owner decisions, 2026-10-06 (binding):
+
+1. **Clax suggests, the owner confirms.** When Clax is turned on at an
+   origin that joined no site, and another origin of the same host family
+   (`localhost`, `*.localhost`, `127.0.0.0/8`, `[::1]`, one scheme) has
+   live pages of the tab's path, or titled as the tab is, or of a path the
+   origin's own pages have, the side panel says "Looks like localhost:7702 —
+   same app?" with Join, Not now (a day) and Never (for that pair), the
+   answers stored by the daemon. Nothing joins on its own. The panel's site
+   tools (Addresses) and the gallery's site menu join an origin to any site
+   ("Same app as…") and split an origin off again.
+2. **Joined means shared.** (a) Pages are matched by path whatever the
+   origin: the site has one key (an origin), its pages and rules are kept
+   under it, and a joined origin's pages are merged into the site's of the
+   same path through the move machinery (batched, each batch atomic,
+   history kept as `join` moves); threads from every origin list together
+   and pin on any of them. (b) A watch on any origin of the site, page or
+   scope, covers them all, origins joined later included. (c) Merge rules
+   apply across the site. (d) The gallery has one entry per site, named
+   after its most recently used origin, listing the others.
+3. **Links.** Opening a thread goes to its path on the site's most recently
+   used origin; the worker probes it with a short request (1.5 s; an origin
+   outside its `connect-src`, `http://localhost:*` and `http://127.0.0.1:*`,
+   cannot be probed and counts as answering) and tries the others, the most
+   recently used first, then says that none answers. A navigation within
+   the site keeps Clax on in the tab, now for the new origin (per-tab
+   enablement is otherwise unchanged); joining asks Chrome for the site's
+   other origins under the click, so the overlay can follow.
+
+1. **Model.** Migration 22 (19 to 21 are other branches') adds
+   `live_sites (origin PRIMARY KEY, site, joined_at, last_used_at)`: a row
+   per origin of a joined site, the key's own included; an origin without
+   a row is a site of its own, keyed by itself. `live_site_answers (a, b,
+   answer, until, created_at)` keeps Never and Not now per ordered pair.
+   `thread_moves.kind` admits `join`. Every query by origin (a page by key,
+   the site's pages, its rules, the scope watches covering a page, a pick)
+   resolves the origin to its site's key in SQL, so the rest of §7.1 runs
+   unchanged on the key.
+2. **Joining** `origin` to the site of `with` keeps `with`'s key. In one
+   transaction: the joining origins get rows; each of their pages whose
+   path the site lacks is re-keyed; their rules become the site's (a
+   pattern the site has is dropped); every page of the site is watched by
+   the scope watches of every origin of it. The pages whose path the site
+   has stay under their origin, pending: each request re-files at most 200
+   of their threads onto the site's page of the path (64 MiB of snapshots,
+   as moves), then deletes a pending page left empty after handing its
+   watchers on (its snapshots no thread names go with it); once none is
+   pending the site's rules are applied across it. The client repeats the
+   request while `remaining` is above 0; a repeat is idempotent.
+3. **Splitting** removes the origin's row. What the site holds stays with
+   it (history stays: threads made on the split origin are not moved back);
+   from then on the origin's lookups and new pages are its own. When the
+   key is split off, the key moves to the most recently used origin left,
+   with the site's pages and rules; that is refused (`joining`) while a
+   join of the site is not finished. A site of one origin left loses its
+   row. The pair is answered Never. Scope watches keep what they made.
+4. **Realtime.** A live page's events go to the `site:` topic of every
+   origin of its site (the daemon keeps the memberships in memory with the
+   live pages, reloaded at each join and split), and a `site` event names
+   the site's origins and those that left. The extension's listing reloads
+   on it.
+5. **Who.** All of it is under `/api/live/sites/` (hidden from the LAN,
+   L10, and in the router's coverage test); reads need an owner
+   credential, writes the token or the extension's credential; the
+   extension gateway admits each route. Suggestions are only for one host
+   family; joins are allowed for any origins the owner picks except the
+   daemon's own.
+6. **Agents.** `watch` on a URL covers its site; its result names the site
+   and its origins. The skill says a thread may come from any of a site's
+   addresses.
+
 ## 8. Screenshots and snapshots
 
 ### 8.1 The screenshot (the clip)

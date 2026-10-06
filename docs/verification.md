@@ -616,7 +616,7 @@ the test build of the extension replaces the release files in
 host manifest from a profile given as `--user-data-dir`, and runs the
 installed `host/launch.sh` → `host/ensure-clax.sh` → `clax native-host`
 (the `bin` setting names this run's binary): the fallback in the plan (pairing
-through the test hook) was not needed. Eight tests, all passing (Clax on
+through the test hook) was not needed. Ten tests, all passing (Clax on
 per tab since 2026-10-06; the worker's hook does what the command does,
 turning Clax on in its tab, and the side panel is opened for that tab):
 
@@ -697,6 +697,23 @@ turning Clax on in its tab, and the side panel is opened for that tab):
    canonical page, and the tab's page becomes it (three threads);
    "Un-merge", confirmed, deletes the rule and each thread goes back to the page of the
    path it was made at, the tab's page then holding two.
+10. **Joined sites** (spec §7.2, owner decisions 2026-10-06). A second
+    Vite dev server serves the same app on another port. Two threads are
+    made through the daemon on the first port (`/` and `/users/1.html`),
+    and an agent session's scope watch is put on the second port (the
+    token API, as `watch` does). With Clax on at the second port's `/`, the
+    panel says "Looks like localhost:<first port> — same app?"; the site is
+    not joined until Join is clicked; then it is, the panel says so, both
+    old threads list in the panel (`/`'s as this page's, `/users/1.html`'s
+    elsewhere), and the pin made on the first port resolves on the second.
+    A comment then made on the first port and sent to the agent reaches the
+    session watching the second. After a lookup makes the first port the
+    most recently used, clicking `/users/1.html`'s thread takes the tab to
+    the first port, where Clax stays on (for that origin, panel enabled)
+    and the thread is selected and found. With the first server stopped,
+    clicking `/`'s thread opens it on the second port, the next address
+    that answers, and Clax stays on there. (The panel's clicks run with a
+    user gesture, which Join needs to ask Chrome for the other origin.)
 
 Found by this test and fixed, each with a regression test:
 
@@ -765,6 +782,20 @@ Found by this test and fixed, each with a regression test:
   and reopening the panel, per site; a merge of more than 200 threads
   shows its progress across batches; an agent's reply on another page
   appears in its card without a reload.
+- Joined sites by hand (spec §7.2): run a dev server on one port, comment,
+  stop it and start it on another port, then turn Clax on there. The
+  suggestion appears once (not for a site already joined, nor after Not now
+  within a day, nor ever after Never for that pair); Join shows Chrome's
+  permission prompt for the other port in the release build (the test
+  build holds every origin), and declining it joins nothing and says why.
+  Under Addresses: both ports are listed, "Split off" splits one (its next
+  comment starts a page of its own; the site keeps what it had), and "Same
+  app as…" lists the other sites. In the gallery, after first paint: one
+  Sites entry per site, a joined one named after the port used last with
+  "also <other port>", and its ⋯ menu joins and splits (light and dark, and
+  at phone width the menu stays on screen). A live page card's address is
+  the port used last. An agent in a real session watching one port gets the
+  comments of the other, and its `watch` result lists both origins.
 - Alt+Shift+C and the page's context menu entry (each turns Clax on in its
   tab, the panel enabled but not opened; where Clax is on, each flips
   comment mode).

@@ -13,7 +13,8 @@ import { spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { type Live, expect, test } from "./extension-fixtures";
+import { createServer } from "vite";
+import { type Live, expect, freePort, test } from "./extension-fixtures";
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
@@ -86,11 +87,12 @@ class SidePanel {
     return new SidePanel(cdp, sessionId);
   }
 
-  /** Evaluates `expr` (an expression, awaited) in the panel. */
+  /** Evaluates `expr` (an expression, awaited) in the panel, as under a
+   * person's gesture (a click there may ask Chrome for a permission). */
   async eval<T>(expr: string): Promise<T> {
     const id = ++this.seq;
     const answer = new Promise<unknown>(r => this.waiting.set(id, r));
-    await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true } }) });
+    await this.cdp.send("Target.sendMessageToTarget", { sessionId: this.session, message: JSON.stringify({ id, method: "Runtime.evaluate", params: { expression: expr, awaitPromise: true, returnByValue: true, userGesture: true } }) });
     const r = (await answer) as { result?: { value?: unknown }; exceptionDetails?: unknown };
     this.waiting.delete(id);
     if (r.exceptionDetails) throw new Error(`panel: ${JSON.stringify(r.exceptionDetails)}`);
@@ -362,6 +364,77 @@ test("the panel lists the site's other pages, opens and pins their threads, move
   await expect.poll(() => panel.text()).toContain("Un-merged /users/:id");
   await expect.poll(async () => (await h.state(tabId))?.threads.length).toBe(2);
   await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".elsewhere summary .path")].map(p => p.textContent)`)).toEqual(["/users/2.html"]);
+});
+
+test("two ports of one app join into one site: suggested, joined, listed and pinned together, watched as one, and opened on an address that answers", async ({ live }) => {
+  const h = hook(live);
+  // The same app on a second port, as a dev server that moved would serve it.
+  const port = await freePort();
+  const second = await createServer({ root: live.siteDir, configFile: false, logLevel: "silent", server: { port, host: "127.0.0.1", strictPort: true } });
+  await second.listen();
+  const O1 = new URL(live.siteUrl).origin;
+  const O2 = `http://localhost:${port}`;
+  try {
+    // Comments made on the first port, before it moved.
+    const seed = async (url: string, selector: string, quote: string, body: string) => {
+      const form = new FormData();
+      form.set("url", url);
+      form.set("title", "Settings");
+      form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+      form.set("body", body);
+      form.set("pending", "[]");
+      form.set("snapshot", `<!doctype html><main><h1>Settings</h1><button id="save">Save</button></main>`);
+      const r = await (await fetch(`${live.daemon.base}/api/live/threads`, { method: "POST", body: form, headers: { authorization: `Bearer ${live.daemon.token}` } })).json();
+      return { aid: r.page.artifact_id as string, tid: r.thread.id as string };
+    };
+    const home = await seed(`${O1}/`, "#save", "Save", "Home button on the old port");
+    const one = await seed(`${O1}/users/1.html`, "main > h1", "Settings", "User one on the old port");
+    // An agent watches the new port (the token API, as `watch` does).
+    const session = await api(live, "/api/sessions", { method: "POST", body: JSON.stringify({ harness: "claude", harness_session_id: "e2e-joined", cwd: "/tmp", pid: null, parent_pid: null }) });
+    const sid: string = session.session?.id ?? session.id;
+    await api(live, `/api/sessions/${sid}/live-watches`, { method: "PUT", body: JSON.stringify({ url: `${O2}/` }) });
+
+    // Clax turned on at the new port: it suggests the old one, and nothing joins until the person says so.
+    const page = await live.ctx.newPage();
+    await page.goto(`${O2}/`);
+    const tabId = await tabIdOf(live, `${O2}/`);
+    await h.comment(tabId, `${O2}/`);
+    const panel = await SidePanel.open(live, page, tabId);
+    await expect.poll(() => panel.text()).toContain(`Looks like localhost:${new URL(O1).port} — same app?`);
+    expect((await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(false);
+    await panel.click(/^ ?Join$/);
+    await expect.poll(async () => (await api(live, `/api/live/site?origin=${encodeURIComponent(O2)}`)).site.joined).toBe(true);
+    await expect.poll(() => panel.text()).toContain("one site");
+
+    // The old port's threads list here: this page's, and the other page's under its path.
+    await expect.poll(() => panel.text()).toContain("Home button on the old port");
+    await expect.poll(() => panel.text()).toContain("User one on the old port");
+    expect(await panel.text()).toContain("Elsewhere on this site");
+    // A pin made on the other port resolves on this one.
+    await expect.poll(async () => (await h.state(tabId))?.resolved[home.tid]?.found ?? null).toBe(true);
+
+    // The agent watching the new port hears of a comment made on the old one.
+    const later = await seed(`${O1}/users/2.html`, "main > h1", "Settings", "Made on the old port after the join");
+    await api(live, `/api/artifacts/${later.aid}/threads/${later.tid}/send`, { method: "POST", body: "{}" });
+    const fb = await api(live, `/api/sessions/${sid}/feedback?tier=wait&wait=10`);
+    expect(fb.feedback.map((f: { thread_id: string }) => f.thread_id)).toContain(later.tid);
+
+    // A thread opens on the site's most recently used address: the old port, used last by this lookup.
+    await fetch(`${live.daemon.base}/api/live/pages?url=${encodeURIComponent(`${O1}/`)}`, { headers: { authorization: `Bearer ${live.daemon.token}` } });
+    await panel.click(/User one on the old port/);
+    await page.waitForURL(`${O1}/users/1.html`);
+    // Clax stays on in the tab, now for the old port, and highlights the thread there.
+    await expect.poll(async () => { const s = await h.state(tabId); return s?.on === O1 && s.selected === one.tid && s.resolved[one.tid]?.found; }).toBe(true);
+    expect(await h.panelEnabled(tabId)).toBe(true);
+
+    // The old port goes down: a thread opens on the next address that answers.
+    await live.site.close();
+    await panel.click(/Home button on the old port/);
+    await page.waitForURL(`${O2}/`);
+    await expect.poll(async () => (await h.state(tabId))?.on ?? null).toBe(O2);
+  } finally {
+    await second.close();
+  }
 });
 
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {
