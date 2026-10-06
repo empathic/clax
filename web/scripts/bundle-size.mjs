@@ -2,8 +2,8 @@
 // and its module script with that script's static imports, per the Vite
 // manifest), of the eager bridge, of each of the bridge's lazy parts with
 // the files it imports (per the parts build's manifest), and of the Chrome
-// extension's release build (web/dist-extension: its worker, loader and
-// overlay scripts, and each page with the scripts and stylesheets it names),
+// extension's release build (web/dist-extension: its worker and overlay
+// scripts, and each page with the scripts and stylesheets it names),
 // against web/perf/bundle-budget.json. The shell sets its type in the
 // system's faces, so the build may carry no font file and no entry may load
 // one. The extension's release manifest may grant no host and declare no
@@ -104,7 +104,6 @@ for (const f of filesIn(ext)) {
 for (const f of filesIn(ext)) {
   if (/(^|\/)key(\/|\.pub)/.test(f.pathname.slice(ext.pathname.length))) throw new Error(`${f.pathname} is a key file; the key reaches the build only as the manifest's key`);
 }
-sizes.extLoader = extGz("loader.js");
 sizes.extOverlay = extGz("overlay.js");
 sizes.extWorker = extGz("sw.js");
 // The pages: the HTML and every script and stylesheet in assets/ it names.
@@ -113,10 +112,10 @@ for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidep
   const files = [...text.matchAll(/(?:src|href)="\.\/(assets\/[^"]+)"/g)].map(m => m[1]);
   sizes[key] = extGz(html) + files.reduce((n, f) => n + extGz(f), 0);
 }
-console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: loader ${sizes.extLoader}, overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
+console.log(`gzip bytes: gallery ${sizes.gallery}, artifact ${sizes.artifact}, eager bridge ${sizes.bridge}, parts: comment ${sizes.partComment}, clip ${sizes.partClip}, caps ${sizes.partCaps}, room ${sizes.partRoom}, sample ${sizes.partSample}, extension: overlay ${sizes.extOverlay}, worker ${sizes.extWorker}, composer ${sizes.extComposer}, panel ${sizes.extPanel}`);
 
 const RECORDED = ["gallery", "artifact", "bridge", ...Object.values(partKeys)];
-const EXTENSION = ["extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"];
+const EXTENSION = ["extOverlay", "extWorker", "extComposer", "extPanel"];
 const MEASURED = [...RECORDED, ...EXTENSION];
 const KEYS = [...MEASURED, "bridgeBaseline"];
 const budget = existsSync(budgetFile) ? JSON.parse(readFileSync(budgetFile, "utf8")) : null;

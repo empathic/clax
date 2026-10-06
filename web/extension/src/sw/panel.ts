@@ -6,7 +6,6 @@
 // tab's error, so the panel's Retry pairs again for it.
 import { type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
-import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
 import type { Tabs } from "./tabs";
 
@@ -18,14 +17,14 @@ export type PanelDeps = {
   allUrls(): Promise<boolean>;
   /** Loads `url` in the tab. */
   navigate(tabId: number, url: string): Promise<void>;
-  /** Turns Clax off on `origin` (its loader and permission) and drops the overlay from the tab. */
-  turnOff(tabId: number, origin: string): Promise<void>;
+  /** Turns Clax off in the tab: its panel, its overlay and its record go. */
+  turnOff(tabId: number): Promise<void>;
 };
 
 class PanelFailure extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
-/** The panel acted on a page or site the tab no longer shows. */
+/** The panel acted on a page the tab no longer shows. */
 const changed = () => new PanelFailure("page_changed", "The tab shows another page now.");
 const failed = (e: unknown): WorkerToPanel => {
   const err = e as { code?: unknown; message?: unknown };
@@ -61,12 +60,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
       }
       d.tabs.setCommentMode(tabId, m.on);
       return;
-    case "turn-off": {
-      const origin = s?.url ? originOf(s.url) : null;
-      if (origin !== m.origin) throw changed();
-      await d.turnOff(tabId, origin);
-      return;
-    }
+    case "turn-off": if (s?.on) await d.turnOff(tabId); return;
     default: break;
   }
   const page = s?.page;

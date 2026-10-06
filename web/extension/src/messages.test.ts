@@ -7,7 +7,7 @@ const ot = (extra: Record<string, unknown> = {}) => ({ id: ULID, status: "open",
 
 describe("messages", () => {
   it("takes the overlay's well-formed messages", () => {
-    expect(isFromOverlay({ t: "hello", url: "http://localhost:5173/" })).toBe(true);
+    expect(isFromOverlay({ t: "hello", url: "http://localhost:5173/" })).toBe(false);
     expect(isFromOverlay({ t: "capture", pickId: "b".repeat(32), anchor, rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 })).toBe(true);
     expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
     expect(isFromOverlay({ t: "quiet", url: "https://x/", title: "", snapshot: "<p>", pending: [ULID] })).toBe(true);
@@ -15,7 +15,7 @@ describe("messages", () => {
     expect(isFromOverlay({ t: "cancel", pickId: "c".repeat(32) })).toBe(true);
     expect(isFromOverlay({ t: "cancel", pickId: null })).toBe(false);
     // An address over MAX_URL goes as null, which the worker tells the person of.
-    expect(isFromOverlay({ t: "hello", url: null })).toBe(true);
+    expect(isFromOverlay({ t: "route", url: null })).toBe(true);
     expect(isFromOverlay({ t: "route", url: null })).toBe(true);
     expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: null, title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
     expect(isFromOverlay({ t: "quiet", url: null, title: "", snapshot: "<p>", pending: [] })).toBe(false);
@@ -25,8 +25,8 @@ describe("messages", () => {
 
   it("drops anything else", () => {
     expect(isFromOverlay(null)).toBe(false);
-    expect(isFromOverlay({ t: "hello" })).toBe(false);
-    expect(isFromOverlay({ t: "hello", url: "x".repeat(MAX_URL + 1) })).toBe(false);
+    expect(isFromOverlay({ t: "route" })).toBe(false);
+    expect(isFromOverlay({ t: "route", url: "x".repeat(MAX_URL + 1) })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: Number.NaN, y: 0, w: 1, h: 1 }, dpr: 1 })).toBe(false);
     expect(isFromOverlay({ t: "pick", pickId: "short", url: "http://x/", title: "T", snapshot: null, snapshotError: "too_large" })).toBe(false);
     expect(isFromOverlay({ t: "steal", url: "http://x/" })).toBe(false);
@@ -37,8 +37,8 @@ describe("messages", () => {
   it("refuses hostile shapes from the page's side", () => {
     expect(isFromOverlay([{ t: "ping" }])).toBe(false);
     expect(isFromOverlay("ping")).toBe(false);
-    expect(isFromOverlay({ t: "hello", url: "javascript:alert(1)" })).toBe(false);
-    expect(isFromOverlay({ t: "hello", url: "chrome-extension://abc/x" })).toBe(false);
+    expect(isFromOverlay({ t: "route", url: "javascript:alert(1)" })).toBe(false);
+    expect(isFromOverlay({ t: "route", url: "chrome-extension://abc/x" })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: 0, y: 0, w: -1, h: 1 }, dpr: 1 })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 0 })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: Infinity })).toBe(false);
@@ -57,7 +57,7 @@ describe("messages", () => {
   it("refuses a message whose type or fields come through its prototype", () => {
     expect(isFromOverlay(JSON.parse(`{"t": "ping", "__proto__": {"t": "ping"}}`))).toBe(false);
     expect(isFromOverlay(Object.create({ t: "ping" }))).toBe(false);
-    expect(isFromOverlay(Object.assign(Object.create({ url: "http://x/" }), { t: "hello" }))).toBe(false);
+    expect(isFromOverlay(Object.assign(Object.create({ url: "http://x/" }), { t: "route" }))).toBe(false);
     expect(isFromOverlay(Object.assign(Object.create(null), { t: "ping" }))).toBe(true);
     expect(isFromOverlay(new (class { t = "ping"; })())).toBe(false);
     expect(isFromOverlay({ t: "ping", [Symbol("x")]: 1 })).toBe(false);
@@ -125,6 +125,7 @@ describe("messages", () => {
     for (const t of ["snapshot-now", "comment-mode", "stream-status"]) expect(isFromWorker({ t, on: true, up: true })).toBe(false);
     expect(isFromWorker({ t: "snapshot-now" })).toBe(false);
     expect(isFromWorker({ t: "resend" })).toBe(true);
+    expect(isFromWorker({ t: "off" })).toBe(true);
     expect(isFromWorker({ t: "focus", threadId: null })).toBe(true);
     expect(isFromWorker({ t: "state", threads: "none", commentMode: false, pending: false })).toBe(false);
     expect(isFromWorker({ t: "scroll-to", threadId: "x" })).toBe(false);
@@ -156,14 +157,12 @@ describe("messages", () => {
     expect(isFromPanel({ t: "set-name", name: "x".repeat(65) })).toBe(false);
     expect(isFromPanel({ t: "navigate", route: "x".repeat(513), artifactId: "7q3k9mzx2b4t" })).toBe(false);
     expect(isFromPanel({ t: "navigate", route: null, artifactId: "NOT-AN-ID" })).toBe(false);
-    expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173/path" })).toBe(false);
-    expect(isFromPanel({ t: "turn-off", origin: "javascript:alert(1)" })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: Number.NaN })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: 1.5 })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: -1 })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: 7 })).toBe(true);
-    expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173" })).toBe(true);
-    expect(isFromPanel({ t: "turn-off" })).toBe(false);
+    expect(isFromPanel({ t: "turn-off" })).toBe(true);
+    expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173" })).toBe(false);
     expect(isFromPanel({ t: "visible", on: false })).toBe(true);
     expect(isFromPanel({ t: "visible", on: "yes" })).toBe(false);
     expect(isFromPanel({ t: "delete", threadId: ULID })).toBe(false);
@@ -180,7 +179,7 @@ describe("messages", () => {
   it("refuses an unknown field on every message", () => {
     const pickId = "a".repeat(32);
     const overlay = [
-      { t: "hello", url: "http://x/" }, { t: "route", url: "http://x/#/a" }, { t: "capture", pickId, anchor, rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
+      { t: "route", url: "http://x/#/a" }, { t: "capture", pickId, anchor, rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
       { t: "pick", pickId, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null },
       { t: "quiet", url: "http://x/", title: "T", snapshot: "<p>", pending: [] }, { t: "resolved", results: [] }, { t: "comment-mode", on: true },
       { t: "cancel", pickId }, { t: "pin", threadId: ULID }, { t: "removed" }, { t: "ping" },
@@ -188,7 +187,7 @@ describe("messages", () => {
     const worker = [
       { t: "state", page: null, route: null, threads: [ot()], commentMode: false, pending: false }, { t: "pick-lost", pickId },
       { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null },
-      { t: "resend" }, { t: "captured", pickId, ok: true }, { t: "captured", pickId, ok: false, error: "no_capture_permission" },
+      { t: "resend" }, { t: "off" }, { t: "captured", pickId, ok: true }, { t: "captured", pickId, ok: false, error: "no_capture_permission" },
       { t: "open-composer", pickId, rect: { x: 0, y: 0, w: 1, h: 1 } }, { t: "composer-ready", pickId },
     ];
     const composer = [{ t: "ready" }, { t: "post", body: "hi" }, { t: "cancel" }];
@@ -196,7 +195,7 @@ describe("messages", () => {
       { t: "watch-tab", tabId: 1 }, { t: "send", threadId: ULID, to: null }, { t: "send-batch", threadIds: [ULID], note: null, to: null },
       { t: "reply", threadId: ULID, body: "ok" }, { t: "resolve", threadId: ULID }, { t: "reopen", threadId: ULID },
       { t: "looked", threadIds: [ULID] }, { t: "set-name", name: "Ana" }, { t: "select", threadId: null }, { t: "comment-mode", on: true },
-      { t: "navigate", route: null, artifactId: "7q3k9mzx2b4t" }, { t: "turn-off", origin: "http://localhost:5173" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
+      { t: "navigate", route: null, artifactId: "7q3k9mzx2b4t" }, { t: "turn-off" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
     ];
     const toComposer = [
       { t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw0KGgo=", clipError: null, capturing: false },

@@ -3,7 +3,7 @@
   // its threads in the shell's own sidebar, who is on the page beside its
   // agents (the shell's roster), the Comment switch, the owner's name (asked
   // for only while the owner has none; spec L6, §3.1), whether the worker's
-  // stream is up, and Clax's menu for the page. Every action goes to the
+  // stream is up, and the way to turn Clax off in the tab. Every action goes to the
   // worker, which alone talks to the daemon. Everything shown from the page
   // or the daemon (titles, URLs, comments) is text, never markup.
   import Roster from "../../../shell/src/ui/Roster.svelte";
@@ -27,7 +27,6 @@
   const sendHarness = $derived(agents.find(a => a.handle === sendTo)?.harness ?? null);
   const threads = $derived(s ? asPages(s.threads) : []);
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
-  const host = $derived.by(() => { try { return s?.page ? new URL(s.page.origin).host : null; } catch { return null; } });
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
   /** The batch send's bound (spec §8). */
   const BATCH = 20;
@@ -118,12 +117,14 @@
           onReply={(t, body) => link.post({ t: "reply", threadId: t.id, body })}
           onSeen={t => link.post({ t: "looked", threadIds: [t.id] })} />
       </div>
-      <footer class="foot">
-        {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
-        {#if host}<button type="button" class="ghost" onclick={() => link.post({ t: "turn-off", origin: s.page!.origin })}>Turn off on {host}</button>{/if}
-      </footer>
     {:else}
       <p class="hint">No comments on this page yet. Press Comment, then click what you want to comment on.</p>
+    {/if}
+    {#if s.enabled}
+      <footer class="foot">
+        {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
+        <button type="button" class="ghost" onclick={() => link.post({ t: "turn-off" })}>Turn off in this tab</button>
+      </footer>
     {/if}
   {/if}
 </main>
@@ -150,4 +151,5 @@
   .threads :global(.sidebar) { position: static; width: auto; overflow: visible; border-left: 0; z-index: auto; padding: 12px var(--gutter) 18px; }
   .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px var(--gutter); border-top: 1px solid var(--border); font-size: 13px; }
   .foot a { color: var(--agent-ink); }
+  .foot button { margin-left: auto; }
 </style>

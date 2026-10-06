@@ -39,14 +39,13 @@ export type OverlayThread = { id: string; status: "open" | "resolved"; anchor: A
 export const overlayThread = (t: Thread): OverlayThread => ({ id: t.id, status: t.status, anchor: t.anchor, addressed_pending: !!t.addressed_pending });
 /** What the person is told when a page's address is over MAX_URL (the daemon's bound; spec §7). */
 export const URL_TOO_LONG = "This page's address is too long for Clax.";
-/** `href` as the overlay and the loader send it: null when it is over MAX_URL. */
+/** `href` as the overlay sends it: null when it is over MAX_URL. */
 export const pageUrl = (href: string): string | null => (href.length > MAX_URL ? null : href);
 export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string };
 
-/** A `url` the overlay or the loader sends is null when the page's address
- * is over MAX_URL: the worker then tells the person, never looks it up. */
+/** A `url` the overlay sends is null when the page's address is over
+ * MAX_URL: the worker then tells the person, never looks it up. */
 export type OverlayToWorker =
-  | { t: "hello"; url: string | null }
   | { t: "route"; url: string | null }
   /** The overlay names the pick (128 random bits); the worker takes it as
    * the tab's pick. The anchor comes with it, so the composer's draft does
@@ -80,7 +79,9 @@ export type WorkerToOverlay =
   /** The worker no longer holds the pick whose composer is shown (it was
    * stopped and started again): the composer stays, with its text, until the
    * person closes it, and comment mode comes back. */
-  | { t: "pick-lost"; pickId: string };
+  | { t: "pick-lost"; pickId: string }
+  /** Clax turned off in the tab: the overlay stops, its pins and comment mode with it. */
+  | { t: "off" };
 
 export type ComposerToWorker = { t: "ready" } | { t: "post"; body: string } | { t: "cancel" };
 /** What a composer page sends as a one-off runtime message once its port
@@ -131,8 +132,8 @@ export type PanelToWorker =
   | { t: "comment-mode"; on: boolean }
   /** `artifactId`: the live page the panel showed; the worker refuses it for another. */
   | { t: "navigate"; route: string | null; artifactId: string }
-  /** `origin`: the site the panel named; the worker refuses it for another. */
-  | { t: "turn-off"; origin: string }
+  /** Turns Clax off in the panel's tab. */
+  | { t: "turn-off" }
   | { t: "retry" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
@@ -200,7 +201,7 @@ export function isFromOverlay(m: unknown): m is OverlayToWorker {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
-    case "hello": case "route": return has("url") && (m.url === null || url(m.url));
+    case "route": return has("url") && (m.url === null || url(m.url));
     case "capture": return has("pickId", "anchor", "rect", "dpr") && pickId(m.pickId) && isAnchor(m.anchor) && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
     case "pick": return has("pickId", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && (m.url === null || url(m.url))
       && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large" || m.snapshotError === "failed")
@@ -236,7 +237,7 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
       && (m.reason === undefined || m.reason === "timeout");
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
-    case "resend": return has();
+    case "resend": case "off": return has();
     case "pick-lost": return has("pickId") && pickId(m.pickId);
     default: return false;
   }
@@ -304,8 +305,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "comment-mode": case "visible": return has("on") && bool(m.on);
     case "navigate": return has("route", "artifactId") && (m.route === null || str(m.route, MAX_ROUTE))
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
-    case "turn-off": return has("origin") && str(m.origin, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(m.origin);
-    case "retry": case "ping": return has();
+    case "turn-off": case "retry": case "ping": return has();
     default: return false;
   }
 }

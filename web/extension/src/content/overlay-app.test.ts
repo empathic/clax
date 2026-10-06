@@ -87,6 +87,17 @@ describe("the overlay", () => {
     expect(sent).toEqual([{ t: "route", url: location.href }]);
   });
 
+  it("stops when Clax turns off in the tab: its pins, its host and its mark go, and the page's own messages cannot stop it", () => {
+    tell(state([thread(A, "#save", "Save")], { commentMode: true }));
+    timers.advance(0);
+    tell({ t: "off" }, { id: "test-extension", tab: { id: 1 } } as chrome.runtime.MessageSender);
+    expect(hosts()).not.toHaveLength(0);
+    tell({ t: "off" });
+    expect(hosts()).toHaveLength(0);
+    expect(listeners).toHaveLength(0);
+    expect(global.claxOverlayStarted).toBeUndefined();
+  });
+
   it("does not use the worker's per-document flag", () => {
     expect(Object.keys(global)).not.toContain("claxOverlayLoaded");
   });

@@ -1,4 +1,4 @@
-// Same-document navigations, as the loader and the overlay report them to
+// Same-document navigations, as the overlay reports them to
 // the worker (spec 2026-10-05 §10.3, §11 "SPA route change"). A page can
 // dispatch `navigatesuccess`, `popstate` and `hashchange` itself, and those
 // reach the isolated world too: only the browser's own events count, the

@@ -1,145 +1,17 @@
-// The service worker (spec 2026-10-05 §6.4): the only holder of the
-// credential. It pairs through the native host, talks to the daemon, keeps
-// one event stream for every tab with Clax on, and answers the overlays,
-// the composers and the side panels. Every listener is registered at the
-// top level, so a worker Chrome restarts for an event hears it. Every
-// message passes its receiver's validator before anything acts on it.
-import { type OverlayToWorker, isComposerNote, isFromOverlay, isFromPanel } from "../messages";
-import { captureClip, chromeCapture } from "./capture";
-import * as origins from "./origins";
-import { PairError } from "./pairing";
-import { type PanelDeps, panelAction } from "./panel";
-import { composerFrameTab, composerTab, createWorker } from "./worker";
+// The service worker's entry: everything is wired on Chrome's own API at
+// the top level (background.ts), so a worker Chrome restarts for an event
+// hears it.
+import { startBackground } from "./background";
 
-const originsEnv: origins.OriginsEnv = {
-  permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local, boot: origins.bootNonce(chrome.storage.session),
-};
-/** Each tab's top document whose overlay or loader last wrote: the worker's
- * messages go to that document, never to a newer one the tab loaded meanwhile. */
-const docs = new Map<number, string>();
-// The pairing (the credential) and the tabs' record stay out of content scripts' reach (spec §10.2).
-void chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
-const { pairer, api, tabs, picks, fromOverlay } = createWorker({
-  pair: {
-    sendNative: async (host, msg) => {
-      try { return await chrome.runtime.sendNativeMessage(host, msg); }
-      catch (e) { throw new PairError(/not found/i.test(String(e)) ? "host_missing" : "host_failed", String(e)); }
-    },
-    session: chrome.storage.session, local: chrome.storage.local,
-    manifestVersion: chrome.runtime.getManifest().version,
-    // Not mid-request, and not while a pick is open: a reload tears down the
-    // composer (an extension page) and the person's text with it.
-    reload: () => picks.whenIdle(() => api.whenIdle(() => chrome.runtime.reload())),
-    now: () => Date.now(),
-  },
-  toOverlay: (tabId, m) => {
-    const documentId = docs.get(tabId);
-    void chrome.tabs.sendMessage(tabId, m, documentId ? { documentId } : { frameId: 0 }).catch(() => {});
-  },
-  inject: tabId => origins.injectOverlay(originsEnv, tabId),
-  present: tabId => origins.overlayPresent(originsEnv, tabId),
-  store: chrome.storage.session,
-  capture: (windowId, rect, dpr) => captureClip(chromeCapture, windowId, rect, dpr),
-  tabActive: async tabId => (await chrome.tabs.get(tabId)).active,
-});
-
-/** A gesture that grants activeTab (spec L8). The side panel (icon only)
- * and the origin's permission are asked for before any await. */
-function gesture(tab: chrome.tabs.Tab, panel: boolean): void {
-  const origin = tab.url ? origins.originOf(tab.url) : null;
-  if (tab.id === undefined || !origin || !tab.url) return;
-  if (panel) void chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
-  const asked = origins.ask(originsEnv, origin);
-  const tabId = tab.id, url = tab.url;
-  void (async () => {
-    await tabs.ready();
-    tabs.activate(tabId, url);
-    // The overlay at once (spec §12): injecting needs only activeTab, so the
-    // origin's loader is registered beside it.
-    let failed: unknown = null;
-    const remembered = asked.then(yes => (yes ? origins.remember(originsEnv, origin) : undefined)).catch(e => { failed = e; });
-    await tabs.toggle(tabId, url);
-    await remembered;
-    if (failed) tabs.fail(tabId, failed);
-  })();
-}
-
-chrome.action.onClicked.addListener(tab => gesture(tab, true));
-chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
-chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
-// The origins' loaders may be gone after a load of the extension; the browser's start wakes the worker to check.
-void origins.restoreLoaders(originsEnv).catch(e => console.warn("Clax could not register its sites' loaders again:", e));
-chrome.runtime.onStartup.addListener(() => {});
-chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
-chrome.tabs.onRemoved.addListener(tabId => { docs.delete(tabId); picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
-// Possibly a new document: if its overlay is gone, so is comment mode (spec
-// §11). At `loading` the old document may still answer; at `complete` the new one does.
-chrome.tabs.onUpdated.addListener((tabId, change) => {
-  if (change.status === "loading" || change.status === "complete") void tabs.ready().then(() => tabs.navigated(tabId));
-});
-
-/** An overlay or loader message comes from a tab's top frame whose origin
- * Clax is on, or which a gesture granted activeTab (spec §9.4); a URL it
- * names is of its own origin. */
-async function admitted(sender: chrome.runtime.MessageSender, m: OverlayToWorker): Promise<boolean> {
-  const tabId = sender.tab?.id;
-  const origin = sender.url ? origins.originOf(sender.url) : null;
-  if (tabId === undefined || !origin) return false;
-  if ("url" in m && m.url !== null && !origins.sameOrigin(m.url, sender.url)) return false;
-  await tabs.ready();
-  return tabs.admits(tabId) || origins.enabled(originsEnv, origin);
-}
-
-chrome.runtime.onMessage.addListener((m, sender, reply) => {
-  if (sender.id !== chrome.runtime.id) return false;
-  // A composer frame whose port is gone (spec §11 "worker restarted").
-  const composer = composerFrameTab(sender, chrome.runtime.id);
-  if (composer !== null) {
-    if (isComposerNote(m)) picks.note(composer, m);
-    return false;
-  }
-  if (sender.tab?.id === undefined || sender.frameId !== 0 || !isFromOverlay(m)) return false;
-  const tab = sender.tab;
-  void (async () => {
-    if (!(await admitted(sender, m))) return null;
-    if (sender.documentId) docs.set(tab.id!, sender.documentId);
-    return fromOverlay(tab.id!, tab.windowId, m, sender.url);
-  })().then(r => reply(r ?? null), e => reply({ error: String(e) }));
-  return true;
-});
-
-chrome.runtime.onConnect.addListener(port => {
-  const s = port.sender;
-  if (s?.id !== chrome.runtime.id) { port.disconnect(); return; }
-  let page = "";
-  try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
-  if (port.name.startsWith("panel:") && page === "/sidepanel.html" && s.tab === undefined) {
-    tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } }); });
-    return;
-  }
-  // A composer frame: the worker then takes it only for its tab's current pick.
-  const tabId = composerTab(port, chrome.runtime.id);
-  if (tabId !== null) { picks.attachComposer(port, tabId); return; }
-  port.disconnect();
-});
-
-/** What a side panel's actions reach (spec §9.4). */
-const panelDeps: PanelDeps = {
-  api, tabs, pairer,
-  allUrls: () => chrome.permissions.contains({ origins: ["<all_urls>"] }),
-  navigate: async (tabId, url) => { await chrome.tabs.update(tabId, { url }); },
-  // The overlay goes with the document: the tab loads again without Clax.
-  turnOff: async (tabId, origin) => { await origins.forget(originsEnv, origin); await chrome.tabs.reload(tabId); },
-};
+const bg = startBackground(chrome);
 
 if (__CLAX_EXT_TEST__) {
   (globalThis as unknown as { claxTest: unknown }).claxTest = {
-    comment: (tabId: number, url: string) => tabs.toggle(tabId, url),
-    /** What a toolbar click records besides activeTab, which the browser tests' build holds through `<all_urls>`. */
-    activate: (tabId: number, url: string) => tabs.activate(tabId, url),
-    /** What a granted origin permission records: the loader registered for the origin (across restarts). */
-    enable: (origin: string) => origins.remember(originsEnv, origin),
-    state: (tabId: number) => tabs.state(tabId),
-    pairer,
+    /** What the command does: turns Clax on in the tab (its panel enabled, the overlay injected), or flips comment mode where it is on. */
+    comment: (tabId: number, url: string) => bg.comment(tabId, url),
+    /** What the icon does in a tab Clax is on. */
+    off: (tabId: number) => bg.off(tabId),
+    state: (tabId: number) => bg.tabs.state(tabId),
+    pairer: bg.pairer,
   };
 }

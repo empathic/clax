@@ -616,7 +616,9 @@ the test build of the extension replaces the release files in
 host manifest from a profile given as `--user-data-dir`, and runs the
 installed `host/launch.sh` → `host/ensure-clax.sh` → `clax native-host`
 (the `bin` setting names this run's binary): the fallback in the plan (pairing
-through the test hook) was not needed. Seven tests, all passing:
+through the test hook) was not needed. Eight tests, all passing (Clax on
+per tab since 2026-10-06; the worker's hook does what the command does,
+turning Clax on in its tab, and the side panel is opened for that tab):
 
 1. **The whole loop.** Chromium's own ID for `<home>/extension` equals the
    daemon's (`GET /api/extension`) and the CLI's (`clax extension status
@@ -642,10 +644,14 @@ through the test hook) was not needed. Seven tests, all passing:
 2. **Daemon restarted on another port.** The pairing names the old port; the
    panel shows `daemon_unreachable` with Retry; Retry pairs again with the new
    daemon and the error clears.
-3. **Browser restart.** With the origin enabled and a thread on the page,
-   Chromium is closed and started on the same profile; the registered loader
-   greets the worker with no gesture, and the overlay comes back and resolves
-   the thread's anchor, comment mode off.
+3. **Per tab.** Clax turned on in one tab of the dev server (its panel
+   open and enabled for it): a second tab of the same origin, opened and
+   reloaded after, has no overlay host, no worker record and its side panel
+   disabled (`chrome.sidePanel.getOptions({tabId})`), while a pick in the
+   first tab opens its composer. A reload of the first tab brings the
+   overlay back (comment mode off, panel still enabled); a navigation to the
+   same server under `127.0.0.1` (another origin) turns Clax off there, its
+   panel disabled, and back on `localhost` it stays off.
 4. With only the dev server's origin held (the release build's state once a
    person allows a site; the test build with `host_permissions` narrowed):
    a `history.pushState` route change keeps the overlay and comment mode
@@ -657,14 +663,18 @@ through the test hook) was not needed. Seven tests, all passing:
    (`captureVisibleTab` needs `activeTab` or `<all_urls>`, spec L8); and the
    page's own iframe of `chrome-extension://<ID>/composer.html` is refused
    (`chrome-error://`).
-5. A composer frame loaded a second time (a navigation over CDP: the page
+5. With only the dev server's origin held: the panel's "Turn off in this
+   tab" stops the overlay in place (no reload) and disables the tab's
+   panel; turned on again, a reload keeps it on; a navigation to
+   `127.0.0.1`, whose URL the extension may not read, turns it off.
+6. A composer frame loaded a second time (a navigation over CDP: the page
    cannot reach the frame) is closed, its pick cancelled, nothing posted,
    and comment mode stays on.
-6. Two toggles at once (the worker's hook called twice concurrently) leave
+7. Two toggles at once (the worker's hook called twice concurrently) leave
    one pins host in the page: the isolated world's flag starts the overlay
    once, whether one injection or both ran `overlay.js` (which of the two
    happened is not observed).
-7. Under a page's modal `<dialog>`, a pick inside the dialog opens the
+8. Under a page's modal `<dialog>`, a pick inside the dialog opens the
    composer, which has focus and takes the keys, and its submit shortcut
    posts; the dialog's backdrop is on top at the composer's centre
    (`elementFromPoint` → `DIALOG`), so its buttons cannot be clicked while
@@ -685,7 +695,9 @@ Found by this test and fixed, each with a regression test:
   whether Chrome does the same on an update or reload was not checked),
   while the origin record stayed; the worker now registers them again at
   each start
-  (`web/extension/src/sw/origins.test.ts`, and test 3 above).
+  (`web/extension/src/sw/origins.test.ts`). Superseded on 2026-10-06: Clax
+  is on per tab and registers no loader; the worker unregisters any an
+  earlier build left.
 - Retry after `daemon_unreachable` did not pair again, so within 10 s of the
   last pairing a daemon restart could not be recovered from the panel;
   Retry now pairs again for it (`web/extension/src/sw/panel.test.ts`, and
@@ -696,9 +708,21 @@ Found by this test and fixed, each with a regression test:
 - The toolbar icon, its permission prompt and the per-origin grant (the
   test build holds `<all_urls>` or a fixed origin; the worker's test hook
   stands in for the click). `activeTab` lapsing on navigation.
-- The side panel opened by the icon (the test opens Chrome's real side
-  panel, but through `chrome.sidePanel.open` from an extension page).
-- Alt+Shift+C and the page's context menu entry.
+- The side panel opened by the icon in that tab (the test opens Chrome's
+  real side panel, but through `chrome.sidePanel.open({tabId})` from an
+  extension page), and the icon's second click turning Clax off in the tab
+  (its panel closing, the pins going without a reload).
+- Clax per tab by hand: with Clax on in one tab of the dev server, open a
+  second tab of it and a new tab: no pins, no panel, and the icon there
+  turns Clax on in that tab alone. Switch between the tabs: the panel hides
+  on a tab Clax is off in and shows again on the way back. A reload of the
+  on tab keeps the pins (comment mode off); a link to another site turns it
+  off. Decline the permission prompt, then reload: Clax turns off in the tab
+  (Chrome no longer lets the worker read it). Quit and start Chrome: no tab
+  has Clax on.
+- Alt+Shift+C and the page's context menu entry (each turns Clax on in its
+  tab, the panel enabled but not opened; where Clax is on, each flips
+  comment mode).
 - Chrome stable, Brave and Edge: host registration on macOS and Linux, and
   Load unpacked of `~/.clax/extension` by a person (only Playwright's
   Chromium ran, on macOS).
@@ -718,7 +742,7 @@ Found by this test and fixed, each with a regression test:
   observe them (not measured).
 - Stacking under a page's popover or non-modal top-layer element opened
   after the overlay (only a modal dialog was tried).
-- Two injections racing for certain: test 6 shows one overlay after two
+- Two injections racing for certain: test 7 shows one overlay after two
   concurrent toggles, but not that both injections reached the page.
 - Neither signing script has run against a real 1Password: only the
   test's fake `op` has served a key. No zip has been uploaded to the Chrome

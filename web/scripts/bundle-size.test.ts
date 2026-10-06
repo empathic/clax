@@ -45,7 +45,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   mkdirSync(join(web, "dist-extension/assets"), { recursive: true });
   const ext = (p: string, s: string) => { mkdirSync(join(web, "dist-extension", p, ".."), { recursive: true }); writeFileSync(join(web, "dist-extension", p), s); };
   ext("manifest.json", JSON.stringify(extManifest));
-  for (const f of ["sw.js", "loader.js", "overlay.js"]) ext(f, f.repeat(20));
+  for (const f of ["sw.js", "overlay.js"]) ext(f, f.repeat(20));
   ext("assets/panel.js", "panel-script ".repeat(400));
   ext("assets/panel.css", "panel-style ".repeat(300));
   ext("assets/composer.js", "composer");
@@ -58,7 +58,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extLoader: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -147,11 +147,11 @@ describe("bundle-size.mjs", () => {
   });
 
   it("counts each extension page with the scripts and stylesheets it names, against its own budget", () => {
-    const sizes = (r: ReturnType<typeof run>) => Object.fromEntries([...r.stdout.matchAll(/(loader|overlay|worker|composer|panel) (\d+)/g)].map(m => [m[1], Number(m[2])]));
+    const sizes = (r: ReturnType<typeof run>) => Object.fromEntries([...r.stdout.matchAll(/(overlay|worker|composer|panel) (\d+)/g)].map(m => [m[1], Number(m[2])]));
     const s = sizes(run(full));
     expect(s.panel).toBeGreaterThan(s.composer);
-    for (const k of ["loader", "overlay", "worker", "composer", "panel"]) expect(s[k], k).toBeGreaterThan(0);
-    for (const [key, size] of [["extPanel", s.panel], ["extComposer", s.composer], ["extLoader", s.loader], ["extOverlay", s.overlay], ["extWorker", s.worker]] as const) {
+    for (const k of ["overlay", "worker", "composer", "panel"]) expect(s[k], k).toBeGreaterThan(0);
+    for (const [key, size] of [["extPanel", s.panel], ["extComposer", s.composer], ["extOverlay", s.overlay], ["extWorker", s.worker]] as const) {
       rmSync(root, { recursive: true, force: true });
       const r = run({ ...full, [key]: size - 1 });
       expect(r.status, key).toBe(1);
@@ -190,7 +190,7 @@ describe("bundle-size.mjs", () => {
   it("never records the extension's ceilings, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;
@@ -199,7 +199,7 @@ describe("bundle-size.mjs", () => {
     expect(r.stderr).toContain("extPanel");
   });
 
-  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "extLoader", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
+  it.each(["gallery", "artifact", "bridge", "bridgeBaseline", "partComment", "partClip", "partCaps", "partRoom", "partSample", "extOverlay", "extWorker", "extComposer", "extPanel"])("fails when the %s budget is missing or not a number", k => {
     for (const budget of [Object.fromEntries(Object.entries(full).filter(([key]) => key !== k)), { ...full, [k]: "10000" }]) {
       const r = run(budget);
       expect(r.status).toBe(1);

@@ -34,8 +34,8 @@ the channels it already uses (§10 tiers 1–5).
   Send to agent, resolve and reopen.
 - Installation costs the person one "Load unpacked" until a Web Store listing
   exists, and nothing after it.
-- The overlay is small and loads lazily: a page with the extension enabled
-  and no threads pays for a loader of under 2 KiB (gzip) and one message.
+- Clax is on per tab: a tab the person has not turned it on in runs nothing
+  of Clax, whatever site it shows and whatever permission Clax holds.
 
 ### Non-goals (this design)
 
@@ -49,14 +49,15 @@ the channels it already uses (§10 tiers 1–5).
 The owner decided O1–O5 before this design; this document records them as
 decided and works out their consequences. L1–L15 are this design's
 decisions, each with its reason. On review the owner decided L6, L7, L8 and
-L15 (2026-10-05); their rows say so.
+L15 (2026-10-05); their rows say so. The owner changed O4 from per origin
+to per tab (2026-10-06); its row says so.
 
 | # | Decision | Reason |
 |---|---|---|
 | O1 | Pairing is Chrome native messaging. `clax init` (and `clax extension install`, §6.6) writes the extension to `~/.clax/extension` (unpacked; its ID is the one in effect, L15) and registers a native-messaging host manifest for Chrome, Chromium, Brave and Edge on macOS and Linux whose `allowed_origins` is exactly that extension's origin. The host is the `clax` binary (`clax native-host`), which returns the daemon URL and an extension-scoped credential, starting the daemon if needed. The daemon token never enters a web page's context; only the extension's service worker holds credentials. A later Web Store listing uses the same ID. `clax uninit` removes it; `clax doctor` reports it. | Owner decision: lowest-friction pairing. |
 | O2 | Each comment on a live page saves a viewport screenshot (`chrome.tabs.captureVisibleTab`), stored as the thread's clip, and a sanitized DOM snapshot of the page, stored as a version of the page's artifact. | Owner decision: threads can always be shown in context after the code changes. |
 | O3 | A live page is an artifact of a new kind, `live`, keyed by origin and path. The MCP `watch` tool accepts a page URL as well as an artifact ID or URL, creating the live page if needed; threads sent there reach the agent through the existing channels. No session picker. The plugin skills tell agents to watch their dev server's URL. | Owner decision: the agent link works exactly as now. |
-| O4 | Any site, Chrome only, Manifest V3. Off by default; turned on per origin when the person clicks the toolbar icon (optional host permissions and `activeTab`), remembered per origin. Threads list in Chrome's side panel, reusing the shell's sidebar components; pins, highlights and the composer sit over the page inside a closed shadow root. The overlay reuses the bridge's comment-mode and anchoring code. Hot reloads and DOM changes re-resolve anchors (detached when gone). Firefox later. | Owner decision. |
+| O4 | Any site, Chrome only, Manifest V3. Off by default; turned on **per tab** when the person clicks the toolbar icon (or uses the command or the context menu) in that tab: its side panel, its pins and comment mode, in that tab only. Other tabs, of the same site or any other, and new tabs show nothing until the person turns Clax on there. Within the tab it stays on through reloads, hot updates and navigations within its origin, and turns off when the tab navigates to another origin, when the person clicks the icon again (or "Turn off in this tab" in the panel), or when the tab closes. Chrome may keep the site's optional host permission, so a later click needs no prompt; holding it turns Clax on in no tab. Threads list in Chrome's side panel, reusing the shell's sidebar components; pins, highlights and the composer sit over the page inside a closed shadow root. The overlay reuses the bridge's comment-mode and anchoring code. Hot reloads and DOM changes re-resolve anchors (detached when gone). Firefox later. | Owner decision. Per tab rather than per origin: owner decision (2026-10-06), so that Clax appears only where the person asked for it, never in every tab of a site. |
 | O5 | Everything else Clax does stays: realtime updates in the side panel (working roster, agent replies), Send to agent, resolve and reopen, "addressed" adapted for live pages, and the gallery shows live pages beside artifacts. | Owner decision. |
 | L1 | The live-page key is the URL's origin (scheme, lowercased host, non-default port) and path. The query string and a plain fragment are not part of the key. A hash route (`#/…` or `#!/…`) is not part of the key either. The query (less `utm_*`, `fbclid`, `gclid`) and the hash route form the thread's **route**, stored on its anchor (§5.2). | A query or hash route is a view of one page's code: keying by it would split one component's threads over many artifacts and mint an artifact per cache-buster. Recording the route on each thread keeps it shown where it was made. Path-routed and hash-routed apps then behave alike: one artifact per path, threads filtered by route. |
 | L2 | A `watch` on a page URL is a **scope watch**: it covers that page and every live page of the same origin whose path is the watched path or below it (`/` covers the whole origin). Scope watches are materialized as ordinary `watches` rows (marked `source = 'scope'`) on every covered live page, now and as new ones are created. | An agent watching `http://localhost:5173/` must also hear about threads on `/settings`. Materializing keeps feedback targeting, participants, retargeting and every tier unchanged, since they read `watches`. |
@@ -108,10 +109,14 @@ can reach regardless, and the gateway never presents the daemon token.
    Developer mode, choose Load unpacked, and pick ~/.clax/extension (once)."
 2. They load it. The Clax icon appears in the toolbar (pin it to keep it
    visible).
-3. On their dev server tab they click the icon. Clax opens the side panel,
-   asks Chrome for access to `http://localhost:5173` ("Allow Clax to read and
-   change site data on localhost:5173?"), injects the overlay and turns
-   comment mode on. The service worker pairs with the daemon on its first
+3. On their dev server tab they click the icon. Clax opens the side panel
+   for that tab, asks Chrome for access to `http://localhost:5173` ("Allow
+   Clax to read and change site data on localhost:5173?"; once allowed,
+   Chrome asks no more), injects the overlay and turns comment mode on. Clax
+   is now on in that tab only: another tab of the dev server, or a new one,
+   shows nothing until the person clicks the icon there. A reload or a
+   navigation within the origin keeps it on (the overlay comes back, comment
+   mode off); a navigation to another origin turns it off. The service worker pairs with the daemon on its first
    need (native host, under 300 ms with a running daemon; it starts one if
    none runs).
 4. If the owner has no name yet (none set in the shell or the CLI), the side
@@ -160,8 +165,11 @@ page" link to the live URL.
 
 ### 3.5 Turning it off
 
-The side panel's menu has "Turn off on localhost:5173", which unregisters the
-content script, removes the origin's permission and the overlay. Threads stay.
+A second click on the icon, or the side panel's "Turn off in this tab",
+turns Clax off in that tab: the overlay stops in place (no reload), and the
+tab's side panel is disabled. Closing the tab or navigating it to another
+origin does the same. Threads stay. Chrome keeps the origin's permission
+(the person removes it in Chrome's own site settings).
 `clax uninit` removes the native host registration and `~/.clax/extension/`,
 revokes every extension credential, and prints how to remove the unpacked
 extension from Chrome.
@@ -175,8 +183,8 @@ extension from Chrome.
   │  ┌──────────────────────────────────────┐      ┌────────────────────────┐ │
   │  │ page (main world)                    │      │ sidepanel.html         │ │
   │  │  ┌────────────────────────────────┐  │      │ Svelte: Sidebar,       │ │
-  │  │  │ isolated world: loader.js      │  │      │ ThreadCard, Roster…    │ │
-  │  │  │   overlay.js (lazy)            │  │      └──────────▲─────────────┘ │
+  │  │  │ isolated world (tabs Clax is on│  │      │ ThreadCard, Roster…    │ │
+  │  │  │ in): overlay.js, injected      │  │      └──────────▲─────────────┘ │
   │  │  │   CommentMode, anchors, pins   │  │                 │ port          │
   │  │  │   snapshot serializer          │  │                 │               │
   │  │  │   <clax-overlay> closed shadow │  │      ┌──────────┴─────────────┐ │
@@ -304,7 +312,7 @@ credential carries no viewer: every live one is the owner identity (L6).
 ```
 ~/.clax/
   extension/                  written by `clax extension install`
-    manifest.json, sw.js, loader.js, overlay.js, composer.html, composer.js,
+    manifest.json, sw.js, overlay.js, composer.html, composer.js,
     sidepanel.html, sidepanel.js, icons/…
     host/launch.sh            the native host's path (L14)
     host/ensure-clax.sh       a copy of the plugins' wrapper
@@ -383,9 +391,8 @@ unusual installs.
 | File | Role | Size target (gzip) |
 |---|---|---|
 | `manifest.json` | MV3 manifest; `key` only when a public key is committed (L15) | — |
-| `sw.js` | Service worker (ES module): pairing, credential, API client, stream hub, origin enablement, screenshot, pick state | 24 KiB |
-| `loader.js` | Content script registered per enabled origin: asks the worker whether the page has threads or a pending action, and asks for the overlay | 2 KiB |
-| `overlay.js` | Injected on demand into the isolated world: CommentMode, anchors, pins, re-resolution, snapshot serializer, composer frame host | 30 KiB |
+| `sw.js` | Service worker (ES module): pairing, credential, API client, stream hub, per-tab enablement, screenshot, pick state | 24 KiB |
+| `overlay.js` | Injected into the isolated world of each tab Clax is on, once per document: CommentMode, anchors, pins, re-resolution, snapshot serializer, composer frame host | 30 KiB |
 | `composer.html/js` | The composer (Svelte, reusing `Composer.svelte`) | 25 KiB |
 | `sidepanel.html/js` | The side panel (Svelte, reusing `Sidebar.svelte`, `ThreadCard`, `SendButton`, `Roster`, `WorkingStrip`, `ViewerName`) | 60 KiB |
 
@@ -400,7 +407,6 @@ Manifest essentials:
   "minimum_chrome_version": "116",
   "action": {"default_title": "Comment with Clax"},
   "background": {"service_worker": "sw.js", "type": "module"},
-  "side_panel": {"default_path": "sidepanel.html"},
   "permissions": ["activeTab", "scripting", "sidePanel", "storage", "nativeMessaging", "contextMenus"],
   "optional_host_permissions": ["http://*/*", "https://*/*"],
   "commands": {"comment": {"suggested_key": {"default": "Alt+Shift+C"}, "description": "Comment on this page"}},
@@ -409,8 +415,32 @@ Manifest essentials:
 }
 ```
 
-No `host_permissions` and no `content_scripts` are declared: nothing runs on
-any page until the person turns the origin on. No `externally_connectable` is
+No `host_permissions`, no `content_scripts` and no `side_panel.default_path`
+are declared, and the worker registers no content script: nothing runs on
+any page until the person turns Clax on in its tab.
+
+Clax on per tab (O4, 2026-10-06). The worker keeps each tab's state, with
+the origin Clax is on for there, in `chrome.storage.session` (cleared when
+the browser quits), so a restarted worker picks every on tab up again. The
+side panel is disabled globally (`chrome.sidePanel.setOptions({enabled:
+false})` at each start) and enabled per tab (`setOptions({tabId, path:
+"sidepanel.html", enabled: true})`), so Chrome hides it when the person
+switches to another tab and shows it again on the way back; the worker
+enables it again for an on tab as it comes to the front and at each start.
+The icon's handler sets the tab's options and calls
+`chrome.sidePanel.open({tabId})` synchronously, inside the gesture, then
+asks for the origin's permission, before any `await`. The icon in a tab
+Clax is on turns it off: `setOptions({tabId, enabled: false})`, the overlay
+told `off` (it stops in place), the tab's pick and state dropped. The
+command and the context menu turn Clax on likewise (the panel enabled, not
+opened) and, in a tab it is on in, flip comment mode. On each `tabs.onUpdated`
+of an on tab the worker reads the tab's URL: another origin turns Clax off
+there, as does a load that completes on a URL the extension may not read
+(an origin it holds no permission for); within the origin, the new
+document gets the overlay once loaded (`chrome.scripting.executeScript`
+into that tab only, with the origin's permission or the gesture's
+`activeTab`). Loaders an earlier build registered per origin are
+unregistered at each start. No `externally_connectable` is
 declared (an empty one only draws a load warning), so no web page can message
 the extension; and no part of it listens for other extensions' messages
 (`onMessageExternal`, `onConnectExternal`), so theirs are dropped. A test
@@ -724,7 +754,8 @@ dropped and counted.
 
 - The worker accepts a runtime message only when `sender.id ===
   chrome.runtime.id`; an overlay message only from a tab's top frame
-  (`sender.frameId === 0`) whose origin is enabled or holds `activeTab`; a
+  (`sender.frameId === 0`) of a tab Clax is on in, whose origin is the one
+  Clax is on for there; a
   composer port only when `sender.url` is the extension's `composer.html`
   (under its ID or its dynamic one), the sender is a frame of the pick's tab
   (`sender.tab.id`, `sender.frameId > 0`), and the port names the tab's
@@ -733,8 +764,8 @@ dropped and counted.
   `open-composer` for it, one port per pick; a panel port only from `sidepanel.html`.
 - The overlay accepts messages only from the worker (`sender.id ===
   chrome.runtime.id` and no `sender.tab`).
-- Overlay (or loader) → worker: `hello {url}` (the loader, at a load),
-  `route {url}` (a same-document navigation, or the overlay's start),
+- Overlay → worker: `route {url}` (a same-document navigation, or the
+  overlay's start),
   `capture {pickId, anchor, rect, dpr}`, `pick {pickId, snapshot |
   snapshotError, url, title}` (`snapshotError`: `too_large`, with the
   serializer's placeholder, or `failed`, when the serializer threw, with no
@@ -743,15 +774,14 @@ dropped and counted.
   serialized the page, L11), `cancel {pickId}`, `comment-mode {on}` (the
   person left comment mode with Escape), `pin {threadId}` (a pin was
   clicked), `removed` (the page removed the overlay's host a second time),
-  `ping` (every 20 s, §9.5). The `url` of `hello`, `route` and `pick` is
+  `ping` (every 20 s, §9.5). The `url` of `route` and `pick` is
   null when the page's address is over 4096 characters (§7): the worker
   then looks nothing up and the panel says "This page's address is too long
   for Clax."; a pick is refused at once with that notice, and a post whose
   `pick` came with no URL fails in the composer with it. `quiet` is not sent
-  for such a page. Route reports (from the loader and the overlay alike)
-  count only the browser's own (`isTrusted`) navigation events, read the URL
+  for such a page. Route reports count only the browser's own (`isTrusted`) navigation events, read the URL
   from `location`, skip an unchanged URL and send a burst's last URL once,
-  at most one every 250 ms; the loader stays quiet while the overlay runs.
+  at most one every 250 ms.
 - Worker → overlay: `state {page, route, threads, commentMode, pending}`,
   where each thread is only `{id, status, anchor, addressed_pending}`
   (`addressed_pending` a boolean; no comment text, replies, names or
@@ -765,8 +795,9 @@ dropped and counted.
   is shown: comment mode comes back, and the composer stays, with its text,
   until the person closes it or picks again), `scroll-to {threadId}`,
   `focus {threadId | null}`, `resend` (the worker has no results for the
-  threads it shows: the overlay sends its `resolved` again). Messages go to
-  the document whose overlay or loader last wrote (`documentId`), so a
+  threads it shows: the overlay sends its `resolved` again), `off` (Clax
+  turned off in the tab: the overlay stops, its pins and comment mode with
+  it). Messages go to the document whose overlay last wrote (`documentId`), so a
   newer document in the tab never hears the old one's state.
 - The composer frame is shown only after the worker confirms its page
   (ruling 2026-10-05): the overlay inserts the frame hidden (so it cannot
@@ -790,18 +821,18 @@ dropped and counted.
   Cancel never throws on a closed port.
 - Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {state}`, where `state` is `{tabId, url, page, route,
   threads, resolved, versions, working, participants, viewer, commentMode,
-  enabled, selected, error, presence?}` (`enabled`: the tab's document has
-  the overlay; `resolved`: the overlay's anchor results by thread ID;
+  enabled, selected, error, presence?}` (`enabled`: Clax is on in the tab; `resolved`: the overlay's anchor results by thread ID;
   `presence`: who is on the page, §9.5), and pushes on change, with
   `stream-status {up}` on `watch-tab` and whenever the stream goes up or
   down; `send`, `send-batch`, `reply`, `resolve`, `reopen`, `looked`,
   `set-name`, `select`,
-  `comment-mode`, `navigate {route, artifactId}`, `turn-off {origin}`,
+  `comment-mode`, `navigate {route, artifactId}`, `turn-off`,
   `retry` → `failed {code, message}` on failure (a failure a new pairing can
   fix is also kept as the tab's `error`, so Retry pairs again for it), and success shows as the
-  next `tab` push (ruling 2026-10-05: no `ok`). `navigate` and `turn-off`
-  name the page and the site the panel showed; the worker refuses them
-  (`page_changed`) when the tab shows another. `visible {on}` says whether
+  next `tab` push (ruling 2026-10-05: no `ok`). `navigate` names the page
+  the panel showed; the worker refuses it (`page_changed`) when the tab
+  shows another. `turn-off` turns Clax off in the panel's tab (shown as
+  "Turn off in this tab" whenever Clax is on there). `visible {on}` says whether
   the panel's document is visible: the worker reports presence only while
   it is (§9.5). `ping` every 20 s.
 
@@ -900,9 +931,10 @@ What is protected, from whom:
    snapshots are untrusted. Svelte renders them as text; payloads quote them
    as JSON strings (§10 "Feedback payload"); the URL in a payload is the
    normalized one, written with `one_line`.
-9. **Permissions**: nothing runs on a site until the person clicks the icon
-   there; the persistent per-origin grant is Chrome's own prompt; "Turn off
-   on this site" removes it.
+9. **Permissions**: nothing runs in a tab until the person turns Clax on
+   in that tab; the persistent per-origin grant is Chrome's own prompt, and
+   holding it turns Clax on nowhere by itself: it only lets the worker
+   inject the overlay again after a reload of a tab Clax is on.
 
 ## 11. Failure modes
 
@@ -911,8 +943,8 @@ What is protected, from whom:
 | Native host not registered (plugin-only install, `clax init` never run) | `sendNativeMessage` fails with "Specified native messaging host not found"; the panel says "Run `clax init` (or /clax:extension in Claude Code), then reload" with a copy button. |
 | Daemon cannot start | The host answers `daemon_unavailable` with the log path; the panel shows it and a Retry button. |
 | Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once; after a network error a comment, a send or a batch send is not sent again (the daemon may have done it): it fails with `daemon_unreachable`, and the panel's Retry pairs again. A new thread is sent again: every attempt names its pick (`pick_id` in `POST /api/live/threads`), of which the daemon makes one thread. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
-| Registered loaders gone (seen in Chromium across a restart of a command-line-loaded extension; an update or reload is the same kind of load) | The worker registers each enabled origin's loader again at each start, while the origin's permission is held. |
-| Worker stopped by Chrome mid-stream | Resumed by the next event; stream resumes with `Last-Event-ID` or refetches (§9.5). |
+| Loaders an earlier, per-origin build registered | Unregistered at each worker start, with that build's list of origins: they would bring Clax to every tab of their origin. |
+| Worker stopped by Chrome mid-stream | Resumed by the next event; stream resumes with `Last-Event-ID` or refetches (§9.5). The tabs Clax is on come back from session storage; their side panels are enabled again. An icon click the worker hears before it read them back opens the panel, then turns Clax off if the tab was on. |
 | Extension files older than the daemon | On pairing, `clax_version` differs from the manifest's version: the worker calls `chrome.runtime.reload()` once for that version (remembered in `storage.local`). |
 | Extension reloaded (L13) or updated while a tab has an overlay | The old overlay is orphaned. Presence means a live overlay of this load of the extension: the overlay marks its isolated world with a check of its own context and of the boot nonce the worker keeps in session storage (new at each load of the extension). An orphan is not present, so the next gesture injects again, and the new overlay stops the orphan when they share the world. The reload itself waits until no pick is open and no request is in flight. |
 | Worker stopped by Chrome while a composer is shown | The composer says "Clax stopped listening to this comment. Copy your comment, then pick again." and tells the worker (`lost`); the overlay gives comment mode back with the composer still shown; Cancel closes it (`dismiss`), and a new pick replaces it. |
@@ -924,7 +956,10 @@ What is protected, from whom:
 | The serializer fails on a page | The pick is sent with `snapshotError: "failed"` and no snapshot; the thread is posted with a placeholder snapshot that says the page could not be read. |
 | The composer page never connects | The worker cancels the pick 5 s after `open-composer`; the overlay closes the hidden frame and says "The comment box did not open. Pick again to comment." |
 | Page removes or restyles the overlay host | Re-added once; then the panel says the page removed Clax's overlay. Pins use `all: initial` and the top layer (`popover`). |
-| Page navigates (full reload) | The registered content script loads the overlay again; comment mode is off; `activeTab` is gone until the next icon click or command. The worker probes the tab for the overlay at `loading` and again at `complete`, and drops a probe answered after a new document or an injection it saw meanwhile. |
+| Tab Clax is on reloads, or navigates within its origin | Clax stays on: once the new document has loaded the worker injects the overlay into that tab again; comment mode is off; the worker treats `activeTab` as gone until the next icon click or command. It probes the tab for the overlay at `loading` and again at `complete` (an in-page navigation keeps its overlay), and a probe answered after a new document or an injection it saw meanwhile resets nothing. |
+| Tab Clax is on navigates to another origin | Clax turns off in the tab: its panel is disabled, its state dropped. The worker sees the new URL where it may read it; a load that completes on a URL it may not read (an origin it holds no permission for, or a reload once the person declined the permission and `activeTab` is gone) turns it off too. Back on the first origin it stays off until the person turns it on again. |
+| Another tab of the same site, or a new tab | Nothing: no overlay, no panel, no state, whatever permission Clax holds; a message from an overlay there is dropped. |
+| Tab closed | Its state, pick and stream topics go. |
 | SPA route change | The overlay reports the new URL; the worker looks it up (`GET /api/live/pages`) and switches artifact or route; pins follow. |
 | Hot reload replaces the DOM | Mutations re-resolve anchors within one animation frame after a 150 ms quiet period; a thread whose anchor is gone goes to Detached. |
 | Agent addressed a thread while the page is closed | The address stays pending; the thread shows "waiting for a snapshot" until the page is next open in Chrome with the extension. |
@@ -934,15 +969,14 @@ What is protected, from whom:
 
 ## 12. Time to usable
 
-- An enabled origin's page loads `loader.js` (under 2 KiB gzip) at
-  `document_idle`. It sends `hello {url}` and does nothing else unless the
-  worker answers with threads or comment mode: then the worker injects
-  `overlay.js` with `chrome.scripting.executeScript` (no web-accessible
-  script, no fetch by the page).
+- A tab Clax is not on in loads nothing of Clax. In a tab it is on in, the
+  worker injects `overlay.js` with `chrome.scripting.executeScript` once
+  each document has loaded (no web-accessible script, no fetch by the
+  page).
 - The icon click injects the overlay at once, before pairing finishes; comment
   mode is on as soon as the overlay runs. Pairing and the page lookup run in
   parallel.
-- Budgets in `web/perf/bundle-budget.json`: `loader.js` 2 KiB, `overlay.js`
+- Budgets in `web/perf/bundle-budget.json`: `overlay.js`
   32 KiB, `sw.js` 24 KiB, `sidepanel.js` 64 KiB, `composer.js` 28 KiB (gzip).
 - The e2e test reports (never judges) icon-click → comment mode on, and pick →
   composer focused.
@@ -963,8 +997,11 @@ What is protected, from whom:
   page URL and the artifact-reference rule.
 - **Vitest (jsdom)**: the snapshot serializer (every removal rule, URL
   rewriting, CSSOM text, shadow roots, caps); message validators; the
-  worker's pairing and re-pair logic and origin enablement against a fake
-  `chrome`; route matching and the re-resolution scheduler.
+  worker's pairing and re-pair logic and per-tab enablement (another tab of
+  the origin and a new tab get nothing; reloads and navigations within the
+  origin inject again; another origin, the icon again and closing turn it
+  off; a worker restart restores it; the panel enabled only for on tabs)
+  against a fake `chrome`; route matching and the re-resolution scheduler.
 - **Playwright** (`web/e2e/chrome-overlay.spec.ts`): Chromium with the
   unpacked test build loaded from `<home>/extension` (`--load-extension`,
   persistent context), the native host registered in the profile's
@@ -978,8 +1015,11 @@ What is protected, from whom:
   true` reply links on the auto snapshot, the shell shows the live page in
   the gallery and the snapshot with its pin, and the shell's viewer is the
   same owner viewer the extension paired as. Also: Retry after the daemon
-  restarts on another port; the loader and overlay after a browser restart;
-  and, with only the dev server's origin held, a route change keeping
+  restarts on another port; a second tab of the dev server showing no
+  overlay and no panel while the first keeps working, a reload keeping Clax
+  on, and a navigation to another origin turning it off; and, with only the
+  dev server's origin held, the panel's "Turn off in this tab", a
+  navigation to an origin the extension cannot read turning it off, a route change keeping
   comment mode, the capture moment, focus and `window.frames`, a post with
   no screenshot, a composer frame loaded again, and a modal dialog.
 - The test build differs from the release build only in

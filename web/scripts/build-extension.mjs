@@ -2,7 +2,7 @@
 // dist-extension/ (the release build `clax extension install` embeds) and
 // dist-extension-test/ (the browser tests' build, which adds
 // `host_permissions: ["<all_urls>"]` and the worker's test hook). The
-// worker is one ES module; the loader and the overlay are classic scripts
+// worker is one ES module; the overlay is a classic script
 // (content scripts cannot be modules); the composer and the side panel are
 // HTML pages. The manifest is extension-manifest.mjs's. Nothing under
 // web/extension/key/ is copied: the key reaches a build only as the
@@ -21,7 +21,7 @@ const root = `${web}extension/`;
 async function variant(out, test) {
   cleanOut(out);
   const shared = { configFile: false, logLevel: "warn", publicDir: false, define: { __CLAX_EXT_TEST__: JSON.stringify(test), __CLAX_TEST_CLOCK__: "false" } };
-  const scripts = [["sw", "sw/main.ts", "es"], ["loader", "content/loader.ts", "iife"], ["overlay", "content/overlay.ts", "iife"]];
+  const scripts = [["sw", "sw/main.ts", "es"], ["overlay", "content/overlay.ts", "iife"]];
   for (const [name, entry, format] of scripts) {
     await build({ ...shared, build: { outDir: out, emptyOutDir: false, minify: true, sourcemap: false,
       lib: { entry: `${root}src/${entry}`, formats: [format], name: `clax_${name}`, fileName: () => `${name}.js` } } });

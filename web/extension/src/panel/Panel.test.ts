@@ -123,10 +123,14 @@ describe("Panel", () => {
     expect(l.sent.filter(m => m.t === "set-name")).toHaveLength(2);
   });
 
-  it("turns Clax off on the site it names", async () => {
+  it("turns Clax off in its tab, with or without a live page, and offers it only where Clax is on", async () => {
     const l = link(state());
-    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
-    await fireEvent.click(screen.getByRole("button", { name: "Turn off on localhost:5173" }));
-    expect(l.sent).toContainEqual({ t: "turn-off", origin: "http://localhost:5173" });
+    const view = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    await fireEvent.click(screen.getByRole("button", { name: "Turn off in this tab" }));
+    expect(l.sent).toContainEqual({ t: "turn-off" });
+    await view.rerender({ link: link(state({ page: null, threads: [] })) as never });
+    expect(screen.getByRole("button", { name: "Turn off in this tab" })).toBeTruthy();
+    await view.rerender({ link: link(state({ enabled: false, page: null, threads: [] })) as never });
+    expect(screen.queryByRole("button", { name: "Turn off in this tab" })).toBeNull();
   });
 });

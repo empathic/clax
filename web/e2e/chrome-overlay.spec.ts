@@ -3,8 +3,9 @@
 // Playwright cannot click the toolbar or answer the permission prompt; the
 // test build holds <all_urls> (or, in the release-shaped run, only the dev
 // server's origin) and the worker's `claxTest.comment` stands in for the
-// icon. The side panel is Chrome's own, opened by `chrome.sidePanel.open`
-// under a real click in an extension page, and driven over CDP, as
+// command, which turns Clax on in its tab. The side panel is Chrome's own,
+// enabled for that tab alone, opened by `chrome.sidePanel.open` under a real
+// click in an extension page, and driven over CDP, as
 // Playwright does not list it among the pages. docs/verification.md lists
 // what only a person can check.
 import type { CDPSession, Page } from "@playwright/test";
@@ -15,20 +16,15 @@ import { join } from "node:path";
 import { type Live, expect, test } from "./extension-fixtures";
 
 type Hook = {
-  activate(tabId: number, url: string): void;
   comment(tabId: number, url: string): Promise<void>;
-  enable(origin: string): Promise<void>;
-  state(tabId: number): { commentMode: boolean; overlay: boolean; route: string | null; error: unknown; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
+  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; route: string | null; error: unknown; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
 };
 const hook = (live: Live) => ({
-  /** What the toolbar icon does once its permission is held: records the activeTab grant, then turns comment mode on or off. */
-  comment: (tabId: number, url: string) => live.sw.evaluate(([id, u]) => {
-    const t = (globalThis as unknown as { claxTest: Hook }).claxTest;
-    t.activate(id, u);
-    return t.comment(id, u);
-  }, [tabId, url] as const),
-  enable: (origin: string) => live.sw.evaluate(o => (globalThis as unknown as { claxTest: Hook }).claxTest.enable(o), origin),
+  /** What the command does once the origin's permission is held: turns Clax on in the tab (records the activeTab grant), or flips comment mode where it is on. */
+  comment: (tabId: number, url: string) => live.sw.evaluate(([id, u]) => (globalThis as unknown as { claxTest: Hook }).claxTest.comment(id, u), [tabId, url] as const),
   state: (tabId: number) => live.sw.evaluate(id => (globalThis as unknown as { claxTest: Hook }).claxTest.state(id) ?? null, tabId),
+  /** Whether the tab's side panel is enabled (its own options, else the global ones, which are off). */
+  panelEnabled: (tabId: number) => live.sw.evaluate(async id => (await chrome.sidePanel.getOptions({ tabId: id })).enabled ?? false, tabId),
 });
 
 /** Polls `fn` until it returns a value other than null or undefined; fails after `ms`. */
@@ -42,8 +38,9 @@ async function until<T>(fn: () => Promise<T | null | undefined> | T | null | und
   }
 }
 
+/** The tab showing `url` exactly (the first, if several). */
 async function tabIdOf(live: Live, url: string): Promise<number> {
-  return live.sw.evaluate(async u => (await chrome.tabs.query({})).find(t => t.url?.startsWith(u))!.id!, url);
+  return live.sw.evaluate(async u => (await chrome.tabs.query({})).find(t => t.url === u)!.id!, url);
 }
 
 async function api(live: Live, path: string, init: RequestInit = {}, session?: string) {
@@ -53,10 +50,11 @@ async function api(live: Live, path: string, init: RequestInit = {}, session?: s
   return res.json();
 }
 
-/** Chrome's own side panel, opened for the window under a real click in an
+/** Chrome's own side panel, opened for the tab `tabId` (which Clax must be
+ * on in: the panel is enabled only there) under a real click in an
  * extension page (`sidePanel.open` needs a gesture), then read and clicked
- * through its CDP target. It follows the window's active tab, so `site` is
- * brought to the front once it is open. */
+ * through its CDP target. It shows while its tab is the active one, so
+ * `site` is brought to the front once it is open. */
 class SidePanel {
   private seq = 0;
   private waiting = new Map<number, (v: unknown) => void>();
@@ -68,16 +66,16 @@ class SidePanel {
     });
   }
 
-  static async open(live: Live, site: Page): Promise<SidePanel> {
+  static async open(live: Live, site: Page, tabId: number): Promise<SidePanel> {
     const opener = await live.ctx.newPage();
     await opener.goto(`chrome-extension://${live.extId}/composer.html`);
-    await opener.evaluate(() => {
+    await opener.evaluate(id => {
       const b = document.createElement("button");
       b.id = "open-panel";
       b.textContent = "Open";
-      b.onclick = async () => { await chrome.sidePanel.open({ windowId: (await chrome.windows.getCurrent()).id! }); b.dataset.done = "1"; };
+      b.onclick = async () => { await chrome.sidePanel.open({ tabId: id }); b.dataset.done = "1"; };
       document.body.append(b);
-    });
+    }, tabId);
     await opener.click("#open-panel");
     await opener.locator("#open-panel[data-done]").waitFor();
     await opener.close();
@@ -125,11 +123,11 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await page.goto(siteUrl);
   await expect(page.locator("#save")).toHaveText("Save");
   const tabId = await tabIdOf(live, siteUrl);
-  const panel = await SidePanel.open(live, page);
   const t0 = Date.now();
   await h.comment(tabId, siteUrl);
   await until(async () => ((await h.state(tabId))?.commentMode ? true : null));
   console.log(`icon → comment mode on: ${Date.now() - t0} ms (reported, not judged)`);
+  const panel = await SidePanel.open(live, page, tabId);
 
   // A page script finds no shadow root to read.
   expect(await page.evaluate(() => (document.querySelector("clax-overlay") as HTMLElement | null)?.shadowRoot ?? null)).toBeNull();
@@ -202,29 +200,13 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await expect(shell.getByText("The save button needs more room")).toBeVisible();
 });
 
-/** A thread on `url`'s live page, posted as the extension would (a credential minted with the token). */
-async function seedThread(live: Live, url: string, body: string): Promise<{ aid: string; tid: string }> {
-  const { credential } = await api(live, "/api/extension/credentials", { method: "POST", body: JSON.stringify({ extension_id: live.extId }) });
-  const f = new FormData();
-  f.set("url", url);
-  f.set("title", "Settings");
-  f.set("anchor", JSON.stringify({ kind: "element", selector: "#save", file: "index.html", quote: "Save" }));
-  f.set("body", body);
-  f.set("pending", "[]");
-  f.set("snapshot", new Blob(["<!doctype html><button id=save>Save</button>"], { type: "text/html" }), "index.html");
-  const res = await fetch(`${live.daemon.base}/api/live/threads`, { method: "POST", body: f, headers: { origin: `chrome-extension://${live.extId}`, authorization: `Clax-Extension ${credential}` } });
-  expect(res.status).toBe(201);
-  const v = await res.json();
-  return { aid: v.page.artifact_id, tid: v.thread.id };
-}
-
 test("the panel recovers when the daemon restarts on another port", async ({ live }) => {
   const h = hook(live);
   const page = await live.ctx.newPage();
   await page.goto(live.siteUrl);
   const tabId = await tabIdOf(live, live.siteUrl);
-  const panel = await SidePanel.open(live, page);
   await h.comment(tabId, live.siteUrl);
+  const panel = await SidePanel.open(live, page, tabId);
   const pairedTo = async () => (await live.sw.evaluate(() => chrome.storage.session.get("pairing"))).pairing?.daemon ?? null;
   await expect.poll(pairedTo).toBe(live.daemon.base);
   const before = live.daemon.base;
@@ -241,19 +223,58 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
   await expect.poll(async () => (await h.state(tabId))?.error ?? null).toBeNull();
 });
 
-test("an origin Clax is on gets its overlay after a browser restart, with no gesture", async ({ live }) => {
+/** How many overlay hosts the page's document has. */
+const overlays = (page: Page) => page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length);
+
+test("Clax is on only in the tab it was turned on in, stays on through a reload, and turns off when the tab leaves the origin", async ({ live }) => {
   const { siteUrl } = live;
-  await hook(live).enable(new URL(siteUrl).origin);
-  await seedThread(live, siteUrl, "Kept across restarts");
-  await live.restartBrowser();
   const h = hook(live);
-  const page = await live.ctx.newPage();
-  await page.goto(siteUrl);
+  const first = await live.ctx.newPage();
+  await first.goto(siteUrl);
   const tabId = await tabIdOf(live, siteUrl);
-  // The registered loader greets the worker; the origin admits it; the page's open thread brings the overlay.
-  await expect.poll(async () => (await h.state(tabId))?.overlay ?? false).toBe(true);
-  await expect.poll(async () => Object.values((await h.state(tabId))?.resolved ?? {}).map(r => r.found)).toEqual([true]);
-  expect((await h.state(tabId))?.commentMode).toBe(false);
+  await h.comment(tabId, siteUrl);
+  await expect.poll(async () => (await h.state(tabId))?.commentMode).toBe(true);
+  const panel = await SidePanel.open(live, first, tabId);
+  await expect.poll(() => panel.text()).toContain("Turn off in this tab");
+
+  // Another tab of the same origin, opened after: no overlay, no panel, no record.
+  const otherUrl = `${siteUrl}?tab=other`;
+  const second = await live.ctx.newPage();
+  await second.goto(otherUrl);
+  await expect(second.locator("#save")).toHaveText("Save");
+  const otherId = await tabIdOf(live, otherUrl);
+  await second.reload();
+  await expect(second.locator("#save")).toHaveText("Save");
+  expect(await overlays(second)).toBe(0);
+  expect(await h.state(otherId)).toBeNull();
+  expect(await h.panelEnabled(otherId)).toBe(false);
+  expect(await h.panelEnabled(tabId)).toBe(true);
+
+  // The first tab keeps working: a pick opens its composer.
+  await first.bringToFront();
+  await first.locator("#save").click();
+  const composer = await until(() => first.frames().find(f => f.url().includes("/composer.html")));
+  await composer.locator("textarea").waitFor();
+  expect(await overlays(second)).toBe(0);
+
+  // A reload keeps Clax on in the tab: the new document gets the overlay, comment mode off.
+  await first.reload();
+  await expect.poll(() => overlays(first)).toBe(1);
+  await expect.poll(async () => (await h.state(tabId))?.overlay).toBe(true);
+  expect(await h.state(tabId)).toMatchObject({ on: new URL(siteUrl).origin, commentMode: false });
+  expect(await h.panelEnabled(tabId)).toBe(true);
+  expect(await overlays(second)).toBe(0);
+
+  // Another origin (the same server under 127.0.0.1): Clax turns off in the tab, its panel with it.
+  await first.goto(siteUrl.replace("localhost", "127.0.0.1"));
+  await expect.poll(async () => await h.state(tabId)).toBeNull();
+  expect(await h.panelEnabled(tabId)).toBe(false);
+  expect(await overlays(first)).toBe(0);
+  // Back on the first origin, it stays off until the person turns it on again.
+  await first.goto(siteUrl);
+  await expect(first.locator("#save")).toHaveText("Save");
+  expect(await h.state(tabId)).toBeNull();
+  expect(await overlays(first)).toBe(0);
 });
 
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {
@@ -315,6 +336,34 @@ test.describe("holding only the dev server's origin, as the release build does o
     await page.evaluate(id => { const f = document.createElement("iframe"); f.src = `chrome-extension://${id}/composer.html`; document.body.append(f); }, live.extId);
     const framed = await refused;
     await expect.poll(() => framed.url()).toMatch(/^chrome-error:/);
+  });
+
+  test("the panel turns Clax off in its tab, and a navigation to an origin the extension cannot read turns it off", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    const tabId = await tabIdOf(live, siteUrl);
+    await h.comment(tabId, siteUrl);
+    await expect.poll(() => overlays(page)).toBe(1);
+    const panel = await SidePanel.open(live, page, tabId);
+    await expect.poll(() => panel.text()).toContain("Turn off in this tab");
+    await panel.click(/Turn off in this tab/);
+    // The overlay stops in place: no reload.
+    await expect.poll(() => overlays(page)).toBe(0);
+    expect(await h.state(tabId)).toBeNull();
+    expect(await h.panelEnabled(tabId)).toBe(false);
+
+    // On again; a reload keeps it on (the origin's permission lets the worker read the tab and inject again).
+    await h.comment(tabId, siteUrl);
+    await expect.poll(() => overlays(page)).toBe(1);
+    await page.reload();
+    await expect.poll(() => overlays(page)).toBe(1);
+    expect((await h.state(tabId))?.on).toBe(new URL(siteUrl).origin);
+    // 127.0.0.1 is another origin, which this build holds no permission for: Chrome hides the tab's URL, and Clax turns off.
+    await page.goto(siteUrl.replace("localhost", "127.0.0.1"));
+    await expect.poll(async () => await h.state(tabId)).toBeNull();
+    expect(await h.panelEnabled(tabId)).toBe(false);
   });
 
   test("two clicks at once inject one overlay", async ({ live }) => {

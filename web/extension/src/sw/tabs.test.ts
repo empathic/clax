@@ -150,7 +150,7 @@ describe("Tabs", () => {
     h.threads.set(AID, [full(T1)]);
     await h.tabs.route(4, URL1);
     const long = `${URL1}#${"x".repeat(4096)}`;
-    for (const m of [{ t: "route", url: null }, { t: "hello", url: null }] as const) {
+    for (const m of [{ t: "route", url: null }] as const) {
       h.calls.length = 0;
       await h.tabs.fromOverlay(4, 1, m, long);
       expect(h.calls).toEqual([]);
@@ -167,16 +167,17 @@ describe("Tabs", () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     h.threads.set(AID, [full(T1)]);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
-    // A new document whose loader greeted, and whose overlay came, while a slow probe was out.
+    // A new document whose overlay came (a click) while a slow probe was out.
     h.reload(4);
     const probe = hold();
     const tabs = h.tabs as unknown as { d: { present(tabId: number): Promise<boolean> } };
     const present = tabs.d.present;
     tabs.d.present = async tabId => { const was = await present(tabId); await probe.p; return was; };
-    const navigated = h.tabs.navigated(4);
+    const navigated = h.tabs.navigated(4, false);
     await settle();
-    await h.tabs.hello(4, URL1);
+    await h.tabs.toggle(4, URL1);
     expect(h.tabs.state(4)?.overlay).toBe(true);
     probe.release();
     await navigated;
@@ -230,14 +231,41 @@ describe("Tabs", () => {
     expect(s.error).toEqual({ code: "daemon_unreachable", message: "down" });
   });
 
-  it("brings the overlay at a page load only when the page has open threads", async () => {
+  it("injects the overlay again at a new document's load only in a tab Clax is on", async () => {
     const h = harness();
-    h.pages.set("http://localhost:5173/", { page: page(), route: null });
-    await h.tabs.hello(4, "http://localhost:5173/");
-    expect(h.injected).toEqual([]);
-    h.threads.set(AID, [full(T1)]);
-    await h.tabs.hello(5, "http://localhost:5173/");
-    expect(h.injected).toEqual([5]);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    await h.tabs.toggle(4, URL1);
+    // Another tab of the same origin, and a new tab: Clax is not on there.
+    await h.tabs.navigated(5, true);
+    await h.tabs.navigated(6, true);
+    expect(h.injected).toEqual([4]);
+    expect(h.tabs.onOrigin(5)).toBeNull();
+    expect(h.tabs.panelState(5).enabled).toBe(false);
+    expect(h.tabs.onTabs()).toEqual([4]);
+    // A reload of the tab Clax is on: the new document gets the overlay once loaded.
+    h.reload(4);
+    await h.tabs.navigated(4, false);
+    expect(h.injected).toEqual([4]);
+    await h.tabs.navigated(4, true);
+    expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, on: "http://localhost:5173" });
+  });
+
+  it("writes no record for a tab turned off while an answer for it was in flight, until it is turned on again", async () => {
+    const h = harness();
+    const slow = hold();
+    h.gates.set(URL1, slow.p);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    const routed = h.tabs.route(4, URL1);
+    h.tabs.close(4);
+    slow.release();
+    await routed;
+    expect(h.tabs.state(4)).toBeUndefined();
+    expect(h.tabs.onOrigin(4)).toBeNull();
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
+    expect(h.tabs.onOrigin(4)).toBe("http://localhost:5173");
   });
 
   it("injects the overlay once and flips comment mode on each toggle", async () => {
@@ -324,15 +352,15 @@ describe("Tabs", () => {
     expect(h.hubIn.at(-1)).toEqual({ id: "tab:4", msg: { t: "reconnect" } });
   });
 
-  it("treats a page load as a new document: comment mode off, and the overlay injected again when the page has open threads", async () => {
+  it("treats a page load as a new document: comment mode off, and the overlay injected again", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     h.threads.set(AID, [full(T1)]);
-    await h.tabs.hello(4, URL1);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
     expect(h.tabs.state(4)?.commentMode).toBe(true);
     h.reload(4);
-    await h.tabs.hello(4, URL1);
+    await h.tabs.navigated(4, true);
     expect(h.injected).toEqual([4, 4]);
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, selected: null, resolved: {} });
   });
@@ -340,10 +368,10 @@ describe("Tabs", () => {
   it("after a real load, forgets the overlay, comment mode and the click's grant", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
-    h.tabs.activate(4, URL1);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
     h.reload(4);
-    await h.tabs.navigated(4);
+    await h.tabs.navigated(4, false);
     expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: false });
     expect(h.tabs.admits(4)).toBe(false);
     h.tabs.activate(4, URL1);
@@ -356,10 +384,10 @@ describe("Tabs", () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     h.pages.set("http://localhost:5173/settings", { page: page(AID, "/settings"), route: null });
-    h.tabs.activate(4, URL1);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
     // Chrome reports the in-page navigation as loading; the document (and its overlay) stays.
-    await h.tabs.navigated(4);
+    await h.tabs.navigated(4, false);
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true, active: true });
     // On a site without the permanent permission the overlay is still heard.
     expect(h.tabs.admits(4)).toBe(true);
@@ -496,14 +524,16 @@ describe("Tabs", () => {
     const store = memory();
     const first = harness(store);
     first.pages.set(URL1, { page: page(), route: null });
+    first.tabs.turnOn(4, URL1, "http://localhost:5173");
     await first.tabs.toggle(4, URL1);
-    first.tabs.activate(4);
     await settle();
     const h = harness(store, first.docs);
     h.pages.set(URL1, { page: page(), route: null });
     h.threads.set(AID, [full(T1)]);
     await h.tabs.ready();
     expect(h.tabs.admits(4)).toBe(true);
+    expect(h.tabs.onOrigin(4)).toBe("http://localhost:5173");
+    expect(h.tabs.onTabs()).toEqual([4]);
     await h.tabs.fromOverlay(4, 1, { t: "ping" }, URL1);
     expect(h.tabs.state(4)).toMatchObject({ url: URL1, overlay: true, commentMode: true, page: page() });
     expect(h.tabs.state(4)?.threads.map(t => t.id)).toEqual([T1]);
@@ -516,6 +546,7 @@ describe("Tabs", () => {
     const after = harness(store);
     await after.tabs.ready();
     expect(after.tabs.admits(4)).toBe(false);
+    expect(after.tabs.onTabs()).toEqual([]);
   });
 });
 
@@ -621,12 +652,15 @@ describe("Tabs and side panels", () => {
     h.pages.set(URL1, { page: page(), route: null });
     h.pages.set(URL2, { page: page(), route: "?tab=billing" });
     h.threads.set(AID, [full(T1, { anchor: { kind: "element", selector: "body", file: "index.html", route: "?tab=billing" } })]);
+    h.tabs.turnOn(4, URL1, "http://localhost:5173");
     await h.tabs.toggle(4, URL1);
     await settle();
     h.tabs.select(4, T1);
     expect(h.overlay.some(o => o.m.t === "scroll-to")).toBe(false);
     // The navigation loads a new document, whose overlay re-resolves on the thread's route.
-    await h.tabs.hello(4, URL2);
+    h.reload(4);
+    await h.tabs.navigated(4, true);
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: URL2 }, URL2);
     await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: false, method: null, rect: null }] }, URL2);
     expect(h.overlay.some(o => o.m.t === "scroll-to")).toBe(false);
     await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: true, method: "exact", rect: null }] }, URL2);

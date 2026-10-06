@@ -1,10 +1,11 @@
 // What the worker knows about each tab with Clax (spec 2026-10-05 §9.4,
 // §9.5): its URL, live page, route, threads, working list and comment mode;
 // the stream's deltas applied to it; the overlay and the side panels told
-// of every change. What a restarted worker needs to pick a tab up again
-// (its URL, whether the overlay is in it, comment mode, activeTab) is kept
-// in session storage; the tab's page and threads are fetched again at its
-// next message.
+// of every change. A tab's record says whether Clax is on in it, and for
+// which origin (spec O4). What a restarted worker needs to pick a tab up
+// again (its URL, its origin, whether the overlay is in it, comment mode,
+// activeTab) is kept in session storage; the tab's page and threads are
+// fetched again at its next message.
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Participants, Version } from "../../../shell/src/api";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
@@ -24,12 +25,14 @@ export type TabState = {
   versions: Version[]; participants: Participants | null;
   /** A gesture granted activeTab since the tab's last full load. */
   active: boolean;
+  /** The origin Clax is on for in the tab; null when it is off there. */
+  on: string | null;
   error: { code: string; message: string } | null;
 };
 
 export const emptyTab = (tabId: number, url: string): TabState => ({
   tabId, url, page: null, route: null, threads: [], working: [], resolved: {}, commentMode: false, overlay: false, pending: false, selected: null,
-  versions: [], participants: null, active: false, error: null,
+  versions: [], participants: null, active: false, on: null, error: null,
 });
 
 /** A thread of a live page has `addressed_pending` while an agent's address waits for the page's next snapshot. */
@@ -85,12 +88,13 @@ type PanelEntry = {
 };
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
-type Saved = { url: string; overlay: boolean; commentMode: boolean; active: boolean };
+type Saved = { url: string; overlay: boolean; commentMode: boolean; active: boolean; on: string | null };
 const STORE_KEY = "tabs";
 const saved = (v: unknown): v is Saved => {
   const o = v as Partial<Saved> | null;
   return typeof o === "object" && o !== null && typeof o.url === "string" && /^https?:\/\//.test(o.url)
-    && typeof o.overlay === "boolean" && typeof o.commentMode === "boolean" && typeof o.active === "boolean";
+    && typeof o.overlay === "boolean" && typeof o.commentMode === "boolean" && typeof o.active === "boolean"
+    && (o.on === null || (typeof o.on === "string" && /^https?:\/\/[^/?#]+$/.test(o.on)));
 };
 
 type Deps = {
@@ -133,17 +137,36 @@ export class Tabs {
   private told = new Map<number, string>();
   /** Per tab, a count of the documents and injections the record has seen: a presence probe answered after either is stale. */
   private gens = new Map<number, number>();
+  /** Tabs turned off or closed: an answer still in flight for one writes no record. */
+  private closed = new Set<number>();
   private viewer: Owner | null = null;
   private streamUp = true;
   private saving = false;
   private readonly loaded: Promise<void>;
+  /** Whether the tabs kept before a worker restart are back. */
+  isReady = false;
 
   constructor(private readonly d: Deps) {
-    this.loaded = this.restore();
+    this.loaded = this.restore().finally(() => { this.isReady = true; });
   }
 
   /** Resolves once the tabs kept before a worker restart are back. */
   ready(): Promise<void> { return this.loaded; }
+
+  /** The origin Clax is on for in the tab; null when it is off there. */
+  onOrigin(tabId: number): string | null { return this.tabs.get(tabId)?.on ?? null; }
+
+  /** The tabs Clax is on in. */
+  onTabs(): number[] { return [...this.tabs.values()].filter(s => s.on !== null).map(s => s.tabId); }
+
+  /** A gesture turned Clax on in the tab for `origin` (or kept it on), and
+   * granted it activeTab. A tab on for another origin starts afresh. */
+  turnOn(tabId: number, url: string, origin: string): void {
+    const s = this.tabs.get(tabId);
+    if (s && s.on !== origin) this.close(tabId);
+    this.closed.delete(tabId);
+    this.set(tabId, { ...(s && s.on === origin ? s : emptyTab(tabId, url)), on: origin, active: true });
+  }
 
   state(tabId: number): TabState | undefined { return this.tabs.get(tabId); }
 
@@ -163,7 +186,7 @@ export class Tabs {
       for (const [k, v] of Object.entries(all)) {
         const tabId = Number(k);
         if (!Number.isSafeInteger(tabId) || tabId < 0 || !saved(v) || this.tabs.has(tabId)) continue;
-        this.tabs.set(tabId, { ...emptyTab(tabId, v.url), overlay: v.overlay, commentMode: v.commentMode, active: v.active });
+        this.tabs.set(tabId, { ...emptyTab(tabId, v.url), overlay: v.overlay, commentMode: v.commentMode, active: v.active, on: v.on });
         this.stale.add(tabId);
       }
     } catch {
@@ -178,15 +201,16 @@ export class Tabs {
     queueMicrotask(() => {
       this.saving = false;
       const out: Record<string, Saved> = {};
-      for (const [id, s] of this.tabs) if (s.url) out[id] = { url: s.url, overlay: s.overlay, commentMode: s.commentMode, active: s.active };
+      for (const [id, s] of this.tabs) if (s.url) out[id] = { url: s.url, overlay: s.overlay, commentMode: s.commentMode, active: s.active, on: s.on };
       void this.d.store!.set({ [STORE_KEY]: out }).catch(() => {});
     });
   }
 
   private set(tabId: number, next: TabState): void {
+    if (this.closed.has(tabId)) return;
     const prev = this.tabs.get(tabId);
     this.tabs.set(tabId, next);
-    if (!prev || prev.url !== next.url || prev.overlay !== next.overlay || prev.commentMode !== next.commentMode || prev.active !== next.active) this.persist();
+    if (!prev || prev.url !== next.url || prev.overlay !== next.overlay || prev.commentMode !== next.commentMode || prev.active !== next.active || prev.on !== next.on) this.persist();
     this.tellOverlay(tabId, next);
     this.tellPanels(tabId);
   }
@@ -387,15 +411,6 @@ export class Tabs {
     }
   }
 
-  /** The loader greeted from a page load: a new document, so no overlay
-   * and comment mode off (spec §11); the overlay comes when the page has
-   * open threads. */
-  async hello(tabId: number, url: string | null): Promise<void> {
-    this.newDocument(tabId, url ?? "");
-    const s = await this.route(tabId, url);
-    if (s.threads.some(t => t.status === "open") && !s.overlay) await this.ensureOverlay(tabId);
-  }
-
   /** The tab's record for a new document: no overlay, comment mode off,
    * and no activeTab grant, which Chrome revokes at a navigation (spec §11
    * "Page navigates"): the panel then says how to start, and the next
@@ -406,18 +421,31 @@ export class Tabs {
     this.set(tabId, { ...s, overlay: false, commentMode: false, active: false, resolved: {}, selected: null });
   }
 
-  /** Chrome reported the tab loading, or done loading. Only a new document
-   * (its overlay is gone) resets the record; an in-page navigation, which
-   * Chrome may report the same way, keeps everything, and the overlay
-   * reports its route. A probe at `loading` can still see the old document:
-   * the one at `complete` sees the new one. A probe answered after a new
-   * document or an injection the record saw meanwhile is stale and dropped. */
-  async navigated(tabId: number): Promise<void> {
+  /** Chrome reported a tab Clax is on loading, or done loading (`loaded`),
+   * within its origin. Only a new document (its overlay is gone) resets the
+   * record; an in-page navigation, which Chrome may report the same way,
+   * keeps everything, and the overlay reports its route. A probe at
+   * `loading` can still see the old document: the one at `complete` sees
+   * the new one, which then gets the overlay again (Clax stays on in the
+   * tab, and `ensureOverlay` probes again, so it injects once). A probe
+   * answered after a new document or an injection the record saw meanwhile
+   * is stale and resets nothing. */
+  async navigated(tabId: number, loaded: boolean): Promise<void> {
     const s = this.tabs.get(tabId);
-    if (!s?.overlay) return;
-    const gen = this.gens.get(tabId) ?? 0;
-    if (this.d.present && (await this.d.present(tabId))) return;
-    if (this.tabs.has(tabId) && (this.gens.get(tabId) ?? 0) === gen) this.newDocument(tabId, s.url);
+    if (!s?.on) return;
+    if (s.overlay) {
+      const gen = this.gens.get(tabId) ?? 0;
+      if (this.d.present && (await this.d.present(tabId))) return;
+      if (this.tabs.get(tabId)?.on !== s.on) return;
+      // A probe answered after a new document or an injection is stale: the record already follows the document.
+      if ((this.gens.get(tabId) ?? 0) === gen) this.newDocument(tabId, s.url);
+    }
+    if (!loaded) return;
+    try {
+      await this.ensureOverlay(tabId);
+    } catch (e) {
+      this.fail(tabId, e);
+    }
   }
 
   /** A gesture granted the tab activeTab. */
@@ -434,6 +462,7 @@ export class Tabs {
 
   /** Makes sure the tab's document has the overlay; true when it was injected now. */
   private async ensureOverlay(tabId: number): Promise<boolean> {
+    if (this.closed.has(tabId)) return false;
     const fresh = await this.d.inject(tabId);
     if (fresh) this.retell(tabId);
     this.set(tabId, { ...(this.tabs.get(tabId) ?? emptyTab(tabId, "")), overlay: true });
@@ -445,6 +474,7 @@ export class Tabs {
    * new document, whatever the record said), else flips. */
   async toggle(tabId: number, url: string): Promise<void> {
     await this.loaded;
+    if (this.closed.has(tabId)) return;
     if (!this.tabs.has(tabId)) this.tabs.set(tabId, emptyTab(tabId, url));
     let fresh: boolean;
     try {
@@ -466,8 +496,10 @@ export class Tabs {
     if (s && s.page?.artifact_id !== page.artifact_id) void this.route(tabId, s.url);
   }
 
-  /** The tab closed: its state and its topics go. */
+  /** The tab closed, or Clax turned off in it: its state and its topics
+   * go, and nothing still in flight for it writes a record again. */
   close(tabId: number): void {
+    this.closed.add(tabId);
     this.tabs.delete(tabId);
     this.seqs.delete(tabId);
     this.syncs.delete(tabId);
@@ -593,13 +625,12 @@ export class Tabs {
     this.tellPanels(tabId);
   }
 
-  /** A message from the tab's loader or overlay. `senderUrl` is the
+  /** A message from the tab's overlay. `senderUrl` is the
    * sender's URL: a tab the worker does not know (it restarted) is looked
    * up there again before the message is acted on. */
   async fromOverlay(tabId: number, _windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown> {
     await this.loaded;
-    // The loader at a load, or an overlay at its start: it hears the whole state.
-    if (m.t === "hello") { this.told.delete(tabId); return this.hello(tabId, m.url); }
+    // An overlay at its start (its first route): it hears the whole state.
     if (m.t === "route") { this.told.delete(tabId); await this.route(tabId, m.url, this.stale.has(tabId)); return; }
     const known = this.tabs.get(tabId);
     if ((!known || this.stale.has(tabId)) && (senderUrl ?? known?.url)) await this.route(tabId, (senderUrl ?? known?.url)!, true);
@@ -624,7 +655,7 @@ export class Tabs {
     return {
       tabId, url: s?.url ?? null, page: s?.page ?? null, route: s?.route ?? null, threads: s?.threads ?? [], resolved: s?.resolved ?? {},
       versions: s?.versions ?? [], working: s?.working ?? [], participants: s?.participants ?? null, viewer: this.viewer,
-      commentMode: s?.commentMode ?? false, enabled: !!s?.overlay, selected: s?.selected ?? null, error: s?.error ?? null,
+      commentMode: s?.commentMode ?? false, enabled: !!s?.on, selected: s?.selected ?? null, error: s?.error ?? null,
     };
   }
 

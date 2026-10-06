@@ -8,7 +8,6 @@
   "partCaps": 8773,
   "partRoom": 3657,
   "partSample": 3674,
-  "extLoader": 2048,
   "extOverlay": 32768,
   "extWorker": 24576,
   "extComposer": 28672,

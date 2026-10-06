@@ -27,7 +27,7 @@ export type WorkerDeps = {
 };
 export type Worker = {
   pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks;
-  /** An admitted overlay or loader message from tab `tabId` in window `windowId`; what it answers is the reply. */
+  /** An admitted overlay message from tab `tabId` in window `windowId`; what it answers is the reply. */
   fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown>;
 };
 

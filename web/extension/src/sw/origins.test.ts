@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, bootNonce, enabled, forget, injectOverlay, originOf, overlayPresent, remember, restoreLoaders, sameOrigin, scriptId, type OriginsEnv } from "./origins";
+import { ask, bootNonce, dropLoaders, injectOverlay, originOf, overlayPresent, sameOrigin, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
 const BOOT = "b".repeat(32);
-const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local, boot: async () => BOOT }) as unknown as OriginsEnv;
+const env = () => ({ permissions: c.permissions, scripting: c.scripting, boot: async () => BOOT }) as unknown as OriginsEnv;
 beforeEach(() => { c = fakeChrome(); });
 
 describe("origins", () => {
@@ -15,30 +15,18 @@ describe("origins", () => {
     expect(originOf("nonsense")).toBeNull();
   });
 
-  it("asks for the origin, registers the loader once, and forgets both", async () => {
+  it("asks for the origin's permission and registers no content script", async () => {
     expect(await ask(env(), "http://localhost:5173")).toBe(true);
-    await remember(env(), "http://localhost:5173");
-    const reg = c.calls.find(x => x.api === "scripting.registerContentScripts")!.args[0] as chrome.scripting.RegisteredContentScript[];
-    expect(reg[0]).toMatchObject({ id: scriptId("http://localhost:5173"), matches: ["http://localhost:5173/*"], js: ["loader.js"], runAt: "document_idle", allFrames: false, persistAcrossSessions: true });
-    expect(c.storage.local.data.origins).toEqual(["http://localhost:5173"]);
-    expect(await enabled(env(), "http://localhost:5173")).toBe(true);
-    await forget(env(), "http://localhost:5173");
-    expect(c.calls.some(x => x.api === "scripting.unregisterContentScripts")).toBe(true);
-    expect(c.granted.has("http://localhost:5173/*")).toBe(false);
-    expect(c.storage.local.data.origins).toEqual([]);
-    expect(await enabled(env(), "http://localhost:5173")).toBe(false);
+    expect(c.granted.has("http://localhost:5173/*")).toBe(true);
+    expect(c.calls.some(x => x.api === "scripting.registerContentScripts")).toBe(false);
   });
 
-  it("registers again the loader of each origin it is on whose permission is held, when Chromium dropped it", async () => {
-    const a = "http://localhost:5173", b = "http://localhost:5174", d = "http://localhost:5175";
-    c.storage.local.data.origins = [a, b, d];
-    c.granted.add(`${a}/*`);
-    c.granted.add(`${d}/*`);
-    c.scripting.getRegisteredContentScripts = (async () => [{ id: scriptId(d) }]) as unknown as typeof c.scripting.getRegisteredContentScripts;
-    await restoreLoaders(env());
-    const reg = c.calls.filter(x => x.api === "scripting.registerContentScripts").flatMap(x => x.args[0] as chrome.scripting.RegisteredContentScript[]);
-    expect(reg.map(r => r.id)).toEqual([scriptId(a)]);
-    expect(reg[0]).toMatchObject({ matches: [`${a}/*`], js: ["loader.js"], persistAcrossSessions: true });
+  it("unregisters the loaders an earlier build registered per origin, and forgets its origins", async () => {
+    c.storage.local.data.origins = ["http://localhost:5173"];
+    c.scripting.getRegisteredContentScripts = (async () => [{ id: "clax-loader-6874" }, { id: "someone-else" }]) as unknown as typeof c.scripting.getRegisteredContentScripts;
+    await dropLoaders(c.scripting as never, c.storage.local);
+    expect(c.calls.filter(x => x.api === "scripting.unregisterContentScripts").map(x => x.args[0])).toEqual([{ ids: ["clax-loader-6874"] }]);
+    expect("origins" in c.storage.local.data).toBe(false);
   });
 
   it("answers false when Chrome refuses or fails the request", async () => {
@@ -51,11 +39,6 @@ describe("origins", () => {
     expect(sameOrigin("http://evil.example/", "http://localhost:5173/")).toBe(false);
     expect(sameOrigin("http://localhost:5173/", undefined)).toBe(false);
     expect(sameOrigin("chrome://x", "chrome://x")).toBe(false);
-  });
-
-  it("gives each origin its own script ID", () => {
-    expect(scriptId("http://localhost:5173")).not.toBe(scriptId("http://localhost:5174"));
-    expect(scriptId("http://localhost:5173")).toMatch(/^clax-loader-[0-9a-f]+$/);
   });
 
   it("injects the overlay into the top frame only", async () => {

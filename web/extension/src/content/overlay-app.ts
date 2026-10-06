@@ -372,9 +372,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   stops.push(every(() => void send({ t: "ping" }), PING_MS));
 
   // Same-document navigations: the worker looks the new URL up (spec §11
-  // "SPA route change"), as `watchRoutes` filters and throttles them. A tab
-  // that holds only activeTab has no loader; where there is one, it is quiet
-  // while the overlay runs.
+  // "SPA route change"), as `watchRoutes` filters and throttles them.
   stops.push(watchRoutes(win, href => void send({ t: "route", url: pageUrl(href) }), timers, now));
 
   const onMessage = (m: unknown, sender: chrome.runtime.MessageSender) => {
@@ -417,6 +415,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         composer.lost = true;
         syncMode();
         break;
+      case "off": stop(); break;
     }
   };
   runtime.onMessage.addListener(onMessage);
