@@ -4,7 +4,7 @@
 //! open limits, and delivery bookkeeping.
 
 use super::Store;
-use crate::questions::{Answer, Question};
+use crate::questions::{Answer, Question, validate_answers};
 use crate::{CoreError, Result, new_ulid};
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
@@ -38,14 +38,15 @@ impl Status {
         }
     }
 
-    fn parse(s: &str) -> Status {
-        match s {
+    fn parse(s: &str) -> Option<Status> {
+        Some(match s {
+            "open" => Status::Open,
             "answered" => Status::Answered,
             "declined" => Status::Declined,
             "released" => Status::Released,
             "withdrawn" => Status::Withdrawn,
-            _ => Status::Open,
-        }
+            _ => return None,
+        })
     }
 }
 
@@ -101,7 +102,10 @@ pub struct NewQuestion {
 
 /// A transition out of `Open` (or, for `Terminal`, out of `Released`).
 pub enum Close {
-    /// Answered in Clax; `via` is `shell`, `extension` or `cli`.
+    /// Answered in Clax; `via` is `shell`, `extension` or `cli`. The
+    /// answers are checked against the questions
+    /// ([`validate_answers`](crate::questions::validate_answers)) and stored
+    /// trimmed.
     Answer {
         answers: Vec<Answer>,
         via: &'static str,
@@ -110,7 +114,8 @@ pub enum Close {
     /// Handed to the terminal; only for `hook` questions.
     Release,
     Withdraw,
-    /// A released question answered in the terminal.
+    /// A released question answered in the terminal, stored as Claude Code
+    /// recorded it (it may leave a question unanswered).
     Terminal {
         answers: Vec<Answer>,
     },
@@ -124,11 +129,88 @@ pub enum ListStatus {
     All,
 }
 
-const COLS: &str = "id, session_id, artifact_id, source, tool_use_id, questions_json, status,
-    answers_json, answered_via, created_at, closed_at, taken_at";
+/// Where to continue a listing of closed questions: the last row shown.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClosedCursor {
+    pub closed_at: String,
+    pub id: String,
+}
 
-fn corrupt(e: serde_json::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(0, rusqlite::types::Type::Text, Box::new(e))
+impl ClosedCursor {
+    /// The cursor after `q`, when `q` is closed.
+    pub fn after(q: &QuestionRow) -> Option<ClosedCursor> {
+        Some(ClosedCursor {
+            closed_at: q.closed_at.clone()?,
+            id: q.id.clone(),
+        })
+    }
+}
+
+macro_rules! select {
+    () => {
+        "SELECT id, session_id, artifact_id, source, tool_use_id, questions_json, status,
+            answers_json, answered_via, created_at, closed_at, taken_at FROM questions "
+    };
+}
+
+/// The late answers' filter: answered or declined `ask` questions of
+/// session `?1` not yet received.
+macro_rules! late {
+    () => {
+        "WHERE session_id = ?1 AND status IN ('answered', 'declined') AND source = 'ask'
+            AND taken_at IS NULL"
+    };
+}
+
+pub(crate) const BY_ID: &str = concat!(select!(), "WHERE id = ?1");
+pub(crate) const BY_TOOL_USE: &str =
+    concat!(select!(), "WHERE session_id = ?1 AND tool_use_id = ?2");
+pub(crate) const OPEN_COUNT: &str = "SELECT COUNT(*) FROM questions WHERE status = 'open'";
+pub(crate) const OPEN_COUNT_OF_SESSION: &str =
+    "SELECT COUNT(*) FROM questions WHERE session_id = ?1 AND status = 'open'";
+pub(crate) const OPEN_OLDEST: &str = concat!(
+    select!(),
+    "WHERE status = 'open' ORDER BY created_at, id LIMIT ?1"
+);
+pub(crate) const OPEN_NEWEST: &str = concat!(
+    select!(),
+    "WHERE status = 'open' ORDER BY created_at DESC, id DESC LIMIT ?1"
+);
+/// Closed questions use the partial index `questions_closed`, whose
+/// condition (`status <> 'open'`) each query repeats word for word.
+pub(crate) const CLOSED_NEWEST: &str = concat!(
+    select!(),
+    "WHERE status <> 'open' ORDER BY closed_at DESC, id DESC LIMIT ?1"
+);
+pub(crate) const CLOSED_BEFORE: &str = concat!(
+    select!(),
+    "WHERE status <> 'open' AND (closed_at, id) < (?1, ?2)
+     ORDER BY closed_at DESC, id DESC LIMIT ?3"
+);
+pub(crate) const LATE_ANSWERS: &str = concat!(select!(), late!());
+pub(crate) const TAKE_LATE: &str = concat!("UPDATE questions SET taken_at = ?2 ", late!());
+pub(crate) const OPEN_OF_SESSION: &str =
+    "SELECT id FROM questions WHERE session_id = ?1 AND status = 'open'";
+pub(crate) const WITHDRAW_SESSION: &str =
+    "UPDATE questions SET status = 'withdrawn', closed_at = ?2
+    WHERE session_id = ?1 AND status = 'open'";
+pub(crate) const OPEN_HOOKS: &str =
+    "SELECT id FROM questions WHERE status = 'open' AND source = 'hook'";
+pub(crate) const WITHDRAW_HOOKS: &str = "UPDATE questions SET status = 'withdrawn', closed_at = ?1
+    WHERE status = 'open' AND source = 'hook'";
+pub(crate) const CLOSE: &str = "UPDATE questions SET status = ?3, answers_json = ?4,
+    answered_via = ?5, closed_at = ?6 WHERE id = ?1 AND status = ?2";
+pub(crate) const TAKE: &str =
+    "UPDATE questions SET taken_at = ?2 WHERE id = ?1 AND taken_at IS NULL";
+
+/// A row this code could not have written. The message names the column,
+/// never its content, so no question text reaches an error or a log.
+fn corrupt(column: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        format!("questions.{column} is not a value this store writes").into(),
+    )
 }
 
 fn to_json<T: Serialize + ?Sized>(v: &T) -> Result<String> {
@@ -139,22 +221,23 @@ fn to_json<T: Serialize + ?Sized>(v: &T) -> Result<String> {
 fn row(r: &Row<'_>) -> rusqlite::Result<QuestionRow> {
     let qs: String = r.get("questions_json")?;
     let ans: Option<String> = r.get("answers_json")?;
+    let source = match r.get_ref("source")?.as_str()? {
+        "ask" => Source::Ask,
+        "hook" => Source::Hook,
+        _ => return Err(corrupt("source")),
+    };
     Ok(QuestionRow {
         id: r.get("id")?,
         session_id: r.get("session_id")?,
         artifact_id: r.get("artifact_id")?,
-        source: if r.get::<_, String>("source")? == "hook" {
-            Source::Hook
-        } else {
-            Source::Ask
-        },
+        source,
         tool_use_id: r.get("tool_use_id")?,
-        questions: serde_json::from_str(&qs).map_err(corrupt)?,
-        status: Status::parse(&r.get::<_, String>("status")?),
+        questions: serde_json::from_str(&qs).map_err(|_| corrupt("questions_json"))?,
+        status: Status::parse(r.get_ref("status")?.as_str()?).ok_or_else(|| corrupt("status"))?,
         answers: ans
             .map(|a| serde_json::from_str(&a))
             .transpose()
-            .map_err(corrupt)?,
+            .map_err(|_| corrupt("answers_json"))?,
         answered_via: r.get("answered_via")?,
         created_at: r.get("created_at")?,
         closed_at: r.get("closed_at")?,
@@ -162,36 +245,33 @@ fn row(r: &Row<'_>) -> rusqlite::Result<QuestionRow> {
     })
 }
 
-fn fetch(c: &Connection, id: &str) -> Result<Option<QuestionRow>> {
-    Ok(c.query_row(
-        &format!("SELECT {COLS} FROM questions WHERE id = ?1"),
-        params![id],
-        row,
-    )
-    .optional()?)
+fn rows(c: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<QuestionRow>> {
+    let mut stmt = c.prepare_cached(sql)?;
+    Ok(stmt
+        .query_map(p, row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+fn fetch(c: &Connection, id: &str) -> Result<Option<QuestionRow>> {
+    Ok(c.query_row(BY_ID, params![id], row).optional()?)
+}
+
+/// The IDs `sql` selects, sorted (ULIDs sort in creation order).
 fn ids(c: &Connection, sql: &str, p: impl rusqlite::Params) -> Result<Vec<String>> {
-    let mut stmt = c.prepare(sql)?;
-    Ok(stmt
+    let mut stmt = c.prepare_cached(sql)?;
+    let mut out = stmt
         .query_map(p, |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?)
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    out.sort_unstable();
+    Ok(out)
 }
 
 /// Withdraws session `sid`'s open questions inside the caller's
 /// transaction; returns their IDs.
 pub(crate) fn withdraw_session(c: &Connection, sid: &str, now: &str) -> Result<Vec<String>> {
-    let out = ids(
-        c,
-        "SELECT id FROM questions WHERE session_id = ?1 AND status = 'open' ORDER BY id",
-        params![sid],
-    )?;
+    let out = ids(c, OPEN_OF_SESSION, params![sid])?;
     if !out.is_empty() {
-        c.execute(
-            "UPDATE questions SET status = 'withdrawn', closed_at = ?2
-             WHERE session_id = ?1 AND status = 'open'",
-            params![sid, now],
-        )?;
+        c.execute(WITHDRAW_SESSION, params![sid, now])?;
     }
     Ok(out)
 }
@@ -203,16 +283,27 @@ fn closed(q: &QuestionRow) -> CoreError {
     )
 }
 
+fn not_mirrored() -> CoreError {
+    CoreError::invalid(
+        "not_mirrored",
+        "only a mirrored AskUserQuestion moves to the terminal",
+    )
+}
+
 impl Store {
     /// Records a question for live session `n.session_id`. A second request
     /// with the same `tool_use_id` for the session returns the first row and
     /// `false`.
     ///
     /// # Errors
-    /// `unknown_session` for a missing or ended session; `limit_reached`
-    /// past [`MAX_OPEN_PER_SESSION`] or [`MAX_OPEN`] open questions (a
-    /// question created released does not count).
+    /// `unknown_session` for a missing or ended session; `not_mirrored` for
+    /// an `ask` question created released; `limit_reached` past
+    /// [`MAX_OPEN_PER_SESSION`] or [`MAX_OPEN`] open questions (a question
+    /// created released does not count).
     pub fn create_question(&self, n: NewQuestion) -> Result<(QuestionRow, bool)> {
+        if n.released && n.source == Source::Ask {
+            return Err(not_mirrored());
+        }
         let json = to_json(&n.questions)?;
         self.with_tx(|tx| {
             let ended: Option<Option<String>> = tx
@@ -230,29 +321,16 @@ impl Store {
             }
             if let Some(t) = &n.tool_use_id {
                 let existing = tx
-                    .query_row(
-                        &format!(
-                            "SELECT {COLS} FROM questions WHERE session_id = ?1 AND tool_use_id = ?2"
-                        ),
-                        params![n.session_id, t],
-                        row,
-                    )
+                    .query_row(BY_TOOL_USE, params![n.session_id, t], row)
                     .optional()?;
                 if let Some(q) = existing {
                     return Ok((q, false));
                 }
             }
             if !n.released {
-                let mine: u32 = tx.query_row(
-                    "SELECT COUNT(*) FROM questions WHERE session_id = ?1 AND status = 'open'",
-                    params![n.session_id],
-                    |r| r.get(0),
-                )?;
-                let all: u32 = tx.query_row(
-                    "SELECT COUNT(*) FROM questions WHERE status = 'open'",
-                    [],
-                    |r| r.get(0),
-                )?;
+                let mine: u32 =
+                    tx.query_row(OPEN_COUNT_OF_SESSION, params![n.session_id], |r| r.get(0))?;
+                let all: u32 = tx.query_row(OPEN_COUNT, [], |r| r.get(0))?;
                 if mine >= MAX_OPEN_PER_SESSION || all >= MAX_OPEN {
                     return Err(CoreError::invalid(
                         "limit_reached",
@@ -313,12 +391,8 @@ impl Store {
         tool_use_id: &str,
     ) -> Result<Option<QuestionRow>> {
         self.with_read(|c| {
-            Ok(c.query_row(
-                &format!("SELECT {COLS} FROM questions WHERE session_id = ?1 AND tool_use_id = ?2"),
-                params![sid, tool_use_id],
-                row,
-            )
-            .optional()?)
+            Ok(c.query_row(BY_TOOL_USE, params![sid, tool_use_id], row)
+                .optional()?)
         })
     }
 
@@ -327,19 +401,23 @@ impl Store {
     ///
     /// # Errors
     /// `NotFound`; `not_mirrored` for a release of an `ask` question;
-    /// `question_closed` when the status no longer allows `c`.
+    /// `question_closed` when the status no longer allows `c`;
+    /// `invalid_answer` for answers that do not fit the questions or a `via`
+    /// other than `shell`, `extension` or `cli`.
     pub fn close_question(&self, qid: &str, c: Close) -> Result<QuestionRow> {
         self.with_tx(|tx| {
             let q = fetch(tx, qid)?.ok_or(CoreError::NotFound)?;
-            let (status, answers, via) = match (&c, q.status) {
-                (Close::Release, _) if q.source == Source::Ask => {
-                    return Err(CoreError::invalid(
-                        "not_mirrored",
-                        "only a mirrored AskUserQuestion moves to the terminal",
-                    ));
-                }
+            let (status, answers, via) = match (c, q.status) {
+                (Close::Release, _) if q.source == Source::Ask => return Err(not_mirrored()),
                 (Close::Answer { answers, via }, Status::Open) => {
-                    (Status::Answered, Some(answers), Some(*via))
+                    if !matches!(via, "shell" | "extension" | "cli") {
+                        return Err(CoreError::invalid(
+                            "invalid_answer",
+                            "an answer comes from the shell, the extension or the CLI",
+                        ));
+                    }
+                    let answers = validate_answers(&q.questions, &answers)?;
+                    (Status::Answered, Some(answers), Some(via))
                 }
                 (Close::Decline, Status::Open) => (Status::Declined, None, None),
                 (Close::Release, Status::Open) => (Status::Released, None, None),
@@ -349,12 +427,21 @@ impl Store {
                 }
                 _ => return Err(closed(&q)),
             };
-            let answers = answers.map(to_json).transpose()?;
-            tx.execute(
-                "UPDATE questions SET status = ?2, answers_json = ?3, answered_via = ?4,
-                    closed_at = ?5 WHERE id = ?1",
-                params![qid, status.as_str(), answers, via, Store::now()],
+            let answers = answers.as_deref().map(to_json).transpose()?;
+            let n = tx.execute(
+                CLOSE,
+                params![
+                    qid,
+                    q.status.as_str(),
+                    status.as_str(),
+                    answers,
+                    via,
+                    Store::now()
+                ],
             )?;
+            if n != 1 {
+                return Err(closed(&q));
+            }
             fetch(tx, qid)?.ok_or(CoreError::NotFound)
         })
     }
@@ -363,10 +450,7 @@ impl Store {
     /// call keeps the first time.
     pub fn take_question(&self, qid: &str) -> Result<()> {
         self.with_tx(|tx| {
-            tx.execute(
-                "UPDATE questions SET taken_at = ?2 WHERE id = ?1 AND taken_at IS NULL",
-                params![qid, Store::now()],
-            )?;
+            tx.execute(TAKE, params![qid, Store::now()])?;
             Ok(())
         })
     }
@@ -376,45 +460,47 @@ impl Store {
     /// transaction so each is returned once.
     pub fn take_late_answers(&self, sid: &str) -> Result<Vec<QuestionRow>> {
         self.with_tx(|tx| {
-            let mut stmt = tx.prepare(&format!(
-                "SELECT {COLS} FROM questions WHERE session_id = ?1 AND source = 'ask'
-                    AND status IN ('answered', 'declined') AND taken_at IS NULL
-                 ORDER BY closed_at, id"
-            ))?;
-            let rows = stmt
-                .query_map(params![sid], row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            let now = Store::now();
-            for q in &rows {
-                tx.execute(
-                    "UPDATE questions SET taken_at = ?2 WHERE id = ?1",
-                    params![q.id, now],
-                )?;
+            let mut out = rows(tx, LATE_ANSWERS, params![sid])?;
+            if !out.is_empty() {
+                tx.execute(TAKE_LATE, params![sid, Store::now()])?;
             }
-            Ok(rows)
+            out.sort_unstable_by(|a, b| (&a.closed_at, &a.id).cmp(&(&b.closed_at, &b.id)));
+            Ok(out)
         })
     }
 
-    /// At most `limit` questions: open ones oldest first, closed ones most
-    /// recently closed first, or all (open first, then newest first); and
-    /// the number open.
+    /// At most `limit` questions with the number open: open ones oldest
+    /// first; closed ones most recently closed first; or all, open ones
+    /// newest first followed by closed ones most recently closed first.
     pub fn list_questions(&self, which: ListStatus, limit: u32) -> Result<(Vec<QuestionRow>, u32)> {
         self.with_read(|c| {
-            let open: u32 = c.query_row(
-                "SELECT COUNT(*) FROM questions WHERE status = 'open'",
-                [],
-                |r| r.get(0),
-            )?;
-            let tail = match which {
-                ListStatus::Open => "WHERE status = 'open' ORDER BY created_at, id",
-                ListStatus::Closed => "WHERE status <> 'open' ORDER BY closed_at DESC, id DESC",
-                ListStatus::All => "ORDER BY status <> 'open', created_at DESC, id DESC",
+            let open: u32 = c.query_row(OPEN_COUNT, [], |r| r.get(0))?;
+            let out = match which {
+                ListStatus::Open => rows(c, OPEN_OLDEST, params![limit])?,
+                ListStatus::Closed => rows(c, CLOSED_NEWEST, params![limit])?,
+                ListStatus::All => {
+                    let mut out = rows(c, OPEN_NEWEST, params![limit])?;
+                    let left = limit.saturating_sub(out.len() as u32);
+                    if left > 0 {
+                        out.extend(rows(c, CLOSED_NEWEST, params![left])?);
+                    }
+                    out
+                }
             };
-            let mut stmt = c.prepare(&format!("SELECT {COLS} FROM questions {tail} LIMIT ?1"))?;
-            let rows = stmt
-                .query_map(params![limit], row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            Ok((rows, open))
+            Ok((out, open))
+        })
+    }
+
+    /// At most `limit` closed questions, most recently closed first,
+    /// continuing after `cursor` when given.
+    pub fn list_closed_questions(
+        &self,
+        cursor: Option<&ClosedCursor>,
+        limit: u32,
+    ) -> Result<Vec<QuestionRow>> {
+        self.with_read(|c| match cursor {
+            None => rows(c, CLOSED_NEWEST, params![limit]),
+            Some(k) => rows(c, CLOSED_BEFORE, params![k.closed_at, k.id, limit]),
         })
     }
 
@@ -422,16 +508,10 @@ impl Store {
     /// was waiting on the previous daemon. Returns their IDs.
     pub fn withdraw_hook_questions_on_start(&self) -> Result<Vec<String>> {
         self.with_tx(|tx| {
-            let out = ids(
-                tx,
-                "SELECT id FROM questions WHERE source = 'hook' AND status = 'open' ORDER BY id",
-                [],
-            )?;
-            tx.execute(
-                "UPDATE questions SET status = 'withdrawn', closed_at = ?1
-                 WHERE source = 'hook' AND status = 'open'",
-                params![Store::now()],
-            )?;
+            let out = ids(tx, OPEN_HOOKS, [])?;
+            if !out.is_empty() {
+                tx.execute(WITHDRAW_HOOKS, params![Store::now()])?;
+            }
             Ok(out)
         })
     }
@@ -443,6 +523,7 @@ mod tests {
     use crate::CoreError;
     use crate::questions::{Answer, Question};
     use crate::store::test_util::{session, store};
+    use rusqlite::params;
 
     fn qs() -> Vec<Question> {
         serde_json::from_value(serde_json::json!([{"question": "Which?", "header": "Pick",
@@ -704,6 +785,119 @@ mod tests {
     }
 
     #[test]
+    fn answers_are_checked_and_trimmed_before_storage() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (q, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+        let bad = |c| {
+            matches!(
+                c,
+                Err(CoreError::Invalid {
+                    code: "invalid_answer",
+                    ..
+                })
+            )
+        };
+        assert!(bad(st.close_question(
+            &q.id,
+            Close::Answer {
+                answers: vec![],
+                via: "shell"
+            }
+        )));
+        assert!(bad(st.close_question(
+            &q.id,
+            Close::Answer {
+                answers: a(),
+                via: "terminal"
+            }
+        )));
+        let r = st
+            .close_question(
+                &q.id,
+                Close::Answer {
+                    answers: vec![Answer {
+                        selected: vec![],
+                        text: Some("  mine  ".into()),
+                    }],
+                    via: "cli",
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            r.answers,
+            Some(vec![Answer {
+                selected: vec![],
+                text: Some("mine".into())
+            }])
+        );
+    }
+
+    #[test]
+    fn only_a_mirrored_question_is_created_released() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let mut n = new(&s, Source::Ask, None);
+        n.released = true;
+        assert!(matches!(
+            st.create_question(n),
+            Err(CoreError::Invalid {
+                code: "not_mirrored",
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn corrupt_rows_fail_without_quoting_them() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let (q, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+        let (r, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+        st.with_write(|c| {
+            c.execute_batch("PRAGMA ignore_check_constraints = ON")?;
+            c.execute(
+                "UPDATE questions SET status = 'bogus' WHERE id = ?1",
+                params![q.id],
+            )?;
+            c.execute(
+                "UPDATE questions SET questions_json = '\"a secret\"' WHERE id = ?1",
+                params![r.id],
+            )?;
+            c.execute_batch("PRAGMA ignore_check_constraints = OFF")?;
+            Ok(())
+        })
+        .unwrap();
+        assert!(st.question(&q.id).is_err(), "an unknown status is not open");
+        let e = st.question(&r.id).unwrap_err().to_string();
+        assert!(!e.contains("secret"), "{e}");
+    }
+
+    #[test]
+    fn closed_questions_page_by_cursor() {
+        let (_d, st) = store();
+        let s = session(&st, "claude", "h1");
+        let mut ids = Vec::new();
+        for _ in 0..5 {
+            let (q, _) = st.create_question(new(&s, Source::Ask, None)).unwrap();
+            st.close_question(&q.id, Close::Decline).unwrap();
+            ids.push(q.id);
+        }
+        ids.reverse();
+        let first = st.list_closed_questions(None, 2).unwrap();
+        let got: Vec<_> = first.iter().map(|q| q.id.clone()).collect();
+        assert_eq!(got, ids[..2]);
+        let cursor = ClosedCursor::after(first.last().unwrap()).unwrap();
+        let rest: Vec<_> = st
+            .list_closed_questions(Some(&cursor), 10)
+            .unwrap()
+            .into_iter()
+            .map(|q| q.id)
+            .collect();
+        assert_eq!(rest, ids[2..]);
+    }
+
+    #[test]
     fn lists_open_oldest_first_and_counts() {
         let (_d, st) = store();
         let s = session(&st, "claude", "h1");
@@ -718,8 +912,11 @@ mod tests {
         assert_eq!(closed.len(), 1);
         assert_eq!(closed[0].id, q1.id);
         let (all, n) = st.list_questions(ListStatus::All, 50).unwrap();
-        assert_eq!((all.len(), n), (3, 2));
-        assert_eq!(all[2].id, q1.id, "closed after open");
+        let ids: Vec<_> = all.iter().map(|q| q.id.clone()).collect();
+        assert_eq!(ids, vec![q3.id.clone(), q2.id.clone(), q1.id.clone()]);
+        assert_eq!(n, 2);
+        let (two, _) = st.list_questions(ListStatus::All, 2).unwrap();
+        assert_eq!(two.len(), 2, "the open page fills the limit");
         let (one, n) = st.list_questions(ListStatus::Open, 1).unwrap();
         assert_eq!((one.len(), n), (1, 2));
     }

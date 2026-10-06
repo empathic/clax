@@ -375,7 +375,8 @@ pub const MIGRATIONS: &[&str] = &[
     // AskUserQuestion that the hook mirrored (`hook`, keyed by the call's
     // tool_use_id), what it asks, how it closed, and when its session
     // received the answer. No foreign key to `artifacts`, as for
-    // `version_threads` (11).
+    // `version_threads` (11). `questions_closed` serves the closed listing,
+    // newest first, without sorting the history.
     "CREATE TABLE questions (
         id TEXT PRIMARY KEY,
         session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -396,7 +397,8 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX questions_by_artifact ON questions(artifact_id, status)
         WHERE artifact_id IS NOT NULL;
     CREATE UNIQUE INDEX questions_by_tool_use ON questions(session_id, tool_use_id)
-        WHERE tool_use_id IS NOT NULL;",
+        WHERE tool_use_id IS NOT NULL;
+    CREATE INDEX questions_closed ON questions(closed_at, id) WHERE status <> 'open';",
 ];
 
 #[cfg(test)]
@@ -535,6 +537,26 @@ mod tests {
             .with_read(|c| Ok(c.query_row("SELECT COUNT(*) FROM questions", [], |r| r.get(0))?))
             .unwrap();
         assert_eq!(n, 0);
+        let indexes: Vec<String> = st
+            .with_read(|c| {
+                let mut s = c.prepare(
+                    "SELECT name FROM sqlite_schema WHERE type = 'index'
+                     AND tbl_name = 'questions' AND sql IS NOT NULL ORDER BY name",
+                )?;
+                Ok(s.query_map([], |r| r.get(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?)
+            })
+            .unwrap();
+        assert_eq!(
+            indexes,
+            [
+                "questions_by_artifact",
+                "questions_by_session",
+                "questions_by_status",
+                "questions_by_tool_use",
+                "questions_closed",
+            ]
+        );
     }
 
     #[test]
