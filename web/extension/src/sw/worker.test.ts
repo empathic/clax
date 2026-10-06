@@ -125,6 +125,8 @@ const area = (m: Record<string, unknown>) => ({
 });
 let pairings = 0;
 const injected: number[] = [];
+/** The tabs whose current document has the overlay. */
+const docs = new Set<number>();
 /** A worker as Chrome starts it, over the session and local storage that outlive it. */
 const booted: Worker[] = [];
 function boot(): Worker {
@@ -132,7 +134,8 @@ function boot(): Worker {
     pair: { sendNative: async () => { pairings++; return d.pair(); }, session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
     fetch: d.fetch,
     toOverlay: () => {},
-    inject: async tabId => { injected.push(tabId); },
+    inject: async tabId => { if (docs.has(tabId)) return false; docs.add(tabId); injected.push(tabId); return true; },
+    present: async tabId => docs.has(tabId),
     store: area(session),
   });
   booted.push(worker);
@@ -143,6 +146,7 @@ afterEach(async () => {
   await settle();
   for (const b of booted.splice(0)) b.hub.close();
   injected.length = 0;
+  docs.clear();
   vi.useRealTimers();
 });
 

@@ -52,7 +52,10 @@ function memory() {
   };
 }
 
-function harness(store = memory()) {
+/** The documents in the tabs: whether each tab's current document has the overlay. */
+function documents() { return new Set<number>(); }
+
+function harness(store = memory(), docs = documents()) {
   const calls: string[] = [];
   const hubIn: { id: string; msg: TabMsg }[] = [];
   const detached: string[] = [];
@@ -75,10 +78,13 @@ function harness(store = memory()) {
     api,
     hub: { receive: (id, msg) => hubIn.push({ id, msg }), detach: id => detached.push(id) },
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
-    inject: async tabId => { injected.push(tabId); },
+    inject: async tabId => { if (docs.has(tabId)) return false; docs.add(tabId); injected.push(tabId); return true; },
+    present: async tabId => docs.has(tabId),
     store,
   });
-  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates, gate, working, store };
+  /** The tab loads a new document: whatever was in the old one is gone. */
+  const reload = (tabId: number) => docs.delete(tabId);
+  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates, gate, working, store, docs, reload };
 }
 
 function port(name = "panel:1") {
@@ -233,20 +239,49 @@ describe("Tabs", () => {
     await h.tabs.hello(4, URL1);
     await h.tabs.toggle(4, URL1);
     expect(h.tabs.state(4)?.commentMode).toBe(true);
+    h.reload(4);
     await h.tabs.hello(4, URL1);
     expect(h.injected).toEqual([4, 4]);
     expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, selected: null, resolved: {} });
   });
 
-  it("forgets the overlay when the tab starts loading a new document", async () => {
+  it("after a real load, forgets the overlay and comment mode but keeps the click's grant", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.activate(4, URL1);
+    await h.tabs.toggle(4, URL1);
+    h.reload(4);
+    await h.tabs.navigated(4);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: true });
+    await h.tabs.toggle(4, URL1);
+    expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)?.commentMode).toBe(true);
+  });
+
+  it("keeps comment mode, the overlay and the click's grant through an in-page route change", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.pages.set("http://localhost:5173/settings", { page: page(AID, "/settings"), route: null });
+    h.tabs.activate(4, URL1);
+    await h.tabs.toggle(4, URL1);
+    // Chrome reports the in-page navigation as loading; the document (and its overlay) stays.
+    await h.tabs.navigated(4);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true, active: true });
+    // On a site without the permanent permission the overlay is still heard.
+    expect(h.tabs.admits(4)).toBe(true);
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: "http://localhost:5173/settings" }, "http://localhost:5173/settings");
+    expect(h.tabs.state(4)).toMatchObject({ url: "http://localhost:5173/settings", commentMode: true, overlay: true });
+  });
+
+  it("turns comment mode on when a toggle had to bring the overlay back, whatever the record said", async () => {
     const h = harness();
     h.pages.set(URL1, { page: page(), route: null });
     await h.tabs.toggle(4, URL1);
-    h.tabs.activate(4);
-    h.tabs.navigated(4);
-    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: false });
+    // A reload Chrome reported as nothing the worker noticed: the record still says on.
+    h.reload(4);
     await h.tabs.toggle(4, URL1);
     expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true });
   });
 
   it("keeps a delta that arrives while a same-page lookup is in flight", async () => {
@@ -339,7 +374,7 @@ describe("Tabs", () => {
     await first.tabs.toggle(4, URL1);
     first.tabs.activate(4);
     await settle();
-    const h = harness(store);
+    const h = harness(store, first.docs);
     h.pages.set(URL1, { page: page(), route: null });
     h.threads.set(AID, [full(T1)]);
     await h.tabs.ready();

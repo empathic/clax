@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, enabled, forget, injectOverlay, originOf, remember, sameOrigin, scriptId, type OriginsEnv } from "./origins";
+import { ask, enabled, forget, injectOverlay, originOf, overlayPresent, remember, sameOrigin, scriptId, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
 const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local }) as unknown as OriginsEnv;
@@ -51,15 +51,31 @@ describe("origins", () => {
     expect(injects.filter(a => a.files)).toEqual([{ target: { tabId: 7, allFrames: false }, files: ["overlay.js"] }]);
   });
 
-  it("does not inject the overlay twice into one document", async () => {
-    let loaded = false;
-    c.scripting.executeScript = (async (inj: { files?: string[]; func?: () => boolean }) => {
+  it("does not inject the overlay twice into one document, and marks it only once injected", async () => {
+    let fail = true;
+    // The fake runs each probe in this test's global, as Chrome runs it in the tab's isolated world.
+    c.scripting.executeScript = (async (inj: { files?: string[]; func?: () => unknown }) => {
       c.calls.push({ api: "scripting.executeScript", args: [inj] });
-      if (inj.func) { const had = loaded; loaded = true; return [{ result: had }]; }
+      if (inj.func) return [{ result: inj.func() }];
+      if (fail) throw new Error("Frame with ID 0 was removed.");
       return [{ result: undefined }];
     }) as unknown as typeof c.scripting.executeScript;
-    await injectOverlay(env(), 7);
-    await injectOverlay(env(), 7);
-    expect(c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files)).toHaveLength(1);
+    const files = () => c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files).length;
+    try {
+      await expect(injectOverlay(env(), 7)).rejects.toThrow("removed");
+      expect(await overlayPresent(env(), 7)).toBe(false);
+      fail = false;
+      expect(await injectOverlay(env(), 7)).toBe(true);
+      expect(await overlayPresent(env(), 7)).toBe(true);
+      expect(await injectOverlay(env(), 7)).toBe(false);
+      expect(files()).toBe(2);
+    } finally {
+      delete (globalThis as { claxOverlayLoaded?: boolean }).claxOverlayLoaded;
+    }
+  });
+
+  it("reads a tab it cannot reach as having no overlay", async () => {
+    c.scripting.executeScript = (async () => { throw new Error("Cannot access contents of the page."); }) as unknown as typeof c.scripting.executeScript;
+    expect(await overlayPresent(env(), 7)).toBe(false);
   });
 });

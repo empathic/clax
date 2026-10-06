@@ -87,7 +87,10 @@ type Deps = {
   api: TabsApi;
   hub: { receive(id: string, msg: TabMsg): void; detach(id: string): void };
   toOverlay(tabId: number, m: WorkerToOverlay): void;
-  inject(tabId: number): Promise<void>;
+  /** Injects the overlay unless the tab's document has it; true when it injected it now. */
+  inject(tabId: number): Promise<boolean>;
+  /** Whether the tab's current document has the overlay (false when the worker cannot reach it). */
+  present?(tabId: number): Promise<boolean>;
   /** Where the tabs are kept across worker restarts (chrome.storage.session). */
   store?: Area;
 };
@@ -264,18 +267,26 @@ export class Tabs {
   async hello(tabId: number, url: string): Promise<void> {
     this.newDocument(tabId, url);
     const s = await this.route(tabId, url);
-    if (s.threads.some(t => t.status === "open") && !s.overlay) await this.injectOnce(tabId);
+    if (s.threads.some(t => t.status === "open") && !s.overlay) await this.ensureOverlay(tabId);
   }
 
-  private newDocument(tabId: number, url: string, keepActive = true): void {
+  /** The tab's record for a new document: no overlay, comment mode off.
+   * The click's activeTab grant is kept: after a cross-document load no
+   * Clax script runs where the origin is not on, and the next click grants
+   * it again. */
+  private newDocument(tabId: number, url: string): void {
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, url);
-    this.set(tabId, { ...s, overlay: false, commentMode: false, resolved: {}, selected: null, active: keepActive && s.active });
+    this.set(tabId, { ...s, overlay: false, commentMode: false, resolved: {}, selected: null });
   }
 
-  /** The tab started loading a new document: its overlay and activeTab are gone. */
-  navigated(tabId: number): void {
+  /** Chrome reported the tab loading. Only a new document (its overlay is
+   * gone) resets the record; an in-page navigation, which Chrome may report
+   * the same way, keeps everything, and the overlay reports its route. */
+  async navigated(tabId: number): Promise<void> {
     const s = this.tabs.get(tabId);
-    if (s) this.newDocument(tabId, s.url, false);
+    if (!s?.overlay) return;
+    if (this.d.present && (await this.d.present(tabId))) return;
+    if (this.tabs.has(tabId)) this.newDocument(tabId, s.url);
   }
 
   /** A gesture granted the tab activeTab. */
@@ -290,24 +301,28 @@ export class Tabs {
     if (s) this.set(tabId, { ...s, error: failure(e) });
   }
 
-  private async injectOnce(tabId: number): Promise<void> {
-    if (this.tabs.get(tabId)?.overlay) return;
-    await this.d.inject(tabId);
+  /** Makes sure the tab's document has the overlay; true when it was injected now. */
+  private async ensureOverlay(tabId: number): Promise<boolean> {
+    const fresh = await this.d.inject(tabId);
     this.set(tabId, { ...(this.tabs.get(tabId) ?? emptyTab(tabId, "")), overlay: true });
+    return fresh;
   }
 
-  /** The icon, the command or the context menu: the overlay is injected and comment mode flips. */
+  /** The icon, the command or the context menu: the overlay is made sure
+   * of, and comment mode turns on when the overlay was just injected (a
+   * new document, whatever the record said), else flips. */
   async toggle(tabId: number, url: string): Promise<void> {
     await this.loaded;
     if (!this.tabs.has(tabId)) this.tabs.set(tabId, emptyTab(tabId, url));
+    let fresh: boolean;
     try {
-      await this.injectOnce(tabId);
+      fresh = await this.ensureOverlay(tabId);
     } catch (e) {
       this.fail(tabId, e);
       return;
     }
     const s = this.tabs.get(tabId)!;
-    this.set(tabId, { ...s, commentMode: !s.commentMode });
+    this.set(tabId, { ...s, commentMode: fresh || !s.commentMode });
     void this.route(tabId, url, this.stale.has(tabId));
   }
 

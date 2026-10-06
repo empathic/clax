@@ -63,20 +63,34 @@ export async function forget(env: OriginsEnv, origin: string): Promise<void> {
   await env.local.set({ origins: (await list(env)).filter(o => o !== origin) });
 }
 
-/** Marks the document as having Clax's overlay, in the extension's
- * isolated world (out of the page's reach); true when it already had it. */
-function markOverlay(): boolean {
-  const g = globalThis as { claxOverlayLoaded?: boolean };
-  const had = g.claxOverlayLoaded === true;
-  g.claxOverlayLoaded = true;
-  return had;
+/** Whether this document has Clax's overlay; runs in the tab's isolated world (out of the page's reach). */
+function hasOverlay(): boolean {
+  return (globalThis as { claxOverlayLoaded?: boolean }).claxOverlayLoaded === true;
+}
+/** Marks this document as having the overlay, once `overlay.js` ran in it. */
+function markOverlay(): void {
+  (globalThis as { claxOverlayLoaded?: boolean }).claxOverlayLoaded = true;
 }
 
-/** Injects the overlay into the tab's top frame, once per document: the
- * worker's record of a tab can lag a reload, or be lost with a restart. */
-export async function injectOverlay(env: OriginsEnv, tabId: number): Promise<void> {
+/** Whether the tab's current document has the overlay; false when the
+ * worker cannot reach the tab (no permission left after a navigation). */
+export async function overlayPresent(env: OriginsEnv, tabId: number): Promise<boolean> {
+  try {
+    const [probe] = await env.scripting.executeScript({ target: { tabId, allFrames: false }, func: hasOverlay });
+    return probe?.result === true;
+  } catch {
+    return false;
+  }
+}
+
+/** Injects the overlay into the tab's top frame, once per document (the
+ * worker's record of a tab can lag a reload, or be lost with a restart);
+ * true when it injected it now. The document is marked only after
+ * `overlay.js` was injected, so a failed injection is tried again. */
+export async function injectOverlay(env: OriginsEnv, tabId: number): Promise<boolean> {
+  if (await overlayPresent(env, tabId)) return false;
   const target = { tabId, allFrames: false };
-  const [probe] = await env.scripting.executeScript({ target, func: markOverlay });
-  if (probe?.result === true) return;
   await env.scripting.executeScript({ target, files: ["overlay.js"] });
+  await env.scripting.executeScript({ target, func: markOverlay });
+  return true;
 }

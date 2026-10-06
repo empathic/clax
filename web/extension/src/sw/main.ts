@@ -10,6 +10,8 @@ import { PairError } from "./pairing";
 import { createWorker } from "./worker";
 
 const originsEnv: origins.OriginsEnv = { permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local };
+// The pairing (the credential) and the tabs' record stay out of content scripts' reach (spec §10.2).
+void chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
 const { pairer, tabs } = createWorker({
   pair: {
     sendNative: async (host, msg) => {
@@ -23,6 +25,7 @@ const { pairer, tabs } = createWorker({
   },
   toOverlay: (tabId, m) => void chrome.tabs.sendMessage(tabId, m, { frameId: 0 }).catch(() => {}),
   inject: tabId => origins.injectOverlay(originsEnv, tabId),
+  present: tabId => origins.overlayPresent(originsEnv, tabId),
   store: chrome.storage.session,
 });
 
@@ -49,7 +52,7 @@ chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && t
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
 chrome.tabs.onRemoved.addListener(tabId => { void tabs.ready().then(() => tabs.close(tabId)); });
-// A new document: its overlay, comment mode and activeTab are gone (spec §11).
+// Possibly a new document: if its overlay is gone, so is comment mode (spec §11).
 chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") void tabs.ready().then(() => tabs.navigated(tabId)); });
 
 /** An overlay or loader message comes from a tab's top frame whose origin
