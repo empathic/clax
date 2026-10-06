@@ -4,7 +4,7 @@
   import { type Thread, type Viewer, anchorLabel } from "../threads";
   import type { Version } from "../api";
   import { type HistoryEvent, addressedNote } from "../view/history-model";
-  import { SEEN_AFTER_MS, authorLabel } from "../view/sidebar-model";
+  import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
   import { guardedAction, keyboardTrail } from "../view/trail";
   import { waitingLabel } from "../waiting";
@@ -76,7 +76,7 @@
       onclick={e => { e.stopPropagation(); onToggle(t, e.shiftKey); }} />{/if}
     <button type="button" class="card-head" bind:this={head} aria-pressed={selected === t.id} onclick={e => { e.stopPropagation(); onSelect(t); }}
       >{#if n !== undefined}<span class="thread-num">{n}</span>{/if}<span class="anchor-label">{anchorLabel(t.anchor)}</span
-      >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small">on {t.anchor.file}</span>{/if}<span class="muted small">{when}</span
+      >{#if outdated}<span class="vt out">outdated</span>{/if}{#if t.anchor.file !== file}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
     ></button>
   </header>
   {#if t.clip_url}<img class="thumb" src={t.clip_url} alt="Screenshot of the commented region" loading="lazy" />{/if}

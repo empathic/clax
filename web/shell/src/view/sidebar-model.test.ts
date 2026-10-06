@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Thread } from "../threads";
-import { needsTicking, sidebarSections } from "./sidebar-model";
+import { needsTicking, pageLabel, sidebarSections } from "./sidebar-model";
 
 const t = (id: string, file = "index.html", extra: Partial<Thread> = {}) => ({ id, status: "open", anchor: { file }, sent_to_agent: false, feedback_state: null, ...extra }) as unknown as Thread;
 const lost = { found: false, method: null, rect: null } as unknown as AnchorResult;
@@ -20,5 +20,15 @@ describe("sidebarSections", () => {
   it("ticks only while an open thread sent to the agent shows elapsed time", () => {
     expect(needsTicking([t("a")])).toBe(false);
     expect(needsTicking([t("a", "index.html", { sent_to_agent: true, feedback_state: { thread_id: "a", state: "sent", tier: null, since: "2026-09-29T00:00:00Z", resends: 0, exhausted: false } } as Partial<Thread>)])).toBe(true);
+  });
+});
+
+describe("pageLabel", () => {
+  it("decodes a percent-encoded page so people can read it", () => {
+    expect(pageLabel("?path=src%2Fgraph_mutations.rs&from=2f00")).toBe("?path=src/graph_mutations.rs&from=2f00");
+  });
+  it("keeps the page as written when it is not valid percent-encoding", () => {
+    expect(pageLabel("?q=100%")).toBe("?q=100%");
+    expect(pageLabel("about.html")).toBe("about.html");
   });
 });

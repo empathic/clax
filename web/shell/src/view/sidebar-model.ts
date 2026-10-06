@@ -39,3 +39,9 @@ export function needsTicking(threads: Thread[]): boolean {
 export function authorLabel(c: Comment): string {
   return c.author_kind === "agent" ? agentName(c.via_harness) : c.author_name;
 }
+
+/** A page as people read it: percent-encoding decoded, or the page as
+ * written when it is not valid percent-encoding. */
+export function pageLabel(page: string): string {
+  try { return decodeURIComponent(page); } catch { return page; }
+}

@@ -201,7 +201,7 @@ input, select { line-height: 1.2; }
 .prompt h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; }
 .prompt p { margin: 0 0 16px; line-height: 1.6; overflow-wrap: anywhere; }
 .prompt .actions { display: flex; gap: 8px; justify-content: flex-end; }
-.file-label { flex: none; white-space: nowrap; }
+.file-label { flex: 0 1 auto; min-width: 0; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer .file-label { margin: 0; }
 .composer button[aria-disabled="true"] { opacity: .55; cursor: progress; }
 .island { display: contents; }
