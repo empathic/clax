@@ -19,12 +19,15 @@ import { PIN_CSS, Pins } from "./pins";
 import { type Placed, realTimers, Resolver, type Timers } from "./resolver";
 import { serializeSnapshot } from "./snapshot";
 
-/** How long the DOM must be still before the automatic snapshot (spec L11). */
-export const QUIET_SNAPSHOT_MS = 1000;
+/** How often the overlay checks whether the automatic snapshot is due (spec L11). */
+export const SNAPSHOT_CHECK_MS = 1000;
 /** The least time between two automatic snapshots. */
 export const SNAPSHOT_EVERY_MS = 10_000;
 /** The keep-alive ping to the worker (spec §9.5). */
 export const PING_MS = 20_000;
+/** The least time between two `route` messages: a burst of navigations
+ * sends the last URL once, on the trailing edge. */
+export const ROUTE_MS = 250;
 /** The most results one `resolved` carries (`isFromOverlay`'s bound). */
 const MAX_RESULTS = 500;
 /** The global, in the isolated world only, that marks a started overlay.
@@ -95,38 +98,56 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     }
   };
 
-  // The pins' host: in the top layer (a manual popover), styled so the
-  // page's rules cannot hide or move it, passing every pointer event but
-  // the pins' and the composer's through.
+  // The pins' host: a child of <html> in the top layer (a manual popover),
+  // styled so the page's rules cannot hide or move it, passing every pointer
+  // event but the pins' and the composer's through. Its only attributes are
+  // `popover` and `style`.
   const host = doc.createElement(OVERLAY_TAG);
-  host.setAttribute("popover", "manual");
   const HOST_CSS = "all:initial!important;position:fixed!important;inset:0!important;display:block!important;pointer-events:none!important;background:transparent!important;border:0!important;margin:0!important;padding:0!important;overflow:visible!important;width:auto!important;height:auto!important;opacity:1!important;z-index:2147483647!important;";
-  host.style.cssText = HOST_CSS;
+  let hidden = false;
+  let ownStyle = "";
+  const applyHost = () => {
+    host.setAttribute("popover", "manual");
+    host.style.cssText = HOST_CSS + (hidden ? "visibility:hidden!important;" : "");
+    ownStyle = host.getAttribute("style") ?? "";
+  };
   const root = host.attachShadow({ mode: "closed" });
   root.innerHTML = `<style>${PIN_CSS}iframe{position:fixed;z-index:2147483647;width:360px;height:236px;border:0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);color-scheme:normal;pointer-events:auto}</style>`;
-  const setHidden = (hidden: boolean) => host.style.setProperty("visibility", hidden ? "hidden" : "visible", "important");
+  const setHidden = (on: boolean) => { hidden = on; applyHost(); };
+  const popoverOpen = () => {
+    try { return typeof host.showPopover !== "function" || host.matches(":popover-open"); } catch { return true; }
+  };
+  const intact = () => host.parentNode === doc.documentElement && host.attributes.length === 2
+    && host.getAttribute("popover") === "manual" && host.getAttribute("style") === ownStyle && popoverOpen();
   const attach = () => {
+    applyHost();
     doc.documentElement.appendChild(host);
     try { host.showPopover(); } catch { /* no popover support, or already shown */ }
   };
   attach();
   stops.push(() => host.remove());
 
-  // A page that removes the host gets it back once; then the overlay gives
-  // up and the worker tells the side panel (spec §10.4).
-  let reattached = false;
-  const guard = new MutationObserver(() => {
-    if (host.isConnected) return;
-    if (!reattached) { reattached = true; attach(); watch(); return; }
+  // A page that removes, moves, restyles or closes the host gets it back
+  // once; the next time the overlay gives up and the worker tells the side
+  // panel (spec §10.4, §11).
+  let repaired = false;
+  let gaveUp = false;
+  const check = () => {
+    if (!live || gaveUp || intact()) return;
+    if (!repaired) { repaired = true; attach(); watch(); return; }
+    gaveUp = true;
     guard.disconnect();
     void send({ t: "removed" });
-  });
+  };
+  const guard = new MutationObserver(check);
   const watch = () => {
     guard.disconnect();
     guard.observe(doc, { childList: true });
     guard.observe(doc.documentElement, { childList: true });
+    guard.observe(host, { attributes: true });
   };
   watch();
+  host.addEventListener("toggle", check);
   stops.push(() => guard.disconnect());
 
   let state: Extract<WorkerToOverlay, { t: "state" }> | null = null;
@@ -140,8 +161,9 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     pins.draw(placed, selected);
     void send({ t: "pin", threadId: id });
   });
-  /** The results go to the worker when what was found changed, not on
-   * every scroll. */
+  /** The results go to the worker when what was found changed (or it asks
+   * with `resend`), not on every scroll: a result's `rect` is where its
+   * anchor was when they were sent. */
   const tellResolved = (p: Placed[]) => {
     const results: AnchorResult[] = p.slice(0, MAX_RESULTS).map(x => ({ id: x.id, found: x.box !== null, method: x.method, rect: x.box }));
     const key = JSON.stringify(results.map(r => [r.id, r.found, r.method]));
@@ -153,6 +175,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     placed = p;
     pins.draw(p, selected);
     tellResolved(p);
+    maybeSnapshot();
   }, timers);
   stops.push(() => resolver.stop());
 
@@ -175,7 +198,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     pickArea: (r: AreaRect) => void pick(buildAreaAnchor(doc, r), { x: r.left, y: r.top, w: r.width, h: r.height }),
     cancel: () => { mode.set(false); void send({ t: "comment-mode", on: false }); },
   }, { shadow: "closed" });
-  stops.push(() => mode.set(false));
+  stops.push(() => mode.destroy());
 
   let composer: { pickId: string; frame: HTMLIFrameElement } | null = null;
   const closeComposer = () => { composer?.frame.remove(); composer = null; };
@@ -207,6 +230,14 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     closeComposer();
     const f = doc.createElement("iframe");
     f.src = `${runtime.getURL("composer.html")}#${pickId}`;
+    // The composer loads once; a second load is a navigation the page made
+    // (a parent may navigate a child frame), so the frame goes.
+    let loads = 0;
+    f.addEventListener("load", () => {
+      if (++loads < 2 || composer?.frame !== f) return;
+      closeComposer();
+      void send({ t: "cancel", pickId });
+    });
     const left = Math.min(Math.max(8, rect.x + rect.w + 12), win.innerWidth - 368);
     const top = Math.min(Math.max(8, rect.y), win.innerHeight - 244);
     f.style.left = `${Math.max(8, left)}px`;
@@ -216,28 +247,51 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   }
 
   // The automatic snapshot after an agent addressed a thread (spec L11):
-  // the page visible, an address pending, and the DOM quiet for a second;
-  // at most one every SNAPSHOT_EVERY_MS, unless the worker asks for one.
+  // the page visible, an address pending, and the DOM settled as the
+  // resolver judges it (quiet for QUIET_MS, or MAX_WAIT_MS into a run of
+  // changes); at most one every SNAPSHOT_EVERY_MS, unless the worker asks
+  // for one. It is tried after each resolution and every SNAPSHOT_CHECK_MS.
   let lastQuiet = -Infinity;
-  stops.push(every(() => {
-    if (!state?.pending || doc.visibilityState !== "visible") return;
+  function maybeSnapshot(): void {
+    if (!live || !state?.pending || doc.visibilityState !== "visible" || resolver.busy) return;
     const t = now();
-    if (t - resolver.lastMutation < QUIET_SNAPSHOT_MS || t - lastQuiet < SNAPSHOT_EVERY_MS) return;
+    if (t - lastQuiet < SNAPSHOT_EVERY_MS) return;
     lastQuiet = t;
     const s = serializeSnapshot(doc);
     if (!s.error) void send({ t: "quiet", url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html });
-  }, QUIET_SNAPSHOT_MS));
+  }
+  stops.push(every(maybeSnapshot, SNAPSHOT_CHECK_MS));
   stops.push(every(() => void send({ t: "ping" }), PING_MS));
 
   // Same-document navigations: the worker looks the new URL up (spec §11
   // "SPA route change"). A tab that holds only activeTab has no loader.
-  const route = () => void send({ t: "route", url: win.location.href });
+  // Only the browser's own events count (a page can dispatch these), the
+  // URL is read from `location`, an unchanged one is not sent, and a burst
+  // sends its last URL once, at most one every ROUTE_MS.
+  let lastRoute = win.location.href;
+  let lastRouteAt = now();
+  let routeTimer: unknown = null;
+  const sendRoute = () => {
+    const href = win.location.href;
+    if (href === lastRoute) return;
+    lastRoute = href;
+    lastRouteAt = now();
+    void send({ t: "route", url: href });
+  };
+  const onNav = (e: Event) => {
+    if (!e.isTrusted || routeTimer !== null) return;
+    routeTimer = timers.set(() => { routeTimer = null; if (live) sendRoute(); }, Math.max(0, lastRouteAt + ROUTE_MS - now()));
+  };
   const nav = (win as { navigation?: EventTarget }).navigation;
   const navTarget: EventTarget = nav ?? win;
   const navEvent = nav ? "navigatesuccess" : "popstate";
-  navTarget.addEventListener(navEvent, route);
-  win.addEventListener("hashchange", route);
-  stops.push(() => { navTarget.removeEventListener(navEvent, route); win.removeEventListener("hashchange", route); });
+  navTarget.addEventListener(navEvent, onNav);
+  win.addEventListener("hashchange", onNav);
+  stops.push(() => {
+    navTarget.removeEventListener(navEvent, onNav);
+    win.removeEventListener("hashchange", onNav);
+    if (routeTimer !== null) timers.clear(routeTimer);
+  });
 
   const onMessage = (m: unknown, sender: chrome.runtime.MessageSender) => {
     if (!live || sender.id !== runtime.id || sender.tab || !isFromWorker(m)) return;
@@ -267,12 +321,17 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         break;
       }
       case "snapshot-now": lastQuiet = -Infinity; break;
+      case "resend":
+        // Sent now, or by the resolution already due.
+        told = "";
+        if (!resolver.busy) tellResolved(placed);
+        break;
       case "stream-status": break;
     }
   };
   runtime.onMessage.addListener(onMessage);
   stops.push(() => runtime.onMessage.removeListener(onMessage));
 
-  route();
+  void send({ t: "route", url: lastRoute });
   return stop;
 }

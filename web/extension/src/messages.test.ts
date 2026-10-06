@@ -106,6 +106,7 @@ describe("messages", () => {
   it("checks what the worker sends the overlay", () => {
     expect(isFromWorker({ t: "state", page: null, route: null, threads: [], commentMode: false, pending: false })).toBe(true);
     expect(isFromWorker({ t: "snapshot-now" })).toBe(true);
+    expect(isFromWorker({ t: "resend" })).toBe(true);
     expect(isFromWorker({ t: "focus", threadId: null })).toBe(true);
     expect(isFromWorker({ t: "state", threads: "none", commentMode: false, pending: false })).toBe(false);
     expect(isFromWorker({ t: "scroll-to", threadId: "x" })).toBe(false);
@@ -156,6 +157,7 @@ describe("messages", () => {
     const worker = [
       { t: "state", page: null, route: null, threads: [], commentMode: false, pending: false }, { t: "comment-mode", on: false },
       { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null }, { t: "snapshot-now" },
+      { t: "resend" },
     ];
     const composer = [{ t: "ready" }, { t: "post", body: "hi" }, { t: "cancel" }];
     const panel = [

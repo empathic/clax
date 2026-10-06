@@ -122,6 +122,12 @@ export class CommentMode {
     }
   }
 
+  /** Ends comment mode and removes its drawing from the page for good. */
+  destroy(): void {
+    this.set(false);
+    this.host.remove();
+  }
+
   /** Hides or shows everything comment mode draws (the extension hides it
    * while the tab's screenshot is taken). */
   setVisible(on: boolean): void {

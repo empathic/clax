@@ -199,6 +199,15 @@ export class Tabs {
     this.set(tabId, { ...s, threads, pending: pendingOf(threads) });
   }
 
+  /** The tab's overlay shows open threads its record has no results for
+   * (the worker restarted, or the page changed): the overlay is asked to
+   * send them again. Only a lookup asks, never a `resolved`, so the two
+   * cannot loop. */
+  private askResults(tabId: number): void {
+    const s = this.tabs.get(tabId);
+    if (s?.overlay && Object.keys(s.resolved).length === 0 && s.threads.some(t => t.status === "open")) this.d.toOverlay(tabId, { t: "resend" });
+  }
+
   /** The page's URL changed (a load or a route change), or its topics went
    * live (`fresh`): look its live page up, load its threads and working
    * list when the page changed or `fresh`, and follow its topics. Stream
@@ -220,6 +229,7 @@ export class Tabs {
         const shown = { ...page, current_version: Math.max(page.current_version, cur.page.current_version) };
         this.d.hub.receive(hubId(tabId), { t: "topics", topics });
         this.set(tabId, { ...cur, url, page: shown, route, error: null });
+        this.askResults(tabId);
         if (fresh) await this.refetch(tabId, page.artifact_id);
         if (fresh && this.watched(tabId)) void this.details(tabId);
         return now();
@@ -235,6 +245,7 @@ export class Tabs {
       };
       this.d.hub.receive(hubId(tabId), { t: "topics", topics });
       this.set(tabId, next);
+      this.askResults(tabId);
       if (page && this.watched(tabId)) void this.details(tabId);
       return next;
     } catch (e) {

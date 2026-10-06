@@ -382,6 +382,10 @@ describe("trusted input", () => {
     expect(host.style.visibility).toBe("hidden");
     m.setVisible(true);
     expect(host.style.visibility).toBe("");
+    m.set(true);
+    m.destroy();
+    expect(host.isConnected).toBe(false);
+    expect(document.documentElement.style.cursor).toBe("");
   });
 });
 

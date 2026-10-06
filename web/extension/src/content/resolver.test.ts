@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { type Placed, QUIET_MS, Resolver, type Timers } from "./resolver";
+import { MAX_WAIT_MS, type Placed, QUIET_MS, Resolver, type Timers } from "./resolver";
 
 /** Timers a test advances by hand. */
 function manual() {
   let now = 0;
   let queue: { at: number; fn: () => void }[] = [];
   const frames: (() => void)[] = [];
-  const t: Timers & { advance(ms: number): void } = {
+  const t: Timers & { advance(ms: number): void; now(): number } = {
+    now: () => now,
     set: (fn, ms) => { const e = { at: now + ms, fn }; queue.push(e); return e; },
     clear: h => { queue = queue.filter(e => e !== h); },
     frame: fn => { frames.push(fn); },
@@ -19,6 +20,7 @@ function manual() {
   return t;
 }
 const flush = () => new Promise(r => setTimeout(r, 0)); // lets MutationObserver records arrive
+const records = () => new Promise<void>(r => queueMicrotask(r)); // after the observer's own microtask
 const thread = (id: string, selector: string, quote: string | null, route?: string) => ({
   id, status: "open", anchor: { kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html", ...(route ? { route } : {}) },
 }) as never;
@@ -78,6 +80,31 @@ describe("Resolver", () => {
     expect(runs).toBe(1);
     t.advance(1);
     expect(runs).toBe(2);
+    r.stop();
+  });
+
+  it("resolves a page that never goes quiet at most MAX_WAIT_MS after the first change", async () => {
+    const t = manual();
+    const at: number[] = [];
+    const r = new Resolver(document, () => { at.push(t.now()); }, t);
+    r.set([], null);
+    t.advance(0);
+    const clock = document.createElement("p");
+    document.body.appendChild(clock);
+    await records();
+    for (let i = 0; i < 100; i++) {
+      clock.textContent = String(i);
+      await records();
+      expect(r.busy).toBe(true);
+      t.advance(50);
+    }
+    const runs = at.slice(1);
+    expect(runs.length).toBeGreaterThanOrEqual(4);
+    expect(runs.length).toBeLessThanOrEqual(5);
+    expect(runs[0]).toBeLessThanOrEqual(MAX_WAIT_MS);
+    for (let i = 1; i < runs.length; i++) expect(runs[i] - runs[i - 1]).toBeLessThanOrEqual(MAX_WAIT_MS + 50);
+    t.advance(QUIET_MS);
+    expect(r.busy).toBe(false);
     r.stop();
   });
 

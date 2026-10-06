@@ -47,6 +47,8 @@ export type WorkerToOverlay =
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
   | { t: "snapshot-now" }
+  /** The worker has no results for the threads it shows (it restarted): the overlay sends its current `resolved` again. */
+  | { t: "resend" }
   /** Whether the worker's event stream is up; while it is down, what the overlay shows may be stale. */
   | { t: "stream-status"; up: boolean };
 
@@ -184,7 +186,7 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "close-composer": return has("pickId", "posted") && pickId(m.pickId) && bool(m.posted);
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
-    case "snapshot-now": return has();
+    case "snapshot-now": case "resend": return has();
     case "stream-status": return has("up") && bool(m.up);
     default: return false;
   }

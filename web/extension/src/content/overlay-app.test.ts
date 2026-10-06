@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type OverlayEnv, startOnce } from "./overlay-app";
-import { QUIET_MS, type Timers } from "./resolver";
+import { type OverlayEnv, type OverlayRuntime, ROUTE_MS, startOnce } from "./overlay-app";
+import { MAX_WAIT_MS, QUIET_MS, Resolver, type Timers } from "./resolver";
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
 const WORKER = { id: "test-extension" } as chrome.runtime.MessageSender;
@@ -11,7 +11,8 @@ function manual() {
   let now = 0;
   let queue: { at: number; fn: () => void }[] = [];
   const frames: (() => void)[] = [];
-  const t: Timers & { advance(ms: number): void } = {
+  const t: Timers & { advance(ms: number): void; now(): number } = {
+    now: () => now,
     set: (fn, ms) => { const e = { at: now + ms, fn }; queue.push(e); return e; },
     clear: h => { queue = queue.filter(e => e !== h); },
     frame: fn => { frames.push(fn); },
@@ -24,6 +25,7 @@ function manual() {
   return t;
 }
 const flush = () => new Promise(r => setTimeout(r, 0));
+const records = () => new Promise<void>(r => queueMicrotask(r));
 const thread = (id: string, selector: string, quote: string) => ({
   id, status: "open", anchor: { kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" },
 });
@@ -34,7 +36,7 @@ let sent: { t: string; [k: string]: unknown }[];
 let listeners: Listener[];
 let ticks: { fn: () => void; ms: number }[];
 let roots: ShadowRoot[];
-let clock: number;
+let rt: { -readonly [K in keyof OverlayRuntime]: OverlayRuntime[K] };
 let timers: ReturnType<typeof manual>;
 let stop: (() => void) | undefined;
 let global: Record<string, unknown>;
@@ -42,15 +44,10 @@ let global: Record<string, unknown>;
 function env(): OverlayEnv {
   return {
     doc: document,
-    runtime: {
-      id: "test-extension",
-      sendMessage: async m => { sent.push(m as never); return null; },
-      getURL: p => `chrome-extension://test-extension/${p}`,
-      onMessage: { addListener: l => listeners.push(l), removeListener: l => { listeners = listeners.filter(x => x !== l); } },
-    },
+    runtime: rt,
     timers,
     every: (fn, ms) => { const e = { fn, ms }; ticks.push(e); return () => { ticks = ticks.filter(x => x !== e); }; },
-    now: () => clock,
+    now: () => timers.now(),
   };
 }
 const tell = (m: unknown, sender = WORKER) => listeners.forEach(l => l(m, sender));
@@ -61,8 +58,14 @@ const pins = () => roots.flatMap(r => [...r.querySelectorAll("button.pin")]);
 beforeEach(() => {
   document.querySelectorAll("clax-overlay").forEach(n => n.remove());
   document.body.innerHTML = `<div id="app"><main><button id="save">Save</button></main></div>`;
-  sent = []; listeners = []; ticks = []; roots = []; clock = 0; global = {};
+  sent = []; listeners = []; ticks = []; roots = []; global = {};
   timers = manual();
+  rt = {
+    id: "test-extension",
+    sendMessage: async m => { sent.push(m as never); return null; },
+    getURL: p => `chrome-extension://test-extension/${p}`,
+    onMessage: { addListener: l => listeners.push(l), removeListener: l => { listeners = listeners.filter(x => x !== l); } },
+  };
   const attach = HTMLElement.prototype.attachShadow;
   vi.spyOn(HTMLElement.prototype, "attachShadow").mockImplementation(function (this: HTMLElement, init: ShadowRootInit) {
     const r = attach.call(this, init);
@@ -136,33 +139,74 @@ describe("the overlay", () => {
     expect(sent.filter(m => m.t === "removed")).toHaveLength(1);
   });
 
-  it("reports a same-document navigation", () => {
+  it("reports a same-document navigation from the browser, at most once per ROUTE_MS, and not an unchanged URL", async () => {
     sent = [];
-    dispatchEvent(new HashChangeEvent("hashchange"));
+    for (let i = 0; i < 20; i++) location.hash = `#/storm-${i}`;
+    await flush();
+    expect(sent).toEqual([]);
+    timers.advance(ROUTE_MS);
     expect(sent).toEqual([{ t: "route", url: location.href }]);
+    expect(location.hash).toBe("#/storm-19");
+    dispatchEvent(new HashChangeEvent("hashchange"));
+    timers.advance(ROUTE_MS);
+    expect(sent).toHaveLength(1);
+    location.hash = "#/next";
+    await flush();
+    timers.advance(ROUTE_MS);
+    expect(sent.at(-1)).toEqual({ t: "route", url: location.href });
+    expect(sent).toHaveLength(2);
   });
 
-  it("sends a snapshot once the DOM has been quiet for a second while an address is pending, at most every 10 s", () => {
+  it("ignores navigation events the page dispatches", () => {
+    sent = [];
+    history.replaceState(null, "", "#/forged");
+    for (let i = 0; i < 50; i++) {
+      dispatchEvent(new HashChangeEvent("hashchange"));
+      dispatchEvent(new PopStateEvent("popstate"));
+    }
+    timers.advance(ROUTE_MS * 4);
+    expect(sent).toEqual([]);
+  });
+
+  it("sends a snapshot once the DOM has settled while an address is pending, at most every 10 s", () => {
     tell(state([], { pending: true }));
-    clock = 999;
     tick(1000);
-    expect(sent.filter(m => m.t === "quiet")).toHaveLength(0);
-    clock = 20_000;
-    tick(1000);
+    expect(sent.filter(m => m.t === "quiet")).toHaveLength(0); // a resolution is due
+    timers.advance(0);
     const q = sent.filter(m => m.t === "quiet");
     expect(q).toHaveLength(1);
     expect(q[0].snapshot).toContain("Save");
     expect(q[0].snapshot).not.toContain("clax-overlay");
-    clock = 25_000;
+    timers.advance(5000);
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(1);
     tell({ t: "snapshot-now" });
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(2);
     tell(state([], { pending: false }));
-    clock = 60_000;
+    timers.advance(60_000);
     tick(1000);
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(2);
+  });
+
+  it("still snapshots and re-resolves a page that never goes quiet", async () => {
+    tell(state([thread(A, "#save", "Save")], { pending: true }));
+    timers.advance(0);
+    const quiet = () => sent.filter(m => m.t === "quiet").length;
+    const before = quiet();
+    timers.advance(10_000);
+    const runs = vi.spyOn(Resolver.prototype, "run");
+    const p = document.createElement("p");
+    document.body.appendChild(p);
+    for (let i = 0; i < 100; i++) {
+      p.textContent = String(i);
+      await records();
+      timers.advance(50);
+      if (i % 20 === 19) tick(1000);
+    }
+    expect(runs.mock.calls.length).toBeGreaterThanOrEqual(4);
+    expect(quiet()).toBeGreaterThan(before);
+    expect(MAX_WAIT_MS).toBe(1000);
   });
 
   it("pings the worker every 20 s", () => {
@@ -177,5 +221,82 @@ describe("the overlay", () => {
     expect(pins()[0].classList.contains("sel")).toBe(true);
     tell({ t: "focus", threadId: null });
     expect(pins()[0].classList.contains("sel")).toBe(false);
+  });
+  it("sends its results again once when the worker asks, without a loop", async () => {
+    tell(state([thread(A, "#save", "Save")]));
+    timers.advance(0);
+    tell(state([thread(A, "#save", "Save")]));
+    tell({ t: "resend" });
+    tell(state([thread(A, "#save", "Save")]));
+    timers.advance(QUIET_MS);
+    expect(sent.filter(m => m.t === "resolved")).toHaveLength(2);
+  });
+
+  it("sends the results after the resolution a resend arrives during", () => {
+    tell(state([thread(A, "#save", "Save")]));
+    tell({ t: "resend" });
+    expect(sent.filter(m => m.t === "resolved")).toHaveLength(0);
+    timers.advance(0);
+    expect(sent.filter(m => m.t === "resolved")).toHaveLength(1);
+  });
+
+  it("repairs a host the page restyles or moves once, then gives up and says so", async () => {
+    const host = hosts()[0] as HTMLElement;
+    const style = host.getAttribute("style");
+    host.style.display = "none";
+    await records();
+    expect(host.getAttribute("style")).toBe(style);
+    expect(sent.filter(m => m.t === "removed")).toHaveLength(0);
+    host.removeAttribute("popover");
+    await records();
+    expect(host.getAttribute("popover")).toBeNull();
+    expect(sent.filter(m => m.t === "removed")).toHaveLength(1);
+  });
+
+  it("puts back a host the page moved", async () => {
+    const host = hosts()[0];
+    document.body.appendChild(host);
+    await records();
+    expect(host.parentNode).toBe(document.documentElement);
+  });
+
+  it("stops, removing everything it drew, when the extension context is gone", () => {
+    rt.id = undefined;
+    tick(20_000);
+    expect(hosts()).toHaveLength(0);
+    expect(listeners).toHaveLength(0);
+    expect(global).toMatchObject({ claxOverlayStarted: false });
+    stop = startOnce(env(), global);
+    expect(stop).toBeTypeOf("function");
+  });
+
+  it("scrolls to a found thread and flashes it", () => {
+    const into = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollIntoView", { value: into, configurable: true });
+    try {
+      tell(state([thread(A, "#save", "Save")]));
+      timers.advance(0);
+      tell({ t: "scroll-to", threadId: A });
+      expect(into).toHaveBeenCalledTimes(1);
+      expect(into.mock.contexts[0]).toBe(document.querySelector("#save"));
+      expect(pins()[0].classList.contains("sel")).toBe(true);
+    } finally {
+      delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+    }
+  });
+
+  it("measures once per frame however many scrolls arrive", () => {
+    tell(state([thread(A, "#save", "Save")]));
+    timers.advance(0);
+    const measure = vi.spyOn(Resolver.prototype, "measure");
+    for (let i = 0; i < 10; i++) document.dispatchEvent(new Event("scroll"));
+    timers.advance(0);
+    expect(measure).toHaveBeenCalledTimes(1);
+  });
+
+  it("ignores a close-composer for a pick it does not show", () => {
+    tell({ t: "comment-mode", on: false });
+    tell({ t: "close-composer", pickId: "0".repeat(32), posted: true });
+    expect(document.documentElement.style.cursor).toBe("");
   });
 });

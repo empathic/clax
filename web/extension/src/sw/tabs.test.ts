@@ -367,6 +367,37 @@ describe("Tabs", () => {
     expect(h.hubIn.filter(x => x.msg.t === "ping")).toEqual([{ id: "tab:4", msg: { t: "ping" } }]);
   });
 
+  it("asks the overlay to send its results again when the tab's record has none for shown threads, once", async () => {
+    const store = memory();
+    const first = harness(store);
+    first.pages.set(URL1, { page: page(), route: null });
+    first.threads.set(AID, [full(T1)]);
+    await first.tabs.toggle(4, URL1);
+    await settle();
+    const h = harness(store, first.docs);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.ready();
+    await h.tabs.fromOverlay(4, 1, { t: "ping" }, URL1);
+    const resends = () => h.overlay.filter(o => o.tabId === 4 && o.m.t === "resend").length;
+    expect(resends()).toBe(1);
+    const last = h.overlay.filter(o => o.tabId === 4).at(-1)!.m;
+    expect(last.t).toBe("resend");
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: true, method: "selector", rect: null }] }, URL1);
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: URL1 }, URL1);
+    expect(resends()).toBe(1);
+  });
+
+  it("does not ask for results when the page shows no open thread or has no overlay", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.toggle(4, URL1);
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: URL1 }, URL1);
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.fromOverlay(5, 1, { t: "route", url: URL1 }, URL1);
+    expect(h.overlay.some(o => o.m.t === "resend")).toBe(false);
+  });
+
   it("rebuilds a tab after the worker restarts, from session storage, at the tab's next message", async () => {
     const store = memory();
     const first = harness(store);
