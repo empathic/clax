@@ -71,34 +71,55 @@ fn chars(s: &str) -> usize {
     s.chars().count()
 }
 
+/// Longest untrusted text quoted in an error message, in characters.
+const SHOWN: usize = 80;
+
+/// `s` for an error message: on one line, cut to [`SHOWN`] characters
+/// with "…" when longer.
+fn shown(s: &str) -> String {
+    let cut: String = s.chars().take(SHOWN).collect();
+    let more = if chars(s) > SHOWN { "…" } else { "" };
+    format!("{}{more}", crate::feedback::one_line(&cut))
+}
+
+/// Empty, or nothing but whitespace.
+fn blank(s: &str) -> bool {
+    s.trim().is_empty()
+}
+
 fn check_one(q: &Question, header_max: Option<usize>) -> Result<()> {
     let n = chars(&q.question);
-    if n == 0 || n > MAX_QUESTION {
-        return Err(bad(format!("a question is 1 to {MAX_QUESTION} characters")));
+    if blank(&q.question) || n > MAX_QUESTION {
+        return Err(bad(format!(
+            "a question is 1 to {MAX_QUESTION} characters, not only spaces"
+        )));
     }
     let h = chars(&q.header);
-    if h == 0 || header_max.is_some_and(|m| h > m) {
+    if blank(&q.header) || header_max.is_some_and(|m| h > m) {
         return Err(bad(format!(
-            "header of \"{}\" is 1 to {MAX_HEADER} characters",
-            q.header
+            "header of \"{}\" is 1 to {MAX_HEADER} characters, not only spaces",
+            shown(&q.header)
         )));
     }
     if !(q.options.is_empty() || (2..=4).contains(&q.options.len())) {
         return Err(bad(format!(
             "\"{}\" needs two to four options, or none for free text",
-            q.header
+            shown(&q.header)
         )));
     }
     if q.options.is_empty() && q.multi_select {
-        return Err(bad(format!("\"{}\": multi_select needs options", q.header)));
+        return Err(bad(format!(
+            "\"{}\": multi_select needs options",
+            shown(&q.header)
+        )));
     }
     let mut labels = HashSet::new();
     for o in &q.options {
         let l = chars(&o.label);
-        if l == 0 || l > MAX_LABEL || !labels.insert(o.label.as_str()) {
+        if blank(&o.label) || l > MAX_LABEL || !labels.insert(o.label.as_str()) {
             return Err(bad(format!(
-                "\"{}\": each label is 1 to {MAX_LABEL} characters and unique",
-                q.header
+                "\"{}\": each label is 1 to {MAX_LABEL} characters, not only spaces, and unique",
+                shown(&q.header)
             )));
         }
         if o.description
@@ -107,20 +128,20 @@ fn check_one(q: &Question, header_max: Option<usize>) -> Result<()> {
         {
             return Err(bad(format!(
                 "\"{}\": a description is at most {MAX_DESCRIPTION} characters",
-                q.header
+                shown(&q.header)
             )));
         }
         if o.preview.as_deref().is_some_and(|p| chars(p) > MAX_PREVIEW) {
             return Err(bad(format!(
                 "\"{}\": a preview is at most {MAX_PREVIEW} characters",
-                q.header
+                shown(&q.header)
             )));
         }
     }
     if q.options.iter().filter(|o| o.recommended).count() > 1 {
         return Err(bad(format!(
             "\"{}\": at most one recommended option",
-            q.header
+            shown(&q.header)
         )));
     }
     Ok(())
@@ -155,7 +176,7 @@ pub fn validate_ask(qs: &[Question]) -> Result<()> {
 /// `invalid_answer` naming the question.
 pub fn validate_answers(qs: &[Question], a: &[Answer]) -> Result<Vec<Answer>> {
     let no = |q: &Question, why: &str| {
-        CoreError::invalid("invalid_answer", format!("\"{}\": {why}", q.header))
+        CoreError::invalid("invalid_answer", format!("\"{}\": {why}", shown(&q.header)))
     };
     if a.len() != qs.len() {
         return Err(CoreError::invalid(
@@ -211,7 +232,8 @@ pub fn validate_answers(qs: &[Question], a: &[Answer]) -> Result<Vec<Answer>> {
 
 /// The questions of an `AskUserQuestion` call's input (spec §4.2): kept
 /// whole (a long header is shown cut, never refused), `other` always on,
-/// a label ending in "(Recommended)" marked recommended.
+/// the first label ending in "(Recommended)" (any case) marked recommended;
+/// every label keeps its text.
 ///
 /// # Errors
 /// `invalid_question` when the input is not that tool's shape or breaks a
@@ -229,7 +251,7 @@ pub fn from_claude(input: &Value) -> Result<Vec<Question>> {
                 .unwrap_or_default()
                 .to_string()
         };
-        let options = q
+        let mut options = q
             .get("options")
             .and_then(Value::as_array)
             .cloned()
@@ -254,7 +276,14 @@ pub fn from_claude(input: &Value) -> Result<Vec<Question>> {
                     preview: opt("preview"),
                 }
             })
-            .collect();
+            .collect::<Vec<QOption>>();
+        let mut seen_recommended = false;
+        for o in &mut options {
+            if seen_recommended {
+                o.recommended = false;
+            }
+            seen_recommended |= o.recommended;
+        }
         out.push(Question {
             question: s("question"),
             header: s("header"),
@@ -283,6 +312,7 @@ fn joined(a: &Answer) -> String {
 /// several joined with ", ") and `annotations` (the one chosen option's
 /// preview).
 pub fn to_claude(qs: &[Question], a: &[Answer]) -> (Map<String, Value>, Map<String, Value>) {
+    debug_assert_eq!(qs.len(), a.len(), "validated answers, one per question");
     let mut answers = Map::new();
     let mut notes = Map::new();
     for (q, ans) in qs.iter().zip(a) {
@@ -302,9 +332,18 @@ pub fn to_claude(qs: &[Question], a: &[Answer]) -> (Map<String, Value>, Map<Stri
 }
 
 /// The terminal's answers (from `PostToolUse`'s `tool_response.answers`)
-/// as Clax answers: reading the ", "-separated parts left to right, the
-/// longest run of parts that spells a label (which may itself hold ", ") is
-/// selected; the parts left over, joined back, are the text.
+/// as Clax answers.
+///
+/// A single-choice or free-text answer is a selection only when it is
+/// exactly one label; otherwise all of it is the text. A multi-select
+/// answer is read as its ", "-separated parts, left to right: the longest
+/// run of parts that spells a label not yet selected (a label may itself
+/// hold ", ") is selected, empty parts are dropped, and the parts left
+/// over, joined with ", ", are the text.
+///
+/// Claude Code joins a multi-select answer's labels and its Other text
+/// with ", ", so Other text that holds a label's text cannot be told apart
+/// from that label being picked: such text is read as the pick.
 pub fn from_claude_answers(qs: &[Question], answers: &Map<String, Value>) -> Vec<Answer> {
     qs.iter()
         .map(|q| {
@@ -321,6 +360,12 @@ pub fn from_claude_answers(qs: &[Question], answers: &Map<String, Value>) -> Vec
                 return Answer {
                     selected: vec![raw],
                     text: None,
+                };
+            }
+            if !q.multi_select {
+                return Answer {
+                    selected: vec![],
+                    text: (!raw.trim().is_empty()).then_some(raw),
                 };
             }
             let parts: Vec<&str> = raw.split(", ").collect();
@@ -357,6 +402,10 @@ pub fn from_claude_answers(qs: &[Question], answers: &Map<String, Value>) -> Vec
 /// header, then its selections and its text, each quoted), and the closing
 /// note. `None` answers render as skipped.
 pub fn render_late(head: &str, qs: &[Question], a: Option<&[Answer]>) -> String {
+    debug_assert!(
+        a.is_none_or(|a| a.len() == qs.len()),
+        "validated answers, one per question"
+    );
     let mut out = format!("{head}\n");
     match a {
         None => out.push_str("  (skipped)\n"),
@@ -580,6 +629,117 @@ mod tests {
         assert_eq!(back[1].text.as_deref(), Some("tv, other"));
         assert!(from_claude(&json!({"questions": []})).is_err());
         assert!(from_claude(&json!({"nope": 1})).is_err());
+    }
+
+    #[test]
+    fn single_select_terminal_answers_are_a_label_or_text() {
+        let yes_no = q(json!({"question": "Use spaces?", "header": "Indent",
+            "options": [{"label": "Yes"}, {"label": "No"}]}));
+        let fw = q(
+            json!({"question": "Which framework?", "header": "Framework",
+            "options": [{"label": "Vue"}, {"label": "React"}]}),
+        );
+        let free = q(json!({"question": "Anything else?", "header": "Notes"}));
+        let qs = [yes_no, fw, free];
+        let mut m = Map::new();
+        m.insert("Use spaces?".into(), json!("No, use tabs"));
+        m.insert("Which framework?".into(), json!("Vue, React"));
+        m.insert("Anything else?".into(), json!("Vue, also"));
+        let back = from_claude_answers(&qs, &m);
+        assert_eq!(
+            back[0],
+            Answer {
+                selected: vec![],
+                text: Some("No, use tabs".into())
+            }
+        );
+        assert_eq!(
+            back[1],
+            Answer {
+                selected: vec![],
+                text: Some("Vue, React".into())
+            }
+        );
+        assert_eq!(
+            back[2],
+            Answer {
+                selected: vec![],
+                text: Some("Vue, also".into())
+            }
+        );
+        validate_answers(&qs, &back).unwrap();
+        m.insert("Use spaces?".into(), json!("No"));
+        assert_eq!(
+            from_claude_answers(&qs, &m)[0].selected,
+            vec!["No".to_string()]
+        );
+    }
+
+    #[test]
+    fn multi_select_terminal_answers_drop_empty_parts() {
+        let qs = [q(
+            json!({"question": "Which targets?", "header": "Targets", "multi_select": true,
+            "options": [{"label": "web"}, {"label": "ios"}]}),
+        )];
+        let mut m = Map::new();
+        m.insert("Which targets?".into(), json!(", web, , desktop, , tv, "));
+        let back = from_claude_answers(&qs, &m);
+        assert_eq!(
+            back[0],
+            Answer {
+                selected: vec!["web".into()],
+                text: Some("desktop, tv".into())
+            }
+        );
+        m.insert("Which targets?".into(), json!(", , "));
+        assert_eq!(
+            from_claude_answers(&qs, &m)[0],
+            Answer {
+                selected: vec![],
+                text: None
+            }
+        );
+    }
+
+    #[test]
+    fn mirror_keeps_only_the_first_recommended() {
+        let qs = from_claude(
+            &json!({"questions": [{"question": "Which?", "header": "Pick",
+            "options": [{"label": "A (Recommended)"}, {"label": "B (recommended)"}]}]}),
+        )
+        .unwrap();
+        assert!(qs[0].options[0].recommended && !qs[0].options[1].recommended);
+        assert_eq!(qs[0].options[1].label, "B (recommended)");
+    }
+
+    #[test]
+    fn blank_text_and_long_messages() {
+        let code = |qs: &[Question]| match validate_ask(qs) {
+            Err(crate::CoreError::Invalid { code, message }) => {
+                assert_eq!(code, "invalid_question");
+                message
+            }
+            other => panic!("{other:?}"),
+        };
+        let mut c = choice();
+        c.question = "   ".into();
+        code(&[c]);
+        let mut c = choice();
+        c.header = " \t ".into();
+        code(&[c]);
+        let mut c = choice();
+        c.options[0].label = "  ".into();
+        code(&[c]);
+        let long = format!("{}\n{}", "h".repeat(500), "z".repeat(500));
+        let input = json!({"questions": [{"question": "Q?", "header": long, "options": [{"label": "only"}]}]});
+        let msg = match from_claude(&input) {
+            Err(crate::CoreError::Invalid { message, .. }) => message,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            msg.chars().count() < 160 && !msg.contains('\n') && msg.contains('…'),
+            "{msg}"
+        );
     }
 
     #[test]
