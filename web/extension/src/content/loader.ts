@@ -1,2 +1,10 @@
-// The loader content script, registered per granted origin: it injects the overlay on demand. Task 10 fills it.
-export {};
+// The content script for each origin Clax is on (spec 2026-10-05 §12):
+// under 2 KiB. It tells the worker the page's URL on load and on every
+// same-document navigation; the worker injects the overlay when the page
+// has threads or the person turned Clax on in this tab.
+const tell = (t: "hello" | "route") => chrome.runtime.sendMessage({ t, url: location.href }).catch(() => {});
+void tell("hello");
+const nav = (globalThis as { navigation?: EventTarget }).navigation;
+if (nav) nav.addEventListener("navigatesuccess", () => void tell("route"));
+else addEventListener("popstate", () => void tell("route"));
+addEventListener("hashchange", () => void tell("route"));
