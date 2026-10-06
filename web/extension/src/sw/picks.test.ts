@@ -42,7 +42,7 @@ const capture = (pickId: string, rect = RECT) => ({ t: "capture", pickId, anchor
 const pick = (pickId: string, extra: Record<string, unknown> = {}) =>
   ({ t: "pick", pickId, url: "http://localhost:5173/", title: "Home", snapshot: "<p>", snapshotError: null, ...extra }) as never;
 
-function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[]; inactive?: boolean } = {}) {
+function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[]; inactive?: boolean; captureMs?: number } = {}) {
   const posted: { form: FormData; pending: string[] }[] = [];
   const snapshots: { form: FormData; pending: string[] }[] = [];
   const overlay: { tabId: number; m: WorkerToOverlay }[] = [];
@@ -66,7 +66,7 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
         return { page, version: 3, linked: p };
       },
     } as never,
-    capture: async (...a) => { captures.push(a); return opts.clip ?? { png: new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }) }; },
+    capture: async (...a) => { captures.push(a); now += opts.captureMs ?? 0; return opts.clip ?? { png: new Blob([new Uint8Array([137, 80, 78, 71])], { type: "image/png" }) }; },
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
     pendingIds: () => pending,
     posted: (tabId, p) => told.push({ tabId, page: p }),
@@ -170,7 +170,8 @@ describe("Picks", () => {
     advance(COMPOSER_WAIT_MS - 1);
     expect(overlay.at(-1)?.m.t).toBe("open-composer");
     advance(1);
-    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "close-composer", pickId: ID(1), posted: false } });
+    // The person is told why the composer went.
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "close-composer", pickId: ID(1), posted: false, reason: "timeout" } });
     const late = port(`composer:${ID(1)}`, 5);
     picks.attachComposer(late as never, 5);
     expect(late.cut).toBe(true);
@@ -180,6 +181,27 @@ describe("Picks", () => {
     picks.attachComposer(p as never, 5);
     advance(COMPOSER_WAIT_MS * 10);
     expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "composer-ready", pickId: ID(2) } });
+  });
+
+  it("starts the composer's wait when it tells the overlay to open it, not before the screenshot", async () => {
+    const { picks, overlay, advance } = setup({ captureMs: 4000 });
+    await picks.capture(5, 9, capture(ID(1)));
+    advance(COMPOSER_WAIT_MS - 1);
+    const p = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(p as never, 5);
+    expect(p.cut).toBe(false);
+    expect(overlay.at(-1)?.m.t).toBe("composer-ready");
+  });
+
+  it("posts a placeholder that says why a pick came without a snapshot", async () => {
+    const { picks, posted } = setup();
+    await picks.capture(5, 9, capture(ID(1)));
+    const p = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(p as never, 5);
+    await picks.attach(5, pick(ID(1), { snapshot: null, snapshotError: "failed" }));
+    p.fire({ t: "post", body: "Hi" });
+    await flush();
+    expect(await (posted[0].form.get("snapshot") as File).text()).toMatch(/could not be read/);
   });
 
   it("captures nothing when the pick's tab is no longer the window's active tab", async () => {

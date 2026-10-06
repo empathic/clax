@@ -196,6 +196,8 @@ describe("messages", () => {
     // A serializer that failed sends no snapshot, and says so.
     expect(isFromOverlay({ t: "pick", pickId, url: "http://x/", title: "T", snapshot: null, snapshotError: "failed" })).toBe(true);
     expect(isFromWorker({ t: "composer-ready", pickId: "short" })).toBe(false);
+    expect(isFromWorker({ t: "close-composer", pickId, posted: false, reason: "timeout" })).toBe(true);
+    expect(isFromWorker({ t: "close-composer", pickId, posted: false, reason: "other" })).toBe(false);
     expect(isFromWorker({ t: "composer-ready" })).toBe(false);
     expect(isFromOverlay({ t: "capture", pickId: "C".repeat(32), rect, dpr: 1 })).toBe(false);
     // A quiet snapshot names the pending threads it covers.

@@ -21,7 +21,7 @@ vi.mock("./snapshot", async orig => {
   const real = await orig<typeof import("./snapshot")>();
   return { ...real, serializeSnapshot: (doc: Document) => { if (snap.throws) throw new Error("hostile DOM"); return real.serializeSnapshot(doc); } };
 });
-const { COMPOSER_CONFIRM_MS, startOnce } = await import("./overlay-app");
+const { COMPOSER_CONFIRM_MS, NOTICE_MS, startOnce } = await import("./overlay-app");
 
 type Listener = (m: unknown, sender: chrome.runtime.MessageSender) => void;
 const WORKER = { id: "test-extension" } as chrome.runtime.MessageSender;
@@ -189,6 +189,16 @@ describe("a pick", () => {
     tell({ t: "close-composer", pickId: PICK, posted: true });
     expect(frames()).toHaveLength(0);
     expect(mode.on).toBe(true);
+  });
+
+  it("says why when the worker closes a composer that never connected, for a while", async () => {
+    await opened();
+    tell({ t: "close-composer", pickId: PICK, posted: false, reason: "timeout" });
+    expect(frames()).toHaveLength(0);
+    const notice = () => roots.map(r => r.querySelector("[role=status]")?.textContent ?? "").join("");
+    expect(notice()).toMatch(/comment box did not open/);
+    elapse(NOTICE_MS);
+    expect(notice()).toBe("");
   });
 
   it("still sends the pick, without a snapshot, when the serializer throws", async () => {

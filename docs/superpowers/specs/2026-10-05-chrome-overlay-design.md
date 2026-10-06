@@ -694,14 +694,18 @@ dropped and counted.
 - The overlay accepts messages only from the worker (`sender.id ===
   chrome.runtime.id` and no `sender.tab`).
 - Overlay → worker: `hello {url}`, `capture {pickId, anchor, rect, dpr}`,
-  `pick {pickId, snapshot | snapshotError, url, title}`, `resolved
+  `pick {pickId, snapshot | snapshotError, url, title}` (`snapshotError`:
+  `too_large`, with the serializer's placeholder, or `failed`, when the
+  serializer threw, with no snapshot), `resolved
   {results}`, `route {url}`, `quiet {url, title, snapshot, pending}`
   (`pending`: the thread IDs its state showed waiting for a snapshot when it
   serialized the page, L11), `cancel {pickId}`.
 - Worker → overlay: `state {page, route, threads, commentMode, pending}`,
   `comment-mode {on}`, `captured {pickId, ok, error?}` (the answer to
   `capture`), `open-composer {pickId, rect}`, `composer-ready {pickId}`,
-  `close-composer {pickId, posted}`, `scroll-to {threadId}`, `focus
+  `close-composer {pickId, posted, reason?}` (`reason: "timeout"` when the
+  composer page never connected: the overlay says so in a short notice),
+  `scroll-to {threadId}`, `focus
   {threadId | null}`, `snapshot-now`.
 - The composer frame is shown only after the worker confirms its page
   (ruling 2026-10-05): the overlay inserts the frame hidden (so it cannot
@@ -711,7 +715,7 @@ dropped and counted.
   while the person types. A second `load` of the frame (a navigation the
   page made) closes it and cancels the pick; so does a frame whose page has
   not connected within 10 s, and the worker cancels a pick whose composer
-  has not connected within 5 s. A document the page puts in the frame is
+  has not connected within 5 s of its `open-composer`. A document the page puts in the frame is
   never shown or focused.
 - Composer ↔ worker (port named `composer:<pickId>`): `ready` → `draft
   {anchor, clipUrl | null, clipError | null, capturing}` (`clipError` a
@@ -810,6 +814,8 @@ What is protected, from whom:
 | Extension files older than the daemon | On pairing, `clax_version` differs from the manifest's version: the worker calls `chrome.runtime.reload()` once for that version (remembered in `storage.local`). |
 | No `activeTab` at a pick | Posted without a clip (§8.1), with the reason in the composer. |
 | Snapshot over the caps | A minimal placeholder snapshot that says why; anchors resolve on the live page and detach in the shell. |
+| The serializer fails on a page | The pick is sent with `snapshotError: "failed"` and no snapshot; the thread is posted with a placeholder snapshot that says the page could not be read. |
+| The composer page never connects | The worker cancels the pick 5 s after `open-composer`; the overlay closes the hidden frame and says "The comment box did not open. Pick again to comment." |
 | Page removes or restyles the overlay host | Re-added once; then the panel says the page removed Clax's overlay. Pins use `all: initial` and the top layer (`popover`). |
 | Page navigates (full reload) | The registered content script loads the overlay again; comment mode is off; `activeTab` is gone until the next icon click or command. |
 | SPA route change | The overlay reports the new URL; the worker looks it up (`GET /api/live/pages`) and switches artifact or route; pins follow. |

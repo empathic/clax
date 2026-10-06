@@ -35,6 +35,8 @@ const FRAME_H = 300;
 /** How long a composer frame waits, hidden, for the worker to confirm its
  * page connected before the overlay closes it (the worker's own wait is shorter). */
 export const COMPOSER_CONFIRM_MS = 10_000;
+/** How long a notice over the page stays. */
+export const NOTICE_MS = 6000;
 /** The most results one `resolved` carries (`isFromOverlay`'s bound). */
 const MAX_RESULTS = 500;
 /** The global, in the isolated world only, that marks a started overlay.
@@ -127,7 +129,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     ownStyle = host.getAttribute("style") ?? "";
   };
   const root = host.attachShadow({ mode: "closed" });
-  root.innerHTML = `<style>${PIN_CSS}iframe{position:fixed;z-index:2147483647;width:${FRAME_W}px;height:${FRAME_H}px;border:0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);color-scheme:normal;pointer-events:auto}</style>`;
+  root.innerHTML = `<style>${PIN_CSS}.notice{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);max-width:min(420px,calc(100vw - 32px));padding:8px 12px;border-radius:8px;background:#1c1b19;color:#fff;font:13px/1.4 system-ui,sans-serif;box-shadow:0 4px 16px rgba(0,0,0,.25)}iframe{position:fixed;z-index:2147483647;width:${FRAME_W}px;height:${FRAME_H}px;border:0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);color-scheme:normal;pointer-events:auto}</style>`;
   const setHidden = (on: boolean) => { hidden = on; applyHost(); };
   const popoverOpen = () => {
     try { return typeof host.showPopover !== "function" || host.matches(":popover-open"); } catch { return true; }
@@ -289,6 +291,20 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     }, 0);
   }
 
+  /** A short notice over the page, in the closed root, for NOTICE_MS. */
+  let notice: { el: HTMLElement; timer: unknown } | null = null;
+  const clearNotice = () => { if (notice) { timers.clear(notice.timer); notice.el.remove(); notice = null; } };
+  stops.push(clearNotice);
+  function notify(text: string): void {
+    clearNotice();
+    const el = doc.createElement("div");
+    el.className = "notice";
+    el.setAttribute("role", "status");
+    el.textContent = text;
+    root.appendChild(el);
+    notice = { el, timer: timers.set(clearNotice, NOTICE_MS) };
+  }
+
   function openComposer(pickId: string, rect: Rect): void {
     closeComposer();
     const f = doc.createElement("iframe");
@@ -381,6 +397,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
       case "close-composer":
         if (composer?.pickId !== m.pickId) break;
         closeComposer();
+        if (m.reason === "timeout") notify("The comment box did not open. Pick again to comment.");
         if (m.posted || state?.commentMode) mode.set(true);
         break;
       case "focus": case "scroll-to": {

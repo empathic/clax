@@ -13,14 +13,17 @@
 // L11). The composer never sees the credential: posting is the worker's.
 import type { Anchor } from "../../../bridge/src/protocol";
 import { bytesDataUrl } from "../data-url";
-import { type OverlayToWorker, type PageView, type Rect, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
+import { type OverlayToWorker, type PageView, type Rect, type SnapshotError, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
 import type { Api } from "./api";
 
 /** How long a captured pick waits for its composer page to connect. */
 export const COMPOSER_WAIT_MS = 5000;
 
-/** The snapshot posted for a pick that came without one. */
-const NO_SNAPSHOT = "<!doctype html><meta charset=\"utf-8\"><title>No snapshot</title><p>Clax took no snapshot of this page.</p>";
+/** The snapshot posted for a pick that came without one, saying why. */
+export function noSnapshotPage(error: SnapshotError | null): string {
+  const why = error === "failed" ? "the page could not be read" : "the page was over Clax's snapshot limits";
+  return `<!doctype html><meta charset="utf-8"><title>No snapshot</title><p>Clax took no snapshot of this page: ${why}.</p>`;
+}
 
 type Capture = Extract<OverlayToWorker, { t: "capture" }>;
 type PickMsg = Extract<OverlayToWorker, { t: "pick" }>;
@@ -28,7 +31,9 @@ type Quiet = Extract<OverlayToWorker, { t: "quiet" }>;
 type Captured = Extract<WorkerToOverlay, { t: "captured" }>;
 
 type PickState = {
-  pickId: string; tabId: number; created: number; anchor: Anchor; clip: Blob | null; clipError: string | null;
+  pickId: string; tabId: number;
+  /** When the overlay was told to open the composer: its page's wait starts then. */
+  opened: number; anchor: Anchor; clip: Blob | null; clipError: string | null;
   /** The tab's pending threads when the overlay was told to serialize the page. */
   pending: string[];
   url: string | null; title: string; snapshot: string | null;
@@ -88,7 +93,7 @@ export class Picks {
     if (prev?.pickId === m.pickId) return null;
     cut(prev?.port ?? null);
     const p: PickState = {
-      pickId: m.pickId, tabId, created: this.d.now(), anchor: m.anchor, clip: null, clipError: null, pending: [],
+      pickId: m.pickId, tabId, opened: Number.POSITIVE_INFINITY, anchor: m.anchor, clip: null, clipError: null, pending: [],
       url: null, title: "", snapshot: null, body: null, port: null, connected: false, posting: false,
     };
     this.byTab.set(tabId, p);
@@ -99,8 +104,9 @@ export class Picks {
     else p.clipError = shot.error;
     // The overlay serializes the page once its composer is shown: what is pending now is what that snapshot covers.
     p.pending = this.d.pendingIds(tabId);
+    p.opened = this.d.now();
     this.d.toOverlay(tabId, { t: "open-composer", pickId: p.pickId, rect: m.rect });
-    this.after(COMPOSER_WAIT_MS, () => { if (this.byTab.get(tabId) === p && !p.connected) this.cancel(tabId, p.pickId); });
+    this.after(COMPOSER_WAIT_MS, () => { if (this.byTab.get(tabId) === p && !p.connected) this.cancel(tabId, p.pickId, "timeout"); });
     return "png" in shot ? { t: "captured", pickId: p.pickId, ok: true } : { t: "captured", pickId: p.pickId, ok: false, error: shot.error };
   }
 
@@ -108,7 +114,7 @@ export class Picks {
   async attach(tabId: number, m: PickMsg): Promise<void> {
     const p = this.current(tabId, m.pickId);
     if (!p || p.url !== null) return;
-    Object.assign(p, { url: m.url, title: m.title, snapshot: m.snapshot ?? NO_SNAPSHOT });
+    Object.assign(p, { url: m.url, title: m.title, snapshot: m.snapshot ?? noSnapshotPage(m.snapshotError) });
     await this.maybePost(p);
   }
 
@@ -116,7 +122,7 @@ export class Picks {
   attachComposer(port: chrome.runtime.Port, tabId: number): void {
     const pickId = port.name.startsWith("composer:") ? port.name.slice("composer:".length) : "";
     const p = this.current(tabId, pickId);
-    if (!p || p.connected || this.d.now() - p.created >= COMPOSER_WAIT_MS) { cut(port); return; }
+    if (!p || p.connected || !(this.d.now() - p.opened < COMPOSER_WAIT_MS)) { cut(port); return; }
     p.port = port;
     p.connected = true;
     port.onMessage.addListener((m: unknown) => {
@@ -137,15 +143,16 @@ export class Picks {
     this.d.toOverlay(tabId, { t: "composer-ready", pickId });
   }
 
-  /** Cancels the tab's pick (`pickId`, or whichever when null) and closes its composer. */
-  cancel(tabId: number, pickId: string | null): void {
+  /** Cancels the tab's pick (`pickId`, or whichever when null) and closes
+   * its composer; `reason` tells the overlay why, when it is not the person's doing. */
+  cancel(tabId: number, pickId: string | null, reason?: "timeout"): void {
     const p = this.byTab.get(tabId);
     if (!p || (pickId !== null && p.pickId !== pickId)) return;
     this.byTab.delete(tabId);
     const port = p.port;
     p.port = null;
     cut(port);
-    this.d.toOverlay(tabId, { t: "close-composer", pickId: p.pickId, posted: false });
+    this.d.toOverlay(tabId, reason ? { t: "close-composer", pickId: p.pickId, posted: false, reason } : { t: "close-composer", pickId: p.pickId, posted: false });
   }
 
   /** The tab closed: its pick goes. */

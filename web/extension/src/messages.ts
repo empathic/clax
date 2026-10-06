@@ -59,7 +59,8 @@ export type WorkerToOverlay =
   | { t: "open-composer"; pickId: string; rect: Rect }
   /** The pick's composer page connected to the worker (after its own load): only now is its frame shown and focused. */
   | { t: "composer-ready"; pickId: string }
-  | { t: "close-composer"; pickId: string; posted: boolean }
+  /** `reason: "timeout"`: the composer page never connected, which the overlay tells the person. */
+  | { t: "close-composer"; pickId: string; posted: boolean; reason?: "timeout" }
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
   | { t: "snapshot-now" }
@@ -207,7 +208,8 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "captured": return shape(m, ["t", "pickId", "ok"], ["error"]) && pickId(m.pickId) && bool(m.ok) && (m.error === undefined || code(m.error));
     case "open-composer": return has("pickId", "rect") && pickId(m.pickId) && box(m.rect);
     case "composer-ready": return has("pickId") && pickId(m.pickId);
-    case "close-composer": return has("pickId", "posted") && pickId(m.pickId) && bool(m.posted);
+    case "close-composer": return shape(m, ["t", "pickId", "posted"], ["reason"]) && pickId(m.pickId) && bool(m.posted)
+      && (m.reason === undefined || m.reason === "timeout");
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
     case "snapshot-now": case "resend": return has();
