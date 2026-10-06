@@ -291,7 +291,11 @@ pub(crate) fn threads_of_many(c: &Connection, ids: &[String]) -> Result<Vec<Thre
         match row.into_thread(comments) {
             Ok(t) => out.push(t),
             Err(CoreError::Corrupt { column, .. }) => {
-                tracing::warn!(thread_id = tid.as_str(), column, "skipping a corrupt thread");
+                tracing::warn!(
+                    thread_id = tid.as_str(),
+                    column,
+                    "skipping a corrupt thread"
+                );
             }
             Err(e) => return Err(e),
         }

@@ -228,8 +228,10 @@ pub fn apply(ctx: &FeedbackCtx, st: &Store, touched: &Touched) {
 /// `null` when that viewer has none or the thread was not resolved by a
 /// viewer; and `addressed_pending`, `{harness, at}` while an agent's address
 /// of a live page's thread waits for the page's next snapshot, else `null`.
-/// A live page's thread also carries `page_url` (the page's URL with the
-/// thread's route) and `snapshot_path` (its version's `index.html` on disk,
+/// A live page's thread also carries `page_path` (the path it was made at:
+/// its page's, unless a merge rule mapped it there), `page_url` (the origin,
+/// that path and the thread's route), `moves` (its moves between pages,
+/// oldest first) and `snapshot_path` (its version's `index.html` on disk,
 /// only when `with_path`, else `null`).
 pub fn thread_view(
     st: &Store,
@@ -287,12 +289,15 @@ pub fn thread_views(
                 None => Value::Null,
             };
             if let Some(Some(p)) = live.get(t.artifact_id.as_str()) {
+                let path = x.live_path.as_deref().unwrap_or(&p.path);
+                v["page_path"] = json!(path);
                 v["page_url"] = json!(format!(
                     "{}{}{}",
                     p.origin,
-                    p.path,
+                    path,
                     t.anchor.route.as_deref().unwrap_or("")
                 ));
+                v["moves"] = json!(x.moves);
                 v["snapshot_path"] = if with_path {
                     let id = ArtifactId::parse(&t.artifact_id)?;
                     json!(

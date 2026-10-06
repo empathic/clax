@@ -539,7 +539,10 @@ impl Store {
                     .push(self.copy_snapshot(to.as_str(), before, to)?);
             }
             let mut clips = Vec::new();
-            for p in plans.iter().filter(|p| p.has_clip && p.from != target.artifact_id) {
+            for p in plans
+                .iter()
+                .filter(|p| p.has_clip && p.from != target.artifact_id)
+            {
                 let src = self.home.clip_path(&ArtifactId::parse(&p.from)?, &p.tid);
                 let dest = self.home.clip_path(to, &p.tid);
                 std::fs::create_dir_all(self.home.clips_dir(to))?;
@@ -575,14 +578,23 @@ impl Store {
     /// version of the live page `to`, noted [`MOVED_NOTE`], keeping `to`'s
     /// title.
     fn copy_snapshot(&self, src: &str, n: u32, to: &ArtifactId) -> Result<Version> {
-        let html = std::fs::read(self.home.version_dir(&ArtifactId::parse(src)?, n).join(INDEX))?;
+        let html = std::fs::read(
+            self.home
+                .version_dir(&ArtifactId::parse(src)?, n)
+                .join(INDEX),
+        )?;
         let mut attempt = 1;
         loop {
             let a = self.get_artifact(to)?.ok_or(CoreError::NotFound)?;
             let p = snapshot_publish_noted(a.current_version, &a.title, &html, MOVED_NOTE)?;
-            match self.write_version_then(to, a.current_version, &p, &BTreeMap::new(), None, |_, _| {
-                Ok(())
-            }) {
+            match self.write_version_then(
+                to,
+                a.current_version,
+                &p,
+                &BTreeMap::new(),
+                None,
+                |_, _| Ok(()),
+            ) {
                 Ok((_, v, ())) => return Ok(v),
                 Err(CoreError::Conflict { .. }) if attempt < SNAPSHOT_ATTEMPTS => attempt += 1,
                 Err(e) => return Err(e),
@@ -735,7 +747,9 @@ mod tests {
         st.delete_artifact(&a).unwrap();
         let kept = st.get_thread(&t.id).unwrap().unwrap();
         assert_eq!(kept.artifact_id, b.as_str());
-        let x = st.thread_extras(std::slice::from_ref(&kept), false).unwrap();
+        let x = st
+            .thread_extras(std::slice::from_ref(&kept), false)
+            .unwrap();
         assert_eq!((x[0].moves.len(), x[0].addressed_in.clone()), (1, vec![3]));
         // Deleting the thread deletes its moves.
         st.delete_thread(&t.id).unwrap();
@@ -811,7 +825,9 @@ mod tests {
         let (refiles, title) = st.rule_refiles(&all).unwrap();
         assert_eq!(refiles.len(), 3);
         assert!(title.is_some());
-        let canon = st.ensure_live_page(&key("/users/*"), "Users", None).unwrap();
+        let canon = st
+            .ensure_live_page(&key("/users/*"), "Users", None)
+            .unwrap();
         let canon = ArtifactId::parse(&canon.artifact.id).unwrap();
         let done = st
             .refile_threads(&canon, &refiles, "viewer:u_x", Some(&all.id), false)
@@ -862,7 +878,10 @@ mod tests {
             canon.as_str()
         );
 
-        assert_eq!(st.delete_live_rule(&one_seg.id).unwrap(), Some(one_seg.clone()));
+        assert_eq!(
+            st.delete_live_rule(&one_seg.id).unwrap(),
+            Some(one_seg.clone())
+        );
         assert_eq!(st.delete_live_rule(&one_seg.id).unwrap(), None);
         assert_eq!(
             st.resolve_live_key(&key("/users/9")).unwrap().key,

@@ -52,7 +52,9 @@ pub const GRACE: Duration = Duration::from_secs(60);
 pub const MAX_DETACHED: usize = 4096;
 
 /// A topic a client subscribes to, by name: `gallery`, `artifact:<id>`,
-/// `presence:<id>`, `working:<id>`, `docs:<id>`.
+/// `presence:<id>`, `working:<id>`, `docs:<id>`, and `site:<origin>` (the
+/// `artifact` events of every live page of a site; spec
+/// 2026-10-05-chrome-overlay-design §9.5).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -60,16 +62,29 @@ pub enum Topic {
     Presence(String),
     Working(String),
     Docs(String),
+    Site(String),
 }
 
 impl Topic {
-    /// Parses a topic name; the artifact ID must be well formed.
+    /// Parses a topic name; the artifact ID must be well formed, and a
+    /// site's origin written as the daemon normalizes it (spec §7: scheme,
+    /// lowercased host, port unless the scheme's default; no path).
     ///
     /// # Errors
     /// A message naming what is wrong.
     pub fn parse(s: &str) -> Result<Topic, String> {
         if s == "gallery" {
             return Ok(Topic::Gallery);
+        }
+        if let Some(origin) = s.strip_prefix("site:") {
+            let normal = clax_core::live::parse_page_url(origin)
+                .ok()
+                .filter(|p| p.key.origin == origin)
+                .is_some();
+            if !normal {
+                return Err(format!("'{origin}' is not a normalized origin"));
+            }
+            return Ok(Topic::Site(origin.to_string()));
         }
         let (kind, aid) = s
             .split_once(':')
@@ -94,13 +109,14 @@ impl Topic {
             Topic::Presence(a) => format!("presence:{a}"),
             Topic::Working(a) => format!("working:{a}"),
             Topic::Docs(a) => format!("docs:{a}"),
+            Topic::Site(o) => format!("site:{o}"),
         }
     }
 
-    /// The artifact the topic is about; `None` for the gallery.
+    /// The artifact the topic is about; `None` for the gallery and a site.
     pub fn artifact(&self) -> Option<&str> {
         match self {
-            Topic::Gallery => None,
+            Topic::Gallery | Topic::Site(_) => None,
             Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) | Topic::Docs(a) => Some(a),
         }
     }
@@ -114,6 +130,7 @@ impl Topic {
             Topic::Artifact(a) => vec![Chan::Artifact(a.clone())],
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
             Topic::Working(a) => vec![Chan::Working(a.clone())],
+            Topic::Site(o) => vec![Chan::Site(o.clone())],
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
@@ -140,12 +157,15 @@ enum Chan {
     Working(String),
     DocsAt(String, Level),
     DocsOf(String, String),
+    /// The `artifact` channel's events of every live page of an origin.
+    Site(String),
 }
 
 impl Chan {
     fn topic(&self) -> String {
         match self {
             Chan::Gallery => "gallery".into(),
+            Chan::Site(o) => format!("site:{o}"),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) => format!("working:{a}"),
@@ -269,6 +289,7 @@ pub enum SubError {
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery | Topic::Docs(_) => false,
+        Topic::Site(_) => true,
         Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) => live.contains(a),
     }
 }
@@ -383,7 +404,10 @@ fn presence_diff(old: &[PresenceView], new: &[PresenceView]) -> (Vec<PresenceVie
 fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
     let a = ev.artifact_id().to_string();
     match ev {
-        Event::Version { .. } | Event::Thread { .. } | Event::ThreadDeleted { .. } => {
+        Event::Version { .. }
+        | Event::Thread { .. }
+        | Event::ThreadDeleted { .. }
+        | Event::ThreadMoved { .. } => {
             vec![(Chan::Gallery, Gate::Any), (Chan::Artifact(a), Gate::Any)]
         }
         Event::ArtifactDeleted { .. } => vec![
@@ -528,8 +552,16 @@ impl Hub {
         if g.chans.is_empty() {
             return;
         }
-        let live = self.live.contains(ev.artifact_id());
-        let present: Vec<(Chan, Gate)> = routes(ev)
+        let site = self.live.origin_of(ev.artifact_id());
+        let live = site.is_some();
+        let mut all = routes(ev);
+        // A live page's `artifact` events also go to its site's channel.
+        if let Some(origin) = site
+            && all.iter().any(|(c, _)| matches!(c, Chan::Artifact(_)))
+        {
+            all.push((Chan::Site(origin), Gate::Local));
+        }
+        let present: Vec<(Chan, Gate)> = all
             .into_iter()
             .filter(|(c, _)| g.chans.contains_key(c))
             .map(|(c, gate)| match c {
@@ -735,9 +767,9 @@ impl Hub {
             return Err(SubError::TooMany);
         }
         if !s.local
-            && add
-                .iter()
-                .any(|t| t.artifact().is_some_and(|a| self.live.contains(a)))
+            && add.iter().any(|t| {
+                matches!(t, Topic::Site(_)) || t.artifact().is_some_and(|a| self.live.contains(a))
+            })
         {
             return Err(SubError::Hidden);
         }
@@ -1105,7 +1137,7 @@ mod tests {
     #[test]
     fn a_live_pages_gallery_events_reach_only_local_streams() {
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::View, None);
         let mut near = hub.open(c.clone(), true, None, None);
@@ -1140,7 +1172,7 @@ mod tests {
     #[test]
     fn a_live_only_stream_takes_live_pages_topics_alone() {
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::Interact, Some("u_x"));
         let o = hub.open(c.clone(), true, Some("h".into()), None);
@@ -1192,7 +1224,7 @@ mod tests {
     #[test]
     fn only_a_request_with_the_openers_credential_or_none_changes_a_stream() {
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::Interact, Some("u_x"));
         let t = [Topic::Artifact(A.into())];
@@ -1217,7 +1249,7 @@ mod tests {
     #[test]
     fn ending_a_credentials_streams_closes_them_and_forgets_them() {
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::Interact, Some("u_x"));
         let t = [Topic::Artifact(A.into())];
@@ -1244,7 +1276,7 @@ mod tests {
     #[test]
     fn a_stream_that_may_not_see_live_pages_cannot_subscribe_to_one() {
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::View, None);
         let far = hub.open(c.clone(), false, None, None);
@@ -1433,7 +1465,7 @@ mod tests {
     async fn a_checked_connection_ends_before_delivering_once_the_check_fails() {
         use std::sync::atomic::{AtomicBool, Ordering};
         let live = Arc::new(crate::live::LiveIds::default());
-        live.insert(A);
+        live.insert(A, "http://localhost:5173");
         let hub = Hub::new(live);
         let c = viewer(Level::View, None);
         let o = hub.open(c.clone(), true, Some("h".into()), None);

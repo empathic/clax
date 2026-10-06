@@ -574,6 +574,71 @@ shows on the route-less view.
 Known consequence: a port reused by another project's dev server shares its
 live pages. The person deletes the live page from the gallery to start over.
 
+### 7.1 Site-wide threads, moving and merging pages
+
+Owner decision, 2026-10-06: the side panel shows, besides the current
+page's threads, "Elsewhere on this site": every thread of every live page of
+the same origin, grouped by page; clicking one navigates the tab there; pins
+show for any thread of the site whose anchor resolves on the current
+screen; the panel filters by status, searches, moves a thread to another
+page, and merges pages (declares that paths are one page, so their threads
+group together from then on). The daemon provides the data and the writes;
+the panel's search and filters run on the listing in the client.
+
+1. **Listing.** `GET /api/live/site?origin=` answers every live page of the
+   origin that has threads, newest activity first, each with its page view,
+   a summary (`open`, `addressed`, `resolved` counts and `last_activity`)
+   and its thread views (resolved ones too), plus the origin's merge rules.
+   A live page's thread view carries `page_path` (the path it was made at)
+   and `page_url` (origin, `page_path` and route: the URL the panel opens),
+   and `moves`. The reads are index-bound: pages by `live_pages`' origin
+   index, threads by `threads_by_artifact`, rules by their origin index,
+   moves by `thread_moves_by_thread`.
+2. **Realtime.** The stream topic `site:<origin>` (the normalized origin)
+   carries every live page's `artifact:` events for the origin, pages made
+   later included; only streams that may see live pages take it (L10), and
+   the extension's live-only stream does.
+3. **Moving.** `POST /api/live/threads/<tid>/move {page_url}` (the owner:
+   the token or the extension's credential) re-files a live page's thread
+   under the live page `page_url` names, of the same origin only
+   (`cross_origin` otherwise), made through `LiveIds::ensure_page` when
+   missing, at `page_url`'s route. The thread keeps its ID, comments, sends,
+   feedback and status; its clip, pending address and pick move with it.
+   Its snapshot comes along as versions of the new page: the version it was
+   made on and each version that addressed it are copied there (noted
+   `moved`), and the thread names the copies, so the invariant "a thread's
+   version and its address links are versions of its own page" holds and
+   deleting the page it left loses nothing. When the new page existed, its
+   version current before the move is copied once more on top, keeping its
+   own latest snapshot current. Each move is recorded (`thread_moves`: who,
+   from which URL, to which, by which rule). The stream gets the new page's
+   `version`s, `thread_moved {artifact_id, thread_id, to_artifact_id}` on
+   the page left, then `thread` on the new page. Moving a thread to where it
+   is writes nothing.
+4. **Merging.** A merge rule `{origin, pattern}` maps every path of the
+   origin that `pattern` matches to one canonical live page whose path is
+   the pattern (`/users/:id`). Patterns are `/`-separated literals,
+   `:name` (one non-empty segment) and a last `*` (one or more segments);
+   no regular expressions; at most 256 bytes, 16 segments, 64 rules per
+   origin; the daemon's own origin is refused. The most literal segments
+   win, then the most `:name` segments, then the oldest rule. Adding a rule
+   re-files, as a move does, every thread of the origin whose path the rule
+   now wins; from then on every lookup and write for a matching URL
+   (`GET /api/live/pages`, `POST /api/live/threads`, `POST
+   /api/live/snapshots`) resolves to the canonical page, and a thread made
+   there keeps its URL's path (`threads.live_path`). Deleting a rule stops
+   the mapping only; it does not un-merge: re-filed threads stay where the
+   rule put them, and the pages they left remain.
+5. **Who.** Reads need an owner credential; moves and rule changes need the
+   token or the extension's credential. All of it is under `/api/live/`, so
+   hidden from the LAN (L10) and admitted by the extension gateway's
+   allowlist (§9.2).
+
+Migration 18 adds `threads.live_path`, `live_rules (id, origin, pattern,
+created_at, UNIQUE (origin, pattern))` and `thread_moves (id, thread_id,
+from_artifact_id, from_url, to_artifact_id, to_url, moved_by, rule_id,
+created_at)` with its index by thread.
+
 ## 8. Screenshots and snapshots
 
 ### 8.1 The screenshot (the clip)
@@ -727,6 +792,11 @@ found by the browser test, 2026-10-05.) New routes (viewer routes: no token):
   version and the links are one transaction. (Ruling 2026-10-05: the
   snapshot names the pending threads it covers.)
 
+Site-wide threads (§7.1, owner decision 2026-10-06): `GET
+/api/live/site?origin=`, `POST /api/live/threads/<tid>/move {page_url}`,
+`GET /api/live/rules?origin=`, `POST /api/live/rules {origin, pattern}` and
+`DELETE /api/live/rules/<id>`; the gateway admits each.
+
 The gateway also admits, for live-page artifacts only: `GET
 /api/artifacts/<aid>`, `GET …/threads`, `GET …/threads/<tid>`, `GET
 …/threads/<tid>/clip`, `POST …/threads/<tid>/comments`, `…/send`,
@@ -876,7 +946,8 @@ The worker runs the shell's stream `Hub` (`stream-hub.ts`) with an
 environment whose requests carry the credential, against `/api/stream`, as
 one client per tab and one per panel. Topics: `artifact:<aid>` and
 `working:<aid>` for each live page an overlay or the panel shows, and
-`presence:<aid>` while the panel shows it. A stream opened through the
+`presence:<aid>` while the panel shows it, and `site:<origin>` for the
+panel's "Elsewhere on this site" (§7.1). A stream opened through the
 gateway is live-only: subscribing to `gallery`, `docs:*` or a topic of an
 artifact that is not a live page is refused 403 `forbidden`. The worker
 stays alive while a panel or overlay port is open; each sends a ping every
@@ -905,8 +976,10 @@ What is protected, from whom:
    on live pages only, as the owner identity (L6). It cannot publish,
    delete artifacts, read sessions, read the token, use `db`, or see any
    non-live artifact. A stolen credential therefore acts as the owner on
-   live pages (comments, sends, resolves, the owner's name and marks) until
-   revoked; that is the cost of one identity, bounded by the allowlist.
+   live pages (comments, sends, resolves, the owner's name and marks, and
+   since §7.1 moving threads between a site's pages and its merge rules)
+   until revoked; that is the cost of one identity, bounded by the
+   allowlist.
 3. **The page cannot drive Clax.** No `externally_connectable` and no external-message listener; the
    isolated world's messages are validated; CommentMode acts only on trusted
    events (`isTrusted`), so page scripts cannot pick; posting a comment takes

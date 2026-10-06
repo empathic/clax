@@ -134,7 +134,8 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// reach the stream; `topics` is the stream's whole list after the change.
 ///
 /// Checked once, here: every subscribed artifact exists, and is not a live
-/// page the stream may not see (404 otherwise), and
+/// page the stream may not see (404 otherwise), a `site:<origin>` topic
+/// needs a stream that may see live pages (404 otherwise), and
 /// a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway
@@ -173,6 +174,9 @@ pub async fn update(
     }
     for aid in add.iter().filter_map(Topic::artifact) {
         sees.check(&s.live_ids, aid)?;
+    }
+    if !sees.may_see && add.iter().any(|t| matches!(t, Topic::Site(_))) {
+        return Err(CoreError::NotFound.into());
     }
     let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();
