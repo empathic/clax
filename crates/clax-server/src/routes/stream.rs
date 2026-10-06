@@ -136,8 +136,9 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// Checked once, here: every subscribed artifact exists, and is not a live
 /// page the stream may not see (404 otherwise), a `site:<origin>` topic
 /// needs a stream that may see live pages (404 otherwise) and an owner
-/// credential (403 `forbidden` otherwise), and
-/// a `docs` topic needs the artifact to declare `db` unless the caller holds
+/// credential (403 `forbidden` otherwise), `questions` needs an owner
+/// credential (403 `forbidden` otherwise, and the whole change is refused),
+/// and a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway
 /// is changed only with its own credential, and any other only without
@@ -145,7 +146,7 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 /// [`crate::stream::MAX_TOPICS`] topics; 400 `invalid_topic` for a name
 /// that is not a topic. On a live-only stream (the extension's), 403
 /// `forbidden` for `gallery`, a `docs` topic, or a topic of an artifact
-/// that is not a live page. Refuses a foreign `Origin` like the viewer routes.
+/// that is not a live page (`questions` it may take). Refuses a foreign `Origin` like the viewer routes.
 pub async fn update(
     State(s): State<AppState>,
     _o: SameOrigin,
@@ -187,6 +188,12 @@ pub async fn update(
                 "only the owner follows a site's threads",
             ));
         }
+    }
+    if add.contains(&Topic::Questions) && !who.is_owner() {
+        return Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner follows questions",
+        ));
     }
     let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();

@@ -15,23 +15,55 @@ fn text(mut obj: Map<String, Value>) -> ContentBlock {
     )
 }
 
+/// What a feedback poll handed over: comments (`feedback`), late answers
+/// to the session's questions (`answers`) and the prose for both (`text`).
+#[derive(Debug, Default)]
+pub struct Handover {
+    pub feedback: Vec<Value>,
+    pub answers: Vec<Value>,
+    pub text: Option<String>,
+}
+
+impl Handover {
+    /// The handover in a `GET /api/sessions/<sid>/feedback` response.
+    pub fn of(res: &Value) -> Handover {
+        let list = |k: &str| res[k].as_array().cloned().unwrap_or_default();
+        Handover {
+            feedback: list("feedback"),
+            answers: list("answers"),
+            text: res["text"].as_str().map(str::to_string),
+        }
+    }
+
+    /// Whether nothing was handed over.
+    pub fn is_empty(&self) -> bool {
+        self.feedback.is_empty() && self.answers.is_empty()
+    }
+}
+
 /// A success result for `value`, which must be a JSON object, with an empty
 /// `feedback` array.
 pub fn success(value: Value) -> CallToolResult {
-    success_with(value, Vec::new(), None)
+    success_with(value, Handover::default())
 }
 
 /// A success result for `value` (a JSON object) whose `feedback` array is
-/// `feedback`. When `feedback` is not empty and `text` is given, a second text
-/// block `---\n<text>` follows: the trailing block agents read as prose.
-pub fn success_with(value: Value, feedback: Vec<Value>, text: Option<String>) -> CallToolResult {
+/// `h.feedback`, with `answers` (the late answers) when there are any. When
+/// something was handed over and `h.text` is given, a second text block
+/// `---\n<text>` follows: the trailing block agents read as prose.
+pub fn success_with(value: Value, h: Handover) -> CallToolResult {
     let Value::Object(mut obj) = value else {
         panic!("tool results are JSON objects");
     };
-    let trailing = text
-        .filter(|_| !feedback.is_empty())
+    let trailing = h
+        .text
+        .clone()
+        .filter(|_| !h.is_empty())
         .map(|t| ContentBlock::text(format!("---\n{t}")));
-    obj.insert("feedback".into(), Value::Array(feedback));
+    obj.insert("feedback".into(), Value::Array(h.feedback));
+    if !h.answers.is_empty() {
+        obj.insert("answers".into(), Value::Array(h.answers));
+    }
     let mut blocks = vec![ContentBlock::text(
         serde_json::to_string_pretty(&Value::Object(obj)).expect("JSON values serialise"),
     )];

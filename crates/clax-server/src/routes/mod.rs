@@ -189,6 +189,14 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             "/api/sessions/{id}/questions/{qid}/release",
             post(questions::release),
         )
+        .route("/api/questions", get(questions::list))
+        .route("/api/questions/{qid}", get(questions::get_one))
+        .route("/api/questions/{qid}/answer", post(questions::answer))
+        .route("/api/questions/{qid}/decline", post(questions::decline))
+        .route(
+            "/api/questions/{qid}/release",
+            post(questions::release_owner),
+        )
         .route("/api/artifacts/{aid}/docs", get(docs::list))
         .route(
             "/api/artifacts/{aid}/docs/{*path}",
@@ -229,8 +237,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             get(questions::waiters),
         )
         .route(
-            "/api/_test/questions/{qid}/answer",
-            post(questions::test_answer),
+            "/api/_test/sessions/{id}/feedback/waiters",
+            get(feedback::waiters),
         );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
@@ -418,6 +426,10 @@ mod l10 {
         Filtered,
         /// It names no artifact.
         NoArtifact,
+        /// It refuses every caller but the owner (`owner(&who)`); every
+        /// owner credential sees live pages (the extension's is
+        /// loopback-only).
+        Owner,
     }
     use Guard::*;
 
@@ -471,7 +483,12 @@ mod l10 {
         ("questions::release", Token),
         ("questions::terminal", Token),
         ("questions::waiters", Token),
-        ("questions::test_answer", Token),
+        ("feedback::waiters", Token),
+        ("questions::list", Owner),
+        ("questions::get_one", Owner),
+        ("questions::answer", Owner),
+        ("questions::decline", Owner),
+        ("questions::release_owner", Owner),
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
@@ -629,6 +646,10 @@ mod l10 {
                     Filtered => assert!(
                         src.contains("sees_live_pages"),
                         "{name} does not filter by sees_live_pages"
+                    ),
+                    Owner => assert!(
+                        sig.contains("who: Identity") && src.contains("owner(&who)?;"),
+                        "{name} does not refuse callers other than the owner"
                     ),
                     NoArtifact => assert!(
                         !src.contains("ArtifactId") && !src.contains("parse_id"),

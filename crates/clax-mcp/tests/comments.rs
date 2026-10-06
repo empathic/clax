@@ -819,3 +819,47 @@ async fn addressed_is_refused_on_an_html_artifact() {
         "nothing was written"
     );
 }
+
+#[tokio::test]
+async fn a_late_answer_ends_wait_for_feedback_and_rides_on_a_tool_result_once() {
+    let ts = TestServer::spawn().await;
+    let (t, sid) = session_tools(&ts).await;
+    let ask = |label: &str| {
+        json!({"source": "ask", "questions": [{"question": "Which?", "header": label,
+            "options": [{"label": "A"}, {"label": "B"}]}]})
+    };
+    let q1 = ts.ask(&sid, ask("First")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.answer_question(&q1, json!({"answers": [{"selected": ["A"]}]}))
+        .await;
+    let (v, trailing) = blocks(
+        &t.wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(1),
+        }))
+        .await
+        .unwrap(),
+    );
+    assert_eq!(v["call_again"], false);
+    assert_eq!(v["feedback"], json!([]));
+    assert_eq!(v["answers"][0]["id"], q1.as_str());
+    assert!(
+        trailing
+            .unwrap()
+            .starts_with("---\n[clax] The person answered your question \"First\""),
+    );
+    let q2 = ts.ask(&sid, ask("Second")).await["question"]["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    ts.answer_question(&q2, json!({"answers": [{"selected": ["B"]}]}))
+        .await;
+    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    assert_eq!(v["answers"][0]["id"], q2.as_str());
+    assert!(trailing.unwrap().contains("\"Second\""));
+    let (v, trailing) = blocks(&t.status(Parameters(StatusArgs {})).await.unwrap());
+    assert!(v.get("answers").is_none(), "handed over once");
+    assert!(trailing.is_none());
+}

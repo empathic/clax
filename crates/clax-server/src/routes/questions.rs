@@ -1,20 +1,24 @@
 //! Agent questions (spec 2026-10-06-agent-questions-and-inbox §6.1).
 //! Session routes (token) let the asking session create, wait on, withdraw,
 //! release and record the terminal answer of its own questions; another
-//! session's question is 404.
+//! session's question is 404. Owner routes (§6.2) let the owner list,
+//! read, answer, decline and release every question; any other caller is
+//! 403, and they keep the viewer routes' origin rules.
 
 use super::artifacts::{body, body_within, path};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
+use crate::identity::Identity;
 use crate::questions::{announce, arm_grace, start_grace, view};
 use crate::state::AppState;
+use crate::viewer::SameOrigin;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use clax_core::questions::{Question, from_claude, from_claude_answers, validate_ask};
-use clax_core::store::questions::{Close, NewQuestion, Source, Status};
+use clax_core::questions::{Answer, Question, from_claude, from_claude_answers, validate_ask};
+use clax_core::store::questions::{Close, ListStatus, NewQuestion, Source, Status};
 use clax_core::{ArtifactId, CoreError, Store};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
@@ -385,36 +389,151 @@ pub async fn waiters(
     Ok(Json(json!({"count": s.questions.count(&qid)})))
 }
 
-#[cfg(debug_assertions)]
+/// 403 `forbidden` unless `who` speaks for the owner (spec §6.2, §11).
+fn owner(who: &Identity) -> Result<(), ApiError> {
+    if who.is_owner() {
+        Ok(())
+    } else {
+        Err(ApiError::forbidden(
+            "forbidden",
+            "only the owner sees and answers questions",
+        ))
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ListQuery {
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    limit: Option<u32>,
+}
+
+/// `GET /api/questions?status=open|closed|all&limit=<1..200>` (owner) →
+/// `{questions, open}`: open questions oldest first, closed ones most
+/// recently closed first, and with `all` the open ones newest first before
+/// the closed ones; `open` counts every open question. Default `open`, 50;
+/// `limit` is clamped to 1..=200. 400 `invalid_query` for another status.
+pub async fn list(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    q: Result<Query<ListQuery>, QueryRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&who)?;
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let which = match q.status.as_deref() {
+        None | Some("open") => ListStatus::Open,
+        Some("closed") => ListStatus::Closed,
+        Some("all") => ListStatus::All,
+        Some(_) => {
+            return Err(ApiError::bad_request(
+                "invalid_query",
+                "status is open, closed or all",
+            ));
+        }
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let out = s
+        .store_call(move |db| {
+            let (rows, open) = db.list_questions(which, limit)?;
+            let views = rows
+                .iter()
+                .map(|r| view(db, r))
+                .collect::<clax_core::Result<Vec<_>>>()?;
+            Ok(json!({"questions": views, "open": open}))
+        })
+        .await?;
+    Ok(Json(out))
+}
+
+/// `GET /api/questions/<qid>` (owner) → `{question}`; 404 when there is
+/// none.
+pub async fn get_one(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    owner(&who)?;
+    let qid = path(p)?;
+    let v = s
+        .store_call(move |db| {
+            let q = db.question(&qid)?.ok_or(CoreError::NotFound)?;
+            view(db, &q)
+        })
+        .await?;
+    Ok(Json(json!({"question": v})))
+}
+
+/// Applies the owner's `c` to question `qid`: 404 when there is none.
+async fn owner_close(s: AppState, qid: String, c: Close) -> Result<Json<Value>, QuestionError> {
+    let st = s.clone();
+    s.store_call(move |db| close(&st, db, &qid, c))
+        .await?
+        .respond()
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AnswerBody {
-    answers: Vec<clax_core::questions::Answer>,
+    answers: Vec<Answer>,
 }
 
-/// `POST /api/_test/questions/<qid>/answer` (debug builds): answers
-/// question `qid` through the shell, as the owner's answer route does.
-#[cfg(debug_assertions)]
-pub async fn test_answer(
+/// `POST /api/questions/<qid>/answer` (owner), body `{answers}` (spec §5.3)
+/// → `{question}`. `answered_via` is `extension` through the extension
+/// gateway, `cli` for the token from no browser of the owner's, else
+/// `shell`. 400 `invalid_answer` for answers that do not fit the questions;
+/// 409 `question_closed`, with the question's view, when it is not open.
+pub async fn answer(
     State(s): State<AppState>,
-    _t: RequireToken,
+    _o: SameOrigin,
+    who: Identity,
     p: Result<Path<String>, PathRejection>,
     req: Result<Json<AnswerBody>, JsonRejection>,
 ) -> Result<Json<Value>, QuestionError> {
+    owner(&who)?;
     let qid = path(p)?;
     let b = body(req)?;
-    let st = s.clone();
-    s.store_call(move |db| {
-        close(
-            &st,
-            db,
-            &qid,
-            Close::Answer {
-                answers: b.answers,
-                via: "shell",
-            },
-        )
-    })
-    .await?
-    .respond()
+    let via = if who.extension {
+        "extension"
+    } else if who.token && !who.owner_browser() {
+        "cli"
+    } else {
+        "shell"
+    };
+    owner_close(
+        s,
+        qid,
+        Close::Answer {
+            answers: b.answers,
+            via,
+        },
+    )
+    .await
+}
+
+/// `POST /api/questions/<qid>/decline` (owner): the person skips the
+/// question → `{question}`; 409 `question_closed` when it is not open.
+pub async fn decline(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, QuestionError> {
+    owner(&who)?;
+    owner_close(s, path(p)?, Close::Decline).await
+}
+
+/// `POST /api/questions/<qid>/release` (owner): "Answer in the terminal"
+/// for a mirrored question → `{question}`; 400 `not_mirrored` for an `ask`
+/// question; 409 `question_closed` when it is not open.
+pub async fn release_owner(
+    State(s): State<AppState>,
+    _o: SameOrigin,
+    who: Identity,
+    p: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, QuestionError> {
+    owner(&who)?;
+    owner_close(s, path(p)?, Close::Release).await
 }

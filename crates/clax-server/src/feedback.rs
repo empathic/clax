@@ -66,6 +66,17 @@ impl FeedbackWaiters {
         }
     }
 
+    /// How many `wait_for_feedback` long-polls of `session_id` are in
+    /// progress.
+    pub fn count(&self, session_id: &str) -> usize {
+        self.active
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// Whether a `wait_for_feedback` long-poll (`tier=wait`) of `session_id`
     /// is in progress; tier 5 (`codex queue`, Pi `inject`) is skipped while it is.
     pub fn is_waiting(&self, session_id: &str) -> bool {

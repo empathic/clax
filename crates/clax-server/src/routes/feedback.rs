@@ -11,7 +11,9 @@ use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
 use axum::extract::{Path, Query, State};
-use clax_core::feedback::{render_items, render_notice};
+use clax_core::feedback::{ago, quoted, render_items, render_notice};
+use clax_core::questions::render_late;
+use clax_core::store::questions::Status;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -36,6 +38,49 @@ fn live_session(st: &Store, sid: &str) -> clax_core::Result<()> {
     }
 }
 
+/// Takes session `sid`'s answered and declined `ask` questions it has not
+/// received (marking them received): their views, and one late-answer
+/// block per question (spec 2026-10-06-agent-questions-and-inbox §6.4).
+fn late_answers(st: &Store, sid: &str) -> clax_core::Result<(Vec<Value>, Vec<String>)> {
+    let rows = st.take_late_answers(sid)?;
+    let now = chrono::Utc::now();
+    let mut views = Vec::with_capacity(rows.len());
+    let mut blocks = Vec::with_capacity(rows.len());
+    for q in &rows {
+        views.push(crate::questions::view(st, q)?);
+        let header = q.questions.first().map_or("", |x| x.header.as_str());
+        let head = match q.status {
+            Status::Declined => format!(
+                "[clax] The person skipped your question {} ({}):",
+                quoted(header),
+                q.id
+            ),
+            _ => format!(
+                "[clax] The person answered your question {} ({}, asked {}):",
+                quoted(header),
+                q.id,
+                ago(&q.created_at, now)
+            ),
+        };
+        let answers = (q.status == Status::Answered)
+            .then_some(q.answers.as_deref())
+            .flatten();
+        blocks.push(render_late(&head, &q.questions, answers));
+    }
+    Ok((views, blocks))
+}
+
+/// The response text: the feedback items' text, then each late-answer
+/// block, separated by blank lines; `None` when there is neither.
+fn poll_text(items: &[clax_core::FeedbackItem], late: &[String]) -> Option<String> {
+    let mut parts: Vec<String> = Vec::with_capacity(1 + late.len());
+    if !items.is_empty() {
+        parts.push(render_items(items).trim_end().to_string());
+    }
+    parts.extend(late.iter().map(|b| b.trim_end().to_string()));
+    (!parts.is_empty()).then(|| parts.join("\n\n"))
+}
+
 #[derive(Deserialize)]
 pub struct FeedbackQuery {
     #[serde(default)]
@@ -45,9 +90,13 @@ pub struct FeedbackQuery {
     resends: Option<bool>,
 }
 
-/// Returns `{feedback, text, waited_s}` as soon as rows exist for the session
-/// and tier (default `wait`), or after `wait` seconds (capped at 600) with
-/// none. A request dropped while waiting takes nothing (the handler future is
+/// Returns `{feedback, answers, text, waited_s}` as soon as rows exist for
+/// the session and tier (default `wait`) or it has late answers, or after
+/// `wait` seconds (capped at 600) with neither. `answers` holds the views of
+/// the session's answered and declined `ask` questions not yet received,
+/// which the poll marks received, and `text` ends with a block for each
+/// (spec 2026-10-06-agent-questions-and-inbox §6.4); `tier=queue` (the Codex
+/// queue) takes no answers and its `answers` is always empty. A request dropped while waiting takes nothing (the handler future is
 /// dropped with the connection). A drop that lands after the wake, while the
 /// take is running on the blocking pool, still marks the rows handed over, and
 /// in-band tiers acknowledge them; such rows are not resent. `resends=false` leaves out
@@ -60,8 +109,8 @@ pub struct FeedbackQuery {
 /// progress, tier 5 is skipped for the session: `codex queue` does not push
 /// to it ([`crate::push::dispatch`]), and a `tier=inject` poll (the Pi
 /// injection loop) takes nothing and answers empty at once, `{feedback: [],
-/// text: null, waited_s: 0}` (also when it was already waiting and is woken),
-/// so the rows go to the wait poll. The inject poll checks before each take;
+/// answers: [], text: null, waited_s: 0}` (also when it was already waiting and is woken),
+/// so the rows and answers go to the wait poll. The inject poll checks before each take;
 /// a wait poll that starts between that check and the take can lose one hand
 /// over to it.
 ///
@@ -113,32 +162,38 @@ pub async fn poll(
         tokio::pin!(notified);
         notified.as_mut().enable();
         if take.tier == Tier::Inject && s.feedback_waiters.is_waiting(&take.session_id) {
-            return Ok(Json(json!({"feedback": [], "text": null, "waited_s": 0})));
+            return Ok(Json(
+                json!({"feedback": [], "answers": [], "text": null, "waited_s": 0}),
+            ));
         }
         let ctx = s.feedback_ctx();
         let t = take.clone();
-        let items = s
+        let (items, (answers, late)) = s
             .store_call(move |st| {
                 let (items, touched) = st.take_feedback(&t, &ctx.browser_base)?;
                 apply(&ctx, st, &touched);
                 crate::working::renew_for_tier(&ctx, &t.session_id, t.tier);
-                if t.tier != Tier::Queue {
-                    crate::working::mark_items(&ctx, st, &t.session_id, &items)?;
+                if t.tier == Tier::Queue {
+                    return Ok((items, Default::default()));
                 }
-                Ok(items)
+                crate::working::mark_items(&ctx, st, &t.session_id, &items)?;
+                Ok((items, late_answers(st, &t.session_id)?))
             })
             .await?;
-        if !items.is_empty() || Instant::now() >= deadline {
-            let text = (!items.is_empty()).then(|| render_items(&items));
-            return Ok(Json(
-                json!({"feedback": items, "text": text, "waited_s": started.elapsed().as_secs()}),
-            ));
+        if !items.is_empty() || !answers.is_empty() || Instant::now() >= deadline {
+            let text = poll_text(&items, &late);
+            return Ok(Json(json!({
+                "feedback": items,
+                "answers": answers,
+                "text": text,
+                "waited_s": started.elapsed().as_secs(),
+            })));
         }
         tokio::select! {
             _ = &mut notified => {}
             _ = tokio::time::sleep_until(deadline) => {}
             _ = &mut stopping => {
-                return Ok(Json(json!({"feedback": [], "text": null, "waited_s": started.elapsed().as_secs()})));
+                return Ok(Json(json!({"feedback": [], "answers": [], "text": null, "waited_s": started.elapsed().as_secs()})));
             }
         }
     }
@@ -254,4 +309,17 @@ pub async fn ack(
         })
         .await?;
     Ok(Json(json!({"acknowledged": n})))
+}
+
+/// `GET /api/_test/sessions/<sid>/feedback/waiters` (debug builds):
+/// `{count}`, how many `wait_for_feedback` polls of session `sid` are in
+/// progress.
+#[cfg(debug_assertions)]
+pub async fn waiters(
+    State(s): State<AppState>,
+    _t: RequireToken,
+    sid: Result<Path<String>, PathRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let sid = path(sid)?;
+    Ok(Json(json!({"count": s.feedback_waiters.count(&sid)})))
 }

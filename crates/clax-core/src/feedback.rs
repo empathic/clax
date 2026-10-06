@@ -172,12 +172,27 @@ pub fn display_name(raw: &str) -> String {
 /// `s` as a JSON string literal. Beyond what JSON requires, U+0085, U+2028,
 /// and U+2029 are escaped too, so no character inside it can read as a line
 /// break.
-pub(crate) fn quoted(s: &str) -> String {
+pub fn quoted(s: &str) -> String {
     serde_json::to_string(s)
         .expect("strings serialise")
         .replace('\u{85}', "\\u0085")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029")
+}
+
+/// How long before `now` the RFC 3339 time `at` was, as a phrase for an
+/// agent: `just now` under a minute, then `14 min ago`, `3 h ago`, `2 d ago`;
+/// `a while ago` when `at` does not parse.
+pub fn ago(at: &str, now: chrono::DateTime<chrono::Utc>) -> String {
+    let Ok(t) = chrono::DateTime::parse_from_rfc3339(at) else {
+        return "a while ago".to_string();
+    };
+    match (now - t.with_timezone(&chrono::Utc)).num_seconds().max(0) {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3600),
+        s => format!("{} d ago", s / 86_400),
+    }
 }
 
 /// `s` with control characters, U+2028, and U+2029 written as `\uXXXX`, so
@@ -338,6 +353,23 @@ pub fn render_notice(n: &Notice) -> String {
 mod tests {
     use super::*;
     use crate::anchor::Anchor;
+
+    #[test]
+    fn ages_read_as_phrases() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-10-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        for (at, want) in [
+            ("2026-10-06T11:59:30Z", "just now"),
+            ("2026-10-06T12:00:30Z", "just now"),
+            ("2026-10-06T11:46:00Z", "14 min ago"),
+            ("2026-10-06T09:00:00Z", "3 h ago"),
+            ("2026-10-04T11:00:00Z", "2 d ago"),
+            ("yesterday", "a while ago"),
+        ] {
+            assert_eq!(ago(at, now), want, "{at}");
+        }
+    }
 
     fn item() -> FeedbackItem {
         FeedbackItem {

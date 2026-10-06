@@ -52,9 +52,11 @@ pub const GRACE: Duration = Duration::from_secs(60);
 pub const MAX_DETACHED: usize = 4096;
 
 /// A topic a client subscribes to, by name: `gallery`, `artifact:<id>`,
-/// `presence:<id>`, `working:<id>`, `docs:<id>`, and `site:<origin>` (the
+/// `presence:<id>`, `working:<id>`, `docs:<id>`, `site:<origin>` (the
 /// `artifact` events of every live page of a site; spec
-/// 2026-10-05-chrome-overlay-design §9.5).
+/// 2026-10-05-chrome-overlay-design §9.5), and `questions` (every agent
+/// question's changes, for the owner alone; spec
+/// 2026-10-06-agent-questions-and-inbox-design §6.3).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Topic {
     Gallery,
@@ -63,6 +65,7 @@ pub enum Topic {
     Working(String),
     Docs(String),
     Site(String),
+    Questions,
 }
 
 impl Topic {
@@ -75,6 +78,9 @@ impl Topic {
     pub fn parse(s: &str) -> Result<Topic, String> {
         if s == "gallery" {
             return Ok(Topic::Gallery);
+        }
+        if s == "questions" {
+            return Ok(Topic::Questions);
         }
         if let Some(origin) = s.strip_prefix("site:") {
             let normal = clax_core::live::parse_page_url(origin)
@@ -110,13 +116,15 @@ impl Topic {
             Topic::Working(a) => format!("working:{a}"),
             Topic::Docs(a) => format!("docs:{a}"),
             Topic::Site(o) => format!("site:{o}"),
+            Topic::Questions => "questions".into(),
         }
     }
 
-    /// The artifact the topic is about; `None` for the gallery and a site.
+    /// The artifact the topic is about; `None` for the gallery, a site and
+    /// `questions`.
     pub fn artifact(&self) -> Option<&str> {
         match self {
-            Topic::Gallery | Topic::Site(_) => None,
+            Topic::Gallery | Topic::Site(_) | Topic::Questions => None,
             Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) | Topic::Docs(a) => Some(a),
         }
     }
@@ -131,6 +139,7 @@ impl Topic {
             Topic::Presence(a) => vec![Chan::Presence(a.clone())],
             Topic::Working(a) => vec![Chan::Working(a.clone())],
             Topic::Site(o) => vec![Chan::Site(o.clone())],
+            Topic::Questions => vec![Chan::Questions],
             Topic::Docs(a) => {
                 let mut v: Vec<Chan> = [Level::View, Level::Interact, Level::Admin, Level::Owner]
                     .into_iter()
@@ -159,6 +168,8 @@ enum Chan {
     DocsOf(String, String),
     /// The `artifact` channel's events of every live page of an origin.
     Site(String),
+    /// Every question's changes; only owner streams subscribe.
+    Questions,
 }
 
 impl Chan {
@@ -166,6 +177,7 @@ impl Chan {
         match self {
             Chan::Gallery => "gallery".into(),
             Chan::Site(o) => format!("site:{o}"),
+            Chan::Questions => "questions".into(),
             Chan::Artifact(a) => format!("artifact:{a}"),
             Chan::Presence(a) => format!("presence:{a}"),
             Chan::Working(a) => format!("working:{a}"),
@@ -284,12 +296,13 @@ pub enum SubError {
 
 /// Whether a live-only stream (one opened through the extension gateway) may
 /// take topic `t`: an `artifact`, `presence` or `working` topic of a live
-/// page in `live`; never `gallery` or a `docs` topic (spec
+/// page in `live`, a `site` topic, or `questions` (the extension acts as the
+/// owner); never `gallery` or a `docs` topic (spec
 /// 2026-10-05-chrome-overlay-design §9.5).
 pub fn live_only_admits(live: &crate::live::LiveIds, t: &Topic) -> bool {
     match t {
         Topic::Gallery | Topic::Docs(_) => false,
-        Topic::Site(_) => true,
+        Topic::Site(_) | Topic::Questions => true,
         Topic::Artifact(a) | Topic::Presence(a) | Topic::Working(a) => live.contains(a),
     }
 }
@@ -431,8 +444,8 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
-        // Owner-only: no artifact's topic carries it.
-        Event::Question { .. } => vec![],
+        // Only owner streams hold the topic (checked at subscribe time).
+        Event::Question { .. } => vec![(Chan::Questions, Gate::Any)],
         Event::Doc {
             private_to,
             read_level,
@@ -895,12 +908,18 @@ impl Hub {
         }
     }
 
-    /// Whether an owner surface is open: an owner's stream holds the
-    /// `questions` or `inbox` topic (spec 2026-10-06-agent-questions-and-inbox
-    /// §6.3). Those topics do not exist yet, so every surface counts as
-    /// open and a mirrored question waits in Clax.
+    /// Whether an owner surface is open: a stream, attached or detached
+    /// within [`GRACE`], holds the `questions` topic (spec
+    /// 2026-10-06-agent-questions-and-inbox-design §4.4, §6.3). Only owner
+    /// streams may hold it. Reads the topic's channel, which a stream leaves
+    /// only when it unsubscribes or is dropped (a detached one at the sweep,
+    /// done here first), so no stream is scanned.
     pub fn holds_owner_topics(&self) -> bool {
-        true
+        let mut g = self.lock();
+        sweep_locked(&mut g, Instant::now());
+        g.chans
+            .get(&Chan::Questions)
+            .is_some_and(|ch| !ch.subs.is_empty())
     }
 
     /// Drops streams detached for longer than [`GRACE`].
@@ -1602,6 +1621,60 @@ mod tests {
             }
         );
         assert!(!hub.open(c, true, None, Some((&o.id, 0))).resumed);
+    }
+
+    #[test]
+    fn the_questions_topic_parses_and_takes_question_events_alone() {
+        assert_eq!(Topic::parse("questions"), Ok(Topic::Questions));
+        assert_eq!(Topic::Questions.name(), "questions");
+        assert_eq!(Topic::Questions.artifact(), None);
+        assert!(Topic::parse("questions:x").is_err());
+        let live = crate::live::LiveIds::default();
+        assert!(live_only_admits(&live, &Topic::Questions));
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, Some("u_o"));
+        let mut q = hub.open(c.clone(), true, None, None);
+        hub.update(&q.id, &c, &[Topic::Questions], &[]).unwrap();
+        let mut g = hub.open(c.clone(), true, None, None);
+        hub.update(&g.id, &c, &[Topic::Gallery, Topic::Artifact(A.into())], &[])
+            .unwrap();
+        hub.dispatch(&Event::Question {
+            question: json!({"id": "Q1", "status": "open"}),
+        });
+        let got = drain(&mut q);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].1.starts_with("event: question\n"), "{}", got[0].1);
+        assert!(
+            got[0].1.contains(r#""topic":"questions""#) && got[0].1.contains(r#""id":"Q1""#),
+            "{}",
+            got[0].1
+        );
+        assert!(
+            drain(&mut g).is_empty(),
+            "no other topic carries a question"
+        );
+    }
+
+    #[test]
+    fn an_owner_surface_is_open_while_a_stream_holds_questions_and_within_its_grace() {
+        let hub = Hub::new(Default::default());
+        let c = viewer(Level::Owner, Some("u_o"));
+        assert!(!hub.holds_owner_topics());
+        let o = hub.open(c.clone(), true, None, None);
+        hub.update(&o.id, &c, &[Topic::Gallery], &[]).unwrap();
+        assert!(!hub.holds_owner_topics(), "gallery is no owner topic");
+        hub.update(&o.id, &c, &[Topic::Questions], &[]).unwrap();
+        assert!(hub.holds_owner_topics());
+        hub.detach(&o.id, o.epoch);
+        let now = Instant::now();
+        sweep_locked(&mut hub.lock(), now + GRACE - Duration::from_secs(1));
+        assert!(hub.holds_owner_topics(), "detached within the grace");
+        sweep_locked(&mut hub.lock(), now + GRACE + Duration::from_secs(1));
+        assert!(!hub.holds_owner_topics());
+        let o = hub.open(c.clone(), true, None, None);
+        hub.update(&o.id, &c, &[Topic::Questions], &[]).unwrap();
+        hub.update(&o.id, &c, &[], &[Topic::Questions]).unwrap();
+        assert!(!hub.holds_owner_topics(), "unsubscribed");
     }
 
     #[test]

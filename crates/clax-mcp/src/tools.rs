@@ -1236,21 +1236,19 @@ impl ClaxTools {
         Ok(out)
     }
 
-    /// Tier 1: the session's undelivered and resend-eligible feedback, handed
-    /// over by the daemon (and so acknowledged). Empty without a session or
-    /// when the fetch fails; a failed fetch never fails the tool.
-    async fn piggyback(&self) -> (Vec<Value>, Option<String>) {
+    /// Tier 1: the session's undelivered and resend-eligible feedback and
+    /// late answers, handed over by the daemon (and so acknowledged). Empty
+    /// without a session or when the fetch fails; a failed fetch never fails
+    /// the tool.
+    async fn piggyback(&self) -> render::Handover {
         if self.session().is_none() {
-            return (Vec::new(), None);
+            return render::Handover::default();
         }
         match self.client.feedback("piggyback", 0, None).await {
-            Ok(res) => (
-                res["feedback"].as_array().cloned().unwrap_or_default(),
-                res["text"].as_str().map(str::to_string),
-            ),
+            Ok(res) => render::Handover::of(&res),
             Err(e) => {
                 tracing::debug!(error = %e, "piggyback feedback unavailable");
-                (Vec::new(), None)
+                render::Handover::default()
             }
         }
     }
@@ -1259,8 +1257,8 @@ impl ClaxTools {
     async fn finish(&self, o: Outcome) -> Result<CallToolResult, McpError> {
         Ok(match o {
             Ok(v) => {
-                let (feedback, text) = self.piggyback().await;
-                render::success_with(v, feedback, text)
+                let h = self.piggyback().await;
+                render::success_with(v, h)
             }
             Err(e) => e,
         })
@@ -1683,12 +1681,11 @@ impl ClaxTools {
         {
             Err(e) => self.fail(e),
             Ok(res) => {
-                let items = res["feedback"].as_array().cloned().unwrap_or_default();
-                let call_again = items.is_empty();
+                let h = render::Handover::of(&res);
+                let call_again = h.is_empty();
                 render::success_with(
                     json!({"waited_s": res["waited_s"], "call_again": call_again}),
-                    items,
-                    res["text"].as_str().map(str::to_string),
+                    h,
                 )
             }
         }

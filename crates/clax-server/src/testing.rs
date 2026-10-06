@@ -449,6 +449,38 @@ impl TestServer {
 pub struct TestViewer {
     pub cookie: String,
     pub public_id: String,
+    base: String,
+    client: reqwest::Client,
+}
+
+impl TestViewer {
+    /// Opens `/api/stream` with this viewer's cookie and subscribes it to
+    /// `topics`; the status of the subscription request.
+    pub async fn subscribe_status(&self, topics: &[&str]) -> u16 {
+        let cookie = format!("clax_viewer={}", self.cookie);
+        let res = self
+            .client
+            .get(format!("{}/api/stream", self.base))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let mut events = EventReader::from_response(res);
+        let id = events.next_named("ready").await["stream"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        self.client
+            .post(format!("{}/api/stream/{id}", self.base))
+            .header("cookie", &cookie)
+            .json(&serde_json::json!({ "subscribe": topics }))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16()
+    }
 }
 
 impl TestServer {
@@ -478,6 +510,8 @@ impl TestServer {
         TestViewer {
             cookie,
             public_id: v["viewer"]["public_id"].as_str().unwrap().to_string(),
+            base: self.base.clone(),
+            client: self.client.clone(),
         }
     }
 
@@ -572,24 +606,43 @@ impl TestServer {
     }
 }
 
-/// The `question` events of a test daemon's bus ([`TestServer::question_events`]).
-pub struct QuestionTap {
-    rx: tokio::sync::broadcast::Receiver<clax_core::Stamped>,
+/// A paired extension's requests ([`TestServer::extension`]): from its
+/// origin, with its credential, as the extension's service worker sends
+/// them.
+pub struct TestExtension {
+    base: String,
+    client: reqwest::Client,
+    origin: String,
+    credential: String,
 }
 
-impl QuestionTap {
-    /// The next `question` event's view, within 20 s.
-    pub async fn next(&mut self) -> serde_json::Value {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        loop {
-            let got = tokio::time::timeout_at(deadline, self.rx.recv())
-                .await
-                .expect("a question event within 20 s")
-                .expect("the bus is open and kept up");
-            if let clax_core::Event::Question { question } = got.event {
-                return question;
-            }
-        }
+impl TestExtension {
+    fn request(&self, m: reqwest::Method, path: &str) -> reqwest::RequestBuilder {
+        self.client
+            .request(m, format!("{}{path}", self.base))
+            .header("origin", &self.origin)
+            .header("sec-fetch-site", "cross-site")
+            .header(
+                "authorization",
+                format!("Clax-Extension {}", self.credential),
+            )
+    }
+
+    /// `GET <path>` as the extension.
+    pub async fn get(&self, path: &str) -> reqwest::Response {
+        self.request(reqwest::Method::GET, path)
+            .send()
+            .await
+            .unwrap()
+    }
+
+    /// `POST <path>` with JSON `body` as the extension.
+    pub async fn post(&self, path: &str, body: serde_json::Value) -> reqwest::Response {
+        self.request(reqwest::Method::POST, path)
+            .json(&body)
+            .send()
+            .await
+            .unwrap()
     }
 }
 
@@ -612,14 +665,98 @@ impl TestServer {
         assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
     }
 
-    /// Answers question `qid` as the owner through the shell.
+    /// Answers question `qid` as the owner through the shell: `POST
+    /// /api/questions/<qid>/answer` with the owner cookie.
     pub async fn answer_question_raw(
         &self,
         qid: &str,
         body: serde_json::Value,
     ) -> reqwest::Response {
-        self.post_json(&format!("/api/_test/questions/{qid}/answer"), body)
+        self.client
+            .post(format!("{}/api/questions/{qid}/answer", self.base))
+            .header("cookie", self.owner_cookie())
+            .json(&body)
+            .send()
             .await
+            .unwrap()
+    }
+
+    /// Opens `/api/stream` as a browser of the owner's (the owner cookie)
+    /// and subscribes it to `topics`; a reader past nothing yet. While the
+    /// reader is held, or for the hub's grace after, an owner surface is
+    /// open.
+    pub async fn stream_as_owner(&self, topics: &[&str]) -> EventReader {
+        let res = self
+            .client
+            .get(format!("{}/api/stream", self.base))
+            .header("cookie", self.owner_cookie())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let mut events = EventReader::from_response(res);
+        let id = events.next_named("ready").await["stream"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let res = self
+            .client
+            .post(format!("{}/api/stream/{id}", self.base))
+            .header("cookie", self.owner_cookie())
+            .json(&serde_json::json!({ "subscribe": topics }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+        events
+    }
+
+    /// How many `wait_for_feedback` polls of session `sid` are in progress.
+    pub async fn feedback_waiters(&self, sid: &str) -> u64 {
+        let v: serde_json::Value = self
+            .get_authed(&format!("/api/_test/sessions/{sid}/feedback/waiters"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        v["count"].as_u64().expect("a count")
+    }
+
+    /// Returns once `n` `wait_for_feedback` polls of session `sid` are in
+    /// progress; panics after 5 s.
+    pub async fn wait_feedback_waiters(&self, sid: &str, n: u64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while self.feedback_waiters(sid).await != n {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{n} feedback polls of {sid} within 5 s"
+            );
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// A paired extension: a fresh credential for this server's extension
+    /// ID, whose requests come from the extension's origin.
+    pub async fn extension(&self) -> TestExtension {
+        let v: serde_json::Value = self
+            .authed(
+                self.client
+                    .post(format!("{}/api/extension/credentials", self.base)),
+            )
+            .json(&serde_json::json!({"extension_id": self.extension_id}))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        TestExtension {
+            base: self.base.clone(),
+            client: self.client.clone(),
+            origin: clax_core::extension::extension_origin(&self.extension_id),
+            credential: v["credential"].as_str().expect("a credential").to_string(),
+        }
     }
 
     /// Question `qid`'s stored status.
@@ -668,13 +805,6 @@ impl TestServer {
             );
             tokio::task::yield_now().await;
             tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    }
-
-    /// A tap on this daemon's `question` events from now on.
-    pub fn question_events(&self) -> QuestionTap {
-        QuestionTap {
-            rx: self.events.subscribe(),
         }
     }
 }
