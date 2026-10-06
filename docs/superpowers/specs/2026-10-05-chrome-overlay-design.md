@@ -602,15 +602,16 @@ manifest edited by hand.
 
 ### 9.2 Extension ↔ daemon
 
-Every request from the worker carries `Origin: chrome-extension://<ID>`
-(added by Chrome) and `Authorization: Clax-Extension <credential>`, with
-`credentials: "omit"`. (Found in Task 16's browser test: Chrome sends no
-`Origin` on the worker's GETs when the extension holds a host permission
-for the daemon's origin, as `<all_urls>` or "On all sites" gives it, and
-marks them `Sec-Fetch-Site: none`, which no web page can send. The gateway
-counts a request with the credential, no `Origin` and `Sec-Fetch-Site:
-none` as the extension's; any other request with the credential and no
-`Origin` is still 403 `forbidden_origin`.) New routes (viewer routes: no token):
+Every request from the worker carries `Authorization: Clax-Extension
+<credential>`, with `credentials: "omit"`, and `Origin:
+chrome-extension://<ID>` (added by Chrome), except a GET while the
+extension holds a host permission for the daemon's origin (`<all_urls>`, or
+"On all sites" in chrome://extensions): Chrome sends that one without
+`Origin`, marked `Sec-Fetch-Site: none`, which no web page can send. The
+gateway counts a request with the credential, no `Origin` and
+`Sec-Fetch-Site: none` as the extension's; any other request with the
+credential and no `Origin` is 403 `forbidden_origin`. (Ruling 2026-10-05,
+from the browser test.) New routes (viewer routes: no token):
 
 - `GET /api/live/pages?url=<page URL>` → `{page: {artifact_id, origin,
   path, route, title, current_version, url} | null, route}`. Never creates.
@@ -787,7 +788,30 @@ What is protected, from whom:
    extension frames. The page can see that a `<clax-overlay>` element exists
    (so it can tell Clax is on) and its size, and can remove it; removal is
    detected by a MutationObserver and the host is re-added once, then the
-   overlay gives up and says so in the panel.
+   overlay gives up and says so in the panel. While the overlay draws, a page
+   script can also observe (checked in Chromium by the browser test where
+   marked):
+   - **Pin positions.** Pins take the pointer, so hit testing
+     (`elementFromPoint`, or where its own pointer events stop arriving)
+     finds the host at each pin; it learns where pins are, never their
+     threads or text.
+   - **The cursor.** Comment mode draws its outline in a closed root, but
+     the page hears its own pointer events as ever, so it knows where the
+     person points; it cannot tell which element comment mode outlines.
+   - **The capture moment** (checked). The host's `style` attribute gains
+     `visibility: hidden` for the two frames of the screenshot, then loses
+     it; a MutationObserver on the host sees both.
+   - **Focus during compose** (checked). The composer frame takes focus:
+     the page sees its window blur and `document.activeElement` become the
+     host; the keys typed reach the composer, never the page. The frame is
+     not in the page's `window.frames` (checked), and a page cannot frame
+     `composer.html` itself (`use_dynamic_url`; checked: Chrome refuses it).
+   - **A modal dialog** (checked). While the page has a modal `<dialog>`
+     open, the rest of the page is inert, the overlay's host with it: the
+     dialog's backdrop takes the pointer over pins and the composer. A pick
+     inside the dialog still opens the composer, which has focus, so typing
+     and the composer's submit shortcut work; its buttons cannot be
+     clicked until the dialog closes.
 5. **Snapshots** are page content: hostile and possibly personal. Sanitized in
    the extension (§8.2: no scripts, no handlers, no form values, no hidden
    inputs); served with the script-blocking policy (§8.4); visible only on
@@ -821,7 +845,8 @@ What is protected, from whom:
 |---|---|
 | Native host not registered (plugin-only install, `clax init` never run) | `sendNativeMessage` fails with "Specified native messaging host not found"; the panel says "Run `clax init` (or /clax:extension in Claude Code), then reload" with a copy button. |
 | Daemon cannot start | The host answers `daemon_unavailable` with the log path; the panel shows it and a Retry button. |
-| Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once. |
+| Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
+| Extension updated or reloaded | Chrome drops the registered loaders; the worker registers each enabled origin's loader again at its next start, while the origin's permission is held. |
 | Worker stopped by Chrome mid-stream | Resumed by the next event; stream resumes with `Last-Event-ID` or refetches (§9.5). |
 | Extension files older than the daemon | On pairing, `clax_version` differs from the manifest's version: the worker calls `chrome.runtime.reload()` once for that version (remembered in `storage.local`). |
 | No `activeTab` at a pick | Posted without a clip (§8.1), with the reason in the composer. |
@@ -870,15 +895,23 @@ What is protected, from whom:
   rewriting, CSSOM text, shadow roots, caps); message validators; the
   worker's pairing and re-pair logic and origin enablement against a fake
   `chrome`; route matching and the re-resolution scheduler.
-- **Playwright**: Chromium with the unpacked test build (`--load-extension`,
+- **Playwright** (`web/e2e/chrome-overlay.spec.ts`): Chromium with the
+  unpacked test build loaded from `<home>/extension` (`--load-extension`,
   persistent context), the native host registered in the profile's
-  `NativeMessagingHosts`, a real daemon, and a real Vite dev server serving a
-  fixture app: enable, pick, comment, screenshot and snapshot stored, side
-  panel shows it, send, an agent session (`watch` with the URL through the
-  shim) receives it, HMR moves and then removes the element (pin follows,
-  then Detached), `addressed: true` reply links on the auto snapshot, the
-  shell shows the live page in the gallery and the snapshot with its pin,
-  and the shell's viewer is the same owner viewer the extension paired as.
+  `NativeMessagingHosts` by `clax extension install` (with
+  `CLAX_NATIVE_HOST_DIRS`), a real daemon, and a real Vite dev server serving
+  a fixture app: Chromium's ID equals the daemon's and the CLI's, enable,
+  pick, comment, screenshot and snapshot stored, Chrome's own side panel
+  (opened by `chrome.sidePanel.open` under a real click, driven over CDP)
+  shows it, send, an agent session watching the URL receives it, HMR moves
+  and then removes the element (pin follows, then Detached), `addressed:
+  true` reply links on the auto snapshot, the shell shows the live page in
+  the gallery and the snapshot with its pin, and the shell's viewer is the
+  same owner viewer the extension paired as. Also: Retry after the daemon
+  restarts on another port; the loader and overlay after a browser restart;
+  and, with only the dev server's origin held, a route change keeping
+  comment mode, the capture moment, focus and `window.frames`, a post with
+  no screenshot, a composer frame loaded again, and a modal dialog.
 - The test build differs from the release build only in
   `host_permissions: ["<all_urls>"]` (so capture and injection need no
   gesture Playwright cannot give) and a test hook on the worker that stands

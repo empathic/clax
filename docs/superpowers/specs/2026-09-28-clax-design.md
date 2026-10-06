@@ -73,6 +73,7 @@ Each decision has a one-line rationale. Contested ones are also listed in
 | D16 | A person installs only a plugin. Every plugin runs the same `clax`, through one wrapper (`scripts/ensure-clax.sh`, copied into each plugin, Pi's included): `$CLAX_BIN`, else the `bin` setting in the Clax home's `config.toml` (`clax bin set`; `clax init` sets it to itself, so `just install` drives the plugins with the checkout's build), else the release the plugin pins, downloaded into `<home>/bin/<version>/` on first use and checked against the SHA256 the plugin embeds. `PATH` is never consulted. `scripts/pin-release.sh` pins a published release; a gate keeps the pin at the newest `v*` tag. `just dev <harness>` names a fresh build in `CLAX_BIN`, on `~/.clax-dev` and port 7481, with the plugin loaded from the checkout for Claude Code and Pi (Codex runs its installed plugin; `just install` updates it); `install.sh` serves people who want `clax` on `PATH` | One download and one daemon serve every harness, whichever starts first; the binary a plugin runs is the one its skills were checked against, verified before every run; the owner's checkout build still drives the plugins; a tampered release is refused at download. |
 | D17 | Grok Build is a fourth harness, served by a separate plugin, `clax-grok`, whose MCP server is named `clax_grok`; it gets tiers 1, 2, 4 and 5, tier 5 being notices from `clax feedback follow` under Grok's agent-started `monitor` tool, which wake the session and deliver nothing. Grok also loads the Claude Code plugin, so in a Grok session only `--agent grok` acts: the Claude Code copy stands down (its hooks exit 0 silently; its MCP server offers one `status` tool naming clax-grok), detected by `GROK_HOOK_EVENT` for hooks and by `GROK_SESSION_ID` with a `CLAUDE_PID` that is not the server's parent for MCP | Grok discovers Claude Code plugins and keeps only the first MCP server of a name, so a shared plugin or server name would let one copy shadow the other; deciding by harness rather than by start order gives one acting copy in every combination. |
 | D18 | Claude Code's tier 5 is a notice, not a delivery: a Claude Code channel event from the shim when the session was launched with the channel (`--dangerously-load-development-channels plugin:clax@<marketplace>`), else a background `clax feedback follow --once` that the skill starts after a publish. The shim never declares permission relay | Channels are the only way a third-party plugin can start a turn in an idle Claude Code session, but they are a research preview behind a launch flag. The background command works in every session. A notice that points at a comment cannot double-deliver it. Commenters must never approve tool use |
+| D19 | Chrome overlay: comment on any page; see `2026-10-05-chrome-overlay-design.md` | People review running apps (a dev server), not only published pages; live pages, the extension, its native host and its gateway are specified there. |
 | D-Echo | The shell's look is Echo, and the agent working signal, the version changelog and batch send are built in it, as recorded in `2026-10-01-echo-design.md`: comment threads with version-tagged history and no turns; gallery cards without thumbnails (Q1); a theme switch that returns to the system (Q2); @mentions by whole display name (Q3); looking at a thread clears it, while the Addressed group holds still until the view is decided again (Q4); presence kept in memory, with the location from the selected thread (Q5); keys only while focus is in the shell (Q6); each person's last viewed version public, their per-thread marks private (Q7); agents named by harness, with no publishing state (Q8); rally of 10 at v10 only (Q9); any viewer may resolve (Q10); the returning viewer's summary in the top bar (Q11); the version bands moved into the top bar (Q12); a send reaching only the agent it names (§10). | The artifact stays the star: nothing covers or moves it, people and agents keep fixed colours and places, and every screen shows the threads from the viewer's own point of view. |
 
 ## 3. Architecture
@@ -136,7 +137,12 @@ crates/
 web/
   shell/                           Svelte 5 (runes) + TypeScript, Vite SPA: gallery, artifact shell, comment sidebar
   bridge/                          vanilla TypeScript: window.claude.use, comment mode, clips
+  extension/                       the Clax Chrome extension (MV3): worker, loader, overlay, composer,
+                                   side panel (built to dist-extension/, embedded into clax-cli;
+                                   dist-extension-test/ is the browser tests' build)
   contract/                        the .d.ts files pages are written against (copied from claude.ai 0.2.61)
+  e2e/                             Playwright tests; chrome-overlay.spec.ts with extension-fixtures.ts and
+                                   live-site/ (the Vite dev-server app the extension is tested on)
   dist/                            built assets, embedded into clax-server via rust-embed
 plugins/
   claude-code/                     .claude-plugin/plugin.json, .mcp.json, hooks/, skills/, commands/, scripts/
@@ -2321,6 +2327,21 @@ Verified against `@mariozechner/pi-coding-agent` 0.73.1:
   `web/e2e/pages/`, written for claude.ai's contract 0.2.61, unchanged in
   both frame modes; `scripts/smoke-capabilities.sh` checks the capabilities
   end to end against a scratch daemon (not a quality gate).
+- **Chrome overlay** (D19): `web/e2e/chrome-overlay.spec.ts` runs the
+  extension's test build in Chromium against a real daemon, the native host
+  `clax extension install` registers in the test profile, and a real Vite
+  dev server (`web/e2e/live-site/`): pick, screenshot, sanitized snapshot,
+  Chrome's own side panel, send, agent feedback, hot update and detach, the
+  addressed snapshot, gallery and snapshot view, Retry after a daemon
+  restart, the loader after a browser restart, and, with only the dev
+  server's origin held, route changes, focus, a post with no screenshot,
+  the composer frame loaded again and a modal dialog. The extension's
+  worker, overlay, serializer, composer and panel have Vitest suites
+  against a fake `chrome` (`web/extension/test/fake-chrome.ts`); the gateway,
+  live pages, credentials and native host have Rust suites
+  (`crates/clax-server/tests/api_gateway.rs`, `api_live*.rs`,
+  `crates/clax-cli/tests/native_host.rs`). `docs/verification.md` ("Clax in
+  Chrome") lists what only a person can check.
 - **Plugins**: shell tests for `ensure-clax.sh` against
   `scripts/fake-release-server.py` (each resolution step, the `bin` line
   forms, a checksum mismatch, a damaged install, concurrent installs,

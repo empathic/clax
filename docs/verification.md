@@ -587,6 +587,138 @@ on `darwin-arm64` where budgets are enforced (`web/perf/budget.json`,
 These are loopback numbers on one machine. No LAN measurement exists, and the
 daemon does not compress responses (6.5).
 
+## 8. Clax in Chrome
+
+The Chrome overlay (spec `docs/superpowers/specs/2026-10-05-chrome-overlay-design.md`,
+main spec D19), on branch `chrome-overlay`. Machine as above: macOS 26.6.2,
+arm64, Node v26.8.2; Playwright 1.63.0 with its Chromium 153.0.8010.12
+(`channel: "chromium"`, new headless).
+
+### 8.1 How a person sets it up
+
+```
+clax init                       # writes ~/.clax/extension and the native host
+                                # manifests for Chrome, Chromium, Brave and Edge
+# chrome://extensions → Developer mode → Load unpacked → ~/.clax/extension
+clax extension status --json    # extension_id, files, launcher, each browser's manifest
+```
+
+### 8.2 What the browser test ran
+
+Command: `cd web && npm run build && npx playwright test e2e/chrome-overlay.spec.ts`
+(it also runs inside the web e2e lane of `scripts/quality_gates.sh`). Each
+test has its own daemon (scratch `CLAX_HOME`, port 0), its own Vite dev
+server on a copy of `web/e2e/live-site/`, and its own Chromium profile.
+`clax extension install` registers the native host into that profile's
+`NativeMessagingHosts` (`CLAX_NATIVE_HOST_DIRS=chromium=<profile>/NativeMessagingHosts`),
+the test build of the extension replaces the release files in
+`<home>/extension`, and Chromium loads it from there. Chromium does read the
+host manifest from a profile given as `--user-data-dir`, and runs the
+installed `host/launch.sh` → `host/ensure-clax.sh` → `clax native-host`
+(the `bin` setting names this run's binary): the fallback in the plan (pairing
+through the test hook) was not needed. Six tests, all passing:
+
+1. **The whole loop.** Chromium's own ID for `<home>/extension` equals the
+   daemon's (`GET /api/extension`) and the CLI's (`clax extension status
+   --json`). An agent session watches the dev server URL. The worker's hook
+   (standing in for the toolbar icon) turns comment mode on; a page script
+   finds no shadow root; a click on the page's button opens the composer
+   frame; the post stores the thread with its clip and a snapshot that has
+   the button and no `<script>`, `onload`, password value or hidden input.
+   Chrome's own side panel (opened by `chrome.sidePanel.open` under a real
+   click in an extension page, then driven over CDP, as Playwright does not
+   list it) shows the thread and sends it; the session's feedback carries
+   `live page <url>` and `Snapshot:`. Editing `main.js` makes Vite hot-update
+   the page: the pin follows the relabelled button, then the thread goes to
+   Detached when the button is removed. The agent's `addressed: true` reply
+   shows in the panel, and the overlay's quiet snapshot links it. The shell's
+   gallery shows the Live chip, the shell's viewer is the extension's owner
+   viewer, and the snapshot view shows the thread with Comment disabled.
+   Reported, not judged: icon → comment mode on 9–33 ms; pick → composer
+   142–253 ms.
+2. **Daemon restarted on another port.** The pairing names the old port; the
+   panel shows `daemon_unreachable` with Retry; Retry pairs again with the new
+   daemon and the error clears.
+3. **Browser restart.** With the origin enabled and a thread on the page,
+   Chromium is closed and started on the same profile; the registered loader
+   greets the worker with no gesture, and the overlay comes back and resolves
+   the thread's anchor, comment mode off.
+4. With only the dev server's origin held (the release build's state once a
+   person allows a site; the test build with `host_permissions` narrowed):
+   a `history.pushState` route change keeps the overlay and comment mode
+   (Chrome reports it to `tabs.onUpdated` as `loading`, then `complete`); a
+   page's MutationObserver sees the host hide for the screenshot and show
+   again; the composer takes focus (the page sees `blur` and
+   `document.activeElement` = `CLAX-OVERLAY`, and typed keys reach the
+   composer); `window.frames.length` is 0; the post has no clip
+   (`captureVisibleTab` needs `activeTab` or `<all_urls>`, spec L8); and the
+   page's own iframe of `chrome-extension://<ID>/composer.html` is refused
+   (`chrome-error://`).
+5. A composer frame loaded a second time (a navigation over CDP: the page
+   cannot reach the frame) is closed, its pick cancelled, nothing posted,
+   and comment mode stays on.
+6. Under a page's modal `<dialog>`, a pick inside the dialog opens the
+   composer, which has focus and takes the keys, and its submit shortcut
+   posts; the dialog's backdrop is on top at the composer's centre
+   (`elementFromPoint` → `DIALOG`), so its buttons cannot be clicked while
+   the dialog is open (spec §10.4).
+
+Found by this test and fixed, each with a regression test:
+
+- Chrome sends no `Origin` on the worker's GETs when the extension holds a
+  host permission for the daemon's origin (`<all_urls>`, or "On all sites"),
+  marking them `Sec-Fetch-Site: none`; the gateway refused them all with
+  `forbidden_origin`, so no page could be looked up. The gateway now counts
+  a credential with no `Origin` and `Sec-Fetch-Site: none` as the
+  extension's (`crates/clax-server/tests/api_gateway.rs`,
+  `a_credential_without_origin_is_the_extensions_only_when_the_browser_says_none`).
+- Registered loaders were gone after the browser restart (Chromium drops
+  registered content scripts when an extension is updated or reloaded, and
+  did so here across a restart with `--load-extension`), while the origin
+  record stayed; the worker now registers them again at each start
+  (`web/extension/src/sw/origins.test.ts`, and test 3 above).
+- Retry after `daemon_unreachable` did not pair again, so within 10 s of the
+  last pairing a daemon restart could not be recovered from the panel;
+  Retry now pairs again for it (`web/extension/src/sw/panel.test.ts`, and
+  test 2 above).
+
+### 8.3 Not exercised; only a person can check
+
+- The toolbar icon, its permission prompt and the per-origin grant (the
+  test build holds `<all_urls>` or a fixed origin; the worker's test hook
+  stands in for the click). `activeTab` lapsing on navigation.
+- The side panel opened by the icon (the test opens Chrome's real side
+  panel, but through `chrome.sidePanel.open` from an extension page).
+- Alt+Shift+C and the page's context menu entry.
+- Chrome stable, Brave and Edge: host registration on macOS and Linux, and
+  Load unpacked of `~/.clax/extension` by a person (only Playwright's
+  Chromium ran, on macOS).
+- An agent in a real Claude Code or Codex session watching a dev server
+  through the MCP `watch` tool (the test registers the session and its watch
+  over HTTP).
+- The self-reload after `clax init` installs a newer extension, and the
+  overlay's re-injection beside an orphaned one after an extension reload:
+  in Playwright's Chromium, `chrome.runtime.reload()` of an extension loaded
+  with `--load-extension` unloads it (its pages answer
+  `ERR_BLOCKED_BY_CLIENT` and no worker starts), with or without
+  `--disable-extensions-except`, and with `Extensions.loadUnpacked` the
+  worker never started; so neither was run.
+- The shell and the side panel sharing the owner's marks by hand (read a
+  thread in one; it is not new in the other).
+- Pins found by hit testing, and the cursor, as spec §10.4 says a page can
+  observe them (not measured).
+
+### 8.4 The owner's steps outside Clax
+
+Both scripts are specified in spec §6.7 and are not in the repository yet.
+
+- Create the extension's key in 1Password, run `scripts/extension-pubkey.sh`
+  and commit `web/extension/key/key.pub.b64`. The extension's ID then becomes
+  the key's, once: each person loads it unpacked again, and `clax init`
+  writes the new host registration (spec L15).
+- Upload to the Chrome Web Store with `scripts/pack-extension.sh
+  --first-upload` (spec L15, §6.7). CI never signs.
+
 ## Appendix A: the browser-and-shim loop script
 
 The script behind section 2.2, kept here so the run can be repeated. Save it
