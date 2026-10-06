@@ -1,11 +1,11 @@
 //! Live pages over HTTP (spec 2026-10-05-chrome-overlay-design §7, §8, §9.2,
 //! L10): lookup, a comment with its snapshot, the views, the publish
-//! refusal, the snapshot policy, and hiding live pages from the LAN.
+//! refusal, the snapshot policy, and hiding live pages from the LAN (whose
+//! requests arrive through [`TestServer::lan`], so they run on any machine).
 mod common;
 use clax_server::testing::FAKE_PNG;
 use common::TestServer;
 use serde_json::{Value, json};
-use std::net::{IpAddr, UdpSocket};
 
 fn anchor() -> String {
     json!({"kind": "element", "selector": "main > button", "quote": "Save", "file": "index.html"})
@@ -65,21 +65,6 @@ async fn post_thread(
     snapshot: &str,
 ) -> reqwest::Response {
     post_thread_titled(ts, cookie, url, "Settings", snapshot).await
-}
-
-/// A non-loopback IPv4 address of this machine (see `api_host.rs`).
-fn non_loopback_ipv4() -> Option<IpAddr> {
-    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("10.255.255.255:1").ok()?;
-    let ip = sock.local_addr().ok()?.ip();
-    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
-}
-
-/// The test daemon's base URL on a non-loopback interface address, when the
-/// machine has one and the daemon listens on every interface.
-fn lan_base(ts: &TestServer) -> Option<String> {
-    let ip = non_loopback_ipv4()?;
-    Some(format!("http://{ip}:{}", ts.addr.port()))
 }
 
 #[tokio::test]
@@ -392,10 +377,7 @@ async fn snapshots_are_served_with_a_policy_that_runs_only_claxs_scripts() {
 #[tokio::test]
 async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let Some(lan) = lan_base(&ts) else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -405,8 +387,7 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
     let aid = body["page"]["artifact_id"].as_str().unwrap();
     let html = ts.publish("T", &[("index.html", "<p>")]).await;
     let html_id = html["artifact"]["id"].as_str().unwrap();
-    let list: Value = ts
-        .client
+    let list: Value = lc
         .get(format!("{lan}/api/artifacts"))
         .send()
         .await
@@ -428,8 +409,7 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
         format!("/c/{aid}/v/1/"),
         format!("/a/{aid}"),
     ] {
-        let st = ts
-            .client
+        let st = lc
             .get(format!("{lan}{path}"))
             .send()
             .await
@@ -438,8 +418,7 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
         assert_eq!(st, 404, "{path}");
     }
     // The live-page routes themselves are not there for the LAN.
-    let st = ts
-        .client
+    let st = lc
         .get(format!(
             "{lan}/api/live/pages?url=http%3A%2F%2Flocalhost%3A5173%2F"
         ))
@@ -453,8 +432,7 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
         .text("anchor", anchor())
         .text("body", "x")
         .text("snapshot", "<p>");
-    let st = ts
-        .client
+    let st = lc
         .post(format!("{lan}/api/live/threads"))
         .multipart(form)
         .send()
@@ -463,8 +441,7 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
         .status();
     assert_eq!(st, 404);
     // An HTML artifact stays visible from the LAN.
-    let st = ts
-        .client
+    let st = lc
         .get(format!("{lan}/api/artifacts/{html_id}"))
         .send()
         .await
@@ -474,14 +451,14 @@ async fn live_pages_are_hidden_from_lan_callers_without_the_token() {
     // Loopback, and the token from the LAN, still see it.
     assert_eq!(ts.get(&format!("/api/artifacts/{aid}")).await.status(), 200);
     let st = ts
-        .authed(ts.client.get(format!("{lan}/api/artifacts/{aid}")))
+        .authed(lc.get(format!("{lan}/api/artifacts/{aid}")))
         .send()
         .await
         .unwrap()
         .status();
     assert_eq!(st, 200);
     let list: Value = ts
-        .authed(ts.client.get(format!("{lan}/api/artifacts")))
+        .authed(lc.get(format!("{lan}/api/artifacts")))
         .send()
         .await
         .unwrap()
@@ -574,17 +551,9 @@ async fn next_event(
 #[tokio::test]
 async fn the_event_stream_carries_no_live_page_event_to_the_lan() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let Some(lan) = lan_base(&ts) else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
-    let res = ts
-        .client
-        .get(format!("{lan}/api/events"))
-        .send()
-        .await
-        .unwrap();
+    let res = lc.get(format!("{lan}/api/events")).send().await.unwrap();
     assert_eq!(res.status(), 200);
     let mut far = Box::pin(res.bytes_stream());
     let res = ts
@@ -626,10 +595,7 @@ fn encoded(aid: &str) -> String {
 #[tokio::test]
 async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let Some(lan) = lan_base(&ts) else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -640,7 +606,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
     let tid = body["thread"]["id"].as_str().unwrap();
     let enc = encoded(aid);
     let get = |path: String| {
-        let req = ts.client.get(format!("{lan}{path}"));
+        let req = lc.get(format!("{lan}{path}"));
         async move { req.send().await.unwrap().status() }
     };
     // Percent-encoded IDs, and the clip.
@@ -664,8 +630,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
         assert_eq!(ts.get(&path).await.status(), 200, "{path}");
     }
     // `?artifact=` of the list.
-    let list: Value = ts
-        .client
+    let list: Value = lc
         .get(format!("{lan}/api/artifacts?artifact={aid}"))
         .send()
         .await
@@ -675,8 +640,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
         .unwrap();
     assert_eq!(list["artifacts"], json!([]));
     // The artifact host, sent to the LAN address.
-    let st = ts
-        .client
+    let st = lc
         .get(format!("{lan}/v/1/"))
         .header("host", format!("{aid}.localhost:{}", ts.addr.port()))
         .send()
@@ -685,12 +649,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
         .status();
     assert_eq!(st, 404);
     // A stream opened from the LAN cannot subscribe to the page's topics.
-    let res = ts
-        .client
-        .get(format!("{lan}/api/stream"))
-        .send()
-        .await
-        .unwrap();
+    let res = lc.get(format!("{lan}/api/stream")).send().await.unwrap();
     assert_eq!(res.status(), 200);
     let mut stream = Box::pin(res.bytes_stream());
     let mut buf = String::new();
@@ -698,8 +657,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
     assert_eq!(name, "ready");
     let sid = ready["stream"].as_str().unwrap();
     for topic in ["artifact", "working", "presence", "docs"] {
-        let res = ts
-            .client
+        let res = lc
             .post(format!("{lan}/api/stream/{sid}"))
             .json(&json!({"subscribe": [format!("{topic}:{aid}")]}))
             .send()
@@ -712,10 +670,7 @@ async fn live_pages_stay_hidden_from_the_lan_whatever_form_the_request_takes() {
 #[tokio::test]
 async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let Some(lan) = lan_base(&ts) else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -740,8 +695,7 @@ async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
         .await
         .unwrap();
     assert!(near["artifacts"].get(aid).is_some(), "{near}");
-    let far: Value = ts
-        .client
+    let far: Value = lc
         .get(format!("{lan}/api/viewers/me/attention"))
         .header("cookie", &cookie)
         .send()
@@ -752,16 +706,14 @@ async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
         .unwrap();
     assert!(far["artifacts"].get(aid).is_none(), "{far}");
     assert!(far["artifacts"].get(html_id).is_some(), "{far}");
-    let res = ts
-        .client
+    let res = lc
         .get(format!("{lan}/api/viewers/me/attention?artifact={aid}"))
         .header("cookie", &cookie)
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 404);
-    let res = ts
-        .client
+    let res = lc
         .get(format!("{lan}/api/viewers/me/seen?artifact={aid}"))
         .header("cookie", &cookie)
         .send()
@@ -782,8 +734,7 @@ async fn a_lan_viewer_learns_nothing_of_live_pages_through_the_viewer_routes() {
             json!({"artifact_id": aid, "state": "here"}),
         ),
     ] {
-        let res = ts
-            .client
+        let res = lc
             .put(format!("{lan}{path}"))
             .header("cookie", &cookie)
             .json(&body)
@@ -1119,10 +1070,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
     })
     .await;
     let store = store.unwrap();
-    let Some(lan) = lan_base(&ts) else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let v = ts.viewer(Some("Alex")).await;
     let body: Value = post_thread(&ts, &v.cookie, "http://localhost:5173/", "<p>")
         .await
@@ -1140,11 +1088,11 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         )
         .unwrap();
     let blob = format!("/_blob/{}", asset.id);
-    let lan_get = |path: String| ts.client.get(format!("{lan}{path}")).send();
+    let lan_get = |path: String| lc.get(format!("{lan}{path}")).send();
     assert_eq!(lan_get(blob.clone()).await.unwrap().status(), 404);
     assert_eq!(ts.get(&blob).await.status(), 200, "loopback sees it");
     let st = ts
-        .authed(ts.client.get(format!("{lan}{blob}")))
+        .authed(lc.get(format!("{lan}{blob}")))
         .send()
         .await
         .unwrap()
@@ -1154,8 +1102,7 @@ async fn a_live_pages_blobs_and_snapshots_route_are_hidden_from_the_lan() {
         .text("url", "http://localhost:5173/")
         .text("pending", "[]")
         .text("snapshot", "<p>");
-    let st = ts
-        .client
+    let st = lc
         .post(format!("{lan}/api/live/snapshots"))
         .multipart(form)
         .send()

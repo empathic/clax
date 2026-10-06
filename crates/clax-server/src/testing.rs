@@ -9,6 +9,38 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
+/// The header that makes a test daemon take a request as arriving from
+/// another machine on the LAN ([`TestServer::lan`]).
+pub const LAN_HEADER: &str = "x-clax-test-lan";
+/// The LAN peer a request with [`LAN_HEADER`] arrives from.
+pub const LAN_PEER: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 7);
+/// The daemon's LAN interface address a request with [`LAN_HEADER`]
+/// arrives on.
+pub const LAN_LOCAL: Ipv4Addr = Ipv4Addr::new(192, 0, 2, 1);
+
+/// Rewrites the connection of a request carrying [`LAN_HEADER`] to one from
+/// [`LAN_PEER`] to [`LAN_LOCAL`] (ports kept), so tests of the LAN rules run
+/// on every machine, whatever interfaces it has.
+async fn as_lan(
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.headers().contains_key(LAN_HEADER) {
+        let conn = req
+            .extensions()
+            .get::<axum::extract::ConnectInfo<crate::auth::Conn>>()
+            .map(|c| c.0);
+        if let Some(c) = conn {
+            req.extensions_mut()
+                .insert(axum::extract::ConnectInfo(crate::auth::Conn {
+                    peer: SocketAddr::new(IpAddr::V4(LAN_PEER), c.peer.port()),
+                    local: SocketAddr::new(IpAddr::V4(LAN_LOCAL), c.local.port()),
+                }));
+        }
+    }
+    next.run(req).await
+}
+
 /// A running test daemon with its own temporary home and the fixed token `test-token`.
 pub struct TestServer {
     pub base: String,
@@ -88,7 +120,7 @@ impl TestServer {
         let working = state.working.clone();
         let presence = state.presence.clone();
         let extension_id = state.extension_id.clone();
-        let app = build_router(state);
+        let app = build_router(state).layer(axum::middleware::from_fn(as_lan));
         tokio::spawn(async move {
             axum::serve(
                 listener,
@@ -109,6 +141,24 @@ impl TestServer {
             extension_id,
             _dir: dir,
         }
+    }
+
+    /// A client whose requests reach this daemon as from another machine on
+    /// the LAN (peer [`LAN_PEER`], arriving on [`LAN_LOCAL`] with that
+    /// address as their `Host`), and the base URL to send them to. A request
+    /// may still set its own `Host`.
+    pub fn lan(&self) -> (reqwest::Client, String) {
+        let mut h = reqwest::header::HeaderMap::new();
+        h.insert(LAN_HEADER, reqwest::header::HeaderValue::from_static("1"));
+        h.insert(
+            reqwest::header::HOST,
+            format!("{LAN_LOCAL}:{}", self.addr.port()).parse().unwrap(),
+        );
+        let client = reqwest::Client::builder()
+            .default_headers(h)
+            .build()
+            .unwrap();
+        (client, self.base.clone())
     }
 
     pub async fn get(&self, path: &str) -> reqwest::Response {

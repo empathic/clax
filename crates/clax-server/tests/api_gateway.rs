@@ -9,7 +9,6 @@ use clax_server::testing::FAKE_PNG;
 use common::TestServer;
 use reqwest::Method;
 use serde_json::{Value, json};
-use std::net::{IpAddr, UdpSocket};
 
 fn origin(ts: &TestServer) -> String {
     extension_origin(&ts.extension_id())
@@ -31,22 +30,12 @@ async fn credential(ts: &TestServer) -> String {
     v["credential"].as_str().unwrap().to_string()
 }
 
-fn ext_at(
-    ts: &TestServer,
-    base: &str,
-    m: Method,
-    path: &str,
-    cred: &str,
-) -> reqwest::RequestBuilder {
+fn ext(ts: &TestServer, m: Method, path: &str, cred: &str) -> reqwest::RequestBuilder {
     ts.client
-        .request(m, format!("{base}{path}"))
+        .request(m, format!("{}{path}", ts.base))
         .header("origin", origin(ts))
         .header("sec-fetch-site", "cross-site")
         .header("authorization", format!("Clax-Extension {cred}"))
-}
-
-fn ext(ts: &TestServer, m: Method, path: &str, cred: &str) -> reqwest::RequestBuilder {
-    ext_at(ts, &ts.base, m, path, cred)
 }
 
 async fn live_thread(ts: &TestServer, cred: &str) -> (String, String) {
@@ -81,14 +70,6 @@ async fn live_thread(ts: &TestServer, cred: &str) -> (String, String) {
         v["page"]["artifact_id"].as_str().unwrap().into(),
         v["thread"]["id"].as_str().unwrap().into(),
     )
-}
-
-/// A non-loopback IPv4 address of this machine (see `api_host.rs`).
-fn non_loopback_ipv4() -> Option<IpAddr> {
-    let sock = UdpSocket::bind("0.0.0.0:0").ok()?;
-    sock.connect("10.255.255.255:1").ok()?;
-    let ip = sock.local_addr().ok()?.ip();
-    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
 }
 
 async fn code(res: reqwest::Response) -> String {
@@ -482,20 +463,27 @@ async fn the_shell_keeps_its_own_origin_rules() {
 #[tokio::test]
 async fn a_credential_from_another_machine_is_refused() {
     let ts = TestServer::spawn_on("0.0.0.0".parse().unwrap(), |_| {}).await;
-    let Some(ip) = non_loopback_ipv4() else {
-        eprintln!("no LAN address; skipped");
-        return;
-    };
+    let (lc, lan) = ts.lan();
     let cred = credential(&ts).await;
-    let lan = format!("http://{ip}:{}", ts.addr.port());
     let path = "/api/viewers/me";
-    let res = ext_at(&ts, &lan, Method::GET, path, &cred)
+    let res = lc
+        .get(format!("{lan}{path}"))
+        .header("origin", origin(&ts))
+        .header("sec-fetch-site", "cross-site")
+        .header("authorization", format!("Clax-Extension {cred}"))
         .send()
         .await
         .unwrap();
     assert_eq!(res.status(), 403);
-    let pre = ts
-        .client
+    let v: Value = res.json().await.unwrap();
+    assert!(
+        v["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("on this machine only"),
+        "{v}"
+    );
+    let pre = lc
         .request(Method::OPTIONS, format!("{lan}{path}"))
         .header("origin", origin(&ts))
         .header("access-control-request-method", "GET")
