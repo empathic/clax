@@ -1,6 +1,7 @@
 //! Query-plan checks for the hot read paths: each query is planned against a
 //! seeded database, with and without planner statistics, and must use its
-//! expected indexes and never scan `comments` or `threads` in full.
+//! expected indexes and never scan `comments` or `threads` in full. The
+//! question queries also never sort in a temporary B-tree.
 
 use super::Store;
 use super::attention::{
@@ -8,6 +9,7 @@ use super::attention::{
 };
 use super::feedback::{FEEDBACK_STATES, TAKE_FEEDBACK};
 use super::live::{PAGES_OF_ORIGIN, PENDING_OF, SCOPES_OF_ORIGIN, THREAD_PATHS_OF_PAGE};
+use super::questions as q;
 use super::site::{
     LINKS_OF_THREAD, PENDING_AT_PATH, PENDING_TO, PICKS_LEFT, PICKS_TO, REFILE_CANDIDATES,
     RULES_OF_ORIGIN, SITE_PAGES, TARGETS_TO, TO_UNMERGE, WATCHES_TO,
@@ -182,7 +184,177 @@ fn seed(c: &Connection) {
         )
         .unwrap();
     }
+    seed_questions(c, &ts);
     c.execute_batch("COMMIT").unwrap();
+}
+
+const QUESTIONS: usize = 2000;
+
+/// Mostly closed history, a few open, a third mirrored from hooks.
+fn seed_questions(c: &Connection, ts: &dyn Fn(usize) -> String) {
+    let statuses = ["answered", "declined", "withdrawn", "released", "answered"];
+    for i in 0..QUESTIONS {
+        let open = i % 40 == 0;
+        let status = if open { "open" } else { statuses[i % 5] };
+        let hook = i % 3 == 0;
+        c.execute(
+            "INSERT INTO questions (id, session_id, artifact_id, source, tool_use_id,
+                questions_json, status, created_at, closed_at, taken_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, '[]', ?6, ?7, ?8, ?9)",
+            params![
+                format!("Q{i:05}"),
+                format!("s{}", i % 20),
+                (i % 2 == 0).then(|| format!("art{:04}", i % ARTIFACTS)),
+                if hook { "hook" } else { "ask" },
+                hook.then(|| format!("toolu_{i}")),
+                status,
+                ts(i),
+                (!open).then(|| ts(i + 1)),
+                (i % 4 != 0 && !open).then(|| ts(i + 2)),
+            ],
+        )
+        .unwrap();
+    }
+}
+
+/// Each question query, its parameters, and the indexes its plan must name.
+/// None sorts in a temporary B-tree; one that walks an index in order
+/// (bounded by its `LIMIT`) scans only that index.
+fn question_queries() -> Vec<Hot> {
+    let t = |s: &str| Value::Text(s.into());
+    let i = Value::Integer;
+    vec![
+        (
+            "question by ID",
+            q::BY_ID.into(),
+            vec![t("Q00040")],
+            &["sqlite_autoindex_questions_1"],
+        ),
+        (
+            "question by tool use",
+            q::BY_TOOL_USE.into(),
+            vec![t("s3"), t("toolu_3")],
+            &["questions_by_tool_use"],
+        ),
+        (
+            "open count",
+            q::OPEN_COUNT.into(),
+            vec![],
+            &["questions_by_status"],
+        ),
+        (
+            "open count of a session",
+            q::OPEN_COUNT_OF_SESSION.into(),
+            vec![t("s0")],
+            &["questions_by_session"],
+        ),
+        (
+            "open, oldest first",
+            q::OPEN_OLDEST.into(),
+            vec![i(50)],
+            &["questions_by_status"],
+        ),
+        (
+            "open, newest first",
+            q::OPEN_NEWEST.into(),
+            vec![i(50)],
+            &["questions_by_status"],
+        ),
+        (
+            "closed, newest first",
+            q::CLOSED_NEWEST.into(),
+            vec![i(50)],
+            &["questions_closed"],
+        ),
+        (
+            "closed before a cursor",
+            q::CLOSED_BEFORE.into(),
+            vec![t("2026-01-01T00:00:01.000Z"), t("Q01000"), i(50)],
+            &["questions_closed"],
+        ),
+        (
+            "late answers",
+            q::LATE_ANSWERS.into(),
+            vec![t("s1")],
+            &["questions_by_session"],
+        ),
+        (
+            "take late answers",
+            q::TAKE_LATE.into(),
+            vec![t("s1"), t("2026-01-01T00:00:00.000Z")],
+            &["questions_by_session"],
+        ),
+        (
+            "open of a session",
+            q::OPEN_OF_SESSION.into(),
+            vec![t("s1")],
+            &["questions_by_session"],
+        ),
+        (
+            "withdraw a session's",
+            q::WITHDRAW_SESSION.into(),
+            vec![t("s1"), t("2026-01-01T00:00:00.000Z")],
+            &["questions_by_session"],
+        ),
+        (
+            "open hook questions",
+            q::OPEN_HOOKS.into(),
+            vec![],
+            &["questions_by_status"],
+        ),
+        (
+            "withdraw hook questions",
+            q::WITHDRAW_HOOKS.into(),
+            vec![t("2026-01-01T00:00:00.000Z")],
+            &["questions_by_status"],
+        ),
+        (
+            "close a question",
+            q::CLOSE.into(),
+            vec![
+                t("Q00040"),
+                t("open"),
+                t("answered"),
+                Value::Null,
+                Value::Null,
+                t("x"),
+            ],
+            &["sqlite_autoindex_questions_1"],
+        ),
+        (
+            "take a question",
+            q::TAKE.into(),
+            vec![t("Q00040"), t("x")],
+            &["sqlite_autoindex_questions_1"],
+        ),
+    ]
+}
+
+fn check_questions(c: &Connection, stats: &str) {
+    for (name, sql, args, indexes) in question_queries() {
+        let plan = plan(c, &sql, &args);
+        let text = plan.join("\n");
+        for ix in indexes {
+            assert!(
+                plan.iter().any(|d| d.split_whitespace().any(|w| w == *ix)),
+                "{name} ({stats}) does not use {ix}:\n{text}"
+            );
+        }
+        assert!(
+            !text.contains("TEMP B-TREE"),
+            "{name} ({stats}) sorts:\n{text}"
+        );
+        for d in &plan {
+            if let Some(rest) = d.strip_prefix("SCAN questions") {
+                assert!(
+                    indexes
+                        .iter()
+                        .any(|ix| rest.ends_with(&format!("INDEX {ix}"))),
+                    "{name} ({stats}) scans questions:\n{text}"
+                );
+            }
+        }
+    }
 }
 
 type Hot = (&'static str, String, Vec<Value>, &'static [&'static str]);
@@ -519,8 +691,10 @@ fn hot_queries_use_their_indexes_with_and_without_statistics() {
             c.execute_batch("DELETE FROM sqlite_stat1; ANALYZE sqlite_schema;")?;
         }
         check_all(c, "no statistics");
+        check_questions(c, "no statistics");
         c.execute_batch("ANALYZE")?;
         check_all(c, "after ANALYZE");
+        check_questions(c, "after ANALYZE");
         Ok(())
     })
     .unwrap();
