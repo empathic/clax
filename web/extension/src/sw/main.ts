@@ -4,7 +4,7 @@
 // the composers and the side panels. Every listener is registered at the
 // top level, so a worker Chrome restarts for an event hears it. Every
 // message passes its receiver's validator before anything acts on it.
-import { isFromOverlay, isFromPanel } from "../messages";
+import { type OverlayToWorker, isFromOverlay, isFromPanel } from "../messages";
 import * as origins from "./origins";
 import { PairError } from "./pairing";
 import { createWorker } from "./worker";
@@ -23,10 +23,8 @@ const { pairer, tabs } = createWorker({
   },
   toOverlay: (tabId, m) => void chrome.tabs.sendMessage(tabId, m, { frameId: 0 }).catch(() => {}),
   inject: tabId => origins.injectOverlay(originsEnv, tabId),
+  store: chrome.storage.session,
 });
-
-/** Tabs a gesture granted activeTab since their last full load. */
-const gestured = new Set<number>();
 
 /** A gesture that grants activeTab (spec L8). The side panel (icon only)
  * and the origin's permission are asked for before any await. */
@@ -36,10 +34,13 @@ function gesture(tab: chrome.tabs.Tab, panel: boolean): void {
   if (panel) void chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
   const asked = origins.ask(originsEnv, origin);
   const tabId = tab.id, url = tab.url;
-  gestured.add(tabId);
   void (async () => {
-    if (await asked) await origins.remember(originsEnv, origin).catch(() => {});
+    await tabs.ready();
+    tabs.activate(tabId, url);
+    let failed: unknown = null;
+    if (await asked) await origins.remember(originsEnv, origin).catch(e => { failed = e; });
     await tabs.toggle(tabId, url);
+    if (failed) tabs.fail(tabId, failed);
   })();
 }
 
@@ -47,24 +48,28 @@ chrome.action.onClicked.addListener(tab => gesture(tab, true));
 chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
-chrome.tabs.onRemoved.addListener(tabId => { gestured.delete(tabId); tabs.close(tabId); });
-chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading" && change.url) gestured.delete(tabId); });
+chrome.tabs.onRemoved.addListener(tabId => { void tabs.ready().then(() => tabs.close(tabId)); });
+// A new document: its overlay, comment mode and activeTab are gone (spec §11).
+chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") void tabs.ready().then(() => tabs.navigated(tabId)); });
 
 /** An overlay or loader message comes from a tab's top frame whose origin
- * Clax is on, or which a gesture granted activeTab (spec §9.4). */
-async function admitted(sender: chrome.runtime.MessageSender): Promise<boolean> {
+ * Clax is on, or which a gesture granted activeTab (spec §9.4); a URL it
+ * names is of its own origin. */
+async function admitted(sender: chrome.runtime.MessageSender, m: OverlayToWorker): Promise<boolean> {
   const tabId = sender.tab?.id;
   const origin = sender.url ? origins.originOf(sender.url) : null;
   if (tabId === undefined || !origin) return false;
-  return gestured.has(tabId) || origins.enabled(originsEnv, origin);
+  if ("url" in m && !origins.sameOrigin(m.url, sender.url)) return false;
+  await tabs.ready();
+  return tabs.admits(tabId) || origins.enabled(originsEnv, origin);
 }
 
 chrome.runtime.onMessage.addListener((m, sender, reply) => {
   if (sender.id !== chrome.runtime.id || sender.tab?.id === undefined || sender.frameId !== 0 || !isFromOverlay(m)) return false;
   const tab = sender.tab;
   void (async () => {
-    if (!(await admitted(sender))) return null;
-    return tabs.fromOverlay(tab.id!, tab.windowId, m);
+    if (!(await admitted(sender, m))) return null;
+    return tabs.fromOverlay(tab.id!, tab.windowId, m, sender.url);
   })().then(r => reply(r ?? null), e => reply({ error: String(e) }));
   return true;
 });

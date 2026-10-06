@@ -59,10 +59,11 @@ export class Pairer {
   }
 
   /** A new pairing; concurrent callers share it, and another within
-   * `REPAIR_MS` of the last is refused (`paired_recently`). */
-  pair(): Promise<Pairing> {
+   * `REPAIR_MS` of the last is refused (`paired_recently`) unless `retry`
+   * (the person asked to try again). */
+  pair(retry = false): Promise<Pairing> {
     if (this.inflight) return this.inflight;
-    if (this.env.now() - this.last < REPAIR_MS) return Promise.reject(new PairError("paired_recently", "Clax paired a moment ago; try again shortly"));
+    if (!retry && this.env.now() - this.last < REPAIR_MS) return Promise.reject(new PairError("paired_recently", "Clax paired a moment ago; try again shortly"));
     this.last = this.env.now();
     this.inflight = (async () => {
       try {

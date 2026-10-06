@@ -46,7 +46,9 @@ export type WorkerToOverlay =
   | { t: "close-composer"; pickId: string; posted: boolean }
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
-  | { t: "snapshot-now" };
+  | { t: "snapshot-now" }
+  /** Whether the worker's event stream is up; while it is down, what the overlay shows may be stale. */
+  | { t: "stream-status"; up: boolean };
 
 export type ComposerToWorker = { t: "ready" } | { t: "post"; body: string } | { t: "cancel" };
 /** `clipUrl` is a `data:image/png` URL (a service worker cannot make object URLs). */
@@ -75,6 +77,8 @@ export type PanelState = {
 export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
   | { t: "failed"; code: string; message: string }
+  /** Whether the worker's event stream is up (told on `watch-tab` and on every change). */
+  | { t: "stream-status"; up: boolean }
   | { t: "ping" };
 
 export type PanelToWorker =
@@ -181,6 +185,21 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
     case "snapshot-now": return has();
+    case "stream-status": return has("up") && bool(m.up);
+    default: return false;
+  }
+}
+
+/** What a side panel takes from the worker. The worker is trusted; this
+ * keeps the panel to the messages it knows, of the right shape. */
+export function isToPanel(m: unknown): m is WorkerToPanel {
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
+  switch (m.t) {
+    case "tab": return has("state") && obj(m.state);
+    case "failed": return has("code", "message") && str(m.code, 64) && str(m.message, MAX_BODY);
+    case "stream-status": return has("up") && bool(m.up);
+    case "ping": return has();
     default: return false;
   }
 }

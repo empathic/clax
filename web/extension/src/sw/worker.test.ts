@@ -103,6 +103,8 @@ class Daemon {
 
 let d: Daemon;
 let w: Worker;
+let session: Record<string, unknown>;
+let local: Record<string, unknown>;
 const tick = () => vi.advanceTimersByTimeAsync(0);
 const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
 const subscribes = (cred: string) => d.log.filter(l => l.method === "POST" && l.path.startsWith("/api/stream/") && l.cred === cred);
@@ -111,21 +113,38 @@ const lookups = (cred: string) => d.log.filter(l => l.path.startsWith("/api/live
 beforeEach(() => {
   vi.useFakeTimers();
   d = new Daemon();
-  const session: Record<string, unknown> = {};
-  const local: Record<string, unknown> = {};
-  const area = (m: Record<string, unknown>) => ({
-    get: async (k: string) => (k in m ? { [k]: m[k] } : {}),
-    set: async (v: Record<string, unknown>) => { Object.assign(m, v); },
-    remove: async (k: string) => { delete m[k]; },
-  });
-  w = createWorker({
-    pair: { sendNative: async () => d.pair(), session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
+  session = {};
+  local = {};
+  w = boot();
+});
+
+const area = (m: Record<string, unknown>) => ({
+  get: async (k: string) => (k in m ? { [k]: structuredClone(m[k]) } : {}),
+  set: async (v: Record<string, unknown>) => { Object.assign(m, structuredClone(v)); },
+  remove: async (k: string) => { delete m[k]; },
+});
+let pairings = 0;
+const injected: number[] = [];
+/** A worker as Chrome starts it, over the session and local storage that outlive it. */
+const booted: Worker[] = [];
+function boot(): Worker {
+  const worker = createWorker({
+    pair: { sendNative: async () => { pairings++; return d.pair(); }, session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
     fetch: d.fetch,
     toOverlay: () => {},
-    inject: async () => {},
+    inject: async tabId => { injected.push(tabId); },
+    store: area(session),
   });
+  booted.push(worker);
+  return worker;
+}
+afterEach(async () => {
+  // Requests still in flight may subscribe again once answered: let them settle, then close.
+  await settle();
+  for (const b of booted.splice(0)) b.hub.close();
+  injected.length = 0;
+  vi.useRealTimers();
 });
-afterEach(() => { w.hub.close(); vi.useRealTimers(); });
 
 /** Tab 4 on URL1, its stream up and subscribed with the first credential. */
 async function up(): Promise<string> {
@@ -210,5 +229,47 @@ describe("the worker", () => {
     expect(d.held.get(now[0].id)).toEqual(new Set([`artifact:${AID2}`, `working:${AID2}`]));
     expect(w.tabs.state(4)?.page?.artifact_id).toBe(AID2);
     expect(lookups(A).filter(l => l.path.includes("settings")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps following a tab's topics past the hub's client TTL", async () => {
+    await up();
+    const stream = d.open()[0];
+    // The daemon's keep-alive every 15 s, for well past CLIENT_TTL_MS (180 s).
+    for (let t = 0; t < 240_000; t += 15_000) {
+      stream.push(": keep-alive\n\n");
+      await vi.advanceTimersByTimeAsync(15_000);
+    }
+    expect(w.hub.stats()).toMatchObject({ clients: 1, topics: [`artifact:${AID}`, `working:${AID}`], up: true });
+    expect(d.held.get(stream.id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`]));
+    stream.push(`event: thread\ndata: ${JSON.stringify({ topic: `artifact:${AID}`, artifact_id: AID, thread: { ...full(T1), comment_count: 0, last_comment: null } })}\nid: ${stream.id}:1\n\n`);
+    await settle();
+    expect(w.tabs.state(4)?.threads.map(t => t.id)).toEqual([T1]);
+  });
+
+  it("rebuilds after Chrome restarts the worker: the stored pairing, the tab, a new stream and its state", async () => {
+    await w.tabs.toggle(4, URL1);
+    await settle();
+    await settle();
+    expect(injected).toEqual([4]);
+    expect(d.open()).toHaveLength(1);
+    const before = pairings;
+    // Chrome stops the worker: its memory goes, storage stays; the stream drops.
+    w.hub.close();
+    for (const s of d.open()) s.end();
+    d.threads = [full(T1)];
+    w = boot();
+    await w.tabs.ready();
+    // The overlay's next ping starts it again.
+    await w.tabs.fromOverlay(4, 1, { t: "ping" }, URL1);
+    await settle();
+    expect(pairings).toBe(before);
+    expect(w.tabs.state(4)).toMatchObject({ overlay: true, commentMode: true, page: { artifact_id: AID } });
+    expect(w.tabs.state(4)?.threads.map(t => t.id)).toEqual([T1]);
+    const open = d.open();
+    expect(open).toHaveLength(1);
+    expect(d.held.get(open[0].id)).toEqual(new Set([`artifact:${AID}`, `working:${AID}`]));
+    // The overlay already in the page is not injected again.
+    await w.tabs.toggle(4, URL1);
+    expect(injected).toEqual([4]);
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { fakeChrome, type FakeChrome } from "../../test/fake-chrome";
-import { ask, enabled, forget, injectOverlay, originOf, remember, scriptId, type OriginsEnv } from "./origins";
+import { ask, enabled, forget, injectOverlay, originOf, remember, sameOrigin, scriptId, type OriginsEnv } from "./origins";
 
 let c: FakeChrome;
 const env = () => ({ permissions: c.permissions, scripting: c.scripting, local: c.storage.local }) as unknown as OriginsEnv;
@@ -33,6 +33,13 @@ describe("origins", () => {
     expect(await ask(env(), "http://localhost:5173")).toBe(false);
   });
 
+  it("tells whether a page's URL is of its sender's origin", () => {
+    expect(sameOrigin("http://localhost:5173/a#b", "http://localhost:5173/")).toBe(true);
+    expect(sameOrigin("http://evil.example/", "http://localhost:5173/")).toBe(false);
+    expect(sameOrigin("http://localhost:5173/", undefined)).toBe(false);
+    expect(sameOrigin("chrome://x", "chrome://x")).toBe(false);
+  });
+
   it("gives each origin its own script ID", () => {
     expect(scriptId("http://localhost:5173")).not.toBe(scriptId("http://localhost:5174"));
     expect(scriptId("http://localhost:5173")).toMatch(/^clax-loader-[0-9a-f]+$/);
@@ -40,6 +47,19 @@ describe("origins", () => {
 
   it("injects the overlay into the top frame only", async () => {
     await injectOverlay(env(), 7);
-    expect(c.calls.find(x => x.api === "scripting.executeScript")!.args[0]).toEqual({ target: { tabId: 7, allFrames: false }, files: ["overlay.js"] });
+    const injects = c.calls.filter(x => x.api === "scripting.executeScript").map(x => x.args[0] as { files?: string[] });
+    expect(injects.filter(a => a.files)).toEqual([{ target: { tabId: 7, allFrames: false }, files: ["overlay.js"] }]);
+  });
+
+  it("does not inject the overlay twice into one document", async () => {
+    let loaded = false;
+    c.scripting.executeScript = (async (inj: { files?: string[]; func?: () => boolean }) => {
+      c.calls.push({ api: "scripting.executeScript", args: [inj] });
+      if (inj.func) { const had = loaded; loaded = true; return [{ result: had }]; }
+      return [{ result: undefined }];
+    }) as unknown as typeof c.scripting.executeScript;
+    await injectOverlay(env(), 7);
+    await injectOverlay(env(), 7);
+    expect(c.calls.filter(x => x.api === "scripting.executeScript" && (x.args[0] as { files?: string[] }).files)).toHaveLength(1);
   });
 });

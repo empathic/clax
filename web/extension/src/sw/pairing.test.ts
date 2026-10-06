@@ -78,6 +78,14 @@ describe("Pairer", () => {
     expect((await p.current()).daemon).toBe("http://localhost:7481");
   });
 
+  it("pairs again at once when asked to retry, inside REPAIR_MS", async () => {
+    const e = env([{ type: "error", v: 1, code: "daemon_unavailable", message: "see the log" }, paired()]);
+    const p = new Pairer(e as unknown as PairEnv);
+    await expect(p.pair()).rejects.toMatchObject({ code: "daemon_unavailable" });
+    await expect(p.pair()).rejects.toMatchObject({ code: "paired_recently" });
+    expect((await p.pair(true)).daemon).toBe("http://localhost:7480");
+  });
+
   it("reloads the extension once for a daemon of another version", async () => {
     const e = env([paired(undefined, "1.0.0"), paired(undefined, "1.0.0")]);
     const p = new Pairer(e as unknown as PairEnv);

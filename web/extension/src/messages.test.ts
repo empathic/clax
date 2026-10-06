@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isFromComposer, isFromOverlay, isFromPanel, isFromWorker } from "./messages";
+import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToPanel } from "./messages";
 
 const anchor = { kind: "element", selector: "main > button", quote: "Save", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
@@ -110,6 +110,19 @@ describe("messages", () => {
     expect(isFromWorker({ t: "state", threads: "none", commentMode: false, pending: false })).toBe(false);
     expect(isFromWorker({ t: "scroll-to", threadId: "x" })).toBe(false);
     expect(isFromWorker({ t: "post", body: "hi" })).toBe(false);
+  });
+
+  it("checks the stream's status as the worker tells the overlay and the panels", () => {
+    expect(isFromWorker({ t: "stream-status", up: false })).toBe(true);
+    expect(isFromWorker({ t: "stream-status", up: "no" })).toBe(false);
+    expect(isFromWorker({ t: "stream-status", up: true, extra: 1 })).toBe(false);
+    expect(isToPanel({ t: "stream-status", up: true })).toBe(true);
+    expect(isToPanel({ t: "stream-status" })).toBe(false);
+    expect(isToPanel({ t: "failed", code: "x", message: "y" })).toBe(true);
+    expect(isToPanel({ t: "tab", state: { tabId: 1 } })).toBe(true);
+    expect(isToPanel({ t: "tab", state: null })).toBe(false);
+    expect(isToPanel({ t: "ping" })).toBe(true);
+    expect(isToPanel({ t: "state" })).toBe(false);
   });
 
   it("checks the composer's and the side panel's messages", () => {

@@ -42,7 +42,17 @@ describe("applyEvent", () => {
   });
 });
 
-function harness() {
+function memory() {
+  const data: Record<string, unknown> = {};
+  return {
+    data,
+    get: async (k: string) => (k in data ? { [k]: structuredClone(data[k]) } : {}),
+    set: async (v: Record<string, unknown>) => { Object.assign(data, structuredClone(v)); },
+    remove: async (k: string) => { delete data[k]; },
+  };
+}
+
+function harness(store = memory()) {
   const calls: string[] = [];
   const hubIn: { id: string; msg: TabMsg }[] = [];
   const detached: string[] = [];
@@ -51,11 +61,13 @@ function harness() {
   const pages = new Map<string, { page: PageView | null; route: string | null }>();
   const threads = new Map<string, unknown[]>();
   const gates = new Map<string, Promise<void>>();
+  const gate: { threads?: Promise<void>; thread?: Promise<void>; working?: Promise<void> } = {};
+  const working = new Map<string, unknown[]>();
   const api: TabsApi = {
     lookup: async (url: string) => { calls.push(`lookup ${url}`); await gates.get(url); const r = pages.get(url); if (!r) throw Object.assign(new Error("down"), { code: "daemon_unreachable" }); return r; },
-    threads: async (aid: string) => { calls.push(`threads ${aid}`); return (threads.get(aid) ?? []) as never; },
-    thread: async (aid: string, tid: string) => { calls.push(`thread ${aid} ${tid}`); return { thread: full(tid, { comments: [] }) as never }; },
-    working: async (aid: string) => { calls.push(`working ${aid}`); return []; },
+    threads: async (aid: string) => { calls.push(`threads ${aid}`); const out = structuredClone(threads.get(aid) ?? []); await gate.threads; return out as never; },
+    thread: async (aid: string, tid: string) => { calls.push(`thread ${aid} ${tid}`); await gate.thread; return { thread: full(tid, { comments: [] }) as never }; },
+    working: async (aid: string) => { calls.push(`working ${aid}`); const out = working.get(aid) ?? []; await gate.working; return out as never; },
     artifact: async (aid: string) => { calls.push(`artifact ${aid}`); return { artifact: { id: aid, participants: { people: [], agents: [{ handle: "a_1", harness: "claude", live: true }] } }, versions: [{ artifact_id: aid, n: 1 }] } as never; },
     me: async () => { calls.push("me"); return { viewer: { public_id: "u_owner", display_name: "Alex", created_at: "t" } }; },
   };
@@ -64,8 +76,9 @@ function harness() {
     hub: { receive: (id, msg) => hubIn.push({ id, msg }), detach: id => detached.push(id) },
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
     inject: async tabId => { injected.push(tabId); },
+    store,
   });
-  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates };
+  return { tabs, calls, hubIn, detached, overlay, injected, pages, threads, gates, gate, working, store };
 }
 
 function port(name = "panel:1") {
@@ -75,6 +88,9 @@ function port(name = "panel:1") {
   return { name, sent, onMessage, onDisconnect, postMessage: (m: WorkerToPanel) => sent.push(m) };
 }
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+const URL1 = "http://localhost:5173/";
+function hold() { let release!: () => void; const p = new Promise<void>(r => { release = r; }); return { p, release }; }
+const resolvedDelta = (id: string) => ({ ...thread(id, "one"), status: "resolved" });
 
 describe("Tabs", () => {
   it("looks the page up, loads its threads and working list, follows its topics and tells the overlay", async () => {
@@ -208,5 +224,137 @@ describe("Tabs", () => {
     await h.tabs.route(4, "http://localhost:5173/");
     h.tabs.repaired();
     expect(h.hubIn.at(-1)).toEqual({ id: "tab:4", msg: { t: "reconnect" } });
+  });
+
+  it("treats a page load as a new document: comment mode off, and the overlay injected again when the page has open threads", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.hello(4, URL1);
+    await h.tabs.toggle(4, URL1);
+    expect(h.tabs.state(4)?.commentMode).toBe(true);
+    await h.tabs.hello(4, URL1);
+    expect(h.injected).toEqual([4, 4]);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: true, commentMode: false, selected: null, resolved: {} });
+  });
+
+  it("forgets the overlay when the tab starts loading a new document", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.toggle(4, URL1);
+    h.tabs.activate(4);
+    h.tabs.navigated(4);
+    expect(h.tabs.state(4)).toMatchObject({ overlay: false, commentMode: false, active: false });
+    await h.tabs.toggle(4, URL1);
+    expect(h.injected).toEqual([4, 4]);
+  });
+
+  it("keeps a delta that arrives while a same-page lookup is in flight", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    const g = hold();
+    h.gates.set(URL1, g.p);
+    const r = h.tabs.route(4, URL1);
+    await settle();
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `artifact:${AID}`, name: "thread", data: { thread: thread(T1, "hi") } });
+    g.release();
+    await r;
+    expect(h.tabs.state(4)?.threads.map(t => t.id)).toEqual([T1]);
+  });
+
+  it("keeps a delta newer than a refetch's answer", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.route(4, URL1);
+    const g = hold();
+    h.gate.threads = g.p;
+    h.gate.working = g.p;
+    h.tabs.fromHub(["tab:4"], { t: "live", topics: [`artifact:${AID}`] });
+    await settle();
+    expect(h.calls.filter(c => c.startsWith("threads"))).toHaveLength(2);
+    // Committed after the daemon answered the list, heard before the answer is applied.
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `artifact:${AID}`, name: "thread", data: { thread: resolvedDelta(T1) } });
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `working:${AID}`, name: "working", data: { working: [{ key: "k", agent: "a_1", harness: "claude", message: null, thread_ids: [T1], started_at: "t", last_heartbeat: "t" }] } });
+    g.release();
+    await settle();
+    expect(h.tabs.state(4)?.threads[0].status).toBe("resolved");
+    expect(h.tabs.state(4)?.working).toHaveLength(1);
+  });
+
+  it("keeps a delta newer than a thread's own refetch", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.route(4, URL1);
+    const g = hold();
+    h.gate.thread = g.p;
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `artifact:${AID}`, name: "thread", data: { thread: { ...thread(T1, "hi"), comment_count: 3 } } });
+    await settle();
+    h.tabs.fromHub(["tab:4"], { t: "event", topic: `artifact:${AID}`, name: "feedback_state", data: { thread_id: T1, state: "delivered", tier: "wait", since: "t", resends: 0, exhausted: false } });
+    g.release();
+    await settle();
+    expect(h.tabs.state(4)?.threads[0].feedback_state?.state).toBe("delivered");
+  });
+
+  it("refetches once for notices that arrive together", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    h.calls.length = 0;
+    h.tabs.fromHub(["tab:4"], { t: "live", topics: [`artifact:${AID}`] });
+    h.tabs.fromHub(["tab:4"], { t: "resync", topic: `working:${AID}` });
+    await settle();
+    expect(h.calls.filter(c => c.startsWith("lookup"))).toHaveLength(1);
+  });
+
+  it("tells the panels and the overlays whether the stream is up", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    const p = port();
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    expect(p.sent).toContainEqual({ t: "stream-status", up: true });
+    h.tabs.fromHub(["tab:4"], { t: "status", up: false });
+    expect(p.sent.at(-1)).toEqual({ t: "stream-status", up: false });
+    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "stream-status", up: false } });
+    h.tabs.fromHub(["tab:4"], { t: "status", up: true });
+    expect(p.sent.at(-1)).toEqual({ t: "stream-status", up: true });
+  });
+
+  it("keeps each tab's hub client alive by answering the hub's pings", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    h.tabs.fromHub(["tab:4", "tab:9"], { t: "ping" });
+    expect(h.hubIn.filter(x => x.msg.t === "ping")).toEqual([{ id: "tab:4", msg: { t: "ping" } }]);
+  });
+
+  it("rebuilds a tab after the worker restarts, from session storage, at the tab's next message", async () => {
+    const store = memory();
+    const first = harness(store);
+    first.pages.set(URL1, { page: page(), route: null });
+    await first.tabs.toggle(4, URL1);
+    first.tabs.activate(4);
+    await settle();
+    const h = harness(store);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.ready();
+    expect(h.tabs.admits(4)).toBe(true);
+    await h.tabs.fromOverlay(4, 1, { t: "ping" }, URL1);
+    expect(h.tabs.state(4)).toMatchObject({ url: URL1, overlay: true, commentMode: true, page: page() });
+    expect(h.tabs.state(4)?.threads.map(t => t.id)).toEqual([T1]);
+    expect(h.hubIn).toContainEqual({ id: "tab:4", msg: { t: "topics", topics: [`artifact:${AID}`, `working:${AID}`] } });
+    await h.tabs.toggle(4, URL1);
+    expect(h.injected).toEqual([]);
+    expect(h.tabs.state(4)?.commentMode).toBe(false);
+    h.tabs.close(4);
+    await settle();
+    const after = harness(store);
+    await after.tabs.ready();
+    expect(after.tabs.admits(4)).toBe(false);
   });
 });

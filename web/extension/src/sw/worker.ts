@@ -14,6 +14,8 @@ export type WorkerDeps = {
   fetch?: typeof fetch;
   toOverlay(tabId: number, m: WorkerToOverlay): void;
   inject(tabId: number): Promise<void>;
+  /** Where the tabs are kept across worker restarts (chrome.storage.session). */
+  store?: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
 };
 export type Worker = { pairer: Pairer; api: Api; hub: Hub; tabs: Tabs };
 
@@ -28,7 +30,7 @@ export function createWorker(d: WorkerDeps): Worker {
     fetch: (input, init) => (String(input) === "/api/token" ? Promise.resolve(new Response(null, { status: 204 })) : api.request(String(input), init)),
     base: "",
   });
-  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject });
+  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, store: d.store });
   const t = tabs;
   api.onRepair = () => t.repaired();
   return { pairer, api, hub, tabs: t };

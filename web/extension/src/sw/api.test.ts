@@ -53,6 +53,22 @@ describe("Api", () => {
     expect(heard).toEqual([B]);
   });
 
+  it("tells its listener once of a pairing that several requests share", async () => {
+    let release!: (p: Pairing) => void;
+    const shared = new Promise<Pairing>(r => { release = r; });
+    let pairs = 0;
+    const pairer = { current: async () => A, pair: () => { pairs++; return shared; } };
+    const s = setup([new Response("{}", { status: 401 }), new Response("{}", { status: 401 }), ok(), ok()], pairer);
+    const heard: Pairing[] = [];
+    s.api.onRepair = p => heard.push(p);
+    const both = Promise.all([s.api.lookup("http://localhost:5173/"), s.api.lookup("http://localhost:5173/b")]);
+    await new Promise(r => setTimeout(r, 0));
+    release(B);
+    await both;
+    expect(pairs).toBe(2);
+    expect(heard).toEqual([B]);
+  });
+
   it("retries with a pairing another request already renewed, without pairing again", async () => {
     let stored = A;
     let pairs = 0;

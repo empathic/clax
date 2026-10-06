@@ -23,6 +23,8 @@ function threadIds(tids: readonly string[]): void {
 export class Api {
   /** Called with each pairing a request made: the old credential's stream cannot be changed or resumed by the new one. */
   onRepair: ((p: Pairing) => void) | null = null;
+  /** The credential `onRepair` last heard of. */
+  private told: string | null = null;
 
   constructor(private readonly pairer: Pick<Pairer, "current" | "pair">, private readonly fetchFn: typeof fetch = (...a) => fetch(...a)) {}
 
@@ -54,7 +56,11 @@ export class Api {
           if (res) return res;
           throw new ApiFailure("daemon_unreachable", String(failed));
         }
-        this.onRepair?.(p);
+        // Requests that shared one pairing tell of it once.
+        if (p.credential !== this.told) {
+          this.told = p.credential;
+          this.onRepair?.(p);
+        }
       }
     }
   }

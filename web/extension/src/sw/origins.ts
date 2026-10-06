@@ -17,6 +17,11 @@ export function originOf(url: string): string | null {
     return null;
   }
 }
+/** Whether `url` is an http or https URL of `senderUrl`'s origin: a page names only its own pages. */
+export function sameOrigin(url: string, senderUrl: string | undefined): boolean {
+  const o = originOf(url);
+  return o !== null && senderUrl !== undefined && o === originOf(senderUrl);
+}
 export const patternOf = (origin: string) => `${origin}/*`;
 export const scriptId = (origin: string) => `clax-loader-${[...new TextEncoder().encode(origin)].map(b => b.toString(16).padStart(2, "0")).join("")}`;
 
@@ -58,7 +63,20 @@ export async function forget(env: OriginsEnv, origin: string): Promise<void> {
   await env.local.set({ origins: (await list(env)).filter(o => o !== origin) });
 }
 
-/** Injects the overlay into the tab's top frame. */
+/** Marks the document as having Clax's overlay, in the extension's
+ * isolated world (out of the page's reach); true when it already had it. */
+function markOverlay(): boolean {
+  const g = globalThis as { claxOverlayLoaded?: boolean };
+  const had = g.claxOverlayLoaded === true;
+  g.claxOverlayLoaded = true;
+  return had;
+}
+
+/** Injects the overlay into the tab's top frame, once per document: the
+ * worker's record of a tab can lag a reload, or be lost with a restart. */
 export async function injectOverlay(env: OriginsEnv, tabId: number): Promise<void> {
-  await env.scripting.executeScript({ target: { tabId, allFrames: false }, files: ["overlay.js"] });
+  const target = { tabId, allFrames: false };
+  const [probe] = await env.scripting.executeScript({ target, func: markOverlay });
+  if (probe?.result === true) return;
+  await env.scripting.executeScript({ target, files: ["overlay.js"] });
 }
