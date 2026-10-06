@@ -12,11 +12,23 @@
 //! `dev.empathic.clax.json` into each browser's hosts directory whose
 //! profile directory exists, with `allowed_origins` exactly the extension's
 //! origin under the ID in effect for this home, and records the manifests it
-//! wrote in `installed.json`.
+//! wrote in `installed.json`. Each manifest is written to a temporary file
+//! beside it and renamed into place, so a reader never sees a partial file
+//! and a symlink at that path is replaced, never written through. A
+//! manifest that names another home's launcher which still exists is that
+//! home's registration: it is kept and reported as `conflict` unless
+//! `--force` is given; one whose launcher is gone is replaced. Either
+//! replacement is reported with `replaced`, the launcher it named. With no
+//! browser installed, the files are written and the status is `no_browser`.
+//!
+//! The home is created 0700 when missing; directories under it are 0755 and
+//! files 0644 (scripts 0755) whatever the umask.
 //!
 //! `uninstall` removes exactly the manifests `installed.json` lists whose
 //! `path` is this home's `launch.sh`, then `<home>/extension`. `status`
-//! reports whether the files match this binary's build and, per installed
+//! reports whether the files match this binary's build, whether
+//! `host/launch.sh` and `host/ensure-clax.sh` are as this binary writes them
+//! and executable (`launcher`), and, per installed
 //! browser, whether its manifest is `installed`, `missing`, or `stale`
 //! (another path or origin). Both `install` and `uninstall` hold the init
 //! lock (`<home>/init.lock`), which `clax init` and `clax uninit` already
@@ -33,7 +45,11 @@ pub enum Cmd {
     /// Write the extension to <home>/extension and register its native
     /// messaging host with each installed browser (Chrome, Chromium, Brave,
     /// Edge).
-    Install,
+    Install {
+        /// Also replace a registration that belongs to another Clax home.
+        #[arg(long)]
+        force: bool,
+    },
     /// Remove the host registrations install wrote, and <home>/extension.
     Uninstall,
     /// Report whether the extension's files match this binary, its ID, and
@@ -111,10 +127,96 @@ fn is_ours(path: &str, launch: &str) -> bool {
     read_json(Path::new(path)).is_some_and(|m| m["path"] == launch)
 }
 
-fn write_exec(path: &Path, body: &[u8]) -> std::io::Result<()> {
+/// Writes `body` to `path` with exactly `mode`, whatever the umask.
+fn write_mode(path: &Path, body: &[u8], mode: u32) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(path, body)?;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
+}
+
+fn write_exec(path: &Path, body: &[u8]) -> std::io::Result<()> {
+    write_mode(path, body, 0o755)
+}
+
+/// Creates `dir` and its missing parents with exactly `mode`.
+fn create_dirs(dir: &Path, mode: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut missing = Vec::new();
+    for a in dir.ancestors() {
+        if a.as_os_str().is_empty() || a.exists() {
+            break;
+        }
+        missing.push(a.to_path_buf());
+    }
+    for d in missing.iter().rev() {
+        match std::fs::create_dir(d) {
+            Ok(()) => std::fs::set_permissions(d, std::fs::Permissions::from_mode(mode))?,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Creates the Clax home, 0700, when it is missing.
+pub(crate) fn create_home(home: &Home) -> std::io::Result<()> {
+    create_dirs(home.root(), 0o700)
+}
+
+/// The wrapper this binary carries (the Claude Code plugin's copy).
+fn wrapper() -> anyhow::Result<Vec<u8>> {
+    crate::plugins::files()
+        .into_iter()
+        .find(|(p, _)| p == "plugins/claude-code/scripts/ensure-clax.sh")
+        .map(|(_, b)| b)
+        .ok_or_else(|| anyhow::anyhow!("the plugins' wrapper is missing from this build"))
+}
+
+/// Writes a host manifest: a temporary file beside it, renamed over it, so
+/// a symlink at `file` is replaced rather than followed.
+fn write_manifest(dir: &Path, file: &Path, body: &[u8]) -> std::io::Result<()> {
+    create_dirs(dir, 0o755)?;
+    let tmp = dir.join(format!(".{HOST_NAME}.json.tmp-{}", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let res = (|| {
+        use std::io::Write as _;
+        use std::os::unix::fs::OpenOptionsExt as _;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o644)
+            .open(&tmp)?;
+        f.write_all(body)?;
+        f.sync_all()?;
+        std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o644))?;
+        std::fs::rename(&tmp, file)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// What install does about the manifest already at a host path.
+enum Existing {
+    /// Nothing there, or this home's own registration.
+    Ours,
+    /// Something to replace; the launcher it named, if any.
+    Replace(Option<String>),
+    /// Another home's registration whose launcher exists.
+    Conflict(String),
+}
+
+fn existing(file: &Path, launch: &str) -> Existing {
+    let Ok(meta) = std::fs::symlink_metadata(file) else {
+        return Existing::Ours;
+    };
+    let named = read_json(file).and_then(|m| m["path"].as_str().map(str::to_string));
+    match named {
+        Some(p) if p == launch && meta.file_type().is_file() => Existing::Ours,
+        Some(p) if p != launch && Path::new(&p).exists() => Existing::Conflict(p),
+        other => Existing::Replace(other.filter(|p| p != launch)),
+    }
 }
 
 /// Removes staging and retired directories an interrupted run left.
@@ -155,17 +257,12 @@ fn write_files(home: &Home, fs: &[(String, Vec<u8>)]) -> anyhow::Result<()> {
         for (p, bytes) in fs {
             let dest = staging.join(p);
             if let Some(parent) = dest.parent() {
-                std::fs::create_dir_all(parent)?;
+                create_dirs(parent, 0o755)?;
             }
-            std::fs::write(dest, bytes)?;
+            write_mode(&dest, bytes, 0o644)?;
         }
-        std::fs::create_dir_all(staging.join("host"))?;
-        let wrapper = crate::plugins::files()
-            .into_iter()
-            .find(|(p, _)| p == "plugins/claude-code/scripts/ensure-clax.sh")
-            .map(|(_, b)| b)
-            .ok_or_else(|| anyhow::anyhow!("the plugins' wrapper is missing from this build"))?;
-        write_exec(&staging.join("host/ensure-clax.sh"), &wrapper)?;
+        create_dirs(&staging.join("host"), 0o755)?;
+        write_exec(&staging.join("host/ensure-clax.sh"), &wrapper()?)?;
         write_exec(
             &staging.join("host/launch.sh"),
             launch_script(home).as_bytes(),
@@ -194,15 +291,16 @@ fn write_files(home: &Home, fs: &[(String, Vec<u8>)]) -> anyhow::Result<()> {
 }
 
 /// Writes the extension, its launcher and the host manifests (see the
-/// module documentation). Fails when this binary carries no extension build.
-pub fn install(home: &Home) -> anyhow::Result<Value> {
+/// module documentation); `force` also replaces another home's
+/// registration. Fails when this binary carries no extension build.
+pub fn install(home: &Home, force: bool) -> anyhow::Result<Value> {
     let fs = files();
     if !fs.iter().any(|(p, _)| p == "manifest.json") {
         anyhow::bail!(
             "this clax was built without the extension (run scripts/build-web.sh, then rebuild clax)"
         );
     }
-    std::fs::create_dir_all(home.root())?;
+    create_home(home)?;
     remove_scratch(home);
     let dir = ext_dir(home);
     let launch = launcher(home).display().to_string();
@@ -226,11 +324,26 @@ pub fn install(home: &Home) -> anyhow::Result<Value> {
             );
             continue;
         }
-        let res = std::fs::create_dir_all(&d.dir).and_then(|_| std::fs::write(&file, &body));
-        match res {
+        let replaced = match existing(&file, &launch) {
+            Existing::Conflict(other) if !force => {
+                hosts.push(json!({
+                    "browser": d.browser, "status": "conflict", "path": file, "other": other,
+                    "detail": format!("registered to another Clax home ({other}); run `clax extension install --force` to replace it"),
+                }));
+                continue;
+            }
+            Existing::Conflict(other) => Some(other),
+            Existing::Replace(other) => other,
+            Existing::Ours => None,
+        };
+        match write_manifest(&d.dir, &file, &body) {
             Ok(()) => {
                 written.push(file.display().to_string());
-                hosts.push(json!({"browser": d.browser, "status": "installed", "path": file}));
+                let mut h = json!({"browser": d.browser, "status": "installed", "path": file});
+                if let Some(r) = replaced {
+                    h["replaced"] = json!(r);
+                }
+                hosts.push(h);
             }
             Err(e) => hosts.push(
                 json!({"browser": d.browser, "status": "failed", "path": file, "detail": e.to_string()}),
@@ -246,19 +359,31 @@ pub fn install(home: &Home) -> anyhow::Result<Value> {
             recorded.push(p);
         }
     }
-    std::fs::write(
-        dir.join("installed.json"),
-        serde_json::to_vec_pretty(
+    write_mode(
+        &dir.join("installed.json"),
+        &serde_json::to_vec_pretty(
             &json!({"version": env!("CARGO_PKG_VERSION"), "hosts": recorded}),
         )?,
+        0o644,
     )?;
-    Ok(json!({
+    let registered = written.len();
+    let mut out = json!({
         "status": "installed",
         "dir": dir,
         "extension_id": extension_id_in_effect(home.root()),
         "hosts": hosts,
         "load_unpacked": format!("{LOAD_UNPACKED} {} (once).", dir.display()),
-    }))
+    });
+    if registered == 0 {
+        let none = hosts.iter().all(|h| h["status"] == "skipped");
+        out["status"] = json!(if none { "no_browser" } else { "not_registered" });
+        out["detail"] = json!(if none {
+            "no supported browser (Chrome, Chromium, Brave, Edge) was found; install one, then run `clax extension install` again"
+        } else {
+            "no browser's native host could be registered (see hosts)"
+        });
+    }
+    Ok(out)
 }
 
 /// Removes the manifests install recorded that still name this home's
@@ -303,6 +428,25 @@ pub fn status(home: &Home) -> Value {
     } else {
         "stale"
     };
+    let host = dir.join("host");
+    let launcher_state = match (
+        std::fs::read(host.join("launch.sh")),
+        std::fs::read(host.join("ensure-clax.sh")),
+    ) {
+        (Ok(l), Ok(w)) => {
+            let exec = |p: &Path| {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o111 == 0o111)
+            };
+            let same = l == launch_script(home).as_bytes() && wrapper().is_ok_and(|b| b == w);
+            if same && exec(&host.join("launch.sh")) && exec(&host.join("ensure-clax.sh")) {
+                "current"
+            } else {
+                "stale"
+            }
+        }
+        _ => "missing",
+    };
     let hosts: Vec<Value> = browsers()
         .into_iter()
         .filter(|(_, installed)| *installed)
@@ -324,6 +468,7 @@ pub fn status(home: &Home) -> Value {
         "dir": dir,
         "extension_id": extension_id_in_effect(home.root()),
         "files": files_state,
+        "launcher": launcher_state,
         "hosts": hosts,
     })
 }
@@ -343,6 +488,9 @@ pub fn host_lines(v: &Value) -> Vec<String> {
             if let Some(d) = h["detail"].as_str().or_else(|| h["path"].as_str()) {
                 l.push_str(&format!(" ({d})"));
             }
+            if let Some(r) = h["replaced"].as_str() {
+                l.push_str(&format!(", replacing the registration for {r}"));
+            }
             l
         })
         .collect()
@@ -350,9 +498,9 @@ pub fn host_lines(v: &Value) -> Vec<String> {
 
 pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
     let out = match cmd {
-        Cmd::Install => {
+        Cmd::Install { force } => {
             let _lock = super::init::InitLock::acquire(home)?;
-            install(home)?
+            install(home, *force)?
         }
         Cmd::Uninstall => {
             let _lock = if home.root().is_dir() {
@@ -367,10 +515,14 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
     super::print(cli, out, |j| {
         let mut lines = Vec::new();
         match cmd {
-            Cmd::Install => {
+            Cmd::Install { .. } => {
                 lines.push(format!(
-                    "extension: installed ({})",
-                    j["dir"].as_str().unwrap_or_default()
+                    "extension: {} ({})",
+                    j["status"].as_str().unwrap_or_default(),
+                    j["detail"]
+                        .as_str()
+                        .or(j["dir"].as_str())
+                        .unwrap_or_default()
                 ));
                 lines.extend(host_lines(j));
                 lines.push(j["load_unpacked"].as_str().unwrap_or_default().to_string());
@@ -390,6 +542,10 @@ pub fn run(cli: &crate::Cli, home: &Home, cmd: &Cmd) -> anyhow::Result<()> {
                     "extension files: {} ({})",
                     j["files"].as_str().unwrap_or_default(),
                     j["dir"].as_str().unwrap_or_default()
+                ));
+                lines.push(format!(
+                    "native host launcher: {}",
+                    j["launcher"].as_str().unwrap_or_default()
                 ));
                 lines.push(format!(
                     "extension ID: {}",

@@ -186,6 +186,8 @@ export HOME="$S_HOME" CLAX_HOME="$S_CLAX" CODEX_HOME="$S_CODEX" \
     CLAUDE_CONFIG_DIR="$S_CLAUDE" PI_CODING_AGENT_DIR="$S_PI" CLAX_BIN \
     PATH="$SAFE_PATH" TMPDIR="$ROOT/tmp"
 unset XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME
+# clax init registers the Chrome extension's native host; keep it in scratch.
+export CLAX_NATIVE_HOST_DIRS="chrome=$ROOT/browsers/chrome"
 READY=1
 # Harness CLIs read project settings from their working directory too.
 cd "$S_HOME"

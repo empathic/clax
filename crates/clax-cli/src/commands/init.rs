@@ -557,7 +557,7 @@ pub(crate) struct InitLock(#[allow(dead_code)] std::fs::File);
 
 impl InitLock {
     pub(crate) fn acquire(home: &Home) -> std::io::Result<InitLock> {
-        std::fs::create_dir_all(home.root())?;
+        super::extension::create_home(home)?;
         let f = std::fs::File::create(home.root().join("init.lock"))?;
         clax_server::daemon::retry_interrupted(|| f.lock())?;
         Ok(InitLock(f))
@@ -705,7 +705,7 @@ fn run(cli: &crate::Cli, home: &Home, a: &Args, install: bool) -> anyhow::Result
         json!({"status": "kept", "detail": "there is no Clax home"})
     };
     let extension = if install {
-        super::extension::install(home)
+        super::extension::install(home, false)
             .unwrap_or_else(|e| json!({"status": "failed", "detail": format!("{e:#}")}))
     } else {
         let revoked = revoke_extension_credentials(home);

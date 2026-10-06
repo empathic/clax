@@ -2622,15 +2622,27 @@ directory:
 }
 ```
 
-A browser directory that does not exist is never touched.
+A browser directory that does not exist is never touched. Each manifest is
+written to a temporary file beside it and renamed into place, so a symlink
+at that path is replaced, never written through. A manifest already there
+that names another Clax home's `launch.sh`, while that file exists, is that
+home's registration: it is kept, and the browser's entry is `conflict` with
+the other launcher in `other`, unless `clax extension install --force`
+replaces it. A manifest whose launcher no longer exists is replaced. A
+replaced registration is named in the entry's `replaced`. `clax init`
+never forces.
 `CLAX_NATIVE_HOST_DIRS` (`<browser>=<dir>:<browser>=<dir>…`) replaces the
 table, for tests and unusual installs; each listed directory must then
 exist. Snap and Flatpak Chromium on Linux keep their profiles in a sandbox
 and cannot run the host; they are not supported. The manifests written are
 recorded in `~/.clax/extension/installed.json` (`{version, hosts}`).
-`--json` answers `{status: "installed", dir, extension_id, hosts:
-[{browser, status: "installed" | "skipped" | "failed", path, detail}],
-load_unpacked}`, where `load_unpacked` is the one-time step in Chrome
+`--json` answers `{status: "installed" | "no_browser" | "not_registered",
+detail, dir, extension_id, hosts: [{browser, status: "installed" |
+"skipped" | "conflict" | "failed", path, detail, other, replaced}],
+load_unpacked}`: `installed` when at least one browser was registered,
+`no_browser` when none of the browsers is installed (the files are still
+written), `not_registered` when every installed browser was in conflict or
+failed; where `load_unpacked` is the one-time step in Chrome
 (chrome://extensions, Developer mode, Load unpacked, then
 `~/.clax/extension`). A binary built without the extension fails with a
 message that says so.
@@ -2644,15 +2656,19 @@ credential routes and the gateway use the same ID.
 lists whose `path` is this home's `launch.sh`, then `~/.clax/extension/`;
 `--json` answers `{status: "removed" | "absent", hosts_removed, note}`. The
 unpacked extension itself is removed in Chrome, at chrome://extensions.
-`install` and `uninstall` hold `~/.clax/init.lock`.
+`install` and `uninstall` hold `~/.clax/init.lock`. A missing home is
+created 0700; the extension's directories are 0755, its files 0644 and the
+two scripts 0755, whatever the umask.
 
 `clax extension status` reports `{dir, extension_id, files: "current" |
-"stale" | "missing", hosts: [{browser, status: "installed" | "missing" |
+"stale" | "missing", launcher: "current" | "stale" | "missing", hosts: [{browser, status: "installed" | "missing" |
 "stale", path}]}`: `files` is `current` when every file of the binary's
-build is on disk as built, and `hosts` lists each installed browser, with
+build is on disk as built, `launcher` is `current` when `host/launch.sh`
+and `host/ensure-clax.sh` are what this binary writes for this home and
+are executable, and `hosts` lists each installed browser, with
 `stale` for a manifest that names another path or origin. `clax doctor`
-includes it as the `extension` check, which warns until the files are
-current and every installed browser is registered.
+includes it as the `extension` check, which warns until the files and the
+launcher are current and every installed browser is registered.
 
 The Claude Code plugin's `/clax:extension` runs `clax extension install`
 through the wrapper and relays the result, for people who installed only

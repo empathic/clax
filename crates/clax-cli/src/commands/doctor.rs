@@ -118,8 +118,9 @@ fn codex_push_check(push: Option<&serde_json::Value>, daemon_version: &str) -> s
     }
 }
 
-/// `extension`: ok when the extension's files match this binary and every
-/// installed browser has this home's host registration; otherwise a warning
+/// `extension`: ok when the extension's files and its native host launcher
+/// and wrapper copy match this binary, and every installed browser has this
+/// home's host registration; otherwise a warning
 /// naming what is off and how to set it up.
 fn extension_check(ext: &serde_json::Value) -> serde_json::Value {
     let hosts = ext["hosts"]
@@ -152,6 +153,15 @@ fn extension_check(ext: &serde_json::Value) -> serde_json::Value {
         );
     }
     let mut problems = bad;
+    if ext["launcher"] != "current" {
+        problems.insert(
+            0,
+            format!(
+                "native host launcher {}",
+                ext["launcher"].as_str().unwrap_or("unknown")
+            ),
+        );
+    }
     if ext["files"] != "current" {
         problems.insert(0, "files differ from this clax's build".into());
     }
@@ -580,11 +590,23 @@ mod tests {
     #[test]
     fn the_extension_check_warns_until_every_browser_is_registered() {
         let ok = extension_check(&serde_json::json!({
-            "dir": "/h/extension", "extension_id": "abc", "files": "current",
+            "dir": "/h/extension", "extension_id": "abc", "files": "current", "launcher": "current",
             "hosts": [{"browser": "chrome", "status": "installed"}]
         }));
         assert_eq!(ok["ok"], true);
         assert!(ok["warn"].is_null(), "{ok}");
+        let launcher = extension_check(&serde_json::json!({
+            "dir": "/h/extension", "files": "current", "launcher": "stale",
+            "hosts": [{"browser": "chrome", "status": "installed"}]
+        }));
+        assert_eq!(launcher["warn"], true);
+        assert!(
+            launcher["detail"]
+                .as_str()
+                .unwrap()
+                .contains("launcher stale"),
+            "{launcher}"
+        );
         let missing = extension_check(
             &serde_json::json!({"dir": "/h/extension", "files": "missing", "hosts": []}),
         );

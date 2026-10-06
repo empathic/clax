@@ -34,8 +34,18 @@ impl Env {
         )
     }
     fn cmd(&self, args: &[&str]) -> Value {
-        let out = Command::cargo_bin("clax")
-            .unwrap()
+        self.cmd_in(Command::cargo_bin("clax").unwrap(), args)
+    }
+    /// `clax <args>` under `umask 000`, so modes come from Clax alone.
+    fn cmd_umask0(&self, args: &[&str]) -> Value {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg("umask 000; exec \"$0\" \"$@\"")
+            .arg(assert_cmd::cargo::cargo_bin("clax"));
+        self.cmd_in(c, args)
+    }
+    fn cmd_in(&self, mut c: Command, args: &[&str]) -> Value {
+        let out = c
             .env("HOME", self.dir.path())
             .env("CLAX_HOME", self.p("ax"))
             .env("CLAX_EXTENSION_DIST", self.p("dist"))
@@ -206,4 +216,213 @@ fn reinstalling_drops_files_the_new_build_lacks() {
         .filter(|n| n.starts_with(".extension"))
         .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
+}
+
+fn host<'a>(out: &'a Value, browser: &str) -> &'a Value {
+    out["hosts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["browser"] == browser)
+        .unwrap_or_else(|| panic!("no {browser} in {out}"))
+}
+
+#[test]
+fn reinstalling_after_an_id_change_rewrites_the_origin() {
+    let e = Env::new();
+    e.cmd(&["extension", "install"]);
+    let launch = e.p("ax/extension/host/launch.sh").display().to_string();
+    std::fs::write(
+        e.p("chrome/dev.empathic.clax.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "name": "dev.empathic.clax", "path": launch, "type": "stdio",
+            "allowed_origins": ["chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/"]
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        host(&e.cmd(&["extension", "status"]), "chrome")["status"],
+        "stale"
+    );
+    let out = e.cmd(&["extension", "install"]);
+    assert_eq!(host(&out, "chrome")["status"], "installed");
+    assert_eq!(
+        host_manifest(&e.p("chrome"))["allowed_origins"],
+        serde_json::json!([e.origin()])
+    );
+    assert_eq!(
+        host(&e.cmd(&["extension", "status"]), "chrome")["status"],
+        "installed"
+    );
+}
+
+#[test]
+fn another_homes_registration_is_kept_unless_forced() {
+    let e = Env::new();
+    std::fs::create_dir_all(e.p("other/extension/host")).unwrap();
+    let other = e.p("other/extension/host/launch.sh");
+    std::fs::write(&other, "#!/bin/sh\n").unwrap();
+    let theirs = format!(
+        r#"{{"name":"dev.empathic.clax","path":"{}","type":"stdio","allowed_origins":[]}}"#,
+        other.display()
+    );
+    std::fs::write(e.p("chrome/dev.empathic.clax.json"), &theirs).unwrap();
+    let out = e.cmd(&["extension", "install"]);
+    let h = host(&out, "chrome");
+    assert_eq!(h["status"], "conflict", "{out}");
+    assert!(h["detail"].as_str().unwrap().contains("--force"), "{out}");
+    assert_eq!(
+        std::fs::read_to_string(e.p("chrome/dev.empathic.clax.json")).unwrap(),
+        theirs
+    );
+    assert_eq!(host(&out, "brave")["status"], "installed");
+    let out = e.cmd(&["extension", "install", "--force"]);
+    let h = host(&out, "chrome");
+    assert_eq!(h["status"], "installed", "{out}");
+    assert_eq!(h["replaced"], other.display().to_string());
+    assert_eq!(
+        host_manifest(&e.p("chrome"))["path"],
+        e.p("ax/extension/host/launch.sh").display().to_string()
+    );
+}
+
+#[test]
+fn a_registration_whose_launcher_is_gone_is_replaced() {
+    let e = Env::new();
+    std::fs::write(
+        e.p("chrome/dev.empathic.clax.json"),
+        r#"{"name":"dev.empathic.clax","path":"/gone/extension/host/launch.sh"}"#,
+    )
+    .unwrap();
+    let out = e.cmd(&["extension", "install"]);
+    let h = host(&out, "chrome");
+    assert_eq!(h["status"], "installed", "{out}");
+    assert_eq!(h["replaced"], "/gone/extension/host/launch.sh");
+}
+
+#[test]
+fn a_symlinked_manifest_is_replaced_not_written_through() {
+    let e = Env::new();
+    std::fs::write(e.p("target.json"), "{}").unwrap();
+    std::os::unix::fs::symlink(e.p("target.json"), e.p("chrome/dev.empathic.clax.json")).unwrap();
+    e.cmd(&["extension", "install"]);
+    assert_eq!(std::fs::read_to_string(e.p("target.json")).unwrap(), "{}");
+    let meta = std::fs::symlink_metadata(e.p("chrome/dev.empathic.clax.json")).unwrap();
+    assert!(meta.file_type().is_file(), "the symlink itself is replaced");
+    assert_eq!(host_manifest(&e.p("chrome"))["name"], "dev.empathic.clax");
+    let left: Vec<_> = std::fs::read_dir(e.p("chrome"))
+        .unwrap()
+        .map(|d| d.unwrap().file_name().to_string_lossy().to_string())
+        .collect();
+    assert_eq!(
+        left,
+        vec!["dev.empathic.clax.json".to_string()],
+        "no temporary file is left"
+    );
+}
+
+#[test]
+fn install_with_no_browser_says_so() {
+    let e = Env::new();
+    std::fs::remove_dir(e.p("chrome")).unwrap();
+    std::fs::remove_dir(e.p("brave")).unwrap();
+    let out = e.cmd(&["extension", "install"]);
+    assert_eq!(out["status"], "no_browser", "{out}");
+    assert!(
+        out["detail"]
+            .as_str()
+            .unwrap()
+            .contains("no supported browser"),
+        "{out}"
+    );
+    assert!(
+        e.p("ax/extension/manifest.json").exists(),
+        "the files are still written"
+    );
+}
+
+#[test]
+fn a_first_install_makes_a_private_home_whatever_the_umask() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    e.cmd_umask0(&["extension", "install"]);
+    let mode = |p: &str| std::fs::metadata(e.p(p)).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode("ax"), 0o700);
+    for p in [
+        "ax/extension",
+        "ax/extension/icons",
+        "ax/extension/manifest.json",
+        "ax/extension/installed.json",
+        "ax/extension/host/launch.sh",
+        "chrome/dev.empathic.clax.json",
+    ] {
+        assert_eq!(mode(p) & 0o022, 0, "{p} is {:o}", mode(p));
+    }
+}
+
+#[test]
+fn status_checks_the_launcher_and_wrapper_copy() {
+    use std::os::unix::fs::PermissionsExt;
+    let e = Env::new();
+    assert_eq!(e.cmd(&["extension", "status"])["launcher"], "missing");
+    e.cmd(&["extension", "install"]);
+    assert_eq!(e.cmd(&["extension", "status"])["launcher"], "current");
+    let wrapper = e.p("ax/extension/host/ensure-clax.sh");
+    std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o644)).unwrap();
+    assert_eq!(e.cmd(&["extension", "status"])["launcher"], "stale");
+    e.cmd(&["extension", "install"]);
+    std::fs::write(
+        e.p("ax/extension/host/launch.sh"),
+        "#!/bin/sh\nexec other\n",
+    )
+    .unwrap();
+    assert_eq!(e.cmd(&["extension", "status"])["launcher"], "stale");
+    std::fs::remove_file(&wrapper).unwrap();
+    assert_eq!(e.cmd(&["extension", "status"])["launcher"], "missing");
+}
+
+/// Every script that runs `clax init` or `clax uninit` keeps it away from
+/// the real browser directories.
+#[test]
+fn scripts_that_run_init_isolate_the_browser_directories() {
+    let scripts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../scripts");
+    let mut checked = 0;
+    for e in std::fs::read_dir(&scripts).unwrap() {
+        let p = e.unwrap().path();
+        if p.extension().is_none_or(|x| x != "sh") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&p).unwrap();
+        let runs_init = text.lines().any(|l| {
+            let l = l.trim_start();
+            if l.starts_with('#') || l.starts_with("echo") || l.starts_with("record") {
+                return false;
+            }
+            let words: Vec<&str> = l.split_whitespace().collect();
+            words.windows(2).any(|w| {
+                (w[0].contains("CLAX_BIN") || w[0].trim_matches('"').ends_with("/clax"))
+                    && matches!(w[1], "init" | "uninit")
+            }) || (words.first() == Some(&"check_run")
+                && matches!(words.last(), Some(&"init") | Some(&"uninit")))
+        });
+        if !runs_init {
+            continue;
+        }
+        checked += 1;
+        let name = p.file_name().unwrap().to_string_lossy().to_string();
+        assert!(
+            text.contains("CLAX_NATIVE_HOST_DIRS="),
+            "{name} runs clax init without setting CLAX_NATIVE_HOST_DIRS to a scratch directory"
+        );
+        assert!(
+            text.lines()
+                .any(|l| l.trim_start().starts_with("unset ") && l.contains("XDG_CONFIG_HOME")),
+            "{name} runs clax init without unsetting XDG_CONFIG_HOME"
+        );
+    }
+    assert!(
+        checked >= 2,
+        "the scan found the scripts that run clax init"
+    );
 }

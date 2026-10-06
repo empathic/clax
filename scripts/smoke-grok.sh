@@ -38,6 +38,9 @@ export GROK_HOME="$SCRATCH/grok-home"
 export CLAX_HOME="$SCRATCH/clax-home"
 export CLAX_BIN="$REPO/target/debug/clax"
 export CLAX_NO_OPEN=1
+# clax init registers the Chrome extension's native host; keep it in scratch.
+export CLAX_NATIVE_HOST_DIRS="chrome=$SCRATCH/browsers/chrome"
+unset XDG_CONFIG_HOME
 unset GROK_SESSION_ID GROK_HOOK_EVENT GROK_PLUGIN_ROOT CLAUDE_PID CLAUDE_CODE_SESSION_ID \
     CLAUDE_PLUGIN_ROOT CLAUDE_PROJECT_DIR CLAUDE_CONFIG_DIR CLAX_SESSION_ID
 CWD="$SCRATCH/cwd"
