@@ -85,6 +85,8 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
     const site = d.sites.origins(on);
     switch (m.t) {
       case "open-thread": {
+        // The site's origins in their order now: which was used last may have changed since the listing came.
+        if (site.length > 1) await d.sites.load(on);
         const where = d.tabs.openThread(tabId, m.threadId);
         if (!where) throw new PanelFailure("not_found", "That thread is not on this site any more.");
         // The most recently used address first; one that does not answer, the next (owner decision 2026-10-06).

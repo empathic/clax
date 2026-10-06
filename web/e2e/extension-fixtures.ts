@@ -35,7 +35,7 @@ export type Live = {
 };
 
 /** A loopback port free a moment ago. */
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   const srv = createNetServer();
   await new Promise<void>(r => srv.listen(0, "127.0.0.1", r));
   const { port } = srv.address() as AddressInfo;
@@ -118,7 +118,7 @@ export const test = base.extend<{ live: Live; variant: Variant }, { warm: void }
     };
     await use(l);
     await l.ctx.close();
-    await site.close();
+    await site.close().catch(() => {});
     await l.daemon.stop();
     rmSync(profile, { recursive: true, force: true });
     rmSync(siteDir, { recursive: true, force: true });

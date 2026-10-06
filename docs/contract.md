@@ -2126,6 +2126,91 @@ the extension's credential; anything else is 403 `forbidden`.
 - **Deleting a page** a thread was moved from leaves the thread whole: its
   snapshot versions, links and send records live on its new page.
 
+### Joined sites
+
+Several origins can be one site (owner decisions 2026-10-06): a dev server
+that moved from `http://localhost:7702` to `:7703` is still one app. Clax
+suggests a join and the owner confirms; nothing joins on its own. The
+routes are under `/api/live/` (hidden from the LAN), take the `Origin` rule
+of the viewer routes, and follow the owner rules above: reads need an owner
+credential, writes the token or the extension's credential (else 403
+`forbidden`). Each origin a route takes may be any URL of it; the daemon's
+own origin is 400 `own_origin`.
+
+- **A site** is `{key, name, joined, origins}`: `key` is the origin its
+  live pages and merge rules are kept under, `name` its most recently used
+  origin, `joined` whether it has more than one origin, and `origins` each
+  `{origin, joined_at, last_used_at}`, the most recently used first (a site
+  of one origin has its origin alone, with `null` times). An origin is
+  used when the extension looks a URL of it up (`GET /api/live/pages`) or
+  posts a comment on it.
+- **Joined means shared.** Every lookup and write for a URL of any origin
+  of a site (`GET /api/live/pages`, `POST /api/live/threads`,
+  `/api/live/snapshots`, a move's `page_url`, a scope watch) resolves to
+  the site's page of the URL's path, kept under the site's key, whose
+  `page` view and threads' `page_url` name the key's origin. `GET
+  /api/live/site?origin=` answers the site's pages (from every origin of
+  it) and its rules, and also `site`; `site:<origin>` on `/api/stream`
+  carries the site's events for every origin of it, origins joined later
+  included, and a `site` event `{site, origins, left}` on every origin's
+  topic when an origin joins it or is split off (`left`: those no longer
+  of it). Moves and merge rules apply across the site (`cross_origin` only
+  for another site). A scope watch on any origin of the site covers the
+  same paths on all of them, origins joined later included; `PUT
+  /api/sessions/<sid>/live-watches` answers `site` too. A live page's
+  artifact view has `live.origins` (the site's, the most recently used
+  first), and its `live.page_url` is its path on the first of them.
+- **`GET /api/live/sites`** answers `{sites: [{site, pages, threads,
+  last_activity}]}`: every site with live pages, one entry per joined
+  site, the most recently active first.
+- **`GET /api/live/sites/suggest?url=&title=`** answers `{origin, site,
+  suggestions}`: when the URL's origin joined no site, at most three sites
+  it may be the same app as, each `{origin, site, reason, path}` (`origin`:
+  the site's name), the most recently active first. A site is suggested
+  when one of its origins is of the URL's host family (both hosts are
+  `localhost`, a `*.localhost` name, `127.0.0.0/8` or `[::1]`, with one
+  scheme), and it has a live page of the URL's path (`reason: "path"`), or
+  one titled `title` (`"title"`, case aside), or one of a path the URL's
+  origin has a page of (`"path"`); and the owner has not answered the pair
+  `never`, or `later` within a day. It never writes.
+- **`POST /api/live/sites/join`** `{origin, with}` joins `origin` (with its
+  site, when it is in one) to the site of `with`, whose key stays the
+  site's key; `with`'s site must have a live page (400 `unknown_site`).
+  Any two origins the owner picks may be joined, of any host family. A
+  page of a joining origin whose path the site lacks is re-keyed to the
+  site; one whose path the site has a page of is merged into it: its
+  threads are re-filed onto the site's page as a move does (their move
+  `kind: "join"`), at most 200 a request (fewer past 64 MiB of snapshots),
+  each batch one transaction, and once empty it hands its watchers to the
+  site's page and is deleted (`artifact_deleted`; its snapshots that no
+  thread names go with it). The joining site's merge rules become the
+  site's (one the site already has is dropped), and once no page is left
+  to merge, the site's rules are applied across it (`kind: "merge"`), in
+  the same batches. It answers `{site, joined, moved, remaining}`
+  (`joined`: this request joined them; `moved`: the re-filed thread IDs);
+  while `remaining` is above 0 the client repeats the request, which is
+  idempotent. 400 `same_origin`, `too_many_origins` (a site joins at most
+  16), `too_many_rules` (64 in force).
+- **`POST /api/live/sites/split`** `{origin}` splits `origin` off its
+  site: from then on it is a site of its own, and its new pages and
+  threads are its own. What the site holds (pages, threads, rules,
+  history), whichever origin it was made on, stays with the site; when
+  `origin` was the site's key, the key moves to its most recently used
+  origin left. A site left with one origin is that origin's own. The pair
+  is answered `never`, so it is not suggested again. A scope watch made
+  before keeps the watches it made. It answers `{split, origin, site}`
+  (`split: false`, writing nothing, when `origin` joined no site; `site`:
+  what is left). 400 `joining` when `origin` is the site's key and a join
+  of the site is not finished.
+- **`POST /api/live/sites/answer`** `{origin, with, answer}` records the
+  owner's answer to the suggestion that `origin` is the same app as
+  `with`: `never`, or `later` (not suggested for a day). It answers
+  `{answer}`. 400 `invalid_answer`, `same_origin`.
+- **Opening a thread** of a joined site (the extension's side panel) goes
+  to its path on the site's most recently used origin; the extension first
+  probes it with a short request, and tries the others, the most recently
+  used first, when it does not answer, then says that none does.
+
 ### The Clax extension's credentials
 
 The Clax Chrome extension pairs with the daemon through its native
@@ -2584,7 +2669,7 @@ except as noted:
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
-| `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin, those made later included. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
+| `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin's site (every origin joined to it, those joined later too: see "Joined sites"), those made later included, and `site` when an origin joins the site or is split off. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
 <stream>:<seq>`. `seq` is one sequence for the whole daemon, rising with

@@ -71,7 +71,7 @@ describe("panelAction on the tab's site", () => {
     const both = ["http://localhost:5174", "http://localhost:5173"];
     const s = setup({ site: both, down: ["http://localhost:5174"] });
     await s.run({ t: "open-thread", threadId: T1 });
-    expect(s.calls).toEqual([`open 4 ${T1}`, "probe http://localhost:5174/users/7?x#/y", "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
+    expect(s.calls).toEqual(["load http://localhost:5173", `open 4 ${T1}`, "probe http://localhost:5174/users/7?x#/y", "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
     const none = setup({ site: both, down: both });
     await none.run({ t: "open-thread", threadId: T1 });
     expect(none.calls.filter(c => c.startsWith("navigate"))).toEqual([]);
