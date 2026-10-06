@@ -64,7 +64,7 @@ Owner's statements (2026-10-06):
 ## 2. Decisions
 
 Owner decisions of 2026-10-06 are binding (O1–O4 for questions, I1–I5 for
-the inbox). The rest follow from them and from the research in §4.
+the inbox, O5–O7 settled after the first draft). The rest follow from them and from the research in §4.
 
 | # | Decision | Rationale |
 |---|---|---|
@@ -86,6 +86,9 @@ the inbox). The rest follow from them and from the research in §4.
 | N2 | Search uses an FTS5 index (contentless, with deletes) beside indexed columns for the filters. | §7.4: an indexed `LIKE` cannot serve a word inside text; FTS5 is compiled into the bundled SQLite. |
 | N3 | The inbox belongs to the install's owner identity and carries no viewer ID. | There is one owner per install (main spec §11); claiming and folding the owner row then never touches the inbox. |
 | N4 | Migration 19 adds `questions`; migration 20 adds the inbox and fills it from the existing history, marked read. | The next free numbers on main (18 is site-wide threads); "the history of the system" includes what came before. |
+| O5 | Claude Code's built-in questions: Clax first, with the **Answer in the terminal** button, and `terminal_after_s` default 600 (§4.4). Both places cannot be live at once with Claude Code today (§4.3); the button and the timeout are the chosen behaviour. | Owner decision 2026-10-06. |
+| O6 | Notifications for every inbox kind; a burst on one page is merged into one notification that replaces itself (one tag per page). No OS notification, and none from the extension, when no Clax tab is open. | Owner decision 2026-10-06. |
+| O7 | Migration numbers are fixed: questions 19, inbox 20 (21 is taken by other work). | Owner decision 2026-10-06. |
 
 ## 3. User flows
 
@@ -240,7 +243,11 @@ terminal dialog is drawn, and the terminal takes no answer while it runs.
 Once the dialog is drawn, nothing outside Claude Code can answer it. An
 async hook can mirror a question but never answer it. So "Clax or the
 terminal, whichever is first" cannot be a race in which both are live at
-once: at each moment exactly one place can answer.
+once: at each moment exactly one place can answer. The owner asked whether
+both places can answer; with Claude Code today they cannot, because there is
+no external answer path once the dialog is drawn. The **Answer in the
+terminal** button and the `terminal_after_s` timeout (default 600) are the
+chosen behaviour (O5).
 
 ### 4.4 The chosen behaviour (Q4)
 
@@ -952,7 +959,8 @@ Each skill gains "Asking the person":
   stop, prompt or wait.
 - While the hook holds a question in Clax, the terminal cannot answer it
   (§4.4).
-- No notification when no Clax tab of the owner's is open at all.
+- No notification when no Clax tab of the owner's is open at all (O6: no OS
+  or extension notification by decision).
 - Codex and Grok built-in question tools are not mirrored (§4.5).
 - An item's index entry keeps the artifact's title from when it was made; a
   later rename is found by the page filter, not by the old title's text.
