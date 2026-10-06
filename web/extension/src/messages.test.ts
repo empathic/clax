@@ -7,8 +7,8 @@ const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
 describe("messages", () => {
   it("takes the overlay's well-formed messages", () => {
     expect(isFromOverlay({ t: "hello", url: "http://localhost:5173/" })).toBe(true);
-    expect(isFromOverlay({ t: "capture", pickId: "b".repeat(32), rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 })).toBe(true);
-    expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
+    expect(isFromOverlay({ t: "capture", pickId: "b".repeat(32), anchor, rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 })).toBe(true);
+    expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
     expect(isFromOverlay({ t: "quiet", url: "https://x/", title: "", snapshot: "<p>", pending: [ULID] })).toBe(true);
     expect(isFromOverlay({ t: "resolved", results: [{ id: ULID, found: true, method: null, rect: null }] })).toBe(true);
     expect(isFromOverlay({ t: "cancel", pickId: null })).toBe(true);
@@ -21,7 +21,7 @@ describe("messages", () => {
     expect(isFromOverlay({ t: "hello" })).toBe(false);
     expect(isFromOverlay({ t: "hello", url: "x".repeat(MAX_URL + 1) })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: Number.NaN, y: 0, w: 1, h: 1 }, dpr: 1 })).toBe(false);
-    expect(isFromOverlay({ t: "pick", pickId: "short", anchor, url: "http://x/", title: "T", snapshot: null, snapshotError: "too_large" })).toBe(false);
+    expect(isFromOverlay({ t: "pick", pickId: "short", url: "http://x/", title: "T", snapshot: null, snapshotError: "too_large" })).toBe(false);
     expect(isFromOverlay({ t: "steal", url: "http://x/" })).toBe(false);
     expect(isFromComposer({ t: "post", body: "x".repeat(MAX_BODY + 1) })).toBe(false);
     expect(isFromPanel({ t: "send", threadId: "not a ulid" })).toBe(false);
@@ -37,8 +37,8 @@ describe("messages", () => {
     expect(isFromOverlay({ t: "capture", rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: Infinity })).toBe(false);
     expect(isFromOverlay({ t: "capture", rect: { x: "0", y: 0, w: 1, h: 1 }, dpr: 1 })).toBe(false);
     // A pick needs a snapshot or the reason it has none.
-    expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), anchor, url: "http://x/", title: "T", snapshot: null, snapshotError: null })).toBe(false);
-    expect(isFromOverlay({ t: "pick", pickId: "A".repeat(32), anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(false);
+    expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), url: "http://x/", title: "T", snapshot: null, snapshotError: null })).toBe(false);
+    expect(isFromOverlay({ t: "pick", pickId: "A".repeat(32), url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(false);
     expect(isFromOverlay({ t: "quiet", url: "http://x/", title: "T", snapshot: "x".repeat(MAX_SNAPSHOT_CHARS + 1) })).toBe(false);
     expect(isFromOverlay({ t: "quiet", url: "http://x/", title: 7, snapshot: "<p>" })).toBe(false);
     expect(isFromOverlay({ t: "resolved", results: new Array(501).fill({ id: ULID, found: true }) })).toBe(false);
@@ -72,7 +72,7 @@ describe("messages", () => {
   });
 
   it("takes a snapshot error only as a known reason", () => {
-    const pick = { t: "pick", pickId: "a".repeat(32), anchor, url: "http://x/", title: "T", snapshot: "<p>placeholder</p>", snapshotError: "too_large" };
+    const pick = { t: "pick", pickId: "a".repeat(32), url: "http://x/", title: "T", snapshot: "<p>placeholder</p>", snapshotError: "too_large" };
     expect(isFromOverlay(pick)).toBe(true);
     expect(isFromOverlay({ ...pick, snapshot: null })).toBe(true);
     expect(isFromOverlay({ ...pick, snapshotError: "<img onerror>" })).toBe(false);
@@ -149,8 +149,8 @@ describe("messages", () => {
   it("refuses an unknown field on every message", () => {
     const pickId = "a".repeat(32);
     const overlay = [
-      { t: "hello", url: "http://x/" }, { t: "route", url: "http://x/#/a" }, { t: "capture", pickId, rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
-      { t: "pick", pickId, anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null },
+      { t: "hello", url: "http://x/" }, { t: "route", url: "http://x/#/a" }, { t: "capture", pickId, anchor, rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
+      { t: "pick", pickId, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null },
       { t: "quiet", url: "http://x/", title: "T", snapshot: "<p>", pending: [] }, { t: "resolved", results: [] }, { t: "comment-mode", on: true },
       { t: "cancel", pickId }, { t: "pin", threadId: ULID }, { t: "removed" }, { t: "ping" },
     ];
@@ -158,7 +158,7 @@ describe("messages", () => {
       { t: "state", page: null, route: null, threads: [], commentMode: false, pending: false }, { t: "comment-mode", on: false },
       { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null }, { t: "snapshot-now" },
       { t: "resend" }, { t: "captured", pickId, ok: true }, { t: "captured", pickId, ok: false, error: "no_capture_permission" },
-      { t: "open-composer", pickId, rect: { x: 0, y: 0, w: 1, h: 1 } },
+      { t: "open-composer", pickId, rect: { x: 0, y: 0, w: 1, h: 1 } }, { t: "composer-ready", pickId },
     ];
     const composer = [{ t: "ready" }, { t: "post", body: "hi" }, { t: "cancel" }];
     const panel = [
@@ -181,7 +181,7 @@ describe("messages", () => {
     expect(isFromOverlay({ t: "capture", rect: { x: 0, y: 0, w: 1, h: 1, z: 1 }, dpr: 1 })).toBe(false);
     // A required field that is absent is refused, not read as undefined.
     expect(isFromPanel({ t: "send", threadId: ULID })).toBe(false);
-    expect(isFromOverlay({ t: "pick", pickId, anchor, url: "http://x/", title: "T", snapshot: "<p>" })).toBe(false);
+    expect(isFromOverlay({ t: "pick", pickId, url: "http://x/", title: "T", snapshot: "<p>" })).toBe(false);
   });
 
   it("checks the pick's messages field by field", () => {
@@ -189,6 +189,14 @@ describe("messages", () => {
     const rect = { x: 0, y: 0, w: 1, h: 1 };
     // The capture names the pick it is for (spec §9.4).
     expect(isFromOverlay({ t: "capture", rect, dpr: 1 })).toBe(false);
+    // The capture carries the pick's anchor, so the draft does not wait for the snapshot.
+    expect(isFromOverlay({ t: "capture", pickId, rect, dpr: 1 })).toBe(false);
+    expect(isFromOverlay({ t: "capture", pickId, anchor: { ...anchor, kind: "script" }, rect, dpr: 1 })).toBe(false);
+    expect(isFromOverlay({ t: "pick", pickId, anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(false);
+    // A serializer that failed sends no snapshot, and says so.
+    expect(isFromOverlay({ t: "pick", pickId, url: "http://x/", title: "T", snapshot: null, snapshotError: "failed" })).toBe(true);
+    expect(isFromWorker({ t: "composer-ready", pickId: "short" })).toBe(false);
+    expect(isFromWorker({ t: "composer-ready" })).toBe(false);
     expect(isFromOverlay({ t: "capture", pickId: "C".repeat(32), rect, dpr: 1 })).toBe(false);
     // A quiet snapshot names the pending threads it covers.
     expect(isFromOverlay({ t: "quiet", url: "http://x/", title: "T", snapshot: "<p>" })).toBe(false);

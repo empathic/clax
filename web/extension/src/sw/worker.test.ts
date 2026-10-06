@@ -285,6 +285,7 @@ describe("the worker", () => {
 
 describe("the pick flow in the worker", () => {
   const PICK = "a".repeat(32);
+  const ANCHOR = { kind: "element", selector: "#save", quote: "Save", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" } as const;
   const sender = (url: string, tab: number | undefined, frameId = 3, id = "ext") =>
     ({ name: `composer:${PICK}`, sender: { id, url, frameId, tab: tab === undefined ? undefined : { id: tab } } }) as unknown as chrome.runtime.Port;
 
@@ -301,7 +302,7 @@ describe("the pick flow in the worker", () => {
   });
 
   it("sends capture, pick, quiet and cancel to the picks, and the rest to the tabs", async () => {
-    const r = await w.fromOverlay(4, 9, { t: "capture", pickId: PICK, rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 }, URL1);
+    const r = await w.fromOverlay(4, 9, { t: "capture", pickId: PICK, anchor: ANCHOR, rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 }, URL1);
     expect(r).toEqual({ t: "captured", pickId: PICK, ok: false, error: "no_capture_permission" });
     expect(captures).toEqual([[9, { x: 1, y: 2, w: 3, h: 4 }, 2]]);
     expect(toOverlay.at(-1)).toEqual({ tabId: 4, m: { t: "open-composer", pickId: PICK, rect: { x: 1, y: 2, w: 3, h: 4 } } });

@@ -12,7 +12,7 @@ import type { FeedbackState, Thread } from "../../../shell/src/threads";
 import { type ThreadDelta, applyThread } from "../../../shell/src/view/deltas";
 import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sync";
 import type { Working } from "../../../shell/src/view/working-model";
-import { type OverlayToWorker, type PageView, type PanelState, type WorkerToOverlay, type WorkerToPanel, isFromPanel } from "../messages";
+import { type OverlayToWorker, type PageView, type PanelState, type WorkerToOverlay, type WorkerToPanel, isFromPanel, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 
 type Owner = { public_id: string; display_name: string | null };
@@ -31,10 +31,8 @@ export const emptyTab = (tabId: number, url: string): TabState => ({
   versions: [], participants: null, active: false, error: null,
 });
 
-/** A thread as the daemon sends it for a live page: `addressed_pending`
- * while an agent's address waits for the page's next snapshot. */
-type LiveThread = Thread & { addressed_pending?: { harness: string; at: string } | null };
-const waiting = (t: Thread) => t.status === "open" && !!(t as LiveThread).addressed_pending;
+/** A thread of a live page has `addressed_pending` while an agent's address waits for the page's next snapshot. */
+const waiting = waitsForSnapshot;
 const pendingOf = (threads: Thread[]) => threads.some(waiting);
 
 const FEEDBACK = ["thread_id", "state", "tier", "since", "resends", "exhausted"] as const;

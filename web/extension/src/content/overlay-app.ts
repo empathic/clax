@@ -14,7 +14,7 @@ import { CommentMode } from "../../../bridge/src/comment-mode";
 import type { Anchor, AnchorResult } from "../../../bridge/src/protocol";
 import { rectOf } from "../../../bridge/src/target";
 import type { Thread } from "../../../shell/src/threads";
-import { isFromWorker, MAX_TITLE, type OverlayToWorker, PICK_ID, type Rect, type WorkerToOverlay } from "../messages";
+import { isFromWorker, MAX_TITLE, type OverlayToWorker, PICK_ID, type Rect, type SnapshotError, type WorkerToOverlay, waitsForSnapshot } from "../messages";
 import { PIN_CSS, Pins } from "./pins";
 import { type Placed, realTimers, Resolver, type Timers } from "./resolver";
 import { serializeSnapshot } from "./snapshot";
@@ -32,6 +32,9 @@ export const ROUTE_MS = 250;
  * thumbnail, three lines of text, the buttons and a notice. */
 const FRAME_W = 360;
 const FRAME_H = 300;
+/** How long a composer frame waits, hidden, for the worker to confirm its
+ * page connected before the overlay closes it (the worker's own wait is shorter). */
+export const COMPOSER_CONFIRM_MS = 10_000;
 /** The most results one `resolved` carries (`isFromOverlay`'s bound). */
 const MAX_RESULTS = 500;
 /** The global, in the isolated world only, that marks a started overlay.
@@ -75,8 +78,7 @@ export function startOnce(env: OverlayEnv, g: object = globalThis): (() => void)
 const randomPickId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
 
 /** The open threads a state shows waiting for a snapshot (spec L11). */
-const waitingIds = (threads: Thread[]) =>
-  threads.filter(t => t.status === "open" && !!(t as { addressed_pending?: unknown }).addressed_pending).map(t => t.id);
+const waitingIds = (threads: Thread[]) => threads.filter(waitsForSnapshot).map(t => t.id);
 
 /** What the overlay shows of a state: a state that changes none of it
  * (`pending` alone, say) resolves nothing again. */
@@ -213,8 +215,13 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   }, { shadow: "closed" });
   stops.push(() => mode.destroy());
 
-  let composer: { pickId: string; frame: HTMLIFrameElement } | null = null;
-  const closeComposer = () => { composer?.frame.remove(); composer = null; };
+  /** The composer's frame; `shown` once the worker confirmed the pick's composer page connected. */
+  let composer: { pickId: string; frame: HTMLIFrameElement; shown: boolean; wait: unknown } | null = null;
+  const closeComposer = () => {
+    if (composer) timers.clear(composer.wait);
+    composer?.frame.remove();
+    composer = null;
+  };
   stops.push(closeComposer);
   /** The pick whose screenshot is being taken, until the worker opens its composer. */
   let picking: { pickId: string; anchor: Anchor } | null = null;
@@ -236,7 +243,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     mode.setVisible(false);
     setHidden(true);
     await new Promise<void>(r => timers.frame(() => timers.frame(r)));
-    const reply = await send({ t: "capture", pickId, rect, dpr: Math.min(8, win.devicePixelRatio || 1) });
+    const reply = await send({ t: "capture", pickId, anchor, rect, dpr: Math.min(8, win.devicePixelRatio || 1) });
     reveal();
     mode.captured();
     // A worker that refused the capture opens no composer for it.
@@ -244,8 +251,8 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     if (!ok && picking?.pickId === pickId) picking = null;
   }
 
-  /** The worker took the pick: its composer opens beside `rect`, then the
-   * page is serialized (spec §8.2: after the composer has focus). */
+  /** The worker took the pick: its composer's frame opens beside `rect`,
+   * hidden until the worker confirms the composer page connected. */
   function composerFor(pickId: string, rect: Rect): void {
     const p = picking;
     if (!p || p.pickId !== pickId || !PICK_ID.test(pickId)) return;
@@ -253,10 +260,32 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     reveal();
     mode.set(false);
     openComposer(pickId, rect);
+  }
+
+  /** The pick's composer page connected to the worker: its frame is shown
+   * and focused, and the page is serialized while the person types (spec
+   * §3.2, §8.2). The composer is an extension frame in its own process, so
+   * the serialization here does not hold up its typing. */
+  function composerReady(pickId: string): void {
+    const c = composer;
+    if (!c || c.pickId !== pickId || c.shown) return;
+    c.shown = true;
+    timers.clear(c.wait);
+    c.frame.style.visibility = "";
+    c.frame.focus();
     timers.set(() => {
       if (!live) return;
-      const s = serializeSnapshot(doc);
-      void send({ t: "pick", pickId, anchor: p.anchor, url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, snapshotError: s.error });
+      let html: string | null = null;
+      let error: SnapshotError | null = null;
+      try {
+        const s = serializeSnapshot(doc);
+        html = s.html;
+        error = s.error;
+      } catch {
+        // A DOM the serializer cannot take: the thread is posted with no snapshot of it.
+        error = "failed";
+      }
+      void send({ t: "pick", pickId, url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: html, snapshotError: error });
     }, 0);
   }
 
@@ -264,22 +293,26 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     closeComposer();
     const f = doc.createElement("iframe");
     f.src = `${runtime.getURL("composer.html")}#${pickId}`;
-    // The composer loads once, and takes focus then; a second load is a
-    // navigation the page made (a parent may navigate a child frame), so
-    // the frame goes.
+    // The frame stays hidden, and so cannot take focus, until the worker
+    // confirms the composer page connected (`composer-ready`): a page may
+    // navigate a child frame, even before the composer first loads, and
+    // what it puts there is never shown. The composer loads once; a second
+    // load is such a navigation, so the frame goes, as does a frame whose
+    // page never connects.
+    f.style.visibility = "hidden";
     let loads = 0;
-    f.addEventListener("load", () => {
+    const abandon = () => {
       if (composer?.frame !== f) return;
-      if (++loads < 2) { f.focus(); return; }
       closeComposer();
       void send({ t: "cancel", pickId });
-    });
+    };
+    f.addEventListener("load", () => { if (++loads >= 2) abandon(); });
     const left = Math.min(Math.max(8, rect.x + rect.w + 12), win.innerWidth - FRAME_W - 8);
     const top = Math.min(Math.max(8, rect.y), win.innerHeight - FRAME_H - 8);
     f.style.left = `${Math.max(8, left)}px`;
     f.style.top = `${Math.max(8, top)}px`;
     root.appendChild(f);
-    composer = { pickId, frame: f };
+    composer = { pickId, frame: f, shown: false, wait: timers.set(abandon, COMPOSER_CONFIRM_MS) };
   }
 
   // The automatic snapshot after an agent addressed a thread (spec L11):
@@ -344,6 +377,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
       case "comment-mode": mode.set(m.on && composer === null); break;
       case "captured": break; // the answer to `capture`
       case "open-composer": composerFor(m.pickId, m.rect); break;
+      case "composer-ready": composerReady(m.pickId); break;
       case "close-composer":
         if (composer?.pickId !== m.pickId) break;
         closeComposer();

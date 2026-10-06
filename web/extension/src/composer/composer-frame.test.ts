@@ -106,6 +106,31 @@ describe("the composer page", () => {
     expect(notice()).toBeNull();
   });
 
+  it("says nothing when the worker lets go after a post", async () => {
+    port.tell(draft());
+    await settle();
+    type("Too wide");
+    post();
+    port.tell({ t: "posted", threadId: T1 });
+    port.drop();
+    expect(notice()).toBeNull();
+  });
+
+  it("says nothing when the worker lets go after a cancel", async () => {
+    port.tell(draft());
+    await settle();
+    (view.root.querySelector("button:not(.primary)") as HTMLButtonElement).click();
+    port.drop();
+    expect(notice()).toBeNull();
+  });
+
+  it("restyles the shell composer's own elements, which are there", async () => {
+    port.tell(draft({ clipUrl: "data:image/png;base64,iVBORw==" }));
+    await settle();
+    // ComposerFrame.svelte's styles name these classes of the shell's Composer.
+    expect(view.root.querySelector("form.composer img.clip")).not.toBeNull();
+  });
+
   it("says when the worker stopped listening, keeping the text to copy", async () => {
     port.tell(draft());
     await settle();

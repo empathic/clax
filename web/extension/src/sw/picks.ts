@@ -1,20 +1,23 @@
 // One pick per tab, from the screenshot to the posted thread (spec
 // 2026-10-05 §3.2, §8.1, §9.4). The overlay names the pick (128 random
-// bits) in `capture`; the worker takes it as the tab's pick, captures, and
-// tells the overlay to open the composer. A composer port is taken only
-// from the pick's tab, for the tab's current pick, within PICK_TTL_MS of
-// its capture, and only one. The thread is posted once both the body (from
-// the composer) and the anchor and snapshot (from the overlay) are in,
-// naming the threads that were pending when the overlay was told to
-// serialize the page (spec L11). The composer never sees the credential:
-// posting is the worker's.
+// bits) and its anchor in `capture`; the worker takes it as the tab's pick,
+// captures, and tells the overlay to open the composer. A composer port is
+// taken only from the pick's tab, for the tab's current pick, within
+// COMPOSER_WAIT_MS of its capture, and only one; once it is, the overlay is
+// told (`composer-ready`) and only then shows the frame, so a document the
+// page put in the frame is never shown or focused. A pick whose composer
+// does not connect in time is cancelled. The draft goes out as soon as the
+// composer asks; the thread is posted once both the body (from the
+// composer) and the snapshot (from the overlay) are in, naming the threads
+// that were pending when the overlay was told to serialize the page (spec
+// L11). The composer never sees the credential: posting is the worker's.
 import type { Anchor } from "../../../bridge/src/protocol";
 import { bytesDataUrl } from "../data-url";
 import { type OverlayToWorker, type PageView, type Rect, type WorkerToComposer, type WorkerToOverlay, isFromComposer } from "../messages";
 import type { Api } from "./api";
 
-/** How long a captured pick waits for its composer. */
-export const PICK_TTL_MS = 600_000;
+/** How long a captured pick waits for its composer page to connect. */
+export const COMPOSER_WAIT_MS = 5000;
 
 /** The snapshot posted for a pick that came without one. */
 const NO_SNAPSHOT = "<!doctype html><meta charset=\"utf-8\"><title>No snapshot</title><p>Clax took no snapshot of this page.</p>";
@@ -25,11 +28,11 @@ type Quiet = Extract<OverlayToWorker, { t: "quiet" }>;
 type Captured = Extract<WorkerToOverlay, { t: "captured" }>;
 
 type PickState = {
-  pickId: string; tabId: number; created: number; clip: Blob | null; clipError: string | null;
+  pickId: string; tabId: number; created: number; anchor: Anchor; clip: Blob | null; clipError: string | null;
   /** The tab's pending threads when the overlay was told to serialize the page. */
   pending: string[];
-  anchor: Anchor | null; url: string | null; title: string; snapshot: string | null;
-  body: string | null; port: chrome.runtime.Port | null; posting: boolean;
+  url: string | null; title: string; snapshot: string | null;
+  body: string | null; port: chrome.runtime.Port | null; connected: boolean; posting: boolean;
 };
 
 export type PicksDeps = {
@@ -40,7 +43,11 @@ export type PicksDeps = {
   pendingIds(tabId: number): string[];
   /** A thread was posted on `page` from the tab. */
   posted?(tabId: number, page: PageView): void;
+  /** Whether the tab is still its window's active tab (what `captureVisibleTab` captures). */
+  tabActive?(tabId: number): Promise<boolean>;
   now(): number;
+  /** Runs `fn` after `ms`. */
+  after?(ms: number, fn: () => void): void;
 };
 
 /** A `data:image/png` URL of `b` (a service worker cannot make object URLs). */
@@ -48,12 +55,23 @@ const dataUrl = async (b: Blob) => bytesDataUrl(new Uint8Array(await b.arrayBuff
 
 const message = (e: unknown) => (e instanceof Error && e.message ? e.message : String(e));
 
+/** Tells the composer `m`; a port Chrome already closed (its frame went) hears nothing. */
+function tell(port: chrome.runtime.Port | null, m: WorkerToComposer): void {
+  try { port?.postMessage(m); } catch { /* the composer is gone */ }
+}
+function cut(port: chrome.runtime.Port | null): void {
+  try { port?.disconnect(); } catch { /* already gone */ }
+}
+
 export class Picks {
   private byTab = new Map<number, PickState>();
   /** Tabs with a quiet snapshot in flight. */
   private quieting = new Set<number>();
+  private readonly after: (ms: number, fn: () => void) => void;
 
-  constructor(private readonly d: PicksDeps) {}
+  constructor(private readonly d: PicksDeps) {
+    this.after = d.after ?? ((ms, fn) => { setTimeout(fn, ms); });
+  }
 
   /** The tab's pick `pickId`, while it is current. */
   private current(tabId: number, pickId: string): PickState | null {
@@ -62,33 +80,35 @@ export class Picks {
   }
 
   /** Takes the overlay's pick for the tab, replacing any earlier one, and
-   * captures its screenshot; then tells the overlay to open its composer.
-   * Answers `captured`, or null for a pick ID the tab already has. */
+   * captures its screenshot (nothing when the tab is no longer its window's
+   * active tab); then tells the overlay to open its composer. Answers
+   * `captured`, or null for a pick ID the tab already has. */
   async capture(tabId: number, windowId: number, m: Capture): Promise<Captured | null> {
     const prev = this.byTab.get(tabId);
     if (prev?.pickId === m.pickId) return null;
-    prev?.port?.disconnect();
+    cut(prev?.port ?? null);
     const p: PickState = {
-      pickId: m.pickId, tabId, created: this.d.now(), clip: null, clipError: null, pending: [],
-      anchor: null, url: null, title: "", snapshot: null, body: null, port: null, posting: false,
+      pickId: m.pickId, tabId, created: this.d.now(), anchor: m.anchor, clip: null, clipError: null, pending: [],
+      url: null, title: "", snapshot: null, body: null, port: null, connected: false, posting: false,
     };
     this.byTab.set(tabId, p);
-    const shot = await this.d.capture(windowId, m.rect, m.dpr);
+    const active = this.d.tabActive ? await this.d.tabActive(tabId).catch(() => false) : true;
+    const shot = active ? await this.d.capture(windowId, m.rect, m.dpr) : { error: "capture_failed" };
     if (this.byTab.get(tabId) !== p) return null;
     if ("png" in shot) p.clip = shot.png;
     else p.clipError = shot.error;
-    // The overlay serializes the page once it hears this: what is pending now is what that snapshot covers.
+    // The overlay serializes the page once its composer is shown: what is pending now is what that snapshot covers.
     p.pending = this.d.pendingIds(tabId);
     this.d.toOverlay(tabId, { t: "open-composer", pickId: p.pickId, rect: m.rect });
+    this.after(COMPOSER_WAIT_MS, () => { if (this.byTab.get(tabId) === p && !p.connected) this.cancel(tabId, p.pickId); });
     return "png" in shot ? { t: "captured", pickId: p.pickId, ok: true } : { t: "captured", pickId: p.pickId, ok: false, error: shot.error };
   }
 
-  /** The overlay's anchor and snapshot for the tab's pick (taken once). */
+  /** The overlay's snapshot for the tab's pick (taken once). */
   async attach(tabId: number, m: PickMsg): Promise<void> {
     const p = this.current(tabId, m.pickId);
-    if (!p || p.anchor) return;
-    Object.assign(p, { anchor: m.anchor, url: m.url, title: m.title, snapshot: m.snapshot ?? NO_SNAPSHOT });
-    await this.sendDraft(p);
+    if (!p || p.url !== null) return;
+    Object.assign(p, { url: m.url, title: m.title, snapshot: m.snapshot ?? NO_SNAPSHOT });
     await this.maybePost(p);
   }
 
@@ -96,8 +116,9 @@ export class Picks {
   attachComposer(port: chrome.runtime.Port, tabId: number): void {
     const pickId = port.name.startsWith("composer:") ? port.name.slice("composer:".length) : "";
     const p = this.current(tabId, pickId);
-    if (!p || p.port || this.d.now() - p.created >= PICK_TTL_MS) { port.disconnect(); return; }
+    if (!p || p.connected || this.d.now() - p.created >= COMPOSER_WAIT_MS) { cut(port); return; }
     p.port = port;
+    p.connected = true;
     port.onMessage.addListener((m: unknown) => {
       if (!isFromComposer(m) || this.byTab.get(tabId) !== p) return;
       if (m.t === "ready") void this.sendDraft(p);
@@ -113,6 +134,7 @@ export class Picks {
       // The composer went away (its frame was removed or navigated): a post in flight still lands.
       if (!p.posting && this.byTab.get(tabId) === p) this.cancel(tabId, pickId);
     });
+    this.d.toOverlay(tabId, { t: "composer-ready", pickId });
   }
 
   /** Cancels the tab's pick (`pickId`, or whichever when null) and closes its composer. */
@@ -122,7 +144,7 @@ export class Picks {
     this.byTab.delete(tabId);
     const port = p.port;
     p.port = null;
-    port?.disconnect();
+    cut(port);
     this.d.toOverlay(tabId, { t: "close-composer", pickId: p.pickId, posted: false });
   }
 
@@ -130,7 +152,7 @@ export class Picks {
   close(tabId: number): void {
     const p = this.byTab.get(tabId);
     this.byTab.delete(tabId);
-    if (p?.port) { const port = p.port; p.port = null; port.disconnect(); }
+    if (p?.port) { const port = p.port; p.port = null; cut(port); }
   }
 
   /** An automatic snapshot (spec L11) for the threads the overlay saw
@@ -156,13 +178,14 @@ export class Picks {
   }
 
   private async sendDraft(p: PickState): Promise<void> {
-    if (!p.port || !p.anchor) return;
-    const m: WorkerToComposer = { t: "draft", anchor: p.anchor, clipUrl: p.clip ? await dataUrl(p.clip) : null, clipError: p.clipError, capturing: false };
-    p.port?.postMessage(m);
+    if (!p.port) return;
+    const clipUrl = p.clip ? await dataUrl(p.clip) : null;
+    // Read after the await: a composer that posted or went meanwhile hears no draft.
+    tell(p.port, { t: "draft", anchor: p.anchor, clipUrl, clipError: p.clipError, capturing: false });
   }
 
   private async maybePost(p: PickState): Promise<void> {
-    if (p.posting || p.body === null || !p.anchor || !p.url || p.snapshot === null) return;
+    if (p.posting || p.body === null || !p.url || p.snapshot === null) return;
     p.posting = true;
     const f = new FormData();
     f.set("url", p.url);
@@ -171,19 +194,22 @@ export class Picks {
     f.set("body", p.body);
     f.set("snapshot", new Blob([p.snapshot], { type: "text/html" }), "index.html");
     if (p.clip) f.set("clip", p.clip, "clip.png");
+    let r: Awaited<ReturnType<Api["postThread"]>>;
     try {
-      const r = await this.d.api.postThread(f, p.pending);
-      p.port?.postMessage({ t: "posted", threadId: r.thread.id } satisfies WorkerToComposer);
-      if (this.byTab.get(p.tabId) === p) this.byTab.delete(p.tabId);
-      const port = p.port;
-      p.port = null;
-      port?.disconnect();
-      this.d.toOverlay(p.tabId, { t: "close-composer", pickId: p.pickId, posted: true });
-      this.d.posted?.(p.tabId, r.page);
+      r = await this.d.api.postThread(f, p.pending);
     } catch (e) {
       p.posting = false;
       p.body = null;
-      p.port?.postMessage({ t: "failed", message: message(e) } satisfies WorkerToComposer);
+      tell(p.port, { t: "failed", message: message(e) });
+      return;
     }
+    // The thread exists: the pick is done whether or not its composer hears it.
+    if (this.byTab.get(p.tabId) === p) this.byTab.delete(p.tabId);
+    const port = p.port;
+    p.port = null;
+    tell(port, { t: "posted", threadId: r.thread.id });
+    cut(port);
+    this.d.toOverlay(p.tabId, { t: "close-composer", pickId: p.pickId, posted: true });
+    this.d.posted?.(p.tabId, r.page);
   }
 }

@@ -19,6 +19,8 @@
   let failure = $state<string | null>(null);
   let away = $state(false);
   let gone = $state(false);
+  /** Posted or cancelled: the worker letting go of the port then is expected. */
+  let done = false;
   let waiting: { ok: () => void; fail: (e: Error) => void } | null = null;
 
   const notice = $derived(
@@ -36,6 +38,7 @@
       if (m.t === "draft") {
         draft = { pickId: id, anchor: m.anchor, version: 0, clip: m.clipUrl ? dataUrlBlob(m.clipUrl) : null, clipError: clipMessage(m.clipError), capturing: m.capturing };
       } else if (m.t === "posted") {
+        done = true;
         waiting?.ok();
         waiting = null;
       } else {
@@ -45,6 +48,7 @@
       }
     });
     p.onDisconnect.addListener(() => {
+      if (done) return;
       gone = true;
       waiting?.fail(new Error("disconnected"));
       waiting = null;
@@ -71,7 +75,7 @@
 
 {#if notice}<p class="notice" role="alert">{notice}</p>{/if}
 {#if draft}
-  <Composer {draft} onCancel={() => port.postMessage({ t: "cancel" })} onSubmit={submit} onText={t => { typed = t; }} />
+  <Composer {draft} onCancel={() => { done = true; port.postMessage({ t: "cancel" }); }} onSubmit={submit} onText={t => { typed = t; }} />
 {:else}
   <p class="wait">Preparing the comment…</p>
 {/if}

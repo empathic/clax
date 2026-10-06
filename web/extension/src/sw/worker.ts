@@ -21,6 +21,8 @@ export type WorkerDeps = {
   store?: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
   /** A pick's screenshot (`captureClip`). */
   capture(windowId: number, rect: Rect, dpr: number): Promise<{ png: Blob } | { error: string }>;
+  /** Whether the tab is its window's active tab. */
+  tabActive?(tabId: number): Promise<boolean>;
   now?(): number;
 };
 export type Worker = {
@@ -61,6 +63,7 @@ export function createWorker(d: WorkerDeps): Worker {
     api, capture: d.capture, toOverlay: d.toOverlay,
     pendingIds: tabId => t.pendingIds(tabId),
     posted: (tabId, page) => t.posted(tabId, page),
+    tabActive: d.tabActive,
     now: d.now ?? (() => Date.now()),
   });
   async function fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown> {

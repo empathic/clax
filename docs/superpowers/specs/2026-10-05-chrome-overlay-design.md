@@ -64,7 +64,7 @@ L15 (2026-10-05); their rows say so.
 | L4 | A snapshot becomes a new version only when its `index.html` differs from the current version's (byte-identical snapshots reuse the current version). The screenshot is the thread's clip, never a version file. | Versions stay a timeline of what the page looked like, not one per comment; the clip already has a home per thread (§9 "Clips"). |
 | L5 | The extension calls the daemon's existing viewer routes through an **extension gateway**: a middleware that admits a request carrying the extension's origin and a valid extension credential, checks it against an allowlist of routes and live-page artifacts, and hands it to the existing handler as the owner identity (L6). | One code path for comments, sends, resolves and the stream, whether they come from the shell or the extension; the extension can reach nothing else. |
 | L6 | The extension acts as the **owner identity**: the one viewer identity Clax gives its owner, shared by the person's browsers on this machine, the CLI with the token, and the extension (§2.1). A live extension credential maps to the owner identity through the owner identity's server-side hook, in the one place that maps credential kinds to it; the extension has no `viewers` row of its own. Its looked-at and seen marks, its name, its presence and the comments, sends and resolves it makes are the owner's. The side panel asks for a name only while the owner has none. | Owner decision (2026-10-05): one person, one identity, whichever client they use. The side panel and the shell then share looked-at and seen marks, and a thread the person read in one is not new in the other. The extension needs no cookie: the gateway, not a browser cookie, says who it is. |
-| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number. | Owner decision (2026-10-05), as proposed. Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. |
+| L7 | The composer over the page is an extension page (`composer.html`) in an iframe inside the closed shadow root. Thread text is shown only in the side panel; on the page, pins carry only a number. | Owner decision (2026-10-05), as proposed. Key events in a closed shadow root are still dispatched through the page's window, so page scripts could read every key typed into an in-page textarea. Text typed into an extension-origin frame never reaches the page. The frame is shown and focused only once the worker confirms the composer page connected (§9.4), so a page that navigates the frame never gets it shown. |
 | L8 | Comment mode is entered only by a gesture that grants `activeTab`: the toolbar icon, the keyboard command (Alt+Shift+C) or the page's context menu entry. The side panel's Comment button works while the tab already holds `activeTab` and otherwise says how to start. A plain key (such as C) is never taken from the page. | Owner decision (2026-10-05), as proposed. `captureVisibleTab` needs `activeTab` or `<all_urls>`; per-origin host permissions are not enough. `<all_urls>` would ask for every site at install. |
 | L9 | Snapshots are sanitized in the extension (§8.2) and served by the daemon with a second Content-Security-Policy that lets only the daemon's own `/_clax/` scripts run. Comment mode is off in the shell for live pages. | Page content is hostile. The client sanitizer removes secrets and scripts; the policy guarantees nothing the page wrote can run even if the sanitizer misses something, without a server-side HTML parser. |
 | L10 | Live pages are visible only to loopback peers and requests with the token. A daemon bound to the LAN serves LAN viewers its artifacts as today, and never its live pages. | Agents publish artifacts for people to see; live-page snapshots are of whatever the person browses. They must not reach the LAN. |
@@ -685,22 +685,38 @@ dropped and counted.
 - The worker accepts a runtime message only when `sender.id ===
   chrome.runtime.id`; an overlay message only from a tab's top frame
   (`sender.frameId === 0`) whose origin is enabled or holds `activeTab`; a
-  composer port only when `sender.url` starts with the extension's
-  `composer.html` URL, `sender.tab.id` is the pick's tab, and the port names
-  a pick ID (128 random bits) the worker issued for that tab; a panel port
-  only from `sidepanel.html`.
+  composer port only when `sender.url` is the extension's `composer.html`
+  (under its ID or its dynamic one), the sender is a frame of the pick's tab
+  (`sender.tab.id`, `sender.frameId > 0`), and the port names the tab's
+  current pick: a pick ID (128 random bits) the overlay drew and the worker
+  took for that tab with its `capture`, within 5 s of the capture, one port
+  per pick; a panel port only from `sidepanel.html`.
 - The overlay accepts messages only from the worker (`sender.id ===
   chrome.runtime.id` and no `sender.tab`).
-- Overlay → worker: `hello {url}`, `capture {pickId, rect, dpr}`,
-  `pick {pickId, anchor, snapshot | snapshotError, url, title}`, `resolved
-  {results}`, `route {url}`, `quiet {url, snapshot}`, `cancel`.
-- Worker → overlay: `state {page, route, threads, commentMode}`,
-  `comment-mode {on}`, `captured {pickId, ok, error?}`, `open-composer
-  {pickId, rect}`, `close-composer {pickId}`, `scroll-to {threadId}`, `focus
+- Overlay → worker: `hello {url}`, `capture {pickId, anchor, rect, dpr}`,
+  `pick {pickId, snapshot | snapshotError, url, title}`, `resolved
+  {results}`, `route {url}`, `quiet {url, title, snapshot, pending}`
+  (`pending`: the thread IDs its state showed waiting for a snapshot when it
+  serialized the page, L11), `cancel {pickId}`.
+- Worker → overlay: `state {page, route, threads, commentMode, pending}`,
+  `comment-mode {on}`, `captured {pickId, ok, error?}` (the answer to
+  `capture`), `open-composer {pickId, rect}`, `composer-ready {pickId}`,
+  `close-composer {pickId, posted}`, `scroll-to {threadId}`, `focus
   {threadId | null}`, `snapshot-now`.
+- The composer frame is shown only after the worker confirms its page
+  (ruling 2026-10-05): the overlay inserts the frame hidden (so it cannot
+  take focus); the composer page connects its port only after its own
+  `load`; once the worker takes that port it sends `composer-ready`, and only
+  then does the overlay show and focus the frame and serialize the page,
+  while the person types. A second `load` of the frame (a navigation the
+  page made) closes it and cancels the pick; so does a frame whose page has
+  not connected within 10 s, and the worker cancels a pick whose composer
+  has not connected within 5 s. A document the page puts in the frame is
+  never shown or focused.
 - Composer ↔ worker (port named `composer:<pickId>`): `ready` → `draft
-  {quote, label, clipUrl | null, clipError | null}`; `post {body}` →
-  `posted {threadId}` | `failed {message}`; `cancel`.
+  {anchor, clipUrl | null, clipError | null, capturing}` (`clipError` a
+  code the composer words); `post {body}` → `posted {threadId}` | `failed
+  {message}`; `cancel`.
 - Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {tabId,
   page, route, threads, working, participants, viewer, commentMode,
   activeTab}` and pushes on change; `send`, `send-batch`, `reply`,

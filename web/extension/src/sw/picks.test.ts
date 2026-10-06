@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { WorkerToOverlay } from "../messages";
 import { ApiFailure } from "./api";
-import { PICK_TTL_MS, Picks } from "./picks";
+import { COMPOSER_WAIT_MS, Picks } from "./picks";
 
 // jsdom's Blob has no `arrayBuffer` or `text` (a worker's has both): read through FileReader.
 const read = (b: Blob, as: "text" | "buffer") => new Promise<unknown>((ok, fail) => {
@@ -36,12 +36,13 @@ function port(name: string, tabId: number) {
   };
   return p;
 }
-const flush = () => new Promise(r => setTimeout(r, 0));
-const capture = (pickId: string, rect = RECT) => ({ t: "capture", pickId, rect, dpr: 1 }) as const;
+/** Lets the turns settle: FileReader (the clip's data URL) answers on a later task. */
+const flush = async () => { for (let i = 0; i < 10; i++) await new Promise(r => setTimeout(r, 0)); };
+const capture = (pickId: string, rect = RECT) => ({ t: "capture", pickId, anchor: anchor as never, rect, dpr: 1 }) as const;
 const pick = (pickId: string, extra: Record<string, unknown> = {}) =>
-  ({ t: "pick", pickId, anchor: anchor as never, url: "http://localhost:5173/", title: "Home", snapshot: "<p>", snapshotError: null, ...extra }) as never;
+  ({ t: "pick", pickId, url: "http://localhost:5173/", title: "Home", snapshot: "<p>", snapshotError: null, ...extra }) as never;
 
-function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[] } = {}) {
+function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown; pending?: string[]; inactive?: boolean } = {}) {
   const posted: { form: FormData; pending: string[] }[] = [];
   const snapshots: { form: FormData; pending: string[] }[] = [];
   const overlay: { tabId: number; m: WorkerToOverlay }[] = [];
@@ -51,6 +52,7 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
   let pending = opts.pending ?? [];
   let fail = opts.fail;
   let snapshotFail: unknown = null;
+  let timers: { at: number; fn: () => void }[] = [];
   const picks = new Picks({
     api: {
       postThread: async (f: FormData, p: string[]) => {
@@ -68,11 +70,18 @@ function setup(opts: { clip?: { png: Blob } | { error: string }; fail?: unknown;
     toOverlay: (tabId, m) => overlay.push({ tabId, m }),
     pendingIds: () => pending,
     posted: (tabId, p) => told.push({ tabId, page: p }),
+    tabActive: async () => !opts.inactive,
     now: () => now,
+    after: (ms, fn) => { timers.push({ at: now + ms, fn }); },
   });
   return {
     picks, posted, snapshots, overlay, told, captures,
-    advance: (ms: number) => { now += ms; },
+    advance: (ms: number) => {
+      now += ms;
+      const due = timers.filter(t => t.at <= now);
+      timers = timers.filter(t => t.at > now);
+      due.forEach(t => t.fn());
+    },
     setPending: (p: string[]) => { pending = p; },
     failSnapshots: (e: unknown) => { snapshotFail = e; },
   };
@@ -94,7 +103,8 @@ describe("Picks", () => {
     expect(overlay.at(-1)?.m.t).toBe("open-composer");
     const p = port(`composer:${ID(1)}`, 5);
     picks.attachComposer(p as never, 5);
-    await picks.attach(5, pick(ID(1)));
+    p.fire({ t: "ready" });
+    await flush();
     expect(p.sent.at(-1)).toEqual({ t: "draft", anchor, clipUrl: null, clipError: "no_capture_permission", capturing: false });
   });
 
@@ -142,16 +152,55 @@ describe("Picks", () => {
     expect(posted[0].pending).toEqual([P1]);
   });
 
-  it("sends the draft with the clip as a PNG data URL once the composer is ready and the anchor is in", async () => {
-    const { picks } = setup();
+  it("sends the draft with the clip as a PNG data URL as soon as the composer is ready, before the snapshot", async () => {
+    const { picks, overlay } = setup();
     await picks.capture(5, 9, capture(ID(1)));
     const p = port(`composer:${ID(1)}`, 5);
     picks.attachComposer(p as never, 5);
+    // The overlay shows the composer's frame only now that its page is the worker's.
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "composer-ready", pickId: ID(1) } });
     p.fire({ t: "ready" });
     await flush();
-    expect(p.sent).toHaveLength(0);
-    await picks.attach(5, pick(ID(1)));
     expect(p.sent[0]).toEqual({ t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw==", clipError: null, capturing: false });
+  });
+
+  it("cancels a pick whose composer does not connect within the wait", async () => {
+    const { picks, overlay, advance } = setup();
+    await picks.capture(5, 9, capture(ID(1)));
+    advance(COMPOSER_WAIT_MS - 1);
+    expect(overlay.at(-1)?.m.t).toBe("open-composer");
+    advance(1);
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "close-composer", pickId: ID(1), posted: false } });
+    const late = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(late as never, 5);
+    expect(late.cut).toBe(true);
+    // A composer that connected in time keeps its pick past the wait.
+    await picks.capture(5, 9, capture(ID(2)));
+    const p = port(`composer:${ID(2)}`, 5);
+    picks.attachComposer(p as never, 5);
+    advance(COMPOSER_WAIT_MS * 10);
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "composer-ready", pickId: ID(2) } });
+  });
+
+  it("captures nothing when the pick's tab is no longer the window's active tab", async () => {
+    const { picks, captures, overlay } = setup({ inactive: true });
+    expect(await picks.capture(5, 9, capture(ID(1)))).toEqual({ t: "captured", pickId: ID(1), ok: false, error: "capture_failed" });
+    expect(captures).toHaveLength(0);
+    expect(overlay.at(-1)?.m.t).toBe("open-composer");
+  });
+
+  it("finishes a post whose composer went before it could be told", async () => {
+    const { picks, posted, overlay, told } = setup();
+    await picks.capture(5, 9, capture(ID(1)));
+    const p = port(`composer:${ID(1)}`, 5);
+    picks.attachComposer(p as never, 5);
+    await picks.attach(5, pick(ID(1)));
+    p.postMessage = () => { throw new Error("Attempting to use a disconnected port object"); };
+    p.fire({ t: "post", body: "Too wide" });
+    await flush();
+    expect(posted).toHaveLength(1);
+    expect(overlay.at(-1)).toEqual({ tabId: 5, m: { t: "close-composer", pickId: ID(1), posted: true } });
+    expect(told).toHaveLength(1);
   });
 
   it("posts a pick whose page was too large to snapshot, and only once", async () => {
@@ -197,7 +246,7 @@ describe("Picks", () => {
     picks.attachComposer(second as never, 5);
     expect(second.cut).toBe(true);
     await picks.capture(5, 9, capture(ID(2)));
-    advance(PICK_TTL_MS);
+    advance(COMPOSER_WAIT_MS);
     const late = port(`composer:${ID(2)}`, 5);
     picks.attachComposer(late as never, 5);
     expect(late.cut).toBe(true);
@@ -215,7 +264,7 @@ describe("Picks", () => {
     expect(posted).toHaveLength(0);
   });
 
-  it("takes the pick's anchor and snapshot once, from its own tab", async () => {
+  it("takes the pick's snapshot once, from its own tab", async () => {
     const { picks, posted } = setup();
     await picks.capture(5, 9, capture(ID(1)));
     const p = port(`composer:${ID(1)}`, 5);

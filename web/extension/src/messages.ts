@@ -17,22 +17,30 @@ export const MAX_TITLE = 1000;
 /** A transport bound in UTF-16 code units; the daemon enforces the 8 MiB cap on the snapshot's bytes. */
 export const MAX_SNAPSHOT_CHARS = 8 * 1024 * 1024;
 export const MAX_ROUTE = 512;
-/** Why a pick carries a placeholder or no snapshot (the serializer's `error`). */
-export type SnapshotError = "too_large";
+/** Why a pick carries a placeholder or no snapshot: the serializer's
+ * `error`, or `failed` when the serializer threw. */
+export type SnapshotError = "too_large" | "failed";
 export const PICK_ID = /^[0-9a-f]{32}$/;
 const ULID = /^[0-9A-HJKMNP-TV-Z]{26}$/;
 const HANDLE = /^a_[0-9a-f]{22}$/;
 const ARTIFACT_ID = /^[0-9a-hjkmnp-tv-z]{12}$/;
 
 export type Rect = { x: number; y: number; w: number; h: number };
+
+/** Whether a thread is open and waits for a snapshot to link its address
+ * to (spec L11): what both the overlay and the worker count as pending. */
+export const waitsForSnapshot = (t: { status: string }) => t.status === "open" && !!(t as { addressed_pending?: unknown }).addressed_pending;
 export type PageView = { artifact_id: string; origin: string; path: string; page_url: string; title: string; current_version: number; url: string };
 
 export type OverlayToWorker =
   | { t: "hello"; url: string }
   | { t: "route"; url: string }
-  /** The overlay names the pick (128 random bits); the worker takes it as the tab's pick. */
-  | { t: "capture"; pickId: string; rect: Rect; dpr: number }
-  | { t: "pick"; pickId: string; anchor: Anchor; url: string; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
+  /** The overlay names the pick (128 random bits); the worker takes it as
+   * the tab's pick. The anchor comes with it, so the composer's draft does
+   * not wait for the page's snapshot. */
+  | { t: "capture"; pickId: string; anchor: Anchor; rect: Rect; dpr: number }
+  /** The page's snapshot for the pick, serialized once its composer is shown. */
+  | { t: "pick"; pickId: string; url: string; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
   /** `pending`: the threads the overlay's state showed waiting for a snapshot when it serialized the page. */
   | { t: "quiet"; url: string; title: string; snapshot: string; pending: string[] }
   | { t: "resolved"; results: AnchorResult[] }
@@ -49,6 +57,8 @@ export type WorkerToOverlay =
   | { t: "captured"; pickId: string; ok: boolean; error?: string }
   /** The worker took the pick: the overlay frames its composer beside `rect`, then serializes the page. */
   | { t: "open-composer"; pickId: string; rect: Rect }
+  /** The pick's composer page connected to the worker (after its own load): only now is its frame shown and focused. */
+  | { t: "composer-ready"; pickId: string }
   | { t: "close-composer"; pickId: string; posted: boolean }
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
@@ -169,9 +179,9 @@ export function isFromOverlay(m: unknown): m is OverlayToWorker {
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
     case "hello": case "route": return has("url") && url(m.url);
-    case "capture": return has("pickId", "rect", "dpr") && pickId(m.pickId) && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
-    case "pick": return has("pickId", "anchor", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && isAnchor(m.anchor) && url(m.url)
-      && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large")
+    case "capture": return has("pickId", "anchor", "rect", "dpr") && pickId(m.pickId) && isAnchor(m.anchor) && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
+    case "pick": return has("pickId", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && url(m.url)
+      && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large" || m.snapshotError === "failed")
       && (m.snapshot !== null || m.snapshotError !== null);
     case "quiet": return has("url", "title", "snapshot", "pending") && url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS)
       && Array.isArray(m.pending) && m.pending.length <= MAX_PENDING && m.pending.every(ulid);
@@ -196,6 +206,7 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "comment-mode": return has("on") && bool(m.on);
     case "captured": return shape(m, ["t", "pickId", "ok"], ["error"]) && pickId(m.pickId) && bool(m.ok) && (m.error === undefined || code(m.error));
     case "open-composer": return has("pickId", "rect") && pickId(m.pickId) && box(m.rect);
+    case "composer-ready": return has("pickId") && pickId(m.pickId);
     case "close-composer": return has("pickId", "posted") && pickId(m.pickId) && bool(m.posted);
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));

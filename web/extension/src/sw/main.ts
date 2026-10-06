@@ -29,6 +29,7 @@ const { pairer, tabs, picks, fromOverlay } = createWorker({
   present: tabId => origins.overlayPresent(originsEnv, tabId),
   store: chrome.storage.session,
   capture: (windowId, rect, dpr) => captureClip(chromeCapture, windowId, rect, dpr),
+  tabActive: async tabId => (await chrome.tabs.get(tabId)).active,
 });
 
 /** A gesture that grants activeTab (spec L8). The side panel (icon only)
