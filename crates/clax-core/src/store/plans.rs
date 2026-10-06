@@ -7,11 +7,12 @@ use super::attention::{
     AGENTS_LIVE, AGENTS_ONE, ATTENTION_LIVE, ATTENTION_ONE, LOOKED_ONE, PEOPLE_LIVE, PEOPLE_ONE,
 };
 use super::feedback::{FEEDBACK_STATES, TAKE_FEEDBACK};
-use super::live::{PENDING_OF, SCOPES_OF_ORIGIN};
+use super::live::{PAGES_OF_ORIGIN, PENDING_OF, SCOPES_OF_ORIGIN};
+use super::site::{RULES_OF_ORIGIN, SITE_PAGES};
 use super::test_util::store;
 use super::threads::{
-    ADDRESSED_IN_MANY, COMMENTS_OF_MANY, NAMES_OF_MANY, PENDING_OF_MANY, SENDS_OF_MANY,
-    THREAD_STATUSES, list_threads_sql,
+    ADDRESSED_IN_MANY, COMMENTS_OF_MANY, LIVE_PATHS_OF_MANY, MOVES_OF_MANY, NAMES_OF_MANY,
+    PENDING_OF_MANY, SENDS_OF_MANY, THREAD_STATUSES, list_threads_sql, threads_of_many_sql,
 };
 use rusqlite::types::Value;
 use rusqlite::{Connection, params};
@@ -116,6 +117,44 @@ fn seed(c: &Connection) {
                 "INSERT INTO live_watches (session_id, origin, path, created_at)
                  VALUES (?1, ?2, '/', ?3)",
                 params![format!("s{s}"), format!("https://o{o}.test"), ts(s)],
+            )
+            .unwrap();
+        }
+    }
+    // Every artifact a live page on one of the origins, each origin with
+    // rules, and a move for the first thread of every third artifact.
+    for a in 0..ARTIFACTS {
+        let aid = format!("art{a:04}");
+        c.execute(
+            "INSERT INTO live_pages (artifact_id, origin, path, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![aid, format!("https://o{}.test", a % 5), format!("/p{a}"), ts(a)],
+        )
+        .unwrap();
+        if a % 3 == 0 {
+            c.execute(
+                "INSERT INTO thread_moves (id, thread_id, from_artifact_id, from_url, to_artifact_id,
+                    to_url, moved_by, created_at)
+                 VALUES (?1, ?2, ?3, 'u', ?3, 'u', 'viewer:x', ?4)",
+                params![format!("m{a}"), format!("{aid}t0"), aid, ts(a)],
+            )
+            .unwrap();
+            c.execute(
+                "UPDATE threads SET live_path = '/x' WHERE id = ?1",
+                params![format!("{aid}t1")],
+            )
+            .unwrap();
+        }
+    }
+    for o in 0..5 {
+        for r in 0..4 {
+            c.execute(
+                "INSERT INTO live_rules (id, origin, pattern, created_at) VALUES (?1, ?2, ?3, ?4)",
+                params![
+                    format!("r{o}{r}"),
+                    format!("https://o{o}.test"),
+                    format!("/r{r}/:id"),
+                    ts(r)
+                ],
             )
             .unwrap();
         }
@@ -264,6 +303,42 @@ fn hot_queries() -> Vec<Hot> {
             SCOPES_OF_ORIGIN.into(),
             vec![t("https://o1.test")],
             &["live_watches_by_origin"],
+        ),
+        (
+            "live pages of a site",
+            SITE_PAGES.into(),
+            vec![t("https://o1.test")],
+            &["sqlite_autoindex_live_pages_2"],
+        ),
+        (
+            "live pages of an origin",
+            PAGES_OF_ORIGIN.into(),
+            vec![t("https://o1.test")],
+            &["sqlite_autoindex_live_pages_2"],
+        ),
+        (
+            "threads of a site's pages",
+            threads_of_many_sql(),
+            vec![t(r#"["art0001","art0006","art0011"]"#)],
+            &["threads_by_artifact"],
+        ),
+        (
+            "merge rules of an origin",
+            RULES_OF_ORIGIN.into(),
+            vec![t("https://o1.test")],
+            &["sqlite_autoindex_live_rules_2"],
+        ),
+        (
+            "live paths of threads",
+            LIVE_PATHS_OF_MANY.into(),
+            vec![tids.clone()],
+            &["sqlite_autoindex_threads_1"],
+        ),
+        (
+            "moves of threads",
+            MOVES_OF_MANY.into(),
+            vec![tids.clone()],
+            &["thread_moves_by_thread"],
         ),
         (
             "thread sends",

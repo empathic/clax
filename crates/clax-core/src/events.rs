@@ -51,6 +51,14 @@ pub enum Event {
         artifact_id: String,
         thread_id: String,
     },
+    /// A live page's thread left `artifact_id` for the live page
+    /// `to_artifact_id` (a move or a merge); a `thread` event of that page
+    /// carries it there.
+    ThreadMoved {
+        artifact_id: String,
+        thread_id: String,
+        to_artifact_id: String,
+    },
     FeedbackState {
         artifact_id: String,
         thread_id: String,
@@ -100,6 +108,7 @@ impl Event {
             | Event::Comment { artifact_id, .. }
             | Event::ThreadResolved { artifact_id, .. }
             | Event::ThreadDeleted { artifact_id, .. }
+            | Event::ThreadMoved { artifact_id, .. }
             | Event::FeedbackState { artifact_id, .. }
             | Event::Working { artifact_id, .. }
             | Event::Presence { artifact_id, .. }
@@ -116,6 +125,7 @@ impl Event {
             Event::Comment { .. } => "comment",
             Event::ThreadResolved { .. } => "thread_resolved",
             Event::ThreadDeleted { .. } => "thread_deleted",
+            Event::ThreadMoved { .. } => "thread_moved",
             Event::FeedbackState { .. } => "feedback_state",
             Event::Working { .. } => "working",
             Event::Presence { .. } => "presence",

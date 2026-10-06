@@ -291,6 +291,31 @@ pub const MIGRATIONS: &[&str] = &[
     );
     CREATE INDEX extension_credentials_by_extension
         ON extension_credentials(extension_id, created_at);",
+    // 18: site-wide threads (spec 2026-10-05-chrome-overlay-design §7.1):
+    // the path a live page's thread was made at when its page's path differs
+    // (a rule mapped the URL, or a merge re-filed the thread), the per-origin
+    // rules that map paths to one canonical page, and each thread's moves
+    // between pages.
+    "ALTER TABLE threads ADD COLUMN live_path TEXT;
+    CREATE TABLE live_rules (
+        id TEXT PRIMARY KEY,
+        origin TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE (origin, pattern)
+    );
+    CREATE TABLE thread_moves (
+        id TEXT PRIMARY KEY,
+        thread_id TEXT NOT NULL REFERENCES threads(id),
+        from_artifact_id TEXT NOT NULL,
+        from_url TEXT NOT NULL,
+        to_artifact_id TEXT NOT NULL,
+        to_url TEXT NOT NULL,
+        moved_by TEXT NOT NULL,
+        rule_id TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX thread_moves_by_thread ON thread_moves(thread_id, created_at, id);",
 ];
 
 #[cfg(test)]
