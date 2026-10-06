@@ -312,7 +312,12 @@ Clax extension reach you like comments on artifacts, with the page URL, a
 screenshot (`Clip:`) and a snapshot of the page's HTML (`Snapshot:`). After
 your change shows in the page (hot reload or restart), reply with
 `comments_reply` and `addressed: true`; the next snapshot of the page is
-recorded as addressing the thread. You cannot `publish` a live page. If the
+recorded as addressing the thread. You cannot `publish` a live page. When a
+dev server moves to another port, the person can join the addresses into one
+site in the extension: then a thread may come from any of the site's
+addresses (its `page_url` names one of them), your `watch` on one covers
+them all (its result lists the site's `origins`), and the same paths on each
+are one page. If the
 person has not set up the extension, set it up yourself: `clax` is often not
 on PATH, so run this plugin's wrapper, `scripts/ensure-clax.sh exec extension
 install --json` from the plugin's directory (two levels above this skill's),

@@ -135,6 +135,10 @@ pub async fn events(
     let filter = list(q.artifact);
     let types = list(q.types);
     let passes = move |ev: &Event| -> bool {
+        // A site's change names no artifact: only `site:` topics carry it.
+        if matches!(ev, Event::Site { .. }) {
+            return false;
+        }
         if hidden
             .as_ref()
             .is_some_and(|live| live.contains(ev.artifact_id()))

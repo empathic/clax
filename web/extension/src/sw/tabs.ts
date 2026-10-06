@@ -116,7 +116,7 @@ type Deps = {
   /** The window the tab is in now (a tab can move to another): where its panel's owner is reported. */
   windowOf?(tabId: number): Promise<number>;
   /** Every thread of the sites the tabs are on for (spec §7.1). */
-  sites?: Pick<Sites, "view" | "follow" | "fromHub">;
+  sites?: Pick<Sites, "view" | "follow" | "fromHub" | "origins">;
   now?(): number;
 };
 
@@ -247,14 +247,30 @@ export class Tabs {
     p.port.postMessage({ t: "site", site: this.d.sites?.view(on) ?? null } satisfies WorkerToPanel);
   }
 
-  /** The URL of a thread of the tab's site, which the overlay scrolls to once
-   * it finds it there (the panel opened it); null when the site has no such thread. */
-  openThread(tabId: number, threadId: string): string | null {
+  /** Where a thread of the tab's site is, which the overlay scrolls to once
+   * it finds it there (the panel opened it): its path and route, and the
+   * site's origins it may be opened on, the most recently used first (spec
+   * §7.2: any of a joined site's); null when the site has no such thread. */
+  openThread(tabId: number, threadId: string): { path: string; origins: string[] } | null {
     const s = this.tabs.get(tabId);
     const t = this.d.sites?.view(s?.on ?? null)?.pages.flatMap(p => p.threads).find(x => x.id === threadId);
-    if (!s || !t?.page_url || originOf(t.page_url) !== s.on) return null;
+    if (!s?.on || !t?.page_url) return null;
+    const origins = this.d.sites?.origins(s.on) ?? [s.on];
+    let u: URL;
+    try { u = new URL(t.page_url); } catch { return null; }
+    if (!origins.includes(u.origin)) return null;
     this.scrollAfter.set(tabId, threadId);
-    return t.page_url;
+    return { path: u.pathname + u.search + u.hash, origins };
+  }
+
+  /** The tab went to `origin`, another origin of the site Clax is on for
+   * there (spec §7.2): Clax stays on in it, now for `origin`. False, and
+   * nothing changed, for an origin of another site. */
+  moveOn(tabId: number, origin: string): boolean {
+    const s = this.tabs.get(tabId);
+    if (!s?.on || s.on === origin || !(this.d.sites?.origins(s.on) ?? []).includes(origin)) return false;
+    this.set(tabId, { ...s, on: origin });
+    return true;
   }
 
   private set(tabId: number, next: TabState): void {

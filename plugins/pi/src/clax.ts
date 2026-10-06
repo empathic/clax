@@ -980,6 +980,8 @@ class Tools {
           url: r.page?.url ?? null,
           page_url: r.page?.page_url ?? null,
           scope: r.live_watch?.scope ?? null,
+          // The site the watch covers (spec 2026-10-05 §7.2): threads may come from any of its origins.
+          site: r.site ? { name: r.site.name ?? null, joined: !!r.site.joined, origins: Array.isArray(r.site.origins) ? r.site.origins.map((o: { origin: string }) => o.origin) : [] } : null,
           watching: true,
           replies_armed: r.live_watch?.replies_armed ?? null,
         };
@@ -1317,7 +1319,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       "Resolve a Clax comment thread you have acted on",
       CommentsResolveArgs, (ctx, a) => tools.commentsResolve(ctx, a));
     define("watch", "Clax watch",
-      "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
+      "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on.",
       "Watch a Clax artifact for comments sent to you, or stop watching it",
       WatchArgs, (ctx, a) => tools.watch(ctx, a));
     define("working", "Clax working",

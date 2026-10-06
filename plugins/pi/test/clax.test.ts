@@ -535,7 +535,7 @@ describe("comments", () => {
   it("watch, comments_read, and wait_for_feedback take a page URL", async () => {
     const { pi, ctx } = load(daemon.home, "pi-live");
     const w = parts(await pi.callToolAsPi("clax_watch", { url_or_id: "http://localhost:5173/" }, ctx)).json;
-    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true });
+    expect(w).toMatchObject({ page_url: "http://localhost:5173/", scope: "http://localhost:5173/*", watching: true, replies_armed: true, site: { name: "http://localhost:5173", joined: false, origins: ["http://localhost:5173"] } });
     expect(w.url).toMatch(new RegExp(`/a/${w.artifact_id}$`));
     // `@agent` sends the thread.
     const { aid, tid } = await liveThread("http://localhost:5173/settings", "@agent the button overflows");

@@ -15,6 +15,8 @@ type Ev = [string, Record<string, unknown>];
  * list and the pins read (threads, their comments, status and anchors), so
  * other events (feedback, versions) change nothing; a deleted page fetches it again. */
 export function applySite(v: SiteView, name: string, d: Record<string, unknown>): SiteView | null {
+  // An origin joined the site or was split off it (spec §7.2): its pages and origins change.
+  if (name === "site") return null;
   const at = v.pages.findIndex(p => p.page.artifact_id === d.artifact_id);
   const on = (i: number, f: (ts: Thread[]) => Thread[], w = v) => ({ ...w, pages: w.pages.map((p, k) => (k === i ? { ...p, threads: f(p.threads) } : p)) });
   const drop = (ts: Thread[]) => ts.filter(t => t.id !== d.thread_id);
@@ -64,6 +66,13 @@ export class Sites {
   constructor(private readonly d: SitesDeps) {}
 
   view(origin: string | null): SiteView | null { return (origin && this.m.get(origin)?.view) || null; }
+
+  /** The origins of `origin`'s site, the most recently used first (spec
+   * §7.2): only `origin` until its listing is loaded, or when it joined none. */
+  origins(origin: string): string[] {
+    const o = this.view(origin)?.site?.origins.map(x => x.origin) ?? [];
+    return o.includes(origin) ? o : [origin, ...o];
+  }
 
   /** Follows the site topics of `origins`, and only those. */
   follow(origins: Iterable<string>): void {

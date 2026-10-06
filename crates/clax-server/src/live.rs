@@ -13,24 +13,48 @@ use clax_core::{CoreError, Store};
 use std::collections::HashMap;
 use std::sync::RwLock;
 
-/// Every live page's artifact ID, with its origin, kept in step with the
-/// store: loaded at start, added to by [`LiveIds::ensure_page`] (the one way
-/// the server makes a live page), removed from on delete.
+/// Every live page's artifact ID, with its origin (its site's key), kept in
+/// step with the store: loaded at start, added to by
+/// [`LiveIds::ensure_page`] (the one way the server makes a live page),
+/// removed from on delete; and the joined sites (spec
+/// 2026-10-05-chrome-overlay-design §7.2): each joined origin's site key,
+/// and each site's origins, the most recently used first, reloaded after a
+/// join or a split ([`LiveIds::reload_sites`]).
 #[derive(Default)]
-pub struct LiveIds(RwLock<HashMap<String, String>>);
+pub struct LiveIds(RwLock<HashMap<String, String>>, RwLock<Sites>);
+
+/// The joined sites as [`LiveIds`] keeps them.
+#[derive(Default)]
+struct Sites {
+    /// Each joined origin's site key.
+    key_of: HashMap<String, String>,
+    /// Each joined site's origins with when Clax last used them, the most
+    /// recently used first.
+    origins: HashMap<String, Vec<(String, String)>>,
+    /// When each joined origin's use was last written to the store.
+    written: HashMap<String, std::time::Instant>,
+}
+
+/// How often a joined origin's use is written to the store at most.
+pub const TOUCH_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl LiveIds {
-    /// The live pages the store holds now.
+    /// The live pages and joined sites the store holds now.
     ///
     /// # Errors
     /// The store's.
     pub fn load(st: &Store) -> clax_core::Result<LiveIds> {
-        Ok(LiveIds(RwLock::new(
-            st.live_pages()?
-                .into_iter()
-                .map(|p| (p.artifact_id, p.origin))
-                .collect(),
-        )))
+        let ids = LiveIds(
+            RwLock::new(
+                st.live_pages()?
+                    .into_iter()
+                    .map(|p| (p.artifact_id, p.origin))
+                    .collect(),
+            ),
+            RwLock::default(),
+        );
+        ids.reload_sites(st)?;
+        Ok(ids)
     }
 
     /// [`Store::ensure_live_page_linking`] (a version it writes links the
@@ -49,7 +73,7 @@ impl LiveIds {
         pending: &[String],
     ) -> clax_core::Result<EnsuredPage> {
         let e = st.ensure_live_page_linking(key, title, snapshot, pending)?;
-        self.insert(&e.artifact.id, &key.origin);
+        self.insert(&e.artifact.id, &e.origin);
         Ok(e)
     }
 
@@ -61,7 +85,8 @@ impl LiveIds {
             .insert(id.to_string(), origin.to_string());
     }
 
-    /// The origin of the live page `id`, or `None` for any other artifact.
+    /// The origin of the live page `id` (its site's key), or `None` for any
+    /// other artifact.
     pub fn origin_of(&self, id: &str) -> Option<String> {
         self.0
             .read()
@@ -84,6 +109,114 @@ impl LiveIds {
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains_key(id)
+    }
+
+    /// Reads the joined sites from the store again, and records the live
+    /// pages of `rekeyed` (a join or split re-keyed them) under their
+    /// origin now.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn reload_sites(&self, st: &Store) -> clax_core::Result<()> {
+        let rows = st.site_memberships()?;
+        let mut g = self
+            .1
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.key_of.clear();
+        g.origins.clear();
+        for (origin, key, used) in rows {
+            g.key_of.insert(origin.clone(), key.clone());
+            g.origins.entry(key).or_default().push((origin, used));
+        }
+        for list in g.origins.values_mut() {
+            list.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        }
+        Ok(())
+    }
+
+    /// Records each page of `ids` as kept under `origin` now.
+    pub fn rekey(&self, ids: &[String], origin: &str) {
+        let mut g = self
+            .0
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for id in ids {
+            if let Some(o) = g.get_mut(id) {
+                *o = origin.to_string();
+            }
+        }
+    }
+
+    /// The key of `origin`'s site: the site it joined, else itself.
+    pub fn site_key(&self, origin: &str) -> String {
+        self.1
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .key_of
+            .get(origin)
+            .cloned()
+            .unwrap_or_else(|| origin.to_string())
+    }
+
+    /// The origins of the site whose key is `key`, the most recently used
+    /// first (only `key` for a site of one origin).
+    pub fn site_origins(&self, key: &str) -> Vec<String> {
+        self.1
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .origins
+            .get(key)
+            .map(|l| l.iter().map(|(o, _)| o.clone()).collect())
+            .unwrap_or_else(|| vec![key.to_string()])
+    }
+
+    /// Records that Clax used `origin` now, when it is an origin of a
+    /// joined site: written to the store at most once per [`TOUCH_EVERY`]
+    /// per origin, and its site's order follows at once.
+    ///
+    /// # Errors
+    /// The store's.
+    pub fn touch(&self, st: &Store, origin: &str) -> clax_core::Result<()> {
+        {
+            let g = self
+                .1
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(key) = g.key_of.get(origin) else {
+                return Ok(());
+            };
+            let first = g
+                .origins
+                .get(key)
+                .and_then(|l| l.first())
+                .map(|x| x.0.as_str());
+            let fresh = g
+                .written
+                .get(origin)
+                .is_some_and(|t| t.elapsed() < TOUCH_EVERY);
+            if fresh && first == Some(origin) {
+                return Ok(());
+            }
+        }
+        st.touch_site_origin(origin)?;
+        let now = clax_core::Store::now();
+        let mut g = self
+            .1
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        g.written
+            .insert(origin.to_string(), std::time::Instant::now());
+        if let Some(key) = g.key_of.get(origin).cloned()
+            && let Some(list) = g.origins.get_mut(&key)
+        {
+            if let Some(i) = list.iter().position(|(o, _)| o == origin) {
+                let mut e = list.remove(i);
+                e.1 = now;
+                list.insert(0, e);
+            }
+        }
+        Ok(())
     }
 }
 

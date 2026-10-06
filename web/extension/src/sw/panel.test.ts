@@ -10,7 +10,8 @@ const URL1 = "http://localhost:5173/app";
 const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", page_url: URL1, title: "T", current_version: 1, url: `http://localhost:7480/a/${AID}` };
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
-function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string } = {}) {
+const SITE = { key: "http://localhost:5173", name: "http://localhost:5174", joined: true, origins: [{ origin: "http://localhost:5174", joined_at: "t", last_used_at: "t2" }, { origin: "http://localhost:5173", joined_at: "t", last_used_at: "t1" }] };
+function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string; site?: string[]; down?: string[] } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   const pg = over.page === undefined ? page : over.page;
@@ -28,6 +29,11 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       move: api("move", { moved: true }),
       addRule: api("addRule", { rule: {}, moved: [T1, T2], remaining: over.remaining ?? 0 }),
       deleteRule: api("deleteRule", { moved: [T1], remaining: over.remaining ?? 0 }),
+      join: api("join", { site: SITE, moved: [T1], remaining: over.remaining ?? 0 }),
+      split: api("split", { split: true, site: SITE }),
+      answer: api("answer", {}),
+      suggest: api("suggest", { origin: "http://localhost:5173", site: SITE, suggestions: [{ origin: "http://localhost:7702", site: { ...SITE, origins: [{ origin: "http://localhost:7702", joined_at: null, last_used_at: null }] }, reason: "path", path: "/app" }] }),
+      sites: api("sites", { sites: [{ site: SITE }] }),
     } as never,
     tabs: {
       state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
@@ -38,9 +44,11 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       setViewer: (v: { display_name: string }) => calls.push(`viewer ${v.display_name}`),
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
-      openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? "http://localhost:5173/users/7" : null; },
+      openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? { path: "/users/7?x#/y", origins: over.site ?? ["http://localhost:5173"] } : null; },
     } as never,
-    sites: { load: async (o: string) => { calls.push(`load ${o}`); } },
+    sites: { load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o] },
+    probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(d => url.startsWith(d)); },
+    title: async () => "My App",
     pairer: { pair: async (retry?: boolean) => { calls.push(`pair ${!!retry}`); return {} as never; } },
     allUrls: async () => over.allUrls ?? false,
     navigate: async (tabId, url) => { calls.push(`navigate ${tabId} ${url}`); },
@@ -54,9 +62,67 @@ describe("panelAction on the tab's site", () => {
   it("opens a thread of another page in the tab, and refuses one the site does not have", async () => {
     const s = setup();
     await s.run({ t: "open-thread", threadId: T1 });
-    expect(s.calls).toEqual([`open 4 ${T1}`, "navigate 4 http://localhost:5173/users/7"]);
+    expect(s.calls).toEqual([`open 4 ${T1}`, "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
     await s.run({ t: "open-thread", threadId: T2 });
     expect(s.out).toEqual([{ t: "failed", code: "not_found", message: "That thread is not on this site any more." }]);
+  });
+
+  it("opens a thread of a joined site on its most recently used address that answers, and says so when none does", async () => {
+    const both = ["http://localhost:5174", "http://localhost:5173"];
+    const s = setup({ site: both, down: ["http://localhost:5174"] });
+    await s.run({ t: "open-thread", threadId: T1 });
+    expect(s.calls).toEqual([`open 4 ${T1}`, "probe http://localhost:5174/users/7?x#/y", "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
+    const none = setup({ site: both, down: both });
+    await none.run({ t: "open-thread", threadId: T1 });
+    expect(none.calls.filter(c => c.startsWith("navigate"))).toEqual([]);
+    expect(none.out).toEqual([{ t: "failed", code: "site_unreachable", message: "No address of this site answers (localhost:5174, localhost:5173). Start its server, then try again." }]);
+  });
+
+  it("moves a thread to a page of another origin of the tab's joined site", async () => {
+    const s = setup({ site: ["http://localhost:5174", "http://localhost:5173"] });
+    await s.run({ t: "move", threadId: T1, pageUrl: "http://localhost:5174/users/7" });
+    expect(s.calls).toEqual([`move "${T1}" "http://localhost:5174/users/7"`]);
+  });
+
+  it("joins the tab's origin to another site a batch at a time, and refuses one for another tab's origin", async () => {
+    const s = setup({ remaining: 2 });
+    await s.run({ t: "join", req: 3, origin: "http://localhost:5173", with: "http://localhost:7702" });
+    expect(s.calls).toEqual([`join "http://localhost:5173" "http://localhost:7702"`, "load http://localhost:5173"]);
+    expect(s.out).toEqual([{ t: "step", req: 3, moved: 1, remaining: 2 }]);
+    const done = setup();
+    await done.run({ t: "join", req: 4, origin: "http://localhost:5173", with: "http://localhost:7702" });
+    expect(done.calls).toContain(`route 4 ${URL1} true`);
+    const other = setup();
+    await other.run({ t: "join", req: 5, origin: "http://localhost:9", with: "http://localhost:7702" });
+    expect(other.calls).toEqual([]);
+    expect(other.out[0]).toMatchObject({ t: "failed", code: "page_changed", req: 5 });
+  });
+
+  it("splits an origin of the tab's site off it, and no other", async () => {
+    const s = setup({ site: ["http://localhost:5174", "http://localhost:5173"] });
+    await s.run({ t: "split", req: 6, origin: "http://localhost:5174" });
+    expect(s.calls).toEqual([`split "http://localhost:5174"`, "load http://localhost:5173", `route 4 ${URL1} true`]);
+    expect(s.out).toEqual([{ t: "step", req: 6, moved: 0, remaining: 0 }]);
+    const other = setup();
+    await other.run({ t: "split", req: 7, origin: "http://localhost:9" });
+    expect(other.calls).toEqual([]);
+  });
+
+  it("asks for a suggestion with the tab's URL and title, answers it, and lists the sites", async () => {
+    const s = setup();
+    await s.run({ t: "suggest" });
+    await s.run({ t: "answer", with: "http://localhost:7702", answer: "never" });
+    await s.run({ t: "list-sites" });
+    expect(s.calls).toEqual([`suggest "${URL1}" "My App"`, `answer "http://localhost:5173" "http://localhost:7702" "never"`, "sites "]);
+    expect(s.out).toEqual([
+      { t: "suggestion", origin: "http://localhost:5173", suggestion: { origin: "http://localhost:7702", origins: ["http://localhost:7702"], reason: "path", path: "/app" } },
+      { t: "suggestion", origin: "http://localhost:5173", suggestion: null },
+      { t: "sites", sites: [{ key: SITE.key, name: SITE.name, origins: ["http://localhost:5174", "http://localhost:5173"] }] },
+    ]);
+    // A tab Clax is off in asks nothing.
+    const off = setup({ page: null });
+    await off.run({ t: "suggest" }, null);
+    expect(off.calls).toEqual([]);
   });
 
   it("moves a thread to a page of the tab's origin only", async () => {

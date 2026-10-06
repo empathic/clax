@@ -93,8 +93,10 @@ fn scope_label(origin: &str, path: &str) -> String {
 /// `url` names (spec 2026-10-05 L2, §9.3). The page is created (with its
 /// placeholder) when it does not exist; the session watches every live page
 /// the scope covers and is handed their comments that were waiting with no
-/// live target. Answers `{live_watch: {origin, path, scope, replies_armed},
-/// page, covered}`.
+/// live target. The scope covers the same paths on every origin of the
+/// URL's site, origins joined later included (spec §7.2). Answers
+/// `{live_watch: {origin, path, scope, replies_armed}, page, site,
+/// covered}`; `site` names the site and its origins.
 pub async fn live_put(
     State(s): State<AppState>,
     _t: RequireToken,
@@ -107,7 +109,7 @@ pub async fn live_put(
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
-    let (w, page, artifact, covered) = s
+    let (w, page, artifact, covered, site) = s
         .store_call(move |st| {
             // The page is made before the scope watch is written, so a
             // failure leaves no watch behind; an unknown session makes no page.
@@ -138,7 +140,8 @@ pub async fn live_put(
             }
             let id = ArtifactId::parse(&e.artifact.id)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
-            Ok((w, page, e.artifact, covered))
+            let site = st.joined_site(&w.origin)?;
+            Ok((w, page, e.artifact, covered, site))
         })
         .await?;
     Ok(Json(json!({
@@ -149,6 +152,7 @@ pub async fn live_put(
             "replies_armed": w.replies_armed,
         },
         "page": page_view(&s, &page, &artifact, None),
+        "site": super::sites::site_view(&site),
         "covered": covered,
     })))
 }
