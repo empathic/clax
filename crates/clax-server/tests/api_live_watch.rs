@@ -304,3 +304,55 @@ async fn a_scope_keeps_its_trailing_slash_and_its_origin() {
     assert!(!w.contains(&port), "another port is another origin");
     assert!(!w.contains(&scheme), "another scheme is another origin");
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn a_scope_watch_whose_page_cannot_be_made_is_not_kept() {
+    use std::os::unix::fs::PermissionsExt;
+    let ts = TestServer::spawn().await;
+    let s = ts.register_session("claude", "w-9").await;
+    let sid = s["id"].as_str().unwrap();
+    let artifacts = ts.home.root().join("artifacts");
+    std::fs::create_dir_all(&artifacts).unwrap();
+    let mode = std::fs::metadata(&artifacts).unwrap().permissions();
+    std::fs::set_permissions(&artifacts, std::fs::Permissions::from_mode(0o555)).unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/{sid}/live-watches", ts.base)),
+        )
+        .json(&json!({"url": "http://localhost:5173/"}))
+        .send()
+        .await
+        .unwrap();
+    std::fs::set_permissions(&artifacts, mode).unwrap();
+    assert!(res.status().is_server_error(), "{}", res.status());
+    // No scope watch was left behind: a page made later under it is not
+    // watched.
+    let v = ts.viewer(Some("Alex")).await;
+    let c = comment(&ts, &v.cookie, "http://localhost:5173/settings").await;
+    let aid = c["page"]["artifact_id"].as_str().unwrap();
+    assert!(!watches(&ts, sid).await.contains(&aid.to_string()));
+}
+
+#[tokio::test]
+async fn a_scope_watch_for_an_unknown_session_makes_no_page() {
+    let ts = TestServer::spawn().await;
+    let res = ts
+        .authed(
+            ts.client
+                .put(format!("{}/api/sessions/nope/live-watches", ts.base)),
+        )
+        .json(&json!({"url": "http://localhost:5173/fresh"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 400);
+    let found: Value = ts
+        .get("/api/live/pages?url=http%3A%2F%2Flocalhost%3A5173%2Ffresh")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(found["page"].is_null());
+}

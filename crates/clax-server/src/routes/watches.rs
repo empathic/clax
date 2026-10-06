@@ -109,7 +109,14 @@ pub async fn live_put(
     let live_ids = s.live_ids.clone();
     let (w, page, artifact, covered) = s
         .store_call(move |st| {
-            let (w, _) = st.live_watch(&sid, &pu.key, b.replies_armed.unwrap_or(true))?;
+            // The page is made before the scope watch is written, so a
+            // failure leaves no watch behind; an unknown session makes no page.
+            if st.get_session(&sid)?.is_none_or(|x| x.ended_at.is_some()) {
+                return Err(CoreError::invalid(
+                    "unknown_session",
+                    format!("no live session {sid}"),
+                ));
+            }
             let page_url = pu.key.page_url();
             let title = page_url
                 .split_once("://")
@@ -124,8 +131,7 @@ pub async fn live_put(
                     at: Some(e.version.created_at.clone()),
                 });
             }
-            // The covered pages, now including this one.
-            let (w, covered) = st.live_watch(&sid, &pu.key, w.replies_armed)?;
+            let (w, covered) = st.live_watch(&sid, &pu.key, b.replies_armed.unwrap_or(true))?;
             for aid in &covered {
                 let touched = st.retarget_untargeted(&ArtifactId::parse(aid)?, &sid)?;
                 apply(&ctx, st, &touched);
