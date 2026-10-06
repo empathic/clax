@@ -346,7 +346,7 @@ fn hot_queries() -> Vec<Hot> {
             "threads to move back when a rule goes",
             TO_UNMERGE.into(),
             vec![aid.clone()],
-            &["threads_by_artifact", "thread_moves_by_thread"],
+            &["threads_by_artifact"],
         ),
         (
             "pending threads made at a path",

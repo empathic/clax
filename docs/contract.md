@@ -2039,17 +2039,23 @@ the extension's credential; anything else is 403 `forbidden`.
     addressed it, become versions of the new page (`version_n`,
     `addressed_in`): a version the page already holds with the same bytes
     (a thread moved back, say), else a copy written as a new version noted
-    `moved`. When copies were written to a page that existed before, its
-    newest version not noted `moved` is written once more on top, with its
-    own note, so its current version is still its own latest snapshot;
+    `moved`. When copies were written to a page that existed before, the
+    version it showed (its current one) is written once more on top, with
+    its own note, so what it showed stays current;
   - its agents: every live session watching the page it left, the session
     it was sent to, and every session with feedback of it not yet
     acknowledged watch the new page too (with the arming they had), and so
     does every scope watch covering the path the thread was made at; so
-    undelivered feedback and later comments still reach them.
+    undelivered feedback and later comments still reach them. A scope-made
+    watch carried to a page the session's scopes do not cover ends when the
+    session removes a scope watch of that origin.
 
-  The re-filing, its copies included, is one transaction: on any failure
-  nothing of it is left (a page made for it may stay, empty). A move is
+  Files are compared and copied before the daemon takes its store's writer;
+  the writer is held only to check that nothing changed meanwhile (else it
+  stages again), insert the rows and put the staged files in place, so a
+  move never holds up other writes while it copies. The re-filing is one
+  transaction: on any failure nothing of it is left, and a page made for it
+  that holds no thread is deleted again (`artifact_deleted`). A move is
   recorded in the thread's `moves` (`kind: "move"`), by the owner
   (`viewer:<public ID>`), with the URL it left. The stream gets the new
   page's `version`s, then on the page left `thread_moved` and, on its own
@@ -2086,7 +2092,8 @@ the extension's credential; anything else is 403 `forbidden`.
     live pages whose path (their `page_path`) the rule now wins, and that
     are not on the canonical page, are re-filed there as a move does (the
     page made when missing), their `page_path` and route kept and their
-    move `kind: "merge"` naming the rule; at most 200 a request, all in one
+    move `kind: "merge"` naming the rule; at most 200 a request, and fewer
+    when their snapshots add up to more than 64 MiB, all in one
     transaction. It answers `201 {rule, page, moved, remaining}` (`page`:
     the canonical page, or `null` when it does not exist; `moved`: the
     re-filed thread IDs; `remaining`: how many are left). While `remaining`
@@ -2104,15 +2111,18 @@ the extension's credential; anything else is 403 `forbidden`.
     rules in force, oldest first.
   - `DELETE /api/live/rules/<id>` deletes the rule and un-merges (owner
     ruling 2026-10-06): the rule maps nothing from then on, and each thread
-    on its canonical page that a rule put there (merged, or made at a path
-    it mapped), not the owner (whose latest move into it is a `move`), goes
-    back to the page of the path it was made at (made when missing; another
-    rule's canonical page when one maps that path), as a move does, its
-    move `kind: "unmerge"` naming the rule; at most 200 a request, in one
-    transaction. It answers `{rule, moved, remaining}`; while `remaining`
-    is above 0 the rule stays, `deleting: true` and in force for nothing,
-    and the client repeats the request; then it is gone (404). Adding the
-    same pattern again while it is `deleting` puts it back in force.
+    on its canonical page whose `page_path` is not the pattern's own (merged
+    there, made at a path it mapped, or moved by the owner to such a URL)
+    goes back to the page of that path (made when missing; another rule's
+    canonical page when one maps that path), as a move does, its move
+    `kind: "unmerge"` naming the rule; at most 200 a request (fewer past
+    64 MiB of snapshots), in one transaction. A thread made at, or moved
+    onto, the pattern's own path stays. It answers `{rule, moved,
+    remaining}`; while `remaining` is above 0 the rule stays, `deleting:
+    true` and in force for nothing, and the client repeats the request;
+    then it is gone (404). Adding the same pattern again while it is
+    `deleting` puts it back in force, and a delete finishing meanwhile
+    leaves it so.
 - **Deleting a page** a thread was moved from leaves the thread whole: its
   snapshot versions, links and send records live on its new page.
 

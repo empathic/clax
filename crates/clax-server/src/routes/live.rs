@@ -715,6 +715,63 @@ pub async fn site(
     })))
 }
 
+/// What a re-filing route needs besides the store.
+#[derive(Clone)]
+struct RefileCtx {
+    feedback: crate::feedback::FeedbackCtx,
+    live_ids: std::sync::Arc<crate::live::LiveIds>,
+    cache: std::sync::Arc<crate::wrap_cache::WrapCache>,
+}
+
+impl RefileCtx {
+    fn of(s: &AppState) -> RefileCtx {
+        RefileCtx {
+            feedback: s.feedback_ctx(),
+            live_ids: s.live_ids.clone(),
+            cache: s.wrap_cache.clone(),
+        }
+    }
+
+    /// [`Store::refile_threads`], announcing what it did; when it fails, the
+    /// pages of `fresh` (made for it) that hold no thread are deleted again.
+    fn refile(
+        &self,
+        st: &Store,
+        moves: &[(String, Refile)],
+        how: &MoveBy,
+        fresh: &[String],
+    ) -> clax_core::Result<Refiled> {
+        match st.refile_threads(moves, how, fresh) {
+            Ok(done) => {
+                announce_refiled(st, &self.feedback, &done)?;
+                Ok(done)
+            }
+            Err(e) => {
+                for aid in fresh {
+                    if let Err(e) = self.discard_if_empty(st, aid) {
+                        tracing::warn!(error = %e, artifact_id = aid.as_str(), "could not delete an empty live page");
+                    }
+                }
+                Err(e)
+            }
+        }
+    }
+
+    fn discard_if_empty(&self, st: &Store, aid: &str) -> clax_core::Result<()> {
+        let id = ArtifactId::parse(aid)?;
+        if !st.list_threads(&id, true, None, 1)?.0.is_empty() {
+            return Ok(());
+        }
+        st.delete_artifact(&id)?;
+        self.cache.remove_artifact(aid);
+        self.feedback.events.publish(Event::ArtifactDeleted {
+            artifact_id: aid.to_string(),
+        });
+        self.live_ids.remove(aid);
+        Ok(())
+    }
+}
+
 /// Publishes what a re-filing did: each version written, then for each
 /// thread that changed page `thread_moved` on the page it left (and, for
 /// clients that know only it, `thread_deleted` on that page's own topics),
@@ -823,13 +880,12 @@ pub async fn move_thread(
     let tid = super::artifacts::path(p)?;
     let b = super::artifacts::body(body)?;
     let pu = page_url(&s, &b.page_url)?;
-    let ctx = s.feedback_ctx();
-    let live_ids = s.live_ids.clone();
+    let rc = RefileCtx::of(&s);
     let with_path = who.token;
     let (view, page, artifact, rule, moved) = s
         .store_call(move |st| {
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
-            let Some(origin) = live_ids.origin_of(&t.artifact_id) else {
+            let Some(origin) = rc.live_ids.origin_of(&t.artifact_id) else {
                 return Err(CoreError::NotFound);
             };
             if origin != pu.key.origin {
@@ -840,7 +896,7 @@ pub async fn move_thread(
             }
             let r = st.resolve_live_key(&pu.key)?;
             let title = clean_title("", &pu.key.page_url());
-            let (to, made) = target_page(st, &live_ids, &ctx.events, &r.key, &title)?;
+            let (to, made) = target_page(st, &rc.live_ids, &rc.feedback.events, &r.key, &title)?;
             let refile = Refile {
                 thread_id: tid.clone(),
                 live_path: r.live_path,
@@ -852,11 +908,10 @@ pub async fn move_thread(
                 rule_id: None,
             };
             let fresh: Vec<String> = made.then(|| to.clone()).into_iter().collect();
-            let done = st.refile_threads(&[(to.clone(), refile)], &how, &fresh)?;
-            announce_refiled(st, &ctx, &done)?;
+            let done = rc.refile(st, &[(to.clone(), refile)], &how, &fresh)?;
             let t = st.get_thread(&tid)?.ok_or(CoreError::NotFound)?;
             let (page, artifact) = page_of(st, &to)?;
-            let view = thread_view(st, &t, ctx.codex_push(), with_path)?;
+            let view = thread_view(st, &t, rc.feedback.codex_push(), with_path)?;
             Ok((view, page, artifact, r.rule, !done.moved.is_empty()))
         })
         .await?;
@@ -923,8 +978,7 @@ pub async fn add_rule(
             "the pattern is not a path as the URL parser writes it",
         ));
     }
-    let ctx = s.feedback_ctx();
-    let live_ids = s.live_ids.clone();
+    let rc = RefileCtx::of(&s);
     let (rule, created, page, moved, remaining) = s
         .store_call(move |st| {
             let (rule, created) = st.add_live_rule(&origin, &pattern)?;
@@ -937,7 +991,13 @@ pub async fn add_rule(
                 return Ok((rule, created, page, Vec::new(), remaining));
             }
             let title = canonical.key.page_url();
-            let (to, made) = target_page(st, &live_ids, &ctx.events, &canonical.key, &title)?;
+            let (to, made) = target_page(
+                st,
+                &rc.live_ids,
+                &rc.feedback.events,
+                &canonical.key,
+                &title,
+            )?;
             let how = MoveBy {
                 by: mover(st, &who)?,
                 kind: KIND_MERGE,
@@ -946,8 +1006,8 @@ pub async fn add_rule(
             let moves: Vec<(String, Refile)> =
                 refiles.into_iter().map(|r| (to.clone(), r)).collect();
             let fresh: Vec<String> = made.then(|| to.clone()).into_iter().collect();
-            let done = st.refile_threads(&moves, &how, &fresh)?;
-            announce_refiled(st, &ctx, &done)?;
+            let done = rc.refile(st, &moves, &how, &fresh)?;
+            let remaining = remaining + done.deferred;
             let moved = done.moved.into_iter().map(|m| m.thread_id).collect();
             Ok((rule, created, Some(page_of(st, &to)?), moved, remaining))
         })
@@ -985,17 +1045,25 @@ pub async fn delete_rule(
 ) -> Result<Json<Value>, ApiError> {
     owner_writes(&who)?;
     let id = super::artifacts::path(p)?;
-    let ctx = s.feedback_ctx();
-    let live_ids = s.live_ids.clone();
-    let (rule, moved, remaining) = s
+    let rc = RefileCtx::of(&s);
+    let (rule, moved, remaining, deleting) = s
         .store_call(move |st| {
             let rule = st.mark_rule_deleted(&id)?.ok_or(CoreError::NotFound)?;
             let (back, remaining) = st.unmerge_candidates(&rule, MAX_REFILE)?;
             let mut moves = Vec::new();
-            let mut fresh = Vec::new();
+            let mut fresh: Vec<String> = Vec::new();
             for (key, refile) in back {
                 let title = clean_title("", &key.page_url());
-                let (to, made) = target_page(st, &live_ids, &ctx.events, &key, &title)?;
+                let made = target_page(st, &rc.live_ids, &rc.feedback.events, &key, &title);
+                let (to, made) = match made {
+                    Ok(m) => m,
+                    Err(e) => {
+                        for aid in &fresh {
+                            let _ = rc.discard_if_empty(st, aid);
+                        }
+                        return Err(e);
+                    }
+                };
                 if made {
                     fresh.push(to.clone());
                 }
@@ -1006,17 +1074,24 @@ pub async fn delete_rule(
                 kind: KIND_UNMERGE,
                 rule_id: Some(rule.id.clone()),
             };
-            let done = st.refile_threads(&moves, &how, &fresh)?;
-            announce_refiled(st, &ctx, &done)?;
-            if remaining == 0 {
+            let done = rc.refile(st, &moves, &how, &fresh)?;
+            // Pages made for threads left for the next request stay only
+            // once they hold one.
+            for aid in &fresh {
+                rc.discard_if_empty(st, aid)?;
+            }
+            let remaining = remaining + done.deferred;
+            let deleting = remaining > 0;
+            if !deleting {
+                // Not when a re-add put it back in force meanwhile.
                 st.drop_rule(&rule.id)?;
             }
             let moved: Vec<String> = done.moved.into_iter().map(|m| m.thread_id).collect();
-            Ok((rule, moved, remaining))
+            Ok((rule, moved, remaining, deleting))
         })
         .await?;
     let mut rule = rule_view(&rule);
-    rule["deleting"] = json!(remaining > 0);
+    rule["deleting"] = json!(deleting);
     Ok(Json(
         json!({"rule": rule, "moved": moved, "remaining": remaining}),
     ))
