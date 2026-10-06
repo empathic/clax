@@ -1,11 +1,18 @@
 // The sanitized snapshot of a live page (spec 2026-10-05 §8.2): the DOM as
 // HTML with no script, no event handler, no form value, no hidden input,
-// no comment and no dangerous URL; styles taken from the CSSOM (so rules
-// CSS-in-JS inserted are kept) with their URLs made absolute; open shadow
-// roots as declarative shadow DOM; embedded content as sized placeholders.
-// Every check is made on the lowercase name the HTML parser will see when the
-// snapshot is loaded again, and names that would not parse back as written are
-// dropped. The daemon also serves it with a policy that runs no page script (§8.4).
+// no comment, no meta but a few harmless ones, and no dangerous URL; styles
+// taken from the CSSOM (so rules CSS-in-JS inserted are kept) with their URLs
+// made absolute; open shadow roots as declarative shadow DOM; embedded content
+// as sized placeholders.
+//
+// The output must parse back to the tree that was checked. So: every check is
+// made on the lowercase name the parser will see; names that would not parse
+// back as written are dropped (attributes) or unwrapped (elements); every
+// attribute value and text node escapes `&`, `<`, `>` (and `"` in attributes),
+// so the only tags in the output are the ones written here; elements the
+// parser reads as raw text or RCDATA are written as escaped text only, never
+// with child elements; and style text cannot open a tag. The daemon also
+// serves the snapshot with a policy that runs no page script (§8.4).
 import { OVERLAY_TAG } from "../../../bridge/src/anchor";
 
 export const MAX_ELEMENTS = 100_000;
@@ -21,17 +28,27 @@ const HTML_NS = "http://www.w3.org/1999/xhtml";
 const DROP = new Set(["script", "noscript", "base", "template", "portal", "noembed", "noframes"]);
 const PLACEHOLDER = new Set(["iframe", "frame", "frameset", "fencedframe", "object", "embed", "applet", "canvas", "video", "audio"]);
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
-/** Elements whose content the parser reads as raw text; written as `pre` so escaped text reads back as text. */
+/** Elements the parser reads as raw text; written as `pre` so their escaped content reads back as markup. */
 const RAW = new Set(["xmp", "plaintext"]);
+/** Elements the parser reads as RCDATA: written with their escaped text only (a textarea's, being a form value, emptied). */
+const RCDATA = new Set(["title", "textarea"]);
+/** The only `meta` elements kept, by `name`; the snapshot writes its own charset. */
+const META_NAMES = new Set(["viewport", "color-scheme", "description"]);
 const URL_ATTRS = new Set(["href", "src", "poster", "background", "xlink:href", "cite", "longdesc"]);
 const DROP_ATTRS = new Set(["srcdoc", "nonce", "integrity", "action", "formaction", "ping", "xml:base", "selected", "checked"]);
 const FORM_VALUE = new Set(["input", "button", "option", "textarea"]);
-const TAG_NAME = /^[a-z][a-z0-9-]*$/i;
+const TAG_NAME = /^[a-z][\w.-]*$/i;
 const ATTR_NAME = /^[a-z_:][-\w:.]*$/i;
+/**
+ * A `url(` in CSS and, when well formed, its URL: quoted (to the next matching quote) or bare (no
+ * quote, paren or space). Each scan is bounded, so the whole is linear. A `url(` that is not well
+ * formed (CSS reads it as a bad URL) matches with no URL.
+ */
+const CSS_URL = /url\(\s*(?:"([^"]*)"\s*\)|'([^']*)'\s*\)|([^'"()\s]*)\s*\))?/gi;
 const TOO_LARGE = Symbol("too large");
 
 const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-const escAttr = (s: string) => s.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
+const escAttr = (s: string) => escText(s).replace(/"/g, "&quot;");
 
 /** The UTF-8 length of `s`, a lone surrogate counting as the U+FFFD that replaces it. */
 function utf8Length(s: string): number {
@@ -58,44 +75,11 @@ function absolute(u: string, base: string): string | null {
   }
 }
 
-/** Each candidate of a srcset kept with its absolute URL; a URL runs to whitespace (trailing commas end it), its descriptors to a comma. */
-function srcset(value: string, base: string): string | null {
-  const out: string[] = [];
-  let rest = value;
-  for (;;) {
-    rest = rest.replace(/^[\s,]+/, "");
-    if (!rest) break;
-    let url = /^\S+/.exec(rest)![0];
-    rest = rest.slice(url.length);
-    let desc = "";
-    if (url.endsWith(",")) url = url.replace(/,+$/, "");
-    else {
-      desc = /^[^,]*/.exec(rest)![0];
-      rest = rest.slice(desc.length);
-    }
-    const abs = absolute(url, base);
-    if (abs) out.push(`${abs} ${desc.trim()}`.trim());
-  }
-  return out.join(", ") || null;
-}
-
-function cssUrls(text: string, base: string): string {
-  return text.replace(/url\(\s*(['"]?)([^'")]*)\1\s*\)/gi, (_m, _q, u: string) => `url("${(absolute(u, base) ?? "").replace(/"/g, "%22")}")`);
-}
-
-function rulesOf(sheet: CSSStyleSheet | null | undefined): string | null {
-  if (!sheet) return null;
-  try {
-    return [...sheet.cssRules].map(r => r.cssText).join("\n");
-  } catch {
-    return null;
-  }
-}
-
 class Writer {
   private parts: string[] = [];
   private bytes = 0;
   private count = 0;
+  private steps = 0;
   private depth = 0;
   private readonly started: number;
   constructor(private readonly o: Required<Omit<Opts, "skip">> & { skip: Set<Element> }, private readonly base: string) {
@@ -105,27 +89,96 @@ class Writer {
     this.bytes += utf8Length(s);
     if (this.bytes > this.o.maxBytes) throw TOO_LARGE;
     this.parts.push(s);
+    this.step();
+  }
+  /** Checks the clock every 256 units of work, so one long stylesheet, srcset or run of text cannot outlast the deadline. */
+  step() {
+    if ((++this.steps & 255) === 0) this.clock();
+  }
+  clock() {
+    if (this.o.now() - this.started > this.o.deadlineMs) throw TOO_LARGE;
   }
   tick() {
-    if (++this.count > this.o.maxElements || this.o.now() - this.started > this.o.deadlineMs) throw TOO_LARGE;
+    if (++this.count > this.o.maxElements) throw TOO_LARGE;
+    this.clock();
   }
   text(): string {
     return this.parts.join("");
   }
 
-  /** A `<style>` holding `css`; a `<` that could open a tag (and so end the element or, inside SVG, add one) is written as a CSS escape. */
-  style(css: string, base: string, media?: string | null) {
+  rules(sheet: CSSStyleSheet | null | undefined): string | null {
+    if (!sheet) return null;
+    let list: CSSRuleList;
+    try {
+      list = sheet.cssRules;
+    } catch {
+      return null;
+    }
+    const out: string[] = [];
+    for (const r of list) {
+      out.push(r.cssText);
+      this.step();
+    }
+    return out.join("\n");
+  }
+
+  cssUrls(text: string, base: string): string {
+    // Script schemes left in malformed CSS are broken as well, so no reading of the text holds one.
+    return text.replace(/(java|vb)script:/gi, "blocked:").replace(CSS_URL, (_m, dq?: string, sq?: string, bare?: string) => {
+      this.step();
+      const u = dq ?? sq ?? bare;
+      // A malformed url( becomes an unknown function, so no reading of it loads anything.
+      if (u === undefined) return "x-url(";
+      return `url("${(absolute(u, base) ?? "").replace(/"/g, "%22")}")`;
+    });
+  }
+
+  /** Each candidate of a srcset kept with its absolute URL; a URL runs to whitespace (trailing commas end it), its descriptors to a comma. */
+  srcset(value: string): string | null {
+    const out: string[] = [];
+    const n = value.length;
+    let i = 0;
+    while (i < n) {
+      while (i < n && /[\s,]/.test(value[i])) i++;
+      if (i >= n) break;
+      let j = i;
+      while (j < n && !/\s/.test(value[j])) j++;
+      let url = value.slice(i, j);
+      let desc = "";
+      i = j;
+      if (url.endsWith(",")) url = url.replace(/,+$/, "");
+      else {
+        const k = value.indexOf(",", i);
+        const end = k < 0 ? n : k;
+        desc = value.slice(i, end).trim();
+        i = end;
+      }
+      const abs = absolute(url, this.base);
+      if (abs) out.push(desc ? `${abs} ${desc}` : abs);
+      this.step();
+    }
+    return out.join(", ") || null;
+  }
+
+  /** A `<style>` holding `css`; a `<` that could open a tag (and so end the element or, inside SVG or MathML, add one) is written as a CSS escape. */
+  style(css: string | null, base: string, media?: string | null) {
+    if (css === null) return;
+    this.clock();
     const m = media ? ` media="${escAttr(media)}"` : "";
-    this.emit(`<style${m}>${cssUrls(css, base).replace(/<(?=[a-z/!?])/gi, "\\3c ")}</style>`);
+    this.emit(`<style${m}>${this.cssUrls(css, base).replace(/<(?=[a-z/!?])/gi, "\\3c ")}</style>`);
+  }
+
+  adopted(sheets: readonly CSSStyleSheet[] | undefined) {
+    for (const s of sheets ?? []) this.style(this.rules(s), this.base);
   }
 
   element(el: Element): void {
     this.tick();
     const name = el.localName;
     const tag = name.toLowerCase();
-    if (this.o.skip.has(el) || tag === OVERLAY_TAG || DROP.has(tag) || !TAG_NAME.test(name)) return;
+    if (this.o.skip.has(el) || tag === OVERLAY_TAG || DROP.has(tag)) return;
     if (tag === "input" && (el as HTMLInputElement).type === "hidden") return;
-    if (tag === "meta" && (el.hasAttribute("http-equiv") || el.hasAttribute("charset"))) return;
+    if (tag === "meta" && (el.hasAttribute("http-equiv") || !META_NAMES.has((el.getAttribute("name") ?? "").toLowerCase()))) return;
     if ((tag === "set" || tag === "animate") && /(^|:)href$/i.test(el.getAttribute("attributeName") ?? "")) return;
     const media = el.getAttribute("media");
     if (tag === "link") {
@@ -133,14 +186,14 @@ class Writer {
       const sheet = (el as HTMLLinkElement).sheet as CSSStyleSheet | null;
       if (sheet?.disabled) return;
       const href = absolute(el.getAttribute("href") ?? "", this.base);
-      const rules = rulesOf(sheet);
+      const rules = this.rules(sheet);
       if (rules !== null) this.style(rules, sheet?.href ?? href ?? this.base, media);
       else if (href) this.emit(`<link rel="stylesheet" href="${escAttr(href)}"${media ? ` media="${escAttr(media)}"` : ""}>`);
       return;
     }
     if (tag === "style") {
       const sheet = (el as HTMLStyleElement).sheet as CSSStyleSheet | null;
-      if (!sheet?.disabled) this.style(rulesOf(sheet) ?? el.textContent ?? "", this.base, media);
+      if (!sheet?.disabled) this.style(this.rules(sheet) ?? el.textContent ?? "", this.base, media);
       return;
     }
     if (PLACEHOLDER.has(tag)) {
@@ -149,36 +202,43 @@ class Writer {
       return;
     }
     if (++this.depth > MAX_DEPTH) throw TOO_LARGE;
+    if (!TAG_NAME.test(name)) {
+      // A name the parser would read differently: keep what it holds, without it.
+      this.children(el);
+      this.depth--;
+      return;
+    }
     const out = RAW.has(tag) ? "pre" : name;
     this.emit(`<${out}`);
     for (const a of [...el.attributes]) {
       const n = a.name.toLowerCase();
       if (!ATTR_NAME.test(a.name) || n.startsWith("on") || a.localName.toLowerCase().startsWith("on") || DROP_ATTRS.has(n)) continue;
-      if (n === "value" && FORM_VALUE.has(tag)) continue;
+      if (n === "value" && (FORM_VALUE.has(tag) || tag.includes("-"))) continue;
       let value: string | null = a.value;
       if (URL_ATTRS.has(n)) value = absolute(value, this.base);
-      else if (n === "srcset") value = srcset(value, this.base);
-      else if (n === "style") value = cssUrls(value, this.base);
+      else if (n === "srcset") value = this.srcset(value);
+      else if (n === "style") value = this.cssUrls(value, this.base);
       if (value !== null) this.emit(` ${a.name}="${escAttr(value)}"`);
     }
     // The chosen option and checked boxes are the page's state, not values typed into it.
     if (tag === "option" && (el as HTMLOptionElement).selected) this.emit(` selected=""`);
     if (tag === "input" && (el as HTMLInputElement).checked) this.emit(` checked=""`);
     this.emit(">");
-    if (tag === "head") {
-      this.emit(`<meta charset="utf-8">`);
-      for (const s of el.ownerDocument.adoptedStyleSheets ?? []) this.style(rulesOf(s) ?? "", this.base);
-    }
+    if (tag === "head") this.emit(`<meta charset="utf-8">`);
     if (!(el.namespaceURI === HTML_NS && VOID.has(tag))) {
-      if (tag !== "textarea") {
+      if (RCDATA.has(tag)) {
+        if (tag === "title") this.emit(escText(el.textContent ?? ""));
+      } else {
         const shadow = (el as HTMLElement).shadowRoot;
         if (shadow) {
           this.emit(`<template shadowrootmode="open">`);
-          for (const s of shadow.adoptedStyleSheets ?? []) this.style(rulesOf(s) ?? "", this.base);
           this.children(shadow);
+          // Adopted sheets come after the tree's own in the cascade.
+          this.adopted(shadow.adoptedStyleSheets);
           this.emit(`</template>`);
         }
         this.children(el);
+        if (tag === "head") this.adopted(el.ownerDocument.adoptedStyleSheets);
       }
       this.emit(`</${out}>`);
     }
@@ -200,7 +260,8 @@ function placeholderPage(title: string): string {
 }
 
 /**
- * Serializes `doc` under the caps (elements, UTF-8 bytes of HTML, time on `now`).
+ * Serializes `doc` under the caps (elements, UTF-8 bytes of HTML, time on `now`,
+ * checked between elements and within long stylesheets, srcsets and text).
  * Past any cap, or nested deeper than the serializer follows, it returns the
  * placeholder page with `error: "too_large"`.
  */

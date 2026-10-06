@@ -19,6 +19,7 @@ function doc(body: string, head = ""): Document {
 const snap = (d: Document) => {
   const r = serializeSnapshot(d);
   expect(r.error).toBeNull();
+  assertClean(r.html);
   return r.html;
 };
 /** The snapshot parsed again, as the daemon's page would be. */
@@ -31,6 +32,39 @@ function allAttrs(d: Document | DocumentFragment): Attr[] {
     if (el instanceof HTMLTemplateElement) out.push(...allAttrs(el.content));
   }
   return out;
+}
+
+const BANNED = "script, noscript, iframe, frame, frameset, fencedframe, object, embed, applet, portal, base, template:not([shadowrootmode])";
+const URLISH = /^(href|src|srcset|poster|background|action|formaction|xlink:href|style|content)$/i;
+const META_NAMES = new Set(["viewport", "color-scheme", "description"]);
+
+/** Every element of a parsed snapshot, declarative shadow roots included. */
+function allElements(d: Document | DocumentFragment): Element[] {
+  const out: Element[] = [];
+  for (const el of d.querySelectorAll("*")) {
+    out.push(el);
+    if (el instanceof HTMLTemplateElement) out.push(...allElements(el.content));
+  }
+  return out;
+}
+
+/**
+ * The snapshot parsed again, as the daemon serves it, holds nothing the sanitizer removes:
+ * no script or embedding element, no base, no meta but the allowed ones, no handler, no srcdoc,
+ * no script URL. Every snapshot the tests take passes through here.
+ */
+function assertClean(html: string) {
+  const bad: string[] = [];
+  for (const el of allElements(reparse(html))) {
+    const name = el.localName.toLowerCase();
+    if (el.matches(BANNED) || name === "script") bad.push(`<${name}>`);
+    if (name === "meta" && !el.hasAttribute("charset") && !META_NAMES.has((el.getAttribute("name") ?? "").toLowerCase())) bad.push(el.outerHTML);
+    for (const a of el.attributes) {
+      if (/^on/i.test(a.localName) || /^(srcdoc|http-equiv)$/i.test(a.localName)) bad.push(`${name}[${a.name}]`);
+      if (URLISH.test(a.name) && /(java|vb)script:|data:text/i.test(a.value)) bad.push(`${name}[${a.name}=${a.value}]`);
+    }
+  }
+  expect(bad, html).toEqual([]);
 }
 
 describe("serializeSnapshot", () => {
@@ -222,15 +256,112 @@ describe("serializeSnapshot", () => {
       expect(reparse(html).querySelectorAll("script, iframe").length).toBe(0);
     });
 
-    it("drops elements and attributes whose names would not survive a parse", () => {
+    it("drops attributes whose names would not survive a parse, and writes such elements as their children", () => {
       // Chrome accepts names jsdom refuses (any character but whitespace, NUL, "/" and ">"); give them as the DOM would report them.
       const d = doc(`<p><span>s</span></p>`);
       const p = d.querySelector("p")!;
       Object.defineProperty(p, "attributes", { value: [{ name: 'x"onclick', localName: 'x"onclick', value: "1" }, { name: "title", localName: "title", value: "t" }] });
       Object.defineProperty(d.querySelector("span")!, "localName", { value: "a<img" });
       const html = snap(d);
-      expect(html).toContain('<p title="t"></p>');
-      expect(html).not.toMatch(/x"onclick|a<img|>s</);
+      expect(html).toContain('<p title="t">s</p>');
+      expect(html).not.toMatch(/x"onclick|a<img/);
+    });
+
+    it("cannot be broken out of a title through a child's attribute, in HTML or SVG", () => {
+      const evil = `</title><meta http-equiv="refresh" content="0;url=https://evil.example/"><img src=x onerror=alert(1)><base href="http://evil/"><iframe srcdoc="<script>1</script>"></iframe>`;
+      const d = doc(`<p>x</p>`);
+      const b = d.createElement("b");
+      b.title = evil;
+      d.querySelector("title")!.append(b);
+      const svgTitle = d.createElementNS(SVG, "title");
+      svgTitle.append("tip");
+      const i = d.createElement("i");
+      i.setAttribute("title", evil);
+      svgTitle.append(i);
+      d.body.append(svgTitle);
+      const html = snap(d);
+      expect(html).toContain("<title>Page</title>");
+      expect(html).toContain("<title>tip</title>");
+    });
+
+    it("escapes <, >, & and quotes in every attribute value", () => {
+      const d = doc(`<p title='a<b>&c"d'>x</p>`);
+      expect(snap(d)).toContain('<p title="a&lt;b&gt;&amp;c&quot;d">x</p>');
+    });
+
+    it("writes raw-text elements as text only, whatever children a script gave them", () => {
+      const d = doc(`<p>x</p>`);
+      const evil = `</xmp></textarea></noembed></iframe></style><img src=x onerror=alert(1)>`;
+      for (const t of ["xmp", "plaintext", "textarea", "noembed", "noframes", "noscript", "iframe", "style"]) {
+        const el = d.createElement(t);
+        const b = d.createElement("b");
+        b.setAttribute("title", evil);
+        b.append(evil);
+        el.append(b);
+        d.body.append(el);
+      }
+      snap(d);
+    });
+
+    it("keeps only the allowed meta elements", () => {
+      const html = snap(doc(`<p>x</p>`,
+        `<meta name="viewport" content="width=device-width"><meta name="Description" content="d"><meta name="color-scheme" content="dark">
+         <meta name="csrf-token" content="SECRETCSRF"><meta name="csrf-param" content="authenticity_token"><meta property="og:title" content="o">
+         <meta name="theme-color" content="#000"><meta itemprop="x" content="y">`));
+      expect(html).toContain('<meta name="viewport" content="width=device-width">');
+      expect(html).toContain('<meta name="Description" content="d">');
+      expect(html).toContain('<meta name="color-scheme" content="dark">');
+      expect(html).not.toMatch(/SECRETCSRF|csrf|og:title|theme-color|itemprop/);
+    });
+
+    it("keeps contenteditable content as page content", () => {
+      expect(snap(doc(`<div contenteditable="true">my words</div>`))).toContain('<div contenteditable="true">my words</div>');
+    });
+
+    it("drops value on custom elements, which may be form-associated", () => {
+      const html = snap(doc(`<sl-input value="typed-secret" label="Name"></sl-input><li value="3">x</li>`));
+      expect(html).not.toContain("typed-secret");
+      expect(html).toContain('<sl-input label="Name"></sl-input>');
+      expect(html).toContain('<li value="3">');
+    });
+
+    it("keeps custom element names with dots and underscores", () => {
+      const d = doc(`<p></p>`);
+      const el = d.createElement("x-a.b_c");
+      el.append("kept text");
+      d.querySelector("p")!.append(el);
+      expect(snap(d)).toContain("<x-a.b_c>kept text</x-a.b_c>");
+    });
+
+    it("writes adopted style sheets after the page's own, as the cascade orders them", () => {
+      const d = doc(`<my-card></my-card>`, `<style>p { color: red }</style>`);
+      const adopted = (css: string) => [{ cssRules: [{ cssText: css }] }];
+      Object.defineProperty(d, "adoptedStyleSheets", { value: adopted("p { color: blue; }") });
+      const root = d.querySelector("my-card")!.attachShadow({ mode: "open" });
+      root.innerHTML = "<style>b { color: red }</style><b>in</b>";
+      Object.defineProperty(root, "adoptedStyleSheets", { value: adopted("b { color: green; }") });
+      const html = snap(d);
+      expect(html).toMatch(/color: red;?\s*\}<\/style><style>p \{ color: blue; \}<\/style><\/head>/);
+      expect(html).toMatch(/<b>in<\/b><style>b \{ color: green; \}<\/style><\/template>/);
+    });
+
+    it("round-trips every namespace-confusion fixture clean", () => {
+      const fixtures = [
+        `<svg></p><style><a title="</style><img src onerror=alert(1)>"></style></svg>`,
+        `<form><math><mtext></form><form><mglyph><style></math><img src onerror=alert(1)>`,
+        `<math><mtext><table><mglyph><style><img src=x onerror=alert(1)></style></mglyph></table></mtext></math>`,
+        `<noscript><p title="</noscript><img src=x onerror=alert(1)>"></noscript>`,
+        `<svg><foreignObject><iframe srcdoc="x"></iframe></foreignObject><title><a title="</title><script>1</script>">t</a></title></svg>`,
+        `<math><style><img src=x onerror=alert(1)></style><mi xlink:href="javascript:alert(1)">x</mi></math>`,
+        `<svg><a href="javascript:1"><animate attributeName="HREF" values="javascript:1"/></a><use href="data:text/html,x"/></svg>`,
+        `<select><option><img src=x onerror=alert(1)></option></select><table><td title="</table><script>1</script>">c</td></table>`,
+      ];
+      for (const f of fixtures) {
+        const d = doc(f);
+        const foreignStyle = d.querySelector("svg style, math style");
+        if (foreignStyle) foreignStyle.textContent = `a::after { content: "</style><img src=x onerror=alert(2)>" }`;
+        snap(d);
+      }
     });
 
     it("reports very deep nesting as too large rather than overflowing the stack", () => {
@@ -263,6 +394,23 @@ describe("serializeSnapshot", () => {
       const late = serializeSnapshot(doc("<i></i><i></i>"), { deadlineMs: 1500, now: () => (t += 1000) });
       expect(late.error).toBe("too_large");
       expect(late.html).toMatch(/^<!doctype html>/);
+    });
+
+    it("checks the deadline inside one long stylesheet, not only between elements", () => {
+      const d = doc(`<p>x</p>`, `<style></style>`);
+      d.querySelector("style")!.textContent = Array.from({ length: 20_000 }, (_, i) => `.c${i} { background: url(i${i}.png) }`).join("\n");
+      let t = 0;
+      // About ten clock reads happen outside the stylesheet; the rest come from within it.
+      expect(serializeSnapshot(d, { deadlineMs: 50, now: () => (t += 1) }).error).toBe("too_large");
+    });
+
+    it("rewrites pathological CSS and srcset in linear time", () => {
+      const d = doc(`<img>`, `<style></style>`);
+      d.querySelector("style")!.textContent = `p::before { content: "${"url(".repeat(80_000)}" }`;
+      d.querySelector("img")!.setAttribute("srcset", Array.from({ length: 40_000 }, (_, i) => `i${i}.png ${i + 1}w`).join(", "));
+      const started = performance.now();
+      serializeSnapshot(d, { deadlineMs: 60_000 });
+      expect(performance.now() - started).toBeLessThan(1500);
     });
 
     it("keeps the placeholder page's title short and escaped", () => {
