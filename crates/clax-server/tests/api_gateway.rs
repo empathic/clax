@@ -741,3 +741,64 @@ async fn the_extension_and_the_shell_change_only_their_own_streams() {
         assert_eq!(r.json(&topic).send().await.unwrap().status(), 200, "{sid}");
     }
 }
+
+/// Chrome sends no `Origin` on an extension's GET to an origin the extension
+/// holds a host permission for (the test build's `<all_urls>`, or "On all
+/// sites" in chrome://extensions), and marks it `Sec-Fetch-Site: none`,
+/// which no web page can send. Such a request with the credential is the
+/// extension's; one a page could make (`same-origin`, `same-site`,
+/// `cross-site`) is not.
+#[tokio::test]
+async fn a_credential_without_origin_is_the_extensions_only_when_the_browser_says_none() {
+    let ts = TestServer::spawn().await;
+    let cred = credential(&ts).await;
+    let (aid, _) = live_thread(&ts, &cred).await;
+    let url = format!("{}/api/artifacts/{aid}/threads", ts.base);
+    let privileged = ts
+        .client
+        .get(&url)
+        .header("sec-fetch-site", "none")
+        .header("authorization", format!("Clax-Extension {cred}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(privileged.status(), 200);
+    assert_eq!(
+        privileged.headers()["access-control-allow-origin"],
+        origin(&ts).as_str()
+    );
+    let unknown = ts
+        .client
+        .get(&url)
+        .header("sec-fetch-site", "none")
+        .header(
+            "authorization",
+            "Clax-Extension cxe_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown.status(), 401, "the credential is still checked");
+    for site in ["same-origin", "same-site", "cross-site"] {
+        let res = ts
+            .client
+            .get(&url)
+            .header("sec-fetch-site", site)
+            .header("authorization", format!("Clax-Extension {cred}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 403, "{site}");
+        assert_eq!(code(res).await, "forbidden_origin", "{site}");
+    }
+    let foreign = ts
+        .client
+        .get(&url)
+        .header("origin", "http://localhost:5173")
+        .header("sec-fetch-site", "none")
+        .header("authorization", format!("Clax-Extension {cred}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), 403, "an Origin of its own is never overridden");
+}

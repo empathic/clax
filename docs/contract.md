@@ -3143,8 +3143,13 @@ abandoned and retried the same way, with a notice.
   missing, unknown, idle or revoked credential is 401 `unknown_credential`;
   an artifact that is not a live page, in the path or in a body, is 404 as
   a missing one; a request from another machine is 403 `forbidden`, and so
-  is the bearer token from that origin. A `Clax-Extension` credential from
-  any other origin, or with none, is 403 `forbidden_origin`. An admitted
+  is the bearer token from that origin. A request with the credential and
+  no `Origin` counts as that origin's when it carries `Sec-Fetch-Site:
+  none`: Chrome sends no `Origin` on the extension's GETs to an origin the
+  extension holds a host permission for (`<all_urls>`, or "On all sites"),
+  and no web page can send `none`. A `Clax-Extension` credential from any
+  other origin, or with none and any other `Sec-Fetch-Site` (or no such
+  header), is 403 `forbidden_origin`. An admitted
   request reaches its route as the owner, one of the owner's browsers: its
   name, looked-at marks, presence, comments, sends and resolves are the
   owner's, at the level the owner cookie gives (`interact` once the owner

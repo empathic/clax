@@ -604,7 +604,13 @@ manifest edited by hand.
 
 Every request from the worker carries `Origin: chrome-extension://<ID>`
 (added by Chrome) and `Authorization: Clax-Extension <credential>`, with
-`credentials: "omit"`. New routes (viewer routes: no token):
+`credentials: "omit"`. (Found in Task 16's browser test: Chrome sends no
+`Origin` on the worker's GETs when the extension holds a host permission
+for the daemon's origin, as `<all_urls>` or "On all sites" gives it, and
+marks them `Sec-Fetch-Site: none`, which no web page can send. The gateway
+counts a request with the credential, no `Origin` and `Sec-Fetch-Site:
+none` as the extension's; any other request with the credential and no
+`Origin` is still 403 `forbidden_origin`.) New routes (viewer routes: no token):
 
 - `GET /api/live/pages?url=<page URL>` → `{page: {artifact_id, origin,
   path, route, title, current_version, url} | null, route}`. Never creates.

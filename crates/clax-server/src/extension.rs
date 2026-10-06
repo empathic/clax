@@ -263,11 +263,29 @@ fn presented(h: &HeaderMap) -> Option<&str> {
         })
 }
 
+/// Whether `h` is a request of the extension's: its `Origin` is `origin`,
+/// or it has no `Origin`, carries a `Clax-Extension` credential and is
+/// marked `Sec-Fetch-Site: none`. Chrome sends no `Origin` on an
+/// extension's GET to an origin the extension holds a host permission for
+/// (`<all_urls>`, or "On all sites"), and marks it `none`, which no web
+/// page can send: a page's request carries its `Origin`, or is
+/// `same-origin`, `same-site` or `cross-site`.
+fn from_extension(h: &HeaderMap, origin: &str) -> bool {
+    match h.get(header::ORIGIN) {
+        Some(v) => v.to_str().ok() == Some(origin),
+        None => {
+            h.get("sec-fetch-site").and_then(|v| v.to_str().ok()) == Some("none")
+                && authorizations(h).any(|v| has_scheme(v, SCHEME))
+        }
+    }
+}
+
 /// Middleware: the extension gateway (spec 2026-10-05-chrome-overlay-design
 /// L5, L6, §9.2, §10 item 6).
 ///
-/// A request whose `Origin` is the extension's (`chrome-extension://<ID in
-/// effect>`) is admitted only from a loopback peer, only to [`rule`]'s
+/// A request of the extension's ([`from_extension`]: its `Origin` is
+/// `chrome-extension://<ID in effect>`, or a privileged request without one)
+/// is admitted only from a loopback peer, only to [`rule`]'s
 /// routes, only with a live credential for that ID, and only for live pages;
 /// otherwise 403 `forbidden` (401 `unknown_credential` for a missing,
 /// unknown, expired or revoked credential; 404 for an artifact that is not
@@ -281,15 +299,11 @@ fn presented(h: &HeaderMap) -> Option<&str> {
 /// 403 otherwise, without `Access-Control-Allow-Credentials` (the extension
 /// sends no cookies).
 ///
-/// A `Clax-Extension` credential with any other `Origin`, or none, is
-/// refused 403 `forbidden_origin`. Every other request passes untouched.
+/// A `Clax-Extension` credential with any other `Origin`, or none and a
+/// `Sec-Fetch-Site` other than `none`, is refused 403 `forbidden_origin`. Every other request passes untouched.
 pub async fn gateway(State(s): State<AppState>, mut req: Request, next: Next) -> Response {
     let origin = extension_origin(&s.extension_id);
-    let ours = req
-        .headers()
-        .get(header::ORIGIN)
-        .and_then(|v| v.to_str().ok())
-        == Some(origin.as_str());
+    let ours = from_extension(req.headers(), &origin);
     if !ours {
         if authorizations(req.headers()).any(|v| has_scheme(v, SCHEME)) {
             return ApiError::forbidden(
