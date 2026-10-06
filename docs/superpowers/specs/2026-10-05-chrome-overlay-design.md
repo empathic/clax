@@ -613,17 +613,28 @@ the panel's search and filters run on the listing in the client.
      writes nothing); otherwise a plain copy is written, noted `moved`
      (owner ruling 2026-10-06: no hard links; a version referring to
      another page's files was judged too invasive for now). After copies,
-     a page that existed gets its newest version not noted `moved` written
-     once more on top, with its own note, so its current version is still
-     its own latest snapshot; without copies its current version is left
-     alone.
+     a page that existed gets the version it showed (its current version
+     when the move was staged; never "the newest not moved", which can be
+     a placeholder) written once more on top, with its own note; without
+     copies its current version is left alone.
    - **Agents** (review H1). Watches are per page, so the thread's agents
      would lose it: every live session watching the page it left, the
      session it was sent to and every session with feedback of it not yet
      acknowledged watch the new page too, with their arming, and so does
      every scope watch covering the path it was made at.
-   - **Atomic.** Plan, copies and re-filing are one transaction; a failure
-     leaves nothing of them (a page made for the move may stay, empty).
+   - **The writer.** The store has one writer, and a move may compare and
+     copy many megabytes, so (as `write_version_then` does) the files are
+     compared and copied into staging directories before the writer is
+     taken; the writer is held only to check that each page is at the
+     version and each thread on the page with the links staging saw (else
+     staging runs again), insert the rows and rename the directories. One
+     call stages at most 64 MiB of source snapshots; past that, its other
+     threads wait for the client's next request (`remaining`).
+   - **Atomic.** The re-filing is one transaction; a failure leaves nothing
+     of it, and the pages the request made that hold no thread are deleted
+     again.
+   - A scope-made watch carried to a page none of the session's scopes
+     covers ends when the session removes a scope watch of that origin.
    - Each move is recorded (`thread_moves`: who, from which URL, to which,
      its kind (`move`, `merge`, `unmerge`) and rule). The stream gets the
      new page's `version`s, `thread_moved {artifact_id, thread_id,
@@ -651,10 +662,13 @@ the panel's search and filters run on the listing in the client.
    still cover it and by which snapshots settle pending addresses: a
    snapshot of `/users/2` links only threads made at `/users/2`.
 5. **Un-merging** (owner ruling 2026-10-06). Deleting a rule takes it out
-   of force at once and moves each thread on its canonical page that a
-   rule put there (not one the owner moved there) back to the page of the
-   path it was made at, or to another rule's canonical page when one maps
-   that path, 200 a request; the rule stays `deleting` until none is left.
+   of force at once and moves each thread on its canonical page made at
+   another path than the pattern's (merged, made at a mapped URL, or moved
+   by the owner to one) back to the page of that path, or to another rule's
+   canonical page when one maps that path, 200 a request; only threads made
+   at, or moved onto, the pattern's own path stay. The rule stays
+   `deleting` until none is left, and is then removed only if still
+   deleting (a re-add meanwhile keeps it in force).
 6. **Who.** Reads need an owner credential; moves and rule changes need the
    token or the extension's credential. All of it is under `/api/live/`, so
    hidden from the LAN (L10) and admitted by the extension gateway's

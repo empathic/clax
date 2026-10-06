@@ -964,6 +964,73 @@ async fn a_scope_watch_on_a_merged_path_still_hears_of_it() {
 }
 
 #[tokio::test]
+async fn a_failed_move_leaves_no_page_made_for_it() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let (a, tid, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/a"), "x").await;
+    // The thread's snapshot is gone from disk: copying it fails.
+    let id = clax_core::ArtifactId::parse(&a).unwrap();
+    std::fs::remove_file(ts.home.version_dir(&id, 1).join("index.html")).unwrap();
+    let res = move_to(&ts, &tid, &format!("{ORIGIN}/new")).await;
+    assert!(res.status().is_server_error(), "{}", res.status());
+    let p: Value = ts
+        .get_authed(&format!(
+            "/api/live/pages?url={}",
+            enc(&format!("{ORIGIN}/new"))
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert!(p["page"].is_null(), "{p}");
+    assert_eq!(threads_of(&ts, &a).await, vec![tid]);
+}
+
+#[tokio::test]
+async fn a_move_to_a_mapped_url_is_unmerged_with_the_rest() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Ana")).await;
+    let r: Value = add_rule(&ts, "/users/:id").await.json().await.unwrap();
+    let rule_id = r["rule"]["id"].as_str().unwrap().to_string();
+    let (_, tid, _) = comment(&ts, &v.cookie, &format!("{ORIGIN}/other"), "x").await;
+    let m: Value = move_to(&ts, &tid, &format!("{ORIGIN}/users/5"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(m["page"]["merged"], true);
+    assert_eq!(m["thread"]["page_path"], "/users/5");
+    // A route-only move within the merged page pins nothing either.
+    let m: Value = move_to(&ts, &tid, &format!("{ORIGIN}/users/5?tab=1"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(m["moved"], true);
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/live/rules/{rule_id}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    let d: Value = res.json().await.unwrap();
+    assert_eq!(d["moved"], json!([tid]));
+    let p: Value = ts
+        .get_authed(&format!(
+            "/api/live/pages?url={}",
+            enc(&format!("{ORIGIN}/users/5"))
+        ))
+        .await
+        .json()
+        .await
+        .unwrap();
+    let aid = p["page"]["artifact_id"].as_str().unwrap();
+    assert_eq!(threads_of(&ts, aid).await, vec![tid]);
+}
+
+#[tokio::test]
 async fn only_the_owner_follows_a_site() {
     let ts = TestServer::spawn().await;
     let v = ts.viewer(Some("Ana")).await;

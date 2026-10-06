@@ -61,14 +61,12 @@ pub(crate) const REFILE_CANDIDATES: &str = "SELECT t.id, t.artifact_id, t.live_p
     FROM threads t JOIN artifacts a ON a.id = t.artifact_id
     WHERE a.deleted_at IS NULL AND t.artifact_id IN (SELECT value FROM json_each(?1))
     ORDER BY t.created_at, t.id";
-/// The threads of the canonical page `?1` that a rule put there (merged, or
-/// made at a path it mapped), not the owner (whose latest move is a
-/// `move`): ID, page, `live_path` and anchor.
+/// The threads of the canonical page `?1` made at another path than the
+/// pattern's own (merged there, made at a path a rule mapped, or moved to
+/// such a URL): ID, page, `live_path` and anchor. A thread made at, or
+/// moved onto, the pattern's own path has no `live_path` and stays.
 pub(crate) const TO_UNMERGE: &str = "SELECT t.id, t.artifact_id, t.live_path, t.anchor_json
-    FROM threads t WHERE t.artifact_id = ?1
-        AND NOT EXISTS(SELECT 1 FROM thread_moves m WHERE m.id =
-            (SELECT m2.id FROM thread_moves m2 WHERE m2.thread_id = t.id
-             ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1) AND m.kind = 'move')
+    FROM threads t WHERE t.artifact_id = ?1 AND t.live_path IS NOT NULL
     ORDER BY t.created_at, t.id";
 /// Of the threads of `?1` (a JSON array), those on a live page of origin
 /// `?2` made at path `?3` (their `live_path`, else their page's path).
@@ -189,6 +187,8 @@ pub struct Refiled {
     pub moved: Vec<Moved>,
     /// The versions it wrote, oldest first per page.
     pub versions: Vec<Version>,
+    /// Threads of the call left for a later one ([`MAX_STAGE_BYTES`]).
+    pub deferred: usize,
 }
 
 /// A thread's re-filing, as planned.
@@ -263,50 +263,6 @@ fn version_files(
     Ok((files_json, files))
 }
 
-/// A version of live page `to` with the same files, byte for byte, as
-/// version `n` of live page `src`, newest first: a move reuses it instead
-/// of writing the same bytes again (a thread moved back, or a page holding
-/// that snapshot already). Sizes are compared before any file is read.
-fn same_version(
-    tx: &Connection,
-    st: &Store,
-    (src, n): (&str, u32),
-    to: &str,
-) -> Result<Option<u32>> {
-    let (src_json, src_files) = version_files(tx, src, n)?;
-    let src_dir = st.home.version_dir(&ArtifactId::parse(src)?, n);
-    let to_id = ArtifactId::parse(to)?;
-    let candidates: Vec<(u32, String)> = {
-        let mut q = tx.prepare_cached(
-            "SELECT n, files_json FROM versions WHERE artifact_id = ?1 ORDER BY n DESC",
-        )?;
-        q.query_map(params![to], |r| Ok((r.get(0)?, r.get(1)?)))?
-            .collect::<rusqlite::Result<_>>()?
-    };
-    let mut src_bytes: HashMap<&str, Vec<u8>> = HashMap::new();
-    for (m, json) in candidates {
-        if json != src_json {
-            continue; // other paths, sizes or types
-        }
-        let dir = st.home.version_dir(&to_id, m);
-        let mut same = true;
-        for path in src_files.keys() {
-            if !src_bytes.contains_key(path.as_str()) {
-                src_bytes.insert(path, std::fs::read(version_file(&src_dir, path))?);
-            }
-            let theirs = std::fs::read(version_file(&dir, path)).ok();
-            if theirs.as_deref() != src_bytes.get(path.as_str()).map(Vec::as_slice) {
-                same = false;
-                break;
-            }
-        }
-        if same {
-            return Ok(Some(m));
-        }
-    }
-    Ok(None)
-}
-
 /// The URL of a thread at `path` (or its page's path) with `route`.
 fn thread_url(page: &LivePage, live_path: Option<&str>, route: Option<&str>) -> String {
     format!(
@@ -373,71 +329,231 @@ fn plan_refile(
     Ok(out)
 }
 
-/// Copies version `n` of live page `src` as version `new_n` of live page
-/// `to`, noted `note`; records the directory in `renamed` once it is in
-/// place.
-fn copy_version(
-    tx: &Connection,
+/// A version's files copied, outside the writer, into a staging directory
+/// of its new page, ready to be renamed into place: what `src`'s version
+/// `n` becomes (the page's own restore when `src` is the page).
+struct StagedCopy {
+    src: (String, u32),
+    dir: Staging,
+    files_json: String,
+    note: Option<String>,
+}
+
+/// What re-filing threads onto one page needs, prepared outside the
+/// writer: the page's current version then, each thread's version links
+/// then, the source versions the page already holds (same bytes), and the
+/// copies staged for the rest (the restore of `current` last).
+struct GroupStage {
+    to: LivePage,
+    current: u32,
+    links: HashMap<String, Vec<(String, u32, String, String)>>,
+    reuse: HashMap<(String, u32), u32>,
+    copies: Vec<StagedCopy>,
+}
+
+/// The metadata staging reads in one go: the page's current version and
+/// every version's `files_json` and note, each thread's links, and each
+/// needed source version's `files_json`.
+struct StageMeta {
+    current: u32,
+    versions: Vec<(u32, String, Option<String>)>,
+    links: HashMap<String, Vec<(String, u32, String, String)>>,
+    needed: BTreeMap<(String, u32), String>,
+}
+
+fn stage_meta(c: &Connection, to: &LivePage, plans: &[&Plan]) -> Result<StageMeta> {
+    let current: u32 = c.query_row(
+        "SELECT current_version FROM artifacts WHERE id = ?1",
+        params![to.artifact_id],
+        |r| r.get(0),
+    )?;
+    let versions = {
+        let mut q = c.prepare_cached(
+            "SELECT n, files_json, note FROM versions WHERE artifact_id = ?1 ORDER BY n DESC",
+        )?;
+        q.query_map(params![to.artifact_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut links = HashMap::new();
+    let mut needed = BTreeMap::new();
+    for p in plans.iter().filter(|p| p.from != to.artifact_id) {
+        let ls = read_links(c, &p.tid)?;
+        let mut srcs = vec![(p.from.clone(), p.version_n)];
+        srcs.extend(ls.iter().map(|(a, n, _, _)| (a.clone(), *n)));
+        for (a, n) in srcs {
+            if !needed.contains_key(&(a.clone(), n)) {
+                let (json, _) = version_files(c, &a, n)?;
+                needed.insert((a, n), json);
+            }
+        }
+        links.insert(p.tid.clone(), ls);
+    }
+    Ok(StageMeta {
+        current,
+        versions,
+        links,
+        needed,
+    })
+}
+
+fn read_links(c: &Connection, tid: &str) -> Result<Vec<(String, u32, String, String)>> {
+    let mut q = c.prepare_cached(LINKS_OF_THREAD)?;
+    let mut ls: Vec<(String, u32, String, String)> = q
+        .query_map(params![tid], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    ls.sort();
+    Ok(ls)
+}
+
+/// The files of a version, from its `files_json`.
+fn paths_of(json: &str) -> Result<Vec<String>> {
+    let files: BTreeMap<String, serde_json::Value> =
+        serde_json::from_str(json).map_err(|_| CoreError::Corrupt {
+            artifact_id: String::new(),
+            column: "files_json",
+            version: None,
+        })?;
+    Ok(files.into_keys().collect())
+}
+
+/// Copies the files of version `n` of `src` (whose `files_json` is
+/// `json`) into a staging directory of page `to`.
+fn stage_copy(
     st: &Store,
     (src, n): (&str, u32),
-    (to, new_n): (&str, u32),
-    note: Option<&str>,
-    renamed: &mut Vec<PathBuf>,
-) -> Result<()> {
-    let src_id = ArtifactId::parse(src)?;
-    let to_id = ArtifactId::parse(to)?;
-    let (files_json, files) = version_files(tx, src, n)?;
-    let versions = st.home.artifact_dir(&to_id).join("versions");
-    let staging = Staging(versions.join(format!(".tmp-{}", new_ulid())));
-    std::fs::create_dir_all(staging.0.join("files"))?;
-    let src_dir = st.home.version_dir(&src_id, n);
-    for path in files.keys() {
-        let dest = version_file(&staging.0, path);
+    json: &str,
+    to: &ArtifactId,
+    note: Option<String>,
+) -> Result<StagedCopy> {
+    let versions = st.home.artifact_dir(to).join("versions");
+    let dir = Staging(versions.join(format!(".tmp-{}", new_ulid())));
+    std::fs::create_dir_all(dir.0.join("files"))?;
+    let src_dir = st.home.version_dir(&ArtifactId::parse(src)?, n);
+    for path in paths_of(json)? {
+        let dest = version_file(&dir.0, &path);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::copy(version_file(&src_dir, path), &dest)?;
+        std::fs::copy(version_file(&src_dir, &path), &dest)?;
     }
-    tx.execute(
-        "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note)
-         VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5)",
-        params![to, new_n, Store::now(), files_json, note],
-    )?;
-    let vdir = st.home.version_dir(&to_id, new_n);
-    std::fs::rename(&staging.0, &vdir)?;
-    renamed.push(vdir);
-    Ok(())
+    Ok(StagedCopy {
+        src: (src.to_string(), n),
+        dir,
+        files_json: json.to_string(),
+        note,
+    })
 }
 
-/// Re-files the planned threads, in one transaction: for each new page, the
-/// versions its threads name are found there (same bytes) or copied there,
-/// and after a copy the page's own latest snapshot is put back on top; then
-/// each thread names those versions, takes its
-/// pending address, pick and watchers along, and its move is recorded.
-/// `Conflict` when a thread changed page since it was planned.
+/// Prepares, outside the writer, the re-filing of `plans` onto `to`: which
+/// versions the page already holds, and the copies of the rest, then (when
+/// copies were made onto a page that existed) of its current version, so
+/// what it showed stays current.
+fn stage_group(st: &Store, to: &LivePage, plans: &[&Plan], fresh: &[String]) -> Result<GroupStage> {
+    let meta = st.with_read(|c| stage_meta(c, to, plans))?;
+    let to_id = ArtifactId::parse(&to.artifact_id)?;
+    let mut reuse = HashMap::new();
+    let mut copies = Vec::new();
+    for ((src, n), json) in &meta.needed {
+        let same = meta
+            .versions
+            .iter()
+            .filter(|(_, j, _)| j == json)
+            .map(|(m, _, _)| *m)
+            .find(|m| same_bytes(st, (src, *n), (&to_id, *m), json).unwrap_or(false));
+        match same {
+            Some(m) => {
+                reuse.insert((src.clone(), *n), m);
+            }
+            None => copies.push(stage_copy(
+                st,
+                (src, *n),
+                json,
+                &to_id,
+                Some(MOVED_NOTE.into()),
+            )?),
+        }
+    }
+    let shown = meta.versions.iter().find(|(m, _, _)| *m == meta.current);
+    if !copies.is_empty()
+        && !fresh.contains(&to.artifact_id)
+        && let Some((_, json, note)) = shown
+    {
+        copies.push(stage_copy(
+            st,
+            (&to.artifact_id, meta.current),
+            json,
+            &to_id,
+            note.clone(),
+        )?);
+    }
+    Ok(GroupStage {
+        to: to.clone(),
+        current: meta.current,
+        links: meta.links,
+        reuse,
+        copies,
+    })
+}
+
+/// Whether version `n` of `src` and version `m` of `to`, both with files
+/// `json`, hold the same bytes.
+fn same_bytes(
+    st: &Store,
+    (src, n): (&str, u32),
+    (to, m): (&ArtifactId, u32),
+    json: &str,
+) -> Result<bool> {
+    let a = st.home.version_dir(&ArtifactId::parse(src)?, n);
+    let b = st.home.version_dir(to, m);
+    for path in paths_of(json)? {
+        if std::fs::read(version_file(&a, &path))? != std::fs::read(version_file(&b, &path))? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// The source versions a re-filing may stage in one request, by their size:
+/// past this, the rest of a batch waits for the next request.
+pub const MAX_STAGE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Re-files the planned threads, in one transaction on the writer, with the
+/// work staged beforehand: each page must still be at the version staging
+/// saw and each thread on its page with the links staging saw (else
+/// `Conflict`, and the caller stages again); the staged copies are numbered
+/// from there, their rows inserted and directories renamed into place; then
+/// each thread names its versions, takes its pending address, pick and
+/// watchers along, and its move is recorded.
 fn commit_refile(
     tx: &rusqlite::Transaction<'_>,
     st: &Store,
     plans: &[Plan],
+    stages: &mut [GroupStage],
     how: &MoveBy,
-    fresh: &[String],
     renamed: &mut Vec<PathBuf>,
 ) -> Result<Vec<(String, u32)>> {
     let now = Store::now();
+    let conflict = || CoreError::Conflict { current: 0 };
     let mut written = Vec::new();
-    let mut order: Vec<&LivePage> = Vec::new();
-    for p in plans {
-        if !order.iter().any(|t| t.artifact_id == p.to.artifact_id) {
-            order.push(&p.to);
+    for g in stages.iter_mut() {
+        let to = g.to.clone();
+        let to_id = ArtifactId::parse(&to.artifact_id)?;
+        let current: u32 = tx.query_row(
+            "SELECT current_version FROM artifacts WHERE id = ?1",
+            params![to.artifact_id],
+            |r| r.get(0),
+        )?;
+        if current != g.current {
+            return Err(conflict());
         }
-    }
-    for to in order {
         let group: Vec<&Plan> = plans
             .iter()
             .filter(|p| p.to.artifact_id == to.artifact_id)
             .collect();
-        let mut links: HashMap<String, Vec<(String, u32, String, String)>> = HashMap::new();
-        let mut needed: BTreeSet<(String, u32)> = BTreeSet::new();
         for p in &group {
             let from: Option<String> = tx
                 .query_row(
@@ -447,94 +563,55 @@ fn commit_refile(
                 )
                 .optional()?;
             if from.as_deref() != Some(p.from.as_str()) {
-                return Err(CoreError::Conflict { current: 0 });
+                return Err(conflict());
             }
-            if p.from == to.artifact_id {
-                continue;
+            if p.from != to.artifact_id
+                && g.links.get(&p.tid).map(Vec::as_slice)
+                    != Some(read_links(tx, &p.tid)?.as_slice())
+            {
+                return Err(conflict());
             }
-            needed.insert((p.from.clone(), p.version_n));
-            let mut q = tx.prepare_cached(LINKS_OF_THREAD)?;
-            let ls: Vec<(String, u32, String, String)> = q
-                .query_map(params![p.tid], |r| {
-                    Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
-                })?
-                .collect::<rusqlite::Result<_>>()?;
-            for (a, n, _, _) in &ls {
-                needed.insert((a.clone(), *n));
-            }
-            links.insert(p.tid.clone(), ls);
         }
-        let mut current: u32 = tx.query_row(
-            "SELECT current_version FROM artifacts WHERE id = ?1",
-            params![to.artifact_id],
-            |r| r.get(0),
-        )?;
-        let mut map: HashMap<(String, u32), u32> = HashMap::new();
-        let mut copied = false;
-        for (src, n) in &needed {
-            if let Some(m) = same_version(tx, st, (src, *n), &to.artifact_id)? {
-                map.insert((src.clone(), *n), m);
-                continue;
-            }
-            current += 1;
-            copy_version(
-                tx,
-                st,
-                (src, *n),
-                (&to.artifact_id, current),
-                Some(MOVED_NOTE),
-                renamed,
+        let mut map = g.reuse.clone();
+        let mut n = current;
+        for copy in g.copies.drain(..) {
+            n += 1;
+            tx.execute(
+                "INSERT INTO versions (artifact_id, n, label, created_at, session_id, files_json, note)
+                 VALUES (?1, ?2, NULL, ?3, NULL, ?4, ?5)",
+                params![to.artifact_id, n, now, copy.files_json, copy.note],
             )?;
-            map.insert((src.clone(), *n), current);
-            written.push((to.artifact_id.clone(), current));
-            copied = true;
-        }
-        if copied {
-            // The page's own latest snapshot goes back on top, so its
-            // current version is still its own (a page made for this move
-            // has only its placeholder, which stays below).
-            let own: Option<(u32, Option<String>)> = if fresh.contains(&to.artifact_id) {
-                None
-            } else {
-                tx.query_row(
-                    "SELECT n, note FROM versions WHERE artifact_id = ?1
-                        AND (note IS NULL OR note <> ?2) ORDER BY n DESC LIMIT 1",
-                    params![to.artifact_id, MOVED_NOTE],
-                    |r| Ok((r.get(0)?, r.get(1)?)),
-                )
-                .optional()?
-            };
-            if let Some((n, note)) = own {
-                current += 1;
-                copy_version(
-                    tx,
-                    st,
-                    (&to.artifact_id, n),
-                    (&to.artifact_id, current),
-                    note.as_deref(),
-                    renamed,
-                )?;
-                written.push((to.artifact_id.clone(), current));
+            let vdir = st.home.version_dir(&to_id, n);
+            std::fs::rename(&copy.dir.0, &vdir)?;
+            renamed.push(vdir);
+            if copy.src.0 != to.artifact_id {
+                map.insert(copy.src, n);
             }
+            written.push((to.artifact_id.clone(), n));
+        }
+        if n != current {
             tx.execute(
                 "UPDATE artifacts SET current_version = ?2, updated_at = ?3 WHERE id = ?1",
-                params![to.artifact_id, current, now],
+                params![to.artifact_id, n, now],
             )?;
         }
         for p in group {
             let mut version_n = p.version_n;
             if p.from != to.artifact_id {
-                version_n = map[&(p.from.clone(), p.version_n)];
+                version_n = *map
+                    .get(&(p.from.clone(), p.version_n))
+                    .ok_or_else(conflict)?;
                 tx.execute(
                     "DELETE FROM version_threads WHERE thread_id = ?1",
                     params![p.tid],
                 )?;
-                for (a, n, source, at) in links.remove(&p.tid).unwrap_or_default() {
+                for (a, ln, source, at) in g.links.remove(&p.tid).unwrap_or_default() {
+                    let ln = *map.get(&(a, ln)).ok_or_else(conflict)?;
                     tx.execute(
                         "INSERT OR IGNORE INTO version_threads
                             (artifact_id, version_n, thread_id, source, created_at)
                          VALUES (?1, ?2, ?3, ?4, ?5)",
-                        params![to.artifact_id, map[&(a, n)], p.tid, source, at],
+                        params![to.artifact_id, ln, p.tid, source, at],
                     )?;
                 }
                 tx.execute(PENDING_TO, params![p.tid, to.artifact_id])?;
@@ -572,7 +649,7 @@ fn commit_refile(
                     p.from,
                     p.from_url,
                     to.artifact_id,
-                    thread_url(to, p.live_path.as_deref(), p.route.as_deref()),
+                    thread_url(&to, p.live_path.as_deref(), p.route.as_deref()),
                     how.by,
                     how.kind,
                     how.rule_id,
@@ -688,14 +765,20 @@ impl Store {
         })
     }
 
-    /// Removes the rule `id` for good, once its threads are moved back.
+    /// Removes the rule `id` for good, once its threads are moved back,
+    /// unless a re-add put it back in force meanwhile; whether it did.
     ///
     /// # Errors
     /// Database errors only.
-    pub fn drop_rule(&self, id: &str) -> Result<()> {
+    pub fn drop_rule(&self, id: &str) -> Result<bool> {
         self.with_write(|c| {
-            c.execute("DELETE FROM live_rules WHERE id = ?1", params![id])?;
-            Ok(())
+            // Only while still being deleted: a re-add meanwhile put it
+            // back in force.
+            let n = c.execute(
+                "DELETE FROM live_rules WHERE id = ?1 AND deleted_at IS NOT NULL",
+                params![id],
+            )?;
+            Ok(n > 0)
         })
     }
 
@@ -821,10 +904,10 @@ impl Store {
     }
 
     /// The first `limit` threads of `rule`'s (being deleted) canonical page
-    /// that a rule put there rather than the owner ([`TO_UNMERGE`]), each
-    /// with the page key of the path it was made at under the rules still
-    /// in force (its own page again, unless another rule maps it) and its
-    /// place there; and how many more there are. A thread made at the
+    /// made at another path than the pattern's own ([`TO_UNMERGE`]), each
+    /// with the page key of that path under the rules still in force (its
+    /// own page again, unless another rule maps it) and its place there;
+    /// and how many more there are. A thread made at, or moved onto, the
     /// pattern's own path stays.
     ///
     /// # Errors
@@ -885,14 +968,23 @@ impl Store {
     /// clip follow it, and so do its agents: the sessions watching the page
     /// it left, it was sent to, or with feedback of it not yet acknowledged,
     /// watch the new page too, as do the scope watches covering its path.
-    /// When a page that existed got copies, its newest version not noted
-    /// [`MOVED_NOTE`] is written once more on top, keeping its own latest
-    /// snapshot current. All of it is one transaction.
+    /// When a page that existed got copies, the version current before them
+    /// is written once more on top, with its own note, so what the page
+    /// showed stays current.
+    ///
+    /// Comparing and copying files happens before the writer is taken; the
+    /// writer is held only to check that nothing changed, insert the rows
+    /// and rename the staged directories (as [`Store::write_version`] does).
+    /// The source versions one call stages are bounded by
+    /// [`MAX_STAGE_BYTES`]: past them, the remaining threads are left as
+    /// they are and counted in [`Refiled::deferred`] (at least one thread is
+    /// always re-filed). The re-filing is one transaction: on failure
+    /// nothing of it is left.
     ///
     /// # Errors
     /// `NotFound` for a missing thread or page; `not_live` for a thread not
     /// on a live page; `cross_origin` for a thread of another origin;
-    /// `Conflict` when the threads keep changing under the move.
+    /// `Conflict` when the threads or pages keep changing under the move.
     pub fn refile_threads(
         &self,
         moves: &[(String, Refile)],
@@ -909,9 +1001,26 @@ impl Store {
             }
         }
         for _ in 0..REFILE_ATTEMPTS {
-            let plans = self.with_read(|c| plan_refile(c, &targets, moves))?;
+            let mut plans = self.with_read(|c| plan_refile(c, &targets, moves))?;
             if plans.is_empty() {
                 return Ok(Refiled::default());
+            }
+            let kept = self.with_read(|c| within_stage_budget(c, &plans))?;
+            let deferred = plans.len() - kept;
+            plans.truncate(kept);
+            let mut stages = Vec::new();
+            for p in &plans {
+                if stages
+                    .iter()
+                    .any(|g: &GroupStage| g.to.artifact_id == p.to.artifact_id)
+                {
+                    continue;
+                }
+                let group: Vec<&Plan> = plans
+                    .iter()
+                    .filter(|q| q.to.artifact_id == p.to.artifact_id)
+                    .collect();
+                stages.push(stage_group(self, &p.to, &group, fresh)?);
             }
             let mut clips = Vec::new();
             for p in plans
@@ -935,9 +1044,17 @@ impl Store {
                     Err(e) => return Err(e.into()),
                 }
             }
+            #[cfg(test)]
+            if let Some(hook) = STAGED_HOOK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_ref()
+            {
+                hook();
+            }
             let mut renamed = Vec::new();
             let result =
-                self.with_tx(|tx| commit_refile(tx, self, &plans, how, fresh, &mut renamed));
+                self.with_tx(|tx| commit_refile(tx, self, &plans, &mut stages, how, &mut renamed));
             match result {
                 Ok(written) => {
                     for (copy, src) in clips {
@@ -958,7 +1075,11 @@ impl Store {
                             to: p.to.artifact_id,
                         })
                         .collect();
-                    return Ok(Refiled { moved, versions });
+                    return Ok(Refiled {
+                        moved,
+                        versions,
+                        deferred,
+                    });
                 }
                 Err(e) => {
                     // Nothing committed: the versions put in place go too.
@@ -973,6 +1094,42 @@ impl Store {
         }
         Err(CoreError::Conflict { current: 0 })
     }
+}
+
+/// Run once staging is done and before the writer is taken, in tests.
+#[cfg(test)]
+pub(crate) static STAGED_HOOK: std::sync::Mutex<Option<Box<dyn Fn() + Send>>> =
+    std::sync::Mutex::new(None);
+
+/// How many of `plans`, in order, fit [`MAX_STAGE_BYTES`] by the sizes of
+/// the source versions they name (at least one).
+fn within_stage_budget(c: &Connection, plans: &[Plan]) -> Result<usize> {
+    let mut seen: BTreeSet<(String, u32)> = BTreeSet::new();
+    let mut total: u64 = 0;
+    for (i, p) in plans.iter().enumerate() {
+        if p.from == p.to.artifact_id {
+            continue;
+        }
+        let mut srcs = vec![(p.from.clone(), p.version_n)];
+        srcs.extend(
+            read_links(c, &p.tid)?
+                .into_iter()
+                .map(|(a, n, _, _)| (a, n)),
+        );
+        for s in srcs {
+            if seen.insert(s.clone()) {
+                let (_, files) = version_files(c, &s.0, s.1)?;
+                total += files
+                    .values()
+                    .filter_map(|f| f.get("size").and_then(serde_json::Value::as_u64))
+                    .sum::<u64>();
+            }
+        }
+        if total > MAX_STAGE_BYTES && i > 0 {
+            return Ok(i);
+        }
+    }
+    Ok(plans.len())
 }
 
 /// [`Store::resolve_live_key`] against `rules`, the origin's in force,
@@ -1425,6 +1582,179 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn a_deleted_rule_put_back_in_force_is_not_dropped() {
+        let (_d, st) = store();
+        let r = rule(&st, "/users/:id");
+        st.mark_rule_deleted(&r.id).unwrap();
+        // A re-add lands between the un-merge and the drop.
+        let (back, new) = st
+            .add_live_rule(ORIGIN, &PathPattern::parse("/users/:id").unwrap())
+            .unwrap();
+        assert!(!new && !back.deleting);
+        assert!(!st.drop_rule(&r.id).unwrap());
+        assert_eq!(st.live_rules(ORIGIN).unwrap(), vec![back]);
+        st.mark_rule_deleted(&r.id).unwrap();
+        assert!(st.drop_rule(&r.id).unwrap());
+        assert_eq!(st.live_rule(&r.id).unwrap(), None);
+    }
+
+    #[test]
+    fn what_a_page_showed_stays_current_after_a_move_onto_it() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let c = page(&st, "/c", "<p>c");
+        let made = st.ensure_live_page(&key("/b"), "/b", None).unwrap();
+        let b = ArtifactId::parse(&made.artifact.id).unwrap();
+        let t1 = thread(&st, &a, None);
+        let t2 = thread(&st, &c, None);
+        st.refile_threads(&[to(&b, &t1.id)], &by(KIND_MOVE), &[b.to_string()])
+            .unwrap();
+        // /b: v1 its placeholder, v2 /a's snapshot, current.
+        assert_eq!(st.get_artifact(&b).unwrap().unwrap().current_version, 2);
+        st.refile_threads(&[to(&b, &t2.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        let cur = st.get_artifact(&b).unwrap().unwrap().current_version;
+        assert_eq!(cur, 4);
+        assert_eq!(index(&st, &b, 3), "<p>c");
+        assert_eq!(index(&st, &b, cur), "<p>a", "not the placeholder");
+    }
+
+    #[test]
+    fn staging_holds_no_writer() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let t = thread(&st, &a, None);
+        let other = thread(&st, &b, None);
+        let (staged_tx, staged_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
+        *STAGED_HOOK.lock().unwrap() = Some(Box::new(move || {
+            staged_tx.send(()).unwrap();
+            go_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+        }));
+        std::thread::scope(|s| {
+            let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
+            staged_rx
+                .recv_timeout(std::time::Duration::from_secs(10))
+                .unwrap();
+            // The copies are staged and the move waits: a comment is
+            // written meanwhile.
+            st.add_comment(
+                &other.id,
+                crate::store::threads::NewComment {
+                    author_kind: crate::store::threads::AUTHOR_VIEWER,
+                    author_name: "Ana".into(),
+                    author_public_id: None,
+                    via_session_id: None,
+                    body: "meanwhile".into(),
+                    via_page: false,
+                },
+            )
+            .unwrap();
+            go_tx.send(()).unwrap();
+            mover.join().unwrap().unwrap();
+        });
+        *STAGED_HOOK.lock().unwrap() = None;
+        assert_eq!(
+            st.get_thread(&t.id).unwrap().unwrap().artifact_id,
+            b.as_str()
+        );
+        assert_eq!(st.get_thread(&other.id).unwrap().unwrap().comments.len(), 2);
+    }
+
+    #[test]
+    fn a_snapshot_written_while_staging_makes_the_move_stage_again() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b1");
+        let t = thread(&st, &a, None);
+        let (staged_tx, staged_rx) = std::sync::mpsc::channel::<()>();
+        let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+        let go_rx = std::sync::Mutex::new(go_rx);
+        let wait = std::time::Duration::from_secs(10);
+        *STAGED_HOOK.lock().unwrap() = Some(Box::new(move || {
+            staged_tx.send(()).unwrap();
+            go_rx.lock().unwrap().recv_timeout(wait).unwrap();
+        }));
+        std::thread::scope(|s| {
+            let mover = s.spawn(|| st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[]));
+            staged_rx.recv_timeout(wait).unwrap();
+            // A snapshot of /b lands after the first staging.
+            st.ensure_live_page(&key("/b"), "/b", Some(b"<p>b2"))
+                .unwrap();
+            go_tx.send(()).unwrap();
+            staged_rx.recv_timeout(wait).unwrap();
+            go_tx.send(()).unwrap();
+            mover.join().unwrap().unwrap();
+        });
+        *STAGED_HOOK.lock().unwrap() = None;
+        // Staged again: /b's newest snapshot is what stays current.
+        let cur = st.get_artifact(&b).unwrap().unwrap().current_version;
+        assert_eq!(cur, 4);
+        assert_eq!(index(&st, &b, 3), "<p>a");
+        assert_eq!(index(&st, &b, cur), "<p>b2");
+    }
+
+    #[test]
+    fn staging_is_bounded_and_the_rest_deferred() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let c = page(&st, "/c", "<p>c");
+        let b = page(&st, "/b", "<p>b");
+        let t1 = thread(&st, &a, None);
+        let t2 = thread(&st, &c, None);
+        // Both snapshots count as more than half the budget.
+        let big = MAX_STAGE_BYTES / 2 + 1;
+        st.with_write(|db| {
+            for id in [&a, &c] {
+                db.execute(
+                    "UPDATE versions SET files_json = ?2 WHERE artifact_id = ?1 AND n = 1",
+                    params![
+                        id.as_str(),
+                        serde_json::json!({INDEX: {"content_type": "text/html", "size": big}})
+                            .to_string()
+                    ],
+                )?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let done = st
+            .refile_threads(&[to(&b, &t1.id), to(&b, &t2.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        assert_eq!((done.moved.len(), done.deferred), (1, 1));
+        assert_eq!(
+            st.get_thread(&t2.id).unwrap().unwrap().artifact_id,
+            c.as_str()
+        );
+    }
+
+    #[test]
+    fn a_scope_watch_carried_by_a_move_goes_with_its_scope() {
+        let (_d, st) = store();
+        let a = page(&st, "/a", "<p>a");
+        let b = page(&st, "/b", "<p>b");
+        let sid = session(&st, "claude", "s");
+        st.live_watch(&sid, &key("/a"), true).unwrap();
+        assert_eq!(watchers(&st, &a), vec![sid.clone()]);
+        let t = thread(&st, &a, None);
+        st.refile_threads(&[to(&b, &t.id)], &by(KIND_MOVE), &[])
+            .unwrap();
+        assert_eq!(watchers(&st, &b), vec![sid.clone()]);
+        let mut removed = st.live_unwatch(&sid, &key("/a")).unwrap();
+        removed.sort();
+        let mut want = vec![a.to_string(), b.to_string()];
+        want.sort();
+        assert_eq!(removed, want);
+        assert!(watchers(&st, &b).is_empty());
     }
 
     #[test]

@@ -789,7 +789,15 @@ impl Store {
             let mut removed = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
                 let keys = page_keys(tx, &p)?;
-                if !keys.iter().any(|k| k.covered_by(scope)) {
+                // A scope-made watch a move carried to a page its scopes do
+                // not cover goes with the scopes too.
+                let carried: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM watches
+                        WHERE session_id = ?1 AND artifact_id = ?2 AND source = 'scope')",
+                    params![sid, p.artifact_id],
+                    |r| r.get(0),
+                )?;
+                if !keys.iter().any(|k| k.covered_by(scope)) && !carried {
                     continue;
                 }
                 match scope_arming(tx, sid, &keys)? {
