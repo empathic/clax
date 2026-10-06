@@ -780,6 +780,16 @@ SIGINT mid-run, and after SIGINT once `key.pem` is in an unfinished
 and a `.crx` signed with the key when a Chromium is found (skipped under
 `CI`). No gate calls 1Password.
 
+### 8.5 Releasing it
+
+- Release notes: "This release adds a schema guard: a newer database is
+  refused by this and later binaries. Older binaries cannot be fixed: do
+  not run an older clax after this one (check plugin pins); run `clax stop`
+  after any downgrade."
+- The plugin pins for this release must be at or above it, so no plugin
+  starts an older daemon on the migrated database (spec §16, known
+  limitations).
+
 ## Appendix A: the browser-and-shim loop script
 
 The script behind section 2.2, kept here so the run can be repeated. Save it

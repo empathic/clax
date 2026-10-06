@@ -237,6 +237,16 @@ CREATE TABLE live_pending (
     created_at TEXT NOT NULL,
     PRIMARY KEY (artifact_id, thread_id)
 );
+CREATE INDEX live_pending_by_thread ON live_pending(thread_id);
+CREATE INDEX live_watches_by_origin ON live_watches(origin, path);
+CREATE TABLE live_picks (
+    artifact_id TEXT NOT NULL,
+    pick_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    PRIMARY KEY (artifact_id, pick_id)
+);
+CREATE INDEX live_picks_by_time ON live_picks(created_at);
 ```
 
 - `artifacts.kind`: every existing artifact is `html`. Artifact views gain
@@ -252,6 +262,11 @@ CREATE TABLE live_pending (
 - `live_pending`: pending addresses (L11). Linking moves a row into
   `version_threads` (with its `source`) and deletes it; deleting the thread
   deletes it.
+- `live_picks`: the thread each recent pick made, so a repeated
+  `POST /api/live/threads` for the same pick makes no second thread (§9.2).
+  Rows older than an hour are dropped when a new one is written; a purged
+  page's rows go with it. No foreign key: a deleted thread leaves its row,
+  which no longer matches and is replaced by the pick's next thread.
 
 ### 5.2 Anchors gain `route`
 
@@ -368,7 +383,7 @@ unusual installs.
 | File | Role | Size target (gzip) |
 |---|---|---|
 | `manifest.json` | MV3 manifest; `key` only when a public key is committed (L15) | — |
-| `sw.js` | Service worker (ES module): pairing, credential, API client, stream hub, origin enablement, screenshot, pick state | 20 KiB |
+| `sw.js` | Service worker (ES module): pairing, credential, API client, stream hub, origin enablement, screenshot, pick state | 24 KiB |
 | `loader.js` | Content script registered per enabled origin: asks the worker whether the page has threads or a pending action, and asks for the overlay | 2 KiB |
 | `overlay.js` | Injected on demand into the isolated world: CommentMode, anchors, pins, re-resolution, snapshot serializer, composer frame host | 30 KiB |
 | `composer.html/js` | The composer (Svelte, reusing `Composer.svelte`) | 25 KiB |
@@ -627,11 +642,19 @@ found by the browser test, 2026-10-05.) New routes (viewer routes: no token):
   (JSON, without `route`), `body`, `pending` (a JSON array of the thread IDs
   the extension saw pending when it serialized the page; a new version links
   those still pending, in its transaction, per the L11 ruling; any other
-  field is 400 `invalid_args`), optional `clip` (PNG), `snapshot` (HTML,
-  ≤ 8 MiB). Finds or creates the live page (with
-  its scope-watch materialization), stores the snapshot (§8.3), creates the
-  thread on the resulting version with `route` set, handles `@agent`, and
-  answers `201 {thread, page, version, clip_error?}`.
+  field is 400 `invalid_args`), optional `pick_id` (the pick ID, §9.4: 32
+  lowercase hex digits, else 400 `invalid_args`; the extension sends it on
+  every attempt), optional `clip` (PNG), `snapshot` (HTML, ≤ 8 MiB). Finds
+  or creates the live page (with its scope-watch materialization), stores
+  the snapshot (§8.3), creates the thread on the resulting version with
+  `route` set, handles `@agent`, and answers
+  `201 {thread, page, version, clip_error?}`. With `pick_id`, a repeat
+  within an hour whose pick already made a thread on the page, while that
+  thread still exists, writes and sends nothing and answers
+  `200 {thread, page, version}` with that thread as it is now (`version` is
+  the one it was made on); two such requests at once make one thread. So
+  the worker's retry after a dropped connection (§11) makes no second thread
+  and no second `@agent` send. Deleting the thread frees its pick ID.
 - `POST /api/live/snapshots` (multipart): `url`, `title`, `pending` (a
   JSON array of the thread IDs the extension saw pending when it serialized
   the page), `snapshot`; any other field is 400 `invalid_args`. Refused with
@@ -704,24 +727,45 @@ dropped and counted.
   (under its ID or its dynamic one), the sender is a frame of the pick's tab
   (`sender.tab.id`, `sender.frameId > 0`), and the port names the tab's
   current pick: a pick ID (128 random bits) the overlay drew and the worker
-  took for that tab with its `capture`, within 5 s of the capture, one port
-  per pick; a panel port only from `sidepanel.html`.
+  took for that tab with its `capture`, within 5 s of the worker's
+  `open-composer` for it, one port per pick; a panel port only from `sidepanel.html`.
 - The overlay accepts messages only from the worker (`sender.id ===
   chrome.runtime.id` and no `sender.tab`).
-- Overlay → worker: `hello {url}`, `capture {pickId, anchor, rect, dpr}`,
-  `pick {pickId, snapshot | snapshotError, url, title}` (`snapshotError`:
-  `too_large`, with the serializer's placeholder, or `failed`, when the
-  serializer threw, with no snapshot), `resolved
-  {results}`, `route {url}`, `quiet {url, title, snapshot, pending}`
+- Overlay (or loader) → worker: `hello {url}` (the loader, at a load),
+  `route {url}` (a same-document navigation, or the overlay's start),
+  `capture {pickId, anchor, rect, dpr}`, `pick {pickId, snapshot |
+  snapshotError, url, title}` (`snapshotError`: `too_large`, with the
+  serializer's placeholder, or `failed`, when the serializer threw, with no
+  snapshot), `resolved {results}`, `quiet {url, title, snapshot, pending}`
   (`pending`: the thread IDs its state showed waiting for a snapshot when it
-  serialized the page, L11), `cancel {pickId}`.
+  serialized the page, L11), `cancel {pickId}`, `comment-mode {on}` (the
+  person left comment mode with Escape), `pin {threadId}` (a pin was
+  clicked), `removed` (the page removed the overlay's host a second time),
+  `ping` (every 20 s, §9.5). The `url` of `hello`, `route` and `pick` is
+  null when the page's address is over 4096 characters (§7): the worker
+  then looks nothing up and the panel says "This page's address is too long
+  for Clax."; a pick is refused at once with that notice, and a post whose
+  `pick` came with no URL fails in the composer with it. `quiet` is not sent
+  for such a page. Route reports (from the loader and the overlay alike)
+  count only the browser's own (`isTrusted`) navigation events, read the URL
+  from `location`, skip an unchanged URL and send a burst's last URL once,
+  at most one every 250 ms; the loader stays quiet while the overlay runs.
 - Worker → overlay: `state {page, route, threads, commentMode, pending}`,
-  `comment-mode {on}`, `captured {pickId, ok, error?}` (the answer to
-  `capture`), `open-composer {pickId, rect}`, `composer-ready {pickId}`,
+  where each thread is only `{id, status, anchor, addressed_pending}`
+  (`addressed_pending` a boolean; no comment text, replies, names or
+  feedback state reach a content script, L7), sent only when one of these
+  fields changed since the overlay was last told and in full to a new
+  overlay; `captured {pickId, ok, error?}` (the answer to `capture`),
+  `open-composer {pickId, rect}`, `composer-ready {pickId}`,
   `close-composer {pickId, posted, reason?}` (`reason: "timeout"` when the
   composer page never connected: the overlay says so in a short notice),
-  `scroll-to {threadId}`, `focus
-  {threadId | null}`, `snapshot-now`.
+  `pick-lost {pickId}` (the worker no longer holds the pick whose composer
+  is shown: comment mode comes back, and the composer stays, with its text,
+  until the person closes it or picks again), `scroll-to {threadId}`,
+  `focus {threadId | null}`, `resend` (the worker has no results for the
+  threads it shows: the overlay sends its `resolved` again). Messages go to
+  the document whose overlay or loader last wrote (`documentId`), so a
+  newer document in the tab never hears the old one's state.
 - The composer frame is shown only after the worker confirms its page
   (ruling 2026-10-05): the overlay inserts the frame hidden (so it cannot
   take focus); the composer page connects its port only after its own
@@ -730,18 +774,29 @@ dropped and counted.
   while the person types. A second `load` of the frame (a navigation the
   page made) closes it and cancels the pick; so does a frame whose page has
   not connected within 10 s, and the worker cancels a pick whose composer
-  has not connected within 5 s of its `open-composer`. A document the page puts in the frame is
+  has not connected in that 5 s wait. A document the page puts in the frame is
   never shown or focused.
 - Composer ↔ worker (port named `composer:<pickId>`): `ready` → `draft
   {anchor, clipUrl | null, clipError | null, capturing}` (`clipError` a
   code the composer words); `post {body}` → `posted {threadId}` | `failed
-  {message}`; `cancel`.
-- Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {tabId,
-  page, route, threads, working, participants, viewer, commentMode,
-  activeTab}` and pushes on change; `send`, `send-batch`, `reply`,
-  `resolve`, `reopen`, `delete`, `looked`, `set-name`, `select`,
+  {message}` (a failure to pair worded as the side panel words it); `cancel`.
+  Once its port is gone unasked (the worker was stopped), the composer page
+  sends one-off runtime messages, which the worker takes only from a
+  `composer.html` frame of the tab: `lost {pickId}` (the worker answers the
+  overlay with `pick-lost` for a pick it does not hold) and, when the person
+  then closes it, `dismiss {pickId}` (the worker answers `close-composer`).
+  Cancel never throws on a closed port.
+- Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {state}`, where `state` is `{tabId, url, page, route,
+  threads, resolved, versions, working, participants, viewer, commentMode,
+  enabled, selected, error, presence?}` (`enabled`: the tab's document has
+  the overlay; `resolved`: the overlay's anchor results by thread ID;
+  `presence`: who is on the page, §9.5), and pushes on change, with
+  `stream-status {up}` on `watch-tab` and whenever the stream goes up or
+  down; `send`, `send-batch`, `reply`, `resolve`, `reopen`, `looked`,
+  `set-name`, `select`,
   `comment-mode`, `navigate {route, artifactId}`, `turn-off {origin}`,
-  `retry` → `failed {code, message}` on failure, and success shows as the
+  `retry` → `failed {code, message}` on failure (a failure a new pairing can
+  fix is also kept as the tab's `error`, so Retry pairs again for it), and success shows as the
   next `tab` push (ruling 2026-10-05: no `ok`). `navigate` and `turn-off`
   name the page and the site the panel showed; the worker refuses them
   (`page_changed`) when the tab shows another. `visible {on}` says whether
@@ -853,16 +908,21 @@ What is protected, from whom:
 |---|---|
 | Native host not registered (plugin-only install, `clax init` never run) | `sendNativeMessage` fails with "Specified native messaging host not found"; the panel says "Run `clax init` (or /clax:extension in Claude Code), then reload" with a copy button. |
 | Daemon cannot start | The host answers `daemon_unavailable` with the log path; the panel shows it and a Retry button. |
-| Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
+| Daemon restarted on another port, or credential revoked | A request fails with a network error or 401 `unknown_credential`; the worker re-pairs once (at most every 10 s) and retries the request once; after a network error a comment, a send or a batch send is not sent again (the daemon may have done it): it fails with `daemon_unreachable`, and the panel's Retry pairs again. A new thread is sent again: every attempt names its pick (`pick_id` in `POST /api/live/threads`), of which the daemon makes one thread. Within 10 s of the last pairing it fails with `daemon_unreachable` (or the 401); the panel's Retry pairs again at once. |
 | Registered loaders gone (seen in Chromium across a restart of a command-line-loaded extension; an update or reload is the same kind of load) | The worker registers each enabled origin's loader again at each start, while the origin's permission is held. |
 | Worker stopped by Chrome mid-stream | Resumed by the next event; stream resumes with `Last-Event-ID` or refetches (§9.5). |
 | Extension files older than the daemon | On pairing, `clax_version` differs from the manifest's version: the worker calls `chrome.runtime.reload()` once for that version (remembered in `storage.local`). |
+| Extension reloaded (L13) or updated while a tab has an overlay | The old overlay is orphaned. Presence means a live overlay of this load of the extension: the overlay marks its isolated world with a check of its own context and of the boot nonce the worker keeps in session storage (new at each load of the extension). An orphan is not present, so the next gesture injects again, and the new overlay stops the orphan when they share the world. The reload itself waits until no pick is open and no request is in flight. |
+| Worker stopped by Chrome while a composer is shown | The composer says "Clax stopped listening to this comment. Copy your comment, then pick again." and tells the worker (`lost`); the overlay gives comment mode back with the composer still shown; Cancel closes it (`dismiss`), and a new pick replaces it. |
+| Page address over 4096 characters | Nothing is looked up; the panel says "This page's address is too long for Clax."; a pick shows that notice instead of a composer, and a post fails with it. |
+| Post pressed before the page's snapshot came | The post fails after 30 s with "The page did not send its snapshot. Post again." |
+| The connection drops after the daemon stored a comment (the native host replacing the daemon mid-request) | The worker retries with the same `pick_id`; the daemon answers 200 with the thread it made, so there is one thread and one send. |
 | No `activeTab` at a pick | Posted without a clip (§8.1), with the reason in the composer. |
 | Snapshot over the caps | A minimal placeholder snapshot that says why; anchors resolve on the live page and detach in the shell. |
 | The serializer fails on a page | The pick is sent with `snapshotError: "failed"` and no snapshot; the thread is posted with a placeholder snapshot that says the page could not be read. |
 | The composer page never connects | The worker cancels the pick 5 s after `open-composer`; the overlay closes the hidden frame and says "The comment box did not open. Pick again to comment." |
 | Page removes or restyles the overlay host | Re-added once; then the panel says the page removed Clax's overlay. Pins use `all: initial` and the top layer (`popover`). |
-| Page navigates (full reload) | The registered content script loads the overlay again; comment mode is off; `activeTab` is gone until the next icon click or command. |
+| Page navigates (full reload) | The registered content script loads the overlay again; comment mode is off; `activeTab` is gone until the next icon click or command. The worker probes the tab for the overlay at `loading` and again at `complete`, and drops a probe answered after a new document or an injection it saw meanwhile. |
 | SPA route change | The overlay reports the new URL; the worker looks it up (`GET /api/live/pages`) and switches artifact or route; pins follow. |
 | Hot reload replaces the DOM | Mutations re-resolve anchors within one animation frame after a 150 ms quiet period; a thread whose anchor is gone goes to Detached. |
 | Agent addressed a thread while the page is closed | The address stays pending; the thread shows "waiting for a snapshot" until the page is next open in Chrome with the extension. |
@@ -954,7 +1014,32 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
 > or in Claude Code ask them to run `/clax:extension`. Then relay its
 > `load_unpacked` step: load `~/.clax/extension` once in Chrome.
 
-## 16. Out of scope
+## 16. Known limitations
+
+- **An older Clax binary on a migrated database.** Clax binaries released
+  before live pages do not refuse a database whose schema is newer than they
+  know. If one starts the daemon (an older plugin pin, or an old `clax` on
+  `PATH` reached through `clax mcp` or a hook) while no daemon runs, it
+  serves the live-pages schema under its own rules: a LAN-bound daemon would
+  list live pages to the LAN and serve their snapshots without the snapshot
+  policy, until a newer client replaces it on its next connect. Binaries
+  with live pages refuse such a database (docs/contract.md, "Known
+  limitations"). Mitigation: ship with the plugin pins at or above the
+  release that adds live pages, and after a downgrade run `clax stop`.
+- **A tunnel to loopback defeats L10.** `sees_live_pages` trusts a loopback
+  peer; `tailscale serve`, ngrok or a reverse proxy to the daemon's loopback
+  address makes every remote caller look local. This is the owner's
+  configuration; Clax cannot tell such a caller apart.
+- **The daemon's LAN address is not its own origin (owner design call).**
+  §7's `own_origin` refusal knows the local names, loopback and unspecified
+  addresses, and the hosts the daemon gives out as its base URLs. Under a
+  `0.0.0.0` bind, the machine's LAN address (for example
+  `http://192.168.1.5:<port>`) is none of these, so a Clax page opened at
+  that address can be commented on as a live page instead of being refused.
+  Whether the daemon should enumerate its interface addresses for this
+  check is left to the owner.
+
+## 17. Out of scope
 
 - Firefox (MV3 with `browser.*`, no `sidePanel`; a `sidebar_action` port
   later), Safari, Windows (registry-based host registration).
@@ -967,7 +1052,7 @@ Added to each plugin's `skills/clax/SKILL.md` (tool names per harness):
   `chrome://` and the Web Store.
 - Headless screenshots of a page nobody has open.
 
-## 17. Open questions
+## 18. Open questions
 
 For the owner:
 

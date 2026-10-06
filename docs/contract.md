@@ -126,6 +126,9 @@ daemon codes a tool can surface in normal operation:
   log. A failed file operation is `internal` with the message
   `storage error: <kind>`, naming the I/O error kind (for example
   `storage error: StorageFull`) and never a path.
+- `schema_newer` (500): the database's schema is newer than this binary
+  knows. The daemon never starts on such a database, so this is not
+  expected over HTTP.
 
 ### publish
 
@@ -1854,7 +1857,9 @@ versions is a snapshot of the page, taken when a comment is posted.
 - **`POST /api/live/threads`** (multipart, at most 24 MiB): `url`, `title`,
   `anchor` (JSON, as for a thread, without `route`), `body`, `pending` (a
   JSON array of the thread IDs the caller saw pending when it serialized the
-  page), optional `clip` (PNG), and `snapshot` (the page's HTML, at most 8
+  page), optional `pick_id` (the pick's ID: 32 lowercase hex digits, else
+  400 `invalid_args`), optional `clip` (PNG), and `snapshot` (the page's
+  HTML, at most 8
   MiB, else 400 `snapshot_too_large`). A missing required field, a field
   given twice, `pending` that is not an array of strings, or any other field
   is 400 `invalid_args`. It finds or creates the live page `url` names,
@@ -1868,7 +1873,13 @@ versions is a snapshot of the page, taken when a comment is posted.
   collapsed and other control characters dropped, cut to 200 characters (the
   page URL when nothing is left). It answers `201 {thread, page, version,
   clip_error?}`; a clip that fails the thread clip rules is dropped and
-  reported in `clip_error`. Both routes are viewer routes: no token, and the
+  reported in `clip_error`. With `pick_id`, the request is idempotent for an
+  hour: when that pick already made a thread on the page `url` names, and
+  the thread still exists, the request writes nothing (no version, no
+  thread, no send) and answers `200 {thread, page, version}` with that
+  thread as it is now (`version` is the version it was made on). Two such
+  requests at once make one thread; the other answers the same 200.
+  Deleting the thread frees its pick ID. Both routes are viewer routes: no token, and the
   `Origin` rule of the other viewer routes.
 - **Scope watches.** `PUT /api/sessions/<sid>/live-watches` (token)
   `{url, replies_armed?}` (default true) makes a scope watch of the live
@@ -1883,8 +1894,11 @@ versions is a snapshot of the page, taken when a comment is posted.
   `replies_armed`. Comments on covered pages waiting with no live target
   are handed to the session. It answers `{live_watch: {origin, path, scope,
   replies_armed}, page, covered}` (`covered`: the artifact IDs of the
-  covered pages); 400 `unknown_session` for a missing or ended session, and
-  the URL errors above (`own_origin` too). Watching the same URL again
+  covered pages); 400 `unknown_session` for a missing or ended session
+  (checked before anything is written, so it makes no page), and the URL
+  errors above (`own_origin` too). The page is made before the scope watch
+  is written: when the page cannot be made, the call fails and leaves no
+  scope watch. Watching the same URL again
   sets its `replies_armed`. A `scope` watch is armed while any of the
   session's scope watches covering the page is armed, and follows the scopes
   left when one is removed. `DELETE /api/sessions/<sid>/live-watches?url=`
@@ -1915,7 +1929,9 @@ versions is a snapshot of the page, taken when a comment is posted.
   addresses instead"); either writes nothing. An agent resolve on a
   live page records a pending address (`resolve`) when the thread has no
   version link and no pending address yet, instead of linking the current
-  version; an `explicit` address replaces a pending `resolve`. Every thread
+  version; an `explicit` address replaces a pending `resolve`. An agent's
+  resolve and the address it records (or, on any other artifact, the
+  version link) are written in one transaction: both land, or neither. Every thread
   view carries `addressed_pending`: `{harness, at}` (the addressing agent's
   harness and when) while an address waits, else `null`. The page's next
   snapshot links pending addresses to its version (with their source), so
@@ -3369,6 +3385,14 @@ abandoned and retried the same way, with a notice.
   under that path is a 404.
 
 ## Known limitations
+
+- A Clax binary refuses to open a database whose schema is newer than it
+  knows: `clax` and the daemon fail to start with "this database's schema
+  is version N, newer than this clax knows (version M); upgrade clax", and
+  leave the database untouched. Binaries released before live pages lack
+  this check and would serve a newer database under their older rules:
+  after running a newer Clax, do not start an older one, and after a
+  downgrade run `clax stop` first.
 
 - Content inside a nested `<iframe>` within a page is a dead zone in comment
   mode (pointer events never reach the page's own document, so it cannot be
