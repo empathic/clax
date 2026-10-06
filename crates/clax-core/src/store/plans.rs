@@ -1,13 +1,14 @@
 //! Query-plan checks for the hot read paths: each query is planned against a
 //! seeded database, with and without planner statistics, and must use its
-//! expected indexes and never scan `comments` or `threads` in full. The
-//! question queries also never sort in a temporary B-tree, and no inbox
-//! query scans `inbox_items` in full.
+//! expected indexes and never scan `comments`, `threads` or `audit_events`
+//! in full. The question queries also never sort in a temporary B-tree, and
+//! no inbox query scans `inbox_items` in full.
 
 use super::Store;
 use super::attention::{
     AGENTS_LIVE, AGENTS_ONE, ATTENTION_LIVE, ATTENTION_ONE, LOOKED_ONE, PEOPLE_LIVE, PEOPLE_ONE,
 };
+use super::audit::{EVENTS_AFTER, EVENTS_FOR_CALL, NEWEST_SEQ};
 use super::feedback::{FEEDBACK_STATES, TAKE_FEEDBACK};
 use super::inbox as ib;
 use super::live::{PAGES_OF_ORIGIN, PENDING_OF, SCOPES_OF_ORIGIN, THREAD_PATHS_OF_PAGE};
@@ -188,6 +189,22 @@ fn seed(c: &Connection) {
     }
     seed_questions(c, &ts);
     seed_inbox(c, &ts);
+    // Audit events: a few per thread, every other one under a tool call.
+    for e in 0..ARTIFACTS * THREADS * 4 {
+        let a = e % ARTIFACTS;
+        c.execute(
+            "INSERT INTO audit_events (at, kind, actor, artifact_id, thread_id, session_id, call_id, body)
+             VALUES (?1, 'comment.add', '{}', ?2, ?3, ?4, ?5, '{}')",
+            params![
+                ts(e),
+                format!("art{a:04}"),
+                format!("art{a:04}t{}", e % THREADS),
+                format!("s{}", a % 20),
+                (e % 2 == 0).then(|| format!("call{}", e / 4))
+            ],
+        )
+        .unwrap();
+    }
     c.execute_batch("COMMIT").unwrap();
 }
 
@@ -833,6 +850,19 @@ fn hot_queries() -> Vec<Hot> {
             &["sqlite_autoindex_threads_1"],
         ),
         (
+            "audit events after a seq",
+            EVENTS_AFTER.into(),
+            vec![Value::Integer(1000), Value::Integer(512)],
+            &["PRIMARY"],
+        ),
+        (
+            "audit events of a tool call",
+            EVENTS_FOR_CALL.into(),
+            vec![t("call7")],
+            &["audit_events_call"],
+        ),
+        ("newest audit seq", NEWEST_SEQ.into(), vec![], &[]),
+        (
             "feedback polling",
             TAKE_FEEDBACK.into(),
             vec![
@@ -849,8 +879,9 @@ fn hot_queries() -> Vec<Hot> {
     ]
 }
 
-/// Aliases and names the hot queries give `comments` and `threads`.
-const BIG_TABLES: &[&str] = &["c", "r", "t", "comments", "threads"];
+/// Aliases and names the hot queries give `comments`, `threads` and
+/// `audit_events`, none of which a hot query may scan in full.
+const BIG_TABLES: &[&str] = &["c", "r", "t", "comments", "threads", "audit_events"];
 
 fn plan(c: &Connection, sql: &str, args: &[Value]) -> Vec<String> {
     let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();

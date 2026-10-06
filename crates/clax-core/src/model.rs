@@ -29,6 +29,11 @@ fn html_kind() -> String {
 pub struct FileMeta {
     pub content_type: String,
     pub size: u64,
+    /// The file's SHA-256 in lowercase hex. Absent on versions written
+    /// before version content hashes; a carried-forward file keeps its
+    /// previous version's hash.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -50,6 +55,11 @@ pub struct Version {
     /// The publishing session's harness.
     #[serde(default)]
     pub agent_harness: Option<String>,
+    /// `sha256:<hex>` of the version's file manifest
+    /// ([`content_manifest_sha256`](crate::audit::content_manifest_sha256));
+    /// `None` only on versions written before content hashes, until backfill.
+    #[serde(default)]
+    pub content_sha256: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

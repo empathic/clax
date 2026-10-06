@@ -39,6 +39,7 @@ pub use publish::html_title;
 pub use store::Store;
 pub use store::artifacts::{CorruptRow, MetaPatch};
 pub use store::attention::{AgentView, Attention, AttentionSummary, Participants, Person};
+pub use store::audit::AuditRow;
 pub use store::feedback::{SendTarget, TakeFeedback};
 pub use store::sessions::{EndedSession, Reaped, RegisterSession};
 pub use store::threads::{NewComment, NewThread, ThreadExtras};

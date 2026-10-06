@@ -24,11 +24,14 @@ export type Artifact = {
 export type Participants = { people: { public_id: string; display_name: string | null; seen: number | null }[]; agents: { handle: string; harness: string; live: boolean }[] };
 export type AttentionSummary = { addressed: string[]; addressed_v: number | null; new_replies: string[]; open_in: string[]; seen: number | null };
 export type Attention = AttentionSummary & { looked: Record<string, string> };
-export type FileMeta = { content_type: string; size: number };
+/** `sha256`: the file's lowercase hex SHA-256; absent on versions written before content hashes. */
+export type FileMeta = { content_type: string; size: number; sha256?: string };
 export type Version = {
   artifact_id: string; n: number; label: string | null; created_at: string; files: Record<string, FileMeta>;
   /** The publishing session's agent handle and harness. */
   agent?: string | null; agent_harness?: string | null;
+  /** `sha256:` and the hex SHA-256 of the file manifest; `null` on versions written before content hashes. */
+  content_sha256?: string | null;
   /** The agent's note on what changed; the IDs of the threads this version addresses. */
   note?: string | null; addresses?: string[];
 };

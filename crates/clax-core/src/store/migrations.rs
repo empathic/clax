@@ -493,11 +493,66 @@ pub const MIGRATIONS: &[&str] = &[
     DROP INDEX version_threads_by_thread;
     CREATE INDEX version_threads_by_thread ON version_threads(thread_id, created_at, version_n);
     CREATE INDEX versions_by_session ON versions(artifact_id, session_id, created_at);",
+    // 23: the audit journal (spec 2026-10-06-toolpath-audit-design §5.1):
+    // append-only events in commit order, the opaque install ID (128
+    // random bits, minted by this migration's Rust step, `install_id`), each
+    // version's content hash and each session's transcript path. Events name artifacts without a
+    // foreign key, since they outlive deletion.
+    "CREATE TABLE audit_events (
+        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+        at TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        actor TEXT NOT NULL,
+        artifact_id TEXT,
+        artifact2_id TEXT,
+        thread_id TEXT,
+        session_id TEXT,
+        question_id TEXT,
+        call_id TEXT,
+        origin TEXT,
+        body TEXT NOT NULL,
+        backfilled INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX audit_events_artifact ON audit_events(artifact_id, seq);
+    CREATE INDEX audit_events_artifact2 ON audit_events(artifact2_id, seq) WHERE artifact2_id IS NOT NULL;
+    CREATE INDEX audit_events_session ON audit_events(session_id, seq);
+    CREATE INDEX audit_events_call ON audit_events(call_id) WHERE call_id IS NOT NULL;
+    CREATE INDEX audit_events_at ON audit_events(at);
+    CREATE TABLE install (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+    ALTER TABLE versions ADD COLUMN content_sha256 TEXT;
+    ALTER TABLE sessions ADD COLUMN transcript_path TEXT;",
 ];
+
+/// The audit journal's migration, as a schema version (the
+/// `user_version` it leaves).
+pub const AUDIT_MIGRATION: u32 = 23;
+
+/// Runs the Rust part of the migration that brings the schema to
+/// `version`, in that migration's transaction, after its SQL.
+pub(super) fn rust_step(tx: &rusqlite::Transaction<'_>, version: u32) -> crate::Result<()> {
+    if version == AUDIT_MIGRATION {
+        install_id(tx)?;
+    }
+    Ok(())
+}
+
+/// Mints the install ID once: 128 random bits in lowercase hex. It holds
+/// no timestamp, so an exported reference does not date the install.
+fn install_id(tx: &rusqlite::Transaction<'_>) -> crate::Result<()> {
+    let id: String = rand::random::<[u8; 16]>()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    tx.execute(
+        "INSERT OR IGNORE INTO install (k, v) VALUES ('id', ?1)",
+        [id],
+    )?;
+    Ok(())
+}
 
 #[cfg(test)]
 mod tests {
-    use super::MIGRATIONS;
+    use super::{AUDIT_MIGRATION, MIGRATIONS};
     use crate::{Home, Store, is_public_id};
     use rusqlite::{Connection, params};
 
@@ -575,6 +630,70 @@ mod tests {
         for secret in [COOKIE, LOST, SID] {
             assert!(!all.contains(secret), "{all}");
         }
+    }
+
+    #[test]
+    fn audit_migration_creates_audit_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        home.ensure_dirs().unwrap();
+        let before = AUDIT_MIGRATION as usize - 1;
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            for sql in &MIGRATIONS[..before] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.pragma_update(None, "user_version", before as u32)
+                .unwrap();
+            c.execute_batch(
+                "INSERT INTO artifacts (id, title, created_at, updated_at, current_version, contract_version)
+                    VALUES ('a1', 'T', 'x', 'x', 1, '1');
+                 INSERT INTO versions (artifact_id, n, created_at, files_json) VALUES ('a1', 1, 'x', '{}');
+                 INSERT INTO sessions (id, harness, cwd, started_at, last_seen_at, agent_handle)
+                    VALUES ('s1', 'claude', '/w', 'x', 'x', 'a_1');",
+            )
+            .unwrap();
+        }
+        let st = Store::open(&home).unwrap();
+        let (schema, old) = st
+            .with_read(|c| {
+                let mut q = c.prepare(
+                    "SELECT name FROM sqlite_schema WHERE name LIKE 'audit%' OR name = 'install'
+                     ORDER BY name",
+                )?;
+                let names = q
+                    .query_map([], |r| r.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                let old: (Option<String>, Option<String>, i64) = c.query_row(
+                    "SELECT (SELECT content_sha256 FROM versions WHERE artifact_id = 'a1'),
+                            (SELECT transcript_path FROM sessions WHERE id = 's1'),
+                            (SELECT COUNT(*) FROM audit_events)",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                )?;
+                Ok((names, old))
+            })
+            .unwrap();
+        assert_eq!(
+            schema,
+            [
+                "audit_events",
+                "audit_events_artifact",
+                "audit_events_artifact2",
+                "audit_events_at",
+                "audit_events_call",
+                "audit_events_session",
+                "install",
+            ]
+        );
+        assert_eq!(old, (None, None, 0));
+        assert!(crate::store::audit::tests::is_install_id(
+            &st.install_id().unwrap()
+        ));
+        let version: u32 = st
+            .with_read(|c| Ok(c.query_row("PRAGMA user_version", [], |r| r.get(0))?))
+            .unwrap();
+        assert_eq!(version, MIGRATIONS.len() as u32);
     }
 
     #[test]
