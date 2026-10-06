@@ -28,7 +28,7 @@ describe("origins", () => {
     expect(await enabled(env(), "http://localhost:5173")).toBe(false);
   });
 
-  it("registers again the loader of each origin it is on whose permission is held, as an extension update drops them", async () => {
+  it("registers again the loader of each origin it is on whose permission is held, when Chromium dropped it", async () => {
     const a = "http://localhost:5173", b = "http://localhost:5174", d = "http://localhost:5175";
     c.storage.local.data.origins = [a, b, d];
     c.granted.add(`${a}/*`);

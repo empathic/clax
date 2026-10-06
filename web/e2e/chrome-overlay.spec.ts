@@ -140,6 +140,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await composer.locator("textarea").waitFor();
   console.log(`pick → composer: ${Date.now() - t1} ms (reported, not judged)`);
   await composer.locator("textarea").fill("The save button needs more room");
+  // A POST: Chrome sends it with Origin (the gateway refuses an Origin-less write).
   await composer.getByRole("button", { name: "Post" }).click();
 
   // The thread, its clip and its snapshot are stored.
@@ -170,6 +171,8 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
     writeFileSync(main, readFileSync(main, "utf8").replace(from, to));
     await seen;
   };
+  // A marker a full reload would lose: the update must be Vite's hot one.
+  await page.evaluate(() => { (window as unknown as { claxHot: boolean }).claxHot = true; });
   await edit('const LABEL = "Save"', 'const LABEL = "Save changes"');
   await expect(page.locator("#save")).toHaveText("Save changes");
   await expect.poll(found).toBe(true);
@@ -177,6 +180,7 @@ test("comment on a dev server page, reach the agent, and follow a hot reload", a
   await expect(page.locator("#save")).toHaveCount(0);
   await expect.poll(found).toBe(false);
   await expect.poll(() => panel.text()).toContain("Detached");
+  expect(await page.evaluate(() => (window as unknown as { claxHot?: boolean }).claxHot)).toBe(true);
 
   // The agent says it is fixed; the open page's next snapshot addresses the thread.
   await api(live, `/api/artifacts/${aid}/threads/${tid}/comments`, { method: "POST", body: JSON.stringify({ body: "Fixed", author_kind: "agent", addressed: true }) }, sid);
@@ -230,11 +234,9 @@ test("the panel recovers when the daemon restarts on another port", async ({ liv
   // Within 10 s of the last pairing the worker does not pair again on its
   // own (spec §11); the panel says the daemon is unreachable, and its Retry pairs again.
   const settled = async () => ((await pairedTo()) === live.daemon.base ? "paired" : ((await h.state(tabId))?.error as { code?: string } | null)?.code ?? null);
-  const how = await until(settled);
-  if (how === "daemon_unreachable") {
-    await expect.poll(() => panel.text()).toContain("Retry");
-    await panel.click(/^ ?Retry$/);
-  }
+  expect(await until(settled)).toBe("daemon_unreachable");
+  await expect.poll(() => panel.text()).toContain("Retry");
+  await panel.click(/^ ?Retry$/);
   await expect.poll(pairedTo).toBe(live.daemon.base);
   await expect.poll(async () => (await h.state(tabId))?.error ?? null).toBeNull();
 });
@@ -290,7 +292,6 @@ test.describe("holding only the dev server's origin, as the release build does o
     });
     await page.locator("#save").click();
     const composer = await until(() => page.frames().find(f => f.url().includes("/composer.html")));
-    // use_dynamic_url: the frame's origin is not the extension's ID.
     await composer.locator("textarea").waitFor();
     // The page can see the moment of capture: the host hides, then shows again (spec §10.4).
     const seen = await page.evaluate(() => (window as unknown as { hostChanges: string[] }).hostChanges.map(s => (/visibility: ?hidden/.test(s) ? "hidden" : "shown")));
@@ -314,6 +315,18 @@ test.describe("holding only the dev server's origin, as the release build does o
     await page.evaluate(id => { const f = document.createElement("iframe"); f.src = `chrome-extension://${id}/composer.html`; document.body.append(f); }, live.extId);
     const framed = await refused;
     await expect.poll(() => framed.url()).toMatch(/^chrome-error:/);
+  });
+
+  test("two clicks at once inject one overlay", async ({ live }) => {
+    const { siteUrl } = live;
+    const h = hook(live);
+    const page = await live.ctx.newPage();
+    await page.goto(siteUrl);
+    const tabId = await tabIdOf(live, siteUrl);
+    await Promise.all([h.comment(tabId, siteUrl), h.comment(tabId, siteUrl)]);
+    await expect.poll(async () => (await h.state(tabId))?.overlay).toBe(true);
+    // Both injections may run overlay.js; the isolated world's flag starts it once: one pins host.
+    expect(await page.evaluate(() => document.querySelectorAll("clax-overlay[popover]").length)).toBe(1);
   });
 
   test("a composer frame loaded again is closed and its pick cancelled", async ({ live }) => {

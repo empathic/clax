@@ -55,7 +55,7 @@ chrome.action.onClicked.addListener(tab => gesture(tab, true));
 chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
 // The origins' loaders may be gone after a load of the extension; the browser's start wakes the worker to check.
-void origins.restoreLoaders(originsEnv).catch(() => {});
+void origins.restoreLoaders(originsEnv).catch(e => console.warn("Clax could not register its sites' loaders again:", e));
 chrome.runtime.onStartup.addListener(() => {});
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
 chrome.tabs.onRemoved.addListener(tabId => { picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });

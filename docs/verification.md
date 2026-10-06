@@ -616,7 +616,7 @@ the test build of the extension replaces the release files in
 host manifest from a profile given as `--user-data-dir`, and runs the
 installed `host/launch.sh` → `host/ensure-clax.sh` → `clax native-host`
 (the `bin` setting names this run's binary): the fallback in the plan (pairing
-through the test hook) was not needed. Six tests, all passing:
+through the test hook) was not needed. Seven tests, all passing:
 
 1. **The whole loop.** Chromium's own ID for `<home>/extension` equals the
    daemon's (`GET /api/extension`) and the CLI's (`clax extension status
@@ -634,8 +634,11 @@ through the test hook) was not needed. Six tests, all passing:
    shows in the panel, and the overlay's quiet snapshot links it. The shell's
    gallery shows the Live chip, the shell's viewer is the extension's owner
    viewer, and the snapshot view shows the thread with Comment disabled.
-   Reported, not judged: icon → comment mode on 9–33 ms; pick → composer
-   142–253 ms.
+   The Vite update is a hot one (a `window` marker set before the edit
+   survives it). The comment's POST passes the gateway, which refuses a
+   write without `Origin`, so Chrome sends `Origin` on it. Reported, not
+   judged, on the implementer's runs: icon → comment mode on 9–33 ms; pick
+   → composer 142–253 ms (a review run printed 42 ms and 354 ms).
 2. **Daemon restarted on another port.** The pairing names the old port; the
    panel shows `daemon_unreachable` with Retry; Retry pairs again with the new
    daemon and the error clears.
@@ -657,7 +660,11 @@ through the test hook) was not needed. Six tests, all passing:
 5. A composer frame loaded a second time (a navigation over CDP: the page
    cannot reach the frame) is closed, its pick cancelled, nothing posted,
    and comment mode stays on.
-6. Under a page's modal `<dialog>`, a pick inside the dialog opens the
+6. Two toggles at once (the worker's hook called twice concurrently) leave
+   one pins host in the page: the isolated world's flag starts the overlay
+   once, whether one injection or both ran `overlay.js` (which of the two
+   happened is not observed).
+7. Under a page's modal `<dialog>`, a pick inside the dialog opens the
    composer, which has focus and takes the keys, and its submit shortcut
    posts; the dialog's backdrop is on top at the composer's centre
    (`elementFromPoint` → `DIALOG`), so its buttons cannot be clicked while
@@ -669,8 +676,9 @@ Found by this test and fixed, each with a regression test:
   host permission for the daemon's origin (`<all_urls>`, or "On all sites"),
   marking them `Sec-Fetch-Site: none`; the gateway refused them all with
   `forbidden_origin`, so no page could be looked up. The gateway now counts
-  a credential with no `Origin` and `Sec-Fetch-Site: none` as the
-  extension's (`crates/clax-server/tests/api_gateway.rs`,
+  a GET with the credential, no `Origin` and `Sec-Fetch-Site: none` as the
+  extension's (provisional, pending the owner's confirmation; writes
+  without `Origin` stay refused) (`crates/clax-server/tests/api_gateway.rs`,
   `a_credential_without_origin_is_the_extensions_only_when_the_browser_says_none`).
 - Registered loaders were gone after the browser restart (Chromium dropped
   the registered content script across a restart with `--load-extension`;
@@ -708,6 +716,10 @@ Found by this test and fixed, each with a regression test:
   thread in one; it is not new in the other).
 - Pins found by hit testing, and the cursor, as spec §10.4 says a page can
   observe them (not measured).
+- Stacking under a page's popover or non-modal top-layer element opened
+  after the overlay (only a modal dialog was tried).
+- Two injections racing for certain: test 6 shows one overlay after two
+  concurrent toggles, but not that both injections reached the page.
 
 ### 8.4 The owner's steps outside Clax
 

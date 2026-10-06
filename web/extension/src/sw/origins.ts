@@ -68,7 +68,9 @@ export async function restoreLoaders(env: OriginsEnv): Promise<void> {
   const have = new Set((await env.scripting.getRegisteredContentScripts()).map(r => r.id));
   for (const o of all) {
     if (have.has(scriptId(o)) || !(await env.permissions.contains({ origins: [patternOf(o)] }).catch(() => false))) continue;
-    // One at a time: a click's `remember` may have registered one meanwhile.
+    // "Turn off on this site" may have forgotten it meanwhile.
+    if (!(await enabled(env, o))) continue;
+    // One at a time: a click's `remember` may have registered one meanwhile (a duplicate ID, refused).
     await env.scripting.registerContentScripts([loader(o)]).catch(() => {});
   }
 }

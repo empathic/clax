@@ -3,7 +3,7 @@
 // the tab's live page, and the thread the daemon answers with is applied at
 // once (the stream brings it too). A failure is told to the panel as
 // `failed {code, message}`.
-import { type PanelToWorker, REPAIRS, type WorkerToPanel } from "../messages";
+import { type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
@@ -48,7 +48,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
     case "watch-tab": if (s?.url) await d.tabs.route(tabId, s.url); return;
     case "retry":
       // Only a pairing or credential failure needs a new pairing; the person asked, so it is not rate-limited.
-      if (s?.error && REPAIRS.has(s.error.code)) await d.pairer.pair(true);
+      if (s?.error && RETRYABLE.has(s.error.code)) await d.pairer.pair(true);
       if (s?.url) await d.tabs.route(tabId, s.url, true);
       return;
     case "select": d.tabs.select(tabId, m.threadId); return;
