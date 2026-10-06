@@ -1,7 +1,8 @@
 // The worker's parts wired together: the pairer, the API client over it,
 // the shell's stream hub with requests through the API client (so the
 // stream carries the credential and pairs again like any request), the
-// tabs, one hub client each, and the picks. A new pairing reconnects the
+// tabs, one hub client each, the sites they are on for (one hub client
+// each), and the picks. A new pairing reconnects the
 // hub: the old credential's stream cannot be changed or resumed by the new
 // one.
 import { Hub } from "../../../shell/src/stream-hub";
@@ -9,6 +10,7 @@ import type { OverlayToWorker, Rect, WorkerToOverlay } from "../messages";
 import { Api } from "./api";
 import { type PairEnv, Pairer } from "./pairing";
 import { Picks } from "./picks";
+import { Sites } from "./site";
 import { Tabs } from "./tabs";
 
 export type WorkerDeps = {
@@ -29,7 +31,7 @@ export type WorkerDeps = {
   now?(): number;
 };
 export type Worker = {
-  pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks;
+  pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks; sites: Sites;
   /** An admitted overlay message from tab `tabId` in window `windowId`; what it answers is the reply. */
   fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown>;
 };
@@ -64,7 +66,8 @@ export function createWorker(d: WorkerDeps): Worker {
     fetch: (input, init) => (String(input) === "/api/token" ? Promise.resolve(new Response(null, { status: 204 })) : api.request(String(input), init)),
     base: "",
   });
-  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf });
+  const sites = new Sites({ api, hub, changed: o => tabs?.siteChanged(o) });
+  tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store, windowOf: d.windowOf, sites });
   const t = tabs;
   api.onRepair = () => t.repaired();
   const picks = new Picks({
@@ -85,5 +88,5 @@ export function createWorker(d: WorkerDeps): Worker {
       default: return t.fromOverlay(tabId, windowId, m, senderUrl);
     }
   }
-  return { pairer, api, hub, tabs: t, picks, fromOverlay };
+  return { pairer, api, hub, tabs: t, picks, sites, fromOverlay };
 }

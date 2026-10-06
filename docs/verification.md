@@ -684,6 +684,19 @@ turning Clax on in its tab, and the side panel is opened for that tab):
    (`elementFromPoint` → `DIALOG`), so its buttons cannot be clicked while
    the dialog is open (spec §10.4).
 
+9. **The whole site.** Three live pages of the dev server (`/`,
+   `/users/1.html`, `/users/2.html`), a thread each, made through the
+   daemon. With Clax on at `/`, the panel lists `/`'s thread above
+   "Elsewhere on this site" and both user pages' threads under their paths;
+   `/users/1.html`'s thread, whose anchor is also on `/`, resolves there
+   ("Pinned here"). Clicking it takes the tab to `/users/1.html`, where it is
+   selected and found. "Move…" on `/`'s thread re-files it under
+   `/users/1.html` (its card leaves the other pages). "Merge pages" with
+   `/users/:id` previews both user pages, merges the three threads onto the
+   canonical page, and the tab's page becomes it (three threads);
+   "Un-merge" deletes the rule and each thread goes back to the page of the
+   path it was made at, the tab's page then holding two.
+
 Found by this test and fixed, each with a regression test:
 
 - Chrome sends no `Origin` on the worker's GETs when the extension holds a
@@ -744,6 +757,13 @@ Found by this test and fixed, each with a regression test:
 - An icon click right after Chrome stopped the worker, in a tab Clax is on
   in: the panel may show for a moment, then close as Clax turns off (the
   worker cannot read its tabs back before the click's gesture ends).
+- The site's threads by hand, light and dark, at the panel's narrowest
+  width: long paths end in an ellipsis with the whole path on hover; a
+  pin of another page's thread is outlined and its tooltip says "from
+  <path>"; the filter and the collapsed groups come back after closing
+  and reopening the panel, per site; a merge of more than 200 threads
+  shows its progress across batches; an agent's reply on another page
+  appears in its card without a reload.
 - Alt+Shift+C and the page's context menu entry (each turns Clax on in its
   tab, the panel enabled but not opened; where Clax is on, each flips
   comment mode).

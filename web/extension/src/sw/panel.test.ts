@@ -10,7 +10,7 @@ const URL1 = "http://localhost:5173/app";
 const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", page_url: URL1, title: "T", current_version: 1, url: `http://localhost:7480/a/${AID}` };
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
-function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string } = {}) {
+function setup(over: { remaining?: number; page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; failCode?: string; error?: string } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   const pg = over.page === undefined ? page : over.page;
@@ -25,6 +25,9 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
       comment: api("comment", { thread: thread(T1) }), resolve: api("resolve", { thread: thread(T1, "resolved") }),
       reopen: api("reopen", { thread: thread(T1) }), looked: api("looked", {}),
       setName: api("setName", { viewer: { public_id: "u_o", display_name: "Mia", created_at: "t" } }),
+      move: api("move", { moved: true }),
+      addRule: api("addRule", { rule: {}, moved: [T1, T2], remaining: over.remaining ?? 0 }),
+      deleteRule: api("deleteRule", { moved: [T1], remaining: over.remaining ?? 0 }),
     } as never,
     tabs: {
       state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true, on: "http://localhost:5173", error: over.error ? { code: over.error, message: "m" } : null } as never),
@@ -35,7 +38,9 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
       setViewer: (v: { display_name: string }) => calls.push(`viewer ${v.display_name}`),
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
+      openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? "http://localhost:5173/users/7" : null; },
     } as never,
+    sites: { load: async (o: string) => { calls.push(`load ${o}`); } },
     pairer: { pair: async (retry?: boolean) => { calls.push(`pair ${!!retry}`); return {} as never; } },
     allUrls: async () => over.allUrls ?? false,
     navigate: async (tabId, url) => { calls.push(`navigate ${tabId} ${url}`); },
@@ -44,6 +49,43 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
   const run = (m: PanelToWorker, tabId: number | null = 4) => panelAction(d, tabId, m, r => out.push(r));
   return { calls, out, run };
 }
+
+describe("panelAction on the tab's site", () => {
+  it("opens a thread of another page in the tab, and refuses one the site does not have", async () => {
+    const s = setup();
+    await s.run({ t: "open-thread", threadId: T1 });
+    expect(s.calls).toEqual([`open 4 ${T1}`, "navigate 4 http://localhost:5173/users/7"]);
+    await s.run({ t: "open-thread", threadId: T2 });
+    expect(s.out).toEqual([{ t: "failed", code: "not_found", message: "That thread is not on this site any more." }]);
+  });
+
+  it("moves a thread to a page of the tab's origin only", async () => {
+    const s = setup();
+    await s.run({ t: "move", threadId: T1, pageUrl: "http://localhost:5173/users/7" });
+    expect(s.calls).toEqual([`move "${T1}" "http://localhost:5173/users/7"`]);
+    await s.run({ t: "move", threadId: T1, pageUrl: "http://evil.test/users/7" });
+    expect(s.out).toEqual([{ t: "failed", code: "cross_origin", message: "That page is on another site." }]);
+    expect(s.calls).toHaveLength(1);
+  });
+
+  it("adds and deletes a rule one batch at a time for the tab's origin, telling the panel what is left", async () => {
+    const s = setup({ remaining: 3 });
+    await s.run({ t: "rule", req: 7, pattern: "/users/:id" });
+    await s.run({ t: "unrule", req: 8, ruleId: T2 });
+    expect(s.calls).toEqual([`addRule "http://localhost:5173" "/users/:id"`, "load http://localhost:5173", `deleteRule "${T2}"`, "load http://localhost:5173"]);
+    expect(s.out).toEqual([{ t: "step", req: 7, moved: 2, remaining: 3 }, { t: "step", req: 8, moved: 1, remaining: 3 }]);
+    // The last batch looks the tab's page up again: a merge may have changed which page its URL names.
+    const done = setup();
+    await done.run({ t: "rule", req: 9, pattern: "/users/:id" });
+    expect(done.calls).toContain("route 4 http://localhost:5173/app true");
+  });
+
+  it("names the request a rule's failure answers", async () => {
+    const s = setup({ fail: "addRule", failCode: "invalid_pattern" });
+    await s.run({ t: "rule", req: 5, pattern: "/:a/:b" });
+    expect(s.out).toEqual([{ t: "failed", code: "invalid_pattern", message: "No such thread.", req: 5 }]);
+  });
+});
 
 describe("panelAction", () => {
   it("sends, replies, resolves, and reopens on the tab's live page, applying the answer", async () => {

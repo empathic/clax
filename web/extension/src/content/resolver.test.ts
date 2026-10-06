@@ -45,6 +45,16 @@ describe("Resolver", () => {
     r.stop();
   });
 
+  it("resolves another page's threads whatever the route, after the page's own, with the path they were left at", () => {
+    const t = manual();
+    const r = new Resolver(document, p => { placed = p; }, t);
+    const far = { ...(thread("01J9BBBBBBBBBBBBBBBBBBBBBB", "#save", "Save", "?tab=billing") as object), from: "/users/7" } as never;
+    r.set([thread("01J9AAAAAAAAAAAAAAAAAAAAAA", "#save", "Save"), far], null);
+    t.advance(0);
+    expect(placed.map(p => [p.id, p.n, p.from])).toEqual([["01J9AAAAAAAAAAAAAAAAAAAAAA", 1, undefined], ["01J9BBBBBBBBBBBBBBBBBBBBBB", 2, "/users/7"]]);
+    r.stop();
+  });
+
   it("re-resolves after a wholesale replacement and detaches what is gone", async () => {
     const t = manual();
     const r = new Resolver(document, p => { placed = p; }, t);

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import type { PageView, WorkerToOverlay, WorkerToPanel } from "../messages";
+import type { PageView, SiteView, WorkerToOverlay, WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
 import { type TabState, Tabs, applyEvent, emptyTab, type TabsApi, CLOSED_MS } from "./tabs";
 
@@ -55,7 +55,8 @@ function memory() {
 /** The documents in the tabs: whether each tab's current document has the overlay. */
 function documents() { return new Set<number>(); }
 
-function harness(store = memory(), docs = documents()) {
+type FakeSites = { view(o: string | null): SiteView | null; follow(os: Iterable<string>): void; fromHub(id: string, msg: HubMsg): void };
+function harness(store = memory(), docs = documents(), sites?: FakeSites) {
   const calls: string[] = [];
   const hubIn: { id: string; msg: TabMsg }[] = [];
   const detached: string[] = [];
@@ -83,6 +84,7 @@ function harness(store = memory(), docs = documents()) {
     inject: async tabId => { if (docs.has(tabId)) return false; docs.add(tabId); injected.push(tabId); return true; },
     present: async tabId => docs.has(tabId),
     store,
+    sites,
   });
   /** The tab loads a new document: whatever was in the old one is gone. */
   const reload = (tabId: number) => docs.delete(tabId);
@@ -718,3 +720,92 @@ describe("Tabs and side panels", () => {
   });
 });
 
+
+describe("Tabs and the site's threads", () => {
+  const O = "http://localhost:5173";
+  const T2 = "01J9BBBBBBBBBBBBBBBBBBBBBB";
+  const T3 = "01J9CCCCCCCCCCCCCCCCCCCCCC";
+  const other = (id: string, extra: object = {}) => ({ ...full(id, { artifact_id: AID2, anchor: { kind: "element", selector: "h1", file: "index.html", route: "?x" }, page_path: "/users/7", page_url: `${O}/users/7?x`, addressed_pending: { harness: "claude", at: "t" }, ...extra }) });
+  function sites() {
+    let view: SiteView | null = null;
+    const followed: string[][] = [];
+    const heard: [string, HubMsg][] = [];
+    return {
+      followed, heard,
+      set(v: SiteView | null) { view = v; },
+      view: (o: string | null) => (o === O ? view : null),
+      follow: (os: Iterable<string>) => { followed.push([...new Set(os)]); },
+      fromHub: (id: string, msg: HubMsg) => { heard.push([id, msg]); },
+    };
+  }
+  const listing = (): SiteView => ({ origin: O, rules: [], pages: [
+    { page: page(), threads: [full(T1) as never] },
+    { page: page(AID2, "/users/7"), threads: [other(T2) as never, other(T3, { status: "resolved" }) as never] },
+  ] });
+
+  it("follows the sites of the origins it is on for, once the daemon answered, and hands their hub messages on", async () => {
+    const f = sites();
+    const h = harness(memory(), documents(), f);
+    h.pages.set(URL1, { page: null, route: null });
+    h.tabs.turnOn(4, URL1, O);
+    h.tabs.turnOn(5, URL1, O);
+    expect(f.followed.flat()).toEqual([]);
+    await h.tabs.route(4, URL1);
+    await h.tabs.route(5, URL1);
+    expect(f.followed.at(-1)).toEqual([O]);
+    h.tabs.fromHub([`site:${O}`], { t: "ping" });
+    expect(f.heard).toEqual([[`site:${O}`, { t: "ping" }]]);
+    h.tabs.close(4);
+    expect(f.followed.at(-1)).toEqual([O]);
+    h.tabs.close(5);
+    expect(f.followed.at(-1)).toEqual([]);
+  });
+
+  it("pins the site's open threads of other pages, after the page's own, with the path they were left at and no text", async () => {
+    const f = sites();
+    const h = harness(memory(), documents(), f);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    h.tabs.turnOn(4, URL1, O);
+    await h.tabs.route(4, URL1);
+    f.set(listing());
+    h.tabs.siteChanged(O);
+    const m = h.overlay.at(-1)!.m as Extract<WorkerToOverlay, { t: "state" }>;
+    expect(m.threads.map(t => [t.id, t.from])).toEqual([[T1, undefined], [T2, "/users/7"]]);
+    // Its pending address is its own page's to settle: this page's snapshot does not wait for it.
+    expect(m.threads[1]).toEqual({ id: T2, status: "open", anchor: { kind: "element", selector: "h1", file: "index.html", route: "?x" }, addressed_pending: false, from: "/users/7" });
+    expect(m.pending).toBe(false);
+    expect(JSON.stringify(m.threads)).not.toMatch(/page_url|comments|body/);
+  });
+
+  it("tells each panel of the tab's site when it watches, and again when the site changes", async () => {
+    const f = sites();
+    const h = harness(memory(), documents(), f);
+    f.set(listing());
+    h.pages.set(URL1, { page: null, route: null });
+    h.tabs.turnOn(4, URL1, O);
+    await h.tabs.route(4, URL1);
+    const p = port();
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    expect(p.sent.filter(m => m.t === "site")).toEqual([{ t: "site", site: listing() }]);
+    f.set(null);
+    h.tabs.siteChanged("http://elsewhere.test");
+    h.tabs.siteChanged(O);
+    expect(p.sent.filter(m => m.t === "site")).toHaveLength(2);
+  });
+
+  it("opens a thread of another page: the tab's URL for it, then the overlay scrolls to it once found", async () => {
+    const f = sites();
+    const h = harness(memory(), documents(), f);
+    f.set(listing());
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, O);
+    await h.tabs.route(4, URL1);
+    expect(h.tabs.openThread(4, T2)).toBe(`${O}/users/7?x`);
+    expect(h.tabs.openThread(4, "01J9DDDDDDDDDDDDDDDDDDDDDD")).toBeNull();
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T2, found: true, method: "selector", rect: null }] });
+    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "scroll-to", threadId: T2 } });
+    expect(h.tabs.state(4)?.selected).toBe(T2);
+  });
+});

@@ -50,7 +50,7 @@ export function startBackground(c: typeof chrome) {
     const documentId = docs.get(tabId);
     quietly(() => c.tabs.sendMessage(tabId, m, documentId ? { documentId } : { frameId: 0 }));
   };
-  const { pairer, api, tabs, picks, fromOverlay } = createWorker({
+  const { pairer, api, tabs, picks, sites, fromOverlay } = createWorker({
     pair: {
       sendNative: async (host, msg) => {
         try { return await c.runtime.sendNativeMessage(host, msg); }
@@ -191,7 +191,7 @@ export function startBackground(c: typeof chrome) {
 
   /** What a side panel's actions reach (spec §9.4). */
   const panelDeps: PanelDeps = {
-    api, tabs, pairer,
+    api, tabs, pairer, sites,
     allUrls: () => c.permissions.contains({ origins: ["<all_urls>"] }),
     navigate: async (tabId, url) => { await c.tabs.update(tabId, { url }); },
     turnOff: async tabId => off(tabId),

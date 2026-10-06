@@ -17,7 +17,7 @@ import { type Live, expect, test } from "./extension-fixtures";
 
 type Hook = {
   comment(tabId: number, url: string): Promise<void>;
-  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; route: string | null; error: unknown; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
+  state(tabId: number): { on: string | null; commentMode: boolean; overlay: boolean; route: string | null; error: unknown; selected: string | null; resolved: Record<string, { found: boolean }>; threads: unknown[] } | undefined;
 };
 const hook = (live: Live) => ({
   /** What the command does once the origin's permission is held: turns Clax on in the tab (records the activeTab grant), or flips comment mode where it is on. */
@@ -282,6 +282,83 @@ test("Clax is on only in the tab it was turned on in, stays on through a reload,
   await expect.poll(() => overlays(first)).toBe(0);
   expect(await h.state(tabId)).toBeNull();
   expect(await h.panelEnabled(tabId)).toBe(false);
+});
+
+/** A thread on the live page `url`, anchored at `selector` (with its text
+ * `quote`), made through the daemon as the panel's comments are. */
+async function liveThread(live: Live, url: string, selector: string, quote: string, body: string): Promise<string> {
+  const form = new FormData();
+  form.set("url", url);
+  form.set("title", "Live site");
+  form.set("anchor", JSON.stringify({ kind: "element", selector, quote, prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" }));
+  form.set("body", body);
+  form.set("pending", "[]");
+  form.set("snapshot", `<!doctype html><main><h1>Settings</h1><button id="save">Save</button></main>`);
+  const res = await fetch(`${live.daemon.base}/api/live/threads`, { method: "POST", body: form, headers: { authorization: `Bearer ${live.daemon.token}` } });
+  const r = await res.json();
+  if (!res.ok) throw new Error(`thread: ${JSON.stringify(r)}`);
+  return r.thread.id;
+}
+
+test("the panel lists the site's other pages, opens and pins their threads, moves a thread, and merges and un-merges pages", async ({ live }) => {
+  const { siteUrl } = live;
+  const origin = new URL(siteUrl).origin;
+  const h = hook(live);
+  const home = `${origin}/`, one = `${origin}/users/1.html`, two = `${origin}/users/2.html`;
+  const a = await liveThread(live, home, "#save", "Save", "Home button note");
+  const b = await liveThread(live, one, "main > h1", "Settings", "User one heading note");
+  const c = await liveThread(live, two, "main > h1", "Settings", "User two heading note");
+  const site = async () => (await api(live, `/api/live/site?origin=${encodeURIComponent(origin)}`)) as { rules: { pattern: string }[]; pages: { page: { path: string; merged: boolean }; threads: { id: string }[] }[] };
+  const pageOf = async (tid: string) => (await site()).pages.find(p => p.threads.some(t => t.id === tid))?.page.path ?? null;
+
+  const page = await live.ctx.newPage();
+  await page.goto(home);
+  const tabId = await tabIdOf(live, home);
+  await h.comment(tabId, home);
+  const panel = await SidePanel.open(live, page, tabId);
+  // This page's thread, then both other pages under their paths.
+  await expect.poll(() => panel.text()).toContain("Elsewhere on this site");
+  const text = await panel.text();
+  expect(text.indexOf("Home button note")).toBeLessThan(text.indexOf("Elsewhere on this site"));
+  for (const s of ["/users/1.html", "/users/2.html", "User one heading note", "User two heading note"]) expect(text).toContain(s);
+
+  // The other pages' threads whose anchors are on this screen are pinned here too.
+  await expect.poll(async () => (await h.state(tabId))?.resolved[b]?.found ?? null).toBe(true);
+  await expect.poll(() => panel.text()).toContain("Pinned here");
+
+  // Opening one from the panel takes this tab to its page, where it is highlighted once found.
+  await panel.click(/User one heading note/);
+  await page.waitForURL(one);
+  await expect.poll(async () => { const s = await h.state(tabId); return s?.selected === b && s.resolved[b]?.found; }).toBe(true);
+  expect((await h.state(tabId))?.on).toBe(origin);
+
+  // Move the home page's thread here: its card leaves "/" for this page.
+  const clickIn = (cardText: string, label: string) => panel.eval<boolean>(`(() => { const card = [...document.querySelectorAll("article.far")].find(a => a.textContent.includes(${JSON.stringify(cardText)})); const b = card && [...card.querySelectorAll("button")].find(b => b.textContent.trim() === ${JSON.stringify(label)}); b?.click(); return !!b; })()`);
+  await expect.poll(() => clickIn("Home button note", "Move…")).toBe(true);
+  await expect.poll(() => panel.eval<string>(`document.querySelector("[aria-label='Move to page']")?.value ?? ""`)).toBe(one);
+  await panel.click(/^ ?Move$/);
+  await expect.poll(() => pageOf(a)).toBe("/users/1.html");
+  await expect.poll(() => panel.eval<number>(`[...document.querySelectorAll("article.far")].filter(a => a.textContent.includes("Home button note")).length`)).toBe(0);
+  expect(await panel.text()).toContain("Home button note");
+
+  // Merge the user pages: the preview names both, the rule applies, and both pages' threads are one page's.
+  await panel.eval(`document.querySelector("details.merge").open = true`);
+  await panel.eval(`(() => { const i = document.querySelector("input[aria-label='Pattern']"); i.value = "/users/:id"; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
+  await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".paths li")].map(l => l.textContent)`)).toEqual(["/users/1.html", "/users/2.html"]);
+  await panel.click(/^ ?Merge pages$/);
+  await expect.poll(async () => (await site()).rules.map(r => r.pattern)).toEqual(["/users/:id"]);
+  await expect.poll(async () => [await pageOf(a), await pageOf(b), await pageOf(c)]).toEqual(["/users/:id", "/users/:id", "/users/:id"]);
+  await expect.poll(() => panel.text()).toContain("Merged: 3 threads moved to /users/:id.");
+  // The tab's URL now names the merged page: every user page's thread is this page's.
+  await expect.poll(async () => (await h.state(tabId))?.threads.length).toBe(3);
+
+  // Un-merge: the rule goes, and each thread goes back to the page of the path it was made at.
+  await panel.click(/Un-merge \/users\/:id/);
+  await expect.poll(async () => (await site()).rules).toEqual([]);
+  await expect.poll(async () => [await pageOf(a), await pageOf(b), await pageOf(c)]).toEqual(["/users/1.html", "/users/1.html", "/users/2.html"]);
+  await expect.poll(() => panel.text()).toContain("Un-merged /users/:id");
+  await expect.poll(async () => (await h.state(tabId))?.threads.length).toBe(2);
+  await expect.poll(() => panel.eval<string[]>(`[...document.querySelectorAll(".elsewhere summary .path")].map(p => p.textContent)`)).toEqual(["/users/2.html"]);
 });
 
 test.describe("holding only the dev server's origin, as the release build does once a person allows it", () => {

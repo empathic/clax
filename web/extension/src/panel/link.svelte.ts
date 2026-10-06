@@ -7,7 +7,13 @@
 // stopped it), the link connects again and watches the tab again. An
 // action's failure stays shown through the worker's later pushes until the
 // person acts again or watches another tab.
-import { type PanelState, type PanelToWorker, isToPanel } from "../messages";
+import { type PanelState, type PanelToWorker, type SiteView, isToPanel } from "../messages";
+
+/** A request the worker answers with `step` (its `req` is the link's to give). */
+export type Ask = { t: "rule"; pattern: string } | { t: "unrule"; ruleId: string };
+type Step = { moved: number; remaining: number };
+type Failure = Error & { code: string };
+const failure = (code: string, message: string): Failure => Object.assign(new Error(message), { code });
 
 type Port = Pick<chrome.runtime.Port, "postMessage" | "onMessage" | "onDisconnect" | "disconnect">;
 export type LinkEnv = {
@@ -27,6 +33,10 @@ export class PanelLink {
   state = $state<PanelState | null>(null);
   /** Whether the worker's event stream is up. */
   up = $state(true);
+  /** Every thread of the tab's site, as the worker last told it. */
+  site = $state<SiteView | null>(null);
+  private reqs = 0;
+  private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
   private port: Port;
   private tabId: number | null = null;
   /** The last action's failure, shown until the next action. */
@@ -63,14 +73,24 @@ export class PanelLink {
     this.fresh = true;
     port.onMessage.addListener((m: unknown) => {
       if (!isToPanel(m)) return;
+      const ask = "req" in m && m.req !== undefined ? this.asked.get(m.req) : undefined;
+      if (ask) {
+        this.asked.delete((m as { req: number }).req);
+        if (m.t === "step") ask.ok({ moved: m.moved, remaining: m.remaining });
+        else if (m.t === "failed") ask.fail(failure(m.code, m.message));
+        return;
+      }
       if (m.t === "tab") this.state = this.failure && !m.state.error ? { ...m.state, error: this.failure } : m.state;
-      else if (m.t === "failed" && this.state) {
+      else if (m.t === "site") this.site = m.site;
+      else if (m.t === "failed" && m.req === undefined && this.state) {
         this.failure = { code: m.code, message: m.message };
         this.state = { ...this.state, error: this.failure };
       }
       else if (m.t === "stream-status") this.up = m.up;
     });
     port.onDisconnect.addListener(() => {
+      for (const a of this.asked.values()) a.fail(failure("worker_restarted", "Clax restarted. Try again."));
+      this.asked.clear();
       if (this.closed) return;
       setTimeout(() => {
         if (this.closed) return;
@@ -99,6 +119,15 @@ export class PanelLink {
     if (this.closed) return;
     if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
+  }
+
+  /** Sends `m` with a request number of its own; answered by its `step`, or rejected with its failure. */
+  request(m: Ask): Promise<Step> {
+    const req = ++this.reqs;
+    return new Promise((ok, fail) => {
+      this.asked.set(req, { ok, fail });
+      this.post({ ...m, req });
+    });
   }
 
   /** Stops the link (tests). */

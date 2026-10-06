@@ -50,6 +50,42 @@ describe("PanelLink", () => {
     expect(link.state?.tabId).toBe(5);
   });
 
+  it("keeps the tab's site as the worker last told it", () => {
+    const f = fakes();
+    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    const site = { origin: "http://localhost:5173", rules: [], pages: [] };
+    f.ports[0].onMessage.fire({ t: "site", site });
+    expect(link.site).toEqual(site);
+    f.ports[0].onMessage.fire({ t: "site", site: "x" });
+    expect(link.site).toEqual(site);
+    f.ports[0].onMessage.fire({ t: "site", site: null });
+    expect(link.site).toBeNull();
+  });
+
+  it("answers a request with its step, or its failure, without showing that as the tab's error", async () => {
+    const f = fakes();
+    link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });
+    await settle();
+    const p = f.ports[0];
+    p.onMessage.fire({ t: "tab", state: { tabId: 5, error: null } });
+    const one = link.request({ t: "rule", pattern: "/users/:id" });
+    const sent = p.sent.at(-1) as { req: number };
+    expect(sent).toEqual({ t: "rule", pattern: "/users/:id", req: expect.any(Number) });
+    p.onMessage.fire({ t: "step", req: sent.req + 1, moved: 0, remaining: 0 });
+    p.onMessage.fire({ t: "step", req: sent.req, moved: 200, remaining: 4 });
+    expect(await one).toEqual({ moved: 200, remaining: 4 });
+    const two = link.request({ t: "unrule", ruleId: "01J9AAAAAAAAAAAAAAAAAAAAAA" });
+    const req = (p.sent.at(-1) as { req: number }).req;
+    expect(req).not.toBe(sent.req);
+    p.onMessage.fire({ t: "failed", code: "invalid_pattern", message: "Bad", req });
+    await expect(two).rejects.toMatchObject({ code: "invalid_pattern", message: "Bad" });
+    expect(link.state?.error).toBeNull();
+    // The worker went away: what was asked of it will not be answered.
+    const three = link.request({ t: "rule", pattern: "/a/:b" });
+    p.onDisconnect.fire();
+    await expect(three).rejects.toMatchObject({ code: "worker_restarted" });
+  });
+
   it("keeps an action's failure shown through later pushes until the next action", async () => {
     const f = fakes();
     link = new PanelLink(2, { runtime: f.runtime as never, tabs: f.tabs as never, search: "", doc: { visibilityState: "visible", addEventListener() {}, removeEventListener() {} } as never });

@@ -3,21 +3,35 @@
   // its threads in the shell's own sidebar, who is on the page beside its
   // agents (the shell's roster), the Comment switch, the owner's name (asked
   // for only while the owner has none; spec L6, §3.1), whether the worker's
-  // stream is up, and the way to turn Clax off in the tab. Every action goes to the
-  // worker, which alone talks to the daemon. Everything shown from the page
-  // or the daemon (titles, URLs, comments) is text, never markup.
+  // stream is up, and the way to turn Clax off in the tab. Below the page's
+  // threads, the threads of the site's other pages, a status filter and a
+  // search over both (remembered per site), moving a thread to another page,
+  // and merging pages (spec §7.1, owner decision 2026-10-06). Every action
+  // goes to the worker, which alone talks to the daemon. Everything shown
+  // from the page or the daemon (titles, URLs, comments) is text, never markup.
   import Roster from "../../../shell/src/ui/Roster.svelte";
   import Sidebar from "../../../shell/src/ui/Sidebar.svelte";
   import type { Thread } from "../../../shell/src/threads";
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
-  import { type PanelState, type PanelToWorker, RETRYABLE } from "../messages";
+  import { sidebarSections } from "../../../shell/src/view/sidebar-model";
+  import { type PanelState, type PanelToWorker, RETRYABLE, type SiteView } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
+  import Elsewhere from "./Elsewhere.svelte";
+  import Merge from "./Merge.svelte";
+  import MoveTo from "./MoveTo.svelte";
+  import { DEFAULT_PREFS, type Prefs, loadPrefs, savePrefs } from "./prefs";
+  import { FILTERS, type Filter, groups, matches, pageLabel } from "./site-model";
 
-  type Link = { state: PanelState | null; up?: boolean; post(m: PanelToWorker): void };
-  let { link, now }: { link: Link; now?: Date } = $props();
+  type Step = { moved: number; remaining: number };
+  type Ask = { t: "rule"; pattern: string } | { t: "unrule"; ruleId: string };
+  type Link = { state: PanelState | null; up?: boolean; site?: SiteView | null; post(m: PanelToWorker): void; request?(m: Ask): Promise<Step> };
+  type Area = Parameters<typeof loadPrefs>[0];
+  const local = (): Area => { try { return chrome.storage.local; } catch { return undefined; } };
+  let { link, now, store = local() }: { link: Link; now?: Date; store?: Area } = $props();
   const s = $derived(link.state);
+  const site = $derived(link.site ?? null);
   let name = $state("");
   /** The agent the person picked in a Send button's menu, while it stays on the page. */
   let chosen = $state<string | null>(null);
@@ -26,6 +40,46 @@
   const sendTo = $derived(agents.some(a => a.handle === chosen) ? chosen : (live?.handle ?? null));
   const sendHarness = $derived(agents.find(a => a.handle === sendTo)?.harness ?? null);
   const threads = $derived(s ? asPages(s.threads) : []);
+  /** The tab's site, whose filter and collapsed groups are remembered. */
+  const origin = $derived(site?.origin ?? s?.page?.origin ?? (s?.url ? new URL(s.url).origin : null));
+  let prefs = $state<Prefs>({ ...DEFAULT_PREFS });
+  let prefsFor: string | null = null;
+  /** How often the person changed the prefs, so a late read of the kept ones does not undo a change. */
+  let changes = 0;
+  $effect(() => {
+    const o = origin;
+    if (!o || o === prefsFor) return;
+    prefsFor = o;
+    prefs = { ...DEFAULT_PREFS };
+    const at = ++changes;
+    // What the person changed meanwhile wins over what was kept.
+    void loadPrefs(store, o).then(p => { if (prefsFor === o && changes === at) prefs = p; });
+  });
+  const setPrefs = (p: Prefs) => { changes++; prefs = p; if (origin) savePrefs(store, origin, p); };
+  const setFilter = (filter: Filter) => setPrefs({ ...prefs, filter });
+  const toggleGroup = (label: string, open: boolean) =>
+    setPrefs({ ...prefs, collapsed: open ? prefs.collapsed.filter(c => c !== label) : [...prefs.collapsed.filter(c => c !== label), label] });
+  let search = $state("");
+  const here = $derived(s?.page?.artifact_id ?? null);
+  /** The page's threads that pass the filter and the search, numbered as the pins are over all of them. */
+  const shown = $derived(threads.filter(t => matches(t, prefs.filter, search, t.page_path ?? s?.page?.path)));
+  const numbers = $derived(sidebarSections(threads, s?.resolved ?? {}, pageOfRoute(s?.route ?? null)).numbers);
+  const far = $derived(groups(site, here, prefs.filter, search));
+  const anyFar = $derived((site?.pages ?? []).some(p => p.page.artifact_id !== here && p.threads.length));
+  const filtering = $derived(prefs.filter !== "all" || !!search.trim());
+  /** Where a thread can be moved: the tab's page (unless it is there), and the site's other pages. */
+  function targets(t: Thread): { url: string; label: string }[] {
+    const out: { url: string; label: string }[] = [];
+    if (s?.url && t.artifact_id !== here) out.push({ url: s.url, label: `This page (${new URL(s.url).pathname})` });
+    for (const p of site?.pages ?? []) if (p.page.artifact_id !== t.artifact_id && p.page.artifact_id !== here) out.push({ url: p.page.page_url, label: pageLabel(p.page) });
+    return out;
+  }
+  const move = (t: Thread, url: string) => link.post({ t: "move", threadId: t.id, pageUrl: url });
+  /** The page's thread selected (on its pin or its card), which can be moved from here. */
+  const picked = $derived(s?.threads.find(t => t.id === s.selected) ?? null);
+  let movingPicked = $state(false);
+  $effect(() => { if (!picked) movingPicked = false; });
+  const ask = (m: Ask): Promise<Step> => link.request?.(m) ?? Promise.reject(new Error("Clax cannot do that here."));
   const people = $derived(roster(s?.participants?.people ?? [], s?.presence ?? []));
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
   /** The batch send's bound (spec §8). */
@@ -106,10 +160,35 @@
     {/if}
     {#if !s.enabled}
       <p class="hint">Click the Clax button or press ⌥⇧C on a page to comment on it.</p>
+    {:else}
+      {#if s.page || anyFar}
+        <div class="tools">
+          <div class="seg" role="group" aria-label="Show threads">
+            {#each FILTERS as f (f.value)}
+              <button type="button" aria-pressed={prefs.filter === f.value} onclick={() => setFilter(f.value)}>{f.label}</button>
+            {/each}
+          </div>
+          <input type="search" aria-label="Search comments" placeholder="Search text, people or paths" value={search} oninput={e => (search = e.currentTarget.value)} />
+        </div>
+      {/if}
+      {#if anyFar}<h2 class="sect">This page</h2>{/if}
+    {/if}
+    {#if !s.enabled}
+      <!-- told above -->
     {:else if s.page}
+      {#if picked}
+        <div class="picked">
+          {#if movingPicked}
+            <MoveTo targets={targets(picked)} onMove={url => { movingPicked = false; move(picked, url); }} onCancel={() => (movingPicked = false)} />
+          {:else}
+            <button type="button" class="ghost" onclick={() => (movingPicked = true)}>Move the selected thread to another page…</button>
+          {/if}
+        </div>
+      {/if}
+      {#if filtering && !shown.length}<p class="hint">Nothing on this page matches.</p>{:else}
       <div class="threads">
         <Sidebar
-          {threads} resolved={s.resolved} selected={s.selected} file={pageOfRoute(s.route)} {now}
+          threads={shown} {numbers} resolved={s.resolved} selected={s.selected} file={pageOfRoute(s.route)} {now}
           versions={s.versions} shown={s.page.current_version} agent={agentName(sendHarness)} me={s.viewer ? { ...s.viewer, created_at: "" } : null}
           working={s.working} {agents} {sendTo} commenting={s.commentMode}
           onSelect={select}
@@ -120,8 +199,16 @@
           onReply={(t, body) => link.post({ t: "reply", threadId: t.id, body })}
           onSeen={t => link.post({ t: "looked", threadIds: [t.id] })} />
       </div>
+      {/if}
     {:else}
       <p class="hint">No comments on this page yet. Press Comment, then click what you want to comment on.</p>
+    {/if}
+    {#if s.enabled && anyFar}
+      <Elsewhere groups={far} resolved={s.resolved} selected={s.selected} collapsed={prefs.collapsed} {now} {targets}
+        onToggle={toggleGroup} onOpen={t => link.post({ t: "open-thread", threadId: t.id })} onMove={move} />
+    {/if}
+    {#if s.enabled && site}
+      <Merge {site} request={ask} />
     {/if}
     {#if s.enabled}
       <footer class="foot">
@@ -155,6 +242,16 @@
   /* The shell's sidebar box is a fixed-width column beside the stage, and
      covers the stage on a narrow screen; in the panel it is the page's flow. */
   .threads :global(.sidebar) { position: static; width: auto; overflow: visible; border-left: 0; z-index: auto; padding: 12px var(--gutter) 18px; }
+  .tools { display: grid; gap: 8px; padding: 12px var(--gutter) 0; }
+  .seg { display: flex; border: 1px solid var(--border-strong); border-radius: var(--radius-sm); overflow: hidden; }
+  .seg button { flex: 1; min-width: 0; min-height: 28px; padding: 4px 6px; border: 0; border-radius: 0; background: var(--card); color: var(--muted); font-size: 12.5px; }
+  .seg button + button { border-left: 1px solid var(--border); }
+  .seg button[aria-pressed="true"] { background: var(--fg); color: var(--bg); }
+  .seg button[aria-pressed="true"]:not(:disabled):hover { background: var(--primary-hover); }
+  .tools input { width: 100%; min-width: 0; font-size: 13px; }
+  .sect { margin: 14px var(--gutter) 0; font: 600 12px/1.2 var(--font); color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .picked { margin: 10px var(--gutter) 0; }
+  .picked > button { width: 100%; min-height: 28px; font-size: 12.5px; color: var(--muted); border: 1px dashed var(--border-hover); }
   .foot { margin-top: auto; display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px var(--gutter); border-top: 1px solid var(--border); font-size: 13px; }
   .foot a { color: var(--agent-ink); }
   .foot button { margin-left: auto; }

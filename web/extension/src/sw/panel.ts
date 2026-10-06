@@ -6,12 +6,15 @@
 // tab's error, so the panel's Retry pairs again for it.
 import { type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
+import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
+import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName">;
-  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule">;
+  tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "openThread">;
+  sites: Pick<Sites, "load">;
   pairer: Pick<Pairer, "pair">;
   /** Whether the extension holds `<all_urls>` (screenshots on any tab without a click). */
   allUrls(): Promise<boolean>;
@@ -26,22 +29,22 @@ class PanelFailure extends Error {
 }
 /** The panel acted on a page the tab no longer shows, or on another tab. */
 const changed = () => new PanelFailure("page_changed", "The tab shows another page now.");
-const failed = (e: unknown): WorkerToPanel => {
+const failed = (e: unknown): Extract<WorkerToPanel, { t: "failed" }> => {
   const err = e as { code?: unknown; message?: unknown };
   return { t: "failed", code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
 };
 
 export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   try {
-    await act(d, tabId, m);
+    await act(d, tabId, m, reply);
   } catch (e) {
     const f = failed(e);
-    if (f.t === "failed" && tabId !== null && RETRYABLE.has(f.code)) d.tabs.fail(tabId, e);
-    reply(f);
+    if (tabId !== null && RETRYABLE.has(f.code)) d.tabs.fail(tabId, e);
+    reply("req" in m ? { ...f, req: m.req } : f);
   }
 }
 
-async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promise<void> {
+async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   // Neither needs a tab: the name is the owner's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
   if (m.t === "ping" || m.t === "visible" || tabId === null) return;
@@ -65,6 +68,31 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
       if (s?.on) await d.turnOff(tabId);
       return;
     default: break;
+  }
+  // The site's actions (spec §7.1): on the origin Clax is on for in the tab.
+  const on = s?.on;
+  if (on) {
+    switch (m.t) {
+      case "open-thread": {
+        const url = d.tabs.openThread(tabId, m.threadId);
+        if (!url) throw new PanelFailure("not_found", "That thread is not on this site any more.");
+        await d.navigate(tabId, url);
+        return;
+      }
+      case "move":
+        if (originOf(m.pageUrl) !== on) throw new PanelFailure("cross_origin", "That page is on another site.");
+        await d.api.move(m.threadId, m.pageUrl);
+        return;
+      case "rule": case "unrule": {
+        const r = m.t === "rule" ? await d.api.addRule(on, m.pattern) : await d.api.deleteRule(m.ruleId);
+        reply({ t: "step", req: m.req, moved: r.moved.length, remaining: r.remaining });
+        // A rule changes the listing (no event says so), and once done, which page the tab's URL names.
+        await d.sites.load(on);
+        if (!r.remaining && s.url) await d.tabs.route(tabId, s.url, true);
+        return;
+      }
+      default: break;
+    }
   }
   const page = s?.page;
   if (!page) throw new PanelFailure("no_page", "This tab shows no live page.");
