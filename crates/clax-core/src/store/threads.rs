@@ -108,6 +108,34 @@ pub(crate) const SENDS_OF_MANY: &str =
 pub(crate) const NAMES_OF_MANY: &str = "SELECT v.public_id, v.display_name FROM json_each(?1) j
     CROSS JOIN viewers v INDEXED BY viewers_public_id ON v.public_id = j.value";
 
+/// The `live_path` of each thread of `?1` (a JSON array) that has one.
+pub(crate) const LIVE_PATHS_OF_MANY: &str = "SELECT t.id, t.live_path FROM json_each(?1) j
+    CROSS JOIN threads t ON t.id = j.value WHERE t.live_path IS NOT NULL";
+/// The moves of each thread of `?1` (a JSON array), oldest first.
+pub(crate) const MOVES_OF_MANY: &str = "SELECT m.thread_id, m.from_artifact_id, m.from_url,
+    m.to_artifact_id, m.to_url, m.moved_by, m.rule_id, m.created_at
+    FROM json_each(?1) j CROSS JOIN thread_moves m ON m.thread_id = j.value
+    ORDER BY m.thread_id, m.created_at, m.id";
+
+/// A move of a live page's thread to another page (spec
+/// 2026-10-05-chrome-overlay-design §7.1): by the owner, or by a merge rule.
+#[derive(Clone, Debug, PartialEq, serde::Serialize)]
+pub struct ThreadMove {
+    pub from_artifact_id: String,
+    /// The thread's URL before the move (its path and route).
+    pub from_url: String,
+    pub to_artifact_id: String,
+    /// The thread's URL after the move.
+    pub to_url: String,
+    /// `viewer:<public ID>` of the owner who moved it.
+    pub moved_by: String,
+    /// The mover's current display name, when they have one.
+    pub moved_by_name: Option<String>,
+    /// The merge rule that moved it, when one did.
+    pub rule_id: Option<String>,
+    pub at: String,
+}
+
 /// A page of threads of artifact `?1` (resolved ones too when `?2`) after
 /// the thread `?3` (`NULL`: from the start), at most `?4`.
 pub(crate) fn list_threads_sql() -> String {
@@ -128,6 +156,11 @@ pub struct ThreadExtras {
     /// A live page's address waiting for its next snapshot: the addressing
     /// agent's harness and when ([`Store::mark_pending`]).
     pub addressed_pending: Option<(String, String)>,
+    /// The path a live page's thread was made at, when it is not its page's
+    /// path (a merge rule mapped the URL, or a merge re-filed the thread).
+    pub live_path: Option<String>,
+    /// The thread's moves between live pages, oldest first.
+    pub moves: Vec<ThreadMove>,
 }
 
 struct ThreadRow {
@@ -229,6 +262,39 @@ fn load_comments_many(
         out.entry(comment.thread_id.clone())
             .or_default()
             .push(comment);
+    }
+    Ok(out)
+}
+
+/// Every thread of the artifacts of `?1` (a JSON array of IDs), resolved
+/// ones too, oldest first.
+pub(crate) fn threads_of_many_sql() -> String {
+    format!(
+        "{THREAD_SELECT} AND t.artifact_id IN (SELECT value FROM json_each(?1))
+         ORDER BY t.created_at, t.id"
+    )
+}
+
+/// The threads of the artifacts `ids` ([`threads_of_many_sql`]) with their
+/// comments; a thread whose anchor does not parse is skipped.
+pub(crate) fn threads_of_many(c: &Connection, ids: &[String]) -> Result<Vec<Thread>> {
+    let mut stmt = c.prepare_cached(&threads_of_many_sql())?;
+    let rows = stmt
+        .query_map(params![id_array(ids)], row_to_thread_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let tids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
+    let mut comments_of = load_comments_many(c, &tids)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let comments = comments_of.remove(&row.id).unwrap_or_default();
+        let tid = row.id.clone();
+        match row.into_thread(comments) {
+            Ok(t) => out.push(t),
+            Err(CoreError::Corrupt { column, .. }) => {
+                tracing::warn!(thread_id = tid.as_str(), column, "skipping a corrupt thread");
+            }
+            Err(e) => return Err(e),
+        }
     }
     Ok(out)
 }
@@ -617,15 +683,44 @@ impl Store {
             return Ok(Vec::new());
         }
         let ids: Vec<String> = threads.iter().map(|t| t.id.clone()).collect();
-        let resolvers: Vec<String> = threads
+        let mut resolvers: Vec<String> = threads
             .iter()
             .filter_map(|t| t.resolved_by.as_deref()?.strip_prefix("viewer:"))
             .filter(|p| crate::is_public_id(p))
             .map(str::to_string)
             .collect();
         self.with_read(|c| {
-            let mut states = feedback_states_in(c, &ids, codex_push)?;
             let arr = id_array(&ids);
+            let mut live_paths: HashMap<String, String> = HashMap::new();
+            let mut moves: HashMap<String, Vec<ThreadMove>> = HashMap::new();
+            {
+                let mut stmt = c.prepare_cached(LIVE_PATHS_OF_MANY)?;
+                let mut rows = stmt.query(params![arr])?;
+                while let Some(r) = rows.next()? {
+                    live_paths.insert(r.get(0)?, r.get(1)?);
+                }
+                let mut stmt = c.prepare_cached(MOVES_OF_MANY)?;
+                let mut rows = stmt.query(params![arr])?;
+                while let Some(r) = rows.next()? {
+                    let m = ThreadMove {
+                        from_artifact_id: r.get(1)?,
+                        from_url: r.get(2)?,
+                        to_artifact_id: r.get(3)?,
+                        to_url: r.get(4)?,
+                        moved_by: r.get(5)?,
+                        moved_by_name: None,
+                        rule_id: r.get(6)?,
+                        at: r.get(7)?,
+                    };
+                    if let Some(p) = m.moved_by.strip_prefix("viewer:")
+                        && crate::is_public_id(p)
+                    {
+                        resolvers.push(p.to_string());
+                    }
+                    moves.entry(r.get(0)?).or_default().push(m);
+                }
+            }
+            let mut states = feedback_states_in(c, &ids, codex_push)?;
             let mut addressed: HashMap<String, Vec<u32>> = HashMap::new();
             let mut stmt = c.prepare_cached(ADDRESSED_IN_MANY)?;
             let mut rows = stmt.query(params![arr])?;
@@ -673,6 +768,19 @@ impl Store {
                         .and_then(|by| by.strip_prefix("viewer:"))
                         .and_then(|p| names.get(p).cloned().flatten()),
                     addressed_pending: pending.remove(&t.id),
+                    live_path: live_paths.remove(&t.id),
+                    moves: moves
+                        .remove(&t.id)
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|mut m| {
+                            m.moved_by_name = m
+                                .moved_by
+                                .strip_prefix("viewer:")
+                                .and_then(|p| names.get(p).cloned().flatten());
+                            m
+                        })
+                        .collect(),
                 })
                 .collect())
         })
@@ -823,6 +931,7 @@ impl Store {
             tx.execute("DELETE FROM viewer_threads WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM feedback WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM batch_threads WHERE thread_id = ?1", params![thread_id])?;
+            tx.execute("DELETE FROM thread_moves WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM comments WHERE thread_id = ?1", params![thread_id])?;
             tx.execute("DELETE FROM threads WHERE id = ?1", params![thread_id])?;
             Ok((t, targets))

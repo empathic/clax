@@ -70,9 +70,19 @@ fn page_by_key(c: &Connection, key: &PageKey) -> Result<Option<LivePage>> {
 /// The publish of a snapshot: `html` as the only file of version
 /// `expected + 1`, titled `title`, noted `snapshot`.
 fn snapshot_publish(expected: u32, title: &str, html: &[u8]) -> Result<ValidatedPublish> {
+    snapshot_publish_noted(expected, title, html, "snapshot")
+}
+
+/// [`snapshot_publish`], noted `note`.
+pub(super) fn snapshot_publish_noted(
+    expected: u32,
+    title: &str,
+    html: &[u8],
+    note: &str,
+) -> Result<ValidatedPublish> {
     crate::publish::validate(PublishRequest {
         title: Some(title.to_string()),
-        note: Some("snapshot".to_string()),
+        note: Some(note.to_string()),
         if_version: Some(expected),
         files: BTreeMap::from([(
             INDEX.to_string(),
@@ -185,12 +195,14 @@ fn scope_row(tx: &Connection, sid: &str, aid: &str, armed: bool) -> Result<()> {
     Ok(())
 }
 
+/// The live pages of origin `?1` whose artifact is not deleted.
+pub(crate) const PAGES_OF_ORIGIN: &str =
+    "SELECT p.artifact_id, p.origin, p.path FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
+    WHERE p.origin = ?1 AND a.deleted_at IS NULL";
+
 /// The live pages of `origin` whose artifact is not deleted.
-fn pages_of(tx: &Connection, origin: &str) -> Result<Vec<LivePage>> {
-    let mut st = tx.prepare(
-        "SELECT p.artifact_id, p.origin, p.path FROM live_pages p JOIN artifacts a ON a.id = p.artifact_id
-         WHERE p.origin = ?1 AND a.deleted_at IS NULL",
-    )?;
+pub(super) fn pages_of(tx: &Connection, origin: &str) -> Result<Vec<LivePage>> {
+    let mut st = tx.prepare_cached(PAGES_OF_ORIGIN)?;
     let rows = st
         .query_map(params![origin], row_to_page)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -600,8 +612,35 @@ impl Store {
         t: NewThread,
         pick: &str,
     ) -> Result<Option<Thread>> {
+        self.create_live_thread(id, t, Some(pick), None)
+    }
+
+    /// [`Store::create_thread`] on the live page `id`, as
+    /// [`Store::create_picked_thread`] when `pick` is given, recording in
+    /// the same transaction `live_path`: the path of the URL the thread was
+    /// made at, when a merge rule mapped it to this page (spec 2026-10-05
+    /// §7.1). `None` only for a repeated pick.
+    ///
+    /// # Errors
+    /// As [`Store::create_thread`].
+    pub fn create_live_thread(
+        &self,
+        id: &ArtifactId,
+        t: NewThread,
+        pick: Option<&str>,
+        live_path: Option<&str>,
+    ) -> Result<Option<Thread>> {
         let taken = std::cell::Cell::new(false);
         let made = self.create_thread_then(id, t, |tx, tid| {
+            if live_path.is_some() {
+                tx.execute(
+                    "UPDATE threads SET live_path = ?2 WHERE id = ?1",
+                    params![tid, live_path],
+                )?;
+            }
+            let Some(pick) = pick else {
+                return Ok(());
+            };
             tx.execute(
                 "DELETE FROM live_picks WHERE created_at < ?1
                     OR (artifact_id = ?2 AND pick_id = ?3

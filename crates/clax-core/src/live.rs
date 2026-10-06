@@ -125,6 +125,180 @@ pub fn parse_page_url(raw: &str) -> Result<PageUrl> {
     })
 }
 
+/// The longest path pattern of a merge rule, in bytes.
+pub const MAX_PATTERN: usize = 256;
+/// The most segments a path pattern has.
+pub const MAX_PATTERN_SEGMENTS: usize = 16;
+/// The longest `:name` of a path pattern, in characters (without the colon).
+pub const MAX_PARAM_NAME: usize = 32;
+
+/// One segment of a [`PathPattern`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Seg {
+    /// Matches exactly this segment.
+    Literal(String),
+    /// `:name`: matches any one non-empty segment.
+    Param,
+    /// `*`, last only: matches the rest of the path, one or more segments
+    /// whose first is not empty.
+    Rest,
+}
+
+/// A merge rule's path pattern (spec 2026-10-05-chrome-overlay-design §7.1):
+/// `/`-separated segments, each a literal, `:name` (any one non-empty
+/// segment) or, last only, `*` (one or more segments). No regular
+/// expressions, no empty segments, no trailing slash.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PathPattern {
+    text: String,
+    segs: Vec<Seg>,
+}
+
+/// Bytes a literal segment may hold besides ASCII letters and digits: path
+/// characters the URL parser leaves alone, `%` followed by two hex digits,
+/// and `:` past the first byte; never `*`, `/`, `?` or `#`.
+const LITERAL_EXTRA: &[u8] = b"-._~!$&'()+,;=@%:";
+
+fn bad_pattern(msg: impl Into<String>) -> CoreError {
+    CoreError::invalid("invalid_pattern", msg)
+}
+
+/// A checked literal segment, or `None`.
+fn literal(p: &str) -> Option<Seg> {
+    let b = p.as_bytes();
+    let chars_ok = b
+        .iter()
+        .all(|c| c.is_ascii_alphanumeric() || LITERAL_EXTRA.contains(c));
+    let escapes_ok = b.iter().enumerate().all(|(j, c)| {
+        *c != b'%'
+            || (b.get(j + 1).is_some_and(u8::is_ascii_hexdigit)
+                && b.get(j + 2).is_some_and(u8::is_ascii_hexdigit))
+    });
+    (chars_ok && escapes_ok && p != "." && p != "..").then(|| Seg::Literal(p.to_string()))
+}
+
+impl PathPattern {
+    /// Parses and checks a pattern.
+    ///
+    /// # Errors
+    /// `invalid_pattern` for a pattern that does not start with `/`, is
+    /// longer than [`MAX_PATTERN`] bytes or has more than
+    /// [`MAX_PATTERN_SEGMENTS`] segments, has an empty or dot segment, a
+    /// `:name` that is not 1 to [`MAX_PARAM_NAME`] ASCII letters, digits or
+    /// `_`, a `*` that is not the whole last segment, a literal with any
+    /// other character, or no `:name` or `*` at all.
+    pub fn parse(text: &str) -> Result<PathPattern> {
+        if text.len() > MAX_PATTERN {
+            return Err(bad_pattern(format!(
+                "a pattern is at most {MAX_PATTERN} bytes"
+            )));
+        }
+        let Some(rest) = text.strip_prefix('/') else {
+            return Err(bad_pattern("a pattern starts with /"));
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        if parts.len() > MAX_PATTERN_SEGMENTS {
+            return Err(bad_pattern(format!(
+                "a pattern has at most {MAX_PATTERN_SEGMENTS} segments"
+            )));
+        }
+        let mut segs = Vec::with_capacity(parts.len());
+        for (i, p) in parts.iter().enumerate() {
+            let seg = if p.is_empty() {
+                return Err(bad_pattern(
+                    "a pattern has no empty segment and no trailing slash",
+                ));
+            } else if *p == "*" {
+                if i + 1 != parts.len() {
+                    return Err(bad_pattern("* is only the last segment"));
+                }
+                Seg::Rest
+            } else if let Some(name) = p.strip_prefix(':') {
+                let ok = !name.is_empty()
+                    && name.chars().count() <= MAX_PARAM_NAME
+                    && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                if !ok {
+                    return Err(bad_pattern(format!(
+                        ":name is 1 to {MAX_PARAM_NAME} ASCII letters, digits or _"
+                    )));
+                }
+                Seg::Param
+            } else {
+                literal(p).ok_or_else(|| {
+                    bad_pattern(format!("segment '{p}' is not a literal, :name or *"))
+                })?
+            };
+            segs.push(seg);
+        }
+        if !segs.iter().any(|s| matches!(s, Seg::Param | Seg::Rest)) {
+            return Err(bad_pattern("a pattern has a :name or * segment"));
+        }
+        Ok(PathPattern {
+            text: text.to_string(),
+            segs,
+        })
+    }
+
+    /// The pattern as written; also the path of its canonical live page.
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// Whether `path` (a live page's path) matches.
+    pub fn matches(&self, path: &str) -> bool {
+        let Some(rest) = path.strip_prefix('/') else {
+            return false;
+        };
+        let parts: Vec<&str> = rest.split('/').collect();
+        for (i, seg) in self.segs.iter().enumerate() {
+            let part = parts.get(i).copied();
+            match seg {
+                Seg::Rest => return part.is_some_and(|p| !p.is_empty()),
+                Seg::Param if !part.is_some_and(|p| !p.is_empty()) => return false,
+                Seg::Literal(l) if part != Some(l.as_str()) => return false,
+                _ => {}
+            }
+        }
+        parts.len() == self.segs.len()
+    }
+
+    /// How specific the pattern is: its literal segments, then its `:name`
+    /// segments; the greater wins.
+    pub fn specificity(&self) -> (usize, usize) {
+        let literals = self
+            .segs
+            .iter()
+            .filter(|s| matches!(s, Seg::Literal(_)))
+            .count();
+        let params = self.segs.iter().filter(|s| matches!(s, Seg::Param)).count();
+        (literals, params)
+    }
+}
+
+/// The rule that maps `path`, of `rules` given oldest first: of those whose
+/// pattern matches, the most specific ([`PathPattern::specificity`]), then
+/// the oldest. Patterns that do not parse are skipped.
+pub fn winning_rule<'a, T>(
+    rules: &'a [T],
+    pattern: impl Fn(&T) -> &str,
+    path: &str,
+) -> Option<&'a T> {
+    let mut best: Option<(&T, (usize, usize))> = None;
+    for r in rules {
+        let Ok(p) = PathPattern::parse(pattern(r)) else {
+            continue;
+        };
+        if !p.matches(path) {
+            continue;
+        }
+        let s = p.specificity();
+        if best.is_none_or(|(_, b)| s > b) {
+            best = Some((r, s));
+        }
+    }
+    best.map(|(r, _)| r)
+}
+
 fn escape_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -234,6 +408,83 @@ mod tests {
                 .covered_by(&k("http://localhost:5173", "/docs//"))
         );
         assert!(!k("http://localhost:5173", "/x").covered_by(&k("http://localhost:5173", "///")));
+    }
+
+    #[test]
+    fn patterns_are_checked_strictly() {
+        for ok in [
+            "/users/:id",
+            "/users/:id/edit",
+            "/files/*",
+            "/:a/:b",
+            "/a%20b/:x",
+            "/v1.2/:id",
+            "/a:b/:id",
+        ] {
+            assert!(PathPattern::parse(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "users/:id",
+            "/users",
+            "/",
+            "/users/",
+            "/users//:id",
+            "/*/x",
+            "/a*/:id",
+            "/:",
+            "/:id-x",
+            "/users/(\\d+)",
+            "/users/[0-9]+",
+            "/a?b/:id",
+            "/a#b/:id",
+            "/../:id",
+            "/./:id",
+            "/a%2/:id",
+            "/a b/:id",
+        ] {
+            assert!(
+                matches!(PathPattern::parse(bad), Err(CoreError::Invalid { code, .. }) if code == "invalid_pattern"),
+                "{bad}"
+            );
+        }
+        let long = format!("/{}/:id", "a".repeat(MAX_PATTERN));
+        assert!(PathPattern::parse(&long).is_err());
+        let deep = format!("{}/:id", "/a".repeat(MAX_PATTERN_SEGMENTS));
+        assert!(PathPattern::parse(&deep).is_err());
+        let name = format!("/:{}", "n".repeat(MAX_PARAM_NAME + 1));
+        assert!(PathPattern::parse(&name).is_err());
+    }
+
+    #[test]
+    fn patterns_match_whole_segments() {
+        let p = PathPattern::parse("/users/:id").unwrap();
+        assert!(p.matches("/users/123"));
+        assert!(p.matches("/users/:id"));
+        assert!(!p.matches("/users/"));
+        assert!(!p.matches("/users/123/"));
+        assert!(!p.matches("/users/123/edit"));
+        assert!(!p.matches("/users"));
+        assert!(!p.matches("/userss/1"));
+        let r = PathPattern::parse("/files/*").unwrap();
+        assert!(r.matches("/files/a"));
+        assert!(r.matches("/files/a/b/"));
+        assert!(!r.matches("/files/"));
+        assert!(!r.matches("/files"));
+        assert_eq!(p.specificity(), (1, 1));
+        assert_eq!(r.specificity(), (1, 0));
+    }
+
+    #[test]
+    fn the_most_specific_rule_wins_then_the_oldest() {
+        let rules = ["/users/*", "/:a/:b", "/users/:id", "/:x/edit"];
+        let win = |path| winning_rule(&rules, |r| r, path).copied();
+        assert_eq!(win("/users/1"), Some("/users/:id"));
+        assert_eq!(win("/users/1/x"), Some("/users/*"));
+        assert_eq!(win("/teams/1"), Some("/:a/:b"));
+        assert_eq!(win("/teams/edit"), Some("/:x/edit"), "more literals");
+        assert_eq!(win("/"), None);
+        let tie = ["/:a/x", "/x/:b"];
+        assert_eq!(winning_rule(&tie, |r| r, "/x/x").copied(), Some("/:a/x"));
     }
 
     #[test]
