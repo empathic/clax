@@ -49,6 +49,13 @@ pub enum CoreError {
     /// A store job panicked, or the thread that would run it stopped.
     #[error("storage task failed")]
     TaskFailed,
+    /// The database's schema (`found`) is newer than this binary knows
+    /// (`known`): a newer clax migrated it. Opening it would serve it under
+    /// rules that predate it, so the store refuses.
+    #[error(
+        "this database's schema is version {found}, newer than this clax knows (version {known}); upgrade clax"
+    )]
+    SchemaNewer { found: u32, known: u32 },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

@@ -57,7 +57,7 @@ pub mod threads;
 pub mod viewers;
 pub mod watches;
 
-use crate::{Home, Result};
+use crate::{CoreError, Home, Result};
 use exec::{Readers, Workers, Writer};
 use rusqlite::Connection;
 use std::sync::OnceLock;
@@ -174,19 +174,38 @@ impl Store {
 }
 
 /// Applies every migration past the database's `user_version`, each in its
-/// own transaction.
+/// own `IMMEDIATE` transaction that re-reads the version under the write
+/// lock, so two processes opening the database at once apply each migration
+/// once. Refuses a database whose schema is newer than this binary knows
+/// ([`CoreError::SchemaNewer`]) without changing it.
 fn migrate(conn: &mut Connection) -> Result<()> {
-    let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-    for (i, sql) in migrations::MIGRATIONS.iter().enumerate() {
-        let target = i as u32 + 1;
-        if target > version {
-            let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-            tx.execute_batch(sql)?;
-            tx.pragma_update(None, "user_version", target)?;
-            tx.commit()?;
+    let known = migrations::MIGRATIONS.len() as u32;
+    let check = |version: u32| {
+        if version > known {
+            Err(CoreError::SchemaNewer {
+                found: version,
+                known,
+            })
+        } else {
+            Ok(())
         }
+    };
+    let version: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+    check(version)?;
+    if version == known {
+        return Ok(());
     }
-    Ok(())
+    loop {
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let version: u32 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        check(version)?;
+        if version == known {
+            return Ok(());
+        }
+        tx.execute_batch(migrations::MIGRATIONS[version as usize])?;
+        tx.pragma_update(None, "user_version", version + 1)?;
+        tx.commit()?;
+    }
 }
 
 #[cfg(test)]

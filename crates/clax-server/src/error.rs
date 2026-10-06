@@ -119,6 +119,14 @@ impl From<CoreError> for ApiError {
                     e.to_string(),
                 )
             }
+            e @ CoreError::SchemaNewer { .. } => {
+                tracing::error!(error = %e, "schema newer than this binary");
+                ApiError::new(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "schema_newer",
+                    e.to_string(),
+                )
+            }
             CoreError::TaskFailed => ApiError::new(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "internal",

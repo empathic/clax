@@ -548,4 +548,87 @@ mod tests {
             assert_eq!(n, 0, "{table}");
         }
     }
+
+    #[test]
+    fn a_database_newer_than_this_binary_is_refused_and_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = Home::at(dir.path().join("ax"));
+        drop(Store::open(&home).unwrap());
+        let newer = MIGRATIONS.len() as u32 + 1;
+        {
+            let c = Connection::open(home.db_path()).unwrap();
+            c.pragma_update(None, "user_version", newer).unwrap();
+        }
+        let err = match Store::open(&home) {
+            Ok(_) => panic!("a newer schema must be refused"),
+            Err(e) => e,
+        };
+        assert!(
+            matches!(err, crate::CoreError::SchemaNewer { found, known }
+                if found == newer && known == MIGRATIONS.len() as u32),
+            "{err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains(&newer.to_string()), "{msg}");
+        assert!(msg.contains(&MIGRATIONS.len().to_string()), "{msg}");
+        assert!(msg.contains("upgrade clax"), "{msg}");
+        let c = Connection::open(home.db_path()).unwrap();
+        let v: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, newer, "the refused database is not touched");
+    }
+
+    /// Opens `home` from `n` threads at once; every open must succeed and
+    /// leave the database at the latest schema.
+    fn open_concurrently(home: &Home, n: usize) {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(n));
+        let opens: Vec<_> = (0..n)
+            .map(|_| {
+                let (home, barrier) = (home.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    Store::open(&home).map(drop)
+                })
+            })
+            .collect();
+        for open in opens {
+            open.join()
+                .unwrap()
+                .expect("every concurrent open succeeds");
+        }
+        let c = Connection::open(home.db_path()).unwrap();
+        let v: u32 = c
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, MIGRATIONS.len() as u32);
+    }
+
+    #[test]
+    fn concurrent_opens_of_an_old_database_migrate_it_once() {
+        for _ in 0..4 {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            home.ensure_dirs().unwrap();
+            {
+                let c = Connection::open(home.db_path()).unwrap();
+                c.execute_batch("PRAGMA journal_mode=WAL;").unwrap();
+                for sql in &MIGRATIONS[..15] {
+                    c.execute_batch(sql).unwrap();
+                }
+                c.pragma_update(None, "user_version", 15).unwrap();
+            }
+            open_concurrently(&home, 6);
+        }
+    }
+
+    #[test]
+    fn concurrent_opens_of_a_fresh_database_migrate_it_once() {
+        for _ in 0..4 {
+            let dir = tempfile::tempdir().unwrap();
+            let home = Home::at(dir.path().join("ax"));
+            home.ensure_dirs().unwrap();
+            open_concurrently(&home, 6);
+        }
+    }
 }

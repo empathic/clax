@@ -54,10 +54,26 @@ fn open(path: &Path) -> Result<Connection> {
 }
 
 /// The write connection: WAL mode and the autocheckpoint threshold.
+///
+/// Switching a new database to WAL needs an exclusive lock that SQLite does
+/// not wait for under the busy timeout, so while another process holds a
+/// lock (it is switching too, or migrating) the switch is retried briefly,
+/// up to [`BUSY_TIMEOUT`].
 pub(crate) fn open_writer(path: &Path) -> Result<Connection> {
     let c = open(path)?;
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match c.execute_batch("PRAGMA journal_mode=WAL;") {
+            Err(rusqlite::Error::SqliteFailure(f, _))
+                if f.code == rusqlite::ErrorCode::DatabaseBusy && Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(5));
+            }
+            r => break r?,
+        }
+    }
     c.execute_batch(&format!(
-        "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint={AUTOCHECKPOINT_PAGES};"
+        "PRAGMA wal_autocheckpoint={AUTOCHECKPOINT_PAGES};"
     ))?;
     Ok(c)
 }
