@@ -66,7 +66,7 @@
   <!-- Styled with the theme's classes and inline styles: a lazy part of the
        shell carries no stylesheet (the shell's CSS comes from its HTML). -->
   <section class="grp" aria-label="Sites">
-    <h2><span class="sw" aria-hidden="true"></span>Sites<small>live pages by address</small></h2>
+    <h2><span class="sw" aria-hidden="true" style="border-radius:50%;width:10px;height:10px;background:var(--border-strong)"></span>Sites<small>live pages by address</small></h2>
     <ul style="list-style:none;margin:10px 0 0;padding:0;display:grid;gap:6px">
       {#each sites as s (s.site.key)}
         {@const others = s.site.origins.filter(o => o.origin !== s.site.name)}
@@ -78,7 +78,7 @@
           </div>
           {#if token}
             <details style="position:relative">
-              <summary aria-label={`Site menu for ${host(s.site.name)}`} style="cursor:pointer;padding:0 8px" class="muted">⋯</summary>
+              <summary aria-label={`Site menu for ${host(s.site.name)}`} style="cursor:pointer;list-style:none;padding:0 8px" class="muted">⋯</summary>
               <div style="position:absolute;right:0;z-index:2;display:grid;gap:6px;width:min(260px,calc(100vw - 32px));padding:10px;border:1px solid var(--border-strong);border-radius:var(--radius-sm);background:var(--card)">
                 <label class="muted small" style="display:grid;gap:4px"><span>Same app as…</span>
                   <select aria-label={`Same app as, for ${host(s.site.name)}`} onchange={e => { picks[s.site.key] = e.currentTarget.value; }}>
