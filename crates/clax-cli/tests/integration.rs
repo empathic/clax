@@ -17,6 +17,7 @@ mod native_host;
 mod standdown;
 mod switch;
 mod verify_harnesses;
+mod version;
 
 /// Cargo's test autodiscovery is off for this crate (`autotests = false` in
 /// its manifest), so a file in `tests/`, or a directory there with a

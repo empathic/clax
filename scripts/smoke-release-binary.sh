@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
-# Checks a built binary: it reports "clax <version>", its bundled SQLite was
-# built with the flags in .cargo/config.toml, and it serves the embedded web
-# UI. Uses a scratch home and a port the kernel picks.
+# Checks a built binary: it reports "clax <version>" and names its build
+# commit, its bundled SQLite was built with the flags in .cargo/config.toml,
+# and it serves the embedded web UI. Uses a scratch home and a port the kernel picks.
 # Usage: smoke-release-binary.sh <binary> <version>
 set -euo pipefail
 [ $# = 2 ] || { echo "usage: smoke-release-binary.sh <binary> <version>" >&2; exit 2; }
 bin="$1" version="$2"
 got="$("$bin" --version | sed -n 1p)"
 [ "$got" = "clax $version" ] || { echo "$bin reports '$got', not 'clax $version'" >&2; exit 1; }
+# A release names the commit it was built from, never `unknown`.
+commit="$("$bin" version --verbose | sed -n 2p)"
+printf '%s\n' "$commit" | grep -xE 'commit [0-9a-f]{7,64}' >/dev/null || { echo "$bin names no build commit ('$commit')" >&2; exit 1; }
 # SQLite embeds its compile options as strings (`PRAGMA compile_options`).
 # A shared page cache (ENABLE_MEMORY_MANAGEMENT) would serialise the store's
 # readers; MEMSTATUS must be off.

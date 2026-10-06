@@ -257,7 +257,29 @@ fn doctor_runs_all_checks() {
         .iter()
         .map(|c| c["name"].as_str().unwrap())
         .collect();
+    let version: serde_json::Value =
+        serde_json::from_slice(&e.cmd().args(["version", "--json"]).output().unwrap().stdout)
+            .unwrap();
+    let commit = version["commit"].as_str().unwrap();
+    let build = v["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["name"] == "build")
+        .expect("a build check");
+    assert!(
+        build["detail"].as_str().unwrap().ends_with(commit),
+        "{build}"
+    );
+    // The daemon names the commit it was built from.
+    let status: serde_json::Value =
+        serde_json::from_slice(&e.cmd().args(["status", "--json"]).output().unwrap().stdout)
+            .unwrap();
+    assert_eq!(status["commit"], commit, "{status}");
+    let text = String::from_utf8(e.cmd().arg("status").output().unwrap().stdout).unwrap();
+    assert!(text.contains(&format!("commit {}", &commit[..7])), "{text}");
     for n in [
+        "build",
         "home",
         "config",
         "daemon",

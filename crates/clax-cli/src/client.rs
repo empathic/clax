@@ -871,6 +871,7 @@ pub(crate) mod tests {
             bind: "127.0.0.1".into(),
             version: version.into(),
             exe: None,
+            commit: None,
         }
     }
 

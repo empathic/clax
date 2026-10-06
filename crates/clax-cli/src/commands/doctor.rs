@@ -529,6 +529,15 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
         && std::fs::write(home.root().join(".doctor"), b"")
             .map(|_| std::fs::remove_file(home.root().join(".doctor")).is_ok())
             .unwrap_or(false);
+    checks.push(check(
+        "build",
+        true,
+        format!(
+            "clax {} built from commit {}",
+            env!("CARGO_PKG_VERSION"),
+            clax_core::build_commit()
+        ),
+    ));
     checks.push(check("home", writable, home.root().display().to_string()));
     checks.push(config_check(home, std::env::var_os(crate::PORT_ENV)));
     // Held until the process exits, so an auto-start cannot race the repairs.

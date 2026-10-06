@@ -25,6 +25,30 @@ pub mod store;
 pub mod working;
 pub mod wrap;
 
+/// The commit the running binary was built from, as the binary sets it at
+/// startup ([`set_build_commit`]); `unknown` until then (a library build,
+/// a test) or when the build had none.
+pub fn build_commit() -> &'static str {
+    BUILD_COMMIT.get().copied().unwrap_or("unknown")
+}
+
+/// Records the commit the running binary was built from: full lowercase
+/// hex, or `unknown`. Embedded by the `clax` binary's build rather than this
+/// crate's, so a new commit relinks one crate instead of the workspace. The
+/// first call wins.
+pub fn set_build_commit(commit: &'static str) {
+    let _ = BUILD_COMMIT.set(commit);
+}
+
+/// [`build_commit`] shortened to its first seven characters (`unknown` is
+/// seven letters).
+pub fn build_commit_short() -> &'static str {
+    let c = build_commit();
+    c.get(..7).unwrap_or(c)
+}
+
+static BUILD_COMMIT: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
 pub use anchor::{Anchor, AnchorKind};
 pub use error::{CoreError, Result};
 pub use events::{EVENT_BUS_CAPACITY, Event, EventBus, Resume, Stamped};

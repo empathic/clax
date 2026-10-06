@@ -133,7 +133,7 @@ decisions.
 | L11 | **Harness IDs are recorded as the harness reports them,** together with the transcript path where one is known. Clax does not resolve a Claude session chain. | Claude Code rotates a session across files, and Toolpath keys the chain by its oldest segment. The ID Clax sees may belong to a later segment. The reported ID plus the transcript path is enough for a reader to find the chain (O6). |
 | L12 | **Migration 21 backfills** existing history into `audit_events`, marked `backfilled: true`. That covers versions (hashing their stored files), threads, comments, resolves, sends, addressed links, moves and sessions. Backfilled steps have no git context, no tool calls and no working records. | Export covers the whole install from day one, and the journal's first segment is complete. It is a one-time pass at daemon start (§13). |
 | L13 | **Versions gain a stored content hash.** `versions.content_sha256` is the SHA-256 of a canonical manifest of each file's path, SHA-256 and size (§5.3), computed at write time. | Provenance must say which bytes were published. The file hashes come from bytes already in memory, at under 1 ms per MiB. |
-| L14 | **The build commit is embedded at build time** as `CLAX_BUILD_COMMIT` by `clax-core/build.rs` (§5.5). It is `unknown` when there is no git. | O3 requires it, and nothing embeds it today. |
+| L14 | **The build commit is embedded at build time** as `CLAX_BUILD_COMMIT` by `clax-cli/build.rs` and handed to the rest at startup (§5.5). It is `unknown` when there is no git. | O3 requires it, and nothing embeds it today. |
 | L15 | **Journal fsync is coalesced.** `sync_data` runs at most once a second while lines arrive, and always on rotation and shutdown (§7.4). | The table is the durable record. A line lost to power failure is re-appended from its sequence number on the next start. |
 | L16 | **Clax reads the harness session IDs Toolpath reads** (§9.4), plus the transcript path wherever hook input or the extension API supplies one. The join hook gains `transcript_path`, which is stored on the session. | O3 and O6. A transcript path names the exact session file a reader needs. |
 
@@ -303,7 +303,15 @@ session:
 - the shim's session gives `agent`.
 
 The sessionless `/mcp` route records `{"type":"agent","session_id":null}`.
-It renders as `agent:clax-mcp` (§10.1).
+It renders as `agent:clax-mcp` (§10.1). Only the token and `x-clax-via: mcp`
+without a known session give that actor: a `hook` or `pi` request with the
+token and no known session records the owner, on its own channel. The
+agent-side headers (`x-clax-via`, `x-clax-session`, `x-clax-git`,
+`x-clax-call`) count only with the token; a browser's are ignored. Every
+agent side names its channel in `x-clax-via` (`mcp` from the shim and the
+daemon's own `/mcp` client, `hook` from `clax hook`, `pi` from the Pi
+extension); without one, a token request with a session is `mcp` and
+without one `cli`.
 
 ### 5.3 Version content hash
 
@@ -328,16 +336,24 @@ context. The event is a step in the install path. The session is not a path
 
 ### 5.5 Build commit
 
-`crates/clax-core/build.rs` sets `CLAX_BUILD_COMMIT`:
+`crates/clax-cli/build.rs` sets `CLAX_BUILD_COMMIT`, and the binary hands
+it to `clax_core::set_build_commit` at startup (the daemon and the renderer
+read `clax_core::build_commit()`). Embedding it in the leaf crate means a
+new commit relinks `clax-cli` alone, not the workspace:
 
 1. `$CLAX_BUILD_COMMIT` from the environment, which the release workflow
    sets;
 2. otherwise `git rev-parse HEAD` in the manifest directory;
 3. otherwise `unknown`.
 
-It reruns when `git rev-parse --git-path HEAD`, or the ref file that HEAD
-names, changes. This works in worktrees. It does not rerun on index changes,
-so no dirty flag is recorded. `clax --version` prints `clax 0.3.0 (abc1234)`.
+It reruns when `git rev-parse --git-path HEAD`, the nearest existing
+directory on the path of the ref file HEAD names (a commit writes a loose
+ref even for a packed branch), or `packed-refs` changes. This works in
+worktrees. It does not rerun on index changes, so no dirty flag is recorded.
+`clax --version` stays exactly `clax 0.3.0`, which the plugin wrappers and
+installers compare. `clax version --verbose` adds `commit <hex>`, `clax
+status` names the daemon's commit (from `daemon.json`), and `clax doctor`
+has a `build` check.
 
 ## 6. Recorded events
 
