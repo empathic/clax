@@ -544,4 +544,34 @@ describe("Tabs and side panels", () => {
     h.tabs.setViewer({ public_id: "u_owner", display_name: "Mia", created_at: "t" });
     expect(tabMsgs(p).at(-1)?.viewer).toEqual({ public_id: "u_owner", display_name: "Mia" });
   });
+
+  it("scrolls to a thread on another route once the overlay finds it there, across a new document", async () => {
+    const h = harness();
+    const URL2 = "http://localhost:5173/?tab=billing";
+    h.pages.set(URL1, { page: page(), route: null });
+    h.pages.set(URL2, { page: page(), route: "?tab=billing" });
+    h.threads.set(AID, [full(T1, { anchor: { kind: "element", selector: "body", file: "index.html", route: "?tab=billing" } })]);
+    await h.tabs.toggle(4, URL1);
+    await settle();
+    h.tabs.select(4, T1);
+    expect(h.overlay.some(o => o.m.t === "scroll-to")).toBe(false);
+    // The navigation loads a new document, whose overlay re-resolves on the thread's route.
+    await h.tabs.hello(4, URL2);
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: false, method: null, rect: null }] }, URL2);
+    expect(h.overlay.some(o => o.m.t === "scroll-to")).toBe(false);
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: true, method: "exact", rect: null }] }, URL2);
+    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "scroll-to", threadId: T1 } });
+    expect(h.tabs.state(4)?.selected).toBe(T1);
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T1, found: true, method: "exact", rect: null }] }, URL2);
+    expect(h.overlay.filter(o => o.m.t === "scroll-to")).toHaveLength(1);
+  });
+
+  it("refuses a panel port whose name names no window", () => {
+    const h = harness();
+    const p = { ...port("panel:x"), disconnect: vi.fn() };
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    expect(p.disconnect).toHaveBeenCalled();
+    expect(p.onMessage.listeners).toHaveLength(0);
+  });
 });
+

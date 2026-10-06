@@ -724,8 +724,14 @@ dropped and counted.
 - Panel ↔ worker (port `panel:<windowId>`): `watch-tab` → `tab {tabId,
   page, route, threads, working, participants, viewer, commentMode,
   activeTab}` and pushes on change; `send`, `send-batch`, `reply`,
-  `resolve`, `reopen`, `delete`, `set-name`, `select`, `comment-mode`,
-  `turn-off` → each `ok` or `failed {code, message}`.
+  `resolve`, `reopen`, `delete`, `looked`, `set-name`, `select`,
+  `comment-mode`, `navigate {route, artifactId}`, `turn-off {origin}`,
+  `retry` → `failed {code, message}` on failure, and success shows as the
+  next `tab` push (ruling 2026-10-05: no `ok`). `navigate` and `turn-off`
+  name the page and the site the panel showed; the worker refuses them
+  (`page_changed`) when the tab shows another. `visible {on}` says whether
+  the panel's document is visible: the worker reports presence only while
+  it is (§9.5). `ping` every 20 s.
 
 ### 9.5 Realtime
 

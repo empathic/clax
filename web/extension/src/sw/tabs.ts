@@ -126,6 +126,8 @@ export class Tabs {
   /** Tabs with a refetch queued for this turn. */
   private refreshing = new Set<number>();
   private panels = new Set<PanelEntry>();
+  /** Per tab, a thread the panel selected on another route: scrolled to once the overlay finds it there. */
+  private scrollAfter = new Map<number, string>();
   private panelSeq = 0;
   private viewer: Owner | null = null;
   private streamUp = true;
@@ -427,6 +429,7 @@ export class Tabs {
     this.seqs.delete(tabId);
     this.syncs.delete(tabId);
     this.workingAt.delete(tabId);
+    this.scrollAfter.delete(tabId);
     this.stale.delete(tabId);
     this.d.hub.detach(hubId(tabId));
     this.persist();
@@ -510,6 +513,10 @@ export class Tabs {
     const s = this.tabs.get(tabId);
     if (!s) return;
     this.set(tabId, { ...s, selected: threadId });
+    this.scrollAfter.delete(tabId);
+    const t = s.threads.find(x => x.id === threadId);
+    // A thread on another route: the panel navigates the tab there first.
+    if (t && (t.anchor.route ?? null) !== s.route) { this.scrollAfter.set(tabId, t.id); return; }
     this.d.toOverlay(tabId, threadId === null ? { t: "focus", threadId: null } : { t: "scroll-to", threadId });
   }
 
@@ -561,7 +568,13 @@ export class Tabs {
     if ((!known || this.stale.has(tabId)) && (senderUrl ?? known?.url)) await this.route(tabId, (senderUrl ?? known?.url)!, true);
     const s = this.tabs.get(tabId) ?? emptyTab(tabId, senderUrl ?? "");
     switch (m.t) {
-      case "resolved": this.set(tabId, { ...s, resolved: Object.fromEntries(m.results.map(r => [r.id, r])) }); return;
+      case "resolved": {
+        const wanted = this.scrollAfter.get(tabId);
+        const found = wanted !== undefined && m.results.some(r => r.id === wanted && r.found);
+        this.set(tabId, { ...s, resolved: Object.fromEntries(m.results.map(r => [r.id, r])), ...(found ? { selected: wanted } : {}) });
+        if (found) { this.scrollAfter.delete(tabId); this.d.toOverlay(tabId, { t: "scroll-to", threadId: wanted }); }
+        return;
+      }
       case "comment-mode": this.set(tabId, { ...s, commentMode: m.on }); return;
       case "pin": this.set(tabId, { ...s, selected: m.threadId }); return;
       case "removed": this.set(tabId, { ...s, overlay: false, error: { code: "overlay_removed", message: "The page removed Clax's overlay." } }); return;
@@ -583,9 +596,11 @@ export class Tabs {
    * sends passes `isFromPanel` before anything acts on it, and then goes to
    * `onMessage`. */
   attachPanel(port: chrome.runtime.Port, onMessage: (tabId: number | null, m: PanelToWorker, windowId: number) => void): void {
-    const windowId = Number(port.name.slice("panel:".length));
+    const name = port.name.slice("panel:".length);
+    const windowId = Number(name);
+    if (!/^\d{1,15}$/.test(name) || !Number.isSafeInteger(windowId)) { port.disconnect(); return; }
     const entry: PanelEntry = {
-      port, tabId: null, windowId: Number.isSafeInteger(windowId) ? windowId : -1, visible: false,
+      port, tabId: null, windowId, visible: false,
       hubId: `panel:${++this.panelSeq}`, aid: null, presence: [], beat: null,
     };
     this.panels.add(entry);

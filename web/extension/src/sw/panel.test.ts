@@ -10,7 +10,7 @@ const URL1 = "http://localhost:5173/app";
 const page = { artifact_id: AID, origin: "http://localhost:5173", path: "/app", page_url: URL1, title: "T", current_version: 1, url: `http://localhost:7480/a/${AID}` };
 const thread = (id: string, status = "open") => ({ id, artifact_id: AID, status });
 
-function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string } = {}) {
+function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: boolean; fail?: string; error?: string } = {}) {
   const calls: string[] = [];
   const out: WorkerToPanel[] = [];
   const pg = over.page === undefined ? page : over.page;
@@ -27,7 +27,7 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
       setName: api("setName", { viewer: { public_id: "u_o", display_name: "Mia", created_at: "t" } }),
     } as never,
     tabs: {
-      state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true } as never),
+      state: () => (pg === null ? undefined : { url: URL1, page: pg, overlay: true, error: over.error ? { code: over.error, message: "m" } : null } as never),
       admits: () => over.admits ?? false,
       route: async (tabId: number, url: string, fresh?: boolean) => { calls.push(`route ${tabId} ${url} ${!!fresh}`); return {} as never; },
       applied: (tabId: number, t: { id: string }) => calls.push(`applied ${tabId} ${t.id}`),
@@ -36,7 +36,7 @@ function setup(over: { page?: typeof page | null; admits?: boolean; allUrls?: bo
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
     } as never,
-    pairer: { forget: async () => { calls.push("forget"); } },
+    pairer: { pair: async (retry?: boolean) => { calls.push(`pair ${!!retry}`); return {} as never; } },
     allUrls: async () => over.allUrls ?? false,
     navigate: async (tabId, url) => { calls.push(`navigate ${tabId} ${url}`); },
     turnOff: async (tabId, origin) => { calls.push(`turn-off ${tabId} ${origin}`); },
@@ -99,11 +99,22 @@ describe("panelAction", () => {
 
   it("goes to a route of the page, and only to one", async () => {
     const s = setup();
-    await s.run({ t: "navigate", route: "?tab=billing" });
-    await s.run({ t: "navigate", route: null });
-    await s.run({ t: "navigate", route: "//evil.example/" });
+    await s.run({ t: "navigate", route: "?tab=billing", artifactId: AID });
+    await s.run({ t: "navigate", route: null, artifactId: AID });
+    await s.run({ t: "navigate", route: "//evil.example/", artifactId: AID });
     expect(s.calls).toEqual([`navigate 4 ${URL1}?tab=billing`, `navigate 4 ${URL1}`]);
     expect(s.out).toEqual([{ t: "failed", code: "invalid_route", message: "Not a route of this page." }]);
+  });
+
+  it("acts only on the page and the site the panel showed", async () => {
+    const s = setup();
+    await s.run({ t: "navigate", route: "?tab=billing", artifactId: "8r4m0nzy3c5v" });
+    await s.run({ t: "turn-off", origin: "http://localhost:3000" });
+    expect(s.calls).toEqual([]);
+    expect(s.out).toEqual([
+      { t: "failed", code: "page_changed", message: "The tab shows another page now." },
+      { t: "failed", code: "page_changed", message: "The tab shows another page now." },
+    ]);
   });
 
   it("selects, refreshes on watch, retries with a new pairing, and turns Clax off on the origin", async () => {
@@ -111,9 +122,20 @@ describe("panelAction", () => {
     await s.run({ t: "select", threadId: T1 });
     await s.run({ t: "watch-tab", tabId: 4 });
     await s.run({ t: "retry" });
-    await s.run({ t: "turn-off" });
+    await s.run({ t: "turn-off", origin: "http://localhost:5173" });
     await s.run({ t: "ping" });
     await s.run({ t: "visible", on: true });
-    expect(s.calls).toEqual([`select 4 ${T1}`, `route 4 ${URL1} false`, "forget", `route 4 ${URL1} true`, "turn-off 4 http://localhost:5173"]);
+    expect(s.calls).toEqual([`select 4 ${T1}`, `route 4 ${URL1} false`, `route 4 ${URL1} true`, "turn-off 4 http://localhost:5173"]);
+  });
+
+  it("pairs again on Retry only after a pairing or credential failure", async () => {
+    for (const code of ["host_missing", "unknown_credential", "http_401"]) {
+      const s = setup({ error: code });
+      await s.run({ t: "retry" });
+      expect(s.calls).toEqual(["pair true", `route 4 ${URL1} true`]);
+    }
+    const net = setup({ error: "daemon_unreachable" });
+    await net.run({ t: "retry" });
+    expect(net.calls).toEqual([`route 4 ${URL1} true`]);
   });
 });

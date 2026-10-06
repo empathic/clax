@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/svelte";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PanelState, PanelToWorker } from "../messages";
 import Panel from "./Panel.svelte";
 
@@ -75,7 +75,7 @@ describe("Panel", () => {
     const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
     expect(container.textContent).toContain("?tab=billing");
     await fireEvent.click(container.querySelector(".card-head")!);
-    expect(l.sent).toEqual([{ t: "navigate", route: "?tab=billing" }, { t: "select", threadId: thread.id }]);
+    expect(l.sent).toEqual([{ t: "navigate", route: "?tab=billing", artifactId: "7q3k9mzx2b4t" }, { t: "select", threadId: thread.id }]);
   });
 
   it("shows who is here on the page beside its agents", () => {
@@ -83,5 +83,50 @@ describe("Panel", () => {
     const { container } = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
     expect(container.querySelector(".tok.p.here")?.textContent).toBe("MW");
     expect(container.querySelector(".tok.a")?.textContent).toBe("cl");
+  });
+
+  it("offers Retry only for a failure trying again can fix, and lets others be dismissed", async () => {
+    const l = link(state({ error: { code: "not_found", message: "No such thread." } }));
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByText("No such thread.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    await fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    expect(screen.queryByText("No such thread.")).toBeNull();
+    expect(l.sent).toEqual([]);
+  });
+
+  it("words an unknown failure code by its message, never by a property of the help table", () => {
+    render(Panel, { props: { link: link(state({ error: { code: "constructor", message: "Something broke." } })) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(screen.getByText("Something broke.")).toBeTruthy();
+  });
+
+  it("shows the setup command as code with a button that copies it", async () => {
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    const { container } = render(Panel, { props: { link: link(state({ error: { code: "host_missing", message: "x" } })) as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    expect(container.querySelector(".notice code")?.textContent).toBe("clax init");
+    expect(container.querySelector(".notice")?.textContent).not.toContain("`");
+    await fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(writeText).toHaveBeenCalledWith("clax init");
+  });
+
+  it("sends the same name again after a failed save", async () => {
+    const l = link(state({ viewer: { public_id: "u_x", display_name: null } }));
+    const view = render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    const input = screen.getByLabelText("Your name") as HTMLInputElement;
+    await fireEvent.input(input, { target: { value: "Mia" } });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    await fireEvent.keyDown(input, { key: "Enter" });
+    expect(l.sent.filter(m => m.t === "set-name")).toHaveLength(1);
+    await view.rerender({ link: { ...l, state: { ...l.state, error: { code: "invalid_name", message: "Not a name." } } } as never, now: new Date("2026-10-05T10:01:00.000Z") });
+    await fireEvent.keyDown(screen.getByLabelText("Your name"), { key: "Enter" });
+    expect(l.sent.filter(m => m.t === "set-name")).toHaveLength(2);
+  });
+
+  it("turns Clax off on the site it names", async () => {
+    const l = link(state());
+    render(Panel, { props: { link: l as never, now: new Date("2026-10-05T10:01:00.000Z") } });
+    await fireEvent.click(screen.getByRole("button", { name: "Turn off on localhost:5173" }));
+    expect(l.sent).toContainEqual({ t: "turn-off", origin: "http://localhost:5173" });
   });
 });

@@ -138,12 +138,16 @@ describe("messages", () => {
     expect(isFromPanel({ t: "send-batch", threadIds: [ULID], note: "x".repeat(281), to: null })).toBe(false);
     expect(isFromPanel({ t: "reply", threadId: ULID, body: "" })).toBe(false);
     expect(isFromPanel({ t: "set-name", name: "x".repeat(65) })).toBe(false);
-    expect(isFromPanel({ t: "navigate", route: "x".repeat(513) })).toBe(false);
+    expect(isFromPanel({ t: "navigate", route: "x".repeat(513), artifactId: "7q3k9mzx2b4t" })).toBe(false);
+    expect(isFromPanel({ t: "navigate", route: null, artifactId: "NOT-AN-ID" })).toBe(false);
+    expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173/path" })).toBe(false);
+    expect(isFromPanel({ t: "turn-off", origin: "javascript:alert(1)" })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: Number.NaN })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: 1.5 })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: -1 })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: 7 })).toBe(true);
-    expect(isFromPanel({ t: "turn-off" })).toBe(true);
+    expect(isFromPanel({ t: "turn-off", origin: "http://localhost:5173" })).toBe(true);
+    expect(isFromPanel({ t: "turn-off" })).toBe(false);
     expect(isFromPanel({ t: "visible", on: false })).toBe(true);
     expect(isFromPanel({ t: "visible", on: "yes" })).toBe(false);
   });
@@ -167,7 +171,7 @@ describe("messages", () => {
       { t: "watch-tab", tabId: 1 }, { t: "send", threadId: ULID, to: null }, { t: "send-batch", threadIds: [ULID], note: null, to: null },
       { t: "reply", threadId: ULID, body: "ok" }, { t: "resolve", threadId: ULID }, { t: "reopen", threadId: ULID }, { t: "delete", threadId: ULID },
       { t: "looked", threadIds: [ULID] }, { t: "set-name", name: "Ana" }, { t: "select", threadId: null }, { t: "comment-mode", on: true },
-      { t: "navigate", route: null }, { t: "turn-off" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
+      { t: "navigate", route: null, artifactId: "7q3k9mzx2b4t" }, { t: "turn-off", origin: "http://localhost:5173" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
     ];
     const toComposer = [
       { t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw0KGgo=", clipError: null, capturing: false },

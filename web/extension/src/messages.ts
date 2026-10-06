@@ -115,8 +115,10 @@ export type PanelToWorker =
   | { t: "set-name"; name: string }
   | { t: "select"; threadId: string | null }
   | { t: "comment-mode"; on: boolean }
-  | { t: "navigate"; route: string | null }
-  | { t: "turn-off" }
+  /** `artifactId`: the live page the panel showed; the worker refuses it for another. */
+  | { t: "navigate"; route: string | null; artifactId: string }
+  /** `origin`: the site the panel named; the worker refuses it for another. */
+  | { t: "turn-off"; origin: string }
   | { t: "retry" }
   /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
   | { t: "visible"; on: boolean }
@@ -278,8 +280,15 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "set-name": return has("name") && str(m.name, 64);
     case "select": return has("threadId") && (m.threadId === null || ulid(m.threadId));
     case "comment-mode": case "visible": return has("on") && bool(m.on);
-    case "navigate": return has("route") && (m.route === null || str(m.route, MAX_ROUTE));
-    case "turn-off": case "retry": case "ping": return has();
+    case "navigate": return has("route", "artifactId") && (m.route === null || str(m.route, MAX_ROUTE))
+      && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
+    case "turn-off": return has("origin") && str(m.origin, MAX_URL) && /^https?:\/\/[^/?#]+$/.test(m.origin);
+    case "retry": case "ping": return has();
     default: return false;
   }
 }
+
+/** Failures trying again can fix: the panel offers Retry for these. */
+export const RETRYABLE = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently", "daemon_unreachable"]);
+/** Of those, the ones a new pairing fixes (the native host, or the credential). */
+export const REPAIRS = /* @__PURE__ */ new Set(["host_missing", "host_failed", "daemon_unavailable", "bad_reply", "unknown_credential", "http_401", "paired_recently"]);

@@ -3,7 +3,7 @@
 // the tab's live page, and the thread the daemon answers with is applied at
 // once (the stream brings it too). A failure is told to the panel as
 // `failed {code, message}`.
-import type { PanelToWorker, WorkerToPanel } from "../messages";
+import { type PanelToWorker, REPAIRS, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
@@ -12,7 +12,7 @@ import type { Tabs } from "./tabs";
 export type PanelDeps = {
   api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "remove" | "looked" | "setName">;
   tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "removed" | "setViewer" | "select" | "setCommentMode">;
-  pairer: Pick<Pairer, "forget">;
+  pairer: Pick<Pairer, "pair">;
   /** Whether the extension holds `<all_urls>` (screenshots on any tab without a click). */
   allUrls(): Promise<boolean>;
   /** Loads `url` in the tab. */
@@ -24,6 +24,8 @@ export type PanelDeps = {
 class PanelFailure extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
+/** The panel acted on a page or site the tab no longer shows. */
+const changed = () => new PanelFailure("page_changed", "The tab shows another page now.");
 const failed = (e: unknown): WorkerToPanel => {
   const err = e as { code?: unknown; message?: unknown };
   return { t: "failed", code: typeof err?.code === "string" ? err.code : "failed", message: typeof err?.message === "string" ? err.message : String(e) };
@@ -45,7 +47,8 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
   switch (m.t) {
     case "watch-tab": if (s?.url) await d.tabs.route(tabId, s.url); return;
     case "retry":
-      await d.pairer.forget();
+      // Only a pairing or credential failure needs a new pairing; the person asked, so it is not rate-limited.
+      if (s?.error && REPAIRS.has(s.error.code)) await d.pairer.pair(true);
       if (s?.url) await d.tabs.route(tabId, s.url, true);
       return;
     case "select": d.tabs.select(tabId, m.threadId); return;
@@ -57,7 +60,8 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
       return;
     case "turn-off": {
       const origin = s?.url ? originOf(s.url) : null;
-      if (origin) await d.turnOff(tabId, origin);
+      if (origin !== m.origin) throw changed();
+      await d.turnOff(tabId, origin);
       return;
     }
     default: break;
@@ -67,6 +71,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker): Promis
   const aid = page.artifact_id;
   switch (m.t) {
     case "navigate":
+      if (m.artifactId !== aid) throw changed();
       if (m.route !== null && !/^[?#]/.test(m.route)) throw new PanelFailure("invalid_route", "Not a route of this page.");
       await d.navigate(tabId, page.page_url + (m.route ?? ""));
       return;

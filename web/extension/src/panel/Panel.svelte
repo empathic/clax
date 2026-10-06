@@ -12,7 +12,7 @@
   import { agentName } from "../../../shell/src/view/history-model";
   import { presenceMap, roster } from "../../../shell/src/view/presence-model";
   import { unsent } from "../../../shell/src/view/batch-model";
-  import type { PanelState, PanelToWorker } from "../messages";
+  import { type PanelState, type PanelToWorker, RETRYABLE } from "../messages";
   import { asPages, pageOfRoute } from "./adapt";
 
   type Link = { state: PanelState | null; up?: boolean; post(m: PanelToWorker): void };
@@ -31,15 +31,25 @@
   const viewUrl = $derived(s?.page && /^https?:\/\//.test(s.page.url) ? s.page.url : null);
   /** The batch send's bound (spec §8). */
   const BATCH = 20;
-  const help: Record<string, string> = {
-    host_missing: "Clax is not set up for Chrome yet. Run `clax init` (or /clax:extension in Claude Code), then click Retry.",
-    daemon_unavailable: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry.",
-    no_capture_permission: "Click the Clax button or press ⌥⇧C to comment with a screenshot.",
-  };
+  /** How the panel words a failure code: text, and a command to run with its copy button. */
+  type Help = { before: string; command?: string; after?: string };
+  const help = new Map<string, Help>([
+    ["host_missing", { before: "Clax is not set up for Chrome yet. Run", command: "clax init", after: "(or /clax:extension in Claude Code), then click Retry." }],
+    ["daemon_unavailable", { before: "Clax could not start. See ~/.clax/logs/daemon.log, then click Retry." }],
+    ["no_capture_permission", { before: "Click the Clax button or press ⌥⇧C to comment with a screenshot." }],
+  ]);
+  const shownHelp = $derived(s?.error ? (help.get(s.error.code) ?? { before: s.error.message }) : null);
+  /** The failure the person dismissed (by code and message), hidden until another comes. */
+  let dismissed = $state<string | null>(null);
+  const errorKey = $derived(s?.error ? `${s.error.code}\n${s.error.message}` : null);
+  let copied = $state(false);
+  function copy(text: string): void {
+    void navigator.clipboard?.writeText(text).then(() => { copied = true; }, () => {});
+  }
   const routeOf = (t: Thread) => t.anchor.route ?? null;
   function select(t: Thread): void {
     // A card on another route: the tab goes there first, and the overlay pins it once it re-resolves.
-    if (s && routeOf(t) !== s.route) link.post({ t: "navigate", route: routeOf(t) });
+    if (s?.page && routeOf(t) !== s.route) link.post({ t: "navigate", route: routeOf(t), artifactId: s.page.artifact_id });
     link.post({ t: "select", threadId: t.id });
   }
   /** The name last sent, so leaving the field after Enter does not send it again. */
@@ -48,6 +58,8 @@
     const v = name.trim();
     if (v && v !== saved) { saved = v; link.post({ t: "set-name", name: v }); }
   }
+  // A failure after a save lets the same name be sent again.
+  $effect(() => { if (s?.error) saved = ""; });
 </script>
 
 <main class="panel">
@@ -70,10 +82,18 @@
     {#if link.up === false}
       <p class="notice quiet" role="status">Reconnecting to Clax. What this shows may be out of date.</p>
     {/if}
-    {#if s.error}
+    {#if s.error && shownHelp && errorKey !== dismissed}
       <div class="notice" role="alert">
-        <p>{help[s.error.code] ?? s.error.message}</p>
-        <button type="button" onclick={() => link.post({ t: "retry" })}>Retry</button>
+        <p>{shownHelp.before}{#if shownHelp.command}{" "}<code>{shownHelp.command}</code>{" "}{shownHelp.after ?? ""}{/if}</p>
+        {#if shownHelp.command}
+          {@const command = shownHelp.command}
+          <button type="button" class="ghost" onclick={() => copy(command)}>{copied ? "Copied" : "Copy"}</button>
+        {/if}
+        {#if RETRYABLE.has(s.error.code)}
+          <button type="button" onclick={() => link.post({ t: "retry" })}>Retry</button>
+        {:else}
+          <button type="button" class="ghost" onclick={() => (dismissed = errorKey)}>Dismiss</button>
+        {/if}
       </div>
     {/if}
     {#if s.viewer && !s.viewer.display_name}
@@ -100,7 +120,7 @@
       </div>
       <footer class="foot">
         {#if viewUrl}<a href={viewUrl} target="_blank" rel="noopener noreferrer">Open in Clax</a>{/if}
-        {#if host}<button type="button" class="ghost" onclick={() => link.post({ t: "turn-off" })}>Turn off on {host}</button>{/if}
+        {#if host}<button type="button" class="ghost" onclick={() => link.post({ t: "turn-off", origin: s.page!.origin })}>Turn off on {host}</button>{/if}
       </footer>
     {:else}
       <p class="hint">No comments on this page yet. Press Comment, then click what you want to comment on.</p>
@@ -120,6 +140,7 @@
   .notice, .hint, .name { margin: 12px var(--gutter) 0; }
   .notice { display: flex; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--danger-tint); color: var(--fg); }
   .notice p { flex: 1; margin: 0; overflow-wrap: anywhere; }
+  .notice code { font: 12.5px var(--mono); padding: 1px 5px; border-radius: var(--radius-xs); background: var(--card); border: 1px solid var(--border); white-space: nowrap; }
   .notice.quiet { background: var(--hover); color: var(--muted); font-size: 13px; }
   .hint { color: var(--muted); }
   .name { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
