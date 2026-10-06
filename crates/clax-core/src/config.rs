@@ -7,8 +7,10 @@
 //! invalid starts with sample off. The top-level `bin` key names the clax the
 //! plugins run ([`HomeConfig::bin`]); `clax bin set` writes it as one line,
 //! [`bin_line`], which the plugins' wrapper reads without a TOML parser, and
-//! nothing else here reads it. Other tables are reserved (spec §5) and
-//! ignored.
+//! nothing else here reads it. `[questions] terminal_after_s` is how long a
+//! mirrored AskUserQuestion waits in Clax before the terminal dialog
+//! ([`HomeConfig::questions_terminal_after_s`]). Other tables are reserved
+//! (spec §5) and ignored.
 
 use crate::{CoreError, Result};
 use serde::Deserialize;
@@ -213,7 +215,48 @@ impl HomeConfig {
         }
         Ok(s)
     }
+
+    /// `[questions] terminal_after_s` (spec 2026-10-06-agent-questions-and-inbox
+    /// §6.7): how many seconds a mirrored AskUserQuestion waits in Clax
+    /// before the terminal dialog appears; 0 never holds it. Default
+    /// [`TERMINAL_AFTER_S`], clamped to `0..=`[`MAX_TERMINAL_AFTER_S`]; an
+    /// out-of-range or mistyped value is logged.
+    pub fn questions_terminal_after_s(&self) -> u64 {
+        let v = self
+            .table
+            .get("questions")
+            .and_then(|t| t.as_table())
+            .and_then(|t| t.get("terminal_after_s"));
+        match v {
+            None => TERMINAL_AFTER_S,
+            Some(toml::Value::Integer(n)) => {
+                let clamped = (*n).clamp(0, MAX_TERMINAL_AFTER_S as i64);
+                if clamped != *n {
+                    tracing::warn!(
+                        value = *n,
+                        used = clamped,
+                        "questions.terminal_after_s is out of range"
+                    );
+                }
+                clamped as u64
+            }
+            Some(v) => {
+                tracing::warn!(
+                    kind = v.type_str(),
+                    used = TERMINAL_AFTER_S,
+                    "questions.terminal_after_s is not an integer"
+                );
+                TERMINAL_AFTER_S
+            }
+        }
+    }
 }
+
+/// [`HomeConfig::questions_terminal_after_s`] when the key is absent.
+pub const TERMINAL_AFTER_S: u64 = 600;
+/// The largest [`HomeConfig::questions_terminal_after_s`]: under the hook's
+/// 3,600 s timeout with room for the terminal dialog.
+pub const MAX_TERMINAL_AFTER_S: u64 = 3300;
 
 /// Whether `path` can be the `bin` setting: absolute, and free of `"`, `\`
 /// and control characters, so that `bin = "<path>"` is valid TOML whose
@@ -272,6 +315,33 @@ pub fn base_url_ok(url: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terminal_after_s_defaults_clamps_and_ignores_mistyped_values() {
+        assert_eq!(with("").questions_terminal_after_s(), 600);
+        assert_eq!(with("[questions]\n").questions_terminal_after_s(), 600);
+        assert_eq!(
+            with("[questions]\nterminal_after_s = 0\n").questions_terminal_after_s(),
+            0
+        );
+        assert_eq!(
+            with("[questions]\nterminal_after_s = 90\n").questions_terminal_after_s(),
+            90
+        );
+        assert_eq!(
+            with("[questions]\nterminal_after_s = -5\n").questions_terminal_after_s(),
+            0
+        );
+        assert_eq!(
+            with("[questions]\nterminal_after_s = 9999\n").questions_terminal_after_s(),
+            3300
+        );
+        assert_eq!(
+            with("[questions]\nterminal_after_s = \"x\"\n").questions_terminal_after_s(),
+            600
+        );
+        assert_eq!(with("questions = 3\n").questions_terminal_after_s(), 600);
+    }
 
     fn with(text: &str) -> HomeConfig {
         let dir = tempfile::tempdir().unwrap();

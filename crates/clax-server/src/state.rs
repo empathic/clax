@@ -52,4 +52,12 @@ pub struct AppState {
     /// The extension ID in effect for this daemon's home (spec L15): the only
     /// extension that may pair.
     pub extension_id: String,
+    /// Polls waiting on each agent question (spec
+    /// 2026-10-06-agent-questions-and-inbox §6.1).
+    pub questions: Arc<crate::questions::QuestionWaiters>,
+    /// How long a mirrored (hook) question stays open with no poll waiting
+    /// on it before it is withdrawn (5 s in the daemon).
+    pub question_grace: Duration,
+    /// `[questions] terminal_after_s`, read when the daemon starts.
+    pub terminal_after_s: u64,
 }

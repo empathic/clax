@@ -403,6 +403,18 @@ impl Working {
             .collect()
     }
 
+    /// The artifact of session `sid`'s most recently renewed live record
+    /// (the latest started among equals), if it has one: what a mirrored
+    /// question with no artifact of its own is about.
+    pub fn newest_artifact_of(&self, sid: &str) -> Option<String> {
+        let now = self.now();
+        let map = self.records.lock().unwrap();
+        map.iter()
+            .filter(|((s, _), r)| s == sid && self.live(r, now))
+            .max_by_key(|(_, r)| (r.heartbeat, r.started_at))
+            .map(|((_, a), _)| a.clone())
+    }
+
     /// The threads the live record (`sid`, `aid`) names.
     pub fn threads_of(&self, sid: &str, aid: &str) -> Vec<String> {
         let now = self.now();
@@ -464,6 +476,25 @@ mod tests {
     }
     fn ids(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_newest_artifact_is_the_most_recently_renewed_live_record() {
+        let (c, w) = fixture();
+        assert_eq!(w.newest_artifact_of("s1"), None);
+        w.mark(&claude("s1"), "a1", &[]);
+        c.advance(5);
+        w.mark(&claude("s1"), "a2", &[]);
+        w.mark(&claude("s2"), "a3", &[]);
+        assert_eq!(w.newest_artifact_of("s1").as_deref(), Some("a2"));
+        c.advance(5);
+        w.mark(&claude("s1"), "a1", &[]);
+        assert_eq!(w.newest_artifact_of("s1").as_deref(), Some("a1"));
+        // Renewed together: the later started wins.
+        w.renew("s1");
+        assert_eq!(w.newest_artifact_of("s1").as_deref(), Some("a2"));
+        c.advance(WORKING_TTL_SECS + 1);
+        assert_eq!(w.newest_artifact_of("s1"), None);
     }
 
     #[test]

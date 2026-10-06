@@ -116,11 +116,13 @@ pub async fn patch(
         ));
     }
     let ctx = s.feedback_ctx();
+    let state = s.clone();
     let session = s
         .store_call(move |st| {
             if b.ended {
                 let ended = st.end_session_touched(&id)?;
                 crate::feedback::apply(&ctx, st, &ended.touched);
+                crate::questions::announce_ids(&state, st, &ended.withdrawn_questions);
                 ctx.waiters.forget(&id);
                 crate::working::announce(&ctx.events, &ctx.working, &ctx.working.end_session(&id));
                 ctx.followers.forget(&id);

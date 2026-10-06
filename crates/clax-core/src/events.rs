@@ -114,6 +114,12 @@ pub enum Event {
         #[serde(skip)]
         self_read: Option<(String, crate::db::Level)>,
     },
+    /// An agent question changed (spec 2026-10-06-agent-questions-and-inbox
+    /// §6.3); `question` is its owner view. Only the owner-only `questions`
+    /// stream topic carries it; `/api/events` never does.
+    Question {
+        question: serde_json::Value,
+    },
 }
 
 impl Event {
@@ -131,6 +137,8 @@ impl Event {
             | Event::Presence { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
             Event::Site { .. } => "",
+            // Owner-only; it belongs to no artifact's routing.
+            Event::Question { .. } => "",
         }
     }
 
@@ -149,6 +157,7 @@ impl Event {
             Event::Presence { .. } => "presence",
             Event::Doc { .. } => "doc",
             Event::Site { .. } => "site",
+            Event::Question { .. } => "question",
         }
     }
 
@@ -400,6 +409,9 @@ mod tests {
                 private_to: Some("u_x".into()),
                 read_level: crate::db::Level::View,
                 self_read: None,
+            },
+            Event::Question {
+                question: serde_json::json!({"id": "q"}),
             },
         ] {
             assert_eq!(serde_json::to_value(&ev).unwrap()["type"], ev.name());

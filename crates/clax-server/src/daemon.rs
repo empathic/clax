@@ -252,6 +252,19 @@ pub async fn serve(
     let listener = bind_first_free(cfg.bind, cfg.port).await?;
     let port = listener.local_addr()?.port();
     let store = Arc::new(Store::open(&cfg.home)?);
+    // Hooks that waited on the previous daemon are gone: their questions
+    // are withdrawn (and kept, as every question is).
+    let gone = store.withdraw_hook_questions_on_start()?;
+    if !gone.is_empty() {
+        tracing::info!(count = gone.len(), "withdrew mirrored questions left open");
+    }
+    let terminal_after_s = match clax_core::config::HomeConfig::load(cfg.home.root()) {
+        Ok(c) => c.questions_terminal_after_s(),
+        Err(e) => {
+            tracing::warn!(error = %e, "config.toml unreadable; questions use the defaults");
+            clax_core::config::TERMINAL_AFTER_S
+        }
+    };
     let reaper_store = store.clone();
     let optimize_store = store.clone();
     let drain_store = store.clone();
@@ -306,11 +319,15 @@ pub async fn serve(
         live_ids,
         ext_creds,
         extension_id: clax_core::extension::extension_id_in_effect(cfg.home.root()),
+        questions: Arc::new(Default::default()),
+        question_grace: Duration::from_secs(5),
+        terminal_after_s,
     };
     state.stream.listen(&state.events);
     tracing::info!(codex = ?state.codex.bin, source = ?state.codex.source, "codex push");
     tracing::info!(provider = ?state.sample.provider_name(), "sample provider");
     let fctx = state.feedback_ctx();
+    let reap_state = state.clone();
     let (state_working, state_events) = (state.working.clone(), state.events.clone());
     let state_presence = state.presence.clone();
     let state_stream = state.stream.clone();
@@ -353,10 +370,12 @@ pub async fn serve(
         loop {
             tokio::time::sleep(reap_interval).await;
             let ctx = fctx.clone();
+            let st = reap_state.clone();
             let reaped = reaper_store
                 .call(move |store| {
                     let r = store.reap_sessions(SESSION_IDLE, &pid_alive)?;
                     crate::feedback::apply(&ctx, store, &r.touched);
+                    crate::questions::announce_ids(&st, store, &r.withdrawn_questions);
                     for id in &r.ended {
                         ctx.waiters.forget(id);
                         crate::working::announce(
