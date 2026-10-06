@@ -7,8 +7,11 @@ use super::attention::{
     AGENTS_LIVE, AGENTS_ONE, ATTENTION_LIVE, ATTENTION_ONE, LOOKED_ONE, PEOPLE_LIVE, PEOPLE_ONE,
 };
 use super::feedback::{FEEDBACK_STATES, TAKE_FEEDBACK};
-use super::live::{PAGES_OF_ORIGIN, PENDING_OF, SCOPES_OF_ORIGIN};
-use super::site::{RULES_OF_ORIGIN, SITE_PAGES};
+use super::live::{PAGES_OF_ORIGIN, PENDING_OF, SCOPES_OF_ORIGIN, THREAD_PATHS_OF_PAGE};
+use super::site::{
+    LINKS_OF_THREAD, PENDING_AT_PATH, PENDING_TO, PICKS_LEFT, PICKS_TO, REFILE_CANDIDATES,
+    RULES_OF_ORIGIN, SITE_PAGES, TARGETS_TO, TO_UNMERGE, WATCHES_TO,
+};
 use super::test_util::store;
 use super::threads::{
     ADDRESSED_IN_MANY, COMMENTS_OF_MANY, LIVE_PATHS_OF_MANY, MOVES_OF_MANY, NAMES_OF_MANY,
@@ -130,12 +133,23 @@ fn seed(c: &Connection) {
             params![aid, format!("https://o{}.test", a % 5), format!("/p{a}"), ts(a)],
         )
         .unwrap();
+        c.execute(
+            "INSERT INTO live_picks (artifact_id, pick_id, thread_id, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![aid, format!("p{a}"), format!("{aid}t0"), ts(a)],
+        )
+        .unwrap();
         if a % 3 == 0 {
             c.execute(
                 "INSERT INTO thread_moves (id, thread_id, from_artifact_id, from_url, to_artifact_id,
-                    to_url, moved_by, created_at)
-                 VALUES (?1, ?2, ?3, 'u', ?3, 'u', 'viewer:x', ?4)",
-                params![format!("m{a}"), format!("{aid}t0"), aid, ts(a)],
+                    to_url, moved_by, kind, rule_id, created_at)
+                 VALUES (?1, ?2, ?3, 'u', ?3, 'u', 'viewer:x', 'merge', ?5, ?4)",
+                params![
+                    format!("m{a}"),
+                    format!("{aid}t0"),
+                    aid,
+                    ts(a),
+                    format!("r{}0", a % 5)
+                ],
             )
             .unwrap();
             c.execute(
@@ -321,6 +335,66 @@ fn hot_queries() -> Vec<Hot> {
             threads_of_many_sql(),
             vec![t(r#"["art0001","art0006","art0011"]"#)],
             &["threads_by_artifact"],
+        ),
+        (
+            "threads a rule may take",
+            REFILE_CANDIDATES.into(),
+            vec![t(r#"["art0001","art0006","art0011"]"#)],
+            &["threads_by_artifact"],
+        ),
+        (
+            "threads to move back when a rule goes",
+            TO_UNMERGE.into(),
+            vec![aid.clone()],
+            &["threads_by_artifact", "thread_moves_by_thread"],
+        ),
+        (
+            "pending threads made at a path",
+            PENDING_AT_PATH.into(),
+            vec![tids.clone(), t("https://o1.test"), t("/p1")],
+            &["sqlite_autoindex_threads_1"],
+        ),
+        (
+            "thread paths of a page",
+            THREAD_PATHS_OF_PAGE.into(),
+            vec![aid.clone()],
+            &["threads_by_artifact"],
+        ),
+        (
+            "a moved thread's version links",
+            LINKS_OF_THREAD.into(),
+            vec![t("art0001t0")],
+            &["version_threads_by_thread"],
+        ),
+        (
+            "a moved thread's pending address",
+            PENDING_TO.into(),
+            vec![t("art0002t0"), aid.clone()],
+            &["live_pending_by_thread"],
+        ),
+        (
+            "a moved thread's pick",
+            PICKS_TO.into(),
+            vec![t("art0001t0"), aid.clone()],
+            &["live_picks_by_thread"],
+        ),
+        (
+            "a moved thread's other picks",
+            PICKS_LEFT.into(),
+            vec![t("art0001t0"), aid.clone()],
+            &["live_picks_by_thread"],
+        ),
+        (
+            "a moved thread's page watchers",
+            WATCHES_TO.into(),
+            vec![aid.clone(), t("art0002"), t("2026-01-01T00:00:00.000Z")],
+            &["watches_by_artifact"],
+        ),
+        (
+            "a moved thread's agents",
+            TARGETS_TO.into(),
+            vec![t("art0001t0"), t("art0002"), t("2026-01-01T00:00:00.000Z")],
+            &["feedback_by_thread"],
         ),
         (
             "merge rules of an origin",

@@ -113,7 +113,7 @@ pub(crate) const LIVE_PATHS_OF_MANY: &str = "SELECT t.id, t.live_path FROM json_
     CROSS JOIN threads t ON t.id = j.value WHERE t.live_path IS NOT NULL";
 /// The moves of each thread of `?1` (a JSON array), oldest first.
 pub(crate) const MOVES_OF_MANY: &str = "SELECT m.thread_id, m.from_artifact_id, m.from_url,
-    m.to_artifact_id, m.to_url, m.moved_by, m.rule_id, m.created_at
+    m.to_artifact_id, m.to_url, m.moved_by, m.rule_id, m.created_at, m.kind
     FROM json_each(?1) j CROSS JOIN thread_moves m ON m.thread_id = j.value
     ORDER BY m.thread_id, m.created_at, m.id";
 
@@ -133,6 +133,9 @@ pub struct ThreadMove {
     pub moved_by_name: Option<String>,
     /// The merge rule that moved it, when one did.
     pub rule_id: Option<String>,
+    /// `move` (the owner's), `merge` (by `rule_id`), or `unmerge` (back,
+    /// when `rule_id` was deleted).
+    pub kind: String,
     pub at: String,
 }
 
@@ -715,6 +718,7 @@ impl Store {
                         moved_by_name: None,
                         rule_id: r.get(6)?,
                         at: r.get(7)?,
+                        kind: r.get(8)?,
                     };
                     if let Some(p) = m.moved_by.strip_prefix("viewer:")
                         && crate::is_public_id(p)

@@ -262,24 +262,52 @@ pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<(
     Ok(())
 }
 
-/// Whether any scope watch of `sid` covering `key` has replies armed, or
-/// `None` when none covers it.
-fn scope_arming(tx: &Connection, sid: &str, key: &PageKey) -> Result<Option<bool>> {
+/// The paths of the threads of live page `?1` made at another path than
+/// the page's (a merge rule's canonical page).
+pub(crate) const THREAD_PATHS_OF_PAGE: &str = "SELECT DISTINCT live_path FROM threads
+    WHERE artifact_id = ?1 AND live_path IS NOT NULL";
+
+/// The keys a scope watch may cover the live page `p` by: its own, and
+/// the path of each of its threads made at another path (spec 2026-10-05
+/// §7.1: a scope on `/users/1` covers the canonical page `/users/:id` once
+/// it holds a thread made at `/users/1`).
+fn page_keys(tx: &Connection, p: &LivePage) -> Result<Vec<PageKey>> {
+    let mut keys = vec![PageKey {
+        origin: p.origin.clone(),
+        path: p.path.clone(),
+    }];
+    let mut st = tx.prepare_cached(THREAD_PATHS_OF_PAGE)?;
+    for path in st.query_map(params![p.artifact_id], |r| r.get::<_, String>(0))? {
+        keys.push(PageKey {
+            origin: p.origin.clone(),
+            path: path?,
+        });
+    }
+    Ok(keys)
+}
+
+/// Whether any scope watch of `sid` covering any of `keys` (one origin's)
+/// has replies armed, or `None` when none covers them.
+fn scope_arming(tx: &Connection, sid: &str, keys: &[PageKey]) -> Result<Option<bool>> {
+    let Some(origin) = keys.first().map(|k| k.origin.clone()) else {
+        return Ok(None);
+    };
     let mut st = tx.prepare(
         "SELECT path, replies_armed FROM live_watches WHERE session_id = ?1 AND origin = ?2",
     )?;
     let rows: Vec<(String, bool)> = st
-        .query_map(params![sid, key.origin], |r| {
+        .query_map(params![sid, origin], |r| {
             Ok((r.get(0)?, r.get::<_, i64>(1)? != 0))
         })?
         .collect::<rusqlite::Result<_>>()?;
     Ok(rows
         .into_iter()
         .filter(|(path, _)| {
-            key.covered_by(&PageKey {
-                origin: key.origin.clone(),
+            let scope = PageKey {
+                origin: origin.clone(),
                 path: path.clone(),
-            })
+            };
+            keys.iter().any(|k| k.covered_by(&scope))
         })
         .map(|(_, armed)| armed)
         .reduce(|a, b| a || b))
@@ -632,11 +660,19 @@ impl Store {
     ) -> Result<Option<Thread>> {
         let taken = std::cell::Cell::new(false);
         let made = self.create_thread_then(id, t, |tx, tid| {
-            if live_path.is_some() {
+            if let Some(path) = live_path {
                 tx.execute(
                     "UPDATE threads SET live_path = ?2 WHERE id = ?1",
-                    params![tid, live_path],
+                    params![tid, path],
                 )?;
+                // Scope watches covering the path now cover the page.
+                if let Some(p) = live_page_of_conn(tx, id.as_str())? {
+                    let key = PageKey {
+                        origin: p.origin,
+                        path: path.to_string(),
+                    };
+                    materialize(tx, id.as_str(), &key)?;
+                }
             }
             let Some(pick) = pick else {
                 return Ok(());
@@ -712,12 +748,9 @@ impl Store {
             )?;
             let mut covered = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
-                let key = PageKey {
-                    origin: p.origin,
-                    path: p.path,
-                };
-                if key.covered_by(scope) {
-                    let armed = scope_arming(tx, sid, &key)?.unwrap_or(replies_armed);
+                let keys = page_keys(tx, &p)?;
+                if keys.iter().any(|k| k.covered_by(scope)) {
+                    let armed = scope_arming(tx, sid, &keys)?.unwrap_or(replies_armed);
                     scope_row(tx, sid, &p.artifact_id, armed)?;
                     covered.push(p.artifact_id);
                 }
@@ -755,14 +788,11 @@ impl Store {
             )?;
             let mut removed = Vec::new();
             for p in pages_of(tx, &scope.origin)? {
-                let key = PageKey {
-                    origin: p.origin,
-                    path: p.path,
-                };
-                if !key.covered_by(scope) {
+                let keys = page_keys(tx, &p)?;
+                if !keys.iter().any(|k| k.covered_by(scope)) {
                     continue;
                 }
-                match scope_arming(tx, sid, &key)? {
+                match scope_arming(tx, sid, &keys)? {
                     // Another scope of the session still covers it: its
                     // arming now follows the scopes left.
                     Some(armed) => scope_row(tx, sid, &p.artifact_id, armed)?,

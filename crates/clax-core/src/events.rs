@@ -46,10 +46,15 @@ pub enum Event {
         resolved_by: String,
         resolved_at: String,
     },
-    /// A thread and its comments were deleted.
+    /// A thread and its comments were deleted. `moved` when the thread
+    /// moved to another live page instead: sent to the page's topics (not
+    /// `site:`) beside `thread_moved`, for clients that know only this
+    /// event; never serialised.
     ThreadDeleted {
         artifact_id: String,
         thread_id: String,
+        #[serde(skip)]
+        moved: bool,
     },
     /// A live page's thread left `artifact_id` for the live page
     /// `to_artifact_id` (a move or a merge); a `thread` event of that page
@@ -363,6 +368,7 @@ mod tests {
             Event::ThreadDeleted {
                 artifact_id: "a".into(),
                 thread_id: "t".into(),
+                moved: false,
             },
             Event::feedback_state("a".into(), s),
             Event::Working {

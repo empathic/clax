@@ -1914,9 +1914,11 @@ versions is a snapshot of the page, taken when a comment is posted.
   page or a merge re-filed the thread there), `page_url` (the origin,
   `page_path` and the thread's route: the URL to open for the thread),
   `moves` (its moves between pages, oldest first: `{from_artifact_id,
-  from_url, to_artifact_id, to_url, moved_by, moved_by_name, rule_id,
-  at}`, where `moved_by` is `viewer:<public ID>` of the owner and `rule_id`
-  the merge rule that moved it, or `null`) and, with the token,
+  from_url, to_artifact_id, to_url, moved_by, moved_by_name, kind,
+  rule_id, at}`, where `moved_by` is `viewer:<public ID>` of the owner,
+  `kind` is `move` (the owner's), `merge` (a rule's) or `unmerge` (back,
+  when the rule was deleted), and `rule_id` that rule, or `null`) and,
+  with the token,
   `snapshot_path` (the absolute path of the thread's version's
   `index.html`; `null` without the token). An agent's feedback payload
   names the same `page_url`.
@@ -1996,27 +1998,34 @@ The threads of every live page of one origin can be listed together,
 followed live, moved from page to page, and grouped by declaring that
 several paths are one page (owner decision 2026-10-06). Every route below
 is under `/api/live/`, so it is hidden from the LAN as above; each takes
-the `Origin` rule of the viewer routes. Reads need an owner credential (the
-token, the extension's credential, or the owner cookie on this machine);
-writes need the token or the extension's credential, else 403 `forbidden`.
+the `Origin` rule of the viewer routes. Reads (the listing, the rules, the
+`site:` topic) need an owner credential (the token, the extension's
+credential, or the owner cookie on this machine); writes need the token or
+the extension's credential; anything else is 403 `forbidden`.
 
+- **Page views** (`page` in every answer below and in `GET
+  /api/live/pages`, `POST /api/live/threads` and `/api/live/snapshots`)
+  carry `merged` (whether the page is a merge rule's canonical page) and
+  `pattern` (that rule's pattern, else `null`). A canonical page's
+  `page_url` is not a URL to open; its threads' `page_url`s are.
 - **`GET /api/live/site?origin=<origin>`** (`origin` may be any URL of the
   origin; the daemon's own origin is 400 `own_origin`) answers `{origin,
-  rules, pages}`. `rules` are the origin's merge rules, oldest first.
-  `pages` are the origin's live pages that have threads, newest activity
-  first, each `{page, summary, threads}`: `page` as `GET /api/live/pages`
-  gives it; `summary` is `{open, addressed, resolved, last_activity}`
-  (counts of its threads: `resolved`, `addressed` (open, with an
-  `addressed_in` version or an `addressed_pending` address), and `open`
-  (the rest); `last_activity` is the newest thread creation, comment or
-  resolve); `threads` are thread views (resolved ones too, with comments,
-  `page_url`, `page_path`, `anchor.route`, `status`, `addressed_in`,
-  `addressed_pending` and `moves`), newest activity first. Searching and
-  filtering are the client's: the views carry each comment's text and
-  author, the page path and the status.
+  rules, pages}`. `rules` are the origin's merge rules in force, oldest
+  first. `pages` are the origin's live pages that have threads, newest
+  activity first, each `{page, summary, threads}`: `summary` is `{open,
+  addressed, resolved, last_activity}` (counts of its threads: `resolved`,
+  `addressed` (open, with an `addressed_in` version or an
+  `addressed_pending` address), and `open` (the rest); `last_activity` is
+  the newest thread creation, comment or resolve); `threads` are thread
+  views (resolved ones too, with comments, `page_url`, `page_path`,
+  `anchor.route`, `status`, `addressed_in`, `addressed_pending` and
+  `moves`), newest activity first. Searching and filtering are the
+  client's: the views carry each comment's text and author, the page path
+  and the status. The listing loads every thread of the origin.
 - **`site:<origin>`** on `/api/stream` (see "The event stream") carries
-  every live page's `artifact:` events for the origin, so a client learns
-  of threads made, changed or moved on any of its pages.
+  every live page's `artifact:` events for the origin, except the
+  `thread_deleted` a move sends for older clients (the topic has
+  `thread_moved`).
 - **`POST /api/live/threads/<tid>/move`** `{page_url}` re-files the live
   page's thread `tid` under the live page `page_url` names (the canonical
   page when a merge rule maps it; made, its version 1 a placeholder, when
@@ -2024,58 +2033,88 @@ writes need the token or the extension's credential, else 403 `forbidden`.
   `{thread, page, moved}`; `moved` is `false`, and nothing is written, when
   the thread is already there with that path and route. The thread keeps
   its ID, comments, sends, feedback rows, status and history. A thread that
-  changes page takes its clip, its pending address and its pick ID along,
-  and its snapshot: the version it was made on, and every version that
-  addressed it, are copied to the new page as new versions noted `moved`,
-  and the thread names the copies (`version_n`, `addressed_in`); when the
-  page existed before, its version current before the move is then copied
-  once more, so its current version is still its own latest snapshot. A
-  move is recorded in the thread's `moves`, by the owner (`viewer:<public
-  ID>`), with the URL it left. The stream gets the new page's `version`s,
-  `thread_moved` on the page left, then the thread's `thread` on the new
+  changes page takes along:
+  - its clip, its pending address and its pick ID;
+  - its snapshot: the version it was made on, and every version that
+    addressed it, become versions of the new page (`version_n`,
+    `addressed_in`): a version the page already holds with the same bytes
+    (a thread moved back, say), else a copy written as a new version noted
+    `moved`. When copies were written to a page that existed before, its
+    newest version not noted `moved` is written once more on top, with its
+    own note, so its current version is still its own latest snapshot;
+  - its agents: every live session watching the page it left, the session
+    it was sent to, and every session with feedback of it not yet
+    acknowledged watch the new page too (with the arming they had), and so
+    does every scope watch covering the path the thread was made at; so
+    undelivered feedback and later comments still reach them.
+
+  The re-filing, its copies included, is one transaction: on any failure
+  nothing of it is left (a page made for it may stay, empty). A move is
+  recorded in the thread's `moves` (`kind: "move"`), by the owner
+  (`viewer:<public ID>`), with the URL it left. The stream gets the new
+  page's `version`s, then on the page left `thread_moved` and, on its own
+  topics (`artifact:<aid>`, `gallery`) but not `site:`, `thread_deleted`
+  (for clients that know only that), then the thread's `thread` on the new
   page. 400 `cross_origin` for a page of another origin, writing nothing;
   the URL errors of `POST /api/live/threads` (`own_origin` too); 404 for a
   missing thread, or one that is not a live page's.
 - **Merge rules.** A rule `{origin, pattern}` says that the live pages of
   `origin` whose path `pattern` matches are one page: the **canonical
-  page**, the live page whose path is the pattern itself (`/users/:id`). A
-  pattern starts with `/`, is at most 256 bytes and 16 segments, and each
-  `/`-separated segment is a literal (ASCII letters, digits, and
-  `-._~!$&'()+,;=@:%`, with `%` followed by two hex digits, not starting
-  with `:`), `:name` (1 to 32 ASCII letters, digits or `_`; matches any one
-  non-empty segment), or, as the last segment only, `*` (matches one or
-  more segments, the first not empty). There are no regular expressions,
-  no empty segments, no trailing slash and no `.` or `..` segments, and a
-  pattern needs at least one `:name` or `*`; anything else is 400
+  page**, the live page whose path is the pattern itself (`/users/:id`),
+  titled with its URL when a rule makes it. A pattern starts with `/`, is at
+  most 256 bytes and 16 segments, and each `/`-separated segment is a
+  literal (ASCII letters, digits, and `-._~!$&'()+,;=@:%`, with `%`
+  followed by two hex digits, not starting with `:`), `:name` (1 to 32
+  ASCII letters, digits or `_`; matches any one non-empty segment), or, as
+  the last segment only, `*` (matches one or more segments, the first not
+  empty). A pattern needs at least one literal segment and at least one
+  `:name` or `*` (so `/*`, `/:x` and `/:a/:b` are refused: no rule merges
+  a whole site). There are no regular expressions, no empty segments, no
+  trailing slash and no `.` or `..` segments; anything else is 400
   `invalid_pattern`, as is a pattern the URL parser would write otherwise.
   A literal matches only the same text: `/users/:id` matches `/users/7`,
-  not `/users/7/` or `/users/7/edit`. When several rules of the origin
-  match a path, the one with the most literal segments wins, then the one
-  with the most `:name` segments, then the oldest. An origin holds at most
-  64 rules (400 `too_many_rules`); the daemon's own origin is 400
-  `own_origin`.
+  not `/users/7/` or `/users/7/edit`. A rule's own pattern, as a path,
+  always names its canonical page. Otherwise, when several rules of the
+  origin match a path, the one with the most literal segments wins, then
+  the one with the most `:name` segments, then the oldest. An origin holds
+  at most 64 rules in force (400 `too_many_rules`); the daemon's own origin
+  is 400 `own_origin`. A rule is `{id, origin, pattern, page_url,
+  created_at, deleting}`, where `page_url` is the canonical page's URL
+  (the origin followed by the pattern).
   - `POST /api/live/rules` `{origin, pattern}` (`origin` may be any URL of
-    the origin) adds the rule and applies it: every thread of the origin's
-    live pages whose path (its `page_path`) the rule now wins, and that is
-    not on the canonical page, is re-filed there as a move does (made when
-    missing), its `page_path` and route kept and its move naming the rule.
-    It answers `201 {rule, page, moved}` (`page`: the canonical page, or
-    `null` when it does not exist; `moved`: the re-filed thread IDs); a rule
-    the origin already has answers `200` the same way, applied again.
+    the origin) adds the rule and applies it: the threads of the origin's
+    live pages whose path (their `page_path`) the rule now wins, and that
+    are not on the canonical page, are re-filed there as a move does (the
+    page made when missing), their `page_path` and route kept and their
+    move `kind: "merge"` naming the rule; at most 200 a request, all in one
+    transaction. It answers `201 {rule, page, moved, remaining}` (`page`:
+    the canonical page, or `null` when it does not exist; `moved`: the
+    re-filed thread IDs; `remaining`: how many are left). While `remaining`
+    is above 0, the client sends the same request again: a rule the origin
+    already has answers `200` the same way and re-files the next ones; a
+    thread already on the canonical page is never copied again.
   - From then on, every URL whose path the rule wins names the canonical
     page: `GET /api/live/pages` answers it, `POST /api/live/threads` and
     `/api/live/snapshots` write to it, and a thread made there keeps the
-    URL's path as its `page_path`.
-  - `GET /api/live/rules?origin=<origin>` answers `{origin, rules}`, oldest
-    first. A rule is `{id, origin, pattern, page_url, created_at}`, where
-    `page_url` is the canonical page's URL (the origin followed by the
-    pattern).
-  - `DELETE /api/live/rules/<id>` removes the rule and answers `{rule}`
-    (404 when there is none). Matching URLs name their own pages again; it
-    does not undo the merge: the threads it re-filed stay on the canonical
-    page, and the pages they left stay, with their snapshots.
+    URL's path as its `page_path`. A scope watch covering that path covers
+    the canonical page from the first such thread on. A snapshot taken at a
+    path links only the pending addresses of threads made at that path
+    (`page_path`), whatever its `pending` names.
+  - `GET /api/live/rules?origin=<origin>` answers `{origin, rules}`, the
+    rules in force, oldest first.
+  - `DELETE /api/live/rules/<id>` deletes the rule and un-merges (owner
+    ruling 2026-10-06): the rule maps nothing from then on, and each thread
+    on its canonical page that a rule put there (merged, or made at a path
+    it mapped), not the owner (whose latest move into it is a `move`), goes
+    back to the page of the path it was made at (made when missing; another
+    rule's canonical page when one maps that path), as a move does, its
+    move `kind: "unmerge"` naming the rule; at most 200 a request, in one
+    transaction. It answers `{rule, moved, remaining}`; while `remaining`
+    is above 0 the rule stays, `deleting: true` and in force for nothing,
+    and the client repeats the request; then it is gone (404). Adding the
+    same pattern again while it is `deleting` puts it back in force.
 - **Deleting a page** a thread was moved from leaves the thread whole: its
-  snapshot copies, links and send records live on its new page.
+  snapshot versions, links and send records live on its new page.
 
 ### The Clax extension's credentials
 
@@ -2535,7 +2574,7 @@ except as noted:
 | `presence:<aid>` | Its `presence` changes, and `artifact_deleted`. |
 | `working:<aid>` | Its `working` list, and `artifact_deleted`. |
 | `docs:<aid>` | Its `doc` events the caller may see, and `artifact_deleted`; needs `db` declared, or the token. |
-| `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin, those made later included. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic). |
+| `site:<origin>` | What `artifact:<aid>` carries, for every live page of the origin, those made later included. `<origin>` is written as the daemon normalizes it (`http://localhost:5173`: scheme, lowercased host, port unless the scheme's default, no path), else 400 `invalid_topic`. Only a stream that may see live pages takes it (404 `not_found` otherwise, as for a live page's topic), and only an owner's (403 `forbidden` otherwise). The `thread_deleted` a move sends for older clients is not on it. |
 
 **Events.** Every event but `ready` and `resync` carries `id:
 <stream>:<seq>`. `seq` is one sequence for the whole daemon, rising with
@@ -2563,8 +2602,12 @@ event's data names its `topic`. Events carry what changed:
 - `thread_deleted`: `{topic, artifact_id, thread_id}`.
 - `thread_moved`: `{topic, artifact_id, thread_id, to_artifact_id}`: a live
   page's thread left `artifact_id` for the live page `to_artifact_id` (a
-  move or a merge; see "Site-wide threads"). The thread is not deleted: a
-  `thread` event of `to_artifact_id` follows with its view there.
+  move, a merge or an un-merge; see "Site-wide threads"). The thread is
+  not deleted: a `thread` event of `to_artifact_id` follows with its view
+  there. Until every client knows this event, a `thread_deleted` for the
+  thread follows it on `artifact:<aid>` and `gallery` (not on `site:`);
+  a client that knows `thread_moved` ignores a `thread_deleted` of a
+  thread it has already moved.
 - `feedback_state`: `{topic, artifact_id, thread_id, state, tier, since,
   resends, exhausted}`, as on `/api/events`.
 - `working` on `working:<aid>`: `{topic, artifact_id, working: [view]}`, the

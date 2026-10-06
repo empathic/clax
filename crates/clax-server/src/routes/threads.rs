@@ -860,6 +860,7 @@ pub async fn delete(
             ctx.events.publish(Event::ThreadDeleted {
                 artifact_id: aid.clone(),
                 thread_id: tid.clone(),
+                moved: false,
             });
             apply(&ctx, st, &touched);
             Ok(Outcome::Done(json!({"deleted": true, "thread_id": tid})))

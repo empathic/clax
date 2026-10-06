@@ -186,7 +186,8 @@ impl PathPattern {
     /// [`MAX_PATTERN_SEGMENTS`] segments, has an empty or dot segment, a
     /// `:name` that is not 1 to [`MAX_PARAM_NAME`] ASCII letters, digits or
     /// `_`, a `*` that is not the whole last segment, a literal with any
-    /// other character, or no `:name` or `*` at all.
+    /// other character, no `:name` or `*` at all, or no literal segment (so
+    /// no rule merges a whole site).
     pub fn parse(text: &str) -> Result<PathPattern> {
         if text.len() > MAX_PATTERN {
             return Err(bad_pattern(format!(
@@ -232,6 +233,9 @@ impl PathPattern {
         }
         if !segs.iter().any(|s| matches!(s, Seg::Param | Seg::Rest)) {
             return Err(bad_pattern("a pattern has a :name or * segment"));
+        }
+        if !segs.iter().any(|s| matches!(s, Seg::Literal(_))) {
+            return Err(bad_pattern("a pattern has a literal segment"));
         }
         Ok(PathPattern {
             text: text.to_string(),
@@ -416,7 +420,7 @@ mod tests {
             "/users/:id",
             "/users/:id/edit",
             "/files/*",
-            "/:a/:b",
+            "/:a/b",
             "/a%20b/:x",
             "/v1.2/:id",
             "/a:b/:id",
@@ -425,6 +429,10 @@ mod tests {
         }
         for bad in [
             "users/:id",
+            "/:a/:b",
+            "/*",
+            "/:x",
+            "/:x/*",
             "/users",
             "/",
             "/users/",
@@ -476,12 +484,13 @@ mod tests {
 
     #[test]
     fn the_most_specific_rule_wins_then_the_oldest() {
-        let rules = ["/users/*", "/:a/:b", "/users/:id", "/:x/edit"];
+        let rules = ["/users/*", "/teams/:id", "/users/:id", "/:x/edit"];
         let win = |path| winning_rule(&rules, |r| r, path).copied();
         assert_eq!(win("/users/1"), Some("/users/:id"));
         assert_eq!(win("/users/1/x"), Some("/users/*"));
-        assert_eq!(win("/teams/1"), Some("/:a/:b"));
-        assert_eq!(win("/teams/edit"), Some("/:x/edit"), "more literals");
+        assert_eq!(win("/teams/1"), Some("/teams/:id"));
+        assert_eq!(win("/teams/edit"), Some("/teams/:id"), "a tie: the oldest");
+        assert_eq!(win("/x/edit"), Some("/:x/edit"));
         assert_eq!(win("/"), None);
         let tie = ["/:a/x", "/x/:b"];
         assert_eq!(winning_rule(&tie, |r| r, "/x/x").copied(), Some("/:a/x"));

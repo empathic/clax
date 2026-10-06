@@ -135,7 +135,8 @@ fn topics(names: &[String]) -> Result<Vec<Topic>, ApiError> {
 ///
 /// Checked once, here: every subscribed artifact exists, and is not a live
 /// page the stream may not see (404 otherwise), a `site:<origin>` topic
-/// needs a stream that may see live pages (404 otherwise), and
+/// needs a stream that may see live pages (404 otherwise) and an owner
+/// credential (403 `forbidden` otherwise), and
 /// a `docs` topic needs the artifact to declare `db` unless the caller holds
 /// the token, in `Authorization` or as the events cookie (403 `not_declared`). 404 `unknown_stream` when no stream has
 /// that ID for this caller (a stream opened through the extension gateway
@@ -175,8 +176,17 @@ pub async fn update(
     for aid in add.iter().filter_map(Topic::artifact) {
         sees.check(&s.live_ids, aid)?;
     }
-    if !sees.may_see && add.iter().any(|t| matches!(t, Topic::Site(_))) {
-        return Err(CoreError::NotFound.into());
+    if add.iter().any(|t| matches!(t, Topic::Site(_))) {
+        if !sees.may_see {
+            return Err(CoreError::NotFound.into());
+        }
+        // The read rule of `GET /api/live/site`.
+        if !who.is_owner() {
+            return Err(ApiError::forbidden(
+                "forbidden",
+                "only the owner follows a site's threads",
+            ));
+        }
     }
     let token = token_or_cookie(&headers, &s.token, &who);
     let check = add.clone();
