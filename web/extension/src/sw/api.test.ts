@@ -115,6 +115,13 @@ describe("Api", () => {
     expect(JSON.parse(String(s.calls[0].init.body))).toEqual({ artifact_id: AID, state: "here", tab: "clax-ext:12" });
   });
 
+  it("reads who is on a live page", async () => {
+    const s = setup([ok({ people: [] })]);
+    expect(await s.api.presenceOf(AID)).toEqual({ people: [] });
+    expect(s.calls[0].url).toBe(`${A.daemon}/api/artifacts/${AID}/presence`);
+    await expect(s.api.presenceOf("../x")).rejects.toMatchObject({ code: "invalid_id" });
+  });
+
   it("names the pending threads a snapshot covers, an empty list when none", async () => {
     const s = setup([ok({}), ok({}), new Response("{}", { status: 401 }), ok({})]);
     const form = () => { const f = new FormData(); f.set("url", "http://localhost:5173/"); return f; };

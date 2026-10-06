@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
 import type { PageView, WorkerToOverlay, WorkerToPanel } from "../messages";
 import { FakeEvent } from "../../test/fake-chrome";
@@ -73,6 +73,8 @@ function harness(store = memory(), docs = documents()) {
     working: async (aid: string) => { calls.push(`working ${aid}`); const out = working.get(aid) ?? []; await gate.working; return out as never; },
     artifact: async (aid: string) => { calls.push(`artifact ${aid}`); return { artifact: { id: aid, participants: { people: [], agents: [{ handle: "a_1", harness: "claude", live: true }] } }, versions: [{ artifact_id: aid, n: 1 }] } as never; },
     me: async () => { calls.push("me"); return { viewer: { public_id: "u_owner", display_name: "Alex", created_at: "t" } }; },
+    presence: async (aid: string, windowId: number) => { calls.push(`presence ${aid} ${windowId}`); return { people: [here("u_owner")] }; },
+    presenceOf: async (aid: string) => { calls.push(`presenceOf ${aid}`); return { people: [here("u_mia")] }; },
   };
   const tabs = new Tabs({
     api,
@@ -96,6 +98,7 @@ function port(name = "panel:1") {
 const settle = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
 const URL1 = "http://localhost:5173/";
 function hold() { let release!: () => void; const p = new Promise<void>(r => { release = r; }); return { p, release }; }
+const here = (id: string) => ({ public_id: id, display_name: id, state: "here" as const, where: null, since: "t" });
 const resolvedDelta = (id: string) => ({ ...thread(id, "one"), status: "resolved" });
 
 describe("Tabs", () => {
@@ -441,5 +444,104 @@ describe("Tabs", () => {
     const after = harness(store);
     await after.tabs.ready();
     expect(after.tabs.admits(4)).toBe(false);
+  });
+});
+
+describe("Tabs and side panels", () => {
+  afterEach(() => vi.useRealTimers());
+  const tabMsgs = (p: ReturnType<typeof port>) => p.sent.filter(m => m.t === "tab").map(m => (m as Extract<WorkerToPanel, { t: "tab" }>).state);
+
+  it("follows the presence of the page a panel shows, through a hub client of its own", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    const p = port("panel:2");
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    await settle();
+    const client = h.hubIn.find(x => x.id.startsWith("panel:"))!;
+    expect(client.msg).toEqual({ t: "topics", topics: [`presence:${AID}`] });
+    h.tabs.fromHub([client.id], { t: "live", topics: [`presence:${AID}`] });
+    await settle();
+    expect(h.calls).toContain(`presenceOf ${AID}`);
+    expect(tabMsgs(p).at(-1)?.presence).toEqual([here("u_mia")]);
+    h.tabs.fromHub([client.id], { t: "event", topic: `presence:${AID}`, name: "presence", data: { artifact_id: AID, people: [here("u_ana")], gone: ["u_mia"] } });
+    expect(tabMsgs(p).at(-1)?.presence).toEqual([here("u_ana")]);
+    h.tabs.fromHub([client.id], { t: "ping" });
+    expect(h.hubIn.at(-1)).toEqual({ id: client.id, msg: { t: "ping" } });
+    p.onDisconnect.fire();
+    expect(h.detached).toContain(client.id);
+  });
+
+  it("reports the owner here every 30 s while a visible panel shows a live page, and never away", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.route(4, URL1);
+    const p = port("panel:2");
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toEqual([]);
+    p.onMessage.fire({ t: "visible", on: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toEqual([`presence ${AID} 2`]);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toHaveLength(2);
+    // Hidden: the report lapses; nothing says away.
+    p.onMessage.fire({ t: "visible", on: false });
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toHaveLength(2);
+    p.onMessage.fire({ t: "visible", on: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toHaveLength(3);
+    p.onDisconnect.fire();
+    await vi.advanceTimersByTimeAsync(90_000);
+    expect(h.calls.filter(c => c.startsWith("presence "))).toHaveLength(3);
+  });
+
+  it("reports nothing for a tab with no live page", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    h.pages.set(URL1, { page: null, route: null });
+    await h.tabs.route(4, URL1);
+    const p = port("panel:2");
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    p.onMessage.fire({ t: "visible", on: true });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(h.calls.filter(c => c.startsWith("presence"))).toEqual([]);
+    expect(h.hubIn.some(x => x.id.startsWith("panel:"))).toBe(false);
+  });
+
+  it("selects a thread, pinning it in the overlay, and sets comment mode from the panel", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    await h.tabs.toggle(4, URL1);
+    await settle();
+    h.tabs.select(4, T1);
+    expect(h.tabs.state(4)?.selected).toBe(T1);
+    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "scroll-to", threadId: T1 } });
+    h.tabs.select(4, null);
+    expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "focus", threadId: null } });
+    h.tabs.setCommentMode(4, false);
+    expect(h.tabs.state(4)?.commentMode).toBe(false);
+  });
+
+  it("applies a thread an action answered with, and the owner's new name, to every panel", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    await h.tabs.route(4, URL1);
+    const p = port("panel:2");
+    h.tabs.attachPanel(p as unknown as chrome.runtime.Port, () => {});
+    p.onMessage.fire({ t: "watch-tab", tabId: 4 });
+    await settle();
+    h.tabs.applied(4, full(T1, { status: "resolved" }) as never);
+    expect(h.tabs.state(4)?.threads[0].status).toBe("resolved");
+    h.tabs.removed(4, T1);
+    expect(h.tabs.state(4)?.threads).toEqual([]);
+    h.tabs.setViewer({ public_id: "u_owner", display_name: "Mia", created_at: "t" });
+    expect(tabMsgs(p).at(-1)?.viewer).toEqual({ public_id: "u_owner", display_name: "Mia" });
   });
 });

@@ -8,11 +8,12 @@
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Participants, Version } from "../../../shell/src/api";
 import type { HubMsg, TabMsg } from "../../../shell/src/stream-hub";
-import type { FeedbackState, Thread } from "../../../shell/src/threads";
-import { type ThreadDelta, applyThread } from "../../../shell/src/view/deltas";
+import { type FeedbackState, type Thread, type Viewer, upsert } from "../../../shell/src/threads";
+import { type ThreadDelta, applyPresence, applyThread } from "../../../shell/src/view/deltas";
+import type { PresenceView } from "../../../shell/src/view/presence-model";
 import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sync";
 import type { Working } from "../../../shell/src/view/working-model";
-import { type OverlayToWorker, type PageView, type PanelState, type WorkerToOverlay, type WorkerToPanel, isFromPanel, waitsForSnapshot } from "../messages";
+import { type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, type WorkerToOverlay, type WorkerToPanel, isFromPanel, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 
 type Owner = { public_id: string; display_name: string | null };
@@ -70,7 +71,18 @@ export function applyEvent(s: TabState, name: string, data: Record<string, unkno
 }
 
 /** The daemon calls the tabs make. */
-export type TabsApi = Pick<Api, "lookup" | "threads" | "thread" | "working" | "artifact" | "me">;
+export type TabsApi = Pick<Api, "lookup" | "threads" | "thread" | "working" | "artifact" | "me" | "presence" | "presenceOf">;
+
+/** How often a visible panel's owner is reported here (spec §9.5). */
+export const PRESENCE_MS = 30_000;
+
+/** A side panel's port and what the worker keeps for it: the tab it shows,
+ * its window, whether it is visible, its hub client (the page's presence
+ * topic) and the presence it heard, and its 30 s report. */
+type PanelEntry = {
+  port: chrome.runtime.Port; tabId: number | null; windowId: number; visible: boolean;
+  hubId: string; aid: string | null; presence: PresenceView[]; beat: ReturnType<typeof setInterval> | null;
+};
 
 type Area = { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
 type Saved = { url: string; overlay: boolean; commentMode: boolean; active: boolean };
@@ -99,6 +111,7 @@ const failure = (e: unknown) => {
 };
 const hubId = (tabId: number) => `tab:${tabId}`;
 const tabOf = (id: string) => (id.startsWith("tab:") ? Number(id.slice(4)) : Number.NaN);
+const presenceList = (v: unknown): PresenceView[] => (Array.isArray(v) ? (v as PresenceView[]) : []);
 
 export class Tabs {
   private tabs = new Map<number, TabState>();
@@ -112,7 +125,8 @@ export class Tabs {
   private stale = new Set<number>();
   /** Tabs with a refetch queued for this turn. */
   private refreshing = new Set<number>();
-  private panels = new Set<{ port: chrome.runtime.Port; tabId: number | null }>();
+  private panels = new Set<PanelEntry>();
+  private panelSeq = 0;
   private viewer: Owner | null = null;
   private streamUp = true;
   private saving = false;
@@ -172,7 +186,71 @@ export class Tabs {
   }
 
   private tellPanels(tabId: number): void {
-    for (const p of this.panels) if (p.tabId === tabId) p.port.postMessage({ t: "tab", state: this.panelState(tabId) } satisfies WorkerToPanel);
+    for (const p of this.panels) {
+      if (p.tabId !== tabId) continue;
+      this.followPage(p);
+      this.tellPanel(p);
+    }
+  }
+
+  private tellPanel(p: PanelEntry): void {
+    p.port.postMessage({ t: "tab", state: { ...this.panelState(p.tabId), presence: p.presence } } satisfies WorkerToPanel);
+  }
+
+  /** The panel's hub client follows the presence of the live page its tab
+   * shows, and its owner is reported here while it is visible there. */
+  private followPage(p: PanelEntry): void {
+    const aid = p.tabId === null ? null : (this.tabs.get(p.tabId)?.page?.artifact_id ?? null);
+    if (aid === p.aid) return;
+    p.aid = aid;
+    p.presence = [];
+    this.d.hub.receive(p.hubId, { t: "topics", topics: aid ? [`presence:${aid}`] : [] });
+    this.report(p);
+  }
+
+  /** Starts or stops the panel's presence report: `here` now and every
+   * 30 s while it is visible and shows a live page; never `away`, so a
+   * hidden panel's report lapses rather than hiding a shell tab's `here`. */
+  private report(p: PanelEntry): void {
+    if (p.beat !== null) { clearInterval(p.beat); p.beat = null; }
+    const aid = p.aid;
+    if (!aid || !p.visible || !this.panels.has(p)) return;
+    const once = () => {
+      void this.d.api.presence(aid, p.windowId).then(r => {
+        if (p.aid === aid && r?.people) this.takePresence(p, presenceList(r.people));
+      }, () => {});
+    };
+    once();
+    p.beat = setInterval(once, PRESENCE_MS);
+  }
+
+  private takePresence(p: PanelEntry, people: PresenceView[]): void {
+    p.presence = people;
+    if (this.panels.has(p)) this.tellPanel(p);
+  }
+
+  private async fetchPresence(p: PanelEntry): Promise<void> {
+    const aid = p.aid;
+    if (!aid) return;
+    const r = await this.d.api.presenceOf(aid).catch(() => null);
+    if (r && p.aid === aid) this.takePresence(p, presenceList(r.people));
+  }
+
+  /** One hub message for a panel's client. */
+  private fromHubPanel(id: string, msg: HubMsg): void {
+    const p = [...this.panels].find(x => x.hubId === id);
+    if (!p) return;
+    switch (msg.t) {
+      case "ping": this.d.hub.receive(id, { t: "ping" }); break;
+      case "live": case "resync": void this.fetchPresence(p); break;
+      case "event":
+        if (msg.name === "presence" && p.aid && msg.data.artifact_id === p.aid) {
+          const gone = Array.isArray(msg.data.gone) ? msg.data.gone.filter((g): g is string => typeof g === "string") : [];
+          this.takePresence(p, applyPresence(p.presence, presenceList(msg.data.people), gone));
+        }
+        break;
+      default: break;
+    }
   }
 
   private watched(tabId: number): boolean {
@@ -366,6 +444,7 @@ export class Tabs {
   fromHub(ids: string[], msg: HubMsg): void {
     if (msg.t === "status") { this.status(ids, msg.up); return; }
     for (const id of ids) {
+      if (id.startsWith("panel:")) { this.fromHubPanel(id, msg); continue; }
       const tabId = tabOf(id);
       const s = this.tabs.get(tabId);
       if (!s) continue;
@@ -426,6 +505,38 @@ export class Tabs {
     }
   }
 
+  /** The panel selected a thread (null: none): the overlay pins it and scrolls to it. */
+  select(tabId: number, threadId: string | null): void {
+    const s = this.tabs.get(tabId);
+    if (!s) return;
+    this.set(tabId, { ...s, selected: threadId });
+    this.d.toOverlay(tabId, threadId === null ? { t: "focus", threadId: null } : { t: "scroll-to", threadId });
+  }
+
+  /** The panel turned comment mode on or off; the overlay follows the tab's state. */
+  setCommentMode(tabId: number, on: boolean): void {
+    const s = this.tabs.get(tabId);
+    if (s) this.set(tabId, { ...s, commentMode: on });
+  }
+
+  /** A thread an action answered with, applied at once (the stream brings it too). */
+  applied(tabId: number, thread: Thread): void {
+    const aid = this.tabs.get(tabId)?.page?.artifact_id;
+    if (aid && thread.artifact_id === aid) this.syncFor(tabId, aid).change(ts => upsert(ts, thread));
+  }
+
+  /** A thread an action deleted. */
+  removed(tabId: number, threadId: string): void {
+    const aid = this.tabs.get(tabId)?.page?.artifact_id;
+    if (aid) this.syncFor(tabId, aid).change(ts => ts.filter(t => t.id !== threadId));
+  }
+
+  /** The owner as the daemon answered (its name set): every panel shows it. */
+  setViewer(v: Viewer): void {
+    this.viewer = { public_id: v.public_id, display_name: v.display_name };
+    for (const p of this.panels) this.tellPanel(p);
+  }
+
   /** The owner, and the page's versions and participants, for a panel. */
   private async details(tabId: number): Promise<void> {
     const aid = this.tabs.get(tabId)?.page?.artifact_id;
@@ -471,19 +582,30 @@ export class Tabs {
    * hears of on every change, with the stream's status. Every message it
    * sends passes `isFromPanel` before anything acts on it, and then goes to
    * `onMessage`. */
-  attachPanel(port: chrome.runtime.Port, onMessage: (tabId: number | null, m: unknown) => void): void {
-    const entry = { port, tabId: null as number | null };
+  attachPanel(port: chrome.runtime.Port, onMessage: (tabId: number | null, m: PanelToWorker, windowId: number) => void): void {
+    const windowId = Number(port.name.slice("panel:".length));
+    const entry: PanelEntry = {
+      port, tabId: null, windowId: Number.isSafeInteger(windowId) ? windowId : -1, visible: false,
+      hubId: `panel:${++this.panelSeq}`, aid: null, presence: [], beat: null,
+    };
     this.panels.add(entry);
     port.onMessage.addListener((m: unknown) => {
       if (!isFromPanel(m)) return;
       if (m.t === "watch-tab") {
         entry.tabId = m.tabId;
-        port.postMessage({ t: "tab", state: this.panelState(entry.tabId) } satisfies WorkerToPanel);
+        this.followPage(entry);
+        this.tellPanel(entry);
         port.postMessage({ t: "stream-status", up: this.streamUp } satisfies WorkerToPanel);
         void this.details(m.tabId);
+      } else if (m.t === "visible") {
+        if (entry.visible !== m.on) { entry.visible = m.on; this.report(entry); }
       }
-      onMessage(entry.tabId, m);
+      onMessage(entry.tabId, m, entry.windowId);
     });
-    port.onDisconnect.addListener(() => this.panels.delete(entry));
+    port.onDisconnect.addListener(() => {
+      this.panels.delete(entry);
+      if (entry.beat !== null) clearInterval(entry.beat);
+      this.d.hub.detach(entry.hubId);
+    });
   }
 }

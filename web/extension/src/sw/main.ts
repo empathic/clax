@@ -8,12 +8,13 @@ import { type OverlayToWorker, isFromOverlay, isFromPanel } from "../messages";
 import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
 import { PairError } from "./pairing";
+import { type PanelDeps, panelAction } from "./panel";
 import { composerTab, createWorker } from "./worker";
 
 const originsEnv: origins.OriginsEnv = { permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local };
 // The pairing (the credential) and the tabs' record stay out of content scripts' reach (spec §10.2).
 void chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
-const { pairer, tabs, picks, fromOverlay } = createWorker({
+const { pairer, api, tabs, picks, fromOverlay } = createWorker({
   pair: {
     sendNative: async (host, msg) => {
       try { return await chrome.runtime.sendNativeMessage(host, msg); }
@@ -86,7 +87,7 @@ chrome.runtime.onConnect.addListener(port => {
   let page = "";
   try { page = s.url ? new URL(s.url).pathname : ""; } catch { /* no page */ }
   if (port.name.startsWith("panel:") && page === "/sidepanel.html" && s.tab === undefined) {
-    tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(tabId, m); });
+    tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(panelDeps, tabId, m, r => { try { port.postMessage(r); } catch { /* the panel closed */ } }); });
     return;
   }
   // A composer frame: the worker then takes it only for its tab's current pick.
@@ -95,8 +96,14 @@ chrome.runtime.onConnect.addListener(port => {
   port.disconnect();
 });
 
-/** A side panel's action; Task 14 fills the cases. */
-async function panelAction(_tabId: number | null, _m: unknown): Promise<void> {}
+/** What a side panel's actions reach (spec §9.4). */
+const panelDeps: PanelDeps = {
+  api, tabs, pairer,
+  allUrls: () => chrome.permissions.contains({ origins: ["<all_urls>"] }),
+  navigate: async (tabId, url) => { await chrome.tabs.update(tabId, { url }); },
+  // The overlay goes with the document: the tab loads again without Clax.
+  turnOff: async (tabId, origin) => { await origins.forget(originsEnv, origin); await chrome.tabs.reload(tabId); },
+};
 
 if (__CLAX_EXT_TEST__) {
   (globalThis as unknown as { claxTest: unknown }).claxTest = {

@@ -3,6 +3,7 @@
 // daemon pairs again (at most once per request) and retries once.
 import type { Artifact, Version } from "../../../shell/src/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
+import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
 import type { PageView } from "../messages";
 import { PairError, type Pairer, type Pairing } from "./pairing";
@@ -113,6 +114,8 @@ export class Api {
   async presence(aid: string, windowId: number) {
     ids(aid);
     if (!Number.isSafeInteger(windowId)) throw new ApiFailure("invalid_id", "not a window ID");
-    return this.send<unknown>("PUT", "/api/viewers/me/presence", { artifact_id: aid, state: "here", tab: `clax-ext:${windowId}` });
+    return this.send<{ people?: PresenceView[] }>("PUT", "/api/viewers/me/presence", { artifact_id: aid, state: "here", tab: `clax-ext:${windowId}` });
   }
+  /** Who is on the live page now. */
+  async presenceOf(aid: string) { ids(aid); return this.json<{ people?: PresenceView[] }>(`/api/artifacts/${aid}/presence`); }
 }

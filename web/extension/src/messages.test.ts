@@ -144,6 +144,8 @@ describe("messages", () => {
     expect(isFromPanel({ t: "watch-tab", tabId: -1 })).toBe(false);
     expect(isFromPanel({ t: "watch-tab", tabId: 7 })).toBe(true);
     expect(isFromPanel({ t: "turn-off" })).toBe(true);
+    expect(isFromPanel({ t: "visible", on: false })).toBe(true);
+    expect(isFromPanel({ t: "visible", on: "yes" })).toBe(false);
   });
 
   it("refuses an unknown field on every message", () => {
@@ -165,7 +167,7 @@ describe("messages", () => {
       { t: "watch-tab", tabId: 1 }, { t: "send", threadId: ULID, to: null }, { t: "send-batch", threadIds: [ULID], note: null, to: null },
       { t: "reply", threadId: ULID, body: "ok" }, { t: "resolve", threadId: ULID }, { t: "reopen", threadId: ULID }, { t: "delete", threadId: ULID },
       { t: "looked", threadIds: [ULID] }, { t: "set-name", name: "Ana" }, { t: "select", threadId: null }, { t: "comment-mode", on: true },
-      { t: "navigate", route: null }, { t: "turn-off" }, { t: "retry" }, { t: "ping" },
+      { t: "navigate", route: null }, { t: "turn-off" }, { t: "retry" }, { t: "ping" }, { t: "visible", on: true },
     ];
     const toComposer = [
       { t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw0KGgo=", clipError: null, capturing: false },

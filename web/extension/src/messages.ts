@@ -9,6 +9,7 @@
 import type { Anchor, AnchorResult } from "../../bridge/src/protocol";
 import type { Participants, Version } from "../../shell/src/api";
 import type { Thread } from "../../shell/src/threads";
+import type { PresenceView } from "../../shell/src/view/presence-model";
 import type { Working } from "../../shell/src/view/working-model";
 
 export const MAX_URL = 4096;
@@ -92,6 +93,8 @@ export type PanelState = {
   enabled: boolean;
   selected: string | null;
   error: { code: string; message: string } | null;
+  /** Who is on the page now (its `presence:<aid>` topic, which the worker follows for this panel). */
+  presence?: PresenceView[];
 };
 export type WorkerToPanel =
   | { t: "tab"; state: PanelState }
@@ -115,6 +118,8 @@ export type PanelToWorker =
   | { t: "navigate"; route: string | null }
   | { t: "turn-off" }
   | { t: "retry" }
+  /** Whether the panel's document is visible: the worker reports the owner here only while it is. */
+  | { t: "visible"; on: boolean }
   | { t: "ping" };
 
 type Obj = Record<string, unknown>;
@@ -272,7 +277,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
     case "looked": return has("threadIds") && Array.isArray(m.threadIds) && m.threadIds.length <= 50 && m.threadIds.every(ulid);
     case "set-name": return has("name") && str(m.name, 64);
     case "select": return has("threadId") && (m.threadId === null || ulid(m.threadId));
-    case "comment-mode": return has("on") && bool(m.on);
+    case "comment-mode": case "visible": return has("on") && bool(m.on);
     case "navigate": return has("route") && (m.route === null || str(m.route, MAX_ROUTE));
     case "turn-off": case "retry": case "ping": return has();
     default: return false;
