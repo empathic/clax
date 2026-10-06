@@ -176,7 +176,7 @@ pub async fn page(
     let (found, rule) = s
         .store_call(move |st| {
             // The extension looks a tab's URL up: its origin is in use.
-            live_ids.touch(st, &key.origin)?;
+            touch(&live_ids, st, &key.origin);
             let r = st.resolve_live_key(&key)?;
             let Some(p) = st.find_live_page(&r.key)? else {
                 return Ok((None, r.rule));
@@ -192,6 +192,14 @@ pub async fn page(
         "route": pu.route,
         "rule": rule.as_ref().map(rule_view),
     })))
+}
+
+/// Records that Clax used `origin` (spec §7.2: a joined site is named after
+/// its most recently used origin); a failure to record it is only logged.
+fn touch(ids: &crate::live::LiveIds, st: &Store, origin: &str) {
+    if let Err(e) = ids.touch(st, origin) {
+        tracing::warn!(error = %e, origin, "could not record a joined origin's use");
+    }
 }
 
 /// The fields of a `POST /api/live/threads`.
@@ -384,7 +392,7 @@ pub async fn thread(
     let key = pu.key;
     let a = s
         .store_call(move |st| {
-            live_ids.touch(st, &key.origin)?;
+            touch(&live_ids, st, &key.origin);
             let path = key.path.clone();
             let resolved = st.resolve_live_key(&key)?;
             let rule = resolved.rule.as_ref();

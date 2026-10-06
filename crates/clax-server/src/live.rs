@@ -209,12 +209,11 @@ impl LiveIds {
             .insert(origin.to_string(), std::time::Instant::now());
         if let Some(key) = g.key_of.get(origin).cloned()
             && let Some(list) = g.origins.get_mut(&key)
+            && let Some(i) = list.iter().position(|(o, _)| o == origin)
         {
-            if let Some(i) = list.iter().position(|(o, _)| o == origin) {
-                let mut e = list.remove(i);
-                e.1 = now;
-                list.insert(0, e);
-            }
+            let mut e = list.remove(i);
+            e.1 = now;
+            list.insert(0, e);
         }
         Ok(())
     }

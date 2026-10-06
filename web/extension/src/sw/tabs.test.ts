@@ -822,6 +822,13 @@ describe("Tabs and the site's threads", () => {
     await h.tabs.route(4, URL1);
     expect(h.tabs.openThread(4, T2)).toEqual({ path: "/users/7?x", origins: [O] });
     expect(h.tabs.openThread(4, "01J9DDDDDDDDDDDDDDDDDDDDDD")).toBeNull();
+    h.tabs.opening(4, T2, `${O}/users/7?x`);
+    // The page the tab leaves finds it first: not selected there.
+    await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T2, found: true, method: "selector", rect: null }] });
+    expect(h.tabs.state(4)?.selected).toBeNull();
+    // Its own page finds it: selected and scrolled to.
+    h.pages.set(`${O}/users/7?x`, { page: page(AID2, "/users/7"), route: "?x" });
+    await h.tabs.fromOverlay(4, 1, { t: "route", url: `${O}/users/7?x` });
     await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T2, found: true, method: "selector", rect: null }] });
     expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "scroll-to", threadId: T2 } });
     expect(h.tabs.state(4)?.selected).toBe(T2);

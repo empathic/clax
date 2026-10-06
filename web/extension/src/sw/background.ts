@@ -218,7 +218,7 @@ export function startBackground(c: typeof chrome) {
   });
 
   return {
-    pairer, tabs,
+    pairer, tabs, sites,
     /** What the command does in the tab (the browser tests' stand-in for a gesture, which they cannot make). */
     comment: (tabId: number, url: string) => { const o = origins.originOf(url); return o ? comment(tabId, url, o) : Promise.resolve(); },
     off,

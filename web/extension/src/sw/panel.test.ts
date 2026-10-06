@@ -45,6 +45,7 @@ function setup(over: { remaining?: number; page?: typeof page | null; admits?: b
       select: (tabId: number, id: string | null) => calls.push(`select ${tabId} ${id}`),
       setCommentMode: (tabId: number, on: boolean) => calls.push(`comment-mode ${tabId} ${on}`),
       openThread: (tabId: number, id: string) => { calls.push(`open ${tabId} ${id}`); return id === T1 ? { path: "/users/7?x#/y", origins: over.site ?? ["http://localhost:5173"] } : null; },
+      opening: (tabId: number, id: string, url: string) => { calls.push(`opening ${tabId} ${id} ${url}`); },
     } as never,
     sites: { load: async (o: string) => { calls.push(`load ${o}`); }, origins: (o: string) => over.site ?? [o] },
     probe: async (url: string) => { calls.push(`probe ${url}`); return !(over.down ?? []).some(x => url.startsWith(x)); },
@@ -62,7 +63,7 @@ describe("panelAction on the tab's site", () => {
   it("opens a thread of another page in the tab, and refuses one the site does not have", async () => {
     const s = setup();
     await s.run({ t: "open-thread", threadId: T1 });
-    expect(s.calls).toEqual([`open 4 ${T1}`, "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
+    expect(s.calls).toEqual([`open 4 ${T1}`, "probe http://localhost:5173/users/7?x#/y", `opening 4 ${T1} http://localhost:5173/users/7?x#/y`, "navigate 4 http://localhost:5173/users/7?x#/y"]);
     await s.run({ t: "open-thread", threadId: T2 });
     expect(s.out).toEqual([{ t: "failed", code: "not_found", message: "That thread is not on this site any more." }]);
   });
@@ -71,7 +72,7 @@ describe("panelAction on the tab's site", () => {
     const both = ["http://localhost:5174", "http://localhost:5173"];
     const s = setup({ site: both, down: ["http://localhost:5174"] });
     await s.run({ t: "open-thread", threadId: T1 });
-    expect(s.calls).toEqual(["load http://localhost:5173", `open 4 ${T1}`, "probe http://localhost:5174/users/7?x#/y", "probe http://localhost:5173/users/7?x#/y", "navigate 4 http://localhost:5173/users/7?x#/y"]);
+    expect(s.calls).toEqual(["load http://localhost:5173", `open 4 ${T1}`, "probe http://localhost:5174/users/7?x#/y", "probe http://localhost:5173/users/7?x#/y", `opening 4 ${T1} http://localhost:5173/users/7?x#/y`, "navigate 4 http://localhost:5173/users/7?x#/y"]);
     const none = setup({ site: both, down: both });
     await none.run({ t: "open-thread", threadId: T1 });
     expect(none.calls.filter(c => c.startsWith("navigate"))).toEqual([]);
