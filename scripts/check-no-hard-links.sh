@@ -14,7 +14,7 @@ if [ $# -gt 0 ]; then
 else
     files=()
     while IFS= read -r -d '' f; do
-        [ "$f" = scripts/check-no-hard-links.sh ] || files+=("$f")
+        case "$f" in scripts/check-no-hard-links.sh|scripts/test-check-no-hard-links.sh) ;; *) files+=("$f") ;; esac
     done < <(git ls-files -z -- '*.rs' '*.ts' '*.tsx' '*.js' '*.mjs' '*.cjs' '*.svelte' \
         '*.py' '*.sh' '*.bash' 'justfile' '**/justfile' 'Makefile' '**/Makefile')
 fi
@@ -33,8 +33,13 @@ perl -ne '
         || /\bfrom\s+os\s+import\b.*\blink\b/
         # cp -l / cp --link.
         || /(?:^|[\s;&|(`"\x27])cp\s+(?:-[a-zA-Z]*l[a-zA-Z]*|--link)\b/;
-    # ln, or a variable naming it, whose options do not include -s.
-    while (!$bad && /(?:^|[\s;&|(`"\x27])(?:ln|\$\{?\w*_LN\}?)"?((?:\s+-[-\w]+)*)(?=\s|$)/g) {
+    # Code that runs ln as a program.
+    $bad ||= /Command::new\(\s*"ln"\s*\)|\b(?:spawn|spawnSync|execFile|execFileSync|exec|execSync)\s*\(\s*["\x27`]ln\b|\bsubprocess\.\w+\(\s*\[\s*["\x27]ln["\x27]/;
+    # In shell (scripts, justfiles, Makefiles): ln, or a variable naming
+    # it, whose options do not include -s. Elsewhere a bare "ln" is an
+    # identifier, such as a Rust variable.
+    my $shell = $ARGV =~ /\.(?:sh|bash)$|(?:^|\/)(?:justfile|Makefile)$/;
+    while ($shell && !$bad && /(?:^|[\s;&|(`"\x27])(?:ln|\$\{?\w*_LN\}?)"?((?:\s+-[-\w]+)*)(?=\s|$)/g) {
         my $opts = $1;
         $bad = 1 unless $opts =~ /\s-[a-zA-Z]*s|--symbolic/;
     }
