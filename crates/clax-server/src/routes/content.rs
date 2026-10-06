@@ -310,7 +310,7 @@ mod tests {
         );
         h.insert(
             header::HOST,
-            HeaderValue::from_static("a 'unsafe-inline' b"),
+            HeaderValue::from_static("a 'strict-dynamic' b"),
         );
         let p = snapshot_policy(&h, "localhost:7480");
         let p = p.to_str().unwrap();
@@ -318,7 +318,7 @@ mod tests {
             p.starts_with("script-src http://localhost:7480/_clax/;"),
             "{p}"
         );
-        assert!(!p.contains("unsafe-inline"));
+        assert!(!p.contains("strict-dynamic"));
         h.insert(header::HOST, HeaderValue::from_static("x;script-src *"));
         assert!(
             !snapshot_policy(&h, "localhost:7480")
