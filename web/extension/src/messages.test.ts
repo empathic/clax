@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToPanel } from "./messages";
+import { MAX_BODY, MAX_SNAPSHOT_CHARS, MAX_URL, isAnchor, isFromComposer, isFromOverlay, isFromPanel, isFromWorker, isToComposer, isToPanel } from "./messages";
 
 const anchor = { kind: "element", selector: "main > button", quote: "Save", prefix: null, suffix: null, html_hash: null, rect: null, custom_name: null, file: "index.html" };
 const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
@@ -7,9 +7,9 @@ const ULID = "01J9ZQ3V7K8M2N4P6R8T0V2X4Y";
 describe("messages", () => {
   it("takes the overlay's well-formed messages", () => {
     expect(isFromOverlay({ t: "hello", url: "http://localhost:5173/" })).toBe(true);
-    expect(isFromOverlay({ t: "capture", rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 })).toBe(true);
+    expect(isFromOverlay({ t: "capture", pickId: "b".repeat(32), rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 })).toBe(true);
     expect(isFromOverlay({ t: "pick", pickId: "a".repeat(32), anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null })).toBe(true);
-    expect(isFromOverlay({ t: "quiet", url: "https://x/", title: "", snapshot: "<p>" })).toBe(true);
+    expect(isFromOverlay({ t: "quiet", url: "https://x/", title: "", snapshot: "<p>", pending: [ULID] })).toBe(true);
     expect(isFromOverlay({ t: "resolved", results: [{ id: ULID, found: true, method: null, rect: null }] })).toBe(true);
     expect(isFromOverlay({ t: "cancel", pickId: null })).toBe(true);
     expect(isFromOverlay({ t: "pin", threadId: ULID })).toBe(true);
@@ -149,15 +149,16 @@ describe("messages", () => {
   it("refuses an unknown field on every message", () => {
     const pickId = "a".repeat(32);
     const overlay = [
-      { t: "hello", url: "http://x/" }, { t: "route", url: "http://x/#/a" }, { t: "capture", rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
+      { t: "hello", url: "http://x/" }, { t: "route", url: "http://x/#/a" }, { t: "capture", pickId, rect: { x: 0, y: 0, w: 1, h: 1 }, dpr: 1 },
       { t: "pick", pickId, anchor, url: "http://x/", title: "T", snapshot: "<p>", snapshotError: null },
-      { t: "quiet", url: "http://x/", title: "T", snapshot: "<p>" }, { t: "resolved", results: [] }, { t: "comment-mode", on: true },
+      { t: "quiet", url: "http://x/", title: "T", snapshot: "<p>", pending: [] }, { t: "resolved", results: [] }, { t: "comment-mode", on: true },
       { t: "cancel", pickId }, { t: "pin", threadId: ULID }, { t: "removed" }, { t: "ping" },
     ];
     const worker = [
       { t: "state", page: null, route: null, threads: [], commentMode: false, pending: false }, { t: "comment-mode", on: false },
       { t: "close-composer", pickId, posted: true }, { t: "scroll-to", threadId: ULID }, { t: "focus", threadId: null }, { t: "snapshot-now" },
-      { t: "resend" },
+      { t: "resend" }, { t: "captured", pickId, ok: true }, { t: "captured", pickId, ok: false, error: "no_capture_permission" },
+      { t: "open-composer", pickId, rect: { x: 0, y: 0, w: 1, h: 1 } },
     ];
     const composer = [{ t: "ready" }, { t: "post", body: "hi" }, { t: "cancel" }];
     const panel = [
@@ -166,7 +167,12 @@ describe("messages", () => {
       { t: "looked", threadIds: [ULID] }, { t: "set-name", name: "Ana" }, { t: "select", threadId: null }, { t: "comment-mode", on: true },
       { t: "navigate", route: null }, { t: "turn-off" }, { t: "retry" }, { t: "ping" },
     ];
-    for (const [check, list] of [[isFromOverlay, overlay], [isFromWorker, worker], [isFromComposer, composer], [isFromPanel, panel]] as const) {
+    const toComposer = [
+      { t: "draft", anchor, clipUrl: "data:image/png;base64,iVBORw0KGgo=", clipError: null, capturing: false },
+      { t: "draft", anchor, clipUrl: null, clipError: "no_capture_permission", capturing: false },
+      { t: "posted", threadId: ULID }, { t: "failed", message: "The daemon is not running." },
+    ];
+    for (const [check, list] of [[isFromOverlay, overlay], [isFromWorker, worker], [isFromComposer, composer], [isFromPanel, panel], [isToComposer, toComposer]] as const) {
       for (const m of list) {
         expect(check(m), JSON.stringify(m)).toBe(true);
         expect(check({ ...m, extra: 1 }), `${JSON.stringify(m)} + extra`).toBe(false);
@@ -176,6 +182,29 @@ describe("messages", () => {
     // A required field that is absent is refused, not read as undefined.
     expect(isFromPanel({ t: "send", threadId: ULID })).toBe(false);
     expect(isFromOverlay({ t: "pick", pickId, anchor, url: "http://x/", title: "T", snapshot: "<p>" })).toBe(false);
+  });
+
+  it("checks the pick's messages field by field", () => {
+    const pickId = "c".repeat(32);
+    const rect = { x: 0, y: 0, w: 1, h: 1 };
+    // The capture names the pick it is for (spec §9.4).
+    expect(isFromOverlay({ t: "capture", rect, dpr: 1 })).toBe(false);
+    expect(isFromOverlay({ t: "capture", pickId: "C".repeat(32), rect, dpr: 1 })).toBe(false);
+    // A quiet snapshot names the pending threads it covers.
+    expect(isFromOverlay({ t: "quiet", url: "http://x/", title: "T", snapshot: "<p>" })).toBe(false);
+    expect(isFromOverlay({ t: "quiet", url: "http://x/", title: "T", snapshot: "<p>", pending: ["x"] })).toBe(false);
+    expect(isFromOverlay({ t: "quiet", url: "http://x/", title: "T", snapshot: "<p>", pending: new Array(1001).fill(ULID) })).toBe(false);
+    expect(isFromWorker({ t: "captured", pickId, ok: "yes" })).toBe(false);
+    expect(isFromWorker({ t: "captured", pickId, ok: false, error: "x".repeat(65) })).toBe(false);
+    expect(isFromWorker({ t: "captured", pickId: "short", ok: true })).toBe(false);
+    expect(isFromWorker({ t: "open-composer", pickId, rect: { ...rect, w: -1 } })).toBe(false);
+    expect(isFromWorker({ t: "open-composer", pickId })).toBe(false);
+    expect(isToComposer({ t: "draft", anchor: { ...anchor, kind: "script" }, clipUrl: null, clipError: null, capturing: false })).toBe(false);
+    expect(isToComposer({ t: "draft", anchor, clipUrl: "https://x/a.png", clipError: null, capturing: false })).toBe(false);
+    expect(isToComposer({ t: "draft", anchor, clipUrl: null, clipError: null })).toBe(false);
+    expect(isToComposer({ t: "posted", threadId: "x" })).toBe(false);
+    expect(isToComposer({ t: "failed", message: 5 })).toBe(false);
+    expect(isToComposer({ t: "ready" })).toBe(false);
   });
 
   it("checks anchors field by field", () => {

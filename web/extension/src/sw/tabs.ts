@@ -337,6 +337,14 @@ export class Tabs {
     void this.route(tabId, url, this.stale.has(tabId));
   }
 
+  /** A thread was posted from the tab on `page`: a page the tab did not
+   * show yet (the first thread created it) is looked up, so the tab follows
+   * its topics; on the page it shows, the stream brings the thread. */
+  posted(tabId: number, page: PageView): void {
+    const s = this.tabs.get(tabId);
+    if (s && s.page?.artifact_id !== page.artifact_id) void this.route(tabId, s.url);
+  }
+
   /** The tab closed: its state and its topics go. */
   close(tabId: number): void {
     this.tabs.delete(tabId);
@@ -448,7 +456,7 @@ export class Tabs {
       case "comment-mode": this.set(tabId, { ...s, commentMode: m.on }); return;
       case "pin": this.set(tabId, { ...s, selected: m.threadId }); return;
       case "removed": this.set(tabId, { ...s, overlay: false, error: { code: "overlay_removed", message: "The page removed Clax's overlay." } }); return;
-      default: return; // capture, pick, quiet and cancel are the pick flow's (Task 13); ping keeps the worker alive
+      default: return; // capture, pick, quiet and cancel are the pick flow's (`Picks`); ping keeps the worker alive
     }
   }
 

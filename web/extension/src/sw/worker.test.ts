@@ -5,7 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PageView } from "../messages";
 import { REPAIR_MS } from "./pairing";
-import { createWorker, type Worker } from "./worker";
+import { composerTab, createWorker, type Worker } from "./worker";
 
 const AID = "7q3k9mzx2b4t";
 const AID2 = "8r4m0nzy3c5v";
@@ -124,6 +124,8 @@ const area = (m: Record<string, unknown>) => ({
   remove: async (k: string) => { delete m[k]; },
 });
 let pairings = 0;
+const toOverlay: { tabId: number; m: unknown }[] = [];
+const captures: unknown[][] = [];
 const injected: number[] = [];
 /** The tabs whose current document has the overlay. */
 const docs = new Set<number>();
@@ -133,7 +135,8 @@ function boot(): Worker {
   const worker = createWorker({
     pair: { sendNative: async () => { pairings++; return d.pair(); }, session: area(session), local: area(local), manifestVersion: "0.9.0", reload: () => {}, now: () => Date.now() },
     fetch: d.fetch,
-    toOverlay: () => {},
+    toOverlay: (tabId, m) => toOverlay.push({ tabId, m }),
+    capture: async (...a) => { captures.push(a); return { error: "no_capture_permission" }; },
     inject: async tabId => { if (docs.has(tabId)) return false; docs.add(tabId); injected.push(tabId); return true; },
     present: async tabId => docs.has(tabId),
     store: area(session),
@@ -146,6 +149,8 @@ afterEach(async () => {
   await settle();
   for (const b of booted.splice(0)) b.hub.close();
   injected.length = 0;
+  toOverlay.length = 0;
+  captures.length = 0;
   docs.clear();
   vi.useRealTimers();
 });
@@ -275,5 +280,34 @@ describe("the worker", () => {
     // The overlay already in the page is not injected again.
     await w.tabs.toggle(4, URL1);
     expect(injected).toEqual([4]);
+  });
+});
+
+describe("the pick flow in the worker", () => {
+  const PICK = "a".repeat(32);
+  const sender = (url: string, tab: number | undefined, frameId = 3, id = "ext") =>
+    ({ name: `composer:${PICK}`, sender: { id, url, frameId, tab: tab === undefined ? undefined : { id: tab } } }) as unknown as chrome.runtime.Port;
+
+  it("takes a composer port only from the extension's composer page framed in a tab", () => {
+    expect(composerTab(sender("chrome-extension://ext/composer.html#" + PICK, 5), "ext")).toBe(5);
+    // A dynamic URL (use_dynamic_url) has another host; the sender's ID is still the extension's.
+    expect(composerTab(sender("chrome-extension://0f1e2d3c/composer.html#" + PICK, 5), "ext")).toBe(5);
+    expect(composerTab(sender("chrome-extension://ext/composer.html", 5, 3, "other"), "ext")).toBeNull();
+    expect(composerTab(sender("chrome-extension://ext/sidepanel.html", 5), "ext")).toBeNull();
+    expect(composerTab(sender("http://localhost:5173/composer.html", 5), "ext")).toBeNull();
+    expect(composerTab(sender("chrome-extension://ext/composer.html", undefined), "ext")).toBeNull();
+    expect(composerTab(sender("chrome-extension://ext/composer.html", 5, 0), "ext")).toBeNull();
+    expect(composerTab({ ...sender("chrome-extension://ext/composer.html", 5), name: "panel:1" } as chrome.runtime.Port, "ext")).toBeNull();
+  });
+
+  it("sends capture, pick, quiet and cancel to the picks, and the rest to the tabs", async () => {
+    const r = await w.fromOverlay(4, 9, { t: "capture", pickId: PICK, rect: { x: 1, y: 2, w: 3, h: 4 }, dpr: 2 }, URL1);
+    expect(r).toEqual({ t: "captured", pickId: PICK, ok: false, error: "no_capture_permission" });
+    expect(captures).toEqual([[9, { x: 1, y: 2, w: 3, h: 4 }, 2]]);
+    expect(toOverlay.at(-1)).toEqual({ tabId: 4, m: { t: "open-composer", pickId: PICK, rect: { x: 1, y: 2, w: 3, h: 4 } } });
+    await w.fromOverlay(4, 9, { t: "cancel", pickId: PICK }, URL1);
+    expect(toOverlay.at(-1)).toEqual({ tabId: 4, m: { t: "close-composer", pickId: PICK, posted: false } });
+    await w.fromOverlay(4, 9, { t: "comment-mode", on: true }, URL1);
+    expect(w.tabs.state(4)?.commentMode).toBe(true);
   });
 });

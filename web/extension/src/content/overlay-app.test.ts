@@ -189,6 +189,20 @@ describe("the overlay", () => {
     expect(sent.filter(m => m.t === "quiet")).toHaveLength(2);
   });
 
+  it("names in a quiet snapshot the threads its state showed waiting for one", () => {
+    const B = "01J9BBBBBBBBBBBBBBBBBBBBBB";
+    const C = "01J9CCCCCCCCCCCCCCCCCCCCCC";
+    const waiting = { addressed_pending: { harness: "claude", at: "t" } };
+    tell(state([
+      { ...thread(A, "#save", "Save"), ...waiting },
+      thread(B, "#save", "Save"),
+      { ...thread(C, "#save", "Save"), ...waiting, status: "resolved" },
+    ], { pending: true }));
+    timers.advance(0);
+    tick(1000);
+    expect(sent.filter(m => m.t === "quiet").map(m => m.pending)).toEqual([[A]]);
+  });
+
   it("still snapshots and re-resolves a page that never goes quiet", async () => {
     tell(state([thread(A, "#save", "Save")], { pending: true }));
     timers.advance(0);

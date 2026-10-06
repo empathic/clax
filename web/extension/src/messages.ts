@@ -30,9 +30,11 @@ export type PageView = { artifact_id: string; origin: string; path: string; page
 export type OverlayToWorker =
   | { t: "hello"; url: string }
   | { t: "route"; url: string }
-  | { t: "capture"; rect: Rect; dpr: number }
+  /** The overlay names the pick (128 random bits); the worker takes it as the tab's pick. */
+  | { t: "capture"; pickId: string; rect: Rect; dpr: number }
   | { t: "pick"; pickId: string; anchor: Anchor; url: string; title: string; snapshot: string | null; snapshotError: SnapshotError | null }
-  | { t: "quiet"; url: string; title: string; snapshot: string }
+  /** `pending`: the threads the overlay's state showed waiting for a snapshot when it serialized the page. */
+  | { t: "quiet"; url: string; title: string; snapshot: string; pending: string[] }
   | { t: "resolved"; results: AnchorResult[] }
   | { t: "comment-mode"; on: boolean }
   | { t: "cancel"; pickId: string | null }
@@ -43,6 +45,10 @@ export type OverlayToWorker =
 export type WorkerToOverlay =
   | { t: "state"; page: PageView | null; route: string | null; threads: Thread[]; commentMode: boolean; pending: boolean }
   | { t: "comment-mode"; on: boolean }
+  /** The answer to `capture`: the screenshot was taken (`ok`), or why not. */
+  | { t: "captured"; pickId: string; ok: boolean; error?: string }
+  /** The worker took the pick: the overlay frames its composer beside `rect`, then serializes the page. */
+  | { t: "open-composer"; pickId: string; rect: Rect }
   | { t: "close-composer"; pickId: string; posted: boolean }
   | { t: "scroll-to"; threadId: string }
   | { t: "focus"; threadId: string | null }
@@ -119,6 +125,10 @@ const url = (v: unknown) => str(v, MAX_URL) && /^https?:\/\//.test(v);
 const ulid = (v: unknown) => typeof v === "string" && ULID.test(v);
 const pickId = (v: unknown) => typeof v === "string" && PICK_ID.test(v);
 const text = (v: unknown, max: number) => str(v, max) && v.trim().length > 0;
+/** The most pending thread IDs a quiet snapshot names (the threads a state carries). */
+const MAX_PENDING = 1000;
+/** A failure code: lowercase words joined by underscores. */
+const code = (v: unknown) => typeof v === "string" && /^[a-z_]{1,64}$/.test(v);
 const BOX = ["x", "y", "w", "h"];
 const box = (v: unknown): v is Rect => shape(v, BOX) && BOX.every(k => num(v[k])) && (v.w as number) >= 0 && (v.h as number) >= 0;
 
@@ -159,11 +169,12 @@ export function isFromOverlay(m: unknown): m is OverlayToWorker {
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
   switch (m.t) {
     case "hello": case "route": return has("url") && url(m.url);
-    case "capture": return has("rect", "dpr") && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
+    case "capture": return has("pickId", "rect", "dpr") && pickId(m.pickId) && box(m.rect) && num(m.dpr) && m.dpr > 0 && m.dpr <= 8;
     case "pick": return has("pickId", "anchor", "url", "title", "snapshot", "snapshotError") && pickId(m.pickId) && isAnchor(m.anchor) && url(m.url)
       && str(m.title, MAX_TITLE) && strOrNull(m.snapshot, MAX_SNAPSHOT_CHARS) && (m.snapshotError === null || m.snapshotError === "too_large")
       && (m.snapshot !== null || m.snapshotError !== null);
-    case "quiet": return has("url", "title", "snapshot") && url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS);
+    case "quiet": return has("url", "title", "snapshot", "pending") && url(m.url) && str(m.title, MAX_TITLE) && str(m.snapshot, MAX_SNAPSHOT_CHARS)
+      && Array.isArray(m.pending) && m.pending.length <= MAX_PENDING && m.pending.every(ulid);
     case "resolved": return has("results") && Array.isArray(m.results) && m.results.length <= 500 && m.results.every(result);
     case "comment-mode": return has("on") && bool(m.on);
     case "cancel": return has("pickId") && (m.pickId === null || pickId(m.pickId));
@@ -183,6 +194,8 @@ export function isFromWorker(m: unknown): m is WorkerToOverlay {
     case "state": return has("page", "route", "threads", "commentMode", "pending") && (m.page === null || page(m.page)) && strOrNull(m.route, MAX_ROUTE)
       && Array.isArray(m.threads) && m.threads.length <= 1000 && m.threads.every(thread) && bool(m.commentMode) && bool(m.pending);
     case "comment-mode": return has("on") && bool(m.on);
+    case "captured": return shape(m, ["t", "pickId", "ok"], ["error"]) && pickId(m.pickId) && bool(m.ok) && (m.error === undefined || code(m.error));
+    case "open-composer": return has("pickId", "rect") && pickId(m.pickId) && box(m.rect);
     case "close-composer": return has("pickId", "posted") && pickId(m.pickId) && bool(m.posted);
     case "scroll-to": return has("threadId") && ulid(m.threadId);
     case "focus": return has("threadId") && (m.threadId === null || ulid(m.threadId));
@@ -212,6 +225,22 @@ export function isFromComposer(m: unknown): m is ComposerToWorker {
   switch (m.t) {
     case "ready": case "cancel": return has();
     case "post": return has("body") && text(m.body, MAX_BODY);
+    default: return false;
+  }
+}
+
+/** What the composer page takes from the worker over its port: the worker
+ * is trusted; this keeps the composer to the messages it knows, of the
+ * right shape (a clip is a PNG `data:` URL). */
+export function isToComposer(m: unknown): m is WorkerToComposer {
+  if (!obj(m) || !Object.hasOwn(m, "t")) return false;
+  const has = (...keys: string[]) => shape(m, ["t", ...keys]);
+  switch (m.t) {
+    case "draft": return has("anchor", "clipUrl", "clipError", "capturing") && isAnchor(m.anchor)
+      && (m.clipUrl === null || (typeof m.clipUrl === "string" && m.clipUrl.startsWith("data:image/png;base64,")))
+      && (m.clipError === null || code(m.clipError)) && bool(m.capturing);
+    case "posted": return has("threadId") && ulid(m.threadId);
+    case "failed": return has("message") && str(m.message, MAX_BODY);
     default: return false;
   }
 }

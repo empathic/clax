@@ -1,12 +1,14 @@
 // The worker's parts wired together: the pairer, the API client over it,
 // the shell's stream hub with requests through the API client (so the
-// stream carries the credential and pairs again like any request), and the
-// tabs, one hub client each. A new pairing reconnects the hub: the old
-// credential's stream cannot be changed or resumed by the new one.
+// stream carries the credential and pairs again like any request), the
+// tabs, one hub client each, and the picks. A new pairing reconnects the
+// hub: the old credential's stream cannot be changed or resumed by the new
+// one.
 import { Hub } from "../../../shell/src/stream-hub";
-import type { WorkerToOverlay } from "../messages";
+import type { OverlayToWorker, Rect, WorkerToOverlay } from "../messages";
 import { Api } from "./api";
 import { type PairEnv, Pairer } from "./pairing";
+import { Picks } from "./picks";
 import { Tabs } from "./tabs";
 
 export type WorkerDeps = {
@@ -17,8 +19,29 @@ export type WorkerDeps = {
   present?(tabId: number): Promise<boolean>;
   /** Where the tabs are kept across worker restarts (chrome.storage.session). */
   store?: { get(k: string): Promise<Record<string, unknown>>; set(v: Record<string, unknown>): Promise<void> };
+  /** A pick's screenshot (`captureClip`). */
+  capture(windowId: number, rect: Rect, dpr: number): Promise<{ png: Blob } | { error: string }>;
+  now?(): number;
 };
-export type Worker = { pairer: Pairer; api: Api; hub: Hub; tabs: Tabs };
+export type Worker = {
+  pairer: Pairer; api: Api; hub: Hub; tabs: Tabs; picks: Picks;
+  /** An admitted overlay or loader message from tab `tabId` in window `windowId`; what it answers is the reply. */
+  fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown>;
+};
+
+/** The tab whose composer `port` is, when it may be one (spec §9.4): from
+ * this extension, named `composer:…`, from its `composer.html` (under its ID
+ * or its dynamic one, so the path is what is checked), framed in a tab.
+ * `Picks.attachComposer` then checks the pick. */
+export function composerTab(port: chrome.runtime.Port, extensionId: string): number | null {
+  const s = port.sender;
+  if (s?.id !== extensionId || !port.name.startsWith("composer:")) return null;
+  let u: URL;
+  try { u = new URL(s.url ?? ""); } catch { return null; }
+  if (u.protocol !== "chrome-extension:" || u.pathname !== "/composer.html") return null;
+  const tabId = s.tab?.id;
+  return tabId !== undefined && s.frameId !== undefined && s.frameId > 0 ? tabId : null;
+}
 
 export function createWorker(d: WorkerDeps): Worker {
   const pairer = new Pairer(d.pair);
@@ -34,5 +57,22 @@ export function createWorker(d: WorkerDeps): Worker {
   tabs = new Tabs({ api, hub, toOverlay: d.toOverlay, inject: d.inject, present: d.present, store: d.store });
   const t = tabs;
   api.onRepair = () => t.repaired();
-  return { pairer, api, hub, tabs: t };
+  const picks = new Picks({
+    api, capture: d.capture, toOverlay: d.toOverlay,
+    pendingIds: tabId => t.pendingIds(tabId),
+    posted: (tabId, page) => t.posted(tabId, page),
+    now: d.now ?? (() => Date.now()),
+  });
+  async function fromOverlay(tabId: number, windowId: number, m: OverlayToWorker, senderUrl?: string): Promise<unknown> {
+    switch (m.t) {
+      // At once: the overlay hides its drawing until the screenshot is taken.
+      case "capture": return picks.capture(tabId, windowId, m);
+      case "cancel": picks.cancel(tabId, m.pickId); return null;
+      // The tab's record first (a restarted worker looks it up again): its pending threads are read from it.
+      case "pick": await t.fromOverlay(tabId, windowId, m, senderUrl); await picks.attach(tabId, m); return null;
+      case "quiet": await t.fromOverlay(tabId, windowId, m, senderUrl); await picks.quiet(tabId, m); return null;
+      default: return t.fromOverlay(tabId, windowId, m, senderUrl);
+    }
+  }
+  return { pairer, api, hub, tabs: t, picks, fromOverlay };
 }

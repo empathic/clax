@@ -110,6 +110,25 @@ describe("Tabs", () => {
     expect(h.overlay.at(-1)).toMatchObject({ tabId: 4, m: { t: "state", page: page(), threads: [expect.objectContaining({ id: T1 })], commentMode: false, pending: false } });
   });
 
+  it("follows the live page a thread posted from the tab created, and only then", async () => {
+    const h = harness();
+    h.pages.set(URL1, { page: null, route: null });
+    await h.tabs.route(4, URL1);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.threads.set(AID, [full(T1)]);
+    h.calls.length = 0;
+    h.tabs.posted(4, page());
+    await settle();
+    expect(h.calls).toEqual([`lookup ${URL1}`, `threads ${AID}`, `working ${AID}`]);
+    expect(h.hubIn.at(-1)).toEqual({ id: "tab:4", msg: { t: "topics", topics: [`artifact:${AID}`, `working:${AID}`] } });
+    // The tab already shows that page: its stream brings the thread.
+    h.calls.length = 0;
+    h.tabs.posted(4, page());
+    h.tabs.posted(9, page());
+    await settle();
+    expect(h.calls).toEqual([]);
+  });
+
   it("follows nothing on a page with no live page", async () => {
     const h = harness();
     h.pages.set("http://localhost:5173/new", { page: null, route: null });

@@ -28,6 +28,10 @@ export const PING_MS = 20_000;
 /** The least time between two `route` messages: a burst of navigations
  * sends the last URL once, on the trailing edge. */
 export const ROUTE_MS = 250;
+/** The composer frame's size in CSS pixels: room for the quote, the clip's
+ * thumbnail, three lines of text, the buttons and a notice. */
+const FRAME_W = 360;
+const FRAME_H = 300;
 /** The most results one `resolved` carries (`isFromOverlay`'s bound). */
 const MAX_RESULTS = 500;
 /** The global, in the isolated world only, that marks a started overlay.
@@ -51,6 +55,8 @@ export type OverlayEnv = {
   /** Runs `fn` every `ms`; returns what stops it. */
   every?(fn: () => void, ms: number): () => void;
   now?(): number;
+  /** A new pick's ID: 128 random bits, in hex. */
+  randomId?(): string;
 };
 
 /** Starts the overlay unless this world already has one; returns what
@@ -64,6 +70,13 @@ export function startOnce(env: OverlayEnv, g: object = globalThis): (() => void)
   const stop = startOverlay(env, () => { if (!stopped) { stopped = true; G[STARTED] = false; } });
   return () => { stop(); };
 }
+
+/** 128 random bits in hex, from the isolated world's own `crypto`. */
+const randomPickId = () => [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, "0")).join("");
+
+/** The open threads a state shows waiting for a snapshot (spec L11). */
+const waitingIds = (threads: Thread[]) =>
+  threads.filter(t => t.status === "open" && !!(t as { addressed_pending?: unknown }).addressed_pending).map(t => t.id);
 
 /** What the overlay shows of a state: a state that changes none of it
  * (`pending` alone, say) resolves nothing again. */
@@ -112,7 +125,7 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     ownStyle = host.getAttribute("style") ?? "";
   };
   const root = host.attachShadow({ mode: "closed" });
-  root.innerHTML = `<style>${PIN_CSS}iframe{position:fixed;z-index:2147483647;width:360px;height:236px;border:0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);color-scheme:normal;pointer-events:auto}</style>`;
+  root.innerHTML = `<style>${PIN_CSS}iframe{position:fixed;z-index:2147483647;width:${FRAME_W}px;height:${FRAME_H}px;border:0;border-radius:10px;box-shadow:0 8px 28px rgba(0,0,0,.28);color-scheme:normal;pointer-events:auto}</style>`;
   const setHidden = (on: boolean) => { hidden = on; applyHost(); };
   const popoverOpen = () => {
     try { return typeof host.showPopover !== "function" || host.matches(":popover-open"); } catch { return true; }
@@ -203,26 +216,47 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
   let composer: { pickId: string; frame: HTMLIFrameElement } | null = null;
   const closeComposer = () => { composer?.frame.remove(); composer = null; };
   stops.push(closeComposer);
+  /** The pick whose screenshot is being taken, until the worker opens its composer. */
+  let picking: { pickId: string; anchor: Anchor } | null = null;
+  const newPickId = env.randomId ?? randomPickId;
 
-  /** A pick: the screenshot is taken with nothing of Clax drawn, then the
-   * composer opens for the pick the worker issued, and the anchor and the
-   * page's snapshot follow. */
+  /** Clax's drawing is back after a capture. */
+  const reveal = () => {
+    mode.setVisible(true);
+    setHidden(false);
+  };
+
+  /** A pick (spec §3.2, §8.1): Clax's drawing is hidden for two frames, the
+   * worker captures the tab for the pick ID the overlay names, then tells the
+   * overlay to open the pick's composer (`open-composer`), and the anchor and
+   * the page's snapshot follow. */
   async function pick(anchor: Anchor, rect: Rect): Promise<void> {
+    const pickId = newPickId();
+    picking = { pickId, anchor };
     mode.setVisible(false);
     setHidden(true);
     await new Promise<void>(r => timers.frame(() => timers.frame(r)));
-    const reply = await send({ t: "capture", rect, dpr: Math.min(8, win.devicePixelRatio || 1) });
-    mode.setVisible(true);
-    setHidden(false);
+    const reply = await send({ t: "capture", pickId, rect, dpr: Math.min(8, win.devicePixelRatio || 1) });
+    reveal();
     mode.captured();
-    const pickId = (reply as { pickId?: unknown } | null)?.pickId;
-    if (!live || typeof pickId !== "string" || !PICK_ID.test(pickId)) return;
+    // A worker that refused the capture opens no composer for it.
+    const ok = isFromWorker(reply) && reply.t === "captured" && reply.pickId === pickId;
+    if (!ok && picking?.pickId === pickId) picking = null;
+  }
+
+  /** The worker took the pick: its composer opens beside `rect`, then the
+   * page is serialized (spec §8.2: after the composer has focus). */
+  function composerFor(pickId: string, rect: Rect): void {
+    const p = picking;
+    if (!p || p.pickId !== pickId || !PICK_ID.test(pickId)) return;
+    picking = null;
+    reveal();
     mode.set(false);
     openComposer(pickId, rect);
     timers.set(() => {
       if (!live) return;
       const s = serializeSnapshot(doc);
-      void send({ t: "pick", pickId, anchor, url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, snapshotError: s.error });
+      void send({ t: "pick", pickId, anchor: p.anchor, url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, snapshotError: s.error });
     }, 0);
   }
 
@@ -230,16 +264,18 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     closeComposer();
     const f = doc.createElement("iframe");
     f.src = `${runtime.getURL("composer.html")}#${pickId}`;
-    // The composer loads once; a second load is a navigation the page made
-    // (a parent may navigate a child frame), so the frame goes.
+    // The composer loads once, and takes focus then; a second load is a
+    // navigation the page made (a parent may navigate a child frame), so
+    // the frame goes.
     let loads = 0;
     f.addEventListener("load", () => {
-      if (++loads < 2 || composer?.frame !== f) return;
+      if (composer?.frame !== f) return;
+      if (++loads < 2) { f.focus(); return; }
       closeComposer();
       void send({ t: "cancel", pickId });
     });
-    const left = Math.min(Math.max(8, rect.x + rect.w + 12), win.innerWidth - 368);
-    const top = Math.min(Math.max(8, rect.y), win.innerHeight - 244);
+    const left = Math.min(Math.max(8, rect.x + rect.w + 12), win.innerWidth - FRAME_W - 8);
+    const top = Math.min(Math.max(8, rect.y), win.innerHeight - FRAME_H - 8);
     f.style.left = `${Math.max(8, left)}px`;
     f.style.top = `${Math.max(8, top)}px`;
     root.appendChild(f);
@@ -257,8 +293,10 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
     const t = now();
     if (t - lastQuiet < SNAPSHOT_EVERY_MS) return;
     lastQuiet = t;
+    // Read before serializing: the snapshot covers the addresses made before it.
+    const pending = waitingIds(state.threads);
     const s = serializeSnapshot(doc);
-    if (!s.error) void send({ t: "quiet", url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html });
+    if (!s.error) void send({ t: "quiet", url: win.location.href, title: doc.title.slice(0, MAX_TITLE), snapshot: s.html, pending });
   }
   stops.push(every(maybeSnapshot, SNAPSHOT_CHECK_MS));
   stops.push(every(() => void send({ t: "ping" }), PING_MS));
@@ -304,6 +342,8 @@ function startOverlay(env: OverlayEnv, onStop: () => void): () => void {
         break;
       }
       case "comment-mode": mode.set(m.on && composer === null); break;
+      case "captured": break; // the answer to `capture`
+      case "open-composer": composerFor(m.pickId, m.rect); break;
       case "close-composer":
         if (composer?.pickId !== m.pickId) break;
         closeComposer();

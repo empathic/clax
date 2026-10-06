@@ -5,14 +5,15 @@
 // top level, so a worker Chrome restarts for an event hears it. Every
 // message passes its receiver's validator before anything acts on it.
 import { type OverlayToWorker, isFromOverlay, isFromPanel } from "../messages";
+import { captureClip, chromeCapture } from "./capture";
 import * as origins from "./origins";
 import { PairError } from "./pairing";
-import { createWorker } from "./worker";
+import { composerTab, createWorker } from "./worker";
 
 const originsEnv: origins.OriginsEnv = { permissions: chrome.permissions, scripting: chrome.scripting, local: chrome.storage.local };
 // The pairing (the credential) and the tabs' record stay out of content scripts' reach (spec §10.2).
 void chrome.storage.session.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" }).catch(() => {});
-const { pairer, tabs } = createWorker({
+const { pairer, tabs, picks, fromOverlay } = createWorker({
   pair: {
     sendNative: async (host, msg) => {
       try { return await chrome.runtime.sendNativeMessage(host, msg); }
@@ -27,6 +28,7 @@ const { pairer, tabs } = createWorker({
   inject: tabId => origins.injectOverlay(originsEnv, tabId),
   present: tabId => origins.overlayPresent(originsEnv, tabId),
   store: chrome.storage.session,
+  capture: (windowId, rect, dpr) => captureClip(chromeCapture, windowId, rect, dpr),
 });
 
 /** A gesture that grants activeTab (spec L8). The side panel (icon only)
@@ -51,7 +53,7 @@ chrome.action.onClicked.addListener(tab => gesture(tab, true));
 chrome.commands.onCommand.addListener((cmd, tab) => { if (cmd === "comment" && tab) gesture(tab, false); });
 chrome.runtime.onInstalled.addListener(() => chrome.contextMenus.create({ id: "clax-comment", title: "Comment with Clax", contexts: ["page", "selection", "link", "image"] }));
 chrome.contextMenus.onClicked.addListener((_info, tab) => { if (tab) gesture(tab, false); });
-chrome.tabs.onRemoved.addListener(tabId => { void tabs.ready().then(() => tabs.close(tabId)); });
+chrome.tabs.onRemoved.addListener(tabId => { picks.close(tabId); void tabs.ready().then(() => tabs.close(tabId)); });
 // Possibly a new document: if its overlay is gone, so is comment mode (spec §11).
 chrome.tabs.onUpdated.addListener((tabId, change) => { if (change.status === "loading") void tabs.ready().then(() => tabs.navigated(tabId)); });
 
@@ -72,7 +74,7 @@ chrome.runtime.onMessage.addListener((m, sender, reply) => {
   const tab = sender.tab;
   void (async () => {
     if (!(await admitted(sender, m))) return null;
-    return tabs.fromOverlay(tab.id!, tab.windowId, m, sender.url);
+    return fromOverlay(tab.id!, tab.windowId, m, sender.url);
   })().then(r => reply(r ?? null), e => reply({ error: String(e) }));
   return true;
 });
@@ -86,7 +88,9 @@ chrome.runtime.onConnect.addListener(port => {
     tabs.attachPanel(port, (tabId, m) => { if (isFromPanel(m)) void panelAction(tabId, m); });
     return;
   }
-  // Task 13 attaches the pick flow's composer ports; until then every other port is refused.
+  // A composer frame: the worker then takes it only for its tab's current pick.
+  const tabId = composerTab(port, chrome.runtime.id);
+  if (tabId !== null) { picks.attachComposer(port, tabId); return; }
   port.disconnect();
 });
 
@@ -96,6 +100,8 @@ async function panelAction(_tabId: number | null, _m: unknown): Promise<void> {}
 if (__CLAX_EXT_TEST__) {
   (globalThis as unknown as { claxTest: unknown }).claxTest = {
     comment: (tabId: number, url: string) => tabs.toggle(tabId, url),
+    /** What a toolbar click records besides activeTab, which the browser tests' build holds through `<all_urls>`. */
+    activate: (tabId: number, url: string) => tabs.activate(tabId, url),
     state: (tabId: number) => tabs.state(tabId),
     pairer,
   };
