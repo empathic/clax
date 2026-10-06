@@ -30,9 +30,6 @@ pub struct EnsuredPage {
     pub created: bool,
     /// This call wrote `version`.
     pub new_version: bool,
-    /// Sessions a scope watch made watchers of the page, when this call
-    /// created it.
-    pub scoped_sessions: Vec<String>,
     /// The threads whose pending addresses were linked to `version` in the
     /// transaction that wrote it ([`Store::ensure_live_page_linking`]).
     pub linked: Vec<String>,
@@ -222,9 +219,8 @@ pub(crate) const PENDING_OF: &str =
     "SELECT harness, created_at FROM live_pending WHERE thread_id = ?1";
 
 /// Makes every live session whose scope watch covers `key` a watcher of the
-/// new page `aid`, armed when any of its covering scopes is; returns those
-/// sessions, each once.
-pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<Vec<String>> {
+/// new page `aid`, armed when any of its covering scopes is.
+pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<()> {
     let rows: Vec<(String, String, bool)> = {
         let mut st = tx.prepare(SCOPES_OF_ORIGIN)?;
         st.query_map(params![key.origin], |r| {
@@ -251,7 +247,7 @@ pub(super) fn materialize(tx: &Connection, aid: &str, key: &PageKey) -> Result<V
     for (sid, armed) in &out {
         scope_row(tx, sid, aid, *armed)?;
     }
-    Ok(out.into_iter().map(|(sid, _)| sid).collect())
+    Ok(())
 }
 
 /// Whether any scope watch of `sid` covering `key` has replies armed, or
@@ -344,9 +340,9 @@ impl Store {
         snapshot: Option<&[u8]>,
         pending: &[String],
     ) -> Result<EnsuredPage> {
-        let (id, created, scoped_sessions) = self.with_tx(|tx| {
+        let (id, created) = self.with_tx(|tx| {
             if let Some(p) = page_by_key(tx, key)? {
-                return Ok((ArtifactId::parse(&p.artifact_id)?, false, Vec::new()));
+                return Ok((ArtifactId::parse(&p.artifact_id)?, false));
             }
             let id = ArtifactId::generate();
             let now = Store::now();
@@ -360,8 +356,8 @@ impl Store {
                 "INSERT INTO live_pages (artifact_id, origin, path, created_at) VALUES (?1, ?2, ?3, ?4)",
                 params![id.as_str(), key.origin, key.path, now],
             )?;
-            let scoped = materialize(tx, id.as_str(), key)?;
-            Ok((id, true, scoped))
+            materialize(tx, id.as_str(), key)?;
+            Ok((id, true))
         })?;
         let current: u32 = self.with_read(|c| {
             Ok(c.query_row(
@@ -401,7 +397,6 @@ impl Store {
             version,
             created,
             new_version,
-            scoped_sessions,
             linked,
         })
     }
@@ -1243,7 +1238,6 @@ mod tests {
         st.live_watch(&sid, &key("/"), true).unwrap();
         st.live_watch(&other, &key("/docs"), false).unwrap();
         let e = st.ensure_live_page(&key("/new"), "n", None).unwrap();
-        assert_eq!(e.scoped_sessions, vec![sid.clone()]);
         let w = st.list_watches(&sid).unwrap();
         assert!(
             w.iter()
@@ -1251,11 +1245,8 @@ mod tests {
         );
         assert!(!watched(&st, &other).contains(&e.artifact.id));
         let d = st.ensure_live_page(&key("/docs/a"), "d", None).unwrap();
-        let mut both = d.scoped_sessions.clone();
-        both.sort();
-        let mut want = vec![sid.clone(), other.clone()];
-        want.sort();
-        assert_eq!(both, want);
+        assert!(watched(&st, &sid).contains(&d.artifact.id));
+        assert!(watched(&st, &other).contains(&d.artifact.id));
         let armed = st
             .list_watches(&other)
             .unwrap()
@@ -1264,9 +1255,12 @@ mod tests {
             .unwrap()
             .replies_armed;
         assert!(!armed, "the scope's arming");
+        st.unwatch(&sid, &ArtifactId::parse(&e.artifact.id).unwrap())
+            .unwrap();
         let again = st.ensure_live_page(&key("/new"), "n", None).unwrap();
+        assert!(!again.created);
         assert!(
-            again.scoped_sessions.is_empty(),
+            !watched(&st, &sid).contains(&e.artifact.id),
             "only a new page is materialized"
         );
     }
@@ -1372,7 +1366,7 @@ mod tests {
             .unwrap();
         assert_eq!(rows, 0);
         let e = st.ensure_live_page(&key("/later"), "l", None).unwrap();
-        assert!(e.scoped_sessions.is_empty());
+        assert!(!watched(&st, &sid).contains(&e.artifact.id));
         assert!(matches!(
             st.live_watch(&sid, &key("/"), true),
             Err(crate::CoreError::Invalid { .. })
