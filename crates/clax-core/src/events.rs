@@ -85,6 +85,16 @@ pub enum Event {
         artifact_id: String,
         people: Vec<crate::presence::PresenceView>,
     },
+    /// A joined site changed (spec 2026-10-05-chrome-overlay-design §7.2):
+    /// an origin joined it or was split off. `site` is its key now,
+    /// `origins` its origins (the most recently used first), and `left` the
+    /// origins that are no longer of it. Only the `site:` topics of those
+    /// origins carry it; it names no artifact.
+    Site {
+        site: String,
+        origins: Vec<String>,
+        left: Vec<String>,
+    },
     /// A `db` document changed; `version` is `None` after a delete. The body
     /// is never carried (SSE needs no token). `private_to` names the viewer
     /// whose private subtree holds `path` (the event goes only to that viewer);
@@ -118,6 +128,7 @@ impl Event {
             | Event::Working { artifact_id, .. }
             | Event::Presence { artifact_id, .. }
             | Event::Doc { artifact_id, .. } => artifact_id,
+            Event::Site { .. } => "",
         }
     }
 
@@ -135,6 +146,7 @@ impl Event {
             Event::Working { .. } => "working",
             Event::Presence { .. } => "presence",
             Event::Doc { .. } => "doc",
+            Event::Site { .. } => "site",
         }
     }
 

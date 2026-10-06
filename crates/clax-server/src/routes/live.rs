@@ -172,8 +172,11 @@ pub async fn page(
     let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
     let pu = page_url(&s, &q.url)?;
     let key = pu.key.clone();
+    let live_ids = s.live_ids.clone();
     let (found, rule) = s
         .store_call(move |st| {
+            // The extension looks a tab's URL up: its origin is in use.
+            live_ids.touch(st, &key.origin)?;
             let r = st.resolve_live_key(&key)?;
             let Some(p) = st.find_live_page(&r.key)? else {
                 return Ok((None, r.rule));
@@ -381,6 +384,7 @@ pub async fn thread(
     let key = pu.key;
     let a = s
         .store_call(move |st| {
+            live_ids.touch(st, &key.origin)?;
             let path = key.path.clone();
             let resolved = st.resolve_live_key(&key)?;
             let rule = resolved.rule.as_ref();
@@ -587,7 +591,7 @@ pub async fn snapshot(
 
 /// 403 `forbidden` unless the request holds the token or comes through the
 /// extension gateway: who may move threads and change merge rules.
-fn owner_writes(who: &Identity) -> Result<(), ApiError> {
+pub(crate) fn owner_writes(who: &Identity) -> Result<(), ApiError> {
     if who.token || who.extension {
         Ok(())
     } else {
@@ -599,7 +603,7 @@ fn owner_writes(who: &Identity) -> Result<(), ApiError> {
 }
 
 /// 403 `forbidden` unless the request holds an owner credential.
-fn owner_reads(who: &Identity) -> Result<(), ApiError> {
+pub(crate) fn owner_reads(who: &Identity) -> Result<(), ApiError> {
     if who.is_owner() {
         Ok(())
     } else {
@@ -612,7 +616,7 @@ fn owner_reads(who: &Identity) -> Result<(), ApiError> {
 
 /// The origin a `site` or `rules` request names: the origin of `raw`, a
 /// page URL or an origin, refusing the daemon's own ([`page_url`]).
-fn origin_of(s: &AppState, raw: &str) -> Result<String, ApiError> {
+pub(crate) fn origin_of(s: &AppState, raw: &str) -> Result<String, ApiError> {
     Ok(page_url(s, raw)?.key.origin)
 }
 
@@ -655,9 +659,10 @@ fn summary_status(t: &Value) -> &'static str {
 }
 
 /// `GET /api/live/site?origin=<origin or page URL>` (the owner): every live
-/// page of the origin that has threads, newest activity first, as `{origin,
-/// rules, pages: [{page, summary: {open, addressed, resolved,
-/// last_activity}, threads}]}`. `page` is [`page_view`]; `threads` are
+/// page of the origin's site (spec §7.2: of every origin joined to it) that
+/// has threads, newest activity first, as `{origin, site, rules, pages:
+/// [{page, summary: {open, addressed, resolved, last_activity}, threads}]}`.
+/// `site` is the origin's site ([`super::sites::site_view`]). `page` is [`page_view`]; `threads` are
 /// thread views (resolved ones too), newest activity first; `rules` the
 /// origin's merge rules ([`rule_view`]), oldest first.
 pub async fn site(
@@ -673,8 +678,9 @@ pub async fn site(
     let with_path = has_token(&headers, &s.token);
     let codex = s.feedback_ctx().codex_push();
     let o = origin.clone();
-    let (pages, rules) = s
+    let (pages, rules, joined) = s
         .store_call(move |st| {
+            let joined = st.joined_site(&o)?;
             let pages = st.site_pages(&o)?;
             let all: Vec<_> = pages.iter().flat_map(|p| p.threads.clone()).collect();
             let mut views = thread_views(st, &all, codex, with_path)?.into_iter();
@@ -683,7 +689,7 @@ pub async fn site(
                 let threads: Vec<Value> = views.by_ref().take(p.threads.len()).collect();
                 out.push((p.page, p.title, p.current_version, threads));
             }
-            Ok((out, st.live_rules(&o)?))
+            Ok((out, st.live_rules(&o)?, joined))
         })
         .await?;
     let mut groups: Vec<(String, Value)> = pages
@@ -710,6 +716,7 @@ pub async fn site(
     groups.sort_by(|a, b| b.0.cmp(&a.0));
     Ok(Json(json!({
         "origin": origin,
+        "site": super::sites::site_view(&joined),
         "rules": rules.iter().map(rule_view).collect::<Vec<_>>(),
         "pages": groups.into_iter().map(|(_, g)| g).collect::<Vec<_>>(),
     })))
@@ -717,14 +724,14 @@ pub async fn site(
 
 /// What a re-filing route needs besides the store.
 #[derive(Clone)]
-struct RefileCtx {
-    feedback: crate::feedback::FeedbackCtx,
-    live_ids: std::sync::Arc<crate::live::LiveIds>,
+pub(crate) struct RefileCtx {
+    pub(crate) feedback: crate::feedback::FeedbackCtx,
+    pub(crate) live_ids: std::sync::Arc<crate::live::LiveIds>,
     cache: std::sync::Arc<crate::wrap_cache::WrapCache>,
 }
 
 impl RefileCtx {
-    fn of(s: &AppState) -> RefileCtx {
+    pub(crate) fn of(s: &AppState) -> RefileCtx {
         RefileCtx {
             feedback: s.feedback_ctx(),
             live_ids: s.live_ids.clone(),
@@ -734,7 +741,7 @@ impl RefileCtx {
 
     /// [`Store::refile_threads`], announcing what it did; when it fails, the
     /// pages of `fresh` (made for it) that hold no thread are deleted again.
-    fn refile(
+    pub(crate) fn refile(
         &self,
         st: &Store,
         moves: &[(String, Refile)],
@@ -757,7 +764,7 @@ impl RefileCtx {
         }
     }
 
-    fn discard_if_empty(&self, st: &Store, aid: &str) -> clax_core::Result<()> {
+    pub(crate) fn discard_if_empty(&self, st: &Store, aid: &str) -> clax_core::Result<()> {
         let id = ArtifactId::parse(aid)?;
         if !st.list_threads(&id, true, None, 1)?.0.is_empty() {
             return Ok(());
@@ -819,7 +826,7 @@ fn announce_refiled(
 
 /// Finds or makes the live page `key` (titled `title` when made) and
 /// announces a version it wrote; `fresh` when this call made it.
-fn target_page(
+pub(crate) fn target_page(
     st: &Store,
     live_ids: &crate::live::LiveIds,
     events: &clax_core::EventBus,
@@ -840,13 +847,13 @@ fn target_page(
 }
 
 /// `viewer:<public ID>` of the owner, who moves threads.
-fn mover(st: &Store, who: &Identity) -> clax_core::Result<String> {
+pub(crate) fn mover(st: &Store, who: &Identity) -> clax_core::Result<String> {
     let v = who.ensure_viewer(st)?.ok_or(CoreError::NotFound)?;
     Ok(format!("viewer:{}", v.public_id))
 }
 
 /// The live page `id` with its artifact, for an answer.
-fn page_of(st: &Store, id: &str) -> clax_core::Result<(LivePage, Artifact)> {
+pub(crate) fn page_of(st: &Store, id: &str) -> clax_core::Result<(LivePage, Artifact)> {
     let id = ArtifactId::parse(id)?;
     Ok((
         st.live_page_of(&id)?.ok_or(CoreError::NotFound)?,
@@ -867,7 +874,7 @@ pub struct MoveBody {
 /// clip, snapshot links and agents (spec 2026-10-05-chrome-overlay-design
 /// §7.1). Answers `{thread, page, moved}`; `moved` is false, and nothing is
 /// written, when the thread is already there. 400 `cross_origin` for a page
-/// of another origin (nothing written); 404 for a missing thread or one not
+/// of another site (an origin not joined to the thread's: nothing written); 404 for a missing thread or one not
 /// on a live page.
 pub async fn move_thread(
     State(s): State<AppState>,
@@ -888,10 +895,11 @@ pub async fn move_thread(
             let Some(origin) = rc.live_ids.origin_of(&t.artifact_id) else {
                 return Err(CoreError::NotFound);
             };
-            if origin != pu.key.origin {
+            // Within its site, joined origins included (spec §7.2).
+            if rc.live_ids.site_key(&origin) != rc.live_ids.site_key(&pu.key.origin) {
                 return Err(CoreError::invalid(
                     "cross_origin",
-                    "a thread moves only to a page of its own origin",
+                    "a thread moves only to a page of its own site",
                 ));
             }
             let r = st.resolve_live_key(&pu.key)?;

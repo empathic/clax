@@ -1363,6 +1363,16 @@ impl ClaxTools {
     }
 
     async fn do_watch(&self, a: WatchArgs) -> Outcome {
+        /// The site a page URL's watch covers (spec 2026-10-05 §7.2): its
+        /// name (its most recently used origin) and every origin of it, the
+        /// most recently used first; threads may come from any of them.
+        fn site_of(v: &Value) -> Value {
+            let origins: Vec<Value> = v["origins"]
+                .as_array()
+                .map(|a| a.iter().map(|o| o["origin"].clone()).collect())
+                .unwrap_or_default();
+            json!({"name": v["name"], "joined": v["joined"], "origins": origins})
+        }
         let url = match self.target(&a.url_or_id).await? {
             crate::target::Target::Page(url) => url,
             crate::target::Target::Artifact { id, .. } => {
@@ -1381,6 +1391,7 @@ impl ClaxTools {
                 "url": res["page"]["url"],
                 "page_url": res["page"]["page_url"],
                 "scope": res["live_watch"]["scope"],
+                "site": site_of(&res["site"]),
                 "watching": true,
                 "replies_armed": res["live_watch"]["replies_armed"],
             }))
@@ -1858,7 +1869,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
+        description = "Watch an artifact, or a web page by its URL (your dev server's, such as `http://localhost:5173/`, which covers every page under it, on every address of its site when the person joined several into one), so comments sent to the agent on it reach this session (`on`, default true; `on: false` stops). `replies` (default true) lets them end your turn through the Stop hook or wake the session where the harness allows. Publishing an artifact already watches it with replies on."
     )]
     pub async fn watch(
         &self,

@@ -9,7 +9,7 @@ import type { Artifact, Version } from "../../../shell/src/api";
 import type { Thread, Viewer } from "../../../shell/src/threads";
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import type { Working } from "../../../shell/src/view/working-model";
-import type { PageView, SiteRule, SiteView } from "../messages";
+import type { PageView, SiteInfo, SiteRule, SiteView } from "../messages";
 import { PairError, type Pairer, type Pairing } from "./pairing";
 
 export class ApiFailure extends Error {
@@ -155,6 +155,19 @@ export class Api {
   addRule(origin: string, pattern: string) { return this.send<{ rule: SiteRule; moved: string[]; remaining: number }>("POST", "/api/live/rules", { origin, pattern }); }
   /** One batch of deleting a merge rule; `remaining` says how many threads are left to un-merge. */
   async deleteRule(id: string) { threadIds([id]); return this.send<{ moved: string[]; remaining: number }>("DELETE", `/api/live/rules/${id}`); }
+  /** The sites the page's origin may be the same app as (spec §7.2). */
+  suggest(url: string, title: string) {
+    return this.json<{ origin: string; site: SiteInfo; suggestions: { origin: string; site: SiteInfo; reason: "path" | "title"; path: string | null }[] }>(
+      `/api/live/sites/suggest?url=${encodeURIComponent(url)}&title=${encodeURIComponent(title)}`);
+  }
+  /** Every site Clax has live pages of, one entry per joined site. */
+  sites() { return this.json<{ sites: { site: SiteInfo }[] }>("/api/live/sites"); }
+  /** One batch of joining `origin` to the site of `with`; `remaining` says how many threads are left to merge. */
+  join(origin: string, withOrigin: string) { return this.send<{ site: SiteInfo; moved: string[]; remaining: number }>("POST", "/api/live/sites/join", { origin, with: withOrigin }); }
+  /** Splits `origin` off its site. */
+  split(origin: string) { return this.send<{ split: boolean; site: SiteInfo }>("POST", "/api/live/sites/split", { origin }); }
+  /** The owner's answer to a suggested join: never, or not now. */
+  answer(origin: string, withOrigin: string, answer: "never" | "later") { return this.send<unknown>("POST", "/api/live/sites/answer", { origin, with: withOrigin, answer }); }
   /** Who is on the live page now. */
   async presenceOf(aid: string) { ids(aid); return this.json<{ people?: PresenceView[] }>(`/api/artifacts/${aid}/presence`); }
 }

@@ -12,6 +12,7 @@ pub mod room;
 pub mod sample;
 pub mod sessions;
 pub mod shell;
+pub mod sites;
 pub mod stream;
 pub mod threads;
 pub mod token;
@@ -136,6 +137,10 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         .route("/api/live/site", get(live::site))
         .route("/api/live/rules", get(live::rules))
         .route("/api/live/rules/{id}", delete(live::delete_rule))
+        .route("/api/live/sites", get(sites::list))
+        .route("/api/live/sites/suggest", get(sites::suggest))
+        .route("/api/live/sites/split", post(sites::split))
+        .route("/api/live/sites/answer", post(sites::answer))
         .route("/api/extension", get(extension::status))
         .route(
             "/api/extension/credentials",
@@ -233,7 +238,9 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         // Moves and merges copy snapshot versions.
         .route("/api/live/threads/{tid}/move", post(live::move_thread))
-        .route("/api/live/rules", post(live::add_rule));
+        .route("/api/live/rules", post(live::add_rule))
+        // A join merges pages as moves do.
+        .route("/api/live/sites/join", post(sites::join));
     #[cfg(feature = "test-routes")]
     let api_slow = api_slow.layer(axum::middleware::from_fn(test_delay));
     let api_slow =
@@ -603,6 +610,18 @@ mod l10 {
                 inline_used.contains(*p),
                 "INLINE lists {p}, which is not a route"
             );
+        }
+        // The joined sites' routes (spec §7.2) are owner-only live routes:
+        // hidden from the LAN by the path rule.
+        for p in [
+            "/api/live/sites",
+            "/api/live/sites/suggest",
+            "/api/live/sites/join",
+            "/api/live/sites/split",
+            "/api/live/sites/answer",
+        ] {
+            assert!(crate::live::live_route(p), "{p}");
+            assert!(routes(src).iter().any(|(r, _)| r == p), "{p} is not routed");
         }
         // `/mcp` is a `route_service` behind the token.
         let mcp = include_str!("mcp.rs");

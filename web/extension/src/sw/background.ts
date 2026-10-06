@@ -11,7 +11,8 @@
 // record in session storage, so a restarted worker picks it up again. It
 // stays on through reloads and navigations within its origin, the overlay
 // injected again into each new document; it turns off when the tab leaves
-// the origin, when the person turns it off, or when the tab closes. Holding
+// the origin (or its joined site, spec §7.2: another of its origins keeps it
+// on, for that origin), when the person turns it off, or when the tab closes. Holding
 // an origin's permission turns Clax on nowhere by itself. An overlay message
 // the worker does not admit is answered `{off: true}`, and the overlay
 // stops: one in a page restored from the back/forward cache after Clax
@@ -153,7 +154,9 @@ export function startBackground(c: typeof chrome) {
       const on = tabs.onOrigin(tabId);
       if (on === null) return;
       const url = change.url ?? tab.url;
-      if (url === undefined || origins.originOf(url) !== on) { off(tabId); return; }
+      const now = url === undefined ? null : origins.originOf(url);
+      // Another origin of the tab's joined site keeps Clax on, now for that origin (spec §7.2).
+      if (now !== on && !(now && tabs.moveOn(tabId, now))) { off(tabId); return; }
       if (change.status === undefined) void tabs.navigated(tabId, true);
       else if (change.status === "loading" || change.status === "complete") void tabs.navigated(tabId, change.status === "complete");
     });
@@ -194,6 +197,8 @@ export function startBackground(c: typeof chrome) {
     api, tabs, pairer, sites,
     allUrls: () => c.permissions.contains({ origins: ["<all_urls>"] }),
     navigate: async (tabId, url) => { await c.tabs.update(tabId, { url }); },
+    probe: url => origins.probeServer(url),
+    title: async tabId => (await c.tabs.get(tabId)).title ?? "",
     turnOff: async tabId => off(tabId),
   };
 

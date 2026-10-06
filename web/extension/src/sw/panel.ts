@@ -4,7 +4,7 @@
 // once (the stream brings it too). A failure is told to the panel as
 // `failed {code, message}`; one a new pairing can fix is also kept as the
 // tab's error, so the panel's Retry pairs again for it.
-import { type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
+import { MAX_SITES, type PanelToWorker, RETRYABLE, type WorkerToPanel } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
 import type { Pairer } from "./pairing";
@@ -12,9 +12,14 @@ import type { Sites } from "./site";
 import type { Tabs } from "./tabs";
 
 export type PanelDeps = {
-  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule">;
+  api: Pick<Api, "sendThread" | "sendBatch" | "comment" | "resolve" | "reopen" | "looked" | "setName" | "move" | "addRule" | "deleteRule" | "suggest" | "sites" | "join" | "split" | "answer">;
   tabs: Pick<Tabs, "state" | "admits" | "route" | "applied" | "fail" | "setViewer" | "select" | "setCommentMode" | "openThread">;
-  sites: Pick<Sites, "load">;
+  sites: Pick<Sites, "load" | "origins">;
+  /** Whether `url`'s server answers a short request (decision 3, 2026-10-06: a
+   * thread opens on the first origin of its site that answers). */
+  probe(url: string): Promise<boolean>;
+  /** The tab's title, for a suggestion's match by title. */
+  title(tabId: number): Promise<string>;
   pairer: Pick<Pairer, "pair">;
   /** Whether the extension holds `<all_urls>` (screenshots on any tab without a click). */
   allUrls(): Promise<boolean>;
@@ -27,6 +32,8 @@ export type PanelDeps = {
 class PanelFailure extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
+/** `origin` without its scheme, as the panel names an address. */
+const host = (origin: string) => origin.replace(/^\w+:\/\//, "");
 /** The panel acted on a page the tab no longer shows, or on another tab. */
 const changed = () => new PanelFailure("page_changed", "The tab shows another page now.");
 const failed = (e: unknown): Extract<WorkerToPanel, { t: "failed" }> => {
@@ -71,20 +78,60 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       return;
     default: break;
   }
-  // The site's actions (spec §7.1): on the origin Clax is on for in the tab.
+  // The site's actions (spec §7.1, §7.2): on the origin Clax is on for in the tab, and its site.
   const on = s?.on;
+  if (!on && (m.t === "suggest" || m.t === "answer" || m.t === "list-sites")) return;
   if (on) {
+    const site = d.sites.origins(on);
     switch (m.t) {
       case "open-thread": {
-        const url = d.tabs.openThread(tabId, m.threadId);
-        if (!url) throw new PanelFailure("not_found", "That thread is not on this site any more.");
-        await d.navigate(tabId, url);
-        return;
+        const where = d.tabs.openThread(tabId, m.threadId);
+        if (!where) throw new PanelFailure("not_found", "That thread is not on this site any more.");
+        // The most recently used address first; one that does not answer, the next (owner decision 2026-10-06).
+        for (const o of where.origins) {
+          const url = o + where.path;
+          if (await d.probe(url)) { await d.navigate(tabId, url); return; }
+        }
+        throw new PanelFailure("site_unreachable", `No address of this site answers (${where.origins.map(host).join(", ")}). Start its server, then try again.`);
       }
-      case "move":
-        if (originOf(m.pageUrl) !== on) throw new PanelFailure("cross_origin", "That page is on another site.");
+      case "move": {
+        const o = originOf(m.pageUrl);
+        if (!o || !site.includes(o)) throw new PanelFailure("cross_origin", "That page is on another site.");
         await d.api.move(m.threadId, m.pageUrl);
         return;
+      }
+      case "join": {
+        if (m.origin !== on) throw changed();
+        const r = await d.api.join(on, m.with);
+        reply({ t: "step", req: m.req, moved: r.moved.length, remaining: r.remaining });
+        // The site's listing changes (its `site` event says so too), and which page the tab's URL names.
+        await d.sites.load(on);
+        if (!r.remaining && s.url) await d.tabs.route(tabId, s.url, true);
+        return;
+      }
+      case "split": {
+        if (!site.includes(m.origin)) throw changed();
+        await d.api.split(m.origin);
+        reply({ t: "step", req: m.req, moved: 0, remaining: 0 });
+        await d.sites.load(on);
+        if (s.url) await d.tabs.route(tabId, s.url, true);
+        return;
+      }
+      case "suggest": {
+        const r = s.url ? await d.api.suggest(s.url, await d.title(tabId).catch(() => "")) : null;
+        const first = r?.suggestions[0];
+        reply({ t: "suggestion", origin: on, suggestion: first ? { origin: first.origin, origins: first.site.origins.map(o => o.origin), reason: first.reason, path: first.path } : null });
+        return;
+      }
+      case "answer":
+        await d.api.answer(on, m.with, m.answer);
+        reply({ t: "suggestion", origin: on, suggestion: null });
+        return;
+      case "list-sites": {
+        const r = await d.api.sites();
+        reply({ t: "sites", sites: r.sites.slice(0, MAX_SITES).map(x => ({ key: x.site.key, name: x.site.name, origins: x.site.origins.map(o => o.origin) })) });
+        return;
+      }
       case "rule": case "unrule": {
         // The panel names the site it means: another tab now shows in it, or the tab left the site.
         if (m.origin !== on) throw changed();
@@ -103,11 +150,14 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
   if (!page) throw new PanelFailure("no_page", "This tab shows no live page.");
   const aid = page.artifact_id;
   switch (m.t) {
-    case "navigate":
+    case "navigate": {
       if (m.artifactId !== aid) throw changed();
       if (m.route !== null && !/^[?#]/.test(m.route)) throw new PanelFailure("invalid_route", "Not a route of this page.");
-      await d.navigate(tabId, page.page_url + (m.route ?? ""));
+      // On the tab's own origin when the page is its site's (spec §7.2): the page's key may be another of its origins.
+      const base = on && d.sites.origins(on).includes(page.origin) ? on + page.path : page.page_url;
+      await d.navigate(tabId, base + (m.route ?? ""));
       return;
+    }
     case "send": d.tabs.applied(tabId, (await d.api.sendThread(aid, m.threadId, m.to)).thread); return;
     case "send-batch": for (const t of (await d.api.sendBatch(aid, m.threadIds, m.note, m.to)).threads) d.tabs.applied(tabId, t); return;
     case "reply": d.tabs.applied(tabId, (await d.api.comment(aid, m.threadId, m.body)).thread); return;

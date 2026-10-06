@@ -55,7 +55,7 @@ function memory() {
 /** The documents in the tabs: whether each tab's current document has the overlay. */
 function documents() { return new Set<number>(); }
 
-type FakeSites = { view(o: string | null): SiteView | null; follow(os: Iterable<string>): void; fromHub(id: string, msg: HubMsg): void };
+type FakeSites = { view(o: string | null): SiteView | null; follow(os: Iterable<string>): void; fromHub(id: string, msg: HubMsg): void; origins(o: string): string[] };
 function harness(store = memory(), docs = documents(), sites?: FakeSites) {
   const calls: string[] = [];
   const hubIn: { id: string; msg: TabMsg }[] = [];
@@ -728,12 +728,15 @@ describe("Tabs and the site's threads", () => {
   const other = (id: string, extra: object = {}) => ({ ...full(id, { artifact_id: AID2, anchor: { kind: "element", selector: "h1", file: "index.html", route: "?x" }, page_path: "/users/7", page_url: `${O}/users/7?x`, addressed_pending: { harness: "claude", at: "t" }, ...extra }) });
   function sites() {
     let view: SiteView | null = null;
+    let joined: string[] = [O];
     const followed: string[][] = [];
     const heard: [string, HubMsg][] = [];
     return {
       followed, heard,
       set(v: SiteView | null) { view = v; },
-      view: (o: string | null) => (o === O ? view : null),
+      join(os: string[]) { joined = os; },
+      origins: (o: string) => (joined.includes(o) ? joined : [o]),
+      view: (o: string | null) => (o !== null && joined.includes(o) ? view : null),
       follow: (os: Iterable<string>) => { followed.push([...new Set(os)]); },
       fromHub: (id: string, msg: HubMsg) => { heard.push([id, msg]); },
     };
@@ -817,10 +820,28 @@ describe("Tabs and the site's threads", () => {
     h.pages.set(URL1, { page: page(), route: null });
     h.tabs.turnOn(4, URL1, O);
     await h.tabs.route(4, URL1);
-    expect(h.tabs.openThread(4, T2)).toBe(`${O}/users/7?x`);
+    expect(h.tabs.openThread(4, T2)).toEqual({ path: "/users/7?x", origins: [O] });
     expect(h.tabs.openThread(4, "01J9DDDDDDDDDDDDDDDDDDDDDD")).toBeNull();
     await h.tabs.fromOverlay(4, 1, { t: "resolved", results: [{ id: T2, found: true, method: "selector", rect: null }] });
     expect(h.overlay.at(-1)).toEqual({ tabId: 4, m: { t: "scroll-to", threadId: T2 } });
     expect(h.tabs.state(4)?.selected).toBe(T2);
+  });
+
+  it("opens a joined site's thread on any of its origins, and keeps Clax on when the tab goes to another of them", async () => {
+    const f = sites();
+    const O2 = "http://localhost:5174";
+    const h = harness(memory(), documents(), f);
+    f.set(listing());
+    f.join([O2, O]);
+    h.pages.set(URL1, { page: page(), route: null });
+    h.tabs.turnOn(4, URL1, O);
+    await h.tabs.route(4, URL1);
+    expect(h.tabs.openThread(4, T2)).toEqual({ path: "/users/7?x", origins: [O2, O] });
+    // Another origin of the site: Clax stays on, for it.
+    expect(h.tabs.moveOn(4, O2)).toBe(true);
+    expect(h.tabs.onOrigin(4)).toBe(O2);
+    // Another site's origin: nothing changes (the worker turns Clax off).
+    expect(h.tabs.moveOn(4, "http://localhost:9999")).toBe(false);
+    expect(h.tabs.onOrigin(4)).toBe(O2);
   });
 });

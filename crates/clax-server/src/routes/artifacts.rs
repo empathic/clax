@@ -164,8 +164,9 @@ pub(crate) fn session_header(headers: &HeaderMap) -> Result<Option<String>, ApiE
 /// `a` as JSON with `owner_live` (its owner session exists and has not ended),
 /// `owner_harness` (the owner's harness, when it exists) and `participants`
 /// (people by public ID, agents by handle; see [`Store::participants`]).
-/// A live page (`kind` `live`) also carries `live: {origin, path, page_url}`
-/// from `live`.
+/// A live page (`kind` `live`) also carries `live: {origin, path, page_url,
+/// origins}` from `live`: `origins` are its site's (spec §7.2), the most
+/// recently used first, and `page_url` is the page's path on the first.
 /// `working` is the artifact's working list (spec §10 "Working"), which
 /// never names a session. The
 /// artifact's own `owner_session_id` stays; token-less routes drop it with
@@ -175,29 +176,41 @@ pub(crate) fn with_owner(
     owner: Option<&Session>,
     working: &[clax_core::working::WorkingView],
     participants: &Participants,
-    live: Option<&LivePage>,
+    live: Option<&LivePart>,
 ) -> Value {
     let mut v = serde_json::to_value(a).expect("serialisable artifact");
     v["owner_live"] = json!(owner.is_some_and(|o| o.ended_at.is_none()));
     v["owner_harness"] = json!(owner.map(|o| &o.harness));
     v["working"] = json!(working);
     v["participants"] = json!(participants);
-    if let Some(p) = live {
+    if let Some(LivePart { page: p, origins }) = live {
+        let newest = origins.first().unwrap_or(&p.origin);
         v["live"] = json!({
             "origin": p.origin,
             "path": p.path,
-            "page_url": format!("{}{}", p.origin, p.path),
+            "page_url": format!("{newest}{}", p.path),
+            "origins": origins,
         });
     }
     v
 }
 
+/// A live page with its site's origins, the most recently used first.
+pub(crate) struct LivePart {
+    pub page: LivePage,
+    pub origins: Vec<String>,
+}
+
 /// The live page `a` is, when it is one.
-pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePage>> {
+pub(crate) fn live_part(st: &Store, a: &Artifact) -> clax_core::Result<Option<LivePart>> {
     if a.kind != KIND_LIVE {
         return Ok(None);
     }
-    st.live_page_of(&ArtifactId::parse(&a.id)?)
+    let Some(page) = st.live_page_of(&ArtifactId::parse(&a.id)?)? else {
+        return Ok(None);
+    };
+    let origins = st.joined_site(&page.origin)?.origin_names();
+    Ok(Some(LivePart { page, origins }))
 }
 
 /// Leaves out the session IDs a token-less caller must not see (spec §14):
@@ -283,10 +296,23 @@ pub async fn list(
                     .map(|s| (s.id.clone(), s))
                     .collect();
                 let participants = st.participants_all()?;
-                let pages: std::collections::HashMap<String, LivePage> = st
+                let mut sites: std::collections::HashMap<String, Vec<(String, String)>> =
+                    std::collections::HashMap::new();
+                for (origin, key, used) in st.site_memberships()? {
+                    sites.entry(key).or_default().push((used, origin));
+                }
+                let pages: std::collections::HashMap<String, LivePart> = st
                     .live_pages()?
                     .into_iter()
-                    .map(|p| (p.artifact_id.clone(), p))
+                    .map(|p| {
+                        let mut list = sites.get(&p.origin).cloned().unwrap_or_default();
+                        list.sort_by(|a, b| b.cmp(a));
+                        let mut origins: Vec<String> = list.into_iter().map(|x| x.1).collect();
+                        if origins.is_empty() {
+                            origins.push(p.origin.clone());
+                        }
+                        (p.artifact_id.clone(), LivePart { page: p, origins })
+                    })
                     .collect();
                 let none = Participants::default();
                 Ok(artifacts

@@ -71,6 +71,44 @@ async fn comment(ts: &TestServer, url: &str) -> (String, String) {
 }
 
 #[tokio::test]
+async fn a_watch_names_the_joined_site_and_hears_its_other_addresses() {
+    let ts = TestServer::spawn().await;
+    let (t, _sid) = session_tools(&ts).await;
+    comment(&ts, "http://localhost:7702/").await;
+    let res = ts
+        .post_json(
+            "/api/live/sites/join",
+            json!({"origin": "http://localhost:7703", "with": "http://localhost:7702"}),
+        )
+        .await;
+    assert_eq!(res.status(), 200);
+    let w = ok(&t
+        .watch(Parameters(WatchArgs {
+            url_or_id: "http://localhost:7703/".into(),
+            on: None,
+            replies: None,
+        }))
+        .await
+        .unwrap());
+    assert_eq!(w["site"]["joined"], true);
+    assert_eq!(
+        w["site"]["origins"],
+        json!(["http://localhost:7703", "http://localhost:7702"])
+    );
+    let (aid, tid) = comment(&ts, "http://localhost:7702/other").await;
+    ts.send_thread(&aid, &tid).await;
+    let r = t
+        .wait_for_feedback(Parameters(WaitArgs {
+            url_or_id: None,
+            timeout_s: Some(1),
+        }))
+        .await
+        .unwrap();
+    let v = ok(&r);
+    assert_eq!(v["feedback"][0]["thread_id"], tid.as_str(), "{v}");
+}
+
+#[tokio::test]
 async fn a_page_url_is_watched_read_and_waited_on() {
     let ts = TestServer::spawn().await;
     let (t, _sid) = session_tools(&ts).await;

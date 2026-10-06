@@ -420,6 +420,12 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
         Event::FeedbackState { .. } => vec![(Chan::Artifact(a), Gate::Any)],
         Event::Working { .. } => vec![(Chan::Gallery, Gate::Any), (Chan::Working(a), Gate::Any)],
         Event::Presence { .. } => vec![(Chan::Presence(a), Gate::Any)],
+        // Only owners' streams on this machine follow a site (L10).
+        Event::Site { origins, left, .. } => origins
+            .iter()
+            .chain(left)
+            .map(|o| (Chan::Site(o.clone()), Gate::Local))
+            .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
         Event::Doc {
@@ -555,14 +561,18 @@ impl Hub {
         let site = self.live.origin_of(ev.artifact_id());
         let live = site.is_some();
         let mut all = routes(ev);
-        // A live page's `artifact` events also go to its site's channel.
-        // (Not the `thread_deleted` a move sends for older clients: the
-        // site's subscribers have `thread_moved`.)
-        if let Some(origin) = site
+        // A live page's `artifact` events also go to its site's channels:
+        // one per origin of its site (spec §7.2: a joined site's origins
+        // hear each other's pages, origins joined later included). (Not the
+        // `thread_deleted` a move sends for older clients: the site's
+        // subscribers have `thread_moved`.)
+        if let Some(key) = site
             && all.iter().any(|(c, _)| matches!(c, Chan::Artifact(_)))
             && !matches!(ev, Event::ThreadDeleted { moved: true, .. })
         {
-            all.push((Chan::Site(origin), Gate::Local));
+            for origin in self.live.site_origins(&key) {
+                all.push((Chan::Site(origin), Gate::Local));
+            }
         }
         let present: Vec<(Chan, Gate)> = all
             .into_iter()

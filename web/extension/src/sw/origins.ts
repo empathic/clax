@@ -43,6 +43,26 @@ export function sameOrigin(url: string, senderUrl: string | undefined): boolean 
 }
 export const patternOf = (origin: string) => `${origin}/*`;
 
+/** How long a probe of a site's address waits for its server. */
+export const PROBE_MS = 1500;
+/** Origins the worker may fetch (its connect-src): others cannot be probed, and count as answering. */
+const PROBED = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+/** Whether `url`'s server answers within PROBE_MS (owner decision
+ * 2026-10-06: a thread of a joined site opens on its most recently used
+ * address that answers). An opaque answer of any status counts; a refused
+ * connection or a timeout does not. */
+export async function probeServer(url: string, fetchFn: typeof fetch = fetch): Promise<boolean> {
+  const o = originOf(url);
+  if (!o) return false;
+  if (!PROBED.test(o)) return true;
+  try {
+    await fetchFn(url, { method: "HEAD", mode: "no-cors", credentials: "omit", cache: "no-store", redirect: "manual", signal: AbortSignal.timeout(PROBE_MS) });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Asks for the origin's permission. Call it before any `await` in the
  * gesture's handler, so the gesture still holds. */
 export function ask(env: OriginsEnv, origin: string): Promise<boolean> {

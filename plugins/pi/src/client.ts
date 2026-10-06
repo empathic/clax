@@ -489,7 +489,7 @@ export class DaemonClient {
     await this.request(() => `${this.sessionPath()}/watches/${id}`, { method: "DELETE" });
   }
 
-  /** `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page `url`; `{live_watch, page, covered}`. */
+  /** `PUT /api/sessions/<sid>/live-watches`: a scope watch on the page `url`; `{live_watch, page, site, covered}`. */
   liveWatch(url: string, replies: boolean): Promise<any> {
     return this.json(() => `${this.sessionPath()}/live-watches`, this.jsonBody("PUT", { url, replies_armed: replies }));
   }
