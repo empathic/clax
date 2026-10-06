@@ -232,7 +232,19 @@ pub(crate) fn create_thread_now(
     with_path: bool,
 ) -> clax_core::Result<Value> {
     let mention = !t.via_page && mentions_agent(&t.body);
-    let mut thread = st.create_thread(id, t)?;
+    let thread = st.create_thread(id, t)?;
+    announce_new_thread(st, ctx, thread, mention, with_path)
+}
+
+/// What follows writing a new thread: sends it to the agent when its first
+/// comment `mention`s one, announces it, and answers its view.
+pub(crate) fn announce_new_thread(
+    st: &Store,
+    ctx: &crate::feedback::FeedbackCtx,
+    mut thread: Thread,
+    mention: bool,
+    with_path: bool,
+) -> clax_core::Result<Value> {
     if mention {
         let (sent, touched) = st.send_to_agent(&thread.id)?;
         thread = sent;

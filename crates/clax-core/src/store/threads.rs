@@ -325,6 +325,18 @@ impl Store {
     /// when the version holds no file at `anchor.file`), `invalid_comment`, or
     /// `unknown_version` for bad input.
     pub fn create_thread(&self, id: &ArtifactId, t: NewThread) -> Result<Thread> {
+        self.create_thread_then(id, t, |_, _| Ok(()))
+    }
+
+    /// [`Store::create_thread`], running `then` with the new thread's ID in
+    /// the transaction that writes it: an error from `then` rolls the thread
+    /// back.
+    pub(crate) fn create_thread_then(
+        &self,
+        id: &ArtifactId,
+        t: NewThread,
+        then: impl FnOnce(&rusqlite::Transaction<'_>, &str) -> Result<()>,
+    ) -> Result<Thread> {
         t.anchor.validate()?;
         check_body(&t.body)?;
         let tid = new_ulid();
@@ -397,6 +409,7 @@ impl Store {
                 params![cid, tid, t.author_name, t.author_public_id, t.via_page, t.body, now],
             )?;
             insert_mentions(tx, &cid, &t.body)?;
+            then(tx, &tid)?;
             Ok(clip)
         })?;
         if let Some(mut clip) = clip {

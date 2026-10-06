@@ -1388,3 +1388,102 @@ async fn a_comment_refuses_fields_it_does_not_take_and_needs_pending() {
         .unwrap();
     assert!(page["page"].is_null(), "nothing was created");
 }
+
+/// A comment on `url` for pick `pick`, mentioning the agent.
+fn picked_form(url: &str, pick: &str) -> reqwest::multipart::Form {
+    reqwest::multipart::Form::new()
+        .text("url", url.to_string())
+        .text("title", "Settings")
+        .text("anchor", anchor())
+        .text("body", "@agent the button overflows")
+        .text("pending", "[]")
+        .text("pick_id", pick.to_string())
+        .text("snapshot", "<!doctype html><p>v1</p>")
+}
+
+async fn thread_count(ts: &TestServer, aid: &str) -> usize {
+    let list: Value = ts
+        .get(&format!("/api/artifacts/{aid}/threads"))
+        .await
+        .json()
+        .await
+        .unwrap();
+    list["threads"].as_array().unwrap().len()
+}
+
+#[tokio::test]
+async fn a_retried_comment_with_its_pick_id_makes_and_sends_one_thread() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let pick = "0123456789abcdef0123456789abcdef";
+    let first = post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/", pick)).await;
+    assert_eq!(first.status(), 201);
+    let first: Value = first.json().await.unwrap();
+    let aid = first["page"]["artifact_id"].as_str().unwrap().to_string();
+    let tid = first["thread"]["id"].as_str().unwrap().to_string();
+    let sent_at = first["thread"]["sent_to_agent"].clone();
+
+    let again = post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/", pick)).await;
+    assert_eq!(again.status(), 200, "a repeat answers the thread it made");
+    let again: Value = again.json().await.unwrap();
+    assert_eq!(again["thread"]["id"], tid);
+    assert_eq!(again["page"]["artifact_id"], aid);
+    assert_eq!(again["version"], first["version"]);
+    assert_eq!(again["thread"]["sent_to_agent"], sent_at);
+    assert_eq!(again["thread"]["comments"].as_array().unwrap().len(), 1);
+    assert_eq!(thread_count(&ts, &aid).await, 1, "no second thread");
+
+    // The same pick on another page, and another pick on this one, are new.
+    let other =
+        post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/x", pick)).await;
+    assert_eq!(other.status(), 201);
+    let fresh = post_thread_form(
+        &ts,
+        &v.cookie,
+        picked_form("http://localhost:5173/", &"f".repeat(32)),
+    )
+    .await;
+    assert_eq!(fresh.status(), 201);
+    assert_eq!(thread_count(&ts, &aid).await, 2);
+}
+
+#[tokio::test]
+async fn a_repeated_pick_whose_thread_was_deleted_makes_a_new_one() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(Some("Alex")).await;
+    let pick = "00000000000000000000000000000001";
+    let first: Value =
+        post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/", pick))
+            .await
+            .json()
+            .await
+            .unwrap();
+    let aid = first["page"]["artifact_id"].as_str().unwrap();
+    let tid = first["thread"]["id"].as_str().unwrap();
+    let res = ts
+        .authed(
+            ts.client
+                .delete(format!("{}/api/artifacts/{aid}/threads/{tid}", ts.base)),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert!(res.status().is_success(), "{}", res.status());
+    let again = post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/", pick)).await;
+    assert_eq!(again.status(), 201);
+    let again: Value = again.json().await.unwrap();
+    assert_ne!(again["thread"]["id"], tid);
+}
+
+#[tokio::test]
+async fn a_pick_id_must_be_32_lowercase_hex_digits() {
+    let ts = TestServer::spawn().await;
+    let v = ts.viewer(None).await;
+    for bad in ["short", &"A".repeat(32), &"g".repeat(32), &"a".repeat(33)] {
+        let res =
+            post_thread_form(&ts, &v.cookie, picked_form("http://localhost:5173/", bad)).await;
+        assert_eq!(res.status(), 400, "{bad}");
+        let body: Value = res.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_args");
+    }
+}

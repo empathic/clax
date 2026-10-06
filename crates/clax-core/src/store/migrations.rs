@@ -239,7 +239,8 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE UNIQUE INDEX viewers_one_owner ON viewers(owner) WHERE owner = 1;",
     // 16: live pages (spec 2026-10-05-chrome-overlay-design §5.1): the
     // artifact kind, each live page's key, scope watches (and the watches
-    // they made), and addresses waiting for a live page's next snapshot.
+    // they made), addresses waiting for a live page's next snapshot, and the
+    // threads recent picks made (so a retried comment makes no second one).
     "ALTER TABLE artifacts ADD COLUMN kind TEXT NOT NULL DEFAULT 'html'
         CHECK (kind IN ('html', 'live'));
     CREATE TABLE live_pages (
@@ -268,7 +269,15 @@ pub const MIGRATIONS: &[&str] = &[
         PRIMARY KEY (artifact_id, thread_id)
     );
     CREATE INDEX live_pending_by_thread ON live_pending(thread_id);
-    CREATE INDEX live_watches_by_origin ON live_watches(origin, path);",
+    CREATE INDEX live_watches_by_origin ON live_watches(origin, path);
+    CREATE TABLE live_picks (
+        artifact_id TEXT NOT NULL,
+        pick_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (artifact_id, pick_id)
+    );
+    CREATE INDEX live_picks_by_time ON live_picks(created_at);",
     // 17: the Clax Chrome extension's credentials (spec
     // 2026-10-05-chrome-overlay-design §5.3), as their SHA-256 only. A
     // credential names no viewer: the extension acts as the owner identity.

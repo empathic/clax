@@ -4,9 +4,10 @@
 //! shell's origin or a script ([`SameOrigin`]).
 
 use super::assets::multipart_error;
-use super::threads::{create_thread_now, publish_thread};
+use super::threads::{announce_new_thread, mentions_agent, publish_thread};
 use crate::auth::has_token;
 use crate::error::ApiError;
+use crate::feedback::thread_view;
 use crate::identity::Identity;
 use crate::state::AppState;
 use crate::viewer::{SameOrigin, author};
@@ -15,11 +16,11 @@ use axum::extract::multipart::MultipartRejection;
 use axum::extract::rejection::QueryRejection;
 use axum::extract::{Multipart, Query, State};
 use axum::http::{HeaderMap, StatusCode};
-use clax_core::live::{PageUrl, parse_page_url};
+use clax_core::live::{PageKey, PageUrl, parse_page_url};
 use clax_core::model::Artifact;
 use clax_core::store::live::LivePage;
 use clax_core::store::threads::{NewThread, clip_problem};
-use clax_core::{Anchor, ArtifactId, CoreError, Event};
+use clax_core::{Anchor, ArtifactId, CoreError, Event, Store};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -159,6 +160,12 @@ struct Fields {
     clip: Option<Vec<u8>>,
     snapshot: Option<Vec<u8>>,
     pending: Option<Vec<String>>,
+    pick_id: Option<String>,
+}
+
+/// Whether `s` is a pick ID: 32 lowercase hex digits.
+fn is_pick_id(s: &str) -> bool {
+    s.len() == 32 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// `pending` as a multipart field gives it: a JSON array of thread IDs.
@@ -192,6 +199,16 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
             "anchor" => f.anchor.replace(text()?).is_some(),
             "body" => f.body.replace(text()?).is_some(),
             "pending" => f.pending.replace(parse_pending(&text()?)?).is_some(),
+            "pick_id" => {
+                let pick = text()?;
+                if !is_pick_id(&pick) {
+                    return Err(ApiError::bad_request(
+                        "invalid_args",
+                        "pick_id is 32 lowercase hex digits",
+                    ));
+                }
+                f.pick_id.replace(pick).is_some()
+            }
             "clip" => f.clip.replace(bytes.to_vec()).is_some(),
             "snapshot" => {
                 if bytes.len() > MAX_SNAPSHOT {
@@ -206,7 +223,7 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
                 return Err(ApiError::bad_request(
                     "invalid_args",
                     format!(
-                        "unknown field '{name}': a comment takes url, title, anchor, body, pending, clip and snapshot"
+                        "unknown field '{name}': a comment takes url, title, anchor, body, pending, pick_id, clip and snapshot"
                     ),
                 ));
             }
@@ -221,6 +238,32 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
     Ok(f)
 }
 
+/// A repeat of a comment: the thread pick `pick` made on the live page
+/// `key`, when it did ([`Store::picked_thread`]), as `thread`'s answer
+/// gives it with `false` for "made now".
+fn replay(
+    st: &Store,
+    ctx: &crate::feedback::FeedbackCtx,
+    key: &PageKey,
+    pick: &str,
+    with_path: bool,
+) -> clax_core::Result<Option<(bool, Value, LivePage, Artifact, u32)>> {
+    let Some((aid, tid)) = st.picked_thread(key, pick)? else {
+        return Ok(None);
+    };
+    let id = ArtifactId::parse(&aid)?;
+    let (Some(thread), Some(page), Some(artifact)) = (
+        st.get_thread(&tid)?,
+        st.live_page_of(&id)?,
+        st.get_artifact(&id)?,
+    ) else {
+        return Ok(None);
+    };
+    let version = thread.version_n;
+    let view = thread_view(st, &thread, ctx.codex_push(), with_path)?;
+    Ok(Some((false, view, page, artifact, version)))
+}
+
 /// `POST /api/live/threads` (multipart `url`, `title`, `anchor`, `body`,
 /// `pending`, optional `clip`, `snapshot`): finds or creates the live page
 /// `url` names, stores `snapshot` as its next version when it differs from
@@ -231,6 +274,11 @@ async fn read_fields(mut mp: Multipart) -> Result<Fields, ApiError> {
 /// screenshot; an `@agent` mention sends it. Answers `201 {thread, page,
 /// version, clip_error?}`; a clip failing `clip_problem` is dropped and
 /// reported.
+///
+/// With `pick_id` (32 lowercase hex digits), a repeat of the request within
+/// [`PICK_TTL`](clax_core::store::live::PICK_TTL) whose pick already made a thread on the page writes and
+/// sends nothing and answers `200 {thread, page, version}` with that thread
+/// as it is now (`version` is the one it was made on).
 pub async fn thread(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -262,13 +310,20 @@ pub async fn thread(
     let clip_error = f.clip.as_deref().and_then(clip_problem);
     let clip = if clip_error.is_some() { None } else { f.clip };
     let body = f.body.unwrap_or_default();
+    let mention = mentions_agent(&body);
+    let pick = f.pick_id;
     let with_path = has_token(&headers, &s.token);
     let ctx = s.feedback_ctx();
     let events = s.events.clone();
     let live_ids = s.live_ids.clone();
     let key = pu.key;
-    let (view, page, artifact, version) = s
+    let (made, view, page, artifact, version) = s
         .store_call(move |st| {
+            if let Some(pick) = &pick
+                && let Some(r) = replay(st, &ctx, &key, pick, with_path)?
+            {
+                return Ok(r);
+            }
             let e = live_ids.ensure_page(st, &key, &title, Some(&snapshot), &pending)?;
             let id = ArtifactId::parse(&e.artifact.id)?;
             if e.new_version {
@@ -286,25 +341,37 @@ pub async fn thread(
                 }
             }
             let (author_name, author_public_id) = author(st, &who)?;
-            let view = create_thread_now(
-                st,
-                &ctx,
-                &id,
-                NewThread {
-                    author_public_id,
-                    version_n: e.version.n,
-                    anchor,
-                    author_name,
-                    body,
-                    clip,
-                    via_page: false,
+            let t = NewThread {
+                author_public_id,
+                version_n: e.version.n,
+                anchor,
+                author_name,
+                body,
+                clip,
+                via_page: false,
+            };
+            let thread = match &pick {
+                None => st.create_thread(&id, t)?,
+                Some(pick) => match st.create_picked_thread(&id, t, pick)? {
+                    Some(thread) => thread,
+                    None => {
+                        return replay(st, &ctx, &key, pick, with_path)?.ok_or(CoreError::NotFound);
+                    }
                 },
-                with_path,
-            )?;
+            };
+            let view = announce_new_thread(st, &ctx, thread, mention, with_path)?;
             let page = st.live_page_of(&id)?.ok_or(CoreError::NotFound)?;
-            Ok((view, page, e.artifact, e.version.n))
+            Ok((true, view, page, e.artifact, e.version.n))
         })
         .await?;
+    if !made {
+        let out = json!({
+            "thread": view,
+            "page": page_view(&s, &page, &artifact),
+            "version": version,
+        });
+        return Ok((StatusCode::OK, Json(out)));
+    }
     let mut out = json!({
         "thread": view,
         "page": page_view(&s, &page, &artifact),

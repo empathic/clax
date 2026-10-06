@@ -2,8 +2,9 @@
 //! `live`, keyed by origin and path, whose versions are snapshots.
 
 use super::Store;
+use super::threads::NewThread;
 use crate::live::{KIND_LIVE, PageKey, placeholder_html};
-use crate::model::{Artifact, CONTRACT_VERSION, Version};
+use crate::model::{Artifact, CONTRACT_VERSION, Thread, Version};
 use crate::publish::{Encoding, FileInput, INDEX, PublishRequest, ValidatedPublish};
 use crate::{ArtifactId, CoreError, Result};
 use base64::Engine as _;
@@ -35,6 +36,16 @@ pub struct EnsuredPage {
     /// The threads whose pending addresses were linked to `version` in the
     /// transaction that wrote it ([`Store::ensure_live_page_linking`]).
     pub linked: Vec<String>,
+}
+
+/// How long a pick ID keeps naming the thread it made
+/// ([`Store::picked_thread`]): far longer than any retry of the request.
+pub const PICK_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
+
+/// The oldest `created_at` of a pick still kept.
+fn pick_cutoff() -> String {
+    let ttl = chrono::Duration::from_std(PICK_TTL).expect("the TTL fits");
+    (chrono::Utc::now() - ttl).to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 /// How many times [`Store::store_snapshot`] tries to write a version while
@@ -557,6 +568,68 @@ impl Store {
         })
     }
 
+    /// The thread pick `pick` made on the live page `key` within
+    /// [`PICK_TTL`], when it still exists: the page's artifact ID and the
+    /// thread ID.
+    ///
+    /// # Errors
+    /// Database errors only.
+    pub fn picked_thread(&self, key: &PageKey, pick: &str) -> Result<Option<(String, String)>> {
+        self.with_read(|c| {
+            Ok(c.query_row(
+                "SELECT p.artifact_id, k.thread_id FROM live_pages p
+                 JOIN artifacts a ON a.id = p.artifact_id
+                 JOIN live_picks k ON k.artifact_id = p.artifact_id
+                 JOIN threads t ON t.id = k.thread_id
+                 WHERE p.origin = ?1 AND p.path = ?2 AND a.deleted_at IS NULL
+                    AND k.pick_id = ?3 AND k.created_at >= ?4",
+                params![key.origin, key.path, pick, pick_cutoff()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+        })
+    }
+
+    /// [`Store::create_thread`] on the live page `id` for pick `pick`,
+    /// recording in the same transaction that the pick made it (and
+    /// forgetting picks older than [`PICK_TTL`], and this pick when its
+    /// thread was deleted). `None`, with nothing
+    /// written, when the pick already made a thread on the page: a repeat of
+    /// the request that raced this one.
+    ///
+    /// # Errors
+    /// As [`Store::create_thread`].
+    pub fn create_picked_thread(
+        &self,
+        id: &ArtifactId,
+        t: NewThread,
+        pick: &str,
+    ) -> Result<Option<Thread>> {
+        let taken = std::cell::Cell::new(false);
+        let made = self.create_thread_then(id, t, |tx, tid| {
+            tx.execute(
+                "DELETE FROM live_picks WHERE created_at < ?1
+                    OR (artifact_id = ?2 AND pick_id = ?3
+                        AND NOT EXISTS(SELECT 1 FROM threads WHERE id = live_picks.thread_id))",
+                params![pick_cutoff(), id.as_str(), pick],
+            )?;
+            let n = tx.execute(
+                "INSERT OR IGNORE INTO live_picks (artifact_id, pick_id, thread_id, created_at)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![id.as_str(), pick, tid, Store::now()],
+            )?;
+            if n == 0 {
+                taken.set(true);
+                return Err(CoreError::Conflict { current: 0 });
+            }
+            Ok(())
+        });
+        match made {
+            Err(_) if taken.get() => Ok(None),
+            r => r.map(Some),
+        }
+    }
+
     /// Whether the live page `id` has addresses waiting for a snapshot.
     ///
     /// # Errors
@@ -810,6 +883,48 @@ mod tests {
         });
         got.sort_unstable();
         assert_eq!(got, (2..2 + N as u32).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn concurrent_comments_for_one_pick_make_one_thread() {
+        let (_d, st) = store();
+        let e = st
+            .ensure_live_page(&key("/"), "x", Some(b"<!doctype html><p>a"))
+            .unwrap();
+        let id = ArtifactId::parse(&e.artifact.id).unwrap();
+        let pick = "0123456789abcdef0123456789abcdef";
+        const N: usize = 6;
+        let start = std::sync::Barrier::new(N);
+        let made: Vec<Option<String>> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..N)
+                .map(|_| {
+                    let (st, id, start) = (&st, &id, &start);
+                    s.spawn(move || {
+                        let mut anchor = crate::store::test_util::anchor();
+                        anchor.route = Some("#/".into());
+                        let t = super::NewThread {
+                            version_n: 1,
+                            anchor,
+                            author_name: "Ana".into(),
+                            author_public_id: None,
+                            body: "x".into(),
+                            clip: None,
+                            via_page: false,
+                        };
+                        start.wait();
+                        st.create_picked_thread(id, t, pick).unwrap().map(|t| t.id)
+                    })
+                })
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        let made: Vec<String> = made.into_iter().flatten().collect();
+        assert_eq!(made.len(), 1, "one thread is made, the rest find it");
+        assert_eq!(
+            st.picked_thread(&key("/"), pick).unwrap(),
+            Some((e.artifact.id.clone(), made[0].clone()))
+        );
+        assert_eq!(st.picked_thread(&key("/other"), pick).unwrap(), None);
     }
 
     #[test]

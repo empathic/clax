@@ -223,6 +223,10 @@ impl Store {
                 "DELETE FROM live_pending WHERE artifact_id = ?1",
                 params![id.as_str()],
             )?;
+            tx.execute(
+                "DELETE FROM live_picks WHERE artifact_id = ?1",
+                params![id.as_str()],
+            )?;
             Ok(())
         })?;
         let dir = self.home.artifact_dir(id);
@@ -414,6 +418,7 @@ impl Store {
                             "DELETE FROM version_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM live_pending WHERE artifact_id = ?1
                                 OR thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
+                            "DELETE FROM live_picks WHERE artifact_id = ?1",
                             "DELETE FROM viewer_seen WHERE artifact_id = ?1",
                             "DELETE FROM viewer_threads WHERE thread_id IN (SELECT id FROM threads WHERE artifact_id = ?1)",
                             "DELETE FROM mentions WHERE comment_id IN (SELECT c.id FROM comments c JOIN threads t ON t.id = c.thread_id WHERE t.artifact_id = ?1)",
