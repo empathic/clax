@@ -100,6 +100,14 @@ impl From<CoreError> for ApiError {
                 code: code @ ("joining" | "unmerging"),
                 message,
             } => ApiError::new(StatusCode::CONFLICT, code, message),
+            CoreError::Invalid {
+                code: "question_closed",
+                message,
+            } => ApiError::new(StatusCode::CONFLICT, "question_closed", message),
+            CoreError::Invalid {
+                code: "limit_reached",
+                message,
+            } => ApiError::new(StatusCode::TOO_MANY_REQUESTS, "limit_reached", message),
             CoreError::Invalid { code, message } => ApiError::bad_request(code, message),
             e @ CoreError::NotDeclared { .. } => ApiError::forbidden("not_declared", e.to_string()),
             e @ CoreError::Corrupt { .. } => {
@@ -162,6 +170,23 @@ impl IntoResponse for ApiError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn closed_questions_conflict_and_limits_are_too_many() {
+        let e = ApiError::from(CoreError::invalid(
+            "question_closed",
+            "the question is released",
+        ));
+        assert_eq!(
+            (e.status, e.code),
+            (StatusCode::CONFLICT, "question_closed")
+        );
+        let e = ApiError::from(CoreError::invalid("limit_reached", "at most 8"));
+        assert_eq!(
+            (e.status, e.code),
+            (StatusCode::TOO_MANY_REQUESTS, "limit_reached")
+        );
+    }
 
     #[test]
     fn io_errors_name_their_kind_but_no_path() {

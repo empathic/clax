@@ -8,6 +8,7 @@ pub mod feedback;
 pub mod health;
 pub mod live;
 pub mod mcp;
+pub mod questions;
 pub mod room;
 pub mod sample;
 pub mod sessions;
@@ -67,6 +68,7 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let cors = CorsLayer::new().allow_origin(Any).allow_methods(Any);
     let publish_limit = DefaultBodyLimit::max(artifacts::PUBLISH_BODY_LIMIT);
     let asset_limit = DefaultBodyLimit::max(21 * 1024 * 1024);
+    let ask_limit = DefaultBodyLimit::max(questions::ASK_BODY_LIMIT);
     let api_fast = Router::new()
         .route("/api/token", get(token::token))
         .route("/api/artifacts", get(artifacts::list))
@@ -171,6 +173,22 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
             axum::routing::put(watches::put).delete(watches::delete),
         )
         .route("/api/sessions/{id}/feedback/ack", post(feedback::ack))
+        .route(
+            "/api/sessions/{id}/questions",
+            post(questions::create.layer(ask_limit)),
+        )
+        .route(
+            "/api/sessions/{id}/questions:terminal",
+            post(questions::terminal),
+        )
+        .route(
+            "/api/sessions/{id}/questions/{qid}/withdraw",
+            post(questions::withdraw),
+        )
+        .route(
+            "/api/sessions/{id}/questions/{qid}/release",
+            post(questions::release),
+        )
         .route("/api/artifacts/{aid}/docs", get(docs::list))
         .route(
             "/api/artifacts/{aid}/docs/{*path}",
@@ -205,7 +223,15 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
     let api_fast = api_fast
         .route("/api/_test/working/skew", post(working::skew))
         .route("/api/_test/events/open", get(events::open_streams))
-        .route("/api/_test/stream/open", get(stream::open_streams));
+        .route("/api/_test/stream/open", get(stream::open_streams))
+        .route(
+            "/api/_test/questions/{qid}/waiters",
+            get(questions::waiters),
+        )
+        .route(
+            "/api/_test/questions/{qid}/answer",
+            post(questions::test_answer),
+        );
     #[cfg(feature = "test-routes")]
     let api_fast = api_fast.layer(axum::middleware::from_fn(test_delay));
     let api_fast = api_fast.layer(axum::middleware::from_fn(crate::http_cache::api_etag));
@@ -273,6 +299,8 @@ pub fn router(state: AppState, shutdown: Option<tokio::sync::watch::Sender<bool>
         )
         .route("/api/sessions/{id}/feedback", get(feedback::poll))
         .route("/api/sessions/{id}/notices", get(feedback::notices))
+        // A long-poll: outside the request timeout, as the feedback poll.
+        .route("/api/sessions/{id}/questions/{qid}", get(questions::poll))
         .merge(api_fast)
         .merge(api_slow)
         .merge(shell_routes)
@@ -437,6 +465,13 @@ mod l10 {
         ("feedback::ack", Token),
         ("feedback::poll", Token),
         ("feedback::notices", Token),
+        ("questions::create", Token),
+        ("questions::poll", Token),
+        ("questions::withdraw", Token),
+        ("questions::release", Token),
+        ("questions::terminal", Token),
+        ("questions::waiters", Token),
+        ("questions::test_answer", Token),
         ("shell::gallery_page", NoArtifact),
         ("shell::static_file", NoArtifact),
         ("health::healthz", NoArtifact),
@@ -467,6 +502,7 @@ mod l10 {
             "feedback" => include_str!("feedback.rs"),
             "health" => include_str!("health.rs"),
             "live" => include_str!("live.rs"),
+            "questions" => include_str!("questions.rs"),
             "room" => include_str!("room.rs"),
             "sample" => include_str!("sample.rs"),
             "sessions" => include_str!("sessions.rs"),

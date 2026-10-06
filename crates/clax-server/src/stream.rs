@@ -431,6 +431,8 @@ fn routes(ev: &Event) -> Vec<(Chan, Gate)> {
             .collect(),
         // The thread delta carries the newest comment and the resolve.
         Event::Comment { .. } | Event::ThreadResolved { .. } => vec![],
+        // Owner-only: no artifact's topic carries it.
+        Event::Question { .. } => vec![],
         Event::Doc {
             private_to,
             read_level,
@@ -891,6 +893,14 @@ impl Hub {
         if g.streams.get(id).is_some_and(|s| s.epoch == epoch) {
             drop_stream(&mut g, id);
         }
+    }
+
+    /// Whether an owner surface is open: an owner's stream holds the
+    /// `questions` or `inbox` topic (spec 2026-10-06-agent-questions-and-inbox
+    /// §6.3). Those topics do not exist yet, so every surface counts as
+    /// open and a mirrored question waits in Clax.
+    pub fn holds_owner_topics(&self) -> bool {
+        true
     }
 
     /// Drops streams detached for longer than [`GRACE`].

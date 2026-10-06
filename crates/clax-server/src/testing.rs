@@ -49,6 +49,8 @@ pub struct TestServer {
     pub client: reqwest::Client,
     /// The server's event bus, for publishing events directly.
     pub events: EventBus,
+    /// The server's store, for reading what a request left behind.
+    pub store: Arc<Store>,
     /// The server's working registry.
     pub working: Arc<clax_core::working::Working>,
     /// The server's presence registry.
@@ -113,10 +115,14 @@ impl TestServer {
             live_ids,
             ext_creds,
             extension_id: clax_core::extension::extension_id_in_effect(home.root()),
+            questions: Arc::new(Default::default()),
+            question_grace: Duration::from_secs(5),
+            terminal_after_s: clax_core::config::TERMINAL_AFTER_S,
         };
         f(&mut state);
         state.stream.listen(&state.events);
         let events = state.events.clone();
+        let store = state.store.clone();
         let working = state.working.clone();
         let presence = state.presence.clone();
         let extension_id = state.extension_id.clone();
@@ -135,6 +141,7 @@ impl TestServer {
             home,
             client: reqwest::Client::new(),
             events,
+            store,
             working,
             presence,
             addr,
@@ -561,5 +568,112 @@ impl TestServer {
             .unwrap();
         assert_eq!(res.status(), 201);
         res.json::<serde_json::Value>().await.unwrap()["thread"].clone()
+    }
+}
+
+/// The `question` events of a test daemon's bus ([`TestServer::question_events`]).
+pub struct QuestionTap {
+    rx: tokio::sync::broadcast::Receiver<clax_core::Stamped>,
+}
+
+impl QuestionTap {
+    /// The next `question` event's view, within 20 s.
+    pub async fn next(&mut self) -> serde_json::Value {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let got = tokio::time::timeout_at(deadline, self.rx.recv())
+                .await
+                .expect("a question event within 20 s")
+                .expect("the bus is open and kept up");
+            if let clax_core::Event::Question { question } = got.event {
+                return question;
+            }
+        }
+    }
+}
+
+impl TestServer {
+    /// `POST /api/sessions/<sid>/questions` with `body`; the response body,
+    /// after asserting a 200 or 201.
+    pub async fn ask(&self, sid: &str, body: serde_json::Value) -> serde_json::Value {
+        let res = self
+            .post_json(&format!("/api/sessions/{sid}/questions"), body)
+            .await;
+        let status = res.status();
+        let v: serde_json::Value = res.json().await.unwrap();
+        assert!(status == 200 || status == 201, "{status}: {v}");
+        v
+    }
+
+    /// Answers question `qid` as the owner through the shell; asserts 200.
+    pub async fn answer_question(&self, qid: &str, body: serde_json::Value) {
+        let res = self.answer_question_raw(qid, body).await;
+        assert_eq!(res.status(), 200, "{}", res.text().await.unwrap());
+    }
+
+    /// Answers question `qid` as the owner through the shell.
+    pub async fn answer_question_raw(
+        &self,
+        qid: &str,
+        body: serde_json::Value,
+    ) -> reqwest::Response {
+        self.post_json(&format!("/api/_test/questions/{qid}/answer"), body)
+            .await
+    }
+
+    /// Question `qid`'s stored status.
+    pub async fn question_status(&self, qid: &str) -> String {
+        self.store
+            .question(qid)
+            .unwrap()
+            .expect("the question exists")
+            .status
+            .as_str()
+            .to_string()
+    }
+
+    /// Ends session `sid` as its harness does; asserts 200.
+    pub async fn end_session(&self, sid: &str) {
+        let res = self
+            .authed(
+                self.client
+                    .patch(format!("{}/api/sessions/{sid}", self.base))
+                    .json(&serde_json::json!({"ended": true})),
+            )
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    /// How many polls hold question `qid` now.
+    pub async fn question_waiters(&self, qid: &str) -> u64 {
+        let v: serde_json::Value = self
+            .get_authed(&format!("/api/_test/questions/{qid}/waiters"))
+            .await
+            .json()
+            .await
+            .unwrap();
+        v["count"].as_u64().expect("a count")
+    }
+
+    /// Returns once `n` polls hold question `qid`; panics after 5 s.
+    pub async fn wait_question_waiters(&self, qid: &str, n: u64) {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while self.question_waiters(qid).await != n {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{n} polls of {qid} within 5 s"
+            );
+            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }
+
+    /// A tap on this daemon's `question` events from now on.
+    pub fn question_events(&self) -> QuestionTap {
+        QuestionTap {
+            rx: self.events.subscribe(),
+        }
     }
 }
