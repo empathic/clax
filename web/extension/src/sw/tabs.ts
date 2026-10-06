@@ -14,7 +14,7 @@ import { type ThreadDelta, applyPresence, applyThread } from "../../../shell/src
 import type { PresenceView } from "../../../shell/src/view/presence-model";
 import { type ThreadChange, ThreadSync } from "../../../shell/src/view/thread-sync";
 import type { Working } from "../../../shell/src/view/working-model";
-import { MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
+import { MAX_FAR, MAX_URL, type OverlayToWorker, type PageView, type PanelState, type PanelToWorker, URL_TOO_LONG, type WorkerToOverlay, type WorkerToPanel, isFromPanel, overlayThread, waitsForSnapshot } from "../messages";
 import type { Api } from "./api";
 import { originOf } from "./origins";
 import type { Sites } from "./site";
@@ -274,8 +274,11 @@ export class Tabs {
     // The site's open threads of other pages follow the page's own (so the
     // pins number those first), each with the path it was left at; their
     // pending addresses are their own pages' to settle.
+    // At most MAX_FAR, the newest.
     const far = (this.d.sites?.view(s.on)?.pages ?? []).filter(p => p.page.artifact_id !== s.page?.artifact_id)
-      .flatMap(p => p.threads.filter(t => t.status === "open").map(t => ({ ...overlayThread(t), addressed_pending: false, from: t.page_path ?? p.page.path })));
+      .flatMap(p => p.threads.filter(t => t.status === "open").map(t => [t, p.page.path] as const))
+      .sort(([a], [b]) => (a.created_at < b.created_at ? 1 : -1)).slice(0, MAX_FAR)
+      .map(([t, path]) => ({ ...overlayThread(t), addressed_pending: false, from: t.page_path ?? path }));
     const m: WorkerToOverlay = { t: "state", page: s.page, route: s.route, threads: [...s.threads.map(overlayThread), ...far].slice(0, 1000), commentMode: s.commentMode, pending: s.pending };
     const key = JSON.stringify(m);
     if (this.told.get(tabId) === key) return;

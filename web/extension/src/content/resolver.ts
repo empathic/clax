@@ -10,7 +10,9 @@ import { OVERLAY_TAG, type Resolved, resolveAnchor, textIndex, type TextIndex } 
 import { placeArea } from "../../../bridge/src/area";
 import { type Box, INDEX_FILE, type ResolveMethod } from "../../../bridge/src/protocol";
 import { rectOf } from "../../../bridge/src/target";
-import type { OverlayThread } from "../messages";
+import { MAX_FAR, type OverlayThread } from "../messages";
+
+export { MAX_FAR };
 
 export const QUIET_MS = 150;
 /** The longest a change waits for its resolution on a page that keeps changing. */
@@ -87,7 +89,8 @@ export class Resolver {
 
   /** The open threads of the current route, then those of the site's other pages (`from`), on any route. */
   private here(): OverlayThread[] {
-    return this.threads.filter(t => t.status === "open" && (t.from !== undefined || (t.anchor.route ?? null) === this.route));
+    const open = this.threads.filter(t => t.status === "open");
+    return [...open.filter(t => t.from === undefined && (t.anchor.route ?? null) === this.route), ...open.filter(t => t.from !== undefined).slice(0, MAX_FAR)];
   }
 
   /** Whether a resolution is due: the DOM changed, or the threads did, since the last one. */

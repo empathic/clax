@@ -106,6 +106,11 @@ for (const f of filesIn(ext)) {
 }
 sizes.extOverlay = extGz("overlay.js");
 sizes.extWorker = extGz("sw.js");
+// The worker is minified whole (build-extension.mjs): no line of it is indented, and it is a few lines at most.
+{
+  const sw = readFileSync(new URL("sw.js", ext), "utf8").split("\n");
+  if (sw.length > 20 || sw.some(l => /^\s/.test(l))) throw new Error(`dist-extension/sw.js is not minified whole (${sw.length} lines)`);
+}
 // The pages: the HTML and every script and stylesheet in assets/ it names.
 for (const [key, html] of [["extComposer", "composer.html"], ["extPanel", "sidepanel.html"]]) {
   const text = readFileSync(new URL(html, ext), "utf8");

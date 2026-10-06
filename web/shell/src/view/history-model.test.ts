@@ -21,6 +21,17 @@ describe("history-model", () => {
     expect(versionAt(vs, "2026-09-30T13:00:00.000Z")).toBe(3);
   });
 
+  it("names a snapshot's address by the agent whose reply addressed it, as the reply does", () => {
+    const codex = { ...C("2", "agent", "codex", "2026-09-30T11:30:00.000Z"), via_harness: "codex" };
+    const t = T({ comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), codex], addressed_in: [3] });
+    // Version 3 is a live page's snapshot: no agent published it.
+    expect(historyOf(t, vs, names).find(e => e.verb === "addressed it")?.who).toBe("codex");
+    // A version an agent published keeps its own name.
+    expect(historyOf(t, [...vs.slice(0, 2), { ...vs[2], agent_harness: "claude" }], names).find(e => e.verb === "addressed it")?.who).toBe("claude");
+    // With no agent reply, the agent stays unnamed.
+    expect(historyOf(T({ addressed_in: [3] }), vs, names).find(e => e.verb === "addressed it")?.who).toBe("agent");
+  });
+
   it("shows an address waiting for a live page's next snapshot", () => {
     const t = { ...T({ comments: [C("1", "viewer", "alex", "2026-10-05T10:00:00.000Z")] }), addressed_pending: { harness: "claude", at: "2026-10-05T10:05:00.000Z" } };
     const h = historyOf(t, [], by => by);

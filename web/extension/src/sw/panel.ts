@@ -47,6 +47,8 @@ export async function panelAction(d: PanelDeps, tabId: number | null, m: PanelTo
 async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: (r: WorkerToPanel) => void): Promise<void> {
   // Neither needs a tab: the name is the owner's, the ping keeps the worker up.
   if (m.t === "set-name") { d.tabs.setViewer((await d.api.setName(m.name)).viewer); return; }
+  // A request (`req`) is always answered: a step or a failure.
+  if (tabId === null && "req" in m) throw new PanelFailure("no_tab", "The panel shows no tab.");
   if (m.t === "ping" || m.t === "visible" || tabId === null) return;
   const s = d.tabs.state(tabId);
   switch (m.t) {
@@ -84,6 +86,8 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
         await d.api.move(m.threadId, m.pageUrl);
         return;
       case "rule": case "unrule": {
+        // The panel names the site it means: another tab now shows in it, or the tab left the site.
+        if (m.origin !== on) throw changed();
         const r = m.t === "rule" ? await d.api.addRule(on, m.pattern) : await d.api.deleteRule(m.ruleId);
         reply({ t: "step", req: m.req, moved: r.moved.length, remaining: r.remaining });
         // A rule changes the listing (no event says so), and once done, which page the tab's URL names.
@@ -94,6 +98,7 @@ async function act(d: PanelDeps, tabId: number | null, m: PanelToWorker, reply: 
       default: break;
     }
   }
+  if ("req" in m) throw changed();
   const page = s?.page;
   if (!page) throw new PanelFailure("no_page", "This tab shows no live page.");
   const aid = page.artifact_id;

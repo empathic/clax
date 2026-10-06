@@ -34,6 +34,10 @@ describe("applySite", () => {
     // Its `thread` on the new page then completes it.
     const w = applySite(v, "thread", { artifact_id: A2, thread: { ...delta(T1, A2, 1), page_path: "/b" } })!;
     expect(w.pages[1].threads[1]).toMatchObject({ page_path: "/b", comments: [{ body: "body 1" }] });
+    // Applied again (a replay of a delta heard during a fetch), it changes nothing.
+    expect(applySite(v, "thread_moved", { artifact_id: A1, thread_id: T1, to_artifact_id: A2 })).toBe(v);
+    const gone = { ...v, pages: [v.pages[1]] };
+    expect(applySite(gone, "thread_moved", { artifact_id: A1, thread_id: T1, to_artifact_id: A2 })).toBe(gone);
     // A page the listing does not hold yet: the listing is fetched again.
     expect(applySite(site(), "thread_moved", { artifact_id: A1, thread_id: T1, to_artifact_id: A3 })).toBeNull();
   });
@@ -47,20 +51,23 @@ describe("applySite", () => {
   });
 });
 
-function harness() {
+function harness(fail = { on: false }) {
   const hubIn: { id: string; msg: TabMsg }[] = [];
   const detached: string[] = [];
   const changed: string[] = [];
   const loads: string[] = [];
   let answer: SiteView = site();
   let gate: Promise<void> | null = null;
+  const timers: { fn: () => void; ms: number }[] = [];
   const sites = new Sites({
-    api: { site: async (o: string) => { loads.push(o); const v = structuredClone(answer); await gate; return v; } },
+    api: { site: async (o: string) => { loads.push(o); const v = structuredClone(answer); await gate; if (fail.on) throw new Error("down"); return v; } },
+    after: (fn, ms) => { const t = { fn, ms }; timers.push(t); return t; },
+    cancel: h => { const i = timers.indexOf(h as never); if (i >= 0) timers.splice(i, 1); },
     hub: { receive: (id, msg) => hubIn.push({ id, msg }), detach: id => detached.push(id) },
     changed: o => changed.push(o),
   });
   const hear = (msg: HubMsg) => sites.fromHub(`site:${O}`, msg);
-  return { sites, hubIn, detached, changed, loads, hear, set: (v: SiteView) => { answer = v; }, hold: (p: Promise<void> | null) => { gate = p; } };
+  return { timers, sites, hubIn, detached, changed, loads, hear, set: (v: SiteView) => { answer = v; }, hold: (p: Promise<void> | null) => { gate = p; } };
 }
 const tick = () => new Promise(r => setTimeout(r, 0));
 
@@ -103,6 +110,52 @@ describe("Sites", () => {
     open();
     await tick();
     expect(h.sites.view(O)?.pages[1].threads).toEqual([]);
+  });
+
+  it("fetches at most once at a time and once more after, however many deltas do not add up meanwhile", async () => {
+    const h = harness();
+    h.sites.follow([O]);
+    h.hear({ t: "live", topics: [`site:${O}`] });
+    await tick();
+    let open!: () => void;
+    h.hold(new Promise<void>(r => { open = r; }));
+    // A merge of 200 threads onto a page the listing does not hold: a moved and a thread event each.
+    for (let i = 0; i < 200; i++) {
+      h.hear({ t: "event", topic: `site:${O}`, name: "thread_moved", data: { artifact_id: A1, thread_id: T1, to_artifact_id: A3 } });
+      h.hear({ t: "event", topic: `site:${O}`, name: "thread", data: { artifact_id: A3, thread: delta(T1, A3, 1) } });
+      void h.sites.load(O);
+    }
+    h.hold(null);
+    open();
+    for (let i = 0; i < 5; i++) await tick();
+    expect(h.loads.length).toBeLessThanOrEqual(4);
+  });
+
+  it("fetches a failed listing again after a growing wait, and not before", async () => {
+    const fail = { on: true };
+    const h = harness(fail);
+    h.sites.follow([O]);
+    h.hear({ t: "live", topics: [`site:${O}`] });
+    await tick();
+    expect(h.timers.map(t => t.ms)).toEqual([1000]);
+    // Deltas meanwhile neither pile up nor fetch at once.
+    h.hear({ t: "event", topic: `site:${O}`, name: "thread", data: { artifact_id: A3, thread: delta(T1, A3, 1) } });
+    expect(h.loads).toHaveLength(1);
+    h.timers.shift()!.fn();
+    await tick();
+    expect(h.loads).toHaveLength(2);
+    expect(h.timers.map(t => t.ms)).toEqual([2000]);
+    fail.on = false;
+    h.timers.shift()!.fn();
+    await tick();
+    expect(h.sites.view(O)?.pages).toHaveLength(2);
+    expect(h.timers).toEqual([]);
+    // Let go, a pending retry is cancelled.
+    fail.on = true;
+    h.hear({ t: "resync", topic: `site:${O}` });
+    await tick();
+    h.sites.follow([]);
+    expect(h.timers).toEqual([]);
   });
 
   it("drops a listing that answers after its origin was let go", async () => {

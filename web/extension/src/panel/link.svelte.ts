@@ -10,7 +10,9 @@
 import { type PanelState, type PanelToWorker, type SiteView, isToPanel } from "../messages";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
-export type Ask = { t: "rule"; pattern: string } | { t: "unrule"; ruleId: string };
+export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string };
+/** How long a request waits for the worker's answer (one batch of at most 200 threads). */
+export const REQUEST_MS = 120_000;
 type Step = { moved: number; remaining: number };
 type Failure = Error & { code: string };
 const failure = (code: string, message: string): Failure => Object.assign(new Error(message), { code });
@@ -125,7 +127,10 @@ export class PanelLink {
   request(m: Ask): Promise<Step> {
     const req = ++this.reqs;
     return new Promise((ok, fail) => {
-      this.asked.set(req, { ok, fail });
+      const timer = setTimeout(() => {
+        if (this.asked.delete(req)) fail(failure("timeout", "Clax did not answer. Try again."));
+      }, REQUEST_MS);
+      this.asked.set(req, { ok: s => { clearTimeout(timer); ok(s); }, fail: e => { clearTimeout(timer); fail(e); } });
       this.post({ ...m, req });
     });
   }

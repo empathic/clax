@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { MAX_WAIT_MS, type Placed, QUIET_MS, Resolver, type Timers } from "./resolver";
+import { MAX_FAR, MAX_WAIT_MS, type Placed, QUIET_MS, Resolver, type Timers } from "./resolver";
 
 /** Timers a test advances by hand. */
 function manual() {
@@ -52,6 +52,17 @@ describe("Resolver", () => {
     r.set([thread("01J9AAAAAAAAAAAAAAAAAAAAAA", "#save", "Save"), far], null);
     t.advance(0);
     expect(placed.map(p => [p.id, p.n, p.from])).toEqual([["01J9AAAAAAAAAAAAAAAAAAAAAA", 1, undefined], ["01J9BBBBBBBBBBBBBBBBBBBBBB", 2, "/users/7"]]);
+    r.stop();
+  });
+
+  it("resolves the page's own threads first, and at most MAX_FAR of the other pages'", () => {
+    const t = manual();
+    const r = new Resolver(document, p => { placed = p; }, t);
+    const far = Array.from({ length: 300 }, (_, i) => ({ ...(thread(`01J9F${String(i).padStart(21, "0")}`, "#save", "Save") as object), from: "/x" }) as never);
+    r.set([...far, thread("01J9AAAAAAAAAAAAAAAAAAAAAA", "#save", "Save")], null);
+    t.advance(0);
+    expect(placed).toHaveLength(1 + MAX_FAR);
+    expect(placed[0].id).toBe("01J9AAAAAAAAAAAAAAAAAAAAAA");
     r.stop();
   });
 

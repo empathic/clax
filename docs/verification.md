@@ -692,9 +692,10 @@ turning Clax on in its tab, and the side panel is opened for that tab):
    ("Pinned here"). Clicking it takes the tab to `/users/1.html`, where it is
    selected and found. "Move…" on `/`'s thread re-files it under
    `/users/1.html` (its card leaves the other pages). "Merge pages" with
-   `/users/:id` previews both user pages, merges the three threads onto the
+   `/users/:id` previews both user pages, asks to confirm ("Merge 2 pages
+   (3 threads)"), merges the three threads onto the
    canonical page, and the tab's page becomes it (three threads);
-   "Un-merge" deletes the rule and each thread goes back to the page of the
+   "Un-merge", confirmed, deletes the rule and each thread goes back to the page of the
    path it was made at, the tab's page then holding two.
 
 Found by this test and fixed, each with a regression test:
