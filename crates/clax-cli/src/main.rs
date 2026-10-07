@@ -1,6 +1,7 @@
 //! The `clax` command line: run the daemon and manage artifacts.
 
 mod client;
+mod codex_approvals;
 mod commands;
 mod extension_files;
 mod hooklog;

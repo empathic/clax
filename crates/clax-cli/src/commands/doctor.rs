@@ -184,7 +184,75 @@ fn extension_check(ext: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// `codex_approvals`: whether Codex would stop mid-task to ask before
+/// calling a Clax tool, under its `config.toml` at `path` (`text`: its
+/// contents, `None` when absent). Passes quietly when no tool asks; warns
+/// naming `clax init --agent codex` when tools ask that the person has not
+/// set a mode for, and names those whose own `approval_mode` makes them ask.
+fn codex_approvals_check(
+    path: &Path,
+    text: Result<Option<String>, String>,
+    tools: &[rmcp::model::Tool],
+) -> serde_json::Value {
+    use crate::codex_approvals::{SETUP_COMMAND, assess};
+    let a = match text.and_then(|t| {
+        assess(t.as_deref(), tools).map_err(|e| format!("could not parse {} ({e})", path.display()))
+    }) {
+        Ok(a) => a,
+        Err(e) => return check("codex_approvals", false, e),
+    };
+    let kept: Vec<String> = a
+        .kept()
+        .iter()
+        .map(|k| format!("{} (approval_mode = \"{}\")", k.tool, k.mode))
+        .collect();
+    let kept = (!kept.is_empty()).then(|| {
+        format!(
+            "Codex asks before {}, as {} sets",
+            kept.join(", "),
+            path.display()
+        )
+    });
+    let addable = a.addable();
+    if !addable.is_empty() {
+        let mut d = format!(
+            "Codex will stop to ask before each call of {}: run `{SETUP_COMMAND}`, which shows the lines it adds to {} and adds them once you confirm",
+            addable.join(", "),
+            path.display()
+        );
+        if let Some(k) = kept {
+            d.push_str(&format!("; {k}"));
+        }
+        return warn("codex_approvals", d);
+    }
+    match kept {
+        Some(k) => warn("codex_approvals", k),
+        None => check(
+            "codex_approvals",
+            true,
+            format!(
+                "Codex runs every Clax tool without asking ({})",
+                path.display()
+            ),
+        ),
+    }
+}
+
 fn codex_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
+    let approvals = match doctor_agent::Dirs::from_env(|k| std::env::var(k).ok()) {
+        Some(d) => {
+            let path = crate::codex_approvals::config_path(&d.codex_home);
+            let text = crate::codex_approvals::read_config(&path);
+            codex_approvals_check(&path, text, &clax_mcp::tools::ClaxTools::tools())
+        }
+        None => check("codex_approvals", false, "HOME is not set"),
+    };
+    let mut out = vec![approvals];
+    out.extend(codex_daemon_checks(client));
+    out
+}
+
+fn codex_daemon_checks(client: Option<&Client>) -> Vec<serde_json::Value> {
     let Some(c) = client else {
         return vec![check(
             "codex_push",
@@ -585,8 +653,46 @@ pub fn run(cli: &crate::Cli, home: &Home, args: &Args) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{codex_push_check, extension_check};
+    use super::{codex_approvals_check, codex_push_check, extension_check};
     use serde_json::{Value, json};
+
+    #[test]
+    fn the_codex_approvals_check_names_the_setup_command() {
+        let tools = clax_mcp::tools::ClaxTools::tools();
+        let p = std::path::Path::new("/cx/config.toml");
+        let none = codex_approvals_check(p, Ok(None), &tools);
+        assert_eq!(none["warn"], true, "{none}");
+        let d = none["detail"].as_str().unwrap();
+        assert!(d.contains("clax init --agent codex"), "{d}");
+        assert!(d.contains("delete, ") || d.contains(", delete"), "{d}");
+        assert!(!d.contains("publish"), "{d}");
+        let approved = crate::codex_approvals::add_approvals(
+            "",
+            &crate::codex_approvals::assess(None, &tools)
+                .unwrap()
+                .addable(),
+        )
+        .unwrap();
+        let ok = codex_approvals_check(p, Ok(Some(approved.clone())), &tools);
+        assert_eq!(
+            (ok["ok"].clone(), ok["warn"].clone()),
+            (json!(true), Value::Null),
+            "{ok}"
+        );
+        let own = approved.replace(
+            "tools.delete]\napproval_mode = \"approve\"",
+            "tools.delete]\napproval_mode = \"prompt\"",
+        );
+        let kept = codex_approvals_check(p, Ok(Some(own)), &tools);
+        assert_eq!(kept["warn"], true, "{kept}");
+        let d = kept["detail"].as_str().unwrap();
+        assert!(d.contains("delete (approval_mode = \"prompt\")"), "{d}");
+        assert!(!d.contains("clax init"), "{d}");
+        let bad = codex_approvals_check(p, Ok(Some("[x\n".into())), &tools);
+        assert_eq!(bad["ok"], false, "{bad}");
+        let unreadable = codex_approvals_check(p, Err("could not read".into()), &tools);
+        assert_eq!(unreadable["ok"], false, "{unreadable}");
+    }
     #[test]
     fn the_extension_check_warns_until_every_browser_is_registered() {
         let ok = extension_check(&serde_json::json!({

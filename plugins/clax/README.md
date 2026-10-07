@@ -62,7 +62,8 @@ wrapper match the binary), `skill` (whether the installed skill
 states the binary's tool count and is the skill the binary was built with),
 `mcp` (whether the daemon has a live Codex session, which the MCP server
 registers), `hooks` (the latest Codex lines in `~/.clax/logs/hooks.log`),
-`feedback` (each live session's watches and push state), and `codex_push` and
+`feedback` (each live session's watches and push state), `codex_approvals`
+(which Clax tools Codex would stop to ask about, below), and `codex_push` and
 `codex_sessions` (native push, below).
 
 `~/.clax/logs/hooks.log` (under `$CLAX_HOME` when set) has one line per
@@ -88,7 +89,8 @@ binary differ.
 - Hooks (`hooks/hooks.json`), run as `clax hook --agent codex <event>`:
   `SessionStart` (`session-start`) registers the Codex session with the daemon
   and records its Codex session ID and `CODEX_HOME`, and adds any comments
-  already waiting for the session to its context; `Stop` (`stop`, 10 s;
+  already waiting for the session to its context, and tells you once when
+  Codex would stop to ask before Clax tools (see "Tool approval"); `Stop` (`stop`, 10 s;
   gives up after 8 s) hands over comments sent to the session at the end of a
   turn, and when nothing is waiting ends the page's "working" status;
   `PostToolUse` (`scripts/tool-hook.sh codex`, 5 s) keeps that status alive,
@@ -116,17 +118,49 @@ The thread in the browser shows which of these it is waiting on.
 
 ### Tool approval
 
-Codex asks before each MCP tool call unless the server's tools are approved.
-To approve the clax tools, add to `~/.codex/config.toml`:
+Each Clax tool tells Codex what it does (MCP annotations, all local:
+`openWorldHint: false`). Under Codex's default approval mode, `auto`, Codex
+then runs the read-only tools and the ones that only add or toggle state
+(`publish`, `comments_reply`, `watch`, ...) without asking. It still asks
+before each call of the six tools that replace or remove data: `delete`,
+`db_set`, `db_update`, `db_delete`, `db_str_replace` and `db_batch`. A
+question while you are away in the browser stalls the task, and `codex exec`
+(approval policy `never`) refuses those calls outright.
+
+`clax init` (also run by `just install`) offers to approve them once, in your
+Codex config. It prints the lines it would add to `~/.codex/config.toml`
+(`$CODEX_HOME/config.toml` when set), one table per tool:
+
+```toml
+[plugins."clax@clax".mcp_servers.clax.tools.delete]
+approval_mode = "approve"
+```
+
+and adds them only when you answer yes; `clax init --agent codex --yes` adds
+them without asking. It keeps everything else in the file, including
+comments, and never changes a setting you made: a tool you set to
+`approval_mode = "prompt"` keeps asking. Re-registering the plugin
+(`codex plugin remove` and `add`, as `clax init` does) deletes Codex's
+settings for the plugin, so `clax init` puts back the ones you had.
+`clax doctor --agent codex` reports which tools Codex would still ask about
+(`codex_approvals`), and the `SessionStart` hook tells you once, with the
+command, when there are any.
+
+Clax ships no approval settings in the plugin: Codex would apply them
+without asking you. To approve every Clax tool instead, including future
+ones, set the server default yourself:
 
 ```toml
 [plugins."clax@clax".mcp_servers.clax]
 default_tools_approval_mode = "approve"
 ```
 
-This approves every clax tool, including `delete`. `codex exec` runs with
-approval policy `never` and refuses tool calls that would prompt, so
-non-interactive use needs this setting.
+The skill tells Codex to use the tools rather than the `clax` command:
+Codex's shell sandbox blocks a command's connection to the daemon on
+127.0.0.1 and its writes to `~/.clax`, so a shell `clax` asks for permission
+(the MCP server runs outside the sandbox). Clax does not widen the sandbox;
+`sandbox_workspace_write.network_access = true` would let shell commands
+reach the daemon, but it opens all network access to every command.
 
 ### Hooks
 

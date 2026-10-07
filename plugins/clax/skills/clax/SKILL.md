@@ -20,6 +20,14 @@ This is Clax plugin 0.3.0. It provides 23 tools as the `clax` MCP server:
 In Codex the tools are named `mcp__clax__<tool>`, for example
 `mcp__clax__publish`.
 
+Use these tools for everything Clax does; do not run the `clax` command in
+the shell. Codex's sandbox blocks a shell command's connection to the Clax
+server on 127.0.0.1 and its writes to `~/.clax`, so a `clax` command stops to
+ask the person for permission, often while they are away. The tools run
+outside the sandbox. Codex runs the read-only and additive tools without
+asking; it asks before `delete` and the `db_*` writes unless the person
+approved them (`clax init --agent codex` offers that once).
+
 ## When to publish
 
 Publish when the result is something the person should look at or interact with

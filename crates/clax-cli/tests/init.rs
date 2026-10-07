@@ -756,3 +756,140 @@ fn a_failed_extension_install_is_reported_and_does_not_fail_init() {
         "{v}"
     );
 }
+
+/// A fake `codex` that edits `$CODEX_HOME/config.toml` as the real one
+/// does: `plugin remove clax@clax` deletes every `[plugins."clax@clax"…]`
+/// table, settings included, and `plugin add clax@clax` appends
+/// `[plugins."clax@clax"] enabled = true`.
+const CODEX_EDITS_CONFIG: &str = r#"#!/bin/sh
+d="${0%/*}/.."
+echo "${0##*/} $*" >> "$d/calls"
+cfg="$CODEX_HOME/config.toml"
+case "$*" in
+"plugin remove clax@clax")
+    if [ -f "$cfg" ]; then
+        awk '/^\[/ { skip = index($0, "[plugins.\"clax@clax\"") == 1 } !skip' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg"
+    fi ;;
+"plugin add clax@clax")
+    mkdir -p "$CODEX_HOME"
+    printf '\n[plugins."clax@clax"]\nenabled = true\n' >> "$cfg" ;;
+esac
+exit 0
+"#;
+
+/// The tools Clax annotates as destructive, which Codex asks about by default.
+const DESTRUCTIVE: [&str; 6] = [
+    "db_batch",
+    "db_delete",
+    "db_set",
+    "db_str_replace",
+    "db_update",
+    "delete",
+];
+
+fn codex_env() -> Env {
+    let e = Env::new(&[]);
+    clax_fake_exe::install(&e.p("fakebin/codex"), CODEX_EDITS_CONFIG);
+    e
+}
+
+fn codex_approvals(v: &serde_json::Value) -> serde_json::Value {
+    v["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["agent"] == "codex")
+        .unwrap()["approvals"]
+        .clone()
+}
+
+#[test]
+fn init_keeps_the_persons_codex_settings_and_adds_approvals_with_yes() {
+    let e = codex_env();
+    let seed = "# mine\nmodel = \"m\"\n\n[plugins.\"clax@clax\"]\nenabled = true\n\n[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"approve\"\n\n[plugins.\"clax@clax\".mcp_servers.clax.tools.delete]\napproval_mode = \"prompt\"\n";
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(e.p("codex/config.toml"), seed).unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "codex", "--yes"]);
+    assert!(ok, "{v}");
+    let a = codex_approvals(&v);
+    assert_eq!(a["status"], "added", "{v}");
+    assert_eq!(a["restored"], true, "{v}");
+    assert_eq!(a["tools"], serde_json::json!(&DESTRUCTIVE[..5]), "{v}");
+    assert!(
+        a["detail"].as_str().unwrap().contains("delete"),
+        "the person's own `prompt` on delete is named: {v}"
+    );
+    let cfg = std::fs::read_to_string(e.p("codex/config.toml")).unwrap();
+    assert!(cfg.starts_with("# mine\nmodel = \"m\"\n"), "{cfg}");
+    assert!(
+        cfg.contains(
+            "[plugins.\"clax@clax\".mcp_servers.clax.tools.publish]\napproval_mode = \"approve\"\n"
+        ),
+        "{cfg}"
+    );
+    assert!(
+        cfg.contains(
+            "[plugins.\"clax@clax\".mcp_servers.clax.tools.delete]\napproval_mode = \"prompt\"\n"
+        ),
+        "{cfg}"
+    );
+    for t in &DESTRUCTIVE[..5] {
+        assert!(
+            cfg.contains(&format!(
+                "[plugins.\"clax@clax\".mcp_servers.clax.tools.{t}]\napproval_mode = \"approve\"\n"
+            )),
+            "{t}: {cfg}"
+        );
+    }
+
+    // Again: the settings come back after the fake removes them, and
+    // there is nothing left to add.
+    let (ok, v) = e.json(&["init", "--agent", "codex"]);
+    assert!(ok, "{v}");
+    let a = codex_approvals(&v);
+    assert_eq!(a["status"], "unchanged", "{v}");
+    assert_eq!(a["restored"], true, "{v}");
+    let again = std::fs::read_to_string(e.p("codex/config.toml")).unwrap();
+    for t in DESTRUCTIVE.iter().chain(["publish"].iter()) {
+        assert!(
+            again.contains(&format!("mcp_servers.clax.tools.{t}]")),
+            "{t}: {again}"
+        );
+    }
+}
+
+#[test]
+fn init_without_yes_or_a_terminal_shows_the_approvals_and_adds_nothing() {
+    let e = codex_env();
+    let (ok, v) = e.json(&["init", "--agent", "codex"]);
+    assert!(ok, "{v}");
+    let a = codex_approvals(&v);
+    assert_eq!(a["status"], "not_added", "{v}");
+    assert_eq!(a["restored"], false, "{v}");
+    assert_eq!(a["tools"], serde_json::json!(DESTRUCTIVE), "{v}");
+    let lines = a["lines"].as_str().unwrap();
+    assert!(
+        lines.starts_with(
+            "[plugins.\"clax@clax\".mcp_servers.clax.tools.db_batch]\napproval_mode = \"approve\"\n"
+        ),
+        "{lines}"
+    );
+    assert!(
+        a["detail"]
+            .as_str()
+            .unwrap()
+            .contains("clax init --agent codex --yes"),
+        "{v}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(e.p("codex/config.toml")).unwrap(),
+        "\n[plugins.\"clax@clax\"]\nenabled = true\n"
+    );
+    let out = e.cmd().args(["init", "--agent", "codex"]).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("codex approvals: not_added"), "{text}");
+    assert!(
+        text.contains("[plugins.\"clax@clax\".mcp_servers.clax.tools.delete]"),
+        "{text}"
+    );
+}

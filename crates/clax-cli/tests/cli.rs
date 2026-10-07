@@ -1493,3 +1493,35 @@ fn publish_takes_a_note_and_addresses() {
     assert_eq!(v2["note"], "Tighter spacing");
     assert_eq!(v2["addressed"], serde_json::json!([]));
 }
+
+#[test]
+fn a_codex_session_start_tells_the_person_once_which_tools_codex_asks_about() {
+    let e = Env::new();
+    let cfg = e.dir.path().join(".codex/config.toml");
+    std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
+    std::fs::write(&cfg, "[plugins.\"clax@clax\"]\nenabled = true\n").unwrap();
+    let start = || {
+        let out = e
+            .cmd()
+            .env("PATH", "/usr/bin:/bin")
+            .args(["hook", "--agent", "codex", "session-start"])
+            .write_stdin("{}")
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        String::from_utf8(out.stdout).unwrap()
+    };
+    let first = start();
+    let v: serde_json::Value = serde_json::from_str(first.trim()).unwrap();
+    let msg = v["systemMessage"].as_str().unwrap();
+    assert!(msg.contains("delete"), "{msg}");
+    assert!(msg.contains(&cfg.display().to_string()), "{msg}");
+    // No `clax` on PATH: the notice names the setting instead of a command.
+    assert!(msg.contains("approval_mode = \"approve\""), "{msg}");
+    assert_eq!(start(), "", "said once");
+    assert_eq!(
+        std::fs::read_to_string(&cfg).unwrap(),
+        "[plugins.\"clax@clax\"]\nenabled = true\n",
+        "the hook never writes Codex's config"
+    );
+}

@@ -161,31 +161,42 @@ pub fn log_run(home: &Home, agent: &str, event: &str, started: Instant, stderr: 
 }
 
 /// Runs the hook. Never fails the harness: any error or timeout prints one
-/// line to stderr and leaves stdout empty. Never starts a daemon. Each run is
+/// line to stderr and leaves stdout empty, except for a Codex session
+/// start's approval notice ([`codex_notice`]), which is printed either way.
+/// Never starts a daemon. Each run is
 /// logged to hooks.log. A Claude Code hook that Grok Build runs stands down:
 /// it prints nothing and logs one standdown line.
 pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     let started = Instant::now();
     let parent_pid = std::os::unix::process::parent_id();
     let (agent, event) = (a.agent, a.event);
+    let notice = match (agent, event) {
+        (Agent::Codex, Event::SessionStart) => codex_notice(home),
+        _ => None,
+    };
     let worker_home = home.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(handle(agent, event, parent_pid, &worker_home));
     });
     let (deadline, _) = budget(agent, event);
-    let error = match rx.recv_timeout(deadline) {
+    let (out, error) = match rx.recv_timeout(deadline) {
         // Stood down: logged by `handle`, nothing to print or log here.
         Ok(Ok(None)) => std::process::exit(0),
-        Ok(Ok(Some(out))) => {
-            if let Some(line) = out.to_line() {
-                let _ = writeln!(std::io::stdout(), "{line}");
-            }
-            None
-        }
-        Ok(Err(e)) => Some(format!("{e:#}")),
-        Err(_) => Some(format!("timed out after {deadline:?}")),
+        Ok(Ok(Some(out))) => (out, None),
+        Ok(Err(e)) => (HookOutput::none(), Some(format!("{e:#}"))),
+        Err(_) => (
+            HookOutput::none(),
+            Some(format!("timed out after {deadline:?}")),
+        ),
     };
+    let out = match &notice {
+        Some(n) => out.with_system_message(n),
+        None => out,
+    };
+    if let Some(line) = out.to_line() {
+        let _ = writeln!(std::io::stdout(), "{line}");
+    }
     if let Some(e) = &error {
         eprintln!("clax hook: {e}");
     }
@@ -198,6 +209,36 @@ pub fn run(_cli: &crate::Cli, home: &Home, a: &Args) -> anyhow::Result<()> {
     );
     // Exit now: a timed-out worker may still be blocked on stdin or the network.
     std::process::exit(0);
+}
+
+/// For a Codex session start: the notice that Codex will stop to ask
+/// before Clax tools, with how to approve them once
+/// ([`crate::codex_approvals::notice`]); given once per set of tools (the
+/// marker `<home>/run/codex-approvals-notice`). Reads Codex's config and
+/// writes nothing there.
+fn codex_notice(home: &Home) -> Option<String> {
+    use crate::codex_approvals as ca;
+    let dirs = super::doctor_agent::Dirs::from_env(|k| std::env::var(k).ok())?;
+    let path = ca::config_path(&dirs.codex_home);
+    let text = ca::read_config(&path).ok()?;
+    let a = ca::assess(text.as_deref(), &clax_mcp::tools::ClaxTools::tools()).ok()?;
+    if !a.registered {
+        return None;
+    }
+    let marker = home.root().join("run/codex-approvals-notice");
+    if !ca::first_notice(&marker, &a.addable()) {
+        return None;
+    }
+    let command = clax_command();
+    ca::notice(&a, &path, command.as_deref())
+}
+
+/// `clax` when a `clax` is on `PATH`, so the person can run it from a
+/// terminal; `None` otherwise (the plugin then runs a binary of its own).
+fn clax_command() -> Option<String> {
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .any(|d| d.join("clax").is_file())
+        .then(|| "clax".to_string())
 }
 
 /// Handles one hook run; `None` means it stood down.
