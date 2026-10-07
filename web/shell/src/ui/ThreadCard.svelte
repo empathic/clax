@@ -5,7 +5,8 @@
   import { isSubmitKey } from "../view/composer-model";
   import { type Thread, type Viewer, anchorLabel } from "../threads";
   import type { Version } from "../api";
-  import { type HistoryEvent, addressedNote } from "../view/history-model";
+  import { relativeTime } from "../format";
+  import { type HistoryEvent, addressedNote, commentVersion } from "../view/history-model";
   import Clip from "./Clip.svelte";
   import { SEEN_AFTER_MS, authorLabel, pageLabel } from "../view/sidebar-model";
   import { after } from "../clock";
@@ -66,8 +67,9 @@
     e.preventDefault();
     hint = guardedAction(e, "reply", send);
   };
+  // A folded card is not looked at: what is in the fold has not been read.
   const seen = (el: HTMLElement) => {
-    if (!onSeen || typeof IntersectionObserver !== "function") return;
+    if (!onSeen || !open || typeof IntersectionObserver !== "function") return;
     let cancel = () => {};
     const io = new IntersectionObserver(([e]) => {
       cancel();
@@ -85,6 +87,7 @@
   const replies = $derived(t.comments.length - 1);
   /** Folds or opens the card; focus left inside what folds goes to its head. */
   const toggle = (to: boolean) => { if (!to && card?.contains(document.activeElement)) head?.focus(); fold?.onToggle(to); };
+  const body = $derived(`thread-${t.id}-body`);
   const escape = (e: KeyboardEvent) => {
     if (e.key !== "Escape" || !fold?.open || e.defaultPrevented) return;
     e.preventDefault();
@@ -101,7 +104,7 @@
     {#if onToggle}<input type="checkbox" class="thread-check" {checked} aria-label={`Select thread ${n ?? ""} ${anchorLabel(t.anchor)}`.replace("  ", " ")}
       onclick={e => { e.stopPropagation(); onToggle(t, e.shiftKey); }} />{/if}
     {#if fold}
-      <button type="button" class="card-head" bind:this={head} aria-expanded={fold.open} aria-label={`${fold.open ? "Fold" : "Show"} the thread on ${anchorLabel(t.anchor)}`}
+      <button type="button" class="card-head" bind:this={head} aria-expanded={fold.open} aria-controls={body}
         onclick={e => { e.stopPropagation(); toggle(!fold.open); }}
         ><span class="fold-caret" aria-hidden="true"></span><span class="anchor-label">{anchorLabel(t.anchor)}</span>{@render badge?.()}{#if t.anchor.file !== file}<span class="file-label muted small" title={pageLabel(t.anchor.file)}>on {pageLabel(t.anchor.file)}</span>{/if}<span class="muted small">{when}</span
       ></button>
@@ -113,14 +116,19 @@
     {/if}
   </header>
   {#if !open}
-    <p class="fold-body">{t.comments[0]?.body ?? ""}</p>
-    <p class="fold-meta"><span>{t.comments[0] ? authorLabel(t.comments[0]) : ""}</span>{#if replies > 0}<span>{replies} {replies === 1 ? "reply" : "replies"}</span>{/if}{@render meta?.()}</p>
+    <div class="fold-sum" id={body}>
+      <p class="fold-body">{t.comments[0]?.body ?? ""}</p>
+      <p class="fold-meta"><span>{t.comments[0] ? authorLabel(t.comments[0]) : ""}</span>{#if replies > 0}<span>{replies} {replies === 1 ? "reply" : "replies"}</span>{/if}{@render meta?.()}</p>
+    </div>
   {:else}
+    <div class="card-body" id={body}>
     {#if t.clip_url}{#if clip}<Clip load={() => clip(t)} />{:else}<Clip src={t.clip_url} />{/if}{/if}
     {#each t.comments as c (c.id)}
       {@const note = addressedNote(t, c, versions)}
+      {@const v = commentVersion(t, c, versions)}
       <div class={["msg", c.author_kind === "agent" ? "agent" : "you"]}>
-        <b class="author">{authorLabel(c)}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b>
+        <p class="by"><b class="author">{authorLabel(c)}{#if note}<span class="addressed muted">{` · addressed in v${note}`}</span>{/if}{#if c.via_page}<span class="via-page muted small">{" · via the page"}</span>{/if}</b
+          >{#if v !== null}<span class="vt">v{v}</span>{/if}<time class="muted small" datetime={c.created_at} title={new Date(c.created_at).toLocaleString()}>{relativeTime(c.created_at, now)}</time></p>
         <p class="body">{c.body}</p>
       </div>
     {/each}
@@ -140,6 +148,7 @@
     {#if fold}{@render actions()}{/if}
     <!-- Said when a key asked for an action on a trail the page may have steered (`keyboardTrail`). -->
     <p class="act-hint" role="status">{hint ?? ""}</p>
+    </div>
   {/if}
   {#if !open && tools}
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
@@ -174,7 +183,7 @@
     .thread-card .card-head:not(:disabled):hover { background-color: transparent; }
     .thread-card .anchor-label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
     .thread-card.far .anchor-label { color: var(--fg); font-weight: 500; }
-    .fold-caret::before { content: "▸"; color: var(--muted); font-size: 11px; }
+    .fold-caret::before { content: "▸"; color: var(--fg); font-size: 13px; line-height: 1; }
     .thread-card:not(.folded) .fold-caret::before { content: "▾"; }
     .fold-body { margin: 0; font-size: 13.5px; line-height: 1.5; display: -webkit-box; -webkit-line-clamp: 3; line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; white-space: pre-wrap; }
     .fold-meta { display: flex; flex-wrap: wrap; gap: 2px 10px; margin: 4px 0 0; font-size: 12px; color: var(--muted); min-width: 0; }
@@ -183,6 +192,9 @@
     .vt.out { color: var(--muted); }
     .msg { display: grid; gap: 3px; }
     .msg + .msg { margin-top: 10px; }
+    .msg .by { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; margin: 0; }
+    .msg.agent .by { justify-content: flex-end; }
+    .msg .by .vt { align-self: center; }
     .msg .author { font: 600 13px/20px var(--font); }
     .msg .body { margin: 0; font-size: 13.5px; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
     .msg.you { border-left: 2px solid var(--you); padding: 1px 0 1px 10px; }

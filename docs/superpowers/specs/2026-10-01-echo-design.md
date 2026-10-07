@@ -19,8 +19,10 @@ contract.
 - Every screen shows the threads from the viewer's point of view: what is
   new for this viewer, what agents are working on, what is open.
 - On top of the threads, Clax adds three layers: a version-tagged history
-  line on each thread (`v3 alex commented · v4 Mia replied · claude worked on
-  it · v5 claude addressed it · alex resolved`), a working marker, and
+  line on each thread (`v4 alex sent it · claude worked on it · v5 claude
+  addressed it · alex resolved`; each comment carries its own version and
+  time beside its author, so the line does not repeat them: owner ruling
+  2026-10-07), a working marker, and
   "addressed in vN", the agent's claim that a version handled a thread.
   Addressing never resolves; resolving stays a separate act.
 - Several people and several agents may share an artifact. People and agents

@@ -1,12 +1,12 @@
 // A thread's history as version-tagged events (spec §8, "Thread sidebar"):
-// "v3 alex commented · v4 Mia replied · claude replied · v5 alex resolved".
-// The comment that opens the thread carries the version it was made on; a
-// person's later event carries the version current when it happened; an
-// agent's carries one only when it came with a version: "v3 claude addressed
-// it", for each version that addressed the thread. A batch send reads "alex
-// sent it with 2 others". On a live page, an agent's address waiting for the
-// next snapshot reads "claude addressed it · waiting for a snapshot". Events
-// are in time order.
+// "v4 alex sent it with 2 others · v5 claude addressed it · v5 alex
+// resolved". Its comments are not repeated there: each shows its author,
+// its version (`commentVersion`) and its time on its own line (owner ruling
+// 2026-10-07). A person's event carries the version current when it
+// happened; an agent's carries one only when it came with a version: "v3
+// claude addressed it", for each version that addressed the thread. On a
+// live page, an agent's address waiting for the next snapshot reads "claude
+// addressed it · waiting for a snapshot". Events are in time order.
 import type { AnchorResult } from "../../../bridge/src/protocol";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
@@ -25,12 +25,6 @@ export function versionAt(versions: Version[], iso: string): number {
  * `more.working` names the agent working on the open thread now: the line ends with it. */
 export function historyOf(t: Thread, versions: Version[], names: (by: string) => string, more: { working?: string | null } = {}): HistoryEvent[] {
   const out: { at: string; e: HistoryEvent }[] = [];
-  t.comments.forEach((c, i) => {
-    const e = c.author_kind === "agent" ? { v: null, who: agentName(c.via_harness), agent: true, verb: "replied" }
-      : i === 0 ? { v: t.version_n, who: c.author_name, agent: false, verb: "commented" }
-      : { v: versionAt(versions, c.created_at), who: c.author_name, agent: false, verb: "replied" };
-    out.push({ at: c.created_at, e });
-  });
   // A batch send (spec §8): "sent it with 2 others · “Before the demo”".
   for (const b of t.sends ?? []) {
     const others = b.size - 1;
@@ -57,6 +51,16 @@ export function historyOf(t: Thread, versions: Version[], names: (by: string) =>
   if (more.working && t.status === "open") out.push({ at: "~", e: { v: null, who: more.working, agent: true, verb: "working on it" } });
   // A stable sort: events at the same time keep their order.
   return out.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0)).map(x => x.e);
+}
+
+/** The version a comment is tagged with beside its time: the thread's
+ * first comment, the version it was made on; a person's reply, the version
+ * current then (none while `versions` is not known); an agent's reply, none
+ * (its address names one: `addressedNote`). */
+export function commentVersion(t: Thread, c: Comment, versions: Version[]): number | null {
+  if (c.author_kind === "agent") return null;
+  if (c.id === t.comments[0]?.id) return t.version_n;
+  return versions.length ? versionAt(versions, c.created_at) : null;
 }
 
 /** The version an agent's reply is labelled with ("addressed in vN"): the

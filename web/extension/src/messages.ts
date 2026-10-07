@@ -164,7 +164,11 @@ export type WorkerToPanel =
   /** Every site Clax has live pages of, for "Same app as…". */
   | { t: "sites"; sites: SiteChoice[] }
   /** The clip `clip` asked for, as a `data:image/png` URL; null when the thread has none or it could not be fetched. */
-  | { t: "clip"; req: number; url: string | null };
+  | { t: "clip"; req: number; url: string | null }
+  /** The page `far-page` asked for: its live agents and versions; null when the thread is not in the site's listing or the page could not be read. */
+  | { t: "far-page"; req: number; page: FarPage | null };
+/** Another page of the tab's site, as a thread of it opened in the panel needs it. */
+export type FarPage = { artifactId: string; agents: Participants["agents"]; versions: Version[] };
 
 export type PanelToWorker =
   | { t: "watch-tab"; tabId: number }
@@ -187,6 +191,8 @@ export type PanelToWorker =
   | { t: "open-thread"; threadId: string }
   /** A thread's clip (the tab's page's or another page's of its site), which the panel cannot fetch itself: answered by `clip`. */
   | { t: "clip"; req: number; threadId: string }
+  /** The live agents and versions of the page of a thread of the site's listing: answered by `far-page`. */
+  | { t: "far-page"; req: number; threadId: string }
   /** Moves a thread of the site to the page `pageUrl` names (of the tab's origin). */
   | { t: "move"; threadId: string; pageUrl: string }
   /** One batch of a new merge rule for `origin`, which must be the origin
@@ -331,6 +337,10 @@ const siteChoice = (v: unknown) => shape(v, ["key", "name", "origins"]) && origi
 
 /** What a side panel takes from the worker. The worker is trusted; this
  * keeps the panel to the messages it knows, of the right shape. */
+/** A page's agents and versions, as the worker read them from the daemon: shown as text. */
+const farPage = (v: unknown) => shape(v, ["artifactId", "agents", "versions"]) && typeof v.artifactId === "string" && ARTIFACT_ID.test(v.artifactId)
+  && Array.isArray(v.agents) && v.agents.length <= 200 && v.agents.every(a => obj(a) && typeof a.handle === "string" && HANDLE.test(a.handle) && str(a.harness, 64) && bool(a.live))
+  && Array.isArray(v.versions) && v.versions.length <= 100_000 && v.versions.every(x => obj(x) && count(x.n) && str(x.created_at, 64));
 export function isToPanel(m: unknown): m is WorkerToPanel {
   if (!obj(m) || !Object.hasOwn(m, "t")) return false;
   const has = (...keys: string[]) => shape(m, ["t", ...keys]);
@@ -343,6 +353,7 @@ export function isToPanel(m: unknown): m is WorkerToPanel {
     case "suggestion": return has("origin", "suggestion") && origin(m.origin) && (m.suggestion === null || suggestion(m.suggestion));
     case "sites": return has("sites") && Array.isArray(m.sites) && m.sites.length <= MAX_SITES && m.sites.every(siteChoice);
     case "clip": return has("req", "url") && count(m.req) && (m.url === null || (str(m.url, MAX_CLIP_URL) && m.url.startsWith("data:image/png;base64,")));
+    case "far-page": return has("req", "page") && count(m.req) && (m.page === null || farPage(m.page));
     default: return false;
   }
 }
@@ -399,7 +410,7 @@ export function isFromPanel(m: unknown): m is PanelToWorker {
       && typeof m.artifactId === "string" && ARTIFACT_ID.test(m.artifactId);
     case "turn-off": return has("tabId") && count(m.tabId);
     case "open-thread": return has("threadId") && ulid(m.threadId);
-    case "clip": return has("req", "threadId") && count(m.req) && ulid(m.threadId);
+    case "clip": case "far-page": return has("req", "threadId") && count(m.req) && ulid(m.threadId);
     case "move": return has("threadId", "pageUrl") && ulid(m.threadId) && url(m.pageUrl);
     case "rule": return has("req", "origin", "pattern") && count(m.req) && origin(m.origin)
       && typeof m.pattern === "string" && m.pattern.length <= MAX_PATTERN && /^\/[\x21-\x7e]*$/.test(m.pattern);

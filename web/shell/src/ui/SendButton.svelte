@@ -1,3 +1,5 @@
+<svelte:options css="injected" />
+
 <script lang="ts">
   // A Send that names its agent (spec §10). The caret, shown only when more
   // than one agent is live, picks another; the choice is remembered. `onSend`
@@ -31,3 +33,19 @@
     {/if}
   {/if}
 </span>
+
+<!-- The Send's styles travel with it (injected on mount): the shell's sidebar and the side panel's lists. -->
+<style>
+  :global {
+    .send button.primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+    .send button.primary:not(:disabled):hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+    .send { display: inline-flex; position: relative; }
+    .send .caret { min-width: 28px; padding: 0 6px; border-left: 1px solid color-mix(in srgb, var(--on-accent) 35%, transparent); font-family: var(--mono); }
+    .send > button.primary:not(:last-child) { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+    .send .caret { border-top-left-radius: 0; border-bottom-left-radius: 0; }
+    .send-menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 160px; background: var(--raised); border: 1px solid var(--border-hover); border-radius: var(--radius); box-shadow: var(--elev-lg); display: flex; flex-direction: column; padding: 4px 0; }
+    .send-menu button { justify-content: flex-start; border: 0; border-radius: 0; min-height: 32px; }
+    .send-menu button[aria-checked="true"]::before { content: "✓"; margin-right: 6px; }
+    @media (max-width: 700px) { .send-menu button { min-height: 40px; } }
+  }
+</style>

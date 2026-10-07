@@ -77,6 +77,10 @@ describe("PanelLink", () => {
     const c = link.clip(T);
     await vi.advanceTimersByTimeAsync(REQUEST_MS);
     expect(await c).toBeNull();
+    const e = link.farPage(T);
+    expect(p.sent.at(-1)).toEqual({ t: "far-page", req: 4, threadId: T });
+    p.onMessage.fire({ t: "far-page", req: 4, page: null });
+    expect(await e).toBeNull();
     const d = link.clip(T);
     p.onDisconnect.fire();
     expect(await d).toBeNull();

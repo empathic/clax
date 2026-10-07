@@ -79,7 +79,7 @@ describe("Sidebar", () => {
     document.body.appendChild(root);
     const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads, resolved: {}, me, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() }, root);
     expect(Array.from(root.querySelectorAll(".hist .ev:last-child")).map(e => e.textContent)).toEqual([
-      " · v1 Alex resolved", " · v1 Viewer resolved", " · v1 Viewer resolved", " · codex resolved", " · v1 Mia resolved",
+      "v1 Alex resolved", "v1 Viewer resolved", "v1 Viewer resolved", "codex resolved", "v1 Mia resolved",
     ]);
     for (const h of root.querySelectorAll(".hist")) expect(h.textContent).not.toContain("u_");
     view.unmount();
@@ -166,7 +166,7 @@ describe("Sidebar", () => {
     view.unmount();
   });
 
-  it("reads each thread's history as version-tagged events, and tags a thread whose element changed in a later version", () => {
+  it("tags each comment with its author, version and time, keeps the history to what the comments do not say, and tags a thread whose element changed in a later version", () => {
     const v = (n: number, at: string) => ({ artifact_id: base.artifact_id, n, label: null, created_at: at, files: {} });
     const versions = [v(1, "2026-09-29T09:00:00.000Z"), v(2, "2026-09-29T11:00:00.000Z")];
     const t: Thread = { ...base, id: "a", anchor: { ...anchor, html_hash: "h1" }, status: "open", sent_to_agent: false,
@@ -174,11 +174,17 @@ describe("Sidebar", () => {
     const found = { a: { id: "a", found: true, method: "selector" as const, rect: null } };
     const props = { versions, shown: 2, agent: "claude", threads: [t], resolved: found, now: new Date(base.created_at), selected: null, onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn() };
     const view = mount(Sidebar, props);
+    // Each comment: its author, the version it was made on or current then, and its time.
+    expect(Array.from(view.root.querySelectorAll(".msg .by"), e => e.textContent)).toEqual(["alexv1just now", "Miav1just now"]);
+    const time = view.root.querySelector(".msg .by time")!;
+    expect(time.getAttribute("datetime")).toBe(base.created_at);
+    // The history repeats none of them: with only comments, there is none.
+    expect(view.root.querySelector("ul.hist")).toBeNull();
+    view.update({ ...props, threads: [{ ...t, sends: [{ batch_id: "b", size: 1, note: null, sent_by: "alex", sent_at: "2026-09-29T11:30:00.000Z" }] }] });
     // A list named History, its events separated by a "·" that is read and copied.
     const hist = view.root.querySelector("ul.hist")!;
     expect(hist.getAttribute("aria-label")).toBe("History");
-    expect(Array.from(hist.querySelectorAll("li.ev"), e => e.textContent)).toEqual(["v1 alex commented", " · v1 Mia replied"]);
-    expect(hist.textContent).toBe("v1 alex commented · v1 Mia replied");
+    expect(hist.textContent).toBe("v2 alex sent it");
     expect(view.root.querySelector(".vt.out")!.textContent).toBe("outdated");
     view.update({ ...props, shown: 1 });
     expect(view.root.querySelector(".vt.out")).toBeNull();
@@ -398,112 +404,172 @@ describe("Sidebar", () => {
 describe("Sidebar: threads on other pages", () => {
   const onAbout = { ...anchor, file: "about.html" };
   const here: Thread = { ...base, id: "a", anchor, status: "open", sent_to_agent: false, comments: [comment("1", "viewer", "Alex", "here")] };
-  const there: Thread = { ...base, id: "b", anchor: onAbout, status: "open", sent_to_agent: false, has_clip: true, clip_url: "/api/artifacts/7q3k9mzx2b4t/threads/b/clip",
-    comments: [comment("2", "viewer", "Alex", "Button looks off"), comment("3", "agent", "claude", "Fixed in v4"), comment("4", "viewer", "Alex", "Still misaligned")] };
-  const done: Thread = { ...base, id: "c", anchor: onAbout, status: "resolved", sent_to_agent: false, comments: [comment("5", "viewer", "Alex", "done there")] };
-  function setup(threads = [here, there, done]) {
+  // Which threads are open in place outlives a sidebar (for the page's life): each test has threads of its own.
+  let made = 0;
+  const thereOf = (id: string): Thread => ({ ...base, id, anchor: onAbout, status: "open", sent_to_agent: false, has_clip: true, clip_url: `/api/artifacts/7q3k9mzx2b4t/threads/${id}/clip`,
+    comments: [comment("2", "viewer", "Alex", "Button looks off"), comment("3", "agent", "claude", "Fixed in v4"), comment("4", "viewer", "Alex", "Still misaligned")] });
+  const doneOf = (id: string): Thread => ({ ...base, id, anchor: onAbout, status: "resolved", sent_to_agent: false, comments: [comment("5", "viewer", "Alex", "done there")] });
+  function setup() {
+    made++;
+    const b = `b${made}`, c = `c${made}`;
+    const there = thereOf(b), done = doneOf(c);
+    const threads = [here, there, done];
     const calls = { select: vi.fn(), send: vi.fn(), resolve: vi.fn(), reply: vi.fn() };
     const props = { versions: [], shown: 1, agent: "claude", threads, resolved: {}, file: "index.html", now: new Date(base.created_at), selected: null,
       onSelect: calls.select, onSend: calls.send, onResolve: calls.resolve, onReply: calls.reply };
     const view = mount(Sidebar, props);
     const card = (id: string) => view.root.querySelector<HTMLElement>(`[data-thread="${id}"]`)!;
     const head = (id: string) => card(id).querySelector<HTMLButtonElement>("button.card-head")!;
-    return { view, props, calls, card, head };
+    return { view, props, calls, card, head, b, c, there, done };
   }
 
   it("folds another page's thread to its summary, and opens it in place without selecting it", () => {
-    const { view, calls, card, head } = setup();
+    const { view, calls, card, head, b, there } = setup();
     // This page's thread is whole, as before.
     expect(head("a").hasAttribute("aria-expanded")).toBe(false);
-    expect(card("b").classList.contains("folded")).toBe(true);
-    expect(head("b").getAttribute("aria-expanded")).toBe("false");
-    expect(head("b").getAttribute("aria-label")).toBe("Show the thread on «Goals»");
-    expect(card("b").querySelector(".fold-body")!.textContent).toBe("Button looks off");
-    expect(card("b").querySelector(".fold-meta")!.textContent).toBe("Alex2 replies");
-    expect(card("b").querySelector('input[aria-label="Reply"]')).toBeNull();
+    expect(card(b).classList.contains("folded")).toBe(true);
+    expect(head(b).getAttribute("aria-expanded")).toBe("false");
+    expect(head(b).getAttribute("aria-controls")).toBe(`thread-${b}-body`);
+    expect(card(b).querySelector(`#thread-${b}-body`)!.textContent).toContain("Button looks off");
+    expect(card(b).querySelector(".fold-body")!.textContent).toBe("Button looks off");
+    expect(card(b).querySelector(".fold-meta")!.textContent).toBe("Alex2 replies");
+    expect(card(b).querySelector('input[aria-label="Reply"]')).toBeNull();
     // A click anywhere on the folded card opens it; neither selects it.
-    card("b").querySelector<HTMLElement>(".fold-body")!.click();
+    card(b).querySelector<HTMLElement>(".fold-body")!.click();
     flush();
-    expect(head("b").getAttribute("aria-expanded")).toBe("true");
-    expect(Array.from(card("b").querySelectorAll(".msg .body"), b => b.textContent)).toEqual(["Button looks off", "Fixed in v4", "Still misaligned"]);
-    head("b").click();
+    expect(head(b).getAttribute("aria-expanded")).toBe("true");
+    expect(Array.from(card(b).querySelectorAll(".msg .body"), x => x.textContent)).toEqual(["Button looks off", "Fixed in v4", "Still misaligned"]);
+    head(b).click();
     flush();
-    expect(head("b").getAttribute("aria-expanded")).toBe("false");
+    expect(head(b).getAttribute("aria-expanded")).toBe("false");
     expect(calls.select).not.toHaveBeenCalled();
     // "Go to page" opens its page (the select that navigates).
-    card("b").querySelector<HTMLButtonElement>("button.go-page")!.click();
+    card(b).querySelector<HTMLButtonElement>("button.go-page")!.click();
     expect(calls.select).toHaveBeenCalledWith(there);
-    expect(card("b").querySelector("button.go-page")!.getAttribute("aria-label")).toBe("Go to page about.html");
+    expect(card(b).querySelector("button.go-page")!.getAttribute("aria-label")).toBe("Go to page about.html");
     view.unmount();
   });
 
   it("replies to, resolves, sends and reopens another page's thread from its open card", () => {
-    const { view, calls, card, head } = setup();
-    head("b").click();
+    const { view, calls, card, head, b, c, there, done } = setup();
+    head(b).click();
     flush();
-    const input = card("b").querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    const input = card(b).querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
     input.value = "@claude still off by 2px";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     flush();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     expect(calls.reply).toHaveBeenCalledWith(there, "@claude still off by 2px");
-    const button = (id: string, name: string) => Array.from(card(id).querySelectorAll<HTMLButtonElement>(".actions button")).find(b => b.textContent === name)!;
-    button("b", "Send to claude").click();
+    const button = (id: string, name: string) => Array.from(card(id).querySelectorAll<HTMLButtonElement>(".actions button")).find(x => x.textContent === name)!;
+    button(b, "Send to claude").click();
     expect(calls.send).toHaveBeenCalledWith(there);
-    button("b", "Resolve").click();
+    button(b, "Resolve").click();
     expect(calls.resolve).toHaveBeenCalledWith(there);
     // The tools follow the reply box, as the card's actions do.
-    expect(Array.from(card("b").querySelectorAll(".actions button"), b => b.textContent)).toEqual(["Resolve", "Send to claude", "Go to page ↗"]);
+    expect(Array.from(card(b).querySelectorAll(".actions button"), x => x.textContent)).toEqual(["Resolve", "Send to claude", "Go to page ↗"]);
     (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
-    head("c").click();
+    head(c).click();
     flush();
-    button("c", "Reopen").click();
+    button(c, "Reopen").click();
     expect(calls.resolve).toHaveBeenCalledWith(done);
     expect(calls.select).not.toHaveBeenCalled();
     view.unmount();
   });
 
   it("keeps cards open by thread ID through the list's changes, shows new replies, and folds with Escape, focus on its head", () => {
-    const { view, props, card, head } = setup();
-    head("b").click();
+    const { view, props, card, head, b, c, there, done } = setup();
+    head(b).click();
     flush();
     (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
-    head("c").click();
+    head(c).click();
     flush();
     const more = { ...there, comments: [...there.comments, comment("6", "agent", "claude", "Aligned now")] };
     view.update({ ...props, threads: [here, more, done] });
-    expect(head("b").getAttribute("aria-expanded")).toBe("true");
-    expect(head("c").getAttribute("aria-expanded")).toBe("true");
-    expect(card("b").textContent).toContain("Aligned now");
-    const input = card("b").querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
+    expect(head(b).getAttribute("aria-expanded")).toBe("true");
+    expect(head(c).getAttribute("aria-expanded")).toBe("true");
+    expect(card(b).textContent).toContain("Aligned now");
+    const input = card(b).querySelector<HTMLInputElement>('input[aria-label="Reply"]')!;
     input.focus();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     flush();
-    expect(head("b").getAttribute("aria-expanded")).toBe("false");
-    expect(document.activeElement).toBe(head("b"));
-    expect(head("c").getAttribute("aria-expanded")).toBe("true");
+    expect(head(b).getAttribute("aria-expanded")).toBe("false");
+    expect(document.activeElement).toBe(head(b));
+    expect(head(c).getAttribute("aria-expanded")).toBe("true");
     view.unmount();
   });
 
   it("shows the clip of an open card, which enlarges and closes with Escape or a click outside", () => {
-    const { view, card, head } = setup();
-    expect(card("b").querySelector(".clip-thumb")).toBeNull();
-    head("b").click();
+    const { view, card, head, b, there } = setup();
+    expect(card(b).querySelector(".clip-thumb")).toBeNull();
+    head(b).click();
     flush();
-    const thumb = card("b").querySelector<HTMLButtonElement>(".clip-thumb")!;
+    const thumb = card(b).querySelector<HTMLButtonElement>(".clip-thumb")!;
     expect(thumb.getAttribute("aria-label")).toBe("Enlarge the screenshot");
     expect(thumb.querySelector("img")!.getAttribute("src")).toBe(there.clip_url);
     expect(thumb.querySelector("img")!.getAttribute("loading")).toBe("lazy");
-    const dialog = card("b").querySelector("dialog")!;
+    const dialog = card(b).querySelector("dialog")!;
     thumb.click();
     expect(dialog.open).toBe(true);
     dialog.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
     flush();
     expect(dialog.open).toBe(false);
-    expect(head("b").getAttribute("aria-expanded")).toBe("true");
+    expect(head(b).getAttribute("aria-expanded")).toBe("true");
     thumb.click();
     dialog.click();
     expect(dialog.open).toBe(false);
+    view.unmount();
+  });
+
+  it("marks a folded card's thread looked only once it is open and seen", () => {
+    vi.useFakeTimers();
+    const seen = new Map<Element, (e: { intersectionRatio: number }[]) => void>();
+    vi.stubGlobal("IntersectionObserver", class { constructor(private cb: (e: { intersectionRatio: number }[]) => void) {} observe(el: Element) { seen.set(el, this.cb); } disconnect() {} });
+    try {
+      const onSeen = vi.fn();
+      made++;
+      const there = thereOf(`b${made}`);
+      const view = mount(Sidebar, { versions: [], shown: 1, agent: "claude", threads: [here, there], resolved: {}, file: "index.html", now: new Date(base.created_at), selected: null,
+        onSelect: vi.fn(), onSend: vi.fn(), onResolve: vi.fn(), onReply: vi.fn(), onSeen });
+      const card = () => view.root.querySelector(`[data-thread="${there.id}"]`)!;
+      // Folded, it is not watched at all; this page's card is.
+      expect(seen.has(card())).toBe(false);
+      expect(seen.has(view.root.querySelector(`[data-thread="${here.id}"]`)!)).toBe(true);
+      vi.advanceTimersByTime(2000);
+      expect(onSeen).not.toHaveBeenCalledWith(there);
+      card().querySelector<HTMLButtonElement>(".card-head")!.click();
+      flush();
+      seen.get(card())!([{ intersectionRatio: 1 }]);
+      vi.advanceTimersByTime(1000);
+      expect(onSeen).toHaveBeenCalledWith(there);
+      view.unmount();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a card open when the sidebar closes and opens again", () => {
+    const first = setup();
+    first.head(first.b).click();
+    flush();
+    first.view.unmount();
+    const again = mount(Sidebar, first.props);
+    expect(again.root.querySelector(`[data-thread="${first.b}"] .card-head`)!.getAttribute("aria-expanded")).toBe("true");
+    again.unmount();
+  });
+
+  it("moves focus with a card reopened from inside it to its head in its new group", async () => {
+    const { view, props, head, card, c, done } = setup();
+    (view.root.querySelector<HTMLDetailsElement>(".section-resolved")!).open = true;
+    head(c).click();
+    flush();
+    const reopen = Array.from(card(c).querySelectorAll<HTMLButtonElement>(".actions button")).find(x => x.textContent === "Reopen")!;
+    reopen.focus();
+    reopen.click();
+    view.update({ ...props, threads: [here, props.threads[1], { ...done, status: "open" }] });
+    await vi.waitFor(() => expect(document.activeElement).toBe(head(c)));
+    expect(card(c).closest(".section-open")).not.toBeNull();
+    expect(document.activeElement).toBe(head(c));
     view.unmount();
   });
 });

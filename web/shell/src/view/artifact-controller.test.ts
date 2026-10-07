@@ -10,7 +10,7 @@ const loaded = { artifact: { id: ID, title: "T", description: null, icon: null, 
 /** The view's stream, driven by event name. */
 const FakeES = artifactStreams(ID);
 
-type Seed = { threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
+type Seed = { lan?: boolean; threads?: Thread[]; artifact?: Record<string, unknown>; versions?: unknown[]; attention?: unknown; routes?: (url: string, init?: RequestInit) => unknown };
 const thread = (id: string, over: Partial<Thread> = {}): Thread => ({
   id, artifact_id: ID, version_n: 1, status: "open", sent_to_agent: false, has_clip: false, clip_url: null, created_at: "2026-09-30T10:00:00.000Z",
   resolved_at: null, resolved_by: null, feedback_state: null, comments: [{ id: `${id}c`, thread_id: id, author_kind: "viewer", author_name: "alex", via_harness: null, body: "x", created_at: "2026-09-30T10:00:00.000Z" }],
@@ -22,6 +22,7 @@ async function started(seed: Seed = {}) {
   vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
     const own = seed.routes?.(url, init);
     if (own !== undefined) return new Response(JSON.stringify(own));
+    if (seed.lan && url === "/api/token") return new Response(JSON.stringify({ error: { code: "not_loopback", message: "not a loopback connection" } }), { status: 403 });
     return new Response(JSON.stringify(
       url.includes("/threads") ? { threads: seed.threads ?? [], next_cursor: null }
       : url.startsWith("/api/viewers") ? { viewer: { public_id: "u_1", display_name: null, created_at: "x" } }
@@ -839,6 +840,47 @@ describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
     hello(frame.contentWindow!);
     hello(frame.contentWindow!, 1); // a stale document now holds the frame
     expect(leave).toHaveBeenCalledTimes(3);
+    ctl.dispose();
+  });
+
+  it("reopens a resolved thread with the owner's token, and says so when it could not", async () => {
+    const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
+    const { ctl } = await started({ threads: [done] });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    const base = fetch as unknown as ReturnType<typeof vi.fn>;
+    const reopens: RequestInit[] = [];
+    let refuse = false;
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (!url.endsWith("/threads/t9/reopen")) return base(url, init);
+      reopens.push(init!);
+      return refuse ? new Response(JSON.stringify({ error: { code: "forbidden", message: "set a name first" } }), { status: 403 })
+        : new Response(JSON.stringify({ thread: { ...done, status: "open", resolved_by: null, resolved_at: null } }));
+    }));
+    ctl.resolveThread(done);
+    await vi.waitFor(() => expect(ctl.state.get().threads[0].status).toBe("open"));
+    expect(new Headers(reopens[0].headers).get("authorization")).toBe("Bearer tk");
+    refuse = true;
+    ctl.resolveThread(done);
+    await vi.waitFor(() => expect(ctl.state.get().notice).toBe("Could not reopen: 403 set a name first"));
+    ctl.dispose();
+  });
+
+  it("asks a viewer with no name and no token for its name before a reopen, and reopens once it has one", async () => {
+    const done = thread("t9", { status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T11:00:00.000Z" });
+    const reopened: string[] = [];
+    const { ctl } = await started({ lan: true, threads: [done], routes: (url) => {
+      if (url.endsWith("/reopen")) { reopened.push(url); return { thread: { ...done, status: "open", resolved_by: null, resolved_at: null } }; }
+      return undefined;
+    } });
+    await vi.waitFor(() => expect(ctl.state.get().threads).toHaveLength(1));
+    ctl.resolveThread(done);
+    await vi.waitFor(() => expect(ctl.state.get().menu).toBe("people"));
+    expect(ctl.state.get().notice).toBe("Add your name to reopen threads: type it under People.");
+    expect(reopened).toEqual([]);
+    ctl.setMe({ public_id: "u_1", display_name: "Mia", created_at: "x" });
+    await vi.waitFor(() => expect(ctl.state.get().threads[0].status).toBe("open"));
+    expect(reopened).toHaveLength(1);
+    expect(ctl.state.get().notice).toBeNull();
     ctl.dispose();
   });
 });

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Version } from "../api";
 import type { Comment, Thread } from "../threads";
-import { addressedNote, historyOf, isOutdated, versionAt } from "./history-model";
+import { addressedNote, commentVersion, historyOf, isOutdated, versionAt } from "./history-model";
 
 const V = (n: number, at: string): Version => ({ artifact_id: "a", n, label: null, created_at: at, files: {} });
 const vs = [V(1, "2026-09-30T10:00:00.000Z"), V(2, "2026-09-30T11:00:00.000Z"), V(3, "2026-09-30T12:00:00.000Z")];
@@ -39,28 +39,22 @@ describe("history-model", () => {
     expect(historyOf({ ...t, status: "resolved" }, [], by => by).some(e => e.verb.includes("waiting"))).toBe(false);
   });
 
-  it("reads comments, replies, an agent's reply without a tag, and the resolve", () => {
+  it("leaves the comments to their own lines, each tagged with its version: the first with the one it was made on, a person's reply with the one current then, an agent's with none", () => {
     const t = T({
       comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:10:00.000Z"), C("3", "agent", "Agent", "2026-09-30T11:20:00.000Z")],
       status: "resolved", resolved_by: "viewer:u_1", resolved_at: "2026-09-30T12:10:00.000Z",
     });
-    expect(historyOf(t, vs, names)).toEqual([
-      { v: 1, who: "alex", agent: false, verb: "commented" },
-      { v: 2, who: "Mia", agent: false, verb: "replied" },
-      { v: null, who: "claude", agent: true, verb: "replied" },
-      { v: 3, who: "alex", agent: false, verb: "resolved" },
-    ]);
+    expect(historyOf(t, vs, names)).toEqual([{ v: 3, who: "alex", agent: false, verb: "resolved" }]);
+    expect(t.comments.map(c => commentVersion(t, c, vs))).toEqual([1, 2, null]);
+    // Without the page's versions, a reply has no tag; the first comment still names its own.
+    expect(t.comments.map(c => commentVersion(t, c, []))).toEqual([1, null, null]);
   });
 
   it("puts each version that addressed the thread in time order, and labels the agent's reply with it", () => {
     const withAgent = vs.map(v => ({ ...v, agent: "a_1", agent_harness: "claude" }));
     const reply = C("2", "agent", "Agent", "2026-09-30T11:20:00.000Z");
     const t = T({ comments: [C("1", "viewer", "alex", "2026-09-30T10:30:00.000Z"), reply], addressed_in: [3] });
-    expect(historyOf(t, withAgent, names)).toEqual([
-      { v: 1, who: "alex", agent: false, verb: "commented" },
-      { v: null, who: "claude", agent: true, verb: "replied" },
-      { v: 3, who: "claude", agent: true, verb: "addressed it" },
-    ]);
+    expect(historyOf(t, withAgent, names)).toEqual([{ v: 3, who: "claude", agent: true, verb: "addressed it" }]);
     expect(addressedNote(t, reply, withAgent)).toBe(3);
     expect(addressedNote(t, t.comments[0], withAgent)).toBeNull();
   });
@@ -74,7 +68,7 @@ describe("history-model", () => {
         { batch_id: "b3", size: 1, note: null, sent_by: "Mia", sent_at: "2026-09-30T12:20:00.000Z" },
       ],
     });
-    expect(historyOf(t, vs, names).slice(1)).toEqual([
+    expect(historyOf(t, vs, names)).toEqual([
       { v: 2, who: "alex", agent: false, verb: "sent it with 2 others · “Before the demo”" },
       { v: 3, who: "Mia", agent: false, verb: "sent it with 1 other" },
       { v: 3, who: "Mia", agent: false, verb: "sent it" },
@@ -84,10 +78,7 @@ describe("history-model", () => {
   it("tags the opening comment with the version it was made on, even when a newer one was out", () => {
     // v2 was published at 11:00; the viewer, still on v1, commented at 11:30.
     const t = T({ version_n: 1, comments: [C("1", "viewer", "alex", "2026-09-30T11:30:00.000Z"), C("2", "viewer", "Mia", "2026-09-30T11:40:00.000Z")] });
-    expect(historyOf(t, vs, names)).toEqual([
-      { v: 1, who: "alex", agent: false, verb: "commented" },
-      { v: 2, who: "Mia", agent: false, verb: "replied" },
-    ]);
+    expect(t.comments.map(c => commentVersion(t, c, vs))).toEqual([1, 2]);
   });
 
   it("calls a thread outdated when a later version changed its element but still has it", () => {

@@ -7,7 +7,7 @@
 // stopped it), the link connects again and watches the tab again. An
 // action's failure stays shown through the worker's later pushes until the
 // person acts again or watches another tab.
-import { type PanelState, type PanelToWorker, type SiteChoice, type SiteView, type Suggestion, isToPanel } from "../messages";
+import { type FarPage, type PanelState, type PanelToWorker, type SiteChoice, type SiteView, type Suggestion, type WorkerToPanel, isToPanel } from "../messages";
 
 /** A request the worker answers with `step` (its `req` is the link's to give). */
 export type Ask = { t: "rule"; origin: string; pattern: string } | { t: "unrule"; origin: string; ruleId: string }
@@ -47,8 +47,8 @@ export class PanelLink {
   failures = $state(0);
   private reqs = 0;
   private asked = new Map<number, { ok(s: Step): void; fail(e: Failure): void }>();
-  /** The clips asked for and not yet answered, by request number. */
-  private clips = new Map<number, (url: string | null) => void>();
+  /** The lookups (`clip`, `far-page`) asked for and not yet answered, by request number: null when it failed. */
+  private lookups = new Map<number, (m: WorkerToPanel | null) => void>();
   private port: Port;
   private tabId: number | null = null;
   /** The last action's failure, shown until the next action. */
@@ -85,10 +85,10 @@ export class PanelLink {
     this.fresh = true;
     port.onMessage.addListener((m: unknown) => {
       if (!isToPanel(m)) return;
-      const clip = "req" in m && m.req !== undefined ? this.clips.get(m.req) : undefined;
-      if (clip) {
-        this.clips.delete((m as { req: number }).req);
-        clip(m.t === "clip" ? m.url : null);
+      const lookup = "req" in m && m.req !== undefined ? this.lookups.get(m.req) : undefined;
+      if (lookup) {
+        this.lookups.delete((m as { req: number }).req);
+        lookup(m.t === "failed" ? null : m);
         return;
       }
       const ask = "req" in m && m.req !== undefined ? this.asked.get(m.req) : undefined;
@@ -112,8 +112,8 @@ export class PanelLink {
     port.onDisconnect.addListener(() => {
       for (const a of this.asked.values()) a.fail(failure("worker_restarted", "Clax restarted. Try again."));
       this.asked.clear();
-      for (const c of this.clips.values()) c(null);
-      this.clips.clear();
+      for (const c of this.lookups.values()) c(null);
+      this.lookups.clear();
       if (this.closed) return;
       setTimeout(() => {
         if (this.closed) return;
@@ -140,7 +140,7 @@ export class PanelLink {
 
   post(m: PanelToWorker): void {
     if (this.closed) return;
-    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip") this.failure = null;
+    if (m.t !== "ping" && m.t !== "visible" && m.t !== "watch-tab" && m.t !== "clip" && m.t !== "far-page") this.failure = null;
     try { this.port.postMessage(m); } catch { /* the port closed; the link connects again */ }
   }
 
@@ -156,16 +156,29 @@ export class PanelLink {
     });
   }
 
-  /** Thread `threadId`'s clip as a `data:` URL, which the worker fetches
-   * (the panel holds no credential); null when it has none, or no answer
-   * came in `REQUEST_MS`. */
-  clip(threadId: string): Promise<string | null> {
+  /** Asks the worker `m` with a request number of its own; answered by its
+   * answer, or null on a failure, a lost worker or no answer in `REQUEST_MS`. */
+  private lookup(m: { t: "clip" | "far-page"; threadId: string }): Promise<WorkerToPanel | null> {
     const req = ++this.reqs;
     return new Promise(ok => {
-      const timer = setTimeout(() => { if (this.clips.delete(req)) ok(null); }, REQUEST_MS);
-      this.clips.set(req, url => { clearTimeout(timer); ok(url); });
-      this.post({ t: "clip", req, threadId });
+      const timer = setTimeout(() => { if (this.lookups.delete(req)) ok(null); }, REQUEST_MS);
+      this.lookups.set(req, a => { clearTimeout(timer); ok(a); });
+      this.post({ ...m, req });
     });
+  }
+
+  /** Thread `threadId`'s clip as a `data:` URL, which the worker fetches
+   * (the panel holds no credential); null when it has none, or no answer
+   * came. */
+  async clip(threadId: string): Promise<string | null> {
+    const a = await this.lookup({ t: "clip", threadId });
+    return a?.t === "clip" ? a.url : null;
+  }
+
+  /** The live agents and versions of the page of thread `threadId`, another page of the tab's site; null when unknown. */
+  async farPage(threadId: string): Promise<FarPage | null> {
+    const a = await this.lookup({ t: "far-page", threadId });
+    return a?.t === "far-page" ? a.page : null;
   }
 
   /** Stops the link (tests). */

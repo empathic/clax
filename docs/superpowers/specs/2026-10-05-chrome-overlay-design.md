@@ -737,29 +737,36 @@ the panel's search and filters run on the listing in the client.
    at, or moved onto, the pattern's own path stay. The rule stays
    `deleting` until none is left, and is then removed only if still
    deleting (a re-add meanwhile keeps it in force).
-6. **In place** (owner decision 2026-10-07). A thread of another page is
+6. **In place** (owner decisions 2026-10-07). A thread of another page is
    the shell's thread card, folded to its anchor, status, first comment,
    author, reply count, last activity, where it was made (a merged page)
    and "Pinned here"; with Move… and "Go to page ↗". A click on it, or
    Enter or Space on its head, opens it in place: every comment with its
-   author, its history (versions only where the thread names them: the one
-   it was made on, those that addressed it), its clip, Reply (an `@` name
-   in it reaches that agent as on the thread's own page), Resolve or
-   Reopen, and "Send to agent", which goes to every live agent of its page
-   (no `to`: the agent picker names this page's agents). Escape inside it
-   folds it again, focus on its head. Any number may be open at once, kept
-   by thread ID while the listing changes; the site's topic updates an open
-   card live. Opening one moves nothing: the tab stays, nothing is selected
-   or pinned; "Go to page ↗" does what clicking a card did before. The
-   panel's `send`, `reply`, `resolve` and `reopen` name a thread of the
-   tab's page or of its site's listing: the worker acts at the thread's own
-   page (`/api/artifacts/<its aid>/threads/<tid>/…`, the same rules as
-   there) and applies the answer to the listing at once. A thread's clip
-   (this page's too) is fetched by the worker with the credential, as the
-   panel holds none: the panel asks `clip {req, threadId}` once the
-   thumbnail nears view and the worker answers `clip {req, url}`, a
-   `data:image/png` URL of at most 5 MiB, or null. The thumbnail opens the
-   whole clip over the panel, closed by Escape, a click outside it or Close.
+   author, version and time, the history of what the comments do not say
+   (sends, addresses, resolve), its clip, Reply (an `@` name in it reaches
+   that agent as on the thread's own page), Resolve or Reopen, and `Send to
+   <agent> ▾` with that page's agent picker: an open card asks the worker
+   for its page's live agents and versions (`far-page {req, threadId}` →
+   `far-page {req, page: {artifactId, agents, versions} | null}`), and Send
+   names the agent picked in the panel when it is live on that page, else
+   that page's first live agent, as on the thread's own page; it is
+   disabled until the page is known. Escape inside it folds it again, focus
+   on its head. A folded card is not looked at; an open one is, at its own
+   page (`looked`). Any number may be open at once, kept by thread ID for
+   the panel's life (a filter or search that hides it does not fold it);
+   the site's topic updates an open card live. Opening one moves nothing:
+   the tab stays, nothing is selected or pinned; "Go to page ↗" does what
+   clicking a card did before. The panel's `send`, `reply`, `resolve`,
+   `reopen` and `looked` name threads of the tab's page or of its site's
+   listing: the worker acts at the thread's own page
+   (`/api/artifacts/<its aid>/threads/<tid>/…`, the same rules as there)
+   and applies the answer to the listing at once. A thread's clip (this
+   page's too) is fetched by the worker with the credential, as the panel
+   holds none: the panel asks `clip {req, threadId}` once the thumbnail
+   nears view and the worker answers `clip {req, url}`, a
+   `data:image/png` URL of at most 5 MiB, or null; the panel keeps the
+   last 20. The thumbnail opens the whole clip over the panel, closed by
+   Escape, a click outside it or Close.
 7. **Who.** Reads need an owner credential; moves and rule changes need the
    token or the extension's credential. All of it is under `/api/live/`, so
    hidden from the LAN (L10) and admitted by the extension gateway's
@@ -1165,11 +1172,13 @@ dropped and counted.
   `comment-mode`, `navigate {route, artifactId}`, `turn-off {tabId}`,
   `retry` → `failed {code, message}` on failure (a failure a new pairing can
   fix is also kept as the tab's `error`, so Retry pairs again for it), and success shows as the
-  next `tab` push (ruling 2026-10-05: no `ok`); `send`, `reply`, `resolve`
-  and `reopen` may name a thread of another page of the tab's site, acted
+  next `tab` push (ruling 2026-10-05: no `ok`); `send`, `reply`, `resolve`,
+  `reopen` and `looked` may name a thread of another page of the tab's site, acted
   on at its own page and shown by the next `site` push (§7.1). `clip {req,
   threadId}` → `clip {req, url}` (a `data:image/png` URL or null, never a
-  failure shown as the tab's error) fetches a thread's clip for the panel. `navigate` names the page
+  failure shown as the tab's error) fetches a thread's clip for the panel;
+  `far-page {req, threadId}` → `far-page {req, page}` the live agents and
+  versions of another page of the site (§7.1). `navigate` names the page
   the panel showed; the worker refuses it (`page_changed`) when the tab
   shows another. `turn-off` turns Clax off in the panel's tab (shown as
   "Turn off in this tab" whenever Clax is on there); it names that tab,

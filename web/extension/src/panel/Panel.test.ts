@@ -229,19 +229,35 @@ describe("Panel: the site's other pages", () => {
     expect(acts()).toEqual([{ t: "open-thread", threadId: T3 }]);
   });
 
-  it("replies to, resolves, reopens and sends another page's thread from its card, @agent included", async () => {
-    const l = siteLink();
+  it("replies to, resolves, reopens and sends another page's thread from its card, @agent included, to its page's agent as there", async () => {
+    const A1 = `a_${"1".repeat(22)}`, A2 = `a_${"2".repeat(22)}`;
+    const asked: string[] = [];
+    const l = { ...siteLink(), farPage: async (id: string) => {
+      asked.push(id);
+      return { artifactId: "9s5n1pza4d6w", agents: [{ handle: A1, harness: "claude", live: true }, { handle: A2, harness: "codex", live: true }],
+        versions: [{ artifact_id: "9s5n1pza4d6w", n: 1, label: null, created_at: "2026-10-05T08:00:00.000Z", files: {} }, { artifact_id: "9s5n1pza4d6w", n: 2, label: null, created_at: "2026-10-05T09:10:00.000Z", files: {} }] };
+    } };
     const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
     const head = () => container.querySelector<HTMLButtonElement>(`[data-thread="${T3}"] .card-head`)!;
     await fireEvent.click(head());
+    await settle();
+    expect(asked).toEqual([T3]);
     const card = container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!;
+    // Each comment with its author, version and time; no history repeating them.
+    expect(card.querySelector(".msg .by")!.textContent).toBe("Alexv11 h ago");
+    expect(card.querySelector(".hist")).toBeNull();
     await fireEvent.input(within(card).getByLabelText("Reply"), { target: { value: "@agent the avatar still blurs" } });
     await fireEvent.click(within(card).getByRole("button", { name: "Reply" }), { detail: 1 });
-    await fireEvent.click(within(card).getByRole("button", { name: "Send to agent" }), { detail: 1 });
+    // Send names the page's first live agent, and its picker offers the others, as on that page.
+    await fireEvent.click(within(card).getByRole("button", { name: "Send to claude" }), { detail: 1 });
+    await fireEvent.click(within(card).getByRole("button", { name: "Choose the agent" }));
+    await fireEvent.click(within(card).getByRole("menuitemradio", { name: "codex" }));
+    await fireEvent.click(within(card).getByRole("button", { name: "Send to codex" }), { detail: 1 });
     await fireEvent.click(within(card).getByRole("button", { name: "Resolve" }), { detail: 1 });
     expect(l.sent.filter(m => m.t !== "suggest")).toEqual([
       { t: "reply", threadId: T3, body: "@agent the avatar still blurs" },
-      { t: "send", threadId: T3, to: null },
+      { t: "send", threadId: T3, to: A1 },
+      { t: "send", threadId: T3, to: A2 },
       { t: "resolve", threadId: T3 },
     ]);
     // A resolved thread of another page reopens from its card.
@@ -249,6 +265,36 @@ describe("Panel: the site's other pages", () => {
     await fireEvent.click(old.querySelector(".card-head")!);
     await fireEvent.click(within(old).getByRole("button", { name: "Reopen" }), { detail: 1 });
     expect(l.sent.at(-1)).toEqual({ t: "reopen", threadId: T2 });
+  });
+
+  it("marks another page's thread looked once its open card is seen, never while folded", async () => {
+    vi.useFakeTimers();
+    const seen = new Map<Element, (e: { intersectionRatio: number }[]) => void>();
+    vi.stubGlobal("IntersectionObserver", class { constructor(private cb: (e: { intersectionRatio: number }[]) => void) {} observe(el: Element) { seen.set(el, this.cb); } disconnect() {} });
+    try {
+      const l = siteLink();
+      const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+      const card = () => container.querySelector(`[data-thread="${T3}"]`)!;
+      expect(seen.has(card())).toBe(false);
+      await fireEvent.click(card().querySelector(".card-head")!);
+      seen.get(card())!([{ intersectionRatio: 1 }]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(l.sent).toContainEqual({ t: "looked", threadIds: [T3] });
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a card open while a search hides the list, and offers no Send before its page's agents are known", async () => {
+    const l = siteLink();
+    const { container } = render(Panel, { props: { link: l as never, now: NOW, store: area() } });
+    await fireEvent.click(container.querySelector(`[data-thread="${T3}"] .card-head`)!);
+    expect((within(container.querySelector<HTMLElement>(`[data-thread="${T3}"]`)!).getByRole("button", { name: "Send to agent" }) as HTMLButtonElement).disabled).toBe(true);
+    await fireEvent.input(screen.getByLabelText("Search comments"), { target: { value: "nothing matches this" } });
+    expect(container.querySelector(`[data-thread="${T3}"]`)).toBeNull();
+    await fireEvent.input(screen.getByLabelText("Search comments"), { target: { value: "" } });
+    expect(container.querySelector(`[data-thread="${T3}"] .card-head`)!.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("keeps several cards open through the listing's changes, shows replies as they come, and folds one with Escape", async () => {
