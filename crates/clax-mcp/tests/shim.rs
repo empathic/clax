@@ -247,6 +247,7 @@ async fn serves_the_tools_and_registers_the_harness_session() {
     assert_eq!(
         names,
         [
+            "ask",
             "asset_upload",
             "comments_read",
             "comments_reply",
@@ -406,7 +407,7 @@ async fn a_daemon_that_cannot_start_is_reported_as_unreachable() {
     std::fs::write(dir.path().join("ax"), "not a directory").unwrap();
     let mut shim = Shim::start_in(dir, None).await;
 
-    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 23);
+    assert_eq!(shim.client().list_all_tools().await.unwrap().len(), 24);
     let r = tokio::time::timeout(Duration::from_secs(10), shim.call("list", json!({})))
         .await
         .expect("the tool answers within 10s instead of hanging");

@@ -153,7 +153,7 @@ To serve on the LAN, stop a running daemon first, then run `clax serve --bind 0.
 
 ## Use from an agent
 
-Each harness gets the same twenty-three tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](plugins/claude-code/README.md), [plugins/clax/README.md](plugins/clax/README.md), [plugins/pi/README.md](plugins/pi/README.md), [plugins/clax-grok/README.md](plugins/clax-grok/README.md).
+Each harness gets the same twenty-four tools (`publish`, `read`, `list`, `delete`, `open`, `pin`, `unpin`, `asset_upload`, `status`, `comments_read`, `comments_reply`, `comments_resolve`, `watch`, `wait_for_feedback`, `working`, `ask`, `db_get`, `db_list`, `db_query`, `db_set`, `db_update`, `db_delete`, `db_str_replace`, `db_batch`) and the `clax` skill. Install the plugin for each harness (see Install); plugin details: [plugins/claude-code/README.md](plugins/claude-code/README.md), [plugins/clax/README.md](plugins/clax/README.md), [plugins/pi/README.md](plugins/pi/README.md), [plugins/clax-grok/README.md](plugins/clax-grok/README.md).
 
 The plugins run `CLAX_BIN`, else the `bin` setting, else the release they
 pin (see "Which clax the plugins run"). `status` and `clax doctor --agent`

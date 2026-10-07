@@ -99,7 +99,7 @@ async function deadHome(): Promise<string> {
 }
 
 describe("clax Pi extension", () => {
-  it("registers the twenty-three tools with one-line prompt snippets, and the clax command", () => {
+  it("registers the twenty-four tools with one-line prompt snippets, and the clax command", () => {
     const { pi } = load(daemon.home, "s-tools");
     expect([...pi.tools.keys()].sort()).toEqual([...TOOLS].sort());
     for (const t of pi.tools.values()) {
@@ -398,6 +398,10 @@ describe("clax Pi extension", () => {
       clax_comments_resolve: [{ url_or_id: id, thread_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W" }],
       clax_watch: [{ url_or_id: id }, { url_or_id: id, on: false, replies: false }],
       clax_wait_for_feedback: [{}, { url_or_id: id, timeout_s: 50 }],
+      clax_ask: [
+        { questions: [{ question: "Which?", header: "Pick", options: [{ label: "A", description: "a", preview: "+-+", recommended: true }, { label: "B" }], multi_select: false, other: true }], url_or_id: id, timeout_s: 60 },
+        { question_id: "01K6AB3Q9X7N2M4P5R6S8T0V1W", cancel: true },
+      ],
       clax_db_get: [{ url_or_id: id, collection: "tasks", doc_id: "t1" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "view" }],
       clax_db_list: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", query: { limit: 10, cursor: "t1" } }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { where: [["n", ">", 1]], order_by: { field: "n", direction: "desc" }, limit: 5 } }],
@@ -423,6 +427,7 @@ describe("clax Pi extension", () => {
       clax_comments_resolve: [{ url_or_id: id }],
       clax_watch: [{ url_or_id: id, on: "yes" }],
       clax_wait_for_feedback: [{ timeout_s: -1 }, { bogus: 1 }],
+      clax_ask: [{ bogus: 1 }, { questions: [] }, { questions: [{ question: "Q" }] }, { questions: [{ question: "Q", header: "H", nope: 1 }] }, { questions: [{ question: "Q", header: "H", options: [{ label: "A", nope: 1 }] }] }],
       clax_working: [{ url_or_id: id, done: "yes" }, { url_or_id: id, bogus: 1 }],
       clax_db_get: [{ url_or_id: id, collection: "tasks" }, { url_or_id: id, collection: "tasks", doc_id: "t1", as_level: "owner" }],
       clax_db_query: [{ url_or_id: id, collection: "tasks", query: { bogus: 1 } }],
@@ -709,6 +714,45 @@ describe("comments", () => {
     expect(got.json.call_again).toBe(false);
     expect(pi.sent).toHaveLength(0);
   }, 20_000);
+
+  it("clax_ask returns the answers, and asks to call again while none came", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ask");
+    const first = parts(await pi.callToolAsPi("clax_ask", { questions: askBody("Pick").questions, timeout_s: 1 }, ctx)).json;
+    expect(first).toMatchObject({ status: "open", answers: null, call_again: true, surface_open: false, feedback: [] });
+    const qid: string = first.question_id;
+    expect(first.url).toMatch(new RegExp(`^http://localhost:\\d+/inbox\\?q=${qid}$`));
+    const waiting = pi.callToolAsPi("clax_ask", { question_id: qid, timeout_s: 30 }, ctx);
+    expect((await api(daemon, `/api/_test/questions/${qid}/waiters?until=1`)).count).toBe(1);
+    await answer(qid, "B");
+    const got = parts(await waiting).json;
+    expect(got).toMatchObject({ question_id: qid, status: "answered", call_again: false, note: expect.stringContaining("own words") });
+    expect(got.answers).toEqual([{ question: "Which?", header: "Pick", selected: ["B"], text: null }]);
+    expect(got.surface_open).toBeUndefined();
+    // Handed over once: no feedback tier repeats it.
+    expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.answers).toBeUndefined();
+  }, 20_000);
+
+  it("clax_ask cancels, refuses another session's question, and checks its arguments", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-ask-cancel");
+    const other = load(daemon.home, "pi-ask-other");
+    parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    const sid = await sessionOf("pi-ask-cancel");
+    const qid = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody("Scope")) })).question.id;
+    const foreign = await other.pi.callTool("clax_ask", { question_id: qid }, other.ctx);
+    expect(json(foreign).error.code).toBe("not_found");
+    const c = parts(await pi.callToolAsPi("clax_ask", { question_id: qid, cancel: true }, ctx)).json;
+    expect(c).toMatchObject({ status: "withdrawn", answers: null, call_again: false });
+    // A second ask that was answered before it was cancelled hands the answer over.
+    const q2 = await askAndAnswer(sid, "Later", "A");
+    const c2 = parts(await pi.callToolAsPi("clax_ask", { question_id: q2, cancel: true }, ctx)).json;
+    expect(c2).toMatchObject({ status: "answered", answers: [{ header: "Later", selected: ["A"] }] });
+    for (const args of [{}, { question_id: "../x" }, { questions: askBody("H").questions, cancel: true }, { questions: askBody("H").questions, question_id: qid }]) {
+      const r = await pi.callTool("clax_ask", args, ctx);
+      expect(json(r).error.code, JSON.stringify(args)).toBe("invalid_args");
+    }
+    const long = await pi.callTool("clax_ask", { questions: askBody("Thirteen char").questions }, ctx);
+    expect(json(long).error.code).toBe("invalid_question");
+  });
 
   it("sends addressed with a reply, which the daemon refuses on an artifact", async () => {
     const { pi, ctx } = load(daemon.home, "pi-addressed");

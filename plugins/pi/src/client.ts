@@ -535,6 +535,25 @@ export class DaemonClient {
     return this.json(this.sessionPath, { method: "GET" });
   }
 
+  /** `POST /api/sessions/<sid>/questions` with `source: "ask"`: `{question,
+   * mode, terminal_after_s, surface_open}`. */
+  askCreate(questions: unknown[], artifactId?: string): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/questions`, this.jsonBody("POST", { source: "ask", questions, artifact_id: artifactId ?? null }));
+  }
+
+  /** `GET /api/sessions/<sid>/questions/<qid>?wait=<waitS>`: `{question,
+   * waited_s}`. The deadline is `waitS` plus 10 s. `qid` must be a ULID. */
+  askWait(qid: string, waitS: number): Promise<any> {
+    const q = new URLSearchParams({ wait: String(waitS) });
+    return this.json(() => `${this.sessionPath()}/questions/${qid}?${q}`, { method: "GET", timeoutMs: (waitS + 10) * 1000 });
+  }
+
+  /** `POST /api/sessions/<sid>/questions/<qid>/withdraw`: `{question}`; 409
+   * `question_closed` when it is not open. `qid` must be a ULID. */
+  askWithdraw(qid: string): Promise<any> {
+    return this.json(() => `${this.sessionPath()}/questions/${qid}/withdraw`, this.jsonBody("POST", {}));
+  }
+
   /** `GET /api/sessions/<sid>/feedback` for `tier`, waiting up to `waitS`
    * seconds (`artifact` narrows it to one artifact): `{feedback, text,
    * waited_s}`. The deadline is `waitS` plus 10 s; `signal` cancels it. */

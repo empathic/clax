@@ -67,7 +67,7 @@ async fn mcp_refuses_a_non_local_host() {
 }
 
 #[tokio::test]
-async fn mcp_lists_the_twenty_three_tools() {
+async fn mcp_lists_the_twenty_four_tools() {
     let ts = TestServer::spawn().await;
     let res = mcp_post(&ts, &initialize())
         .bearer_auth(&ts.token)
@@ -120,6 +120,7 @@ async fn mcp_lists_the_twenty_three_tools() {
     assert_eq!(
         names,
         [
+            "ask",
             "asset_upload",
             "comments_read",
             "comments_reply",

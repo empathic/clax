@@ -163,7 +163,7 @@ fn claude_code_as_the_parent_acts_even_with_a_grok_session_id() {
             ("CLAUDE_PID", std::process::id().to_string()),
         ],
     );
-    assert_eq!(m.tool_names().len(), 23);
+    assert_eq!(m.tool_names().len(), 24);
     drop(m);
     let _ = clax(&home, &[]).arg("stop").status();
 }
@@ -173,7 +173,7 @@ fn the_grok_agent_acts() {
     let dir = tempfile::tempdir().unwrap();
     let home = dir.path().join("ax");
     let mut m = Mcp::start(&home, "grok", &[("GROK_SESSION_ID", "019a-g".into())]);
-    assert_eq!(m.tool_names().len(), 23);
+    assert_eq!(m.tool_names().len(), 24);
     drop(m);
     let _ = clax(&home, &[]).arg("stop").status();
 }
