@@ -2,7 +2,9 @@
 // artifact entry once the view knows its viewer: the `artifact:<id>`,
 // `presence:<id>` and `working:<id>` topics, and `docs:<id>` for a page that
 // declares `db`. Thread and presence deltas are applied to what the view
-// holds, and the view handles the full events they amount to.
+// holds, and the view handles the full events they amount to. It also loads
+// the question module, whose surfaces (the top bar's Inbox, the sidebar's
+// questions) show for the owner.
 import { ApiError, getArtifact } from "../api";
 import type { ArtifactEvent } from "../events";
 import { nav } from "../nav";
@@ -10,6 +12,7 @@ import { type StreamEvent, pageStream } from "../stream";
 import { type Thread, getViewer, renamedViewer, upsert } from "../threads";
 import type { ArtifactController } from "./artifact-controller";
 import { holdKeysAcrossLoad } from "./keys";
+import { guardedAction, keyboardTrail } from "./trail";
 import { type ThreadDelta, applyPresence, applyThread } from "./deltas";
 import type { PresenceView } from "./presence-model";
 
@@ -43,9 +46,15 @@ export const reconnect = () => pageStream().reconnect();
 export class ArtifactStream {
   private readonly main: () => void;
   private docs: (() => void) | null = null;
+  private questions: (() => void) | null = null;
+  private stopped = false;
 
   constructor(private readonly id: string, private readonly v: ArtifactStreamView) {
     this.main = pageStream().watch([`artifact:${id}`, `presence:${id}`, `working:${id}`], e => this.on(e));
+    // Once the browser is idle, so it stays off the view's way to being usable.
+    const load = () => void import("../q").then(m => { if (!this.stopped) this.questions = m.artifact(id, { keyboardTrail, guardedAction }, pageStream()); }, () => {});
+    if (typeof requestIdleCallback === "function") requestIdleCallback(load, { timeout: 2000 });
+    else setTimeout(load, 200);
   }
 
   /** Also watches the `docs` topic (once). */
@@ -56,6 +65,9 @@ export class ArtifactStream {
   }
 
   stop(): void {
+    this.stopped = true;
+    this.questions?.();
+    this.questions = null;
     this.main();
     this.docs?.();
     this.docs = null;

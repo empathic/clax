@@ -14,15 +14,22 @@
 // stream must say `ready` within `CONNECT_MS` and must not go silent for
 // `IDLE_MS` (the daemon sends a keep-alive every 15 s); a subscription that
 // does not answer within `STUCK_MS` fails the connection, which reconnects.
+//
+// Notifications (a hub made with `notify`): tabs say whether they have focus.
+// For each unread inbox item the hub has not announced yet (an `inbox_item`
+// event), when no tab has focus, the hub asks the most recently focused tab
+// holding `inbox` to notify (`notify`).
 import { STUCK_MS, backoff } from "./lifecycle";
 import { parseBlock } from "./sse";
 
 /** What a tab sends the hub. `hello` names the tab's Web Lock (held while
  * the tab lives), when it has one; `topics` is the tab's whole set;
- * `reconnect` opens a new stream (the viewer changed, so the caller did). */
+ * `focus` whether the tab has focus; `reconnect` opens a new stream (the
+ * viewer changed, so the caller did). */
 export type TabMsg =
   | { t: "hello"; lock?: string }
   | { t: "topics"; topics: string[] }
+  | { t: "focus"; focused: boolean }
   | { t: "reconnect" }
   | { t: "ping" }
   | { t: "bye" };
@@ -31,9 +38,11 @@ export type TabMsg =
  * the tab wants; `live` names topics the stream now carries for the tab
  * (refetch them); `resync` a topic whose events were dropped (refetch it);
  * `refused` a topic the daemon would not subscribe (`code` says why);
- * `status` whether the connection is up. */
+ * `status` whether the connection is up; `notify` asks the tab to show a
+ * notification for an `inbox_item` event's data. */
 export type HubMsg =
   | { t: "event"; topic: string; name: string; data: Record<string, unknown> }
+  | { t: "notify"; data: Record<string, unknown> }
   | { t: "live"; topics: string[] }
   | { t: "resync"; topic: string }
   | { t: "refused"; topic: string; code: string }
@@ -51,9 +60,12 @@ export const LINGER_MS = 3000;
 export const PING_MS = 10_000;
 /** A tab without a Web Lock that has not been heard from in this long is gone. */
 export const CLIENT_TTL_MS = 180_000;
+/** How many announced inbox item IDs the hub remembers (oldest dropped). */
+export const ANNOUNCED_MAX = 512;
 
 type Timer = ReturnType<typeof setTimeout>;
-type Client = { topics: Set<string>; live: Set<string>; heard: number; locked: boolean };
+/** `focusedAt` orders the tabs by when they last gained focus (0: never). */
+type Client = { topics: Set<string>; live: Set<string>; heard: number; locked: boolean; focused: boolean; focusedAt: number };
 
 /** Where the hub runs: how it reaches tabs, makes requests, and watches a
  * tab's Web Lock. */
@@ -66,6 +78,8 @@ export type HubEnv = {
   watchLock?(name: string, gone: () => void): void;
   /** The daemon's origin, for requests (default: relative URLs). */
   base?: string;
+  /** Asks tabs to notify about unread inbox items (the shell's hubs only). */
+  notify?: boolean;
 };
 
 export class Hub {
@@ -91,6 +105,9 @@ export class Hub {
   private syncing = false;
   private dirty = false;
   private readonly fetch: typeof fetch;
+  /** Inbox item IDs already announced, oldest first. */
+  private announced = new Set<string>();
+  private focusSeq = 0;
 
   constructor(private readonly env: HubEnv) {
     this.fetch = env.fetch ?? ((...a) => fetch(...a));
@@ -106,7 +123,7 @@ export class Hub {
     if (msg.t === "bye") { this.detach(id); return; }
     let c = this.clients.get(id);
     if (!c) {
-      c = { topics: new Set(), live: new Set(), heard: Date.now(), locked: false };
+      c = { topics: new Set(), live: new Set(), heard: Date.now(), locked: false, focused: false, focusedAt: 0 };
       this.clients.set(id, c);
       // Tells a tab that joins during an outage.
       if (this.toldDown) this.env.send([id], { t: "status", up: false });
@@ -133,6 +150,10 @@ export class Hub {
         this.changed();
         break;
       }
+      case "focus":
+        c.focused = msg.focused;
+        if (msg.focused) c.focusedAt = ++this.focusSeq;
+        break;
       case "reconnect":
         this.streamId = null;
         if (this.conn) this.connect();
@@ -295,6 +316,24 @@ export class Hub {
     if (!to.length) return;
     if (name === "resync") this.env.send(to, { t: "resync", topic });
     else this.env.send(to, { t: "event", topic, name, data });
+    if (this.env.notify && topic === "inbox" && name === "inbox_item") this.announce(data, to);
+  }
+
+  /** Asks one tab of `to` to notify about a new unread item, once per item,
+   * when no tab has focus: the one that gained focus last (ties: the first). */
+  private announce(data: Record<string, unknown>, to: string[]): void {
+    const item = data.item as { id?: unknown; read?: unknown } | null;
+    if (!item || typeof item !== "object" || typeof item.id !== "string" || item.read !== false || this.announced.has(item.id)) return;
+    this.announced.add(item.id);
+    if (this.announced.size > ANNOUNCED_MAX) this.announced.delete(this.announced.values().next().value!);
+    if ([...this.clients.values()].some(c => c.focused)) return;
+    let best: string | null = null;
+    let at = -1;
+    for (const id of to) {
+      const c = this.clients.get(id);
+      if (c && c.focusedAt > at) { best = id; at = c.focusedAt; }
+    }
+    if (best) this.env.send([best], { t: "notify", data });
   }
 
   /** Ends the open connection without telling the tabs. */

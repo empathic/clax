@@ -1,5 +1,5 @@
-// The gallery's attention grouping, markers, working chips and rosters, and
-// its live refreshes, are not needed for the first paint: the gallery loads
+// The gallery's attention grouping, markers, working chips and rosters, its
+// live refreshes, and the haiku in its footer are not needed for the first paint: the gallery loads
 // this module once its first list has painted, and until then shows one list
 // in the usual order.
 import { mount, unmount } from "svelte";
@@ -11,6 +11,7 @@ import { markers } from "../view/attention-model";
 import { agentNames, chips, type Working } from "../view/working-model";
 
 export { groups } from "../view/attention-model";
+export { default as HaikuLine } from "./HaikuLine.svelte";
 export { default as Markers } from "./Markers.svelte";
 export { default as NeedsGroup } from "./NeedsGroup.svelte";
 export { default as Roster } from "./Roster.svelte";
@@ -41,6 +42,9 @@ export class CardSync extends Sync {
     this.#sites = null;
   }
 }
+export { pageStream } from "../stream";
+/** The question module (the inbox's summary, Inbox, notifications). */
+export const q = () => import("../q");
 
 /** A card's markers, its working agents named as its participants name them. */
 export const cardMarkers = (a: Artifact, att: AttentionSummary | undefined, working: Working[]) =>

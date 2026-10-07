@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { item } from "./fixtures";
+import { item, view } from "./fixtures";
 import { filterFromUrl, filterToUrl, itemText, itemTitle, notificationText } from "./inbox-model";
 
 describe("inbox model", () => {
@@ -24,6 +24,8 @@ describe("inbox model", () => {
     expect(itemText(item("version"))).toBe("Two columns, sortable table");
     expect(itemText(item("published"))).toBe("Weekly sales by region");
     expect(itemText(item("question"))).toBe("Which layout should the dashboard use?");
+    const answered = view({ status: "answered", answers: [{ selected: ["Two"], text: null }, { selected: [], text: null }, { selected: [], text: "keep it" }] });
+    expect(itemText(item("question", { question: answered }))).toBe("Layout: Two · Sidebars: — · Notes: keep it");
     expect(itemText(item("finished"))).toBe("Charts are in.");
     expect(itemText(item("reply", { gone: true, reply: { comment_id: "c", body: null, addressed: false } }))).toBe("");
   });

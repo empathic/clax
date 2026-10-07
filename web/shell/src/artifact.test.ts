@@ -188,7 +188,12 @@ describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   it("opens the event stream only after the viewer lookup and the token request answered, with no token in its URL", async () => {
     let answerViewer!: () => void;
     let tokenAsked = false;
-    const view = await mountView(async url => { if (url === "/api/token") tokenAsked = true; return new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1))); },
+    // Not the owner: the owner's topics (`questions`, `inbox`) stay out.
+    const view = await mountView(async url => {
+      if (url === "/api/token") tokenAsked = true;
+      if (/^\/api\/(inbox|questions)/.test(url)) return new Response("{}", { status: 403 });
+      return new Response(JSON.stringify(url === "/api/token" ? { token: "tk" } : artifact(1)));
+    },
       url => url.includes("/threads")
         ? Promise.resolve(new Response(JSON.stringify({ threads: [], next_cursor: null })))
         : new Promise<Response>(r => { answerViewer = () => r(new Response(JSON.stringify(viewer))); }));

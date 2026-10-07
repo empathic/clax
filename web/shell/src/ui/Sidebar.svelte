@@ -10,6 +10,7 @@
   // then those on other pages of the version (labelled "on <file>"). Below,
   // collapsed into a tail: open threads on the page shown and not found, or on
   // a page the version does not hold (Detached); then resolved threads.
+  import type { Snippet } from "svelte";
   import type { AnchorResult } from "../../../bridge/src/protocol";
   import type { Participants, Version } from "../api";
   import type { Decided } from "../view/changelog-model";
@@ -81,6 +82,11 @@
     numbers?: Map<string, number>;
     /** Fetches a thread's clip, for a host that cannot load `clip_url` itself (the side panel). */
     clip?(t: Thread): Promise<string | null>;
+    /** The questions about the page, at the top, above the threads. Without
+     * it, the sidebar holds an empty `.questions-slot` there and, once
+     * mounted, dispatches `clax-questions-slot` from it (bubbling), for the
+     * question module to fill. */
+    questions?: Snippet;
   };
   let p: Props = $props();
   // Each second while a waiting label counts; otherwise often enough for "N min ago".
@@ -152,6 +158,11 @@
   const foldOf = (t: Thread) => far(t)
     ? { open: unfolded.includes(t.id), onToggle: (o: boolean) => { unfolded = o ? [...unfolded, t.id] : unfolded.filter(x => x !== t.id); } }
     : undefined;
+  // The question module (loaded apart, owner only) fills the slot: it hears
+  // where the slot is now, each time the sidebar mounts.
+  $effect(() => {
+    if (!p.questions) document.querySelector(".sidebar > .questions-slot")?.dispatchEvent(new CustomEvent("clax-questions-slot", { bubbles: true }));
+  });
 </script>
 
 {#snippet go(t: Thread)}
@@ -175,6 +186,7 @@
 {/snippet}
 
 <aside class="sidebar" aria-label="Comment threads" bind:this={aside}>
+  {#if p.questions}{@render p.questions()}{:else}<div class="questions-slot"></div>{/if}
   {#each newestFirst(p.working ?? []) as w (w.key)}
     {#await import("./WorkingStrip.svelte") then { default: WorkingStrip }}
       <WorkingStrip {w} text={stripText(w, agentsByHandle, s.numbers, new Set(p.mine ?? []))} commenting={p.commenting ?? false} />

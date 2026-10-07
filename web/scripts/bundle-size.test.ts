@@ -2,8 +2,12 @@ import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { CHILD_TIMEOUT_MS } from "../shell/src/test/timeouts";
+
+/** The script's deflate (pako has no type declarations). */
+const pako = createRequire(import.meta.url)("pako") as { gzip(data: string, o: { level: number }): Uint8Array };
 
 let root = "";
 afterEach(() => { if (root) rmSync(root, { recursive: true, force: true }); root = ""; });
@@ -32,7 +36,16 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
   dist("artifact.html", artifact);
   dist("_clax/bridge.js", "bridge");
   dist("_clax/shell/a.js", "a");
-  dist(".vite/manifest.json", JSON.stringify({ "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" } }));
+  // The question module imports the gallery's entry chunk, the gallery's
+  // lazy module's own import, and one file of its own.
+  for (const f of ["w.js", "s.js", "q.js", "qd.js"]) dist(`_clax/shell/${f}`, f.repeat(100));
+  dist(".vite/manifest.json", JSON.stringify({
+    "index.html": { file: "_clax/shell/a.js" }, "artifact.html": { file: "_clax/shell/a.js" },
+    "src/ui/gallery-working.ts": { file: "_clax/shell/w.js", isDynamicEntry: true, imports: ["index.html", "_s.js"] },
+    "_s.js": { file: "_clax/shell/s.js" },
+    "src/q/index.ts": { file: "_clax/shell/q.js", isDynamicEntry: true, imports: ["index.html", "_s.js", "_qd.js"] },
+    "_qd.js": { file: "_clax/shell/qd.js" },
+  }));
   // The parts: clip and caps import the comment part's file.
   for (const f of ["comment-1.js", "clip-1.js", "caps-1.js", "room-1.js", "sample-1.js"]) dist(`_clax/bridge/${f}`, f.repeat(50));
   dist("_clax/bridge/.vite/manifest.json", JSON.stringify({
@@ -59,7 +72,7 @@ function run(budget: Record<string, unknown>, artifact = ENTRY, args: string[] =
 }
 
 describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
-  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000 };
+  const full = { gallery: 10_000, artifact: 10_000, bridge: 10_000, bridgeBaseline: 10_000, partComment: 10_000, partClip: 10_000, partCaps: 10_000, partRoom: 10_000, partSample: 10_000, extOverlay: 10_000, extWorker: 10_000, extComposer: 10_000, extPanel: 10_000, questions: 10_000 };
 
   it("passes within budget", () => {
     expect(run(full).status).toBe(0);
@@ -188,10 +201,21 @@ describe("bundle-size.mjs", { timeout: CHILD_TIMEOUT_MS }, () => {
     }
   });
 
-  it("never records the extension's ceilings, nor adds a missing one", () => {
+  it("counts the question module with what it imports beyond the gallery's entry and lazy module", () => {
+    const size = (r: ReturnType<typeof run>) => Number(/questions (\d+)/.exec(r.stdout)?.[1]);
+    const q = size(run(full));
+    const one = (f: string) => pako.gzip(f.repeat(100), { level: 9 }).length;
+    expect(q).toBe(one("q.js") + one("qd.js"));
+    rmSync(root, { recursive: true, force: true });
+    const r = run({ ...full, questions: q - 1 });
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("questions");
+  });
+
+  it("never records the extension's ceilings or the question module's, nor adds a missing one", () => {
     expect(run(full, ENTRY, ["--record"]).status).toBe(0);
     const recorded = JSON.parse(readFileSync(join(root, "web/perf/bundle-budget.json"), "utf8"));
-    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel"]) expect(recorded[k], k).toBe(10_000);
+    for (const k of ["extOverlay", "extWorker", "extComposer", "extPanel", "questions"]) expect(recorded[k], k).toBe(10_000);
     expect(recorded.gallery).toBeLessThan(10_000);
     rmSync(root, { recursive: true, force: true });
     const { extPanel: _, ...noPanel } = full;
