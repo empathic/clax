@@ -74,7 +74,7 @@
 set -uo pipefail
 
 # This plugin's Clax version.
-CLAX_VERSION="0.3.0"
+CLAX_VERSION="0.3.1"
 # The Clax release the plugins run when neither CLAX_BIN nor the `bin`
 # setting names a binary, and the sha256 of its archive for each target.
 # scripts/pin-release.sh writes them, from the release's SHA256SUMS, into
