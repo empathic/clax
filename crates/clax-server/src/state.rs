@@ -61,6 +61,9 @@ pub struct AppState {
     /// The timers of question polls and graces ([`crate::questions::TokioSleeper`]
     /// in the daemon).
     pub question_sleeper: Arc<dyn crate::questions::Sleeper>,
+    /// Where question code reads the time, such as a late answer's age
+    /// ([`clax_core::working::SystemClock`] in the daemon).
+    pub question_clock: Arc<dyn clax_core::working::Clock>,
     /// `[questions] terminal_after_s`, read when the daemon starts.
     pub terminal_after_s: u64,
 }

@@ -1947,7 +1947,7 @@ impl ClaxTools {
     }
 
     #[tool(
-        description = "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch. Returns them in `feedback` as soon as they arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
+        description = "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch, and for their late answers to questions you asked. Returns comments in `feedback` and answers in `answers` as soon as any arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
         annotations(read_only_hint = true, open_world_hint = false)
     )]
     pub async fn wait_for_feedback(

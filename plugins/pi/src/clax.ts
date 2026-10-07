@@ -215,9 +215,29 @@ export class ToolError extends Error {
 }
 
 /** The text of a result: pretty-printed JSON carrying `feedback` (the
- * feedback items handed over with it, empty by default). */
-function render(obj: Json, feedback: unknown[] = []): string {
-  return JSON.stringify({ ...obj, feedback }, null, 2);
+ * feedback items handed over with it, empty by default) and, when there are
+ * any, `answers` (the late answers to the session's questions handed over
+ * with it). */
+function render(obj: Json, feedback: unknown[] = [], answers: unknown[] = []): string {
+  return JSON.stringify(answers.length ? { ...obj, feedback, answers } : { ...obj, feedback }, null, 2);
+}
+
+/** What a feedback poll handed over: comments (`feedback`), late answers to
+ * the session's questions (`answers`), and the daemon's prose for both
+ * (`text`). The poll marks both taken, so a caller that drops either loses it. */
+export interface Handover {
+  feedback: unknown[];
+  answers: unknown[];
+  text: string | null;
+}
+
+/** The handover in a `GET /api/sessions/<sid>/feedback` response. */
+export function handoverOf(r: any): Handover {
+  return {
+    feedback: Array.isArray(r?.feedback) ? r.feedback : [],
+    answers: Array.isArray(r?.answers) ? r.answers : [],
+    text: typeof r?.text === "string" ? r.text : null,
+  };
 }
 
 function toolError(code: string, message: string, extra: Json = {}): ToolError {
@@ -1130,19 +1150,18 @@ class Tools {
   }
 
   /** Tier 4: waits `timeout_s` (clamped to [`MIN_WAIT_S`]..[`MAX_WAIT_S`],
-   * default [`DEFAULT_WAIT_S`]) for feedback. Returns the result object, the
-   * feedback items, and the daemon's prose rendering of them for the trailing
-   * block. */
-  async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>): Promise<{ result: Json; feedback: unknown[]; text: string | null }> {
+   * default [`DEFAULT_WAIT_S`]) for feedback and late answers. Returns the
+   * result object (`call_again` only when nothing was handed over) and the
+   * handover, whose `text` is the trailing block. */
+  async waitForFeedback(ctx: ExtensionContext, a: Static<typeof WaitArgs>): Promise<{ result: Json } & Handover> {
     const c = this.clientFor(ctx);
     const artifact = a.url_or_id === undefined ? undefined : (await this.resolveRef(c, a.url_or_id)).id;
     const secs = Math.min(Math.max(a.timeout_s ?? DEFAULT_WAIT_S, MIN_WAIT_S), MAX_WAIT_S);
     const r = await this.call(() => c.feedback("wait", secs, artifact));
-    const feedback: unknown[] = Array.isArray(r.feedback) ? r.feedback : [];
+    const h = handoverOf(r);
     return {
-      result: { waited_s: r.waited_s ?? null, call_again: feedback.length === 0 },
-      feedback,
-      text: typeof r.text === "string" ? r.text : null,
+      result: { waited_s: r.waited_s ?? null, call_again: h.feedback.length === 0 && h.answers.length === 0 },
+      ...h,
     };
   }
 }
@@ -1363,7 +1382,7 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
     pi.registerTool({
       name: "clax_wait_for_feedback",
       label: "Clax wait for feedback",
-      description: "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch. Returns them in `feedback` as soon as they arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
+      description: "Wait up to `timeout_s` seconds (1 to 600, default 50) for comments the person sends to you, on one artifact or any you watch, and for their late answers to questions you asked. Returns comments in `feedback` and answers in `answers` as soon as any arrive, or `call_again: true` when none did; call it again while the person wants live feedback.",
       promptSnippet: "Wait for comments the person sends to you on a Clax artifact",
       parameters: WaitArgs,
       async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
@@ -1373,15 +1392,16 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
         } catch (e) {
           throw internal(e);
         }
-        const content: { type: "text"; text: string }[] = [{ type: "text", text: render(out.result, out.feedback) }];
-        if (out.feedback.length && out.text !== null) content.push({ type: "text", text: `---\n${out.text}` });
+        const content: { type: "text"; text: string }[] = [{ type: "text", text: render(out.result, out.feedback, out.answers) }];
+        if ((out.feedback.length || out.answers.length) && out.text !== null) content.push({ type: "text", text: `---\n${out.text}` });
         return { content, details: {} };
       },
     });
 
-    // Tier 1: the session's pending feedback is appended to the result of every
-    // successful call of a tool in `piggybacked`: into the JSON block's `feedback` array, and as a trailing
-    // `---` text block. A failed fetch leaves the result unchanged.
+    // Tier 1: the session's pending feedback and late answers are appended to
+    // the result of every successful call of a tool in `piggybacked`: into the
+    // JSON block's `feedback` and `answers` arrays, and as a trailing `---`
+    // text block. A failed fetch leaves the result unchanged.
     pi.on("tool_result", async event => {
       if (!piggybacked.has(event.toolName) || event.isError) return;
       const c = tools.existingClient();
@@ -1402,10 +1422,10 @@ export function claxExtension(opts: ClaxOptions = {}): (pi: ExtensionAPI) => voi
       } catch {
         return;
       }
-      const items: unknown[] = Array.isArray(res.feedback) ? res.feedback : [];
-      if (!items.length) return;
-      const content: (typeof event.content)[number][] = [{ type: "text", text: render(obj, items) }, ...event.content.slice(1)];
-      if (typeof res.text === "string") content.push({ type: "text", text: `---\n${res.text}` });
+      const h = handoverOf(res);
+      if (!h.feedback.length && !h.answers.length) return;
+      const content: (typeof event.content)[number][] = [{ type: "text", text: render(obj, h.feedback, h.answers) }, ...event.content.slice(1)];
+      if (h.text !== null) content.push({ type: "text", text: `---\n${h.text}` });
       return { content };
     });
 

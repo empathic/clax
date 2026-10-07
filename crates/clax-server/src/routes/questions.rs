@@ -221,8 +221,8 @@ pub struct WaitQuery {
 /// waited_s}` as soon as the question is not open, or after `wait` seconds
 /// (at most [`MAX_WAIT_SECS`]), or when the daemon shuts down. An answered
 /// or declined result marks it taken. While the poll runs it holds the
-/// question; when the last poll of an open hook question lets go, its
-/// grace starts. 429 `limit_reached` when
+/// question, and feedback polls leave the question's answer to it; when
+/// the last poll of an open hook question lets go, its grace starts. 429 `limit_reached` when
 /// [`MAX_POLLS`](crate::questions::MAX_POLLS) polls hold it already (a
 /// new poll is refused rather than an older one ended).
 pub async fn poll(
@@ -377,16 +377,28 @@ pub async fn terminal(
     })
 }
 
-/// `GET /api/_test/questions/<qid>/waiters` (debug builds): `{count}`, how
-/// many polls hold question `qid`.
+/// The query of the debug builds' waiter routes.
+#[cfg(debug_assertions)]
+#[derive(Deserialize)]
+pub struct UntilQuery {
+    pub(crate) until: Option<usize>,
+}
+
+/// `GET /api/_test/questions/<qid>/waiters?until=<n>` (debug builds):
+/// `{count}`, how many polls hold question `qid`, answered once the count
+/// is `until` (or after 5 s), at once without it.
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
     _t: RequireToken,
     p: Result<Path<String>, PathRejection>,
+    q: Result<Query<UntilQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let qid = path(p)?;
-    Ok(Json(json!({"count": s.questions.count(&qid)})))
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let w = &s.questions;
+    let n = crate::questions::count_until(w.changed(), || w.count(&qid), q.until).await;
+    Ok(Json(json!({"count": n})))
 }
 
 /// 403 `forbidden` unless `who` speaks for the owner (spec §6.2, §11).

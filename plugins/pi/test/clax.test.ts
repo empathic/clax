@@ -486,6 +486,31 @@ async function liveThread(url: string, body: string): Promise<{ aid: string; tid
 }
 
 /** The JSON block and the trailing block of a tool result. */
+/** The daemon's ID of the Pi session `harnessId`. */
+async function sessionOf(harnessId: string): Promise<string> {
+  const s = (await sessions()).find(x => x.harness_session_id === harnessId && x.ended_at === null);
+  expect(s, harnessId).toBeDefined();
+  return s.id;
+}
+
+/** An `ask` question set with one single-select question headed `header`. */
+function askBody(header: string) {
+  return { source: "ask", questions: [{ question: "Which?", header, options: [{ label: "A" }, { label: "B" }] }] };
+}
+
+/** Answers question `qid` with `label` as the owner (the token). */
+async function answer(qid: string, label: string): Promise<void> {
+  await api(daemon, `/api/questions/${qid}/answer`, { method: "POST", body: JSON.stringify({ answers: [{ selected: [label] }] }) });
+}
+
+/** Session `sid` asks a question headed `header`, which the owner answers
+ * with `label` while no poll waits on it; its ID. */
+async function askAndAnswer(sid: string, header: string, label: string): Promise<string> {
+  const qid = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody(header)) })).question.id;
+  await answer(qid, label);
+  return qid;
+}
+
 function parts(o: { content: { type: string; text?: string }[]; isError: boolean }) {
   expect(o.isError).toBe(false);
   return { json: JSON.parse(o.content[0].text!), trailing: o.content[1]?.text };
@@ -643,6 +668,47 @@ describe("comments", () => {
     for (const h of pi.handlers.get("tool_result") ?? []) expect(await h(foreign, ctx)).toBeUndefined();
     expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.feedback).toHaveLength(1);
   });
+
+  it("wait_for_feedback hands over a late answer and ends the wait", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-late-wait");
+    parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    const sid = await sessionOf("pi-late-wait");
+    const qid = await askAndAnswer(sid, "Layout", "A");
+    const r = parts(await pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 5 }, ctx));
+    expect(r.json).toMatchObject({ feedback: [], call_again: false });
+    expect(r.json.answers.map((a: any) => a.id)).toEqual([qid]);
+    expect(r.trailing).toMatch(new RegExp(`^---\\n\\[clax\\] The person answered your question "Layout" \\(${qid}, asked `));
+    // Handed over once.
+    expect(parts(await pi.callToolAsPi("clax_list", {}, ctx)).json.answers).toBeUndefined();
+  });
+
+  it("tier 1 hands over a late answer with no feedback beside it, once", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-late-tier1");
+    parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    const sid = await sessionOf("pi-late-tier1");
+    const qid = await askAndAnswer(sid, "Data", "B");
+    const r = parts(await pi.callToolAsPi("clax_list", {}, ctx));
+    expect(r.json.feedback).toEqual([]);
+    expect(r.json.answers.map((a: any) => a.id)).toEqual([qid]);
+    expect(r.trailing).toContain(`[clax] The person answered your question "Data" (${qid}`);
+    const again = await pi.callToolAsPi("clax_list", {}, ctx);
+    expect(again.content).toHaveLength(1);
+    expect(parts(again).json.answers).toBeUndefined();
+  });
+
+  it("an answer given during wait_for_feedback goes to the wait, not the injection loop", async () => {
+    const { pi, ctx } = load(daemon.home, "pi-late-inject");
+    await pi.emit("session_start", {}, ctx);
+    const sid = await sessionOf("pi-late-inject");
+    const qid = (await api(daemon, `/api/sessions/${sid}/questions`, { method: "POST", body: JSON.stringify(askBody("Scope")) })).question.id;
+    const waiting = pi.callToolAsPi("clax_wait_for_feedback", { timeout_s: 5 }, ctx);
+    expect((await api(daemon, `/api/_test/sessions/${sid}/feedback/waiters?until=1`)).count).toBe(1);
+    await answer(qid, "A");
+    const got = parts(await waiting);
+    expect(got.json.answers.map((a: any) => a.id)).toEqual([qid]);
+    expect(got.json.call_again).toBe(false);
+    expect(pi.sent).toHaveLength(0);
+  }, 20_000);
 
   it("sends addressed with a reply, which the daemon refuses on an artifact", async () => {
     const { pi, ctx } = load(daemon.home, "pi-addressed");

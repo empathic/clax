@@ -7,6 +7,7 @@ use super::artifacts::{body, parse_id, path};
 use crate::auth::RequireToken;
 use crate::error::ApiError;
 use crate::feedback::apply;
+use crate::questions::QuestionWaiters;
 use crate::state::AppState;
 use axum::Json;
 use axum::extract::rejection::{JsonRejection, PathRejection, QueryRejection};
@@ -14,6 +15,7 @@ use axum::extract::{Path, Query, State};
 use clax_core::feedback::{ago, quoted, render_items, render_notice};
 use clax_core::questions::render_late;
 use clax_core::store::questions::Status;
+use clax_core::working::Clock;
 use clax_core::{CoreError, Store, TakeFeedback, Tier};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -39,11 +41,17 @@ fn live_session(st: &Store, sid: &str) -> clax_core::Result<()> {
 }
 
 /// Takes session `sid`'s answered and declined `ask` questions it has not
-/// received (marking them received): their views, and one late-answer
-/// block per question (spec 2026-10-06-agent-questions-and-inbox §6.4).
-fn late_answers(st: &Store, sid: &str) -> clax_core::Result<(Vec<Value>, Vec<String>)> {
-    let rows = st.take_late_answers(sid)?;
-    let now = chrono::Utc::now();
+/// received (marking them received), leaving those a question poll holds
+/// to that poll: their views, and one late-answer block per question, its
+/// age read from `clock` (spec 2026-10-06-agent-questions-and-inbox §6.4).
+fn late_answers(
+    st: &Store,
+    sid: &str,
+    held: &QuestionWaiters,
+    clock: &dyn Clock,
+) -> clax_core::Result<(Vec<Value>, Vec<String>)> {
+    let rows = st.take_late_answers(sid, |qid| held.count(qid) > 0)?;
+    let now = clock.now();
     let mut views = Vec::with_capacity(rows.len());
     let mut blocks = Vec::with_capacity(rows.len());
     for q in &rows {
@@ -95,12 +103,17 @@ pub struct FeedbackQuery {
 /// `wait` seconds (capped at 600) with neither. `answers` holds the views of
 /// the session's answered and declined `ask` questions not yet received,
 /// which the poll marks received, and `text` ends with a block for each
-/// (spec 2026-10-06-agent-questions-and-inbox §6.4); `tier=queue` (the Codex
-/// queue) takes no answers and its `answers` is always empty. A request dropped while waiting takes nothing (the handler future is
-/// dropped with the connection). A drop that lands after the wake, while the
-/// take is running on the blocking pool, still marks the rows handed over, and
-/// in-band tiers acknowledge them; such rows are not resent. `resends=false` leaves out
-/// resend-eligible rows. A daemon that begins shutting down answers empty at once.
+/// (spec 2026-10-06-agent-questions-and-inbox §6.4). A question that a
+/// question poll holds is left to that poll, so each answer is handed over
+/// once. `tier=queue` (the Codex queue) takes no answers and its `answers`
+/// is always empty.
+///
+/// A request dropped while waiting takes nothing (the handler future is
+/// dropped with the connection). A drop that lands after the wake, while
+/// the take is running on the blocking pool, still marks the rows handed
+/// over, and in-band tiers acknowledge them; such rows are not resent.
+/// `resends=false` leaves out resend-eligible rows. A daemon that begins
+/// shutting down answers empty at once.
 /// An unknown session is 404; an ended one is 400 `unknown_session`, answered
 /// before any wait. A session that ends during the wait answers empty at the
 /// deadline.
@@ -109,10 +122,10 @@ pub struct FeedbackQuery {
 /// progress, tier 5 is skipped for the session: `codex queue` does not push
 /// to it ([`crate::push::dispatch`]), and a `tier=inject` poll (the Pi
 /// injection loop) takes nothing and answers empty at once, `{feedback: [],
-/// answers: [], text: null, waited_s: 0}` (also when it was already waiting and is woken),
-/// so the rows and answers go to the wait poll. The inject poll checks before each take;
-/// a wait poll that starts between that check and the take can lose one hand
-/// over to it.
+/// answers: [], text: null, waited_s: 0}` (also when it was already waiting
+/// and is woken), so the rows and answers go to the wait poll. The inject
+/// poll checks before each take; a wait poll that starts between that check
+/// and the take can lose one hand over to it.
 ///
 /// Any holder of the token may read or acknowledge any session's feedback: the
 /// token is the local trust boundary, and sessions are not authenticated
@@ -168,6 +181,7 @@ pub async fn poll(
         }
         let ctx = s.feedback_ctx();
         let t = take.clone();
+        let (held, clock) = (s.questions.clone(), s.question_clock.clone());
         let (items, (answers, late)) = s
             .store_call(move |st| {
                 let (items, touched) = st.take_feedback(&t, &ctx.browser_base)?;
@@ -177,7 +191,7 @@ pub async fn poll(
                     return Ok((items, Default::default()));
                 }
                 crate::working::mark_items(&ctx, st, &t.session_id, &items)?;
-                Ok((items, late_answers(st, &t.session_id)?))
+                Ok((items, late_answers(st, &t.session_id, &held, &*clock)?))
             })
             .await?;
         if !items.is_empty() || !answers.is_empty() || Instant::now() >= deadline {
@@ -311,15 +325,20 @@ pub async fn ack(
     Ok(Json(json!({"acknowledged": n})))
 }
 
-/// `GET /api/_test/sessions/<sid>/feedback/waiters` (debug builds):
-/// `{count}`, how many `wait_for_feedback` polls of session `sid` are in
-/// progress.
+/// `GET /api/_test/sessions/<sid>/feedback/waiters?until=<n>` (debug
+/// builds): `{count}`, how many `wait_for_feedback` polls of session `sid`
+/// are in progress, answered once the count is `until` (or after 5 s), at
+/// once without it.
 #[cfg(debug_assertions)]
 pub async fn waiters(
     State(s): State<AppState>,
     _t: RequireToken,
     sid: Result<Path<String>, PathRejection>,
+    q: Result<Query<super::questions::UntilQuery>, QueryRejection>,
 ) -> Result<Json<Value>, ApiError> {
     let sid = path(sid)?;
-    Ok(Json(json!({"count": s.feedback_waiters.count(&sid)})))
+    let Query(q) = q.map_err(|e| ApiError::bad_request("invalid_query", e.body_text()))?;
+    let w = &s.feedback_waiters;
+    let n = crate::questions::count_until(w.changed(), || w.count(&sid), q.until).await;
+    Ok(Json(json!({"count": n})))
 }

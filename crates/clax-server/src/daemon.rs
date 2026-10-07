@@ -322,6 +322,7 @@ pub async fn serve(
         questions: Arc::new(Default::default()),
         question_grace: Duration::from_secs(5),
         question_sleeper: Arc::new(crate::questions::TokioSleeper),
+        question_clock: Arc::new(clax_core::working::SystemClock),
         terminal_after_s,
     };
     state.stream.listen(&state.events);
