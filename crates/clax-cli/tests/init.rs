@@ -893,3 +893,21 @@ fn init_without_yes_or_a_terminal_shows_the_approvals_and_adds_nothing() {
         "{text}"
     );
 }
+
+#[test]
+fn an_unparseable_codex_config_is_reported_and_init_still_succeeds() {
+    let e = codex_env();
+    std::fs::create_dir_all(e.p("codex")).unwrap();
+    std::fs::write(e.p("codex/config.toml"), "[broken\n").unwrap();
+    let (ok, v) = e.json(&["init", "--agent", "codex", "--yes"]);
+    assert!(ok, "{v}");
+    let a = codex_approvals(&v);
+    assert_eq!(a["status"], "failed", "{v}");
+    assert!(
+        a["detail"].as_str().unwrap().contains("could not parse"),
+        "{v}"
+    );
+    let cfg = std::fs::read_to_string(e.p("codex/config.toml")).unwrap();
+    assert!(cfg.starts_with("[broken\n"), "{cfg}");
+    assert!(!cfg.contains("approval_mode"), "{cfg}");
+}

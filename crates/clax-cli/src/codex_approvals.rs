@@ -16,8 +16,10 @@
 //!
 //! Every Clax tool is annotated `openWorldHint: false`, so under `auto` only
 //! the destructive ones ask. Approving those is a grant the person makes:
-//! [`add_approvals`] writes it only where the person has set nothing for the
-//! tool, and never changes or removes a setting.
+//! it is offered only for tools the person has set nothing for, neither on
+//! the tool nor on the server ([`Assessment::addable`]); a tool that asks
+//! because of the person's own setting is theirs ([`Assessment::kept`]).
+//! [`add_approvals`] never changes or removes a setting.
 //!
 //! `codex plugin remove` deletes the plugin's whole table, settings
 //! included, so `clax init`, which removes and adds the plugin, carries them
@@ -54,6 +56,23 @@ pub struct Asking {
     /// The effective approval mode, as written (`auto` when unset).
     pub mode: String,
     pub source: Source,
+    /// Whether the tool is annotated `destructiveHint: true`.
+    pub destructive: bool,
+}
+
+impl Asking {
+    /// The person's setting that makes the tool ask, as written in
+    /// `config.toml`; `None` when nothing is set.
+    pub fn setting(&self) -> Option<String> {
+        match self.source {
+            Source::Default => None,
+            Source::Server => Some(format!("default_tools_approval_mode = \"{}\"", self.mode)),
+            Source::Tool => Some(format!(
+                "approval_mode = \"{}\" on `{}`",
+                self.mode, self.tool
+            )),
+        }
+    }
 }
 
 /// The Clax tools Codex asks about under one `config.toml`.
@@ -66,22 +85,56 @@ pub struct Assessment {
 }
 
 impl Assessment {
-    /// The asking tools with no `approval_mode` of their own: those
-    /// [`add_approvals`] approves.
-    pub fn addable(&self) -> Vec<&str> {
+    /// The asking tools the person has set nothing for, on the tool or
+    /// the server: those setup offers to approve.
+    pub fn addable_asking(&self) -> Vec<&Asking> {
         self.asking
             .iter()
-            .filter(|a| a.source != Source::Tool)
+            .filter(|a| a.source == Source::Default)
+            .collect()
+    }
+
+    /// The names of [`Self::addable_asking`].
+    pub fn addable(&self) -> Vec<&str> {
+        self.addable_asking()
+            .into_iter()
             .map(|a| a.tool.as_str())
             .collect()
     }
 
-    /// The asking tools whose own `approval_mode` the person set.
+    /// The asking tools that ask because of a setting the person made, on
+    /// the tool or on the server; setup leaves them alone.
     pub fn kept(&self) -> Vec<&Asking> {
         self.asking
             .iter()
-            .filter(|a| a.source == Source::Tool)
+            .filter(|a| a.source != Source::Default)
             .collect()
+    }
+
+    /// Names the tools in [`Self::kept`] with the setting that makes each
+    /// ask, grouped by setting; `None` when there are none.
+    pub fn kept_note(&self, config: &Path) -> Option<String> {
+        let kept = self.kept();
+        if kept.is_empty() {
+            return None;
+        }
+        let mut groups: Vec<(String, Vec<&str>)> = Vec::new();
+        for k in kept {
+            let s = k.setting().unwrap_or_default();
+            match groups.iter_mut().find(|(g, _)| *g == s) {
+                Some((_, tools)) => tools.push(&k.tool),
+                None => groups.push((s, vec![&k.tool])),
+            }
+        }
+        let parts: Vec<String> = groups
+            .iter()
+            .map(|(s, tools)| format!("{} (your {s})", tools.join(", ")))
+            .collect();
+        Some(format!(
+            "Codex asks before {}, as set in {}; Clax leaves your settings as they are",
+            parts.join("; "),
+            config.display()
+        ))
     }
 }
 
@@ -116,12 +169,34 @@ pub fn read_config(path: &Path) -> Result<Option<String>, String> {
     }
 }
 
+/// `path` with symbolic links followed, including one whose target does
+/// not exist yet; an error for a loop.
+fn follow_links(path: &Path) -> std::io::Result<PathBuf> {
+    let mut p = path.to_path_buf();
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&p) {
+            Ok(m) if m.file_type().is_symlink() => {
+                let to = std::fs::read_link(&p)?;
+                p = match p.parent() {
+                    Some(dir) if to.is_relative() => dir.join(to),
+                    _ => to,
+                };
+            }
+            _ => return Ok(p),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: too many levels of symbolic links",
+        path.display()
+    )))
+}
+
 /// Replaces the config at `path` with `text` atomically: a sibling
 /// temporary file, with the old file's permissions, renamed over it. A
-/// symbolic link at `path` is followed, so the file it names is replaced
-/// and the link stays.
+/// symbolic link at `path` is followed, even when its target does not exist
+/// yet, so the file it names is written and the link stays.
 pub fn write_config(path: &Path, text: &str) -> std::io::Result<()> {
-    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let target = follow_links(path)?;
     let dir = target.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     let tmp = dir.join(format!(".config.toml.clax.{}.tmp", std::process::id()));
@@ -217,6 +292,7 @@ pub fn assess(text: Option<&str>, tools: &[Tool]) -> Result<Assessment, String> 
                 tool: name.to_string(),
                 mode: mode.to_string(),
                 source,
+                destructive: t.annotations.as_ref().and_then(|a| a.destructive_hint) == Some(true),
             });
         }
     }
@@ -295,7 +371,7 @@ pub fn plugin_settings(text: &str) -> Option<Table> {
 
 /// Every key of `from` that `into` lacks, copied in, recursing into tables
 /// both have.
-fn merge_missing(into: &mut Table, from: &Table) {
+pub fn merge_missing(into: &mut Table, from: &Table) {
     for (k, v) in from.iter() {
         match (into.get_mut(k), v) {
             (None, _) => {
@@ -323,10 +399,11 @@ pub fn restore(text: &str, saved: &Table) -> Result<String, String> {
 /// which case the notice names the settings instead. `None` when no tool
 /// would be added.
 pub fn notice(a: &Assessment, config: &Path, command: Option<&str>) -> Option<String> {
-    let tools = a.addable();
-    if tools.is_empty() {
+    let asking = a.addable_asking();
+    if asking.is_empty() {
         return None;
     }
+    let tools: Vec<&str> = asking.iter().map(|a| a.tool.as_str()).collect();
     let how = match command {
         Some(c) => format!(
             "run `{c} init --agent codex` in a terminal: it shows the lines it adds to {} and adds them once you confirm",
@@ -338,27 +415,86 @@ pub fn notice(a: &Assessment, config: &Path, command: Option<&str>) -> Option<St
         ),
     };
     Some(format!(
-        "Clax: Codex will stop to ask before each call of {}, which change or remove artifacts or page data. To approve them once, {how}.",
-        tools.join(", ")
+        "Clax: Codex will stop to ask before each call of {}. {} To approve them once, {how}.",
+        tools.join(", "),
+        consequences(&asking)
     ))
 }
 
-/// Whether the session-start notice for `tools` is new: it is shown once
-/// per set of tools, recorded in the file at `marker`, which is removed
-/// when nothing asks. Records the set when it is new.
-pub fn first_notice(marker: &Path, tools: &[&str]) -> bool {
+/// What the tools in `asking` do, from their annotations and names, and
+/// what approving them means; the text the setup prompt and the notice show.
+pub fn consequences(asking: &[&Asking]) -> String {
+    let mut parts = Vec::new();
+    if asking.iter().any(|a| a.tool == "delete" && a.destructive) {
+        parts.push("`delete` removes an artifact and all its versions".to_string());
+    }
+    let db: Vec<&str> = asking
+        .iter()
+        .filter(|a| a.destructive && a.tool.starts_with("db_"))
+        .map(|a| a.tool.as_str())
+        .collect();
+    if !db.is_empty() {
+        parts.push(format!(
+            "{} replace or remove page data, which keeps no history",
+            db.join(", ")
+        ));
+    }
+    let other: Vec<&str> = asking
+        .iter()
+        .filter(|a| a.destructive && a.tool != "delete" && !a.tool.starts_with("db_"))
+        .map(|a| a.tool.as_str())
+        .collect();
+    if !other.is_empty() {
+        parts.push(format!("{} may replace or remove data", other.join(", ")));
+    }
+    let mut out = String::new();
+    if !parts.is_empty() {
+        out = format!("Of these, {}. ", parts.join("; "));
+    }
+    out.push_str("Once approved, Codex runs them without asking, including when it acts on comments people leave on a page.");
+    out
+}
+
+/// How long a shown notice stays quiet for the same set of tools: a notice
+/// can land in a session nobody reads (`codex exec` drops it), so it comes
+/// back after this many days.
+pub const NOTICE_QUIET_DAYS: u64 = 7;
+
+/// The marker recording the last notice for the Codex home `codex_home`,
+/// under the Clax home `clax_root`: one per Codex home.
+pub fn notice_marker(clax_root: &Path, codex_home: &Path) -> PathBuf {
+    // FNV-1a, so the name is stable across builds.
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in codex_home.as_os_str().as_encoded_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    clax_root.join(format!("run/codex-approvals-notice-{h:016x}"))
+}
+
+/// Whether the notice for `tools` is due on day `today` (days since the
+/// Unix epoch): when the marker records another set, or the same set shown
+/// [`NOTICE_QUIET_DAYS`] or more days ago. With no tools, the marker is
+/// removed, so the next set that asks is shown at once.
+pub fn notice_due(marker: &Path, tools: &[&str], today: u64) -> bool {
     if tools.is_empty() {
         let _ = std::fs::remove_file(marker);
         return false;
     }
-    let set = tools.join(",");
-    if std::fs::read_to_string(marker).is_ok_and(|s| s == set) {
-        return false;
-    }
+    let Ok(recorded) = std::fs::read_to_string(marker) else {
+        return true;
+    };
+    let mut lines = recorded.lines();
+    let same = lines.next() == Some(tools.join(",").as_str());
+    let day = lines.next().and_then(|d| d.parse::<u64>().ok());
+    !(same && day.is_some_and(|d| today < d.saturating_add(NOTICE_QUIET_DAYS)))
+}
+
+/// Records that the notice for `tools` was shown on day `today`.
+pub fn record_notice(marker: &Path, tools: &[&str], today: u64) {
     if let Some(d) = marker.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    std::fs::write(marker, set).is_ok()
+    let _ = std::fs::write(marker, format!("{}\n{today}\n", tools.join(",")));
 }
 
 #[cfg(test)]
@@ -445,16 +581,63 @@ approval_mode = "prompt"
         assert!(!asking.contains(&"db_batch"), "disabled: {asking:?}");
         assert!(!asking.contains(&"read"), "read-only under writes");
         assert!(asking.contains(&"pin"), "writes asks for pin");
+        // Every tool that asks does so by the person's own settings.
+        assert!(a.addable().is_empty(), "{:?}", a.addable());
+        assert_eq!(a.kept().len(), a.asking.len());
+        let delete = a.kept().into_iter().find(|k| k.tool == "delete").unwrap();
         assert_eq!(
-            a.kept(),
-            [&Asking {
-                tool: "delete".into(),
-                mode: "prompt".into(),
-                source: Source::Tool
-            }]
+            (delete.source, delete.setting().unwrap()),
+            (
+                Source::Tool,
+                "approval_mode = \"prompt\" on `delete`".into()
+            )
         );
-        assert!(!a.addable().contains(&"delete"));
-        assert!(a.addable().contains(&"pin"));
+        let pin = a.kept().into_iter().find(|k| k.tool == "pin").unwrap();
+        assert_eq!(
+            pin.setting().unwrap(),
+            "default_tools_approval_mode = \"writes\""
+        );
+        let note = a.kept_note(Path::new("/cx/config.toml")).unwrap();
+        assert!(
+            note.contains("delete (your approval_mode = \"prompt\" on `delete`)"),
+            "{note}"
+        );
+        assert!(
+            note.contains("(your default_tools_approval_mode = \"writes\")"),
+            "{note}"
+        );
+    }
+
+    /// A server default the person set is theirs: nothing is offered over
+    /// it, and every tool it makes ask is named with it.
+    #[test]
+    fn a_server_default_of_the_persons_is_never_offered_over() {
+        let tools = ClaxTools::tools();
+        let server = |mode: &str| {
+            assess(
+                Some(&format!(
+                    "[plugins.\"clax@clax\".mcp_servers.clax]\ndefault_tools_approval_mode = \"{mode}\"\n"
+                )),
+                &tools,
+            )
+            .unwrap()
+        };
+        let prompt = server("prompt");
+        assert!(prompt.addable().is_empty());
+        assert_eq!(prompt.kept().len(), tools.len());
+        assert!(prompt.kept().iter().all(|k| k.source == Source::Server));
+        let writes = server("writes");
+        assert!(writes.addable().is_empty());
+        let read_only = tools
+            .iter()
+            .filter(|t| t.annotations.as_ref().and_then(|a| a.read_only_hint) == Some(true))
+            .count();
+        assert_eq!(writes.kept().len(), tools.len() - read_only);
+        assert!(!names(&writes).contains(&"read"));
+        assert!(server("approve").asking.is_empty());
+        assert_eq!(notice(&prompt, Path::new("/c"), Some("clax")), None);
+        let p = add_approvals("", &prompt.addable()).unwrap();
+        assert!(!p.contains("approval_mode"), "{p}");
     }
 
     #[test]
@@ -567,21 +750,57 @@ screen_reader_detection_done = true
             without.contains("[plugins.\"clax@clax\".mcp_servers.clax.tools.<tool>]"),
             "{without}"
         );
+        assert!(
+            with.contains("removes an artifact and all its versions"),
+            "{with}"
+        );
+        assert!(with.contains("keeps no history"), "{with}");
+        assert!(
+            with.contains("including when it acts on comments"),
+            "{with}"
+        );
         let approved = add_approvals("", &a.addable()).unwrap();
         let none = assess(Some(&approved), &ClaxTools::tools()).unwrap();
         assert_eq!(notice(&none, p, Some("clax")), None);
     }
 
     #[test]
-    fn the_notice_is_given_once_per_set_of_tools() {
+    fn consequences_claim_only_what_the_annotations_say() {
+        let a = |tool: &str, destructive: bool| Asking {
+            tool: tool.into(),
+            mode: "auto".into(),
+            source: Source::Default,
+            destructive,
+        };
+        let (read, pin) = (a("read", false), a("pin", false));
+        let text = consequences(&[&read, &pin]);
+        assert!(!text.contains("remove"), "{text}");
+        assert!(!text.contains("replace"), "{text}");
+        let (del, set) = (a("delete", true), a("db_set", true));
+        let text = consequences(&[&del, &set]);
+        assert!(text.starts_with("Of these, `delete` removes"), "{text}");
+        assert!(
+            text.contains("db_set replace or remove page data"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn the_notice_is_quiet_for_a_week_per_set_of_tools() {
         let d = tempfile::tempdir().unwrap();
-        let m = d.path().join("run/codex-approvals-notice");
-        assert!(first_notice(&m, &["delete", "db_set"]));
-        assert!(!first_notice(&m, &["delete", "db_set"]));
-        assert!(first_notice(&m, &["delete"]));
-        assert!(!first_notice(&m, &[]));
+        let m = notice_marker(d.path(), Path::new("/home/u/.codex"));
+        assert_ne!(m, notice_marker(d.path(), Path::new("/home/u/.codex-2")));
+        let set = ["delete", "db_set"];
+        assert!(notice_due(&m, &set, 100), "never shown");
+        assert!(notice_due(&m, &set, 100), "due until recorded");
+        record_notice(&m, &set, 100);
+        assert!(!notice_due(&m, &set, 100));
+        assert!(!notice_due(&m, &set, 106));
+        assert!(notice_due(&m, &set, 107), "a week later");
+        assert!(notice_due(&m, &["delete"], 101), "another set");
+        assert!(!notice_due(&m, &[], 101));
         assert!(!m.exists());
-        assert!(first_notice(&m, &["delete"]));
+        assert!(notice_due(&m, &set, 101));
     }
 
     #[test]
@@ -604,6 +823,19 @@ screen_reader_detection_done = true
         assert_eq!(
             std::fs::metadata(&real).unwrap().permissions().mode() & 0o777,
             0o600
+        );
+        let dangling = d.path().join("dangling.toml");
+        std::os::unix::fs::symlink("missing/target.toml", &dangling).unwrap();
+        write_config(&dangling, "c = 1\n").unwrap();
+        assert!(
+            std::fs::symlink_metadata(&dangling)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("missing/target.toml")).unwrap(),
+            "c = 1\n"
         );
         let fresh = d.path().join("new/config.toml");
         write_config(&fresh, "b = 1\n").unwrap();

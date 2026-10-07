@@ -139,12 +139,15 @@ approval_mode = "approve"
 and adds them only when you answer yes; `clax init --agent codex --yes` adds
 them without asking. It keeps everything else in the file, including
 comments, and never changes a setting you made: a tool you set to
-`approval_mode = "prompt"` keeps asking. Re-registering the plugin
+`approval_mode = "prompt"`, or every tool when you set the server's
+`default_tools_approval_mode`, keeps asking, and `init` names those tools and
+the setting instead of offering them. Re-registering the plugin
 (`codex plugin remove` and `add`, as `clax init` does) deletes Codex's
 settings for the plugin, so `clax init` puts back the ones you had.
 `clax doctor --agent codex` reports which tools Codex would still ask about
-(`codex_approvals`), and the `SessionStart` hook tells you once, with the
-command, when there are any.
+(`codex_approvals`), and the `SessionStart` hook tells you, with the
+command, when there are any: once per set of tools, again after a week, and
+not in `codex exec` or app-server sessions.
 
 Clax ships no approval settings in the plugin: Codex would apply them
 without asking you. To approve every Clax tool instead, including future
