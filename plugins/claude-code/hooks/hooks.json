@@ -33,12 +33,35 @@
         ]
       }
     ],
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude ask",
+            "timeout": 3600,
+            "statusMessage": "Asking in Clax: answer there, or choose Answer in the terminal"
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tool-hook.sh\" claude",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/ensure-clax.sh\" exec hook --agent claude asked",
             "timeout": 5
           }
         ]

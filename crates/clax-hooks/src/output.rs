@@ -32,6 +32,24 @@ impl HookOutput {
         HookOutput(Some(v))
     }
 
+    /// PreToolUse: allow the call with `updated_input` replacing its input.
+    pub fn allow_with_input(updated_input: Value) -> HookOutput {
+        HookOutput(Some(json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": updated_input,
+        }})))
+    }
+
+    /// PreToolUse: deny the call; `reason` is shown to the agent.
+    pub fn deny(reason: &str) -> HookOutput {
+        HookOutput(Some(json!({"hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": reason,
+        }})))
+    }
+
     pub fn value(&self) -> Option<&Value> {
         self.0.as_ref()
     }
@@ -71,6 +89,18 @@ mod tests {
                 "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "hi"},
                 "systemMessage": "m",
             }))
+        );
+        assert_eq!(
+            HookOutput::allow_with_input(json!({"a": 1})).value(),
+            Some(
+                &json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow", "updatedInput": {"a": 1}}})
+            )
+        );
+        assert_eq!(
+            HookOutput::deny("no").value(),
+            Some(
+                &json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "no"}})
+            )
         );
     }
 }

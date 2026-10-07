@@ -195,7 +195,7 @@ fn main() {
         Err(e) => {
             if hook && let Ok(home) = home_from_env() {
                 let text = e.to_string();
-                commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()));
+                commands::hook::log_run(&home, &agent_arg(), "-", started, Some(text.trim()), None);
             }
             let shown = matches!(e.kind(), ErrorKind::DisplayHelp | ErrorKind::DisplayVersion);
             if invoked.as_deref() == Some("native-host") && !shown {
