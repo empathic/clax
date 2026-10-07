@@ -1,8 +1,9 @@
 import { describe, it, expect, onTestFinished } from "vitest";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { artifactViewHooks, waitFor, ID, artifact, page, viewer, mountView, stubMedia, postReady, buttonNamed, fromFrame, gestureIn, viewerPick, startOf, pick, pointerClick } from "./test/artifact-view";
 
 // The view's picks, composer and comment mode (the rest is in artifact.test.ts).
-describe("ArtifactView", () => {
+describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   artifactViewHooks();
   it("starts each pick with an empty composer and shows a failed post only in the banner", async () => {
     const view = await mountView(async () => new Response(JSON.stringify(artifact(1))),

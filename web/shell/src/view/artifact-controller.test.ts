@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "../test/fake-worker";
+import { MOUNT_TIMEOUT_MS, WAIT_MS } from "../test/timeouts";
 import type { Thread } from "../threads";
 
 const ID = "7q3k9mzx2b4t";
@@ -35,7 +36,7 @@ async function started(seed: Seed = {}) {
   const ctl = new ArtifactController({ id: ID, pinnedVersion: null });
   ctl.frame = new FrameHost(stage, () => ctl.frameLoaded());
   ctl.start();
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + WAIT_MS;
   while (!stage.querySelector("iframe") && Date.now() < deadline) await new Promise(r => setTimeout(r, 5));
   return { ctl, frame: stage.querySelector("iframe")! };
 }
@@ -62,7 +63,7 @@ const seed: Seed = {
   routes: url => (url === "/api/viewers/me/seen" ? { seen: 2 } : url === "/api/viewers/me/looked" ? { looked: { t1: "x" } } : undefined),
 };
 
-describe("ArtifactController", () => {
+describe("ArtifactController", { timeout: MOUNT_TIMEOUT_MS }, () => {
   beforeEach(() => { vi.resetModules(); FakeES.last = undefined; history.replaceState(null, "", `/a/${ID}`); });
   // The gesture module this test's registry loaded watches the document until its `unwatchShell` runs.
   afterEach(async () => { (await import("../caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.body.replaceChildren(); });

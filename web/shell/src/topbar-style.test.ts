@@ -3,6 +3,7 @@
 // island would drop their style without failing anything else.
 import { readFileSync } from "node:fs";
 import { FakeWorker } from "./test/fake-worker";
+import { MOUNT_TIMEOUT_MS, WAIT_MS } from "./test/timeouts";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 
@@ -23,7 +24,7 @@ function rulesFor(el: Element, pseudo?: "::before"): string[] {
 
 afterEach(async () => { (await import("./caps/gesture")).unwatchShell(); vi.unstubAllGlobals(); sessionStorage.clear(); document.head.replaceChildren(); document.body.replaceChildren(); });
 
-it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in the people's tint and ink, and no case transform", async () => {
+it("styles the topbar controls through the island: a 3px red-orange rule under the bar in comment mode, a pressed Comment in the people's tint and ink, and no case transform", { timeout: MOUNT_TIMEOUT_MS }, async () => {
   vi.resetModules();
   history.replaceState(null, "", `/a/${ID}`);
   vi.stubGlobal("SharedWorker", FakeWorker);
@@ -34,7 +35,7 @@ it("styles the topbar controls through the island: a 3px red-orange rule under t
   const root = document.createElement("div");
   document.body.append(root);
   const view = (await import("./artifact")).mountArtifactView(root, { id: ID, pinnedVersion: null });
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + WAIT_MS;
   while (!root.querySelector(".topbar button.comment") && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
   const topbar = root.querySelector<HTMLElement>(".topbar")!;
   const comment = root.querySelector<HTMLButtonElement>(".topbar button.comment")!;

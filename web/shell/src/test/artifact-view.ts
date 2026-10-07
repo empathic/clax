@@ -3,9 +3,10 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { dispatchTrusted } from "../../../bridge/test/trusted";
 import { FakeWorker, artifactStreams } from "./fake-worker";
+import { WAIT_MS } from "./timeouts";
 
 export async function waitFor<T>(check: () => T | null | undefined | false, what: string): Promise<T> {
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + WAIT_MS;
   for (;;) {
     const v = check();
     if (v) return v;

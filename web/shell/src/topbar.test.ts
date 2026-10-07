@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { artifact, artifactViewHooks, mountView, waitFor } from "./test/artifact-view";
 import { flush, mount } from "./test/svelte";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import MoreMenu from "./ui/MoreMenu.svelte";
 import PhoneTabs from "./ui/PhoneTabs.svelte";
 
@@ -155,7 +156,7 @@ describe("Echo top bar parts", () => {
   });
 });
 
-describe("the top bar on a live page", () => {
+describe("the top bar on a live page", { timeout: MOUNT_TIMEOUT_MS }, () => {
   artifactViewHooks();
   const live = { origin: "http://localhost:5173", path: "/settings", page_url: "http://localhost:5173/settings" };
   const liveArtifact = () => {

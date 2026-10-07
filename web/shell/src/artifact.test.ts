@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
+import { MOUNT_TIMEOUT_MS } from "./test/timeouts";
 import { artifactViewHooks, waitFor, ID, FakeES, artifact, page, viewer, mountView, stubMedia, buttonNamed, fromFrame, gestureIn } from "./test/artifact-view";
 
-describe("ArtifactView", () => {
+describe("ArtifactView", { timeout: MOUNT_TIMEOUT_MS }, () => {
   artifactViewHooks();
 
   it("disposes the capability host when it is replaced and on unmount", async () => {
