@@ -49,6 +49,8 @@ export interface DaemonOptions {
   /** Port for a daemon this call starts (0 = any free port); the CLI's default
    * when absent. */
   port?: number;
+  /** The wrapper that resolves the binary; [`WRAPPER`] when absent. */
+  wrapper?: string;
 }
 
 /** `$CLAX_HOME`, else `$HOME/.clax`; an empty variable counts as unset. */
@@ -137,25 +139,27 @@ function bash(env: NodeJS.ProcessEnv): string {
  * clax), else the `bin` setting in `<home>/config.toml`, else the release
  * this package pins, installed in `<home>/bin/<version>` and downloaded
  * there on first use. `PATH` is not searched. Rejects with the wrapper's
- * reason, which names the fix. */
-export function findBinary(home: string, env: NodeJS.ProcessEnv = process.env): Promise<string> {
+ * reason, which names the fix. `wrapper` is the script run in place of
+ * [`WRAPPER`]. */
+export function findBinary(home: string, env: NodeJS.ProcessEnv = process.env, wrapper: string = WRAPPER): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile(bash(env), [WRAPPER], { env: { ...env, CLAX_HOME: home }, timeout: RESOLVE_TIMEOUT_MS }, (err, stdout, stderr) => {
+    execFile(bash(env), [wrapper], { env: { ...env, CLAX_HOME: home }, timeout: RESOLVE_TIMEOUT_MS }, (err, stdout, stderr) => {
       const path = String(stdout).trim();
       if (!err && path) return resolve(path);
       const lines = String(stderr).split("\n").map(l => l.trim()).filter(Boolean);
       const reason = lines.reverse().find(l => l.startsWith("clax: "))?.slice("clax: ".length);
       const late = err?.killed ? `it did not finish within ${RESOLVE_TIMEOUT_MS / 1000} s` : "";
-      reject(new Error(reason || late || `${WRAPPER} failed: ${err?.message ?? "no binary"}`));
+      reject(new Error(reason || late || `${wrapper} failed: ${err?.message ?? "no binary"}`));
     });
   });
 }
 
 /** The version `bin --version` reports (`clax 0.3.0` gives `0.3.0`), or
- * null when it does not run, does not answer within 3 s, or is not clax. */
-export function binaryVersion(bin: string, env: NodeJS.ProcessEnv = process.env): Promise<string | null> {
+ * null when it does not run, does not answer within `timeoutMs` (3 s by
+ * default), or is not clax. */
+export function binaryVersion(bin: string, env: NodeJS.ProcessEnv = process.env, timeoutMs = 3_000): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(bin, ["--version"], { env, timeout: 3_000 }, (err, stdout) => {
+    execFile(bin, ["--version"], { env, timeout: timeoutMs }, (err, stdout) => {
       const m = /^clax (\S+)/.exec(String(stdout).split("\n")[0] ?? "");
       resolve(!err && m ? m[1] : null);
     });
@@ -186,7 +190,7 @@ export async function ensure(home: string, opts: DaemonOptions = {}): Promise<Da
   const found = await discover(home);
   if (found) return found;
   const env = opts.env ?? process.env;
-  const bin = await findBinary(home, env);
+  const bin = await findBinary(home, env, opts.wrapper);
   const args = ["serve", "--json", ...(opts.port === undefined ? [] : ["--port", String(opts.port)])];
   await new Promise<void>((resolve, reject) => {
     execFile(bin, args, { env: { ...env, CLAX_HOME: home }, timeout: SERVE_TIMEOUT_MS }, (err, _stdout, stderr) => {
