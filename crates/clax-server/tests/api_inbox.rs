@@ -555,5 +555,9 @@ async fn the_hooks_timer_leaves_a_question_unread_and_the_owner_moving_it_reads_
             .as_bool()
     };
     assert_eq!(read_of(&timer), Some(false), "the hook's timer");
-    assert_eq!(read_of(&moved), Some(true), "Answer in the terminal");
+    assert_eq!(
+        read_of(&moved),
+        Some(true),
+        "the owner moving it to the terminal"
+    );
 }
