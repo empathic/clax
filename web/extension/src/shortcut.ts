@@ -1,8 +1,8 @@
-// How the panel and the composer tell the person to get screenshots in a
-// tab Clax is on (spec 2026-10-05 L8): the keyboard command, which grants
-// activeTab (the toolbar icon there would turn Clax off), named by the
-// shortcut Chrome has assigned it, or the page's context menu when it has
-// none. Every such wording is here.
+// How the panel and the composer tell the person to start Clax, or to get
+// screenshots in a tab Clax is on (spec 2026-10-05 L8): the keyboard
+// command, which grants activeTab (the toolbar icon in an on tab would turn
+// Clax off), named by the shortcut Chrome has assigned it, or the page's
+// context menu when it has none. Every such wording is here.
 
 /** The command's assigned shortcut ("⌥⇧C" on macOS), or null when none is. */
 export type Shortcut = string | null;
@@ -27,3 +27,7 @@ export const panelHint = (keys: Shortcut) => {
 
 /** The composer's words, after "No screenshot: ", for a pick taken without the grant. */
 export const clipHint = (keys: Shortcut) => `${how(keys)} before your next pick to include one`;
+
+/** The side panel's words in a tab Clax is off in, where the toolbar icon turns it on. */
+export const offHint = (keys: Shortcut) =>
+  keys ? `Click the Clax button or press ${keys} on a page to comment on it.` : "Click the Clax button, or right-click a page and choose Comment with Clax, to comment on it.";
