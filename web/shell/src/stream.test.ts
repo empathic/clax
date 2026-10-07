@@ -140,6 +140,28 @@ describe("EventStream", () => {
     expect(seen.at(-1)).toEqual({ type: "ready" });
   });
 
+  it("keeps no timer and shows no notice once nothing watches it, even when its hub is lost", async () => {
+    const off = s.watch(["gallery"], () => {});
+    await flush();
+    // Lost while watched: a notice and a new hub are on their way...
+    links[0].lost();
+    off();
+    await flush();
+    // ...and stop with the last watcher, whose view is gone.
+    expect(s.open).toBe(false);
+    await vi.advanceTimersByTimeAsync(NOTICE_MS * 2);
+    expect(connNoticeText()).toBeNull();
+    // Lost with no watcher: nothing is scheduled for no one.
+    const off2 = s.watch(["gallery"], () => {});
+    await flush();
+    off2();
+    await flush();
+    links.at(-1)!.lost();
+    expect(s.open).toBe(false);
+    await vi.advanceTimersByTimeAsync(NOTICE_MS * 2);
+    expect(connNoticeText()).toBeNull();
+  });
+
   it("joins a new hub at once when the link says the hub is gone", async () => {
     s.watch(["gallery"], () => {});
     await flush();
